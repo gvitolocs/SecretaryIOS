@@ -27,7 +27,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Gym parity with Lucina Gym, plus a layout guard for the clipping (b40dec6, live)
 - [x] i18n: it / en / da for shell, chat, login, weight (20e811e); Gym and Shopping still to adopt it
 - [x] Deploy the new web shell (48d52d3)
-- [ ] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), in progress
+- [x] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), live edb6405
 
 ### Avatar
 - [ ] Owner picked Summer, but in her uniform: variants A/B being built → → owner picks → convert → p1 private assets
