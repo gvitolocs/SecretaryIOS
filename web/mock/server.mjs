@@ -28,12 +28,27 @@
 //   POST /v1/_mock/gym/bump           -> bumps the gym revision (next command gets 409)
 //   POST /v1/_mock/body/bump          -> bumps the body revision
 //   POST /v1/_mock/server {"down":true} -> /v1/gym/* and /v1/body/* answer 502 with no body
+// Timeline (one conversation across every channel):
+//   GET  /v1/timeline?before=<id>&limit=50 -> {items, nextBefore}, newest first
+//   GET  /v1/timeline/stream             -> SSE: `event: item` (id = item id), `event: ping`;
+//                                            replays items after Last-Event-ID
+//   POST /v1/chat records the user message (channel from X-Secretary-Client) and Lucina's
+//   reply, and answers userItemId / lucinaItemId. "remind" also posts a reminder item 15 s later.
+//   POST /v1/_mock/timeline {channel, role, text, meta?} -> injects an item (CSRF header needed)
+//   MOCK_FAKE_TRAFFIC=1 posts a fake Telegram message (and Lucina's answer) every ~20 s.
+// Lucina stage (session needed, like the real server):
+//   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
+//                            The model is private: never copy it into the repo.
+//   POST /v1/tts {text, lang} -> a short silent audio/mpeg clip
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
 
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { createReadStream, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { extname, join, resolve, sep } from "node:path";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8791);
 const HOST = process.env.MOCK_HOST ?? "127.0.0.1";
@@ -88,13 +103,13 @@ function fail(res, status, code, message, headers = {}) {
   send(res, status, { error: { code, message } }, headers);
 }
 
-function readJson(req) {
+function readJson(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on("data", (c) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > limit) {
         reject(Object.assign(new Error("body too large"), { status: 413 }));
         req.destroy();
         return;
@@ -1246,6 +1261,161 @@ async function handleBodyCommand(req, res) {
   return send(res, 200, { ok: true, replayed: false, view: bodyView(bodyState, now) });
 }
 
+// ---------- Timeline ----------
+
+const TIMELINE_CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"];
+const TIMELINE_MAX_LIMIT = 100;
+const SSE_PING_MS = 15_000;
+let timelineSeq = 1000;
+/** @type {object[]} oldest first; ids are increasing integers (as strings) */
+const timeline = [];
+/** @type {Set<import("node:http").ServerResponse>} */
+const streamClients = new Set();
+/** sessionId/clientMessageId -> user item id, so retries reuse the recorded message */
+const userItems = new Map();
+
+function sseWrite(res, item) {
+  res.write(`id: ${item.id}\nevent: item\ndata: ${JSON.stringify(item)}\n\n`);
+}
+
+function addItem(fields, ts = Date.now()) {
+  const item = { id: String(++timelineSeq), ts: new Date(ts).toISOString(), ...fields };
+  timeline.push(item);
+  for (const client of streamClients) sseWrite(client, item);
+  return item;
+}
+
+function seedTimeline() {
+  const now = Date.now();
+  const H = 3_600_000;
+  const rows = [];
+  const tg = { chatTitle: "Family" };
+  const dc = { guildName: "Lucina HQ", channelName: "general" };
+  // Imported history, a few weeks back.
+  for (let i = 0; i < 24; i++) {
+    const at = now - 21 * DAY_MS + i * 9 * H;
+    const channel = i % 3 === 0 ? "telegram" : i % 3 === 1 ? "discord" : "web";
+    const meta = channel === "telegram" ? tg : channel === "discord" ? dc : undefined;
+    rows.push([at, { channel, role: "user", text: `Old message #${i + 1} from ${channel}.`, meta, backfilled: true }]);
+    rows.push([at + 60_000, { channel, role: "lucina", text: `Noted (#${i + 1}).`, meta, backfilled: true }]);
+  }
+  const recent = [
+    [3 * DAY_MS + 2 * H, { channel: "telegram", role: "user", text: "Lucina, can you add oat milk to the list?", meta: tg }],
+    [3 * DAY_MS + 2 * H - 50_000, { channel: "telegram", role: "lucina", text: "Added oat milk to your shopping list.", meta: tg }],
+    [2 * DAY_MS + 5 * H, { channel: "discord", role: "user", text: "What's on my calendar on Friday?", meta: dc }],
+    [2 * DAY_MS + 5 * H - 40_000, { channel: "discord", role: "lucina", text: "Dentist at 10:30 and the gym at 18:00.", meta: dc }],
+    [2 * DAY_MS + 3 * H, { channel: "discord", role: "user", text: "Thanks!", meta: { isDm: true } }],
+    [DAY_MS + 8 * H, { channel: "alexa", role: "user", text: "Alexa, ask Lucina to start a 10 minute timer." }],
+    [DAY_MS + 8 * H - 5_000, { channel: "alexa", role: "lucina", text: "Timer set for 10 minutes." }],
+    [DAY_MS + 4 * H, { channel: "ios", role: "user", text: "Remember that I parked on level 2.", attachments: [{ kind: "image", name: "parking.jpg" }] }],
+    [DAY_MS + 4 * H - 30_000, { channel: "ios", role: "lucina", text: "Got it: level 2. I kept the photo too." }],
+    [5 * H, { channel: "other", role: "lucina", text: "Water the plants.", meta: { kind: "reminder" } }],
+    [3 * H, { channel: "telegram", role: "user", text: "", attachments: [{ kind: "voice" }], meta: tg }],
+    [3 * H - 20_000, { channel: "telegram", role: "lucina", text: "I listened to your voice note: bread and eggs, added.", meta: tg }],
+    [H, { channel: "web", role: "user", text: "Hello Lucina, any news?" }],
+    [H - 30_000, { channel: "web", role: "lucina", text: "All quiet. Details: https://example.com/status" }],
+  ];
+  for (const [ago, fields] of recent) rows.push([now - ago, fields]);
+  rows.sort((a, b) => a[0] - b[0]);
+  for (const [at, fields] of rows) {
+    const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+    addItem(clean, at);
+  }
+}
+seedTimeline();
+
+function handleTimelinePage(res, url) {
+  const before = url.searchParams.get("before");
+  const limitRaw = Number(url.searchParams.get("limit") ?? 50);
+  const limit = Number.isInteger(limitRaw) && limitRaw >= 1 ? Math.min(limitRaw, TIMELINE_MAX_LIMIT) : 50;
+  if (before !== null && !/^\d+$/.test(before)) return fail(res, 400, "bad_request", "before must be an item id");
+  const older = before === null ? timeline : timeline.filter((it) => Number(it.id) < Number(before));
+  const items = older.slice(-limit).reverse();
+  const nextBefore = older.length > limit && items.length ? items[items.length - 1].id : null;
+  return send(res, 200, { items, nextBefore });
+}
+
+function handleTimelineStream(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write("retry: 3000\n\n");
+  const last = String(req.headers["last-event-id"] ?? "");
+  if (/^\d+$/.test(last)) {
+    for (const it of timeline) if (Number(it.id) > Number(last)) sseWrite(res, it);
+  }
+  streamClients.add(res);
+  const ping = setInterval(() => res.write(`event: ping\ndata: {}\n\n`), SSE_PING_MS);
+  req.on("close", () => {
+    clearInterval(ping);
+    streamClients.delete(res);
+  });
+}
+
+function clientChannel(req) {
+  const c = String(req.headers["x-secretary-client"] ?? "").toLowerCase();
+  return c === "web" || c === "ios" ? c : "other";
+}
+
+if (process.env.MOCK_FAKE_TRAFFIC === "1") {
+  let n = 0;
+  setInterval(() => {
+    n += 1;
+    const meta = { chatTitle: "Family" };
+    const user = addItem({ channel: "telegram", role: "user", text: `Fake Telegram message ${n}`, meta });
+    setTimeout(() => {
+      addItem({ channel: "telegram", role: "lucina", text: `Reply to fake message ${n}.`, meta, replyTo: user.id });
+    }, 1500);
+  }, 20_000).unref();
+}
+
+// ---------- Lucina stage assets + TTS ----------
+
+const ASSETS_DIR = resolve(process.env.MOCK_ASSETS_DIR ?? join(homedir(), "scratch/lucina-avatar/out"));
+const ASSET_TYPES = {
+  ".glb": "model/gltf-binary",
+  ".gltf": "model/gltf+json",
+  ".json": "application/json",
+  ".bin": "application/octet-stream",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ktx2": "image/ktx2",
+};
+
+function handleAsset(res, rel) {
+  const file = resolve(ASSETS_DIR, `.${sep}${rel}`);
+  const type = ASSET_TYPES[extname(file).toLowerCase()];
+  let st = null;
+  try {
+    st = statSync(file);
+  } catch {
+    st = null;
+  }
+  if (!type || !file.startsWith(ASSETS_DIR + sep) || !st?.isFile()) return fail(res, 404, "not_found", "No such asset.");
+  res.writeHead(200, { "Content-Type": type, "Content-Length": String(st.size), "Cache-Control": "private, no-store" });
+  createReadStream(file).pipe(res);
+}
+
+/** ~0.5 s of silence: MPEG-1 Layer III frames (32 kbps, 44.1 kHz, mono) with empty side info. */
+const SILENT_MP3 = (() => {
+  const frame = Buffer.alloc(104);
+  frame.set([0xff, 0xfb, 0x10, 0xc4]);
+  return Buffer.concat(Array.from({ length: 20 }, () => frame));
+})();
+
+async function handleTts(req, res) {
+  const body = await readJson(req);
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  if (!text || text.length > 4000) return fail(res, 400, "bad_request", "text must be 1-4000 characters");
+  await sleep(150);
+  res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": String(SILENT_MP3.length), "Cache-Control": "no-store" });
+  res.end(SILENT_MP3);
+}
+
 async function handleChat(req, res) {
   const body = await readJson(req);
   const message = typeof body.message === "string" ? body.message : "";
@@ -1265,6 +1435,14 @@ async function handleChat(req, res) {
   const key = clientMessageId ? `${sessionId}/${clientMessageId}` : null;
   const cached = key ? chatReplies.get(key) : undefined;
   if (cached) return send(res, 200, { ...cached, duplicate: true });
+
+  // The message is on the timeline as soon as it arrives; a retry reuses it.
+  const channel = clientChannel(req);
+  let userItemId = key ? userItems.get(key) : undefined;
+  if (!userItemId) {
+    userItemId = addItem({ channel, role: "user", text: message, ...(clientMessageId ? { clientMessageId } : {}) }).id;
+    if (key) userItems.set(key, userItemId);
+  }
 
   const m = message.toLowerCase();
   await sleep(600 + Math.random() * 900);
@@ -1302,6 +1480,18 @@ async function handleChat(req, res) {
     };
   } else {
     reply = { reply: lucinaReply(message), action: "reply", job: null, ...ids };
+  }
+  const lucinaItem = addItem({
+    channel,
+    role: "lucina",
+    text: reply.reply,
+    replyTo: userItemId,
+    ...(clientMessageId ? { clientMessageId } : {}),
+  });
+  reply = { ...reply, userItemId, lucinaItemId: lucinaItem.id };
+  if (reply.reminder) {
+    const text = message;
+    setTimeout(() => addItem({ channel, role: "lucina", text, meta: { kind: "reminder" } }), 15_000).unref();
   }
   if (key) chatReplies.set(key, reply);
   send(res, 200, reply);
@@ -1431,6 +1621,15 @@ async function route(req, res) {
     return send(res, 200, { online: lucinaOnline });
   }
 
+  if (path === "/v1/_mock/timeline" && method === "POST") {
+    const body = await readJson(req);
+    const channel = TIMELINE_CHANNELS.includes(body.channel) ? body.channel : "telegram";
+    const role = body.role === "lucina" ? "lucina" : "user";
+    const text = typeof body.text === "string" ? body.text.slice(0, 4000) : "Hello from the mock.";
+    const item = addItem({ channel, role, text, ...(body.meta && typeof body.meta === "object" ? { meta: body.meta } : {}) });
+    return send(res, 201, item);
+  }
+
   if (path === "/v1/_mock/gym/bump" && method === "POST") {
     gymState.revision += 1;
     return send(res, 200, { revision: gymState.revision });
@@ -1450,6 +1649,7 @@ async function route(req, res) {
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
+  if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
@@ -1474,6 +1674,21 @@ async function route(req, res) {
   if (path === "/v1/body/command" && method === "POST") return handleBodyCommand(req, res);
 
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
+
+  if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
+  const assetMatch = path.match(/^\/v1\/assets\/(.+)$/);
+  if (assetMatch && method === "GET") {
+    let rel;
+    try {
+      rel = decodeURIComponent(assetMatch[1]);
+    } catch {
+      return fail(res, 400, "bad_request", "Bad asset path.");
+    }
+    return handleAsset(res, rel);
+  }
+
+  if (path === "/v1/timeline" && method === "GET") return handleTimelinePage(res, url);
+  if (path === "/v1/timeline/stream" && method === "GET") return handleTimelineStream(req, res);
 
   const jobMatch = path.match(/^\/v1\/jobs\/([^/]+)$/);
   if (jobMatch && method === "GET") {

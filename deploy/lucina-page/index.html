@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Lucina</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <meta name="theme-color" content="#0f1420" />
+  <link rel="stylesheet" href="./lucina.css" />
+</head>
+<body>
+  <header class="bar">
+    <a class="back" href="/" aria-label="Back to Secretary">←</a>
+    <span class="title">Lucina</span>
+    <span id="status" class="status" aria-live="polite">Loading…</span>
+    <button id="mute" class="icon" type="button" aria-pressed="true" aria-label="Unmute Lucina">🔇</button>
+  </header>
+
+  <main class="stage-wrap">
+    <canvas id="stage" aria-label="Lucina. Tap her to talk."></canvas>
+    <p id="hint" class="hint">Tap Lucina to talk, or type below.</p>
+  </main>
+
+  <section id="log" class="log" aria-live="polite" aria-label="Conversation"></section>
+
+  <form id="composer" class="composer" autocomplete="off">
+    <button id="mic" class="icon" type="button" aria-label="Speak to Lucina">🎙️</button>
+    <input id="text" type="text" placeholder="Scrivi a Lucina…" maxlength="4000" aria-label="Message Lucina" />
+    <button id="send" class="send" type="submit" aria-label="Send">➤</button>
+  </form>
+
+  <noscript>This page needs JavaScript.</noscript>
+  <script type="module" src="./lucina.js"></script>
+</body>
+</html>

@@ -111,6 +111,97 @@ pub fn flag(field: &'static str, s: &str) -> Result<&'static str> {
     }
 }
 
+/// Max page size of `GET /timeline`.
+pub const MAX_TIMELINE_LIMIT: u32 = 200;
+
+/// Client surfaces a chat message may come from.
+pub const CHAT_CHANNELS: &[&str] = &["web", "ios"];
+
+/// A decimal integer in `min..=max` (no sign, no leading `+`).
+pub fn bounded_int(field: &'static str, s: &str, min: u32, max: u32) -> Result<u32> {
+    let n = if !s.is_empty() && s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit()) {
+        s.parse::<u32>().ok()
+    } else {
+        None
+    };
+    match n {
+        Some(n) if (min..=max).contains(&n) => Ok(n),
+        _ => Err(invalid(field, format!("must be an integer {min}..={max}"))),
+    }
+}
+
+/// A chat channel: one of [`CHAT_CHANNELS`].
+pub fn chat_channel(field: &'static str, s: &str) -> Result<()> {
+    if CHAT_CHANNELS.contains(&s) {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            format!("must be one of {}", CHAT_CHANNELS.join(", ")),
+        ))
+    }
+}
+
+// -- shopping v2 ----------------------------------------------------------
+
+/// Max ops in one `POST /shopping/lists/{id}/ops` batch.
+pub const MAX_OPS_PER_BATCH: usize = 200;
+/// Max characters of a list name.
+pub const MAX_LIST_NAME_CHARS: usize = 80;
+/// Max characters of an item `spec` ("6, mature").
+pub const MAX_SPEC_CHARS: usize = 200;
+/// Max characters of a quantity `unit`.
+pub const MAX_UNIT_CHARS: usize = 32;
+/// Max quantity.
+pub const MAX_QUANTITY: f64 = 100_000.0;
+/// Max `reorder` position.
+pub const MAX_POSITION: u32 = 100_000;
+/// List themes.
+pub const LIST_THEMES: &[&str] = &[
+    "home", "grocery", "work", "holiday", "garden", "hardware", "baby", "other",
+];
+
+/// A UUID in canonical hyphenated form (`8-4-4-4-12` hex).
+pub fn uuid(field: &'static str, s: &str) -> Result<()> {
+    if s.len() == 36 && uuid::Uuid::try_parse(s).is_ok() {
+        Ok(())
+    } else {
+        Err(invalid(field, "must be a UUID (8-4-4-4-12 hex)"))
+    }
+}
+
+/// Optional text that may be empty (clearing a value), else like [`text`].
+pub fn clearable_text(field: &'static str, s: Option<&str>, max: usize) -> Result<()> {
+    match s {
+        None | Some("") => Ok(()),
+        Some(s) if s.trim().is_empty() => Ok(()),
+        Some(s) => text(field, s, max),
+    }
+}
+
+/// A list theme: one of [`LIST_THEMES`].
+pub fn list_theme(field: &'static str, s: &str) -> Result<()> {
+    if LIST_THEMES.contains(&s) {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            format!("must be one of {}", LIST_THEMES.join(", ")),
+        ))
+    }
+}
+
+/// A quantity: finite, `> 0`, at most [`MAX_QUANTITY`].
+pub fn quantity(field: &'static str, n: &serde_json::Number) -> Result<()> {
+    match n.as_f64() {
+        Some(q) if q.is_finite() && q > 0.0 && q <= MAX_QUANTITY => Ok(()),
+        _ => Err(invalid(
+            field,
+            format!("must be a number > 0 and <= {MAX_QUANTITY}"),
+        )),
+    }
+}
+
 /// A JSON object (shopping bodies are passed through, but must be objects).
 pub fn object(field: &'static str, v: &Value) -> Result<()> {
     match v {
@@ -172,5 +263,11 @@ mod tests {
         assert!(shopping_item(&json!({"rawName": "x", "product": 3})).is_err());
         assert!(session_id("sessionId", "iphone_1-a").is_ok());
         assert!(session_id("sessionId", "a.b").is_err());
+        assert_eq!(bounded_int("limit", "50", 1, 200).unwrap(), 50);
+        for bad in ["0", "201", "-1", "+5", "abc", "", "1e2", "99999999999"] {
+            assert!(bounded_int("limit", bad, 1, 200).is_err(), "{bad:?}");
+        }
+        assert!(chat_channel("channel", "ios").is_ok());
+        assert!(chat_channel("channel", "telegram").is_err());
     }
 }

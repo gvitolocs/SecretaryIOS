@@ -15,9 +15,10 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::models::{
-    Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CreateReminder,
-    CreatedReminder, Envelope, Health, Job, ReminderList, ReminderQuery, ReminderScope,
-    ShoppingItem,
+    Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CreateList, CreateReminder,
+    CreatedReminder, Envelope, Health, Job, ListState, OpsBatch, OpsResult, ReminderList,
+    ReminderQuery, ReminderScope, ShoppingItem, ShoppingList, ShoppingListData, ShoppingListsData,
+    ShoppingOp, TimelinePage, TimelineQuery, UpdateList,
 };
 use crate::validate;
 
@@ -30,6 +31,12 @@ pub struct Timeouts {
     pub default: Duration,
     /// TCP/TLS connect: 5 s by default.
     pub connect: Duration,
+    /// TCP/TLS connect of the timeline event stream: 10 s by default.
+    pub stream_connect: Duration,
+    /// The event stream ends when Lucina sends nothing (not even its 20 s
+    /// `: ping`) for this long: 60 s by default. Also bounds the wait for
+    /// the response headers. There is no total deadline on the stream.
+    pub stream_idle: Duration,
 }
 
 impl Default for Timeouts {
@@ -38,6 +45,8 @@ impl Default for Timeouts {
             chat: Duration::from_secs(120),
             default: Duration::from_secs(15),
             connect: Duration::from_secs(5),
+            stream_connect: Duration::from_secs(10),
+            stream_idle: Duration::from_secs(60),
         }
     }
 }
@@ -95,6 +104,9 @@ impl Call {
             validate::session_id("sessionId", sid)?;
         }
         validate::opt_id("clientMessageId", req.client_message_id.as_deref())?;
+        if let Some(c) = req.channel.as_deref() {
+            validate::chat_channel("channel", c)?;
+        }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
         call.class = TimeoutClass::Chat;
@@ -182,6 +194,96 @@ impl Call {
             .extracting("item"))
     }
 
+    /// `GET /shopping/lists`.
+    pub fn shopping_lists() -> Self {
+        Self::new(Method::GET, &["shopping", "lists"])
+    }
+
+    /// `POST /shopping/lists {name, theme?}`.
+    pub fn shopping_list_create(req: &CreateList) -> Result<Self> {
+        validate::text("name", &req.name, validate::MAX_LIST_NAME_CHARS)?;
+        if let Some(t) = req.theme.as_deref() {
+            validate::list_theme("theme", t)?;
+        }
+        let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["shopping", "lists"]).with_body(body))
+    }
+
+    /// `GET /shopping/lists/{id}`.
+    pub fn shopping_list(id: &str) -> Result<Self> {
+        validate::id("id", id)?;
+        Ok(Self::new(Method::GET, &["shopping", "lists", id]))
+    }
+
+    /// `PATCH /shopping/lists/{id} {name?, theme?}`.
+    pub fn shopping_list_update(id: &str, req: &UpdateList) -> Result<Self> {
+        validate::id("id", id)?;
+        if req.name.is_none() && req.theme.is_none() {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "needs name and/or theme".into(),
+            });
+        }
+        if let Some(n) = req.name.as_deref() {
+            validate::text("name", n, validate::MAX_LIST_NAME_CHARS)?;
+        }
+        if let Some(t) = req.theme.as_deref() {
+            validate::list_theme("theme", t)?;
+        }
+        let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::PATCH, &["shopping", "lists", id]).with_body(body))
+    }
+
+    /// `DELETE /shopping/lists/{id}` (Lucina refuses the default list).
+    pub fn shopping_list_delete(id: &str) -> Result<Self> {
+        validate::id("id", id)?;
+        Ok(Self::new(Method::DELETE, &["shopping", "lists", id]))
+    }
+
+    /// `POST /shopping/lists/{id}/ops`: 1..=200 ops with distinct UUID
+    /// `opId`s; every field is checked (ids, lengths, quantities).
+    pub fn shopping_ops(id: &str, batch: &OpsBatch) -> Result<Self> {
+        validate::id("id", id)?;
+        if batch.ops.is_empty() || batch.ops.len() > validate::MAX_OPS_PER_BATCH {
+            return Err(Error::Invalid {
+                field: "ops",
+                message: format!("must hold 1..={} ops", validate::MAX_OPS_PER_BATCH),
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (i, op) in batch.ops.iter().enumerate() {
+            validate_op(op).map_err(|e| match e {
+                Error::Invalid { field, message } => Error::Invalid {
+                    field: "ops",
+                    message: format!("[{i}].{field}: {message}"),
+                },
+                other => other,
+            })?;
+            if !seen.insert(op.op_id()) {
+                return Err(Error::Invalid {
+                    field: "ops",
+                    message: format!("[{i}].opId: repeated in this batch"),
+                });
+            }
+        }
+        let body = serde_json::to_value(batch).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["shopping", "lists", id, "ops"]).with_body(body))
+    }
+
+    /// `GET /timeline?before=&limit=` (newest first, `{items, nextBefore}`).
+    pub fn timeline(q: &TimelineQuery) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["timeline"]);
+        if let Some(b) = q.before.as_deref() {
+            validate::id("before", b)?;
+            call.query.push(("before", b.to_owned()));
+        }
+        if let Some(l) = q.limit.as_deref() {
+            let n = validate::bounded_int("limit", l, 1, validate::MAX_TIMELINE_LIMIT)?;
+            call.query.push(("limit", n.to_string()));
+        }
+        Ok(call)
+    }
+
     pub fn method(&self) -> &Method {
         &self.method
     }
@@ -200,11 +302,97 @@ impl Call {
     }
 }
 
+fn validate_op(op: &ShoppingOp) -> Result<()> {
+    use ShoppingOp as O;
+    validate::uuid("opId", op.op_id())?;
+    match op {
+        O::Add {
+            catalog_id,
+            name,
+            spec,
+            quantity,
+            unit,
+            section,
+            ..
+        } => {
+            if catalog_id.is_none() && name.is_none() {
+                return Err(Error::Invalid {
+                    field: "catalogId",
+                    message: "add needs catalogId or name".into(),
+                });
+            }
+            validate::opt_id("catalogId", catalog_id.as_deref())?;
+            if let Some(n) = name.as_deref() {
+                validate::text("name", n, validate::MAX_SHOPPING_NAME_CHARS)?;
+            }
+            validate::clearable_text("spec", spec.as_deref(), validate::MAX_SPEC_CHARS)?;
+            if let Some(q) = quantity {
+                validate::quantity("quantity", q)?;
+            }
+            validate::clearable_text("unit", unit.as_deref(), validate::MAX_UNIT_CHARS)?;
+            validate::opt_id("section", section.as_deref())?;
+        }
+        O::Need { item_id, .. } | O::Purchase { item_id, .. } | O::Remove { item_id, .. } => {
+            validate::id("itemId", item_id)?;
+        }
+        O::SetSpec { item_id, spec, .. } => {
+            validate::id("itemId", item_id)?;
+            validate::clearable_text("spec", spec.as_deref(), validate::MAX_SPEC_CHARS)?;
+        }
+        O::SetQuantity {
+            item_id,
+            quantity,
+            unit,
+            ..
+        } => {
+            validate::id("itemId", item_id)?;
+            if let Some(q) = quantity {
+                validate::quantity("quantity", q)?;
+            }
+            validate::clearable_text("unit", unit.as_deref(), validate::MAX_UNIT_CHARS)?;
+        }
+        O::SetSection {
+            item_id, section, ..
+        } => {
+            validate::id("itemId", item_id)?;
+            validate::id("section", section)?;
+        }
+        O::Rename { item_id, name, .. } => {
+            validate::id("itemId", item_id)?;
+            validate::text("name", name, validate::MAX_SHOPPING_NAME_CHARS)?;
+        }
+        O::Move {
+            item_id,
+            to_list_id,
+            ..
+        } => {
+            validate::id("itemId", item_id)?;
+            validate::id("toListId", to_list_id)?;
+        }
+        O::ClearRecent { .. } => {}
+        O::Reorder {
+            item_id, position, ..
+        } => {
+            validate::id("itemId", item_id)?;
+            if *position > validate::MAX_POSITION {
+                return Err(Error::Invalid {
+                    field: "position",
+                    message: format!("must be 0..={}", validate::MAX_POSITION),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Client for Lucina's secretary API. Holds the server-side Lucina token;
 /// `Debug` never prints it.
 #[derive(Clone)]
 pub struct LucinaClient {
     http: reqwest::Client,
+    /// For the long-lived event stream: no gzip, its own connect and idle
+    /// timeouts, no total deadline.
+    stream_http: reqwest::Client,
     base: Url,
     token: String,
     timeouts: Timeouts,
@@ -237,8 +425,16 @@ impl LucinaClient {
             .connect_timeout(timeouts.connect)
             .build()
             .map_err(|e| Error::Config(e.without_url().to_string()))?;
+        let stream_http = reqwest::Client::builder()
+            .user_agent(concat!("secretary-core/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(timeouts.stream_connect)
+            .read_timeout(timeouts.stream_idle)
+            .no_gzip()
+            .build()
+            .map_err(|e| Error::Config(e.without_url().to_string()))?;
         Ok(Self {
             http,
+            stream_http,
             base,
             token,
             timeouts,
@@ -349,6 +545,77 @@ impl LucinaClient {
     pub async fn shopping(&self) -> Result<Vec<ShoppingItem>> {
         self.call(&Call::shopping()).await
     }
+
+    pub async fn shopping_lists(&self) -> Result<Vec<ShoppingList>> {
+        Ok(self
+            .call::<ShoppingListsData>(&Call::shopping_lists())
+            .await?
+            .into_lists())
+    }
+
+    pub async fn shopping_list_create(&self, req: &CreateList) -> Result<ShoppingList> {
+        Ok(self
+            .call::<ShoppingListData>(&Call::shopping_list_create(req)?)
+            .await?
+            .into_list())
+    }
+
+    pub async fn shopping_list(&self, id: &str) -> Result<ListState> {
+        self.call(&Call::shopping_list(id)?).await
+    }
+
+    pub async fn shopping_ops(&self, id: &str, batch: &OpsBatch) -> Result<OpsResult> {
+        self.call(&Call::shopping_ops(id, batch)?).await
+    }
+
+    pub async fn timeline(&self, q: &TimelineQuery) -> Result<TimelinePage> {
+        self.call(&Call::timeline(q)?).await
+    }
+
+    /// Open `GET /timeline/stream` (Server-Sent Events) and return the live
+    /// response once Lucina answered 2xx with `text/event-stream`; read it
+    /// with `bytes_stream()`. `last_event_id` (an id) is sent as
+    /// `Last-Event-ID` so Lucina replays what was missed.
+    ///
+    /// Non-2xx answers are classified like [`Self::call`]; a body read that
+    /// stalls longer than [`Timeouts::stream_idle`] fails with a timeout.
+    pub async fn timeline_stream(&self, last_event_id: Option<&str>) -> Result<reqwest::Response> {
+        validate::opt_id("lastEventId", last_event_id)?;
+        let call = Call::new(Method::GET, &["timeline", "stream"]);
+        let mut req = self
+            .stream_http
+            .get(self.url(&call))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache");
+        if let Some(id) = last_event_id {
+            req = req.header("last-event-id", id);
+        }
+        let resp = req.send().await.map_err(Error::from_reqwest)?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
+            // Non-2xx always decodes to an error.
+            return Err(decode_response::<Value>(status, &bytes)
+                .err()
+                .unwrap_or(Error::Api {
+                    status,
+                    code: format!("http_{status}"),
+                    message: None,
+                }));
+        }
+        let is_sse = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim_start().starts_with("text/event-stream"));
+        if !is_sse {
+            return Err(Error::Decode(
+                "timeline stream is not text/event-stream".into(),
+            ));
+        }
+        Ok(resp)
+    }
 }
 
 /// Envelope handling, separate from I/O so it can be unit-tested.
@@ -407,6 +674,14 @@ mod tests {
             c.url(&Call::reminders(&q).unwrap()).as_str(),
             "http://h:1/prefix/api/secretary/reminders?scope=today&includeSent=1"
         );
+        let q = TimelineQuery {
+            before: Some("tl_9".into()),
+            limit: Some("050".into()),
+        };
+        assert_eq!(
+            c.url(&Call::timeline(&q).unwrap()).as_str(),
+            "http://h:1/prefix/api/secretary/timeline?before=tl_9&limit=50"
+        );
     }
 
     #[test]
@@ -415,7 +690,8 @@ mod tests {
         assert!(Call::chat(&ChatRequest {
             message: " ".into(),
             session_id: None,
-            client_message_id: None
+            client_message_id: None,
+            channel: None
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -429,17 +705,109 @@ mod tests {
         })
         .is_err());
         assert!(Call::shopping_add(json!("milk")).is_err());
+        let chat = |channel: &str| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                session_id: None,
+                client_message_id: None,
+                channel: Some(channel.into()),
+            })
+        };
+        assert!(chat("ios").is_ok());
+        assert!(chat("telegram").is_err());
+        let tq = |before: Option<&str>, limit: Option<&str>| TimelineQuery {
+            before: before.map(str::to_owned),
+            limit: limit.map(str::to_owned),
+        };
+        assert!(Call::timeline(&tq(Some("a/b"), None)).is_err());
+        assert!(Call::timeline(&tq(None, Some("0"))).is_err());
+        assert!(Call::timeline(&tq(None, Some("201"))).is_err());
         assert!(Call::shopping_add(json!({"rawName": "latte"})).is_ok());
         assert_eq!(
             Call::chat(&ChatRequest {
                 message: "hi".into(),
                 session_id: None,
-                client_message_id: None
+                client_message_id: None,
+                channel: None
             })
             .unwrap()
             .timeout_class(),
             TimeoutClass::Chat
         );
+    }
+
+    #[test]
+    fn shopping_ops_validation() {
+        const U1: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        const U2: &str = "7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let batch = |ops: Value| -> Result<Call> {
+            let b: OpsBatch = serde_json::from_value(json!({"expectedRevision": 4, "ops": ops}))
+                .map_err(|e| Error::Decode(e.to_string()))?;
+            Call::shopping_ops("default", &b)
+        };
+        let call = batch(json!([
+            {"opId": U1, "type": "add", "catalogId": "banana", "name": "Banane", "spec": "6",
+             "quantity": 1.5, "unit": "kg", "section": "produce", "smuggled": true},
+            {"opId": U2, "type": "purchase", "itemId": "i-1"},
+        ]))
+        .unwrap();
+        assert_eq!(call.path(), "/api/secretary/shopping/lists/default/ops");
+        let body = call.body().unwrap();
+        assert_eq!(body["expectedRevision"], 4);
+        assert_eq!(body["ops"][0]["type"], "add");
+        assert_eq!(body["ops"][0]["quantity"], 1.5);
+        assert!(
+            body["ops"][0].get("smuggled").is_none(),
+            "unknown op fields dropped"
+        );
+        assert_eq!(
+            body["ops"][1],
+            json!({"type": "purchase", "opId": U2, "itemId": "i-1"})
+        );
+
+        let bad = |ops: Value| match batch(ops) {
+            Err(Error::Invalid { message, .. }) => message,
+            Err(Error::Decode(m)) => format!("decode: {m}"),
+            other => panic!("{other:?}"),
+        };
+        assert!(bad(json!([])).contains("1..=200"));
+        assert!(bad(json!([{"opId": "nope", "type": "remove", "itemId": "x"}])).contains("opId"));
+        assert!(bad(json!([{"opId": U1, "type": "explode"}])).starts_with("decode"));
+        assert!(bad(json!([{"opId": U1, "type": "add"}])).contains("catalogId or name"));
+        assert!(
+            bad(json!([{"opId": U1, "type": "add", "name": "x".repeat(201)}])).contains("name")
+        );
+        assert!(
+            bad(json!([{"opId": U1, "type": "set_quantity", "itemId": "i", "quantity": -1}]))
+                .contains("quantity")
+        );
+        assert!(
+            bad(json!([{"opId": U1, "type": "move", "itemId": "i", "toListId": "../x"}]))
+                .contains("toListId")
+        );
+        assert!(bad(json!([
+            {"opId": U1, "type": "clear_recent"},
+            {"opId": U1, "type": "clear_recent"}
+        ]))
+        .contains("[1].opId: repeated"));
+        let many: Vec<Value> = (0..201)
+            .map(|i| json!({"opId": format!("6f1c2a3b-4d5e-4f60-8a7b-{i:012}"), "type": "clear_recent"}))
+            .collect();
+        assert!(bad(Value::Array(many)).contains("1..=200"));
+        // clearing values is allowed
+        assert!(batch(json!([
+            {"opId": U1, "type": "set_spec", "itemId": "i", "spec": null},
+            {"opId": U2, "type": "set_quantity", "itemId": "i", "quantity": null}
+        ]))
+        .is_ok());
+
+        assert!(Call::shopping_list_create(&CreateList {
+            name: "Casa".into(),
+            theme: Some("pool".into())
+        })
+        .is_err());
+        assert!(Call::shopping_list_update("default", &UpdateList::default()).is_err());
+        assert!(Call::shopping_list("a/b").is_err());
     }
 
     #[test]

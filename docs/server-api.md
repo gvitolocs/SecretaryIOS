@@ -219,6 +219,12 @@ answered with an error).
 | `message` | Required, 1–4000 characters, not blank, no control characters except newline/tab. |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
+| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+
+The channel comes from the `X-Secretary-Client: web|ios` request header,
+else from the body's `channel`, else defaults to `web`; the header wins when
+both are sent. Any other value is `400 bad_request`. The server always
+forwards a `channel` to Lucina.
 
 Server timeout 120 s (an LLM turn); use a client timeout of at least 125 s.
 
@@ -231,9 +237,17 @@ Server timeout 120 s (an LLM turn); use a client timeout of at least 125 s.
   "job": null,
   "sessionId": "secretary_iphone",
   "clientMessageId": "B1E4C0DE-2F0A-4B8C-9D11-7A6E5F4C3B2A",
-  "reminder": { "id": "…", "text": "chiamare la mamma", "dueAt": "2026-10-21T16:30:00.000Z", "…": "…" }
+  "reminder": { "id": "…", "text": "chiamare la mamma", "dueAt": "2026-10-21T16:30:00.000Z", "…": "…" },
+  "userItemId": "tl_0192…",
+  "lucinaItemId": "tl_0193…"
 }
 ```
+
+`userItemId` / `lucinaItemId` are the timeline ids of the stored message
+and of Lucina's reply (present when Lucina records the timeline). The same
+items also arrive on [`/v1/timeline/stream`](#get-v1timelinestream);
+de-duplicate by `id` (or by `clientMessageId` for the optimistic copy of
+your own message).
 
 `action` is `reply`, `grocery`, `list_reminders`, `schedule_reminder`
 (with `reminder` when one was created or already existed), or an async
@@ -259,6 +273,118 @@ Treat unknown `action` values as `reply`.
 `status`: `queued` → `running` → `done` | `error`. Poll every 2–5 s until
 `done` or `error`. `error: "interrupted"` means Lucina restarted mid-job.
 `404 job_not_found`.
+
+## Timeline
+
+The unified conversation: every message Lucina sees or sends, on every
+channel (Telegram, Discord, the web app, the iOS app, Alexa), as one list.
+Both routes need auth (Bearer or the session cookie); they are `GET`, so
+cookie callers need no CSRF header.
+
+Timeline item:
+
+```json
+{
+  "id": "tl_0193…",
+  "ts": 1761048003000,
+  "channel": "telegram",
+  "role": "lucina",
+  "text": "Fatto, te lo ricordo alle 18:30.",
+  "clientMessageId": "B1E4C0DE-…",
+  "replyTo": "tl_0192…",
+  "attachments": [{ "kind": "image", "name": "scontrino.jpg" }],
+  "meta": { "chatTitle": "Casa", "isDm": true },
+  "backfilled": true
+}
+```
+
+| Field | |
+|---|---|
+| `id` | Opaque id (string; treat a number as its decimal text). Also the pagination cursor and the SSE event id. |
+| `ts` | Epoch milliseconds. Parse an ISO 8601 string too: the server passes `ts` through as Lucina sent it. |
+| `channel` | `telegram`, `discord`, `web`, `ios`, `alexa` or `other`. Show unknown values as `other`. |
+| `role` | `user` or `lucina`. Skip items with any other role. |
+| `text` | May be empty (for example an attachment-only message). |
+| `clientMessageId` | Optional; set on messages sent through `POST /v1/chat` with one. |
+| `replyTo` | Optional id of the item this answers. |
+| `attachments` | Optional `[{kind: image\|voice\|file, name?}]`. |
+| `meta` | Optional `{chatTitle?, guildName?, channelName?, isDm?, kind?}` (`kind: "reminder"` for a delivered reminder). |
+| `backfilled` | Optional `true` for history imported after the fact. |
+
+Other fields may appear and are passed through unchanged.
+
+### `GET /v1/timeline?before=<id>&limit=50`
+
+Newest first. `200`:
+
+```json
+{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…" }
+```
+
+| Query | Rules |
+|---|---|
+| `before` | Optional item id (`[A-Za-z0-9_.:-]{1,128}`): only older items. Pass the previous page's `nextBefore`. |
+| `limit` | Optional integer 1–200; Lucina's default is 50. |
+
+`nextBefore` is `null` at the start of history. Anything else is `400
+bad_request` before Lucina is called. Timeout 15 s.
+
+### `GET /v1/timeline/stream`
+
+[Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html):
+new items as they happen, relayed unchanged from Lucina's
+`/api/secretary/timeline/stream` without buffering. Response headers:
+`Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-store`,
+`X-Accel-Buffering: no`.
+
+```
+: ping
+
+event: item
+id: tl_0193…
+data: {"id":"tl_0193…","ts":1761048003000,"channel":"web","role":"user","text":"Ciao"}
+
+```
+
+- `event: item` carries one timeline item as JSON in `data` (the raw
+  Lucina item, same shape as above). Ignore other event names.
+- `: ping` is a comment line Lucina sends every 20 s to keep proxies from
+  closing the idle connection. EventSource ignores it; hand-written parsers
+  must skip lines starting with `:`.
+- **Resuming:** send the last `id` you saw as the `Last-Event-ID` header and
+  Lucina replays everything after it. EventSource does this by itself when
+  it reconnects. A *new* EventSource cannot set headers, so pass
+  `?lastEventId=<id>` instead (the header wins if both are present). An id
+  outside the id charset is `400 bad_request`.
+- **Ending:** when Lucina's stream ends, fails, or sends nothing (not even a
+  ping) for 60 s, the server ends the response cleanly; it also ends every
+  stream when it shuts down. EventSource then reconnects on its own (after
+  its retry delay, sending `Last-Event-ID`). Native clients: reconnect with
+  backoff (1 s, 2 s, 5 s, 10 s, 30 s) and send `Last-Event-ID`.
+- **Errors before the stream starts** are ordinary JSON errors with a
+  status: `401`, `429 too_many_streams`, `502 lucina_error` /
+  `lucina_unreachable`, `504 lucina_timeout` (Lucina did not connect within
+  10 s or send headers within 60 s), `503 lucina_not_configured`.
+  EventSource gives up for good on a non-200 answer (`readyState` becomes
+  `CLOSED`): open a new one with backoff and reload the latest page with
+  `GET /v1/timeline` to fill the gap.
+- **Limits:** at most 4 open streams per device and 20 in total; beyond
+  that `429 too_many_streams` with `Retry-After: 5`. A stream counts once
+  against the per-device rate limit (when it opens), not per event. One
+  stream per tab or app is enough; close it when hidden for long.
+- There is no total duration limit on the stream.
+
+**Behind Caddy** nothing special is needed. Caddy's
+[`reverse_proxy`](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming)
+flushes immediately when the upstream answers `Content-Type:
+text/event-stream` (it ignores `flush_interval` then), and it has no read,
+response-header or stream timeout by default. The `encode zstd gzip` in
+`deploy/Caddyfile.snippet` still compresses the stream, but
+[`encode`](https://caddyserver.com/docs/caddyfile/directives/encode) does not
+hold back `text/event-stream` responses to reach `minimum_length`: headers go
+out at once and the body is streamed as written. (Checked against Caddy's
+docs on 2026-10-21.) `X-Accel-Buffering: no` is for nginx, should one ever
+sit in front.
 
 ## Reminders
 
@@ -351,6 +477,92 @@ returns only `{id, product, status}` here, with `product` = the raw name.
 Errors: `400 invalid_status`, `404 item_not_found`.
 
 All shopping routes may answer `503 grocery_unavailable`.
+
+The three routes above are the **legacy** surface (chat and old clients);
+they keep working against the default list. New clients use v2 below.
+
+### Shopping v2
+
+Multiple lists, catalog tiles and an idempotent op log, per
+[`shopping-v2.md`](shopping-v2.md). Lucina's grocery store is the source of
+truth; the server validates and forwards (`/api/secretary/shopping/lists…`).
+All routes need auth; cookie writes need `X-Secretary-CSRF: 1`.
+
+#### `GET /v1/shopping/catalog?lang=it|en|da`
+
+The static catalog (`{version, lang, sections, items}`, see
+`shopping-v2.md`), served byte for byte from
+`$SECRETARY_CATALOG_DIR/catalog.{lang}.json` (default dir
+`/var/lib/secretary/catalog`). No Lucina call. `lang` defaults to `it`;
+anything else is `400 bad_request`. A missing file is `503
+catalog_unavailable`.
+
+Headers: a strong `ETag` (`"<base64url SHA-256 of the file>"`), `Cache-Control:
+public, max-age=3600`, `Vary: Authorization, Cookie`. Send the tag back in
+`If-None-Match` and an unchanged file answers `304` with no body (the same
+`ETag` and `Cache-Control`). The tag changes whenever the file does.
+
+#### Lists
+
+| Route | Body | `2xx` |
+|---|---|---|
+| `GET /v1/shopping/lists` | | Array of `{id, name, theme, needed, recent, updatedAt}` (Lucina's `{lists}` is unwrapped if present). |
+| `POST /v1/shopping/lists` | `{name, theme?}` | `201` the list (Lucina's `{list}` unwrapped if present). |
+| `GET /v1/shopping/lists/{id}` | | `{list, revision, items}` (below). |
+| `PATCH /v1/shopping/lists/{id}` | `{name?, theme?}`, at least one | The list. |
+| `DELETE /v1/shopping/lists/{id}` | | Lucina's answer as is (the default list can't be deleted). |
+
+`name`: 1–80 characters, no control characters. `theme`: `home`,
+`grocery`, `work`, `holiday`, `garden`, `hardware`, `baby`, `other`. List ids
+use the id charset `[A-Za-z0-9_.:-]{1,128}` (`default` is the default list).
+
+List state:
+
+```json
+{ "list": {"id": "default", "name": "Casa", "theme": "home"}, "revision": 42,
+  "items": [ { "id": "…", "catalogId": "banana", "name": "Banane", "spec": "6, mature",
+               "quantity": null, "unit": null, "section": "produce", "icon": "🍌",
+               "status": "needed", "position": 3, "updatedAt": "…", "updatedBy": "telegram" } ] }
+```
+
+`status`: `needed` (tiles), `recent` (quick re-add), `removed` (never show;
+treat unknown statuses like `removed`). Unknown fields pass through.
+
+#### `POST /v1/shopping/lists/{id}/ops`
+
+```json
+{ "expectedRevision": 42,
+  "ops": [ { "opId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "add", "catalogId": "banana", "name": "Banane", "spec": "6" },
+           { "opId": "7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "purchase", "itemId": "…" } ] }
+```
+
+`200`: `{revision, applied: [opId], duplicates: [opId], items: [...full state...]}`.
+
+Validation (all before Lucina; any failure is `400 bad_request` naming
+`ops: [i].<field>`):
+
+- 1–200 ops per batch; every `opId` a canonical UUID (`8-4-4-4-12`), distinct
+  within the batch. `expectedRevision` (optional) a non-negative integer.
+- Op types and their fields (other fields are dropped):
+
+| `type` | Fields |
+|---|---|
+| `add` | `catalogId?` (id), `name?` (1–200), at least one of the two; `spec?` (≤200), `quantity?` (number > 0, ≤ 100000), `unit?` (≤32), `section?` (id) |
+| `need`, `purchase`, `remove` | `itemId` |
+| `set_spec` | `itemId`, `spec` (≤200; `null` or `""` clears) |
+| `set_quantity` | `itemId`, `quantity` (as above; `null` clears), `unit?` |
+| `set_section` | `itemId`, `section` |
+| `rename` | `itemId`, `name` (1–200) |
+| `move` | `itemId`, `toListId` |
+| `clear_recent` | none |
+| `reorder` | `itemId`, `position` (integer 0–100000) |
+
+Semantics are Lucina's: an already-applied `opId` is listed in `duplicates`
+and changes nothing, so an outbox can replay a batch safely. A stale
+`expectedRevision` only fails when an op conflicts: Lucina's `409` becomes
+**`409 revision_conflict`**; refetch the list and retry the unapplied ops with
+new `opId`s. Lucina's `404` (`list_not_found`, `item_not_found`) and `422`
+codes pass through unchanged.
 
 ## Local modules: gym and body
 
@@ -793,17 +1005,20 @@ await audio.play();
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
 | 409 | `already_sent` | Lucina | Cancelling a delivered reminder. |
+| 409 | `revision_conflict` | server (from Lucina 409) | Shopping ops conflict with a newer list revision; refetch and retry. |
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
 | 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server) / 64 KiB (Lucina). |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |
+| 429 | `too_many_streams` | server | Over 4 open timeline streams for this device or 20 in total; honour `Retry-After`. |
 | 500 | `internal` | server | Unexpected server failure. |
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
+| 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
@@ -835,14 +1050,34 @@ With `SECRETARY_WEB_DIR` set, the server also serves the built web app at
   (emit content-hashed file names there); everything else, `index.html`
   included → `no-cache`.
 
-Every response (API and static) carries:
+Every response carries `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: no-referrer`, and one of two Content Security Policies.
+
+`/v1` responses (and JSON errors, such as a missing static file) get the
+strict policy:
 
 ```
 Content-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'
-X-Content-Type-Options: nosniff
-Referrer-Policy: no-referrer
 ```
 
-So the web build must not use inline `<script>`, remote scripts/fonts or
+Files served from the web directory, the SPA `index.html` included, get the
+web app policy, which the 3D Lucina stage in Chat needs:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'
+```
+
+| Directive | Why |
+|---|---|
+| `script-src 'wasm-unsafe-eval'` | The meshopt GLB decoder is WebAssembly. It does not allow `eval`. |
+| `img-src blob:` | GLTFLoader turns textures embedded in the GLB into `blob:` URLs. |
+| `connect-src blob: data:` | The loader fetches those `blob:`/`data:` URLs. |
+| `media-src blob:` | TTS audio played from a `blob:` URL. |
+| `worker-src blob:` | Decoder workers started from `blob:` URLs. |
+| `base-uri 'none'` | No `<base>` tag can redirect relative URLs. |
+
+It matches the standalone `/lucina/` page that Caddy serves
+(`deploy/Caddyfile.p1`). Neither policy allows inline `<script>` or remote
+origins, so the web build must not use inline `<script>`, remote scripts or fonts, or
 remote images (`imageUrl` from a `generate_image` job will not render in an
 `<img>` under this CSP; open it as a link instead).

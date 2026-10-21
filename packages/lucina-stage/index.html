@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Lucina stage demo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg1: #eef1fb;
+        --bg2: #f9eef3;
+        --card: rgba(255, 255, 255, 0.55);
+        --fg: #1d2033;
+        --muted: #5b6078;
+        --btn: #ffffff;
+        --btn-on: #3b5bdb;
+        --line: rgba(30, 40, 80, 0.14);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg1: #141726;
+          --bg2: #221a2a;
+          --card: rgba(255, 255, 255, 0.05);
+          --fg: #e8eaf6;
+          --muted: #a2a7c0;
+          --btn: #23273a;
+          --line: rgba(255, 255, 255, 0.12);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 14px/1.4 system-ui, -apple-system, sans-serif;
+        color: var(--fg);
+        background: linear-gradient(160deg, var(--bg1), var(--bg2));
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        padding: 20px 16px;
+        justify-content: center;
+        align-items: flex-start;
+      }
+      #stage-wrap {
+        position: relative;
+        width: min(420px, 100%);
+        aspect-ratio: 3 / 4;
+        border-radius: 20px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        overflow: hidden;
+      }
+      #stage { width: 100%; height: 100%; display: block; }
+      #hud {
+        position: absolute;
+        left: 10px;
+        top: 8px;
+        font: 12px ui-monospace, monospace;
+        color: var(--muted);
+        pointer-events: none;
+      }
+      #toast {
+        position: absolute;
+        left: 50%;
+        bottom: 14px;
+        transform: translateX(-50%);
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font-size: 12px;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+      }
+      #panel { width: min(420px, 100%); display: flex; flex-direction: column; gap: 14px; }
+      fieldset { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin: 0; }
+      legend { color: var(--muted); padding: 0 4px; }
+      .row { display: flex; flex-wrap: wrap; gap: 6px; }
+      button {
+        font: inherit;
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: var(--btn);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button[aria-pressed='true'] { background: var(--btn-on); color: #fff; border-color: transparent; }
+      input[type='text'] {
+        font: inherit;
+        padding: 6px 8px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: var(--btn);
+        color: var(--fg);
+        flex: 1;
+        min-width: 0;
+      }
+      label { display: inline-flex; gap: 6px; align-items: center; }
+      #log { font: 12px ui-monospace, monospace; color: var(--muted); white-space: pre-wrap; max-height: 9em; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="stage-wrap">
+      <canvas id="stage"></canvas>
+      <div id="hud"></div>
+      <div id="toast"></div>
+    </div>
+    <div id="panel">
+      <fieldset>
+        <legend>State</legend>
+        <div class="row" id="states">
+          <button data-state="idle">idle</button>
+          <button data-state="listening">listen</button>
+          <button data-state="thinking">think</button>
+          <button id="speak">speak test</button>
+          <button id="stop">stop</button>
+          <button id="nod">nod</button>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Expression</legend>
+        <div class="row" id="expr">
+          <button data-expr="">none</button>
+          <button data-expr="smile">smile</button>
+          <button data-expr="sad">sad</button>
+          <button data-expr="surprised">surprised</button>
+          <button data-expr="angry">angry</button>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Voice</legend>
+        <div class="row">
+          <label><input type="checkbox" id="mock" checked /> mock TTS</label>
+          <input type="text" id="base" placeholder="TTS base URL (e.g. https://getsecretary.tech)" />
+        </div>
+        <div class="row" style="margin-top: 6px">
+          <input type="text" id="text" value="Ciao! Sono Lucina, la tua segretaria." />
+          <button id="mic">listen (mic)</button>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>View</legend>
+        <div class="row">
+          <button id="mute">mute</button>
+          <button id="look" aria-pressed="true">look at pointer</button>
+          <button id="framing">full body</button>
+          <button id="reduced">reduced motion</button>
+        </div>
+      </fieldset>
+      <div id="log"></div>
+    </div>
+    <script type="module" src="/demo/main.ts"></script>
+  </body>
+</html>

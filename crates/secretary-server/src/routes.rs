@@ -3,7 +3,7 @@
 //! returns Lucina's `data` unwrapped.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, get, patch};
 use axum::{Json, Router};
 use secretary_core::models::{AgendaQuery, ChatRequest, CreateReminder, ReminderQuery};
@@ -32,7 +32,44 @@ async fn health(State(st): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn chat(State(st): State<AppState>, JsonBody(req): JsonBody<ChatRequest>) -> ApiResult {
+/// Header naming the client surface (`web` | `ios`) for chat.
+pub const CLIENT_HEADER: &str = "x-secretary-client";
+
+/// The chat `channel`: the `X-Secretary-Client` header, else the body's
+/// `channel`, else `web`. Explicit values must be `web` or `ios`.
+fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<String, ApiError> {
+    let channel = match headers.get(CLIENT_HEADER) {
+        Some(v) => v.to_str().map(str::trim).map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "X-Secretary-Client: must be one of web, ios",
+            )
+        })?,
+        None => body.unwrap_or("web"),
+    };
+    secretary_core::validate::chat_channel("X-Secretary-Client", channel).map_err(|_| {
+        let field = if headers.contains_key(CLIENT_HEADER) {
+            "X-Secretary-Client"
+        } else {
+            "channel"
+        };
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            format!("{field}: must be one of web, ios"),
+        )
+    })?;
+    Ok(channel.to_owned())
+}
+
+/// Lucina's reply (with `userItemId`/`lucinaItemId`) passes through as is.
+async fn chat(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(mut req): JsonBody<ChatRequest>,
+) -> ApiResult {
+    req.channel = Some(chat_channel(&headers, req.channel.as_deref())?);
     forward(&st, Call::chat(&req)?).await
 }
 
