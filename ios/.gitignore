@@ -7,3 +7,4 @@ DerivedData/
 
 # local copy of the web mock server (uncommitted upstream; see scripts/run-mock.sh)
 .mock/
+tools/*/target/

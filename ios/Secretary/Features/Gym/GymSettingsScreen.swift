@@ -69,7 +69,7 @@ struct GymSettingsScreen: View {
                 Text("Server sync")
             } footer: {
                 Text(app.gymEngineError
-                    ?? "On this iPhone, training works offline. Upload or download copies the whole history between the iPhone and the server (which the web app uses); each replaces the other side.")
+                    ?? String(localized: "On this iPhone, training works offline. Upload or download copies the whole history between the iPhone and the server (which the web app uses); each replaces the other side."))
             }
             if let message = message ?? store.actionError {
                 Section { Text(message).font(.footnote).foregroundStyle(GymPalette.muted) }
@@ -95,7 +95,7 @@ struct GymSettingsScreen: View {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard size <= 8 * 1024 * 1024 else { message = "This backup exceeds the 8 MB import limit."; return }
+                guard size <= 8 * 1024 * 1024 else { message = String(localized: "This backup exceeds the 8 MB import limit."); return }
                 pendingBackup = try String(contentsOf: url, encoding: .utf8)
                 confirmRestore = true
             } catch {
@@ -139,10 +139,10 @@ struct GymSettingsScreen: View {
         do {
             if upload {
                 try await app.uploadGymToServer()
-                message = "Uploaded: the server now has this iPhone's training."
+                message = String(localized: "Uploaded: the server now has this iPhone's training.")
             } else {
                 try await app.downloadGymFromServer()
-                message = "Downloaded: this iPhone now has the server's training."
+                message = String(localized: "Downloaded: this iPhone now has the server's training.")
                 loadPreferences()
             }
         } catch {

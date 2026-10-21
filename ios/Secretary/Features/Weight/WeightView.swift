@@ -275,7 +275,7 @@ private struct WeightSettings: View {
                         var grams: Int?
                         if !trimmed.isEmpty {
                             guard let parsed = unit.parse(trimmed) else {
-                                store.actionError = "Enter the goal like 78 or 78.5."
+                                store.actionError = String(localized: "Enter the goal like 78 or 78.5.")
                                 return
                             }
                             grams = parsed

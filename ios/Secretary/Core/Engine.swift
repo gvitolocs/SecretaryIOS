@@ -38,7 +38,7 @@ enum EngineOutcome<Response: EngineResponse>: Sendable {
 }
 
 enum EngineRetry {
-    static let conflictMessage = "This changed somewhere else. I refreshed it; please try again."
+    static let conflictMessage = String(localized: "This changed somewhere else. I refreshed it; please try again.")
 
     /// Sends one user action with conflict handling (docs/server-api.md, offline queue
     /// recipe, as the server and web app do): on `conflict`, refetch the state and resend

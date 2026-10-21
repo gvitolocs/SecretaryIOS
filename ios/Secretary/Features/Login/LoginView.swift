@@ -32,7 +32,7 @@ struct LoginView: View {
                     ErrorBanner(message: reason, systemImage: "person.crop.circle.badge.exclamationmark")
                 }
                 Picker("Sign in with", selection: $mode) {
-                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(Mode.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("loginMode")
@@ -63,7 +63,7 @@ struct LoginView: View {
                     .accessibilityIdentifier("signIn")
                 }
 
-                Text(ServerConfig.isDebugBuild ? "Server: \(app.baseURL.absoluteString)" : "Your data stays between this iPhone, your server and Lucina.")
+                Text(ServerConfig.isDebugBuild ? String(localized: "Server: \(app.baseURL.absoluteString)") : String(localized: "Your data stays between this iPhone, your server and Lucina."))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -174,14 +174,14 @@ struct LoginView: View {
         switch error {
         case .unauthorized:
             // One generic message: never say which of email or password was wrong.
-            self.error = mode == .password ? "That email and password don't match." : "That access key isn't valid."
+            self.error = mode == .password ? String(localized: "That email and password don't match.") : String(localized: "That access key isn't valid.")
         case let .rateLimited(_, retryAfter, _):
             lockedUntil = Date().addingTimeInterval(TimeInterval(retryAfter ?? 60))
             self.error = error.userMessage
         case let .server(status, code, _) where mode == .password && (status == 404 || code == "not_found"):
-            self.error = "This server doesn't offer password sign-in yet. Use your access key."
+            self.error = String(localized: "This server doesn't offer password sign-in yet. Use your access key.")
             mode = .accessKey
-            self.error = "This server doesn't offer password sign-in yet. Use your access key."
+            self.error = String(localized: "This server doesn't offer password sign-in yet. Use your access key.")
         default:
             self.error = error.userMessage
         }

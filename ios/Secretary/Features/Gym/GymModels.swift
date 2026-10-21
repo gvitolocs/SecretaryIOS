@@ -24,10 +24,10 @@ enum ExerciseKind: String, CaseIterable, Sendable {
 
     var title: String {
         switch self {
-        case .weightReps: return "Weight & reps"
-        case .repsOnly: return "Reps only"
-        case .timed: return "Time"
-        case .distanceTime: return "Distance & time"
+        case .weightReps: return String(localized: "Weight & reps")
+        case .repsOnly: return String(localized: "Reps only")
+        case .timed: return String(localized: "Time")
+        case .distanceTime: return String(localized: "Distance & time")
         }
     }
 }
@@ -35,7 +35,14 @@ enum ExerciseKind: String, CaseIterable, Sendable {
 enum SetKind: String, CaseIterable, Sendable {
     case normal, warmup, drop, failure
 
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .normal: return String(localized: "Normal")
+        case .warmup: return String(localized: "Warm-up")
+        case .drop: return String(localized: "Drop set")
+        case .failure: return String(localized: "Failure")
+        }
+    }
 }
 
 struct Exercise: Decodable, Identifiable, Equatable, Hashable, Sendable {

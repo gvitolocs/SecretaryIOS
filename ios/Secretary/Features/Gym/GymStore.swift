@@ -61,7 +61,7 @@ final class GymStore {
             let response = try await transport.state(timezone: timezone())
             guard mine == generation else { return nil }
             guard let view = response.view else {
-                loadError = response.error ?? "The gym engine sent no data."
+                loadError = response.error ?? String(localized: "The gym engine sent no data.")
                 return nil
             }
             apply(view)
@@ -122,7 +122,7 @@ final class GymStore {
                 return response
             case let .rejected(response):
                 if let view = response.view { apply(view) }
-                if !quiet { actionError = response.error ?? "The change could not be saved." }
+                if !quiet { actionError = response.error ?? String(localized: "The change could not be saved.") }
                 return nil
             case .conflict:
                 if !quiet { actionError = EngineRetry.conflictMessage }
@@ -155,7 +155,7 @@ final class GymStore {
             if let clock = response.clock { setClock(clock) }
             if let view = response.view { apply(view) }
             if !response.ok {
-                if reportErrors { actionError = response.error ?? "That didn't work." }
+                if reportErrors { actionError = response.error ?? String(localized: "That didn't work.") }
                 return nil
             }
             return response

@@ -9,6 +9,14 @@ struct GymScreen: View {
     enum Section: String, CaseIterable, Identifiable {
         case training = "Training", journal = "Journal", progress = "Progress", settings = "Settings"
         var id: String { rawValue }
+        var title: LocalizedStringKey {
+            switch self {
+            case .training: return "Training"
+            case .journal: return "Journal"
+            case .progress: return "Progress"
+            case .settings: return "Settings"
+            }
+        }
         var icon: String {
             switch self {
             case .training: return "dumbbell"
@@ -75,7 +83,7 @@ struct GymScreen: View {
                 } label: {
                     VStack(spacing: 3) {
                         Image(systemName: item.icon).font(.system(size: 15, weight: .semibold))
-                        Text(item.rawValue).font(.system(size: 11, weight: .semibold, design: .rounded))
+                        Text(item.title).font(.system(size: 11, weight: .semibold, design: .rounded))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
@@ -84,7 +92,7 @@ struct GymScreen: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(item.rawValue)
+                .accessibilityLabel(item.title)
                 .accessibilityAddTraits(section == item ? .isSelected : [])
                 .accessibilityIdentifier("gymSection-\(item.rawValue)")
             }

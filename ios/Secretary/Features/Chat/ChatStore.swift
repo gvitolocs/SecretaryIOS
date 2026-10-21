@@ -326,16 +326,16 @@ final class ChatStore {
 
     nonisolated static func describe(_ error: APIError) -> String {
         switch error.code {
-        case "lucina_unreachable": return "Lucina is offline. Not delivered."
-        case "lucina_timeout": return "Lucina didn't answer in time."
-        case "lucina_error": return "Lucina ran into a problem."
-        case "timeout": return "No answer in time."
+        case "lucina_unreachable": return String(localized: "Lucina is offline. Not delivered.")
+        case "lucina_timeout": return String(localized: "Lucina didn't answer in time.")
+        case "lucina_error": return String(localized: "Lucina ran into a problem.")
+        case "timeout": return String(localized: "No answer in time.")
         default: break
         }
         if case .hostNotFound = error { return error.userMessage }
-        if error.isConnectivity { return "Couldn't reach the server." }
-        if error.status == 401 { return "You were signed out." }
-        if error.status == 429 { return "Too many messages; wait a moment." }
+        if error.isConnectivity { return String(localized: "Couldn't reach the server.") }
+        if error.status == 401 { return String(localized: "You were signed out.") }
+        if error.status == 429 { return String(localized: "Too many messages; wait a moment.") }
         return error.userMessage
     }
 
@@ -388,7 +388,7 @@ final class ChatStore {
             let apiError = APIError.wrap(error)
             if apiError.code == "job_not_found" || apiError.status == 404 {
                 jobs[key]?.status = "error"
-                jobs[key]?.pollError = "This job no longer exists."
+                jobs[key]?.pollError = String(localized: "This job no longer exists.")
                 persist()
                 return false
             }
@@ -396,7 +396,7 @@ final class ChatStore {
                 onTransportError?(apiError)
                 return false
             }
-            jobs[key]?.pollError = "Couldn't check on this job. Retrying…"
+            jobs[key]?.pollError = String(localized: "Couldn't check on this job. Retrying…")
             return true
         }
     }
@@ -454,7 +454,7 @@ final class ChatStore {
             var item = item
             if item.localStatus == .sending {
                 item.localStatus = .error
-                item.localError = "Not sent: the app closed before Lucina answered."
+                item.localError = String(localized: "Not sent: the app closed before Lucina answered.")
             }
             return item
         }

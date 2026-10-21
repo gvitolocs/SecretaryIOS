@@ -56,7 +56,7 @@ struct ChatTitle: View {
                 .padding(.vertical, 3)
                 .background(.thinMaterial, in: Capsule())
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(store.isLive ? "Live: new messages from every channel appear here" : "Not connected to live updates")
+                .accessibilityLabel(store.isLive ? String(localized: "Live: new messages from every channel appear here") : String(localized: "Not connected to live updates"))
                 .accessibilityIdentifier("liveIndicator")
             }
         }
@@ -236,7 +236,7 @@ struct SourceBadge: View {
         if item.channel == .discord {
             if meta.isDm == true { return "Discord DM" }
             let place = [meta.guildName, meta.channelName.map { "#\($0)" }].compactMap { $0 }.joined(separator: " ")
-            return place.isEmpty ? "Discord" : "Discord · \(place)"
+            return place.isEmpty ? "Discord" : String(localized: "Discord · \(place)")
         }
         if item.channel == .telegram, let title = meta.chatTitle, meta.isDm != true {
             return "Telegram · \(title)"
@@ -420,7 +420,7 @@ private struct JobCard: View {
                 Text(LinkText.attributed(result)).font(.subheadline).textSelection(.enabled)
             }
             if job.status == "error" {
-                Text(job.error == "interrupted" ? "Lucina restarted while working on this." : (job.error ?? "The task failed."))
+                Text(job.error == "interrupted" ? String(localized: "Lucina restarted while working on this.") : (job.error ?? String(localized: "The task failed.")))
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             if let raw = job.imageUrl, let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {

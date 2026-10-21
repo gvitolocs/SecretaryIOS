@@ -176,8 +176,8 @@ final class AppModel {
         }
         if error.isLucinaOffline {
             lucinaNotice = error.code == "lucina_timeout"
-                ? "Lucina took too long to answer. She may be busy; try again in a moment."
-                : "Lucina is offline right now. Your messages stay here, so you can retry once she's back."
+                ? String(localized: "Lucina took too long to answer. She may be busy; try again in a moment.")
+                : String(localized: "Lucina is offline right now. Your messages stay here, so you can retry once she's back.")
         }
     }
 
@@ -210,7 +210,7 @@ final class AppModel {
     }
 
     private func gymSync() throws -> GymSync {
-        guard let engine = deviceEngine else { throw GymSync.SyncError.failed(gymEngineError ?? "The on-device gym engine isn't available.") }
+        guard let engine = deviceEngine else { throw GymSync.SyncError.failed(gymEngineError ?? String(localized: "The on-device gym engine isn't available.")) }
         return GymSync(device: FFIGymTransport(engine: engine), server: HTTPGymTransport(client: client))
     }
 
@@ -297,5 +297,5 @@ enum GymLocation: String, CaseIterable, Sendable {
 
     static let key = "secretary.gym.location"
 
-    var title: String { self == .device ? "On this iPhone" : "On the server" }
+    var title: String { self == .device ? String(localized: "On this iPhone") : String(localized: "On the server") }
 }

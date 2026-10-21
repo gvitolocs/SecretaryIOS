@@ -192,7 +192,18 @@ enum ListTheme: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .home: return String(localized: "Home")
+        case .grocery: return String(localized: "Groceries")
+        case .work: return String(localized: "Work")
+        case .holiday: return String(localized: "Holiday")
+        case .garden: return String(localized: "Garden")
+        case .hardware: return String(localized: "Hardware")
+        case .baby: return String(localized: "Baby")
+        case .other: return String(localized: "Other")
+        }
+    }
 }
 
 struct ShopList: Codable, Identifiable, Equatable, Hashable, Sendable {

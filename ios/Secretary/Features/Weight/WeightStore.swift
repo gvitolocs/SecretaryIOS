@@ -85,7 +85,7 @@ final class WeightStore {
                 return true
             case let .rejected(response):
                 if let view = response.view { self.view = view }
-                actionError = response.error ?? "The change could not be saved."
+                actionError = response.error ?? String(localized: "The change could not be saved.")
                 return false
             case .conflict:
                 actionError = EngineRetry.conflictMessage
@@ -105,7 +105,7 @@ final class WeightStore {
     /// Parses the typed weight in the display unit. Returns nil (and sets the error) when it isn't a number.
     func grams(from text: String) -> Int? {
         guard let grams = unit.parse(text) else {
-            actionError = "Enter a weight like 80.5 (up to three decimals)."
+            actionError = String(localized: "Enter a weight like 80.5 (up to three decimals).")
             return nil
         }
         return grams

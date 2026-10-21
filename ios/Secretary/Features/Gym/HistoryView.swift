@@ -18,7 +18,7 @@ struct HistoryView: View {
                     } label: {
                         GymCard {
                             HStack {
-                                GymEyebrow(text: dateLabel(workout.finishedMs ?? workout.startedMs))
+                                GymEyebrow(verbatim: dateLabel(workout.finishedMs ?? workout.startedMs))
                                 Spacer()
                                 Image(systemName: "arrow.up.right").foregroundStyle(GymPalette.forest).accessibilityHidden(true)
                             }

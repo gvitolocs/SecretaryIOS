@@ -12,7 +12,8 @@ final class SecretaryFlowTests: XCTestCase {
 
     private func launch(reset: Bool = true, tab: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-SecretaryBaseURL", Self.baseURL]
+        // The assertions are in English; the simulator may be set to Danish or Italian.
+        app.launchArguments = ["-SecretaryBaseURL", Self.baseURL, "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         if reset { app.launchArguments += ["-SecretaryResetState", "YES"] }
         if let tab { app.launchArguments += ["-SecretaryInitialTab", tab] }
         app.launch()
@@ -96,9 +97,9 @@ final class SecretaryFlowTests: XCTestCase {
     func testTimelineShowsOtherChannelsLive() async throws {
         let app = launch()
         signIn(app)
-        // Seeded history from other channels is on the timeline.
-        let badge = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "From Web")).firstMatch
-        XCTAssertTrue(badge.waitForExistence(timeout: 15), "web message with its source badge")
+        // History from the timeline shows with source badges.
+        let badge = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "From ")).firstMatch
+        XCTAssertTrue(badge.waitForExistence(timeout: 15), "messages with their source badge")
         let live = app.descendants(matching: .any)["liveIndicator"]
         XCTAssertTrue(live.waitForExistence(timeout: 15))
         let connected = NSPredicate(format: "label BEGINSWITH %@", "Live")

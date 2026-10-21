@@ -201,7 +201,7 @@ struct ExerciseCard: View {
         }
     }
 
-    private var fieldsLabel: String {
+    private var fieldsLabel: LocalizedStringKey {
         switch kind {
         case .repsOnly: return "Reps"
         case .timed: return "Seconds"

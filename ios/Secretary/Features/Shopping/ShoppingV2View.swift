@@ -127,7 +127,7 @@ struct ShoppingV2View: View {
                         .minimumScaleFactor(0.6)
                     Image(systemName: "chevron.down").font(.headline.weight(.bold)).accessibilityHidden(true)
                 }
-                Text(store.needed.isEmpty ? "Nothing to buy" : "\(store.needed.count) to buy")
+                Text(store.needed.isEmpty ? String(localized: "Nothing to buy") : String(localized: "\(store.needed.count) to buy"))
                     .font(.subheadline.weight(.medium))
                     .opacity(0.8)
             }
@@ -357,8 +357,8 @@ private extension View {
     func tileAccessibility(item: ShopItem, needed: Bool, details: @escaping () -> Void) -> some View {
         accessibilityElement(children: .ignore)
             .accessibilityLabel([item.name, item.spec.isEmpty ? nil : item.spec, item.quantityText].compactMap { $0 }.joined(separator: ", "))
-            .accessibilityValue(needed ? "To buy" : "Bought")
-            .accessibilityHint(needed ? "Double-tap to mark it bought" : "Double-tap to put it back on the list")
+            .accessibilityValue(needed ? String(localized: "To buy") : String(localized: "Bought"))
+            .accessibilityHint(needed ? String(localized: "Double-tap to mark it bought") : String(localized: "Double-tap to put it back on the list"))
             .accessibilityAddTraits(.isButton)
             .accessibilityAction(named: "Details", details)
             .accessibilityIdentifier("tile-\(item.name)")
@@ -394,7 +394,7 @@ private struct SearchSheet: View {
                                 .onTapGesture { add(item.displayName(store.search.lang), item) }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel(item.displayName(store.search.lang))
-                                .accessibilityValue(onList ? "On the list" : "")
+                                .accessibilityValue(onList ? String(localized: "On the list") : "")
                                 .accessibilityAddTraits(.isButton)
                                 .accessibilityIdentifier("suggestion-\(item.id)")
                         }
@@ -706,7 +706,7 @@ private struct ListEditor: View {
                     }
                 }
             }
-            .navigationTitle(isCreate ? "New list" : "Edit list")
+            .navigationTitle(isCreate ? String(localized: "New list") : String(localized: "Edit list"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }

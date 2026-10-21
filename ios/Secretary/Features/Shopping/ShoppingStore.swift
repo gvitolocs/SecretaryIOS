@@ -89,7 +89,7 @@ final class ShoppingStore {
     private func report(_ error: Error, prefix: String? = nil) {
         let apiError = APIError.wrap(error)
         onTransportError?(apiError)
-        let message = apiError.code == "grocery_unavailable" ? "The shopping list is turned off on Lucina's side right now." : apiError.userMessage
+        let message = apiError.code == "grocery_unavailable" ? String(localized: "The shopping list is turned off on Lucina's side right now.") : apiError.userMessage
         self.error = [prefix, message].compactMap { $0 }.joined(separator: " ")
     }
 }

@@ -234,9 +234,9 @@ final class ShoppingV2Store {
         let op = ShopOp.add(itemId: existing?.id ?? itemId, catalogId: item?.id, name: name, section: item?.section)
         var undo: Undo?
         if existing == nil {
-            undo = Undo(message: "Added \(name)", listId: currentListId, ops: [ShopOp(kind: .remove, itemId: itemId)])
+            undo = Undo(message: String(localized: "Added \(name)"), listId: currentListId, ops: [ShopOp(kind: .remove, itemId: itemId)])
         } else if existing?.status == .recent, let id = existing?.id {
-            undo = Undo(message: "Added \(name) back", listId: currentListId, ops: [ShopOp(kind: .purchase, itemId: id)])
+            undo = Undo(message: String(localized: "Added \(name) back"), listId: currentListId, ops: [ShopOp(kind: .purchase, itemId: id)])
         }
         perform([op], undo: undo)
     }
@@ -245,7 +245,7 @@ final class ShoppingV2Store {
     func toggle(_ item: ShopItem) {
         if item.status == .needed {
             perform([ShopOp(kind: .purchase, itemId: item.id)],
-                    undo: Undo(message: "Bought \(item.name)", listId: currentListId, ops: [ShopOp(kind: .need, itemId: item.id)]))
+                    undo: Undo(message: String(localized: "Bought \(item.name)"), listId: currentListId, ops: [ShopOp(kind: .need, itemId: item.id)]))
         } else {
             perform([ShopOp(kind: .need, itemId: item.id)],
                     undo: Undo(message: "\(item.name) is back on the list", listId: currentListId, ops: [ShopOp(kind: .purchase, itemId: item.id)]))
@@ -258,7 +258,7 @@ final class ShoppingV2Store {
                              spec: item.spec.isEmpty ? nil : item.spec, quantity: item.quantity, unit: item.unit, section: item.section)
         var ops = [restore]
         if item.status == .recent, let id = restore.itemId { ops.append(ShopOp(kind: .purchase, itemId: id)) }
-        perform([ShopOp(kind: .remove, itemId: item.id)], undo: Undo(message: "Deleted \(item.name)", listId: currentListId, ops: ops))
+        perform([ShopOp(kind: .remove, itemId: item.id)], undo: Undo(message: String(localized: "Deleted \(item.name)"), listId: currentListId, ops: ops))
     }
 
     func setSpec(_ item: ShopItem, _ spec: String) {

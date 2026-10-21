@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
     @State private var serverDraft = ""
     @State private var serverError: String?
+    @State private var languageChanged = false
     @State private var testing = false
     @State private var probes: [APIClient.Probe] = []
 
@@ -64,6 +65,17 @@ struct SettingsView: View {
             }
 
             Section {
+                Picker("Language", selection: Binding(get: { AppLanguage.current }, set: { AppLanguage.set($0); languageChanged = true })) {
+                    ForEach(AppLanguage.allCases) { Text($0.title).tag($0) }
+                }
+                .accessibilityIdentifier("appLanguage")
+            } header: {
+                Text("Language")
+            } footer: {
+                Text(languageChanged ? "Close and reopen Secretary to switch the language." : "Follows the iPhone's language unless you pick one. Lucina answers in the language you write in.")
+            }
+
+            Section {
                 Toggle("Show Lucina", isOn: Binding(get: { app.lucina.enabled }, set: { app.lucina.enabled = $0 }))
                     .accessibilityIdentifier("lucinaEnabled")
                 Toggle("Voice replies", isOn: Binding(get: { !app.lucina.muted }, set: { app.lucina.muted = !$0 }))
@@ -114,7 +126,7 @@ struct SettingsView: View {
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
                 Button("Use this server") {
-                    serverError = app.setServerOverride(serverDraft) ? nil : "Use https://, or http:// for a local host."
+                    serverError = app.setServerOverride(serverDraft) ? nil : String(localized: "Use https://, or http:// for a local host.")
                 }
                 Button("Back to \(ServerConfig.production.host ?? "production")") { _ = app.setServerOverride(nil) }
                 if let serverError { Text(serverError).font(.footnote).foregroundStyle(.red) }
@@ -166,20 +178,20 @@ private struct ChangePasswordView: View {
     }
 
     private func save() async {
-        guard new == confirm else { message = "The new passwords don't match."; return }
-        guard new.count >= 8 else { message = "Use at least 8 characters."; return }
+        guard new == confirm else { message = String(localized: "The new passwords don't match."); return }
+        guard new.count >= 8 else { message = String(localized: "Use at least 8 characters."); return }
         busy = true
         defer { busy = false }
         do {
             try await app.changePassword(current: current, new: new)
             done = true
-            message = "Password changed. Other devices keep their sign-in."
+            message = String(localized: "Password changed. Other devices keep their sign-in.")
             current = ""; new = ""; confirm = ""
         } catch {
             let apiError = APIError.wrap(error)
             switch (apiError.status, apiError.code) {
-            case (_, "invalid_credentials"): message = "The current password is wrong."
-            case (404, _): message = "This server doesn't support changing the password yet."
+            case (_, "invalid_credentials"): message = String(localized: "The current password is wrong.")
+            case (404, _): message = String(localized: "This server doesn't support changing the password yet.")
             default:
                 if apiError.endsSession { app.handle(apiError) }
                 message = apiError.userMessage
@@ -193,5 +205,40 @@ extension Bundle {
         let version = infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = infoDictionary?["CFBundleVersion"] as? String ?? "?"
         return "\(version) (\(build))"
+    }
+}
+
+/// The app's language: the iPhone's (Italian, English or Danish), or an override.
+/// iOS applies `AppleLanguages` for the app on the next launch.
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system, en, it, da
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .system: return "Same as iPhone"
+        case .en: return "English"
+        case .it: return "Italiano"
+        case .da: return "Dansk"
+        }
+    }
+
+    private static let key = "AppleLanguages"
+    private static let overrideKey = "secretary.languageOverride"
+
+    static var current: AppLanguage {
+        AppLanguage(rawValue: UserDefaults.standard.string(forKey: overrideKey) ?? "") ?? .system
+    }
+
+    static func set(_ language: AppLanguage) {
+        let defaults = UserDefaults.standard
+        if language == .system {
+            defaults.removeObject(forKey: key)
+            defaults.removeObject(forKey: overrideKey)
+        } else {
+            defaults.set([language.rawValue], forKey: key)
+            defaults.set(language.rawValue, forKey: overrideKey)
+        }
     }
 }

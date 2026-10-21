@@ -29,10 +29,15 @@ struct GymCard<Content: View>: View {
 }
 
 struct GymEyebrow: View {
-    let text: String
+    let text: LocalizedStringKey
+
+    init(text: LocalizedStringKey) { self.text = text }
+    /// Dynamic text (dates, counts) shown as is.
+    init(verbatim: String) { text = LocalizedStringKey(verbatim) }
 
     var body: some View {
-        Text(text.uppercased())
+        Text(text)
+            .textCase(.uppercase)
             .font(.system(size: 10, weight: .bold, design: .rounded))
             .tracking(2)
             .foregroundStyle(GymPalette.muted)
@@ -41,11 +46,11 @@ struct GymEyebrow: View {
 
 struct GymMetric: View {
     let value: String
-    let label: String
+    let label: LocalizedStringKey
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(value)
+            Text(verbatim: value)
                 .font(.system(size: 23, weight: .semibold, design: .rounded))
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -57,7 +62,7 @@ struct GymMetric: View {
 }
 
 struct GymPrimaryButton: View {
-    let title: String
+    let title: LocalizedStringKey
     var icon: String = "plus"
     let action: () -> Void
 
@@ -76,8 +81,8 @@ struct GymPrimaryButton: View {
 
 struct GymEmptyCard: View {
     let icon: String
-    let title: String
-    let detail: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
 
     var body: some View {
         GymCard {

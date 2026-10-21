@@ -13,8 +13,8 @@ final class FFIGymEngine: @unchecked Sendable {
 
         var errorDescription: String? {
             switch self {
-            case let .open(message): return "Couldn't open your gym data: \(message)"
-            case .emptyResponse: return "The gym engine returned no answer."
+            case let .open(message): return String(localized: "Couldn't open your gym data: \(message)")
+            case .emptyResponse: return String(localized: "The gym engine returned no answer.")
             }
         }
     }
@@ -117,11 +117,11 @@ struct GymSync: Sendable {
         let tz = EngineClock.timezone
         let export = try await source.send(EngineRequest(opId: UUID().uuidString.lowercased(), expectedRevision: 0,
                                                          timezone: tz, command: .exportJSON))
-        guard export.ok, let backup = export.text else { throw SyncError.failed(export.error ?? "Couldn't export the gym data.") }
+        guard export.ok, let backup = export.text else { throw SyncError.failed(export.error ?? String(localized: "Couldn't export the gym data.")) }
         let current = try await target.state(timezone: tz)
-        guard let revision = current.view?.state.revision else { throw SyncError.failed(current.error ?? "Couldn't read \(name).") }
+        guard let revision = current.view?.state.revision else { throw SyncError.failed(current.error ?? String(localized: "Couldn't read \(name).")) }
         let restored = try await target.send(EngineRequest(opId: UUID().uuidString.lowercased(), expectedRevision: revision,
                                                            timezone: tz, command: .restoreJSON(backup: backup)))
-        guard restored.ok else { throw SyncError.failed(restored.error ?? "Couldn't restore the gym data on \(name).") }
+        guard restored.ok else { throw SyncError.failed(restored.error ?? String(localized: "Couldn't restore the gym data on \(name).")) }
     }
 }

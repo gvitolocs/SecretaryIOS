@@ -25,6 +25,8 @@ targets:
       path: Secretary/Info.plist
       properties:
         CFBundleDisplayName: Secretary
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, it, da]
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen:

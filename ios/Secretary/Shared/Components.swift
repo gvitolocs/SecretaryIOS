@@ -26,10 +26,14 @@ struct Card<Content: View>: View {
 }
 
 struct Eyebrow: View {
-    let text: String
+    let text: LocalizedStringKey
+
+    init(text: LocalizedStringKey) { self.text = text }
+    init(verbatim: String) { text = LocalizedStringKey(verbatim) }
 
     var body: some View {
-        Text(text.uppercased())
+        Text(text)
+            .textCase(.uppercase)
             .font(.caption2.weight(.semibold))
             .tracking(1.2)
             .foregroundStyle(.secondary)
@@ -38,11 +42,11 @@ struct Eyebrow: View {
 
 struct Metric: View {
     let value: String
-    let label: String
+    let label: LocalizedStringKey
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(value)
+            Text(verbatim: value)
                 .font(.title3.weight(.semibold).monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -56,7 +60,7 @@ struct Metric: View {
 }
 
 struct PrimaryButton: View {
-    let title: String
+    let title: LocalizedStringKey
     var icon: String = "plus"
     var isBusy = false
     let action: () -> Void
@@ -84,8 +88,8 @@ struct PrimaryButton: View {
 
 struct EmptyCard: View {
     let icon: String
-    let title: String
-    let detail: String
+    let title: LocalizedStringKey
+    let detail: LocalizedStringKey
 
     var body: some View {
         Card {

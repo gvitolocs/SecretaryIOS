@@ -54,15 +54,15 @@ final class HealthStore {
     var summary: String {
         switch status {
         case .unknown: return "Checking…"
-        case let .online(latency): return latency.map { "Lucina online · \($0) ms" } ?? "Lucina online"
+        case let .online(latency): return latency.map { "Lucina online · \($0) ms" } ?? String(localized: "Lucina online")
         case let .lucinaDown(reason):
             switch reason {
-            case "lucina_timeout": return "Lucina isn't answering"
-            case "not_configured", "lucina_not_configured": return "Lucina isn't configured on the server"
-            default: return "Lucina is offline"
+            case "lucina_timeout": return String(localized: "Lucina isn't answering")
+            case "not_configured", "lucina_not_configured": return String(localized: "Lucina isn't configured on the server")
+            default: return String(localized: "Lucina is offline")
             }
-        case .serverDown: return "Server unreachable"
-        case let .hostNotFound(host): return "Can't find \(host) \u{2014} check DNS/VPN"
+        case .serverDown: return String(localized: "Server unreachable")
+        case let .hostNotFound(host): return String(localized: "Can't find \(host) \u{2014} check DNS/VPN")
         }
     }
 }

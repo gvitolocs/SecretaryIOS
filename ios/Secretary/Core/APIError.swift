@@ -52,29 +52,29 @@ enum APIError: Error, Equatable, Sendable {
     var userMessage: String {
         switch self {
         case let .unauthorized(code, _):
-            return code == "invalid_credentials" ? "That email and password don't match." : "You were signed out. Sign in again."
+            return code == "invalid_credentials" ? String(localized: "That email and password don't match.") : String(localized: "You were signed out. Sign in again.")
         case let .rateLimited(code, retryAfter, _):
             if code == "account_locked" {
-                if let retryAfter, retryAfter > 0 { return "Too many failed sign-ins. Try again in \(retryAfter) s." }
-                return "Too many failed sign-ins. Try again later."
+                if let retryAfter, retryAfter > 0 { return String(localized: "Too many failed sign-ins. Try again in \(retryAfter) s.") }
+                return String(localized: "Too many failed sign-ins. Try again later.")
             }
-            if let retryAfter, retryAfter > 0 { return "Too many requests. Try again in \(retryAfter) s." }
-            return "Too many requests. Wait a moment and try again."
+            if let retryAfter, retryAfter > 0 { return String(localized: "Too many requests. Try again in \(retryAfter) s.") }
+            return String(localized: "Too many requests. Wait a moment and try again.")
         case let .lucinaOffline(code, _):
-            return code == "lucina_timeout" ? "Lucina didn't answer in time." : "Lucina is offline right now."
+            return code == "lucina_timeout" ? String(localized: "Lucina didn't answer in time.") : String(localized: "Lucina is offline right now.")
         case let .server(status, _, message):
             if !message.isEmpty { return message }
-            return status >= 500 ? "The server had a problem. Please try again." : "Request failed (\(status))."
+            return status >= 500 ? String(localized: "The server had a problem. Please try again.") : String(localized: "Request failed (\(status)).")
         case let .hostNotFound(host):
-            return "Can't find \(host) \u{2014} check DNS/VPN."
+            return String(localized: "Can't find \(host) \u{2014} check DNS/VPN.")
         case .network:
-            return "Can't reach the server. Check your connection."
+            return String(localized: "Can't reach the server. Check your connection.")
         case .timeout:
-            return "The server took too long to answer."
+            return String(localized: "The server took too long to answer.")
         case .decoding:
-            return "The server sent an answer this version of the app doesn't understand."
+            return String(localized: "The server sent an answer this version of the app doesn't understand.")
         case .invalidURL:
-            return "The server address is not valid."
+            return String(localized: "The server address is not valid.")
         }
     }
 

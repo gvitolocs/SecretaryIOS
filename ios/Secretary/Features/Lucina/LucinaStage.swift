@@ -125,8 +125,8 @@ final class VoiceInput {
         case notAuthorized, unavailable
         var errorDescription: String? {
             switch self {
-            case .notAuthorized: return "Allow the microphone and speech recognition in Settings to talk to Lucina."
-            case .unavailable: return "Speech recognition isn't available right now."
+            case .notAuthorized: return String(localized: "Allow the microphone and speech recognition in Settings to talk to Lucina.")
+            case .unavailable: return String(localized: "Speech recognition isn't available right now.")
             }
         }
     }
@@ -368,7 +368,7 @@ final class LucinaStageController {
         thinking = false
         guard let reply, !reply.isEmpty else {
             run("lucina.setState('idle')")
-            message = reply == nil ? "Lucina is busy with another message." : "That message wasn't delivered; see the chat."
+            message = reply == nil ? String(localized: "Lucina is busy with another message.") : String(localized: "That message wasn't delivered; see the chat.")
             return
         }
         await say(reply)
@@ -390,7 +390,7 @@ final class LucinaStageController {
         } catch {
             run("lucina.setState('idle')")
             let apiError = APIError.wrap(error)
-            message = apiError.code == "tts_unavailable" ? "Lucina's voice isn't available right now." : apiError.userMessage
+            message = apiError.code == "tts_unavailable" ? String(localized: "Lucina's voice isn't available right now.") : apiError.userMessage
         }
     }
 
@@ -480,7 +480,7 @@ struct LucinaControls: View {
                         .background(controller.listening ? Color.red.gradient : Theme.accentFill.gradient, in: Circle())
                 }
                 .disabled(controller.thinking)
-                .accessibilityLabel(controller.listening ? "Stop listening" : "Talk to Lucina")
+                .accessibilityLabel(controller.listening ? String(localized: "Stop listening") : String(localized: "Talk to Lucina"))
                 .accessibilityIdentifier("lucinaMic")
             }
         }
