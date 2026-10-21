@@ -14,6 +14,7 @@
 //! | `SECRETARY_TRUST_PROXY` | `0` | `1`: take the client IP from `X-Forwarded-For` (Caddy in front) |
 //! | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only) |
 //! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` |
+//! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
 //! | `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices a client may ask for |
 
 use std::net::SocketAddr;
@@ -28,6 +29,7 @@ pub const DEFAULT_BIND: &str = "127.0.0.1:8800";
 pub const DEFAULT_LUCINA_URL: &str = "http://127.0.0.1:18788";
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/secretary";
 pub const DEFAULT_PRIVATE_ASSETS_DIR: &str = "/var/lib/secretary/private-assets";
+pub const DEFAULT_CATALOG_DIR: &str = "/var/lib/secretary/catalog";
 pub const BODY_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,6 +52,8 @@ pub struct Config {
     /// `None` when `SECRETARY_SERVICE_TOKEN_FILE` is unset: insights 503.
     pub service_token: Option<crate::service::ServiceToken>,
     pub private_assets_dir: PathBuf,
+    /// Holds `catalog.{lang}.json` (shopping catalog).
+    pub catalog_dir: PathBuf,
     pub tts_url: String,
     pub tts_voices: Vec<String>,
     pub tts_timeout: Duration,
@@ -96,6 +100,7 @@ impl Config {
             trust_proxy: false,
             service_token: None,
             private_assets_dir: PathBuf::from(DEFAULT_PRIVATE_ASSETS_DIR),
+            catalog_dir: PathBuf::from(DEFAULT_CATALOG_DIR),
             tts_url: crate::tts::DEFAULT_URL.into(),
             tts_voices: crate::tts::DEFAULT_VOICES
                 .split(',')
@@ -131,6 +136,9 @@ impl Config {
         cfg.web_dir = get("SECRETARY_WEB_DIR").map(PathBuf::from);
         if let Some(d) = get("SECRETARY_PRIVATE_ASSETS_DIR") {
             cfg.private_assets_dir = PathBuf::from(d);
+        }
+        if let Some(d) = get("SECRETARY_CATALOG_DIR") {
+            cfg.catalog_dir = PathBuf::from(d);
         }
         if let Some(u) = get("SECRETARY_TTS_URL") {
             cfg.tts_url = u;

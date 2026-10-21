@@ -242,6 +242,281 @@ pub struct Agenda {
     pub extra: Map<String, Value>,
 }
 
+// -- shopping lists (v2, docs/shopping-v2.md) -------------------------------
+
+/// A shopping list (summary in `GET /shopping/lists`, header of a list state).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShoppingList {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// `home`, `grocery`, `work`, `holiday`, `garden`, `hardware`, `baby`, `other`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Count of `needed` items (summaries only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needed: Option<u64>,
+    /// Count of `recent` items (summaries only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /shopping/lists` data: a bare array or `{lists: [...]}` (both
+/// accepted; the app always gets the array).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ShoppingListsData {
+    Wrapped { lists: Vec<ShoppingList> },
+    Bare(Vec<ShoppingList>),
+}
+
+impl ShoppingListsData {
+    pub fn into_lists(self) -> Vec<ShoppingList> {
+        match self {
+            ShoppingListsData::Wrapped { lists } | ShoppingListsData::Bare(lists) => lists,
+        }
+    }
+}
+
+/// A created/updated list: `{list: {...}}` or the bare list (both accepted;
+/// the app always gets the bare list).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum ShoppingListData {
+    Wrapped { list: ShoppingList },
+    Bare(ShoppingList),
+}
+
+impl ShoppingListData {
+    pub fn into_list(self) -> ShoppingList {
+        match self {
+            ShoppingListData::Wrapped { list } | ShoppingListData::Bare(list) => list,
+        }
+    }
+}
+
+/// An item of a v2 list. Unknown statuses survive as [`ListItemStatus::Unknown`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListItem {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub spec: Option<String>,
+    /// A number or `null`; opaque here.
+    #[serde(default)]
+    pub quantity: Value,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub status: ListItemStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// `telegram|discord|web|ios|alexa|lucina`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ListItemStatus {
+    /// On the list (tiles).
+    Needed,
+    /// Bought recently (quick re-add tiles).
+    Recent,
+    /// Deleted; never shown.
+    Removed,
+    Unknown(String),
+}
+
+impl From<String> for ListItemStatus {
+    fn from(s: String) -> Self {
+        match s.as_str() {
+            "needed" => ListItemStatus::Needed,
+            "recent" => ListItemStatus::Recent,
+            "removed" => ListItemStatus::Removed,
+            _ => ListItemStatus::Unknown(s),
+        }
+    }
+}
+
+impl From<ListItemStatus> for String {
+    fn from(s: ListItemStatus) -> Self {
+        match s {
+            ListItemStatus::Needed => "needed".into(),
+            ListItemStatus::Recent => "recent".into(),
+            ListItemStatus::Removed => "removed".into(),
+            ListItemStatus::Unknown(s) => s,
+        }
+    }
+}
+
+/// `GET /shopping/lists/{id}` data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListState {
+    pub list: ShoppingList,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(default)]
+    pub items: Vec<ListItem>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `POST /shopping/lists/{id}/ops` data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpsResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    /// opIds applied by this batch.
+    #[serde(default)]
+    pub applied: Vec<String>,
+    /// opIds that had been applied before (no change).
+    #[serde(default)]
+    pub duplicates: Vec<String>,
+    /// The full list state after the batch.
+    #[serde(default)]
+    pub items: Vec<ListItem>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `POST /shopping/lists {name, theme?}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreateList {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+/// `PATCH /shopping/lists/{id} {name?, theme?}` (at least one).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdateList {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+}
+
+/// `POST /shopping/lists/{id}/ops` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpsBatch {
+    /// The revision the client's view is based on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<u64>,
+    pub ops: Vec<ShoppingOp>,
+}
+
+/// One idempotent list operation; `opId` is a UUID. Only the listed fields
+/// are forwarded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShoppingOp {
+    /// Create, or move a `recent` item back to `needed`. Needs `catalogId` or `name`.
+    #[serde(rename_all = "camelCase")]
+    Add {
+        op_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        catalog_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spec: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quantity: Option<serde_json::Number>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Need { op_id: String, item_id: String },
+    #[serde(rename_all = "camelCase")]
+    Purchase { op_id: String, item_id: String },
+    #[serde(rename_all = "camelCase")]
+    Remove { op_id: String, item_id: String },
+    /// `spec: null` or `""` clears it.
+    #[serde(rename_all = "camelCase")]
+    SetSpec {
+        op_id: String,
+        item_id: String,
+        #[serde(default)]
+        spec: Option<String>,
+    },
+    /// `quantity: null` clears it.
+    #[serde(rename_all = "camelCase")]
+    SetQuantity {
+        op_id: String,
+        item_id: String,
+        #[serde(default)]
+        quantity: Option<serde_json::Number>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetSection {
+        op_id: String,
+        item_id: String,
+        section: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Rename {
+        op_id: String,
+        item_id: String,
+        name: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Move {
+        op_id: String,
+        item_id: String,
+        to_list_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    ClearRecent { op_id: String },
+    #[serde(rename_all = "camelCase")]
+    Reorder {
+        op_id: String,
+        item_id: String,
+        position: u32,
+    },
+}
+
+impl ShoppingOp {
+    pub fn op_id(&self) -> &str {
+        match self {
+            ShoppingOp::Add { op_id, .. }
+            | ShoppingOp::Need { op_id, .. }
+            | ShoppingOp::Purchase { op_id, .. }
+            | ShoppingOp::Remove { op_id, .. }
+            | ShoppingOp::SetSpec { op_id, .. }
+            | ShoppingOp::SetQuantity { op_id, .. }
+            | ShoppingOp::SetSection { op_id, .. }
+            | ShoppingOp::Rename { op_id, .. }
+            | ShoppingOp::Move { op_id, .. }
+            | ShoppingOp::ClearRecent { op_id }
+            | ShoppingOp::Reorder { op_id, .. } => op_id,
+        }
+    }
+}
+
 // -- timeline ---------------------------------------------------------------
 
 /// A JSON string or number kept exactly as Lucina sent it (timeline ids and
@@ -496,6 +771,33 @@ mod tests {
             (r.user_item_id.as_deref(), r.lucina_item_id.as_deref()),
             (Some("u1"), Some("l1"))
         );
+    }
+
+    #[test]
+    fn shopping_v2_shapes() {
+        let state = json!({
+            "list": {"id": "default", "name": "Casa", "theme": "home"}, "revision": 42,
+            "items": [{"id": "u1", "catalogId": "banana", "name": "Banane", "spec": "6, mature",
+                       "quantity": null, "unit": null, "section": "produce", "icon": "🍌",
+                       "status": "needed", "position": 3, "updatedAt": "t", "updatedBy": "telegram",
+                       "price": {"eur": 1.2}}],
+            "etagHint": "x"
+        });
+        let s: ListState = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(s.items[0].status, ListItemStatus::Needed);
+        assert_eq!(serde_json::to_value(&s).unwrap(), state);
+        let s: ListItem = serde_json::from_value(json!({"id": "u", "status": "archived"})).unwrap();
+        assert_eq!(s.status, ListItemStatus::Unknown("archived".into()));
+
+        let one =
+            json!({"id": "default", "name": "Casa", "theme": "home", "needed": 3, "recent": 9});
+        let bare: ShoppingListsData = serde_json::from_value(json!([one])).unwrap();
+        let wrapped: ShoppingListsData =
+            serde_json::from_value(json!({"lists": [one], "total": 1})).unwrap();
+        assert_eq!(bare.into_lists(), wrapped.into_lists());
+        let a: ShoppingListData = serde_json::from_value(json!({"list": one})).unwrap();
+        let b: ShoppingListData = serde_json::from_value(one.clone()).unwrap();
+        assert_eq!(a.into_list(), b.into_list());
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod ratelimit;
 pub mod routes;
 pub mod service;
 pub mod sessions;
+pub mod shopping;
 pub mod timeline;
 pub mod tts;
 pub mod upstream;
@@ -69,6 +70,7 @@ pub struct Inner {
     /// The single owner account (`owner.json`).
     pub owner: owner::OwnerStore,
     pub private_assets_dir: PathBuf,
+    pub catalog_dir: PathBuf,
     pub tts: tts::Tts,
     /// Open `/v1/timeline/stream` responses.
     pub streams: timeline::StreamSlots,
@@ -110,6 +112,7 @@ impl AppState {
             service_token: cfg.service_token.clone(),
             owner: owner::OwnerStore::new(&cfg.data_dir),
             private_assets_dir: cfg.private_assets_dir.clone(),
+            catalog_dir: cfg.catalog_dir.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
@@ -180,7 +183,8 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::account_routes())
         .merge(assets::routes())
         .merge(tts::routes())
-        .merge(timeline::routes());
+        .merge(timeline::routes())
+        .merge(shopping::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }

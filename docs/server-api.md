@@ -478,6 +478,92 @@ Errors: `400 invalid_status`, `404 item_not_found`.
 
 All shopping routes may answer `503 grocery_unavailable`.
 
+The three routes above are the **legacy** surface (chat and old clients);
+they keep working against the default list. New clients use v2 below.
+
+### Shopping v2
+
+Multiple lists, catalog tiles and an idempotent op log, per
+[`shopping-v2.md`](shopping-v2.md). Lucina's grocery store is the source of
+truth; the server validates and forwards (`/api/secretary/shopping/lists…`).
+All routes need auth; cookie writes need `X-Secretary-CSRF: 1`.
+
+#### `GET /v1/shopping/catalog?lang=it|en|da`
+
+The static catalog (`{version, lang, sections, items}`, see
+`shopping-v2.md`), served byte for byte from
+`$SECRETARY_CATALOG_DIR/catalog.{lang}.json` (default dir
+`/var/lib/secretary/catalog`). No Lucina call. `lang` defaults to `it`;
+anything else is `400 bad_request`. A missing file is `503
+catalog_unavailable`.
+
+Headers: a strong `ETag` (`"<base64url SHA-256 of the file>"`), `Cache-Control:
+public, max-age=3600`, `Vary: Authorization, Cookie`. Send the tag back in
+`If-None-Match` and an unchanged file answers `304` with no body (the same
+`ETag` and `Cache-Control`). The tag changes whenever the file does.
+
+#### Lists
+
+| Route | Body | `2xx` |
+|---|---|---|
+| `GET /v1/shopping/lists` | | Array of `{id, name, theme, needed, recent, updatedAt}` (Lucina's `{lists}` is unwrapped if present). |
+| `POST /v1/shopping/lists` | `{name, theme?}` | `201` the list (Lucina's `{list}` unwrapped if present). |
+| `GET /v1/shopping/lists/{id}` | | `{list, revision, items}` (below). |
+| `PATCH /v1/shopping/lists/{id}` | `{name?, theme?}`, at least one | The list. |
+| `DELETE /v1/shopping/lists/{id}` | | Lucina's answer as is (the default list can't be deleted). |
+
+`name`: 1–80 characters, no control characters. `theme`: `home`,
+`grocery`, `work`, `holiday`, `garden`, `hardware`, `baby`, `other`. List ids
+use the id charset `[A-Za-z0-9_.:-]{1,128}` (`default` is the default list).
+
+List state:
+
+```json
+{ "list": {"id": "default", "name": "Casa", "theme": "home"}, "revision": 42,
+  "items": [ { "id": "…", "catalogId": "banana", "name": "Banane", "spec": "6, mature",
+               "quantity": null, "unit": null, "section": "produce", "icon": "🍌",
+               "status": "needed", "position": 3, "updatedAt": "…", "updatedBy": "telegram" } ] }
+```
+
+`status`: `needed` (tiles), `recent` (quick re-add), `removed` (never show;
+treat unknown statuses like `removed`). Unknown fields pass through.
+
+#### `POST /v1/shopping/lists/{id}/ops`
+
+```json
+{ "expectedRevision": 42,
+  "ops": [ { "opId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "add", "catalogId": "banana", "name": "Banane", "spec": "6" },
+           { "opId": "7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "type": "purchase", "itemId": "…" } ] }
+```
+
+`200`: `{revision, applied: [opId], duplicates: [opId], items: [...full state...]}`.
+
+Validation (all before Lucina; any failure is `400 bad_request` naming
+`ops: [i].<field>`):
+
+- 1–200 ops per batch; every `opId` a canonical UUID (`8-4-4-4-12`), distinct
+  within the batch. `expectedRevision` (optional) a non-negative integer.
+- Op types and their fields (other fields are dropped):
+
+| `type` | Fields |
+|---|---|
+| `add` | `catalogId?` (id), `name?` (1–200), at least one of the two; `spec?` (≤200), `quantity?` (number > 0, ≤ 100000), `unit?` (≤32), `section?` (id) |
+| `need`, `purchase`, `remove` | `itemId` |
+| `set_spec` | `itemId`, `spec` (≤200; `null` or `""` clears) |
+| `set_quantity` | `itemId`, `quantity` (as above; `null` clears), `unit?` |
+| `set_section` | `itemId`, `section` |
+| `rename` | `itemId`, `name` (1–200) |
+| `move` | `itemId`, `toListId` |
+| `clear_recent` | none |
+| `reorder` | `itemId`, `position` (integer 0–100000) |
+
+Semantics are Lucina's: an already-applied `opId` is listed in `duplicates`
+and changes nothing, so an outbox can replay a batch safely. A stale
+`expectedRevision` only fails when an op conflicts: Lucina's `409` becomes
+**`409 revision_conflict`**; refetch the list and retry the unapplied ops with
+new `opId`s. Lucina's `404` (`list_not_found`, `item_not_found`) and `422`
+codes pass through unchanged.
+
 ## Local modules: gym and body
 
 The gym and body-weight modules are Rust engines (`crates/secretary-gym`,
@@ -919,6 +1005,7 @@ await audio.play();
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
 | 409 | `already_sent` | Lucina | Cancelling a delivered reminder. |
+| 409 | `revision_conflict` | server (from Lucina 409) | Shopping ops conflict with a newer list revision; refetch and retry. |
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
 | 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server) / 64 KiB (Lucina). |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
@@ -931,6 +1018,7 @@ await audio.play();
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
+| 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
