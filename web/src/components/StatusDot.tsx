@@ -1,4 +1,5 @@
-import { checkHealth, health } from "../state/health";
+import { t } from "../i18n";
+import { checkHealth, health, healthLabel } from "../state/health";
 
 /** Lucina status dot. Tapping it re-checks immediately. */
 export function StatusDot() {
@@ -7,8 +8,8 @@ export function StatusDot() {
       type="button"
       class="status"
       onClick={() => void checkHealth()}
-      aria-label={`${health().label}. Check again`}
-      title={health().label}
+      aria-label={t("shell.healthCheckAgain", { label: healthLabel() })}
+      title={healthLabel()}
     >
       <span
         class="dot"
@@ -20,7 +21,7 @@ export function StatusDot() {
         aria-hidden="true"
       />
       <span class="status-text" aria-hidden="true">
-        Lucina
+        {t("shell.lucina")}
       </span>
     </button>
   );

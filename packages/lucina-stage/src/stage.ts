@@ -37,8 +37,12 @@ import { normalizeManifest, type CameraFraming, type NormalizedManifest } from '
 import { MUTE_STORAGE_KEY, readStoredMuted, writeMuted } from './mute';
 import { createPlaceholder } from './placeholder';
 import { Rig, type RigReport } from './rig';
+import { ClipPlayer, loadClipLibrary, type ClipInfo, type ClipLibrary, type PlayOptions } from './clips';
 import { damp } from './spring';
 import { StageStateMachine } from './stateMachine';
+import { StageEnvironment, type EnvironmentOptions } from './scene/environment';
+import { MotionLayer, clipNames } from './scene/motion';
+import type { StageQuality, StageQualitySetting, StageTheme } from './scene/quality';
 import { FrameStats } from './stats';
 import { clamp, type Expression, type Framing, type StageState } from './types';
 
@@ -79,6 +83,22 @@ export interface LucinaStageOptions {
    * slightly forward, with a soft elbow bend. `false` keeps the authored pose.
    */
   armPose?: { down?: number; forward?: number; elbow?: number } | false;
+  /**
+   * The stage set: nebula sky, holographic floor ring, particles, neon rim light, camera drift,
+   * bloom on the high tier (src/scene/). Off by default: transparent canvas, the host paints it.
+   */
+  environment?: boolean | EnvironmentOptions;
+  /**
+   * Body animation clips (lucina-anims.glb, same skeleton as the model, no mesh), e.g.
+   * `/v1/assets/lucina-anims.glb`. With clips, an idle clip always plays under the procedural
+   * gaze/blink/lip-sync, so she never stands in the rest pose. Without (or if loading fails),
+   * the procedural idle with relaxed arms is used.
+   */
+  clipsUrl?: string;
+  /** clips.json for the clip file (loop flags, tags). Optional. */
+  clipsMetaUrl?: string;
+  /** Clip pools per state (defaults: idle_breathe/idle_shift, listen_lean, think_chin, talk_gesture_*). */
+  stateClips?: Partial<Record<StageState, string[]>>;
 }
 
 export const DEFAULT_HIDE_MATERIALS = ['ExpIcons', 'Falchion'];
@@ -101,6 +121,8 @@ export interface SpeakOptions {
 
 export interface StageInfo {
   placeholder: boolean;
+  /** Clips bound to the model ([] when no clip file is loaded). */
+  clips: ClipInfo[];
   extensions: string[];
   rig: RigReport;
   hidden: string[];
@@ -127,9 +149,36 @@ export interface LucinaStage {
   /** Creates/resumes the AudioContext; call from a user gesture on iOS. */
   unlockAudio(): Promise<void>;
   resize(): void;
+  /**
+   * Plays a body clip by name (see `info.clips`). One-shots resolve when they end and return to the
+   * state's idle pool; loops resolve at once and play until the next play/stopClip/state change.
+   * Rejects for unknown names or when no clip file is loaded.
+   */
+  play(clip: string, opts?: PlayOptions): Promise<void>;
+  /** Ends the current clip and returns to the state's pool (the idle never shows the rest pose). */
+  stopClip(fade?: number): void;
+  /** Name of the clip playing now, or null without clips. */
+  readonly clip: string | null;
+  /** Replace the clip pools per state, e.g. `{ speaking: ['talk_gesture_2'] }`. */
+  setStateClips(map: Partial<Record<StageState, string[]>>): void;
   dispose(): void;
   readonly stats: FrameStats;
   readonly info: StageInfo;
+  /** Procedural gesture by name (nod, tilt, happy, shy, surprised, greet, think); works without a clip file. */
+  gesture(name: string): boolean;
+  /** Names `gesture` accepts. */
+  readonly gestures: string[];
+  /**
+   * Tap reaction: a reaction clip when the clip file has one, else a procedural gesture; with the
+   * environment also a sparkle burst at `at` (world space). Returns what played.
+   */
+  react(at?: { x: number; y: number; z: number }): string;
+  /** Environment quality tier; no-op without the environment. */
+  setQuality(q: StageQualitySetting): void;
+  /** Current environment tier, null without the environment. */
+  readonly quality: StageQuality | null;
+  /** Environment palette; no-op without the environment. */
+  setTheme(theme: StageTheme): void;
   /** Escape hatches for debugging. */
   readonly three: { renderer: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; model: Object3D };
 }
@@ -183,7 +232,7 @@ const DEG = Math.PI / 180;
  * node, otherwise the measured rest direction of each upper arm, aiming `down` degrees below horizontal.
  */
 function relaxArms(rig: Rig, cfg: { down?: number; forward?: number; elbow?: number }, manifest: NormalizedManifest): void {
-  const target = (cfg.down ?? 72) * DEG;
+  const target = (cfg.down ?? 80) * DEG;
   const forward = (cfg.forward ?? 6) * DEG;
   const elbow = (cfg.elbow ?? 12) * DEG;
   for (const [upper, lower] of [
@@ -200,6 +249,10 @@ function relaxArms(rig: Rig, cfg: { down?: number; forward?: number; elbow?: num
     let roll: number;
     if (rec && Math.abs(rec.axis[2]) > 0.9) {
       roll = rec.angleDeg * DEG * Math.sign(rec.axis[2]);
+      // The recommendation can leave the arms out in an A: lower them the rest of the way.
+      const rest = Math.atan2(-dir.y, Math.abs(dir.x));
+      const need = clamp(target - rest, 0, 80 * DEG);
+      if (need > Math.abs(roll)) roll = -side * need;
     } else {
       const current = Math.atan2(-dir.y, Math.abs(dir.x)); // angle below horizontal
       const delta = clamp(target - current, 0, 80 * DEG);
@@ -208,7 +261,8 @@ function relaxArms(rig: Rig, cfg: { down?: number; forward?: number; elbow?: num
       roll = -side * delta;
     }
     rig.setOffset(upper, { x: -forward, y: 0, z: roll });
-    rig.setOffset(lower, { x: -elbow, y: 0, z: 0 });
+    // Forearms follow a little further in, so the hands rest by the hips instead of out in an A.
+    rig.setOffset(lower, { x: -elbow, y: 0, z: -side * 8 * DEG });
   }
 }
 
@@ -232,6 +286,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   renderer.toneMapping = TONE[options.toneMapping ?? 'aces'];
   renderer.toneMappingExposure = options.exposure ?? 0.9;
   const maxDpr = options.maxPixelRatio ?? 2;
+  let env: StageEnvironment | null = null;
 
   const scene = new Scene();
   const camera = new PerspectiveCamera(30, 1, 0.01, 100);
@@ -255,7 +310,15 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   let model: Object3D;
   let placeholder = false;
   let extensions: string[] = [];
+  let clipLib: ClipLibrary | null = null;
   const usePlaceholder = options.placeholder || !options.modelUrl;
+  const clipsPromise: Promise<ClipLibrary | null> =
+    !usePlaceholder && options.clipsUrl
+      ? loadClipLibrary(options.clipsUrl, options.clipsMetaUrl, options).catch((e: unknown) => {
+          console.warn('[lucina-stage] clips not loaded, using the procedural idle:', e);
+          return null;
+        })
+      : Promise.resolve(null);
   if (!usePlaceholder) {
     try {
       const [m, loaded] = await Promise.all([
@@ -269,6 +332,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       manifest = m;
       model = loaded.gltf.scene;
       extensions = loaded.extensions;
+      clipLib = await clipsPromise;
     } catch (e) {
       if (options.fallbackToPlaceholder === false) {
         renderer.dispose();
@@ -319,7 +383,21 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   }
   rig.setFixedMorphs({ ...DEFAULT_FIXED_MORPHS, ...manifest.idle.morphs, ...options.fixedMorphs });
   if (options.armPose !== false) relaxArms(rig, options.armPose ?? {}, manifest);
-  rig.apply(new Animator().update(0, 'idle', { a: 0, i: 0, u: 0, e: 0, o: 0 }));
+  let player: ClipPlayer | null = null;
+  if (clipLib && !placeholder) {
+    player = new ClipPlayer(model, clipLib, { stateClips: options.stateClips });
+    if (!player.ready) {
+      console.warn('[lucina-stage] no clip in the clip file matches this model; using the procedural idle');
+      player.dispose();
+      player = null;
+    }
+  }
+  const frame0 = new Animator().update(0, 'idle', { a: 0, i: 0, u: 0, e: 0, o: 0 });
+  if (player) {
+    rig.restoreBones();
+    player.update(0);
+    rig.apply(frame0, { driven: player.drivenNodes });
+  } else rig.apply(frame0);
   if (rig.report.missingBones.length || rig.report.missingMorphs.length) {
     console.info('[lucina-stage] unbound bones:', rig.report.missingBones, 'morphs:', rig.report.missingMorphs);
   }
@@ -356,6 +434,10 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   shadow.position.set((bbox.min.x + bbox.max.x) / 2, bbox.min.y + height * 0.001, (bbox.min.z + bbox.max.z) / 2);
   shadow.renderOrder = -1;
   scene.add(shadow);
+
+  // Procedural body layer (arm sway without clips, gestures always).
+  const leftArm = rig.bonePosition('upper_arm_l');
+  const motion = new MotionLayer(leftArm ? Math.sign(leftArm.x - headPos.x) || 1 : 1);
 
   // ---------- Camera framing ----------
   let framing: Framing = options.framing ?? 'bust';
@@ -444,14 +526,38 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   let reducedOverride: boolean | null = options.reducedMotion ?? null;
   let reducedMotion = reducedOverride ?? mql?.matches ?? false;
   const animator = new Animator({ reducedMotion });
+  if (options.environment) {
+    const chest = rig.bonePosition('chest') ?? new Vector3(headPos.x, bbox.min.y + height * 0.7, headPos.z);
+    env = new StageEnvironment(
+      renderer,
+      scene,
+      camera,
+      {
+        height,
+        floorY: bbox.min.y,
+        center: new Vector3((bbox.min.x + bbox.max.x) / 2, bbox.min.y, (bbox.min.z + bbox.max.z) / 2),
+        chest,
+        radius: Math.max(size.x, size.z) / 2,
+      },
+      { hemi, key, rim, rim2 },
+      typeof options.environment === 'object' ? options.environment : {},
+      () => resize(),
+    );
+    env.setReducedMotion(reducedMotion);
+    (shadow.material as MeshBasicMaterial).opacity = 0.7;
+  }
   const machine = new StageStateMachine('idle');
   const onMql = (): void => {
     if (reducedOverride === null) {
       reducedMotion = mql?.matches ?? false;
       animator.reducedMotion = reducedMotion;
+      env?.setReducedMotion(reducedMotion);
     }
   };
   mql?.addEventListener?.('change', onMql);
+  if (player) {
+    machine.onChange((next) => player?.setState(next));
+  }
 
   // ---------- Audio ----------
   const muteKey = options.muteStorageKey === undefined ? MUTE_STORAGE_KEY : options.muteStorageKey;
@@ -652,7 +758,9 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   function resize(): void {
     const w = Math.max(1, Math.round(canvas.clientWidth || canvas.width || 1));
     const h = Math.max(1, Math.round(canvas.clientHeight || canvas.height || 1));
-    renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, maxDpr));
+    const dpr = Math.min(globalThis.devicePixelRatio || 1, maxDpr, env?.maxPixelRatio ?? Infinity);
+    renderer.setPixelRatio(dpr);
+    env?.setSize(w, h, dpr);
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     computeFraming();
@@ -675,14 +783,25 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     if (current && audio) lip = audio.lipsync.sample(dt);
     else lip = silentLip.silence(dt);
     updateLook();
-    const f = animator.update(dt, machine.state, lip.weights, lip.stress);
-    rig.apply(f);
+    const f = motion.apply(animator.update(dt, machine.state, lip.weights, lip.stress), dt, machine.state, reducedMotion, !!player);
+    if (player) {
+      // clips underneath (frozen in reduced motion: a still idle pose, never the rest pose)
+      rig.restoreBones();
+      player.update(reducedMotion ? 0 : dt);
+      rig.apply(f, { driven: player.drivenNodes });
+    } else rig.apply(f);
     applyCamera(dt, false);
-    renderer.render(scene, camera);
+    if (env) {
+      env.update(dt, machine.state, lip.open);
+      env.driftCamera(camera, camNow.target);
+      env.render(dt);
+    } else renderer.render(scene, camera);
   }
 
   function renderOnce(): void {
-    if (!disposed) renderer.render(scene, camera);
+    if (disposed) return;
+    if (env) env.render(0);
+    else renderer.render(scene, camera);
   }
 
   function frame(now: number): void {
@@ -731,6 +850,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   function dispose(): void {
     if (disposed) return;
     stopSpeaking();
+    player?.dispose();
     disposed = true;
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
@@ -746,6 +866,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     removeGestureUnlock();
     tapListeners.clear();
     stats.clear();
+    env?.dispose();
+    env = null;
     const textures = new Set<Texture>();
     const materials = new Set<Material>();
     scene.traverse((o) => {
@@ -805,12 +927,55 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       reducedOverride = r;
       reducedMotion = r ?? mql?.matches ?? false;
       animator.reducedMotion = reducedMotion;
+      env?.setReducedMotion(reducedMotion);
+    },
+    gesture(name) {
+      kick();
+      return motion.play(name);
+    },
+    get gestures() {
+      return clipNames();
+    },
+    react(at) {
+      kick();
+      animator.blink();
+      env?.pulse(at);
+      const reactions = player?.list().filter((c) => !c.loop && c.tags.some((t) => /reaction|happy|greeting/.test(t))) ?? [];
+      if (player && reactions.length) {
+        const pick = reactions[Math.floor(Math.random() * reactions.length)]!.name;
+        void player.play(pick).catch(() => {});
+        return pick;
+      }
+      return motion.react();
+    },
+    setQuality(q) {
+      env?.setQuality(q);
+    },
+    get quality() {
+      return env?.quality ?? null;
+    },
+    setTheme(theme) {
+      env?.setTheme(theme);
     },
     unlockAudio,
     resize,
+    play(name, opts) {
+      if (!player) return Promise.reject(new Error('No clip file loaded (clipsUrl)'));
+      kick();
+      return player.play(name, opts);
+    },
+    stopClip(fade) {
+      player?.stop(fade);
+    },
+    get clip() {
+      return player?.current ?? null;
+    },
+    setStateClips(map) {
+      player?.setStateClips(map);
+    },
     dispose,
     stats,
-    info: { placeholder, extensions, rig: rig.report, hidden },
+    info: { placeholder, clips: player?.list() ?? [], extensions, rig: rig.report, hidden },
     three: { renderer, scene, camera, model },
   };
   return stage;

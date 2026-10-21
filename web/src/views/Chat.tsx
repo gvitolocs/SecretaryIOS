@@ -2,7 +2,6 @@ import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMo
 import { CHAT_MAX_CHARS } from "../api/secretary";
 import type { Attachment, Channel } from "../api/timeline";
 import {
-  AvatarIcon,
   BellIcon,
   BubbleIcon,
   DotsIcon,
@@ -13,11 +12,10 @@ import {
   SpeakerIcon,
 } from "../components/Icons";
 import { LinkifiedText } from "../components/LinkifiedText";
-import { LucinaPanel } from "../components/LucinaPanel";
+import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
-import { readString, writeString } from "../lib/storage";
 import {
-  CHANNEL_LABELS,
+  channelLabel,
   contextCaption,
   dayKey,
   dayLabel,
@@ -45,34 +43,34 @@ import {
   type JobState,
 } from "../state/chat";
 
-const JOB_LABELS: Record<string, string> = {
-  queued: "Queued",
-  running: "Working on it",
-  done: "Done",
-  error: "Failed",
+const JOB_LABELS: Record<string, MessageKey> = {
+  queued: "chat.jobQueued",
+  running: "chat.jobRunning",
+  done: "chat.jobDone",
+  error: "chat.jobFailed",
 };
 
-const JOB_ERRORS: Record<string, string> = {
-  interrupted: "Lucina restarted while working on this.",
+const JOB_ERRORS: Record<string, MessageKey> = {
+  interrupted: "chat.jobInterrupted",
 };
 
 const STREAM_LABELS = {
-  connecting: "Connecting…",
-  live: "Live",
-  reconnecting: "Reconnecting…",
-  offline: "Not live",
-} as const;
+  connecting: "chat.streamConnecting",
+  live: "chat.streamLive",
+  reconnecting: "chat.streamReconnecting",
+  offline: "chat.streamOffline",
+} as const satisfies Record<string, MessageKey>;
 
-const ATTACHMENT_LABELS: Record<Attachment["kind"], string> = {
-  image: "Photo",
-  voice: "Voice message",
-  file: "File",
+const ATTACHMENT_LABELS: Record<Attachment["kind"], MessageKey> = {
+  image: "chat.photo",
+  voice: "chat.voice",
+  file: "chat.file",
 };
-
-const STAGE_HIDDEN_KEY = "secretary.stage.hidden";
 
 /** Start loading older items when the list is scrolled this close to the top. */
 const LOAD_OLDER_PX = 200;
+/** Long enough for a smooth scroll to the end to finish. */
+const AUTO_SCROLL_MS = 900;
 /** Within this distance of the bottom, new items keep the list pinned to the end. */
 const STICK_PX = 80;
 
@@ -98,13 +96,16 @@ function JobResult(props: { value: unknown }) {
         </Show>
       }
     >
-      {(t) => <LinkifiedText class="job-result" text={t()} />}
+      {(text) => <LinkifiedText class="job-result" text={text()} />}
     </Show>
   );
 }
 
 function JobCard(props: { job: JobState }) {
-  const label = () => JOB_LABELS[props.job.status] ?? props.job.status;
+  const label = () => {
+    const key = JOB_LABELS[props.job.status];
+    return key ? t(key) : props.job.status;
+  };
   const done = () => isTerminalJob(props.job.status);
   return (
     <section
@@ -114,7 +115,7 @@ function JobCard(props: { job: JobState }) {
         "job--error": props.job.status === "error",
         "job--active": !done(),
       }}
-      aria-label={`Job: ${label()}`}
+      aria-label={t("chat.jobLabel", { status: label() })}
     >
       <div class="job-head">
         <Show when={!done()}>
@@ -127,12 +128,12 @@ function JobCard(props: { job: JobState }) {
         <JobResult value={props.job.result} />
       </Show>
       <Show when={props.job.status === "error" && props.job.error}>
-        {(e) => <p class="job-note">{JOB_ERRORS[e()] ?? e()}</p>}
+        {(e) => <p class="job-note">{JOB_ERRORS[e()] ? t(JOB_ERRORS[e()]!) : e()}</p>}
       </Show>
       <Show when={props.job.imageUrl ? safeHref(props.job.imageUrl) : null}>
         {(href) => (
           <a class="job-link" href={href()} target="_blank" rel="noopener noreferrer nofollow">
-            Open image
+            {t("chat.openImage")}
           </a>
         )}
       </Show>
@@ -165,12 +166,12 @@ function ChannelGlyph(props: { channel: Channel }) {
 
 /** "via Telegram · Family" badge: glyph plus a text label, read as one phrase. */
 export function SourceBadge(props: { message: ChatMessage }) {
-  const label = () => CHANNEL_LABELS[props.message.channel];
+  const label = () => channelLabel(props.message.channel);
   const context = () => contextCaption(props.message.channel, props.message.meta);
   return (
     <span class="src-badge" data-channel={props.message.channel}>
       <ChannelGlyph channel={props.message.channel} />
-      <span class="sr-only">via </span>
+      <span class="sr-only">{t("chat.via")} </span>
       <span class="src-label">{label()}</span>
       <Show when={context()}>
         {(c) => (
@@ -186,11 +187,11 @@ export function SourceBadge(props: { message: ChatMessage }) {
 
 function Attachments(props: { items: Attachment[] }) {
   return (
-    <ul class="attachments" aria-label="Attachments">
+    <ul class="attachments" aria-label={t("chat.attachments")}>
       <For each={props.items}>
         {(a) => (
           <li class="attachment">
-            {ATTACHMENT_LABELS[a.kind]}
+            {t(ATTACHMENT_LABELS[a.kind])}
             <Show when={a.name}>{(n) => <span class="attachment-name">: {n()}</span>}</Show>
           </li>
         )}
@@ -223,7 +224,7 @@ function MessageItem(props: { message: ChatMessage }) {
       }}
       data-key={props.message.key}
     >
-      <span class="sr-only">{isReminder() ? "Reminder:" : isUser() ? "You:" : "Lucina:"}</span>
+      <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
       <Show when={hasBody() || isReminder()}>
         <div
           class="bubble"
@@ -236,7 +237,7 @@ function MessageItem(props: { message: ChatMessage }) {
           <Show when={isReminder()}>
             <span class="reminder-head" aria-hidden="true">
               <BellIcon />
-              Reminder
+              {t("chat.reminder")}
             </span>
           </Show>
           <Show when={props.message.text}>
@@ -251,7 +252,7 @@ function MessageItem(props: { message: ChatMessage }) {
       <div class="msg-info">
         <SourceBadge message={props.message} />
         <Show when={props.message.backfilled}>
-          <span class="msg-imported">Imported from history</span>
+          <span class="msg-imported">{t("chat.imported")}</span>
         </Show>
         <time
           class="msg-time"
@@ -261,19 +262,19 @@ function MessageItem(props: { message: ChatMessage }) {
           {timeLabel(props.message.createdAt)}
         </time>
         <Show when={props.message.status === "sending"}>
-          <span class="msg-meta">Sending…</span>
+          <span class="msg-meta">{t("chat.sending")}</span>
         </Show>
       </div>
       <Show when={props.message.status === "error"}>
         <div class="msg-error">
-          <span>{props.message.error ?? "Not delivered."}</span>
+          <span>{props.message.error ?? t("chat.notDelivered")}</span>
           <button
             type="button"
             class="btn btn--small"
             onClick={() => void retryMessage(props.message.key)}
             disabled={sending()}
           >
-            Retry
+            {t("chat.retry")}
           </button>
         </div>
       </Show>
@@ -287,10 +288,10 @@ function LiveIndicator() {
       class="live"
       classList={{ "live--on": streamStatus() === "live" }}
       role="status"
-      title={streamStatus() === "live" ? "New messages from every channel appear as they arrive." : undefined}
+      title={streamStatus() === "live" ? t("chat.liveTitle") : undefined}
     >
       <span class="live-dot" aria-hidden="true" />
-      {STREAM_LABELS[streamStatus()]}
+      {t(STREAM_LABELS[streamStatus()])}
     </span>
   );
 }
@@ -298,17 +299,21 @@ function LiveIndicator() {
 export default function ChatView() {
   const [draft, setDraft] = createSignal("");
   const [filter, setFilter] = createSignal<SourceFilter>("all");
-  const [stageOpen, setStageOpen] = createSignal(readString("local", STAGE_HIDDEN_KEY) !== "1");
   const tooLong = createMemo(() => draft().length > CHAT_MAX_CHARS);
   const canSend = createMemo(() => draft().trim().length > 0 && !tooLong() && !sending());
   const visible = createMemo(() => {
     const f = filter();
     return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m.channel, f));
   });
-  const filterLabel = () => SOURCE_FILTERS.find((f) => f.id === filter())?.label ?? "";
+  const filterLabel = () => {
+    const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
+    return key ? t(key) : "";
+  };
   let list: HTMLDivElement | undefined;
   let input: HTMLTextAreaElement | undefined;
   let atBottom = true;
+  /** While our own scroll-to-end runs, scroll events are not the reader's. */
+  let autoScrollUntil = 0;
 
   function autosize() {
     if (!input) return;
@@ -319,6 +324,7 @@ export default function ChatView() {
   function scrollToEnd(smooth: boolean) {
     if (!list) return;
     const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    autoScrollUntil = Date.now() + (smooth && !reduce ? AUTO_SCROLL_MS : 100);
     if (typeof list.scrollTo === "function") {
       list.scrollTo({ top: list.scrollHeight, behavior: smooth && !reduce ? "smooth" : "auto" });
     } else {
@@ -336,7 +342,7 @@ export default function ChatView() {
   }
 
   function onScroll() {
-    if (!list) return;
+    if (!list || Date.now() < autoScrollUntil) return;
     atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < STICK_PX;
     if (list.scrollTop < LOAD_OLDER_PX && hasMore()) void older();
   }
@@ -347,12 +353,15 @@ export default function ChatView() {
   });
 
   // New items at the end (or the thinking bubble) keep the view pinned to the
-  // bottom unless the reader has scrolled up. Prepending never moves it.
+  // bottom unless the reader has scrolled up. Prepending never moves it. The
+  // first fill jumps straight to the end: a smooth scroll from the top would
+  // pass the load-older zone on its way down.
   createEffect(
     on(
       () => [visible()[visible().length - 1]?.key, sending()] as const,
-      () => {
-        if (atBottom) requestAnimationFrame(() => scrollToEnd(true));
+      (_now, prev) => {
+        const firstFill = !prev?.[0];
+        if (atBottom) requestAnimationFrame(() => scrollToEnd(!firstFill));
       },
       { defer: true },
     ),
@@ -381,17 +390,6 @@ export default function ChatView() {
     input?.focus();
   }
 
-  function showStage(open: boolean) {
-    setStageOpen(open);
-    writeString("local", STAGE_HIDDEN_KEY, open ? "0" : "1");
-  }
-
-  function sendTranscript(text: string) {
-    if (filter() !== "all" && filter() !== "app") setFilter("all");
-    atBottom = true;
-    void sendMessage(text);
-  }
-
   function onKeyDown(e: KeyboardEvent) {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
     e.preventDefault();
@@ -408,165 +406,143 @@ export default function ChatView() {
   }
 
   return (
-    <div class="chat" classList={{ "chat--stage": stageOpen() }}>
-      <Show when={stageOpen()}>
-        <LucinaPanel
-          thinking={sending()}
-          onTranscript={sendTranscript}
-          onTypeInstead={() => input?.focus()}
-          onCollapse={() => showStage(false)}
-        />
-      </Show>
-      <div class="chat-main">
-        <div class="chat-bar">
-          <div class="chip-group" role="group" aria-label="Show messages from">
-            <For each={SOURCE_FILTERS}>
-              {(f) => (
-                <button
-                  type="button"
-                  class="chip"
-                  classList={{ "chip--active": filter() === f.id }}
-                  aria-pressed={filter() === f.id ? "true" : "false"}
-                  onClick={() => setFilter(f.id)}
-                >
-                  {f.label}
-                </button>
-              )}
-            </For>
-          </div>
-          <Show when={!stageOpen()}>
-            <button
-              type="button"
-              class="icon-btn stage-show"
-              onClick={() => showStage(true)}
-              aria-expanded="false"
-              aria-label="Show Lucina"
-              title="Show Lucina"
-            >
-              <AvatarIcon />
-            </button>
-          </Show>
-          <LiveIndicator />
-        </div>
-        <div
-          class="messages"
-          ref={list}
-          onScroll={onScroll}
-          role="log"
-          aria-live="off"
-          aria-label="Conversation with Lucina"
-        >
-          <div class="timeline-top">
-            <Switch>
-              <Match when={olderState() === "loading"}>
-                <span class="timeline-hint" role="status">
-                  Loading earlier messages…
-                </span>
-              </Match>
-              <Match when={olderState() === "error"}>
-                <button type="button" class="btn btn--small" onClick={() => void older()}>
-                  Couldn't load earlier messages. Try again
-                </button>
-              </Match>
-              <Match when={hasMore()}>
-                <button type="button" class="btn btn--small" onClick={() => void older()}>
-                  Load earlier messages
-                </button>
-              </Match>
-              <Match when={chat.loaded && chat.messages.length > 0}>
-                <span class="timeline-hint">Start of the conversation</span>
-              </Match>
-            </Switch>
-          </div>
-          <Show when={loadState() === "error"}>
-            <div class="timeline-error" role="alert">
-              <span>Couldn't load the conversation.</span>
-              <button type="button" class="btn btn--small" onClick={() => void loadLatest()}>
-                Try again
+    <div class="chat">
+      <div class="chat-bar">
+        <div class="chip-group" role="group" aria-label={t("chat.filterGroup")}>
+          <For each={SOURCE_FILTERS}>
+            {(f) => (
+              <button
+                type="button"
+                class="chip"
+                classList={{ "chip--active": filter() === f.id }}
+                aria-pressed={filter() === f.id ? "true" : "false"}
+                onClick={() => setFilter(f.id)}
+              >
+                {t(f.label)}
               </button>
-            </div>
-          </Show>
-          <Show when={!chat.loaded && chat.messages.length === 0 && loadState() !== "error"}>
-            <p class="timeline-hint" role="status">
-              Loading the conversation…
-            </p>
-          </Show>
-          <Show when={chat.loaded && chat.messages.length === 0 && !sending()}>
-            <div class="empty">
-              <p class="empty-title">Hello. Lucina is listening.</p>
-              <p class="empty-sub">Ask her anything, or have her add to your shopping list.</p>
-            </div>
-          </Show>
-          <Show when={chat.messages.length > 0 && visible().length === 0}>
-            <p class="timeline-hint">No {filterLabel()} messages loaded yet.</p>
-          </Show>
-          <For each={visible()}>
-            {(m, i) => (
-              <>
-                <Show when={dayBreak(i())}>
-                  {(label) => (
-                    <div class="day-sep" role="separator" aria-label={label()}>
-                      <span>{label()}</span>
-                    </div>
-                  )}
-                </Show>
-                <MessageItem message={m} />
-              </>
             )}
           </For>
-          <Show when={sending()}>
-            <div class="msg msg--lucina">
-              <div class="bubble bubble--thinking">
-                <span class="typing" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
-                </span>
-                Lucina is thinking…
-              </div>
-            </div>
-          </Show>
         </div>
-        <div class="sr-only" aria-live="polite" aria-atomic="true">
-          {sending() ? "Lucina is thinking." : lastReply() ? `Lucina: ${lastReply()}` : ""}
-        </div>
-        <form
-          class="composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-        >
-          <label class="sr-only" for="composer-input">
-            Message Lucina
-          </label>
-          <textarea
-            ref={input}
-            id="composer-input"
-            class="composer-input"
-            rows="1"
-            placeholder={sending() ? "Waiting for Lucina…" : "Message Lucina"}
-            value={draft()}
-            onInput={(e) => {
-              setDraft(e.currentTarget.value);
-              autosize();
-            }}
-            onKeyDown={onKeyDown}
-            readOnly={sending()}
-            aria-disabled={sending() ? "true" : "false"}
-            enterkeyhint="send"
-            autocomplete="off"
-          />
-          <Show when={tooLong()}>
-            <span class="composer-count" role="status">
-              {draft().length}/{CHAT_MAX_CHARS}
-            </span>
-          </Show>
-          <button class="send-btn" type="submit" disabled={!canSend()} aria-label="Send">
-            <SendIcon />
-          </button>
-        </form>
+        <LiveIndicator />
       </div>
+      <div
+        class="messages"
+        ref={list}
+        onScroll={onScroll}
+        role="log"
+        aria-live="off"
+        aria-label={t("chat.conversation")}
+      >
+        <div class="timeline-top">
+          <Switch>
+            <Match when={olderState() === "loading"}>
+              <span class="timeline-hint" role="status">
+                {t("chat.loadingEarlier")}
+              </span>
+            </Match>
+            <Match when={olderState() === "error"}>
+              <button type="button" class="btn btn--small" onClick={() => void older()}>
+                {t("chat.earlierFailed")}
+              </button>
+            </Match>
+            <Match when={hasMore()}>
+              <button type="button" class="btn btn--small" onClick={() => void older()}>
+                {t("chat.loadEarlier")}
+              </button>
+            </Match>
+            <Match when={chat.loaded && chat.messages.length > 0}>
+              <span class="timeline-hint">{t("chat.start")}</span>
+            </Match>
+          </Switch>
+        </div>
+        <Show when={loadState() === "error"}>
+          <div class="timeline-error" role="alert">
+            <span>{t("chat.loadFailed")}</span>
+            <button type="button" class="btn btn--small" onClick={() => void loadLatest()}>
+              {t("common.tryAgain")}
+            </button>
+          </div>
+        </Show>
+        <Show when={!chat.loaded && chat.messages.length === 0 && loadState() !== "error"}>
+          <p class="timeline-hint" role="status">
+            {t("chat.loading")}
+          </p>
+        </Show>
+        <Show when={chat.loaded && chat.messages.length === 0 && !sending()}>
+          <div class="empty">
+            <p class="empty-title">{t("chat.emptyTitle")}</p>
+            <p class="empty-sub">{t("chat.emptySub")}</p>
+          </div>
+        </Show>
+        <Show when={chat.messages.length > 0 && visible().length === 0}>
+          <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
+        </Show>
+        <For each={visible()}>
+          {(m, i) => (
+            <>
+              <Show when={dayBreak(i())}>
+                {(label) => (
+                  <div class="day-sep" role="separator" aria-label={label()}>
+                    <span>{label()}</span>
+                  </div>
+                )}
+              </Show>
+              <MessageItem message={m} />
+            </>
+          )}
+        </For>
+        <Show when={sending()}>
+          <div class="msg msg--lucina">
+            <div class="bubble bubble--thinking">
+              <span class="typing" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+              {t("chat.thinking")}
+            </div>
+          </div>
+        </Show>
+      </div>
+      <div class="sr-only" aria-live="polite" aria-atomic="true">
+        {sending() ? t("chat.thinkingSr") : lastReply() ? t("chat.replySr", { text: lastReply() }) : ""}
+      </div>
+      <form
+        class="composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <label class="sr-only" for="composer-input">
+          {t("chat.composer")}
+        </label>
+        <textarea
+          ref={input}
+          id="composer-input"
+          class="composer-input"
+          rows="1"
+          placeholder={sending() ? t("chat.waiting") : t("chat.composer")}
+          value={draft()}
+          onInput={(e) => {
+            setDraft(e.currentTarget.value);
+            autosize();
+          }}
+          onKeyDown={onKeyDown}
+          readOnly={sending()}
+          aria-disabled={sending() ? "true" : "false"}
+          enterkeyhint="send"
+          autocomplete="off"
+        />
+        <Show when={tooLong()}>
+          <span class="composer-count" role="status">
+            {draft().length}/{CHAT_MAX_CHARS}
+          </span>
+        </Show>
+        <button class="send-btn" type="submit" disabled={!canSend()} aria-label={t("chat.send")}>
+          <SendIcon />
+        </button>
+      </form>
     </div>
   );
 }

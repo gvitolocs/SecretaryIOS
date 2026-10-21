@@ -2,10 +2,22 @@ import { A, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import type { ExerciseKind, GymView, SetKind, WorkoutExercise, WorkoutSet } from "../../api/gym";
 import { PlusIcon } from "../../components/Icons";
-import { formatCountdown, formatDuration } from "../../lib/units";
-import { gym, restRemainingNow, runGym, tickClock } from "../../state/gym";
+import { formatCountdown } from "../../lib/units";
+import { runGym, tickClock } from "../../state/gym";
 import ExercisePicker from "./Picker";
-import { ConfirmButton, exerciseById, GymPage, SET_KIND_LABELS, setBadge } from "./shared";
+import { TimerIcon } from "./icons";
+import {
+  ConfirmButton,
+  exerciseById,
+  GymPage,
+  JOURNAL_HREF,
+  Metric,
+  SET_KINDS,
+  setBadge,
+  setKindLabel,
+  useGymClock,
+} from "./shared";
+import { gt, type GymKey } from "./strings";
 
 const CLOCK_POLL_MS = 15_000;
 const INT_RE = /^\d+$/;
@@ -25,11 +37,17 @@ function fieldsFor(kind: ExerciseKind): Field[] {
   }
 }
 
-const FIELD_LABELS: Record<Field, string> = {
-  weight: "Weight",
-  reps: "Reps",
-  seconds: "Seconds",
-  distance: "Meters",
+const FIELD_KEYS: Record<Field, GymKey> = {
+  weight: "fieldWeight",
+  reps: "fieldReps",
+  seconds: "fieldSeconds",
+  distance: "fieldMeters",
+};
+
+const SUFFIX_KEYS: Record<Exclude<Field, "weight">, GymKey> = {
+  reps: "suffixReps",
+  seconds: "suffixSeconds",
+  distance: "suffixMeters",
 };
 
 function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: ExerciseKind }) {
@@ -61,7 +79,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
     const v = values();
     for (const f of fields()) {
       if (f !== "weight" && !INT_RE.test(v[f].trim())) {
-        setError(`${FIELD_LABELS[f]} must be a whole number.`);
+        setError(gt("wholeNumber", { field: gt(FIELD_KEYS[f]) }));
         return null;
       }
     }
@@ -121,7 +139,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
     });
   }
 
-  const label = () => `Set ${props.index + 1}`;
+  const n = () => props.index + 1;
 
   return (
     <li
@@ -133,7 +151,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
         <span aria-hidden="true">{setBadge(props.set.kind, props.index)}</span>
         <select
           class="set-badge-select"
-          aria-label={`${label()} type`}
+          aria-label={gt("setType", { n: n() })}
           value={props.set.kind}
           disabled={props.set.completed || pending()}
           onChange={(e) => {
@@ -142,9 +160,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
             changeKind(next);
           }}
         >
-          <For each={Object.keys(SET_KIND_LABELS) as SetKind[]}>
-            {(k) => <option value={k}>{SET_KIND_LABELS[k]}</option>}
-          </For>
+          <For each={SET_KINDS}>{(k) => <option value={k}>{setKindLabel(k)}</option>}</For>
         </select>
       </span>
       <div class="set-fields" classList={{ "set-fields--two": fields().length === 2 }}>
@@ -152,7 +168,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
           {(f) => (
             <label class="set-field">
               <span class="sr-only">
-                {label()} {FIELD_LABELS[f]}
+                {gt("setField", { n: n(), field: gt(FIELD_KEYS[f]) })}
                 {f === "weight" ? ` (${unit()})` : ""}
               </span>
               <input
@@ -173,7 +189,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
                 }}
               />
               <span class="set-suffix" aria-hidden="true">
-                {f === "weight" ? unit() : f === "reps" ? "reps" : f === "seconds" ? "s" : "m"}
+                {f === "weight" ? unit() : gt(SUFFIX_KEYS[f])}
               </span>
             </label>
           )}
@@ -183,7 +199,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
         type="button"
         class="set-done"
         aria-pressed={props.set.completed}
-        aria-label={props.set.completed ? `Uncheck ${label().toLowerCase()}` : `Complete ${label().toLowerCase()}`}
+        aria-label={gt(props.set.completed ? "uncheckSet" : "completeSet", { n: n() })}
         disabled={pending()}
         onClick={toggleDone}
       >
@@ -194,7 +210,7 @@ function SetRow(props: { view: GymView; set: WorkoutSet; index: number; kind: Ex
       <button
         type="button"
         class="icon-btn set-remove"
-        aria-label={`Delete ${label().toLowerCase()}`}
+        aria-label={gt("deleteSet", { n: n() })}
         disabled={props.set.completed || pending()}
         onClick={() => void run(() => runGym({ type: "remove_set", set_id: props.set.id }))}
       >
@@ -241,15 +257,15 @@ function ExerciseCard(props: { view: GymView; item: WorkoutExercise }) {
   }
 
   return (
-    <section class="card exercise-card" aria-label={exercise()?.name ?? "Exercise"}>
+    <section class="card exercise-card" aria-label={exercise()?.name ?? gt("exercise")}>
       <header class="exercise-head">
         <div>
-          <h3 class="exercise-name">{exercise()?.name ?? "Exercise"}</h3>
-          <Show when={previous()}>{(p) => <p class="muted small">Previous · {p()}</p>}</Show>
+          <h3 class="exercise-name">{exercise()?.name ?? gt("exercise")}</h3>
+          <Show when={previous()}>{(p) => <p class="muted small">{gt("previous", { label: p() })}</p>}</Show>
         </div>
         <ConfirmButton
-          label="Remove"
-          confirmLabel="Remove exercise"
+          label={gt("remove")}
+          confirmLabel={gt("removeExercise")}
           onConfirm={() => runGym({ type: "remove_exercise", exercise_id: props.item.id })}
         />
       </header>
@@ -259,12 +275,12 @@ function ExerciseCard(props: { view: GymView; item: WorkoutExercise }) {
         </For>
       </ol>
       <button type="button" class="btn btn--small btn--block add-set" disabled={adding()} onClick={() => void addSet()}>
-        <PlusIcon /> Add set
+        <PlusIcon /> {gt("addSet")}
       </button>
       <details class="exercise-notes" open={props.item.notes.length > 0}>
-        <summary>Notes</summary>
+        <summary>{gt("notes")}</summary>
         <label class="sr-only" for={`notes-${props.item.id}`}>
-          Notes for {exercise()?.name ?? "exercise"}
+          {gt("notesFor", { name: exercise()?.name ?? gt("exercise") })}
         </label>
         <textarea
           id={`notes-${props.item.id}`}
@@ -281,52 +297,9 @@ function ExerciseCard(props: { view: GymView; item: WorkoutExercise }) {
   );
 }
 
-/** Rest countdown and workout clock. Local ticking only between server updates. */
-function useWorkoutClock() {
-  const [now, setNow] = createSignal(Date.now());
-
-  // A fresh clock from the server resets the local tick base.
-  createEffect(on(() => gym.clock?.receivedAt, () => setNow(Date.now())));
-
-  const restRemaining = createMemo(() => {
-    const c = gym.clock;
-    if (!c) return 0;
-    return restRemainingNow(c, Math.max(now(), c.receivedAt));
-  });
-
-  const elapsed = createMemo(() => {
-    const c = gym.clock;
-    if (!c || c.active_elapsed_seconds === undefined) return null;
-    return c.active_elapsed_seconds + Math.max(0, Math.floor((now() - c.receivedAt) / 1000));
-  });
-
-  const ticking = createMemo(() => restRemaining() > 0 || elapsed() !== null);
-
-  createEffect(() => {
-    if (!ticking()) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    onCleanup(() => clearInterval(timer));
-  });
-
-  // When the local countdown runs out, ask the server once for the real clock.
-  createEffect(
-    on(restRemaining, (left, prev) => {
-      if (left === 0 && prev !== undefined && prev > 0) void tickClock();
-    }),
-  );
-
-  const duration = () => {
-    const e = elapsed();
-    if (e !== null) return formatDuration(e);
-    return gym.clock?.active_duration ?? gym.view?.summary.active_duration ?? "";
-  };
-
-  return { restRemaining, duration };
-}
-
 function WorkoutBody(props: { view: GymView }) {
   const navigate = useNavigate();
-  const clock = useWorkoutClock();
+  const clock = useGymClock();
   const [pickerOpen, setPickerOpen] = createSignal(false);
   const [renaming, setRenaming] = createSignal(false);
   const [title, setTitle] = createSignal("");
@@ -382,8 +355,8 @@ function WorkoutBody(props: { view: GymView }) {
     try {
       const res = await runGym({ type: "finish_workout" });
       const newest = res?.ok ? res.view?.state.history[0] : undefined;
-      if (newest) navigate(`/gym/history/${newest.id}`);
-      else if (res?.ok) navigate("/gym/history");
+      if (newest) navigate(`${JOURNAL_HREF}/${newest.id}`);
+      else if (res?.ok) navigate(JOURNAL_HREF);
     } finally {
       setFinishing(false);
     }
@@ -405,9 +378,9 @@ function WorkoutBody(props: { view: GymView }) {
       when={active()}
       fallback={
         <div class="empty">
-          <p class="empty-title">No workout in progress.</p>
+          <p class="empty-title">{gt("noWorkout")}</p>
           <A href="/gym" class="btn btn-link">
-            Back to Gym
+            {gt("backToGym")}
           </A>
         </div>
       }
@@ -416,13 +389,13 @@ function WorkoutBody(props: { view: GymView }) {
         <>
           <header class="workout-head">
             <A href="/gym" class="back-link">
-              ‹ Gym
+              {gt("backGym")}
             </A>
             <Show
               when={renaming()}
               fallback={
                 <div class="workout-title-row">
-                  <h1 class="view-title workout-title">{workout().title}</h1>
+                  <h1 class="view-title gym-title workout-title">{workout().title}</h1>
                   <button
                     type="button"
                     class="btn btn--small"
@@ -431,14 +404,14 @@ function WorkoutBody(props: { view: GymView }) {
                       setRenaming(true);
                     }}
                   >
-                    Rename
+                    {gt("rename")}
                   </button>
                 </div>
               }
             >
               <form class="inline-form" onSubmit={rename}>
                 <label class="sr-only" for="workout-title">
-                  Workout name
+                  {gt("workoutName")}
                 </label>
                 <input
                   id="workout-title"
@@ -448,55 +421,47 @@ function WorkoutBody(props: { view: GymView }) {
                   onInput={(e) => setTitle(e.currentTarget.value)}
                 />
                 <button type="submit" class="btn btn--primary btn--small">
-                  Save
+                  {gt("save")}
                 </button>
                 <button type="button" class="btn btn--small" onClick={() => setRenaming(false)}>
-                  Cancel
+                  {gt("cancel")}
                 </button>
               </form>
             </Show>
           </header>
 
-          <section class="metric-row" aria-label="Workout stats">
-            <div class="metric-tile">
-              <span class="metric-value">{clock.duration()}</span>
-              <span class="metric-label">Duration</span>
-            </div>
-            <div class="metric-tile">
-              <span class="metric-value">{summary().active_volume}</span>
-              <span class="metric-label">Volume</span>
-            </div>
-            <div class="metric-tile">
-              <span class="metric-value">{summary().active_completed_sets}</span>
-              <span class="metric-label">Sets</span>
-            </div>
+          <section class="gym-metrics" aria-label={gt("workoutStats")}>
+            <Metric value={clock.duration()} label={gt("duration")} />
+            <Metric value={summary().active_volume} label={gt("volume")} />
+            <Metric value={summary().active_completed_sets} label={gt("setsLabel")} />
           </section>
 
           <Show
             when={clock.restRemaining() > 0}
             fallback={
               <button type="button" class="btn btn--small rest-start" disabled={resting()} onClick={() => void startRest()}>
-                Start rest timer ({formatCountdown(props.view.state.settings.rest_seconds)})
+                {gt("startRest", { time: formatCountdown(props.view.state.settings.rest_seconds) })}
               </button>
             }
           >
-            <div class="rest-banner" role="timer" aria-label="Rest timer">
-              <span class="rest-text">Rest · {formatCountdown(clock.restRemaining())}</span>
+            <div class="rest-banner" role="timer" aria-label={gt("restTimerLabel")}>
+              <TimerIcon />
+              <span class="rest-text">{gt("restRemaining", { time: formatCountdown(clock.restRemaining()) })}</span>
               <button type="button" class="btn btn--small" onClick={() => void runGym({ type: "stop_rest" })}>
-                Skip
+                {gt("skip")}
               </button>
             </div>
           </Show>
 
           <label class="sr-only" for="workout-notes">
-            Workout notes
+            {gt("workoutNotes")}
           </label>
           <textarea
             id="workout-notes"
             class="text-input notes-input"
             rows="2"
             maxlength="8000"
-            placeholder="Workout notes"
+            placeholder={gt("workoutNotes")}
             value={notes()}
             onFocus={() => setNotesFocused(true)}
             onInput={(e) => setNotes(e.currentTarget.value)}
@@ -507,20 +472,20 @@ function WorkoutBody(props: { view: GymView }) {
 
           <button
             type="button"
-            class="btn btn--primary btn--block add-exercise"
+            class="btn btn--primary btn--block gym-primary add-exercise"
             ref={addButton}
             onClick={() => setPickerOpen(true)}
           >
-            <PlusIcon /> Add exercise
+            <PlusIcon /> {gt("addExercise")}
           </button>
 
-          <section class="workout-actions" aria-label="Finish">
+          <section class="workout-actions" aria-label={gt("finishSection")}>
             <button type="button" class="btn btn--primary" disabled={finishing()} onClick={() => void finish()}>
-              Finish workout
+              {gt("finishWorkout")}
             </button>
             <ConfirmButton
-              label="Discard workout"
-              confirmLabel="Discard for good"
+              label={gt("discardWorkout")}
+              confirmLabel={gt("discardForGood")}
               onConfirm={async () => {
                 const res = await runGym({ type: "cancel_workout" });
                 if (res?.ok) navigate("/gym");
@@ -537,13 +502,13 @@ function WorkoutBody(props: { view: GymView }) {
                     setRoutineName(workout().title);
                   }}
                 >
-                  Save as routine
+                  {gt("saveAsRoutine")}
                 </button>
               }
             >
               <form class="inline-form" onSubmit={saveRoutine}>
                 <label class="sr-only" for="routine-name">
-                  Routine name
+                  {gt("routineName")}
                 </label>
                 <input
                   id="routine-name"
@@ -553,16 +518,16 @@ function WorkoutBody(props: { view: GymView }) {
                   onInput={(e) => setRoutineName(e.currentTarget.value)}
                 />
                 <button type="submit" class="btn btn--primary btn--small">
-                  Save
+                  {gt("save")}
                 </button>
                 <button type="button" class="btn btn--small" onClick={() => setRoutineName(null)}>
-                  Cancel
+                  {gt("cancel")}
                 </button>
               </form>
             </Show>
             <Show when={routineSaved()}>
               <p class="muted small" role="status">
-                Saved to your routines.
+                {gt("savedToRoutines")}
               </p>
             </Show>
           </section>

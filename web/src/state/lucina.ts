@@ -1,26 +1,27 @@
 import { createSignal } from "solid-js";
 import { setLucinaOfflineHandler, type ApiError } from "../api/client";
+import { t, type MessageKey } from "../i18n";
 
 // Shared "Lucina is offline" notice, set by any request that comes back with
 // lucina_unreachable / lucina_timeout and cleared by the next success.
-const [lucinaNotice, setLucinaNotice] = createSignal<string | null>(null);
+const [notice, setNotice] = createSignal<MessageKey | null>(null);
 
-export { lucinaNotice };
+/** The notice text in the current language, or null. */
+export function lucinaNotice(): string | null {
+  const key = notice();
+  return key ? t(key) : null;
+}
 
 export function markLucinaOffline(err: ApiError): void {
-  setLucinaNotice(
-    err.code === "lucina_timeout"
-      ? "Lucina took too long to answer. She may be busy or offline; try again in a moment."
-      : "Lucina is offline right now. Your messages stay here, so you can retry once she's back.",
-  );
+  setNotice(err.code === "lucina_timeout" ? "shell.noticeTimeout" : "shell.noticeOffline");
 }
 
 export function markServerOffline(): void {
-  setLucinaNotice("Secretary's server isn't reachable right now. Your last change wasn't saved.");
+  setNotice("shell.noticeServer");
 }
 
 export function markLucinaOnline(): void {
-  setLucinaNotice(null);
+  setNotice(null);
 }
 
 setLucinaOfflineHandler(markLucinaOffline);

@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, For, onMount, Show } from "soli
 import { parseWeightOnServer, type BodyEntry, type BodyStatLabel, type BodyView } from "../api/body";
 import { toApiError } from "../api/client";
 import { type ChartSeries, LineChart } from "../components/LineChart";
+import { t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
 import { formatDate, formatDateTime, formatWeight, weightValue, type WeightUnit } from "../lib/units";
 import { body, dismissBodyError, refreshBody, runBody } from "../state/body";
@@ -53,7 +54,7 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
     if (pending()) return;
     const measured = localDateTimeMs(when());
     if (measured === null) {
-      setError("Enter a valid date and time.");
+      setError(t("weight.invalidDate"));
       return;
     }
     // Only send what changed; omitted fields keep their value.
@@ -91,9 +92,9 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
       <Show
         when={!editing()}
         fallback={
-          <form class="weight-edit" onSubmit={(e) => void save(e)} aria-label="Edit weigh-in">
+          <form class="weight-edit" onSubmit={(e) => void save(e)} aria-label={t("weight.editForm")}>
             <label class="field-label" for={`edit-weight-${props.entry.id}`}>
-              Weight ({props.unit})
+              {t("weight.weightIn", { unit: props.unit })}
             </label>
             <input
               id={`edit-weight-${props.entry.id}`}
@@ -106,7 +107,7 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
               disabled={pending()}
             />
             <label class="field-label" for={`edit-when-${props.entry.id}`}>
-              When
+              {t("weight.when")}
             </label>
             <input
               id={`edit-when-${props.entry.id}`}
@@ -117,7 +118,7 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
               disabled={pending()}
             />
             <label class="field-label" for={`edit-note-${props.entry.id}`}>
-              Note
+              {t("weight.note")}
             </label>
             <input
               id={`edit-note-${props.entry.id}`}
@@ -132,10 +133,10 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
             <Show when={error()}>{(message) => <p class="form-error">{message()}</p>}</Show>
             <div class="weight-edit-actions">
               <button class="btn btn--small" type="button" onClick={() => setEditing(false)} disabled={pending()}>
-                Cancel
+                {t("common.cancel")}
               </button>
               <button class="btn btn--primary btn--small" type="submit" disabled={pending()}>
-                Save
+                {t("common.save")}
               </button>
             </div>
           </form>
@@ -149,21 +150,21 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
           </div>
           <div class="weight-row-actions">
             <button class="btn btn--small" type="button" onClick={startEdit} disabled={pending()}>
-              Edit
+              {t("common.edit")}
             </button>
             <Show
               when={confirmDelete()}
               fallback={
                 <button class="btn btn--small" type="button" onClick={() => setConfirmDelete(true)} disabled={pending()}>
-                  Delete
+                  {t("common.delete")}
                 </button>
               }
             >
               <button class="btn btn--small btn--danger" type="button" onClick={() => void remove()} disabled={pending()}>
-                Confirm delete
+                {t("common.confirmDelete")}
               </button>
               <button class="btn btn--small" type="button" onClick={() => setConfirmDelete(false)} disabled={pending()}>
-                Cancel
+                {t("common.cancel")}
               </button>
             </Show>
           </div>
@@ -209,13 +210,18 @@ export default function WeightView() {
   const detailLine = createMemo(() => {
     const v = body.view;
     if (!v || v.stats.count === 0) return "";
-    return `Min ${statLabel(v, "min")} · Max ${statLabel(v, "max")} · 30d ${statLabel(v, "trend30")} · 90d ${statLabel(v, "trend90")}`;
+    return t("weight.detail", {
+      min: statLabel(v, "min"),
+      max: statLabel(v, "max"),
+      d30: statLabel(v, "trend30"),
+      d90: statLabel(v, "trend90"),
+    });
   });
 
   const goalValue = createMemo(() => {
     const v = body.view;
     if (!v || v.stats.goal_grams === null) return null;
-    if (v.stats.goal_reached) return "Goal reached";
+    if (v.stats.goal_reached) return t("weight.goalReached");
     return statLabel(v, "goal_distance");
   });
 
@@ -244,7 +250,7 @@ export default function WeightView() {
     if (logPending()) return;
     const text = weightText().trim();
     if (!text) {
-      setLogError("Enter your weight.");
+      setLogError(t("weight.enterWeight"));
       return;
     }
     const chosen = unit();
@@ -299,7 +305,7 @@ export default function WeightView() {
           {(message) => (
             <div class="notice" role="alert">
               <span>{message()}</span>
-              <button class="banner-close" type="button" onClick={dismissBodyError} aria-label="Dismiss">
+              <button class="banner-close" type="button" onClick={dismissBodyError} aria-label={t("common.dismiss")}>
                 ×
               </button>
             </div>
@@ -313,7 +319,7 @@ export default function WeightView() {
               when={body.loadError}
               fallback={
                 <p class="muted center" role="status">
-                  Loading your weigh-ins…
+                  {t("weight.loading")}
                 </p>
               }
             >
@@ -321,7 +327,7 @@ export default function WeightView() {
                 <div class="empty" role="alert">
                   <p class="empty-title">{message()}</p>
                   <button class="btn" type="button" onClick={() => void refreshBody()}>
-                    Try again
+                    {t("common.tryAgain")}
                   </button>
                 </div>
               )}
@@ -331,29 +337,29 @@ export default function WeightView() {
           <Show when={body.loadError}>
             {(message) => (
               <p class="muted small" role="status">
-                {message()} Showing the last copy.
+                {t("weight.staleCopy", { message: message() })}
               </p>
             )}
           </Show>
 
           <form class="card weight-log" onSubmit={(e) => void submitLog(e)}>
-            <h1 class="view-title">Weight</h1>
+            <h1 class="view-title">{t("weight.title")}</h1>
             <div class="weight-log-row">
               <label class="sr-only" for="weight-input">
-                Weight
+                {t("weight.weight")}
               </label>
               <input
                 id="weight-input"
                 class="text-input weight-input"
                 type="text"
                 inputmode="decimal"
-                placeholder={`Weight (${unit()})`}
+                placeholder={t("weight.weightIn", { unit: unit() })}
                 value={weightText()}
                 onInput={(e) => setWeightText(e.currentTarget.value)}
                 autocomplete="off"
                 disabled={logPending()}
               />
-              <div class="segmented" role="group" aria-label="Weight unit">
+              <div class="segmented" role="group" aria-label={t("weight.unitGroup")}>
                 <button
                   class="segmented-btn"
                   classList={{ "segmented-btn--active": unit() === "kg" }}
@@ -375,13 +381,13 @@ export default function WeightView() {
               </div>
             </div>
             <label class="sr-only" for="weight-note">
-              Note (optional)
+              {t("weight.noteOptional")}
             </label>
             <input
               id="weight-note"
               class="text-input"
               type="text"
-              placeholder="Note (optional)"
+              placeholder={t("weight.noteOptional")}
               value={note()}
               onInput={(e) => setNote(e.currentTarget.value)}
               maxlength="1000"
@@ -390,7 +396,7 @@ export default function WeightView() {
             />
             <Show when={logError()}>{(message) => <p class="form-error">{message()}</p>}</Show>
             <button class="btn btn--primary btn--block" type="submit" disabled={logPending()}>
-              {logPending() ? "Logging…" : "Log weigh-in"}
+              {logPending() ? t("weight.logging") : t("weight.log")}
             </button>
           </form>
 
@@ -398,24 +404,24 @@ export default function WeightView() {
             {(view) => (
               <>
                 <div class="stat-grid">
-                  <div class="stat-card" aria-label="Current">
+                  <div class="stat-card" aria-label={t("weight.current")}>
                     <span class="stat-value">{statLabel(view(), "current")}</span>
-                    <span class="stat-label">Current</span>
+                    <span class="stat-label">{t("weight.current")}</span>
                   </div>
-                  <div class="stat-card" aria-label="7-day average">
+                  <div class="stat-card" aria-label={t("weight.avg7")}>
                     <span class="stat-value">{statLabel(view(), "avg7")}</span>
-                    <span class="stat-label">7-day average</span>
+                    <span class="stat-label">{t("weight.avg7")}</span>
                   </div>
-                  <div class="stat-card" aria-label="Weekly change">
+                  <div class="stat-card" aria-label={t("weight.weeklyChange")}>
                     <span class="stat-value">{statLabel(view(), "weekly_change")}</span>
-                    <span class="stat-label">Weekly change</span>
+                    <span class="stat-label">{t("weight.weeklyChange")}</span>
                   </div>
-                  <div class="stat-card" aria-label="Goal distance">
-                    <Show when={goalValue()} fallback={<span class="stat-value stat-value--muted">Set a goal</span>}>
+                  <div class="stat-card" aria-label={t("weight.goalDistance")}>
+                    <Show when={goalValue()} fallback={<span class="stat-value stat-value--muted">{t("weight.setGoal")}</span>}>
                       {(value) => <span class="stat-value">{value()}</span>}
                     </Show>
                     <span class="stat-label">
-                      Goal distance
+                      {t("weight.goalDistance")}
                       <Show when={view().stat_labels.goal}>{(goal) => ` · ${goal()}`}</Show>
                     </span>
                   </div>
@@ -425,23 +431,23 @@ export default function WeightView() {
                 </Show>
 
                 <section class="card weight-chart-card">
-                  <h2 class="section-title">Trend</h2>
+                  <h2 class="section-title">{t("weight.trend")}</h2>
                   <LineChart
                     series={chartData().series}
                     xLabels={chartData().labels}
-                    ariaLabel="Body weight trend with 7-day average"
+                    ariaLabel={t("weight.chartLabel")}
                     height={180}
                     formatY={(value) => String(Math.round(value * 10) / 10)}
                   />
                 </section>
 
                 <section class="weight-history">
-                  <h2 class="section-title">Weigh-ins</h2>
+                  <h2 class="section-title">{t("weight.history")}</h2>
                   <Show
                     when={entries().length > 0}
                     fallback={
                       <div class="empty">
-                        <p class="empty-title">No weigh-ins yet. Log your first one above.</p>
+                        <p class="empty-title">{t("weight.empty")}</p>
                       </div>
                     }
                   >
@@ -454,10 +460,10 @@ export default function WeightView() {
                 </section>
 
                 <details class="settings-block">
-                  <summary>Settings</summary>
+                  <summary>{t("weight.settings")}</summary>
                   <form class="settings-form" onSubmit={(e) => void saveSettings(e)}>
                     <label class="field-label" for="settings-unit">
-                      Unit
+                      {t("weight.unit")}
                     </label>
                     <select
                       id="settings-unit"
@@ -474,18 +480,18 @@ export default function WeightView() {
                       }}
                       disabled={settingsPending()}
                     >
-                      <option value="kg">Kilograms (kg)</option>
-                      <option value="lb">Pounds (lb)</option>
+                      <option value="kg">{t("weight.kilograms")}</option>
+                      <option value="lb">{t("weight.pounds")}</option>
                     </select>
                     <label class="field-label" for="settings-goal">
-                      Goal weight ({settingsUnit()})
+                      {t("weight.goalWeight", { unit: settingsUnit() })}
                     </label>
                     <input
                       id="settings-goal"
                       class="text-input"
                       type="text"
                       inputmode="decimal"
-                      placeholder="No goal"
+                      placeholder={t("weight.noGoal")}
                       value={goalText()}
                       onInput={(e) => setGoalText(e.currentTarget.value)}
                       autocomplete="off"
@@ -493,7 +499,7 @@ export default function WeightView() {
                     />
                     <Show when={settingsError()}>{(message) => <p class="form-error">{message()}</p>}</Show>
                     <button class="btn btn--primary" type="submit" disabled={settingsPending()}>
-                      Save settings
+                      {t("weight.saveSettings")}
                     </button>
                   </form>
                 </details>

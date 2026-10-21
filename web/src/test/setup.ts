@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@solidjs/testing-library";
 import { afterEach, vi } from "vitest";
+import { reloadLocale } from "../i18n";
 
 afterEach(() => {
   cleanup();
@@ -12,6 +13,8 @@ afterEach(() => {
   } catch {
     // ignore
   }
+  // Back to the device language (jsdom: en-US) with no stored choice.
+  reloadLocale();
 });
 
 // jsdom lacks these; the chat view uses them for scrolling.

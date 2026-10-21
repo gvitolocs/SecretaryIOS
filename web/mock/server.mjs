@@ -603,9 +603,73 @@ function gymApply(state, command, now) {
       };
       return;
     }
+    case "record_measurement": {
+      // Body weight belongs to the body module now (engine rule).
+      if (command.kind === "body_weight") throw new Error("Log body weight in the body module");
+      state.measurements.push({
+        id: randomUUID(),
+        timestamp_ms: now,
+        kind: String(command.kind ?? ""),
+        value_milli: gymDecimalMilli(command.value),
+      });
+      return;
+    }
+    case "delete_measurement": {
+      const index = state.measurements.findIndex((m) => m.id === command.measurement_id);
+      if (index < 0) throw new Error("Measurement not found");
+      state.measurements.splice(index, 1);
+      return;
+    }
+    case "restore_json": {
+      let restored;
+      try {
+        restored = JSON.parse(String(command.backup ?? ""));
+      } catch (e) {
+        throw new Error(`Invalid backup: ${e?.message ?? e}`);
+      }
+      const lists = ["exercises", "routines", "history", "measurements"];
+      if (!restored || typeof restored !== "object" || !restored.settings || lists.some((k) => !Array.isArray(restored[k]))) {
+        throw new Error("Invalid backup: missing fields");
+      }
+      const receipts = state.receipts;
+      const revision = state.revision;
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, restored, { receipts, revision, rest: null, active: restored.active ?? null });
+      return;
+    }
     default:
       throw new Error(`unknown variant \`${command.type}\``);
   }
+}
+
+/** The engine's decimal text -> thousandths (up to three decimals, `,` or `.`). */
+function gymDecimalMilli(value) {
+  const text = String(value ?? "").trim().replace(",", ".");
+  const match = /^(\d{1,9})(?:\.(\d{1,3}))?$/.exec(text);
+  if (!match) throw new Error("Enter a number with up to three decimals");
+  return Number(match[1]) * 1000 + Number((match[2] ?? "").padEnd(3, "0"));
+}
+
+/** Engine-shaped export texts (export_json drops receipts; CSV lists completed sets). */
+function gymExportText(state, type) {
+  if (type === "export_json") return JSON.stringify({ ...state, receipts: {} }, null, 2);
+  const quote = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const rows = [
+    ["workout_name", "started_utc", "finished_utc", "exercise", "set_order", "set_type", "weight_kg", "reps", "duration_seconds", "distance_meters", "notes"],
+  ];
+  for (const w of state.history) {
+    for (const e of w.exercises) {
+      const name = state.exercises.find((x) => x.id === e.exercise_id)?.name ?? e.exercise_id;
+      e.sets.forEach((set, i) => {
+        if (!set.completed) return;
+        rows.push([
+          w.title, new Date(w.started_ms).toISOString(), new Date(w.finished_ms).toISOString(), name, i + 1, set.kind,
+          gymNumber(set.weight_grams / 1000), set.reps, set.seconds, set.distance_meters, `${w.notes}\n${e.notes}`,
+        ]);
+      });
+    }
+  }
+  return rows.map((r) => r.map(quote).join(",")).join("\n") + "\n";
 }
 
 function gymValidate(state) {
@@ -983,7 +1047,8 @@ function engineError(res, status, code, error) {
 async function handleGymCommand(req, res) {
   let body;
   try {
-    body = await readJson(req);
+    // 16 MiB like the server's /v1/gym/command limit (restore_json backups).
+    body = await readJson(req, 16 * 1024 * 1024);
   } catch (e) {
     return engineError(res, e?.status ?? 400, "invalid_json", String(e?.message ?? e));
   }
@@ -999,6 +1064,9 @@ async function handleGymCommand(req, res) {
   }
   const now = Date.now();
   if (command.type === "clock") return send(res, 200, { ok: true, replayed: false, clock: gymClock(gymState, now) });
+  if (command.type === "export_json" || command.type === "export_csv") {
+    return send(res, 200, { ok: true, replayed: false, text: gymExportText(gymState, command.type), view: gymView(gymState, now, tz) });
+  }
   if (command.type === "parse_weight" && !MOCK_STRICT) {
     try {
       const grams = parseGymWeight(String(command.value ?? ""), command.unit ?? gymState.settings.weight_unit);

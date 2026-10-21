@@ -15,22 +15,34 @@ export class FakeStage {
   state: StageState = "idle";
   muted: boolean;
   states: StageState[] = [];
-  private taps: (() => void)[] = [];
+  private taps: ((e: { point: { x: number; y: number; z: number } }) => void)[] = [];
+  private stateListeners: ((next: StageState, prev: StageState) => void)[] = [];
   readonly setState = vi.fn((s: StageState) => {
+    const prev = this.state;
     this.state = s;
     this.states.push(s);
+    if (prev !== s) for (const cb of this.stateListeners) cb(s, prev);
   });
+  readonly onStateChange = vi.fn((cb: (next: StageState, prev: StageState) => void) => {
+    this.stateListeners.push(cb);
+    return () => {};
+  });
+  readonly react = vi.fn((_at?: unknown) => "nod");
+  readonly gesture = vi.fn((_name: string) => true);
+  readonly setTheme = vi.fn();
+  readonly setQuality = vi.fn();
   readonly speak = vi.fn(async (_audio: unknown) => {});
   readonly stopSpeaking = vi.fn();
   readonly setMuted = vi.fn((m: boolean) => {
     this.muted = m;
   });
   readonly isMuted = () => this.muted;
-  readonly onTap = vi.fn((cb: () => void) => {
+  readonly onTap = vi.fn((cb: (e: { point: { x: number; y: number; z: number } }) => void) => {
     this.taps.push(cb);
     return () => {};
   });
   readonly nod = vi.fn();
+  readonly setFraming = vi.fn();
   readonly unlockAudio = vi.fn(async () => {});
   readonly dispose = vi.fn();
 
@@ -40,7 +52,7 @@ export class FakeStage {
 
   /** Simulates a tap on Lucina. */
   tap(): void {
-    for (const cb of this.taps) cb();
+    for (const cb of this.taps) cb({ point: { x: 0, y: 1.4, z: 0 } });
   }
 }
 
