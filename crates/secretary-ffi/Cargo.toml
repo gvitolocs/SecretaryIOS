@@ -10,6 +10,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 secretary-gym = { path = "../secretary-gym" }
+secretary-body = { path = "../secretary-body" }
 serde_json.workspace = true
 
 [dev-dependencies]

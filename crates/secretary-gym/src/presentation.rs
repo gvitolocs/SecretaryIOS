@@ -53,6 +53,16 @@ fn active_elapsed_ms(state: &State, now: u64) -> u64 {
         .as_ref()
         .map_or(0, |w| now.saturating_sub(w.started_ms))
 }
+/// `116667, "kg"` → `"116.7 kg"`: integer, half-up, one decimal (like the
+/// body module's labels).
+pub(crate) fn one_decimal(grams: u64, unit: &str) -> String {
+    let tenths = if unit == "lb" {
+        ((grams as u128 * 1_000_000 + 22_679_618) / 45_359_237) as u64
+    } else {
+        (grams + 50) / 100
+    };
+    format!("{}.{} {unit}", tenths / 10, tenths % 10)
+}
 /// Epley estimate `w * (1 + reps/30)`, rounded half up; a single rep is `w`.
 pub(crate) fn estimated_1rm(weight_grams: u64, reps: u64) -> u64 {
     if reps <= 1 {
@@ -215,7 +225,7 @@ pub fn view(state: &State, now: u64, tz: chrono_tz::Tz) -> View {
             ),
             seconds: sets.iter().map(|x| x.seconds).max().unwrap_or(0),
             distance_meters: sets.iter().map(|x| x.distance_meters).max().unwrap_or(0),
-            estimated_1rm: e1rm.map(|g| volume(g, unit)),
+            estimated_1rm: e1rm.map(|g| one_decimal(g, unit)),
             estimated_1rm_grams: e1rm,
         });
     }

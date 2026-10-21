@@ -5,15 +5,21 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod assets;
 pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod devices;
+pub mod engines;
 pub mod error;
 pub mod health;
+pub mod insights;
+pub mod owner;
 pub mod ratelimit;
 pub mod routes;
+pub mod service;
 pub mod sessions;
+pub mod tts;
 pub mod upstream;
 pub mod web;
 
@@ -55,6 +61,14 @@ pub struct Inner {
     pub upstream: Option<upstream::Upstream>,
     pub web_dir: Option<PathBuf>,
     pub trust_proxy: bool,
+    /// Gym and body engines (files in the data dir).
+    pub engines: engines::Engines,
+    /// `None` when `SECRETARY_SERVICE_TOKEN_FILE` is unset.
+    pub service_token: Option<service::ServiceToken>,
+    /// The single owner account (`owner.json`).
+    pub owner: owner::OwnerStore,
+    pub private_assets_dir: PathBuf,
+    pub tts: tts::Tts,
 }
 
 #[derive(Clone)]
@@ -87,6 +101,11 @@ impl AppState {
             upstream,
             web_dir: cfg.web_dir.clone(),
             trust_proxy: cfg.trust_proxy,
+            engines: engines::Engines::open(&cfg.data_dir)?,
+            service_token: cfg.service_token.clone(),
+            owner: owner::OwnerStore::new(&cfg.data_dir),
+            private_assets_dir: cfg.private_assets_dir.clone(),
+            tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
         })))
     }
 
@@ -142,7 +161,11 @@ fn static_header(name: &'static str, value: &'static str) -> SetResponseHeaderLa
 
 /// The full HTTP surface.
 pub fn app(state: AppState) -> Router {
-    let mut protected = routes::protected();
+    let mut protected = routes::protected()
+        .merge(engines::routes())
+        .merge(auth::account_routes())
+        .merge(assets::routes())
+        .merge(tts::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -155,6 +178,7 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::public())
         .merge(auth::session_routes())
         .merge(protected)
+        .merge(insights::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
@@ -230,6 +254,8 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
             tracing::warn!(dir = %dir.display(), "SECRETARY_WEB_DIR has no index.html");
         }
     }
+    // The dummy Argon2 hash for unknown emails, computed before the first login.
+    tokio::task::spawn_blocking(owner::warm_up);
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     tracing::info!(
         addr = %cfg.bind,

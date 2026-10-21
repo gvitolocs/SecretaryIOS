@@ -1,6 +1,7 @@
 import { A } from "@solidjs/router";
 import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { ChatIcon, ListIcon, LogoutIcon } from "../components/Icons";
+import { AccountDialog } from "../components/AccountDialog";
+import { ChatIcon, DumbbellIcon, ListIcon, LogoutIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { StatusDot } from "../components/StatusDot";
 import { resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
@@ -18,12 +19,22 @@ function NavLinks(props: { class: string }) {
         <ListIcon />
         <span>Shopping</span>
       </A>
+      <A href="/gym" class="tab" activeClass="tab--active">
+        <DumbbellIcon />
+        <span>Gym</span>
+      </A>
+      <A href="/weight" class="tab" activeClass="tab--active">
+        <ScaleIcon />
+        <span>Weight</span>
+      </A>
     </nav>
   );
 }
 
 export default function Shell(props: { children?: JSX.Element }) {
   const [loggingOut, setLoggingOut] = createSignal(false);
+  const [accountOpen, setAccountOpen] = createSignal(false);
+  let accountButton: HTMLButtonElement | undefined;
 
   onMount(() => {
     void checkHealth();
@@ -57,13 +68,23 @@ export default function Shell(props: { children?: JSX.Element }) {
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">
-            S
+            <img src="/icon-192.png" alt="" width="32" height="32" />
           </span>
           <span class="brand-name">Secretary</span>
         </div>
         <NavLinks class="tabs-top" />
         <div class="topbar-actions">
           <StatusDot />
+          <button
+            type="button"
+            class="icon-btn"
+            ref={accountButton}
+            onClick={() => setAccountOpen(true)}
+            aria-label="Account"
+            title="Account"
+          >
+            <UserIcon />
+          </button>
           <button
             type="button"
             class="icon-btn"
@@ -90,6 +111,13 @@ export default function Shell(props: { children?: JSX.Element }) {
         {props.children}
       </main>
       <NavLinks class="tabbar" />
+      <AccountDialog
+        open={accountOpen()}
+        onClose={() => {
+          setAccountOpen(false);
+          accountButton?.focus();
+        }}
+      />
     </div>
   );
 }

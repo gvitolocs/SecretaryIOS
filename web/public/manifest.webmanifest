@@ -1,14 +1,15 @@
 {
   "name": "Secretary",
   "short_name": "Secretary",
-  "description": "Your shopping list and a line to Lucina.",
+  "description": "Lucina, your personal secretary: chat, shopping, gym and weight.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f5f4f0",
-  "theme_color": "#0d6767",
+  "background_color": "#111518",
+  "theme_color": "#3b4a9a",
   "icons": [
-    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
   ]
 }

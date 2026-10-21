@@ -15,6 +15,10 @@ export function markLucinaOffline(err: ApiError): void {
   );
 }
 
+export function markServerOffline(): void {
+  setLucinaNotice("Secretary's server isn't reachable right now. Your last change wasn't saved.");
+}
+
 export function markLucinaOnline(): void {
   setLucinaNotice(null);
 }

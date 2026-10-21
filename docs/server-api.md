@@ -24,17 +24,43 @@ or the `{ok, data}` envelope.
 
 ## Authentication
 
-Every `/v1` route except `GET /v1/health` and `/v1/session` needs one of:
+Every `/v1` route except `GET /v1/health`, `/v1/session` and
+`POST /v1/auth/device` needs one of:
 
 | Client | How | Notes |
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary`; see [Insights](#insights-for-lucina). |
 
-- **Device tokens** are issued on the server with
+There is exactly **one user**, the owner. Ways in:
+
+- **Email + password** (the owner account): the web app logs in with
+  `POST /v1/session {email, password}`; native apps get a device token from
+  `POST /v1/auth/device {email, password, deviceName}`. The account is
+  created on the server with `secretary-server user set --email <e>
+  --password-stdin` (see `deploy/README.md`).
+- **Device tokens** are also issued on the server with
   `secretary-server token issue --name <name>` and shown once. Format: `sec_`
   + 43 base64url characters. Revoking a device (`token revoke <id>`) ends its
   Bearer access and all of its browser sessions on the next request.
+  `POST /v1/session {token}` still exchanges one for a browser cookie.
+
+Password rules:
+
+- Passwords are stored as Argon2id hashes (m = 19 MiB, t = 2, p = 1) in
+  `owner.json`. The email is case-insensitive.
+- Every failed password attempt answers the same `401 invalid_credentials`
+  (wrong email, wrong password, no account). An unknown email costs the
+  same Argon2 work as a known one.
+- **Lockout:** the 10th consecutive failed password attempt (whatever the
+  email) locks password logins for 15 minutes; each further failure after a
+  lock doubles it (30 min, 1 h, … at most 24 h). A success resets it. While
+  locked, `POST /v1/session {email,…}`, `POST /v1/auth/device` and the
+  password change answer `429 account_locked` with `Retry-After: <seconds>`.
+  Device-token login is never locked.
+- The per-IP login limit (5/minute, `429 rate_limited`) covers both password
+  routes and token login.
 - **CSRF:** the server sends no CORS headers, so a cross-site page cannot add
   `X-Secretary-CSRF` (a custom header forces a preflight that fails). The
   cookie is also `SameSite=Strict`. Bearer requests are exempt.
@@ -49,11 +75,11 @@ token`, `device token revoked`, `session expired or invalid`.
 ### Web app recipe
 
 ```js
-// login (once): exchange a device token for the cookie
+// login (once): email + password (or {token}) for the cookie
 await fetch("/v1/session", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ token }),
+  body: JSON.stringify({ email, password }),
 });
 
 // every later call: same origin, cookie sent automatically
@@ -75,13 +101,20 @@ app on startup whether the cookie is still good.
 
 ### `POST /v1/session`
 
-Request: `{"token": "sec_…"}` (a device token).
+Request, either:
+
+- `{"email": "owner@example.com", "password": "…"}` (the owner account), or
+- `{"token": "sec_…"}` (a device token).
 
 `200`:
 
 ```json
-{ "authenticated": true, "deviceName": "Giuseppe's iPhone" }
+{ "authenticated": true, "deviceName": "web" }
 ```
+
+(`deviceName` is `"web"` for a password login, else the token's device
+name.) Password logins hang off one server-side device named `web`;
+revoking it (`token revoke`) ends every password-login browser session.
 
 with
 
@@ -90,10 +123,56 @@ Set-Cookie: sec_session=<43 base64url chars>; HttpOnly; Secure; SameSite=Strict;
 ```
 
 The session lasts 30 days (not sliding). Only its SHA-256 is stored on the
-server. Errors: `400 bad_request` / `400 invalid_json` / `415
-unsupported_media_type` (body), `401 unauthorized` (unknown or revoked
-token), `429 rate_limited`. No CSRF header is needed here; the JSON
-content type already forces a CORS preflight for cross-site callers.
+server. Errors: `400 bad_request` (neither `token` nor `email`+`password`)
+/ `400 invalid_json` / `415 unsupported_media_type` (body), `401
+invalid_credentials` (password login), `401 unauthorized` (unknown or
+revoked token), `429 rate_limited` (per IP), `429 account_locked`
+(password lockout, with `Retry-After`). No CSRF header is needed here; the
+JSON content type already forces a CORS preflight for cross-site callers.
+
+```json
+{ "error": { "code": "invalid_credentials", "message": "wrong email or password" } }
+```
+
+### `POST /v1/auth/device` (no auth)
+
+For native apps: trade the owner's password for a new device token.
+
+```json
+{ "email": "owner@example.com", "password": "…", "deviceName": "Giuseppe's iPhone" }
+```
+
+`201`:
+
+```json
+{ "token": "sec_…43 chars…", "deviceId": "dev_Xk3…", "deviceName": "Giuseppe's iPhone" }
+```
+
+The token is shown only here (the server keeps its SHA-256); store it in
+the Keychain and send it as `Authorization: Bearer`. `deviceName`: 1–64
+printable characters. Errors as for the password login (`401
+invalid_credentials`, `429 rate_limited`, `429 account_locked`), plus `400
+bad_request` for a bad `deviceName`. The device appears in `token list`
+and can be revoked there.
+
+### `POST /v1/session/password` (authenticated)
+
+```json
+{ "currentPassword": "…", "newPassword": "at least 8 characters" }
+```
+
+Cookie clients need `X-Secretary-CSRF: 1`. `200`:
+
+```json
+{ "changed": true, "sessionsRevoked": 2 }
+```
+
+Every browser session except the caller's own cookie session ends (with a
+Bearer token: every browser session). Device tokens stay valid. Errors:
+`403 invalid_credentials` (wrong current password; counts toward the
+lockout; 403 so the app does not log out), `400 bad_request` (new password
+shorter than 8 characters or over 1024 bytes), `429 account_locked`, `409
+no_owner_account`.
 
 ### `GET /v1/session`
 
@@ -333,10 +412,12 @@ file). `error` is a human message (English) that can be shown as is.
 **Offline queue recipe (phone or browser):** for each user action create
 `{op_id: uuid(), expected_revision: <revision shown>, timezone, command}`,
 persist it, send queued requests in order, and resend them verbatim after a
-crash or timeout. `replayed: true` counts as success. On `conflict`, fetch
-the state, rebuild the command against it **with a new op_id**, and ask the
-user if the change no longer makes sense. Never reuse an op_id for a
-different command.
+crash or timeout. `replayed: true` counts as success. On `conflict`
+(recommended, and what the web app does): fetch the state, rebuild the
+command against the new revision **with a new op_id** and retry it once
+automatically; if that also conflicts or the command no longer applies
+(`invalid_command`), drop it from the queue and tell the user. Never reuse
+an op_id for a different command (`op_id_reused`, 422).
 
 ### HTTP routes
 
@@ -374,7 +455,7 @@ input, the engines own the parsing:
 
 - `{"type": "parse_weight", "value": "176,5", "unit": "lb"}` (query, both
   modules; `unit` defaults to the module's display unit) →
-  `{"ok": true, "replayed": false, "weight_grams": 80060}`. Up to three
+  `{"ok": true, "replayed": false, "weight_grams": 80059}`. Up to three
   decimals, `,` or `.` as separator; lb → g uses 1 lb = 453.59237 g, rounded
   to the nearest gram.
 - Commands that take a weight accept either `weight_grams` (integer) or
@@ -405,24 +486,39 @@ Commands:
 Limits: weight and goal 1 000–650 000 g; `measured_ms` ≤ now + 24 h; note ≤
 1 000 bytes; ≤ 50 000 entries.
 
-View:
+Real response to a `log_entry` (`{"weight": "80,5", "note": "after run"}`)
+after four earlier entries 9, 6, 3 and 1 days before, with a 78 kg goal;
+`entries`, `series` and `labels` are trimmed to two items:
 
 ```json
 {
-  "revision": 3,
-  "settings": { "unit": "kg", "goal_grams": 78000 },
-  "entries": [ { "id": "…", "weight_grams": 80500, "measured_ms": 1792584000000, "note": "", "created_ms": …, "updated_ms": … } ],
-  "stats": {
-    "count": 3,
-    "current_grams": 80500, "current_measured_ms": 1792584000000,
-    "avg7_grams": 80800, "weekly_change_grams": -400,
-    "min_grams": 80500, "max_grams": 81200,
-    "trend30_grams": -700, "trend90_grams": null,
-    "goal_grams": 78000, "goal_distance_grams": 2800, "goal_reached": false
-  },
-  "series": [ { "entry_id": "…", "measured_ms": 1792411200000, "weight_grams": 81200, "avg7_grams": 81200 } ],
-  "labels": { "<entry_id>": "80.5 kg" },
-  "stat_labels": { "current": "80.5 kg", "avg7": "80.8 kg", "weekly_change": "-0.4 kg", "…": "…" }
+  "ok": true,
+  "replayed": false,
+  "view": {
+    "revision": 6,
+    "settings": { "unit": "kg", "goal_grams": 78000 },
+    "entries": [
+      { "id": "773a210b-8db8-41e0-b3b5-d38b9771412e", "weight_grams": 80500, "measured_ms": 1792602906883, "note": "after run", "created_ms": 1792602906883, "updated_ms": 1792602906883 },
+      { "id": "1e69e2f3-3fe8-40b4-9614-559ed4eef206", "weight_grams": 80400, "measured_ms": 1792516506708, "note": "", "created_ms": 1792602906855, "updated_ms": 1792602906855 }
+    ],
+    "stats": {
+      "count": 5,
+      "current_grams": 80500, "current_measured_ms": 1792602906883,
+      "avg7_grams": 80625, "weekly_change_grams": -575,
+      "min_grams": 80400, "max_grams": 81200,
+      "trend30_grams": -575, "trend90_grams": -575,
+      "goal_grams": 78000, "goal_distance_grams": 2625, "goal_reached": false
+    },
+    "series": [
+      { "entry_id": "1a45cf06-8446-4965-a1dd-edaeada33fce", "measured_ms": 1791825306708, "weight_grams": 81200, "avg7_grams": 81200 },
+      { "entry_id": "773a210b-8db8-41e0-b3b5-d38b9771412e", "measured_ms": 1792602906883, "weight_grams": 80500, "avg7_grams": 80625 }
+    ],
+    "labels": { "773a210b-8db8-41e0-b3b5-d38b9771412e": "80.5 kg", "1e69e2f3-3fe8-40b4-9614-559ed4eef206": "80.4 kg" },
+    "stat_labels": {
+      "avg7": "80.6 kg", "current": "80.5 kg", "goal": "78.0 kg", "goal_distance": "+2.6 kg",
+      "max": "81.2 kg", "min": "80.4 kg", "trend30": "-0.6 kg", "trend90": "-0.6 kg", "weekly_change": "-0.6 kg"
+    }
+  }
 }
 ```
 
@@ -489,7 +585,7 @@ View (`view` in every successful response except `clock` and
 |---|---|
 | `state` | `schema_version`, `revision`, `settings {weight_unit, rest_seconds, weekly_goal}`, `exercises[]` (catalog, sorted by name), `routines[]`, `active` (workout or null), `history[]` (newest first), `measurements[]` (newest first), `rest {workout_id, deadline_ms}` or null. Workout: `{id, title, notes, started_ms, finished_ms, exercises: [{id, exercise_id, notes, sets: [{id, kind, weight_grams, reps, seconds, distance_meters, completed}]}]}`. |
 | `summary` | `workouts`, `completed_sets`, `weekly_workouts`, `weekly_goal`, `volume` (label), `active_volume` (label), `active_duration` (label), `active_elapsed_seconds` (int), `active_completed_sets` |
-| `records[]` | per catalog exercise with history: `exercise_id`, `name`, `weight` (label), `reps`, `volume` (label), `seconds`, `distance_meters`, `estimated_1rm` (label or null), `estimated_1rm_grams` (int or null; Epley `w·(1 + reps/30)`, `w` for single reps) |
+| `records[]` | per catalog exercise with history: `exercise_id`, `name`, `weight` (label), `reps`, `volume` (label), `seconds`, `distance_meters`, `estimated_1rm` (label with one decimal, e.g. `"116.7 kg"`, or null), `estimated_1rm_grams` (int or null; Epley `w·(1 + reps/30)`, `w` for single reps) |
 | `chart[]` | last 14 finished workouts, oldest first: `{id, label: "21 Oct", volume: number (display unit), volume_grams: int}` |
 | `exercise_charts` | `{catalog exercise id: ChartPoint[]}`: the same per exercise (its volume in each of its last 14 workouts) |
 | `rest_remaining` | seconds |
@@ -498,7 +594,66 @@ View (`view` in every successful response except `clock` and
 | `measurement_labels` | `{measurement id: "18.5%"}` |
 | `workout_labels` | `{workout id: {sets, volume, duration}}` |
 
-`clock`: `{"rest_remaining": 42, "active_duration": "12m 05s", "active_elapsed_seconds": 725}`.
+Real response to `complete_set` in a second workout (the first one: bench
+press 80 kg × 5); `state.exercises` (the 30-exercise catalog),
+`state.routines`, `state.history` and `state.measurements` are elided:
+
+```json
+{
+  "ok": true,
+  "replayed": false,
+  "view": {
+    "state": {
+      "schema_version": 1, "revision": 9,
+      "settings": { "weight_unit": "kg", "rest_seconds": 90, "weekly_goal": 3 },
+      "exercises": "…", "routines": "…", "history": "…", "measurements": [],
+      "active": {
+        "id": "04e54b17-2a5b-45c6-ab75-e03bce9aee0e", "title": "Push", "notes": "",
+        "started_ms": 1792602906497, "finished_ms": null,
+        "exercises": [
+          { "id": "dc24d2a5-edaf-4651-9195-fd9bff73f83e", "exercise_id": "bench-press", "notes": "",
+            "sets": [ { "id": "8ea818e6-5ff6-42c8-8764-9dc104d670b6", "kind": "normal", "weight_grams": 82500, "reps": 5, "seconds": 0, "distance_meters": 0, "completed": true } ] }
+        ]
+      },
+      "rest": { "workout_id": "04e54b17-2a5b-45c6-ab75-e03bce9aee0e", "deadline_ms": 1792602996616 },
+      "receipts": {}
+    },
+    "summary": {
+      "workouts": 1, "completed_sets": 1, "weekly_workouts": 1, "weekly_goal": 3,
+      "volume": "400 kg", "active_volume": "412.5 kg", "active_duration": "0m 00s",
+      "active_elapsed_seconds": 0, "active_completed_sets": 1
+    },
+    "records": [
+      { "exercise_id": "bench-press", "name": "Bench Press", "weight": "80 kg", "reps": 5, "volume": "400 kg",
+        "seconds": 0, "distance_meters": 0, "estimated_1rm": "93.3 kg", "estimated_1rm_grams": 93333 }
+    ],
+    "chart": [ { "id": "e0926a06-33c1-44cc-9bda-6f82ed157b2e", "label": "21 Oct", "volume": 400.0, "volume_grams": 400000 } ],
+    "exercise_charts": {
+      "bench-press": [ { "id": "e0926a06-33c1-44cc-9bda-6f82ed157b2e", "label": "21 Oct", "volume": 400.0, "volume_grams": 400000 } ]
+    },
+    "rest_remaining": 90,
+    "weight_labels": { "8ea818e6-5ff6-42c8-8764-9dc104d670b6": "82.5", "ef3b17ab-6f98-4758-beb7-fbf698d9435f": "80" },
+    "previous_labels": { "dc24d2a5-edaf-4651-9195-fd9bff73f83e": "80 kg × 5" },
+    "measurement_labels": {},
+    "workout_labels": {
+      "04e54b17-2a5b-45c6-ab75-e03bce9aee0e": { "sets": 1, "volume": "412.5 kg", "duration": "0m 00s" },
+      "e0926a06-33c1-44cc-9bda-6f82ed157b2e": { "sets": 1, "volume": "400 kg", "duration": "0m 02s" }
+    }
+  }
+}
+```
+
+`state.receipts` is always `{}` in views. Records count finished workouts
+only. `weight_labels` covers every set in history and the active workout.
+
+Errors (real):
+
+```
+409 {"ok":false,"replayed":false,"error":"State changed. Refresh and retry the edit.","code":"conflict"}
+422 {"ok":false,"replayed":false,"error":"Finish or discard your current workout first","code":"invalid_command"}
+```
+
+`clock` (real): `{"ok":true,"replayed":false,"clock":{"rest_remaining":90,"active_duration":"0m 00s","active_elapsed_seconds":0}}`.
 Tick `active_elapsed_seconds` locally between refreshes.
 
 ## Insights for Lucina
@@ -512,25 +667,47 @@ service-token generate <path>`; the file is written 0600 and the token is
 never printed). Device tokens and cookies get `401` here, and a service
 token gets `401` on every other route. Without `SECRETARY_SERVICE_TOKEN_FILE`
 the route answers `503 service_token_not_configured`. `workouts` is 1–20
-(default 5).
+(default 5; values outside are clamped); `timezone` defaults to `UTC`.
+
+Real response (two workouts today, the second a bench PR; the body data
+from the example above; `weekly_volume` trimmed to the last two of its 8
+weeks):
 
 ```json
 {
-  "generated_ms": 1792600000000,
+  "generated_ms": 1792602906912,
   "timezone": "Europe/Rome",
   "gym": {
     "unit": "kg", "weekly_goal": 3, "workouts_this_week": 2,
     "recent_workouts": [
-      { "id": "…", "title": "Push", "finished_ms": …, "date": "2026-10-20", "duration_min": 58,
-        "completed_sets": 15, "volume_grams": 8240000, "volume_label": "8240 kg",
-        "exercises": ["Bench Press", "Overhead Press"],
-        "prs": [ { "exercise_id": "bench-press", "name": "Bench Press", "weight_grams": 82500, "reps": 5, "label": "82.5 kg × 5" } ] }
+      { "id": "04e54b17-2a5b-45c6-ab75-e03bce9aee0e", "title": "Push", "finished_ms": 1792602906695,
+        "date": "2026-10-21", "duration_min": 0, "completed_sets": 1,
+        "volume_grams": 412500, "volume_label": "412.5 kg", "exercises": ["Bench Press"],
+        "prs": [ { "exercise_id": "bench-press", "name": "Bench Press", "weight_grams": 82500, "reps": 5, "label": "82.5 kg × 5" } ] },
+      { "id": "e0926a06-33c1-44cc-9bda-6f82ed157b2e", "title": "Push", "finished_ms": 1792602906471,
+        "date": "2026-10-21", "duration_min": 0, "completed_sets": 1,
+        "volume_grams": 400000, "volume_label": "400 kg", "exercises": ["Bench Press"], "prs": [] }
     ],
-    "weekly_volume": [ { "week_start": "2026-10-19", "workouts": 2, "volume_grams": 15100000, "volume_label": "15100 kg" } ]
+    "weekly_volume": [
+      { "week_start": "2026-10-12", "workouts": 0, "volume_grams": 0, "volume_label": "0 kg" },
+      { "week_start": "2026-10-19", "workouts": 2, "volume_grams": 812500, "volume_label": "812.5 kg" }
+    ]
   },
-  "body": { "unit": "kg", "stats": { …the body stats… }, "stat_labels": { … } }
+  "body": {
+    "unit": "kg",
+    "stats": { "count": 5, "current_grams": 80500, "current_measured_ms": 1792602906883, "avg7_grams": 80625,
+               "weekly_change_grams": -575, "min_grams": 80400, "max_grams": 81200, "trend30_grams": -575,
+               "trend90_grams": -575, "goal_grams": 78000, "goal_distance_grams": 2625, "goal_reached": false },
+    "stat_labels": { "avg7": "80.6 kg", "current": "80.5 kg", "goal": "78.0 kg", "goal_distance": "+2.6 kg",
+                     "max": "81.2 kg", "min": "80.4 kg", "trend30": "-0.6 kg", "trend90": "-0.6 kg", "weekly_change": "-0.6 kg" }
+  }
 }
 ```
+
+Errors: `401 unauthorized` (no or wrong service token, device token,
+cookie), `400 bad_request` (unknown `timezone`), `503
+service_token_not_configured`, `429 rate_limited` (shared bucket for the
+service token).
 
 - `recent_workouts`: newest first. A PR is a completed non-warmup set of a
   weight × reps exercise heavier than every such set of that exercise in all
@@ -538,6 +715,71 @@ the route answers `503 service_token_not_configured`. `workouts` is 1–20
   per exercise is listed.
 - `weekly_volume`: the last 8 weeks (Monday starts, in `timezone`),
   oldest first, zero-filled.
+
+## Avatar media
+
+### `GET /v1/assets/{name}` (authenticated)
+
+Private files for the 3D Lucina avatar (model, motions, textures, sounds),
+served from `SECRETARY_PRIVATE_ASSETS_DIR` (default
+`/var/lib/secretary/private-assets`) **only** to authenticated callers
+(device Bearer or the session cookie; no CSRF header needed for GET). The
+model's licence forbids redistribution, so there is no public URL for
+these files, and they are never written to the web build.
+
+- `name`: `[a-z0-9][a-z0-9._-]*`, at most 128 bytes, no `..`, no slashes.
+- Extensions and content types: `.glb` `model/gltf-binary`, `.json`
+  `application/json`, `.png` `image/png`, `.webp` `image/webp`, `.mp3`
+  `audio/mpeg`, `.vmd` `application/octet-stream`. Anything else is `404`.
+- `200` with `Cache-Control: private, max-age=86400`, `ETag`,
+  `Last-Modified`. `If-None-Match` → `304`. `Range: bytes=…` → `206`.
+- `404 not_found` for a missing or refused name; `401 unauthorized` without
+  auth.
+
+Browsers can use the URL directly (`fetch("/v1/assets/lucina.glb")`, same
+origin, cookie sent automatically). The iOS app sends its Bearer token.
+
+### `POST /v1/tts` (authenticated)
+
+```json
+{ "text": "Ciao Giuseppe, come stai oggi?", "voice": "if_sara", "lang": "it", "speed": 1.0 }
+```
+
+| Field | Rules |
+|---|---|
+| `text` | Required, 1–1200 characters (trimmed). |
+| `voice` | Optional; one of `SECRETARY_TTS_VOICES` (default `if_sara`, `af_heart`, `af_bella`, `bf_emma`). Wins over `lang`. |
+| `lang` | Optional, `it` or `en` (`it-IT` style accepted): `it` → `if_sara`, `en` → `af_heart`. |
+| `speed` | Optional, 0.5–2.0, default 1.0. |
+
+Without `voice` and `lang`, the server scores the text: Italian stopwords
+(`che, non, per, sono, ciao, il, la, è, un, una, di, ti, mi, come, oggi, …`)
+plus accented letters against English stopwords (`the, and, you, is, …`). A
+tie or no signal is Italian (`if_sara`); English wins only with a higher
+score (`af_heart`). The chosen voice is always sent to Kokoro.
+
+Texts over 300 characters are split on sentence boundaries (then commas,
+then spaces) and synthesized chunk by chunk into the same MP3 stream, so
+audio starts after the first sentence. The status comes from the first
+chunk; if a later chunk fails, the stream ends early.
+
+`200`: the MP3 bytes, `Content-Type: audio/mpeg`, streamed as Kokoro
+produces them, plus `X-TTS-Voice: <voice used>`. The server proxies to
+Kokoro's OpenAI-compatible API (`POST {SECRETARY_TTS_URL}/v1/audio/speech`
+with `{model: "kokoro", input, voice, response_format: "mp3", speed}`;
+default URL `http://100.107.164.33:8880`, over Tailscale).
+
+Errors: `400 bad_request` (field rules above), `401`, `403 csrf` (cookie
+without `X-Secretary-CSRF: 1`), `429 rate_limited` (30 requests/minute per
+device, separate from the general limit; `Retry-After`), `502
+tts_unavailable` (Kokoro unreachable or failed), `504 tts_unavailable`
+(no answer within 30 s).
+
+```js
+const r = await api("/v1/tts", { method: "POST", body: { text } });
+const audio = new Audio(URL.createObjectURL(await r.blob()));
+await audio.play();
+```
 
 ## Error codes
 
@@ -560,10 +802,12 @@ the route answers `503 service_token_not_configured`. `workouts` is 1–20
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
+| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
+| 504 | `tts_unavailable` | server | Kokoro did not answer within 30 s. |
 
 Any other Lucina 4xx code is passed through with Lucina's status.
 

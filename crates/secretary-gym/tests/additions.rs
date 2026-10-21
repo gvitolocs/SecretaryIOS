@@ -232,7 +232,7 @@ fn records_carry_estimated_one_rep_max() {
         .unwrap();
     // Epley: 100 kg × 5 → 116.667 kg beats the 110 kg single.
     assert_eq!(bench.estimated_1rm_grams, Some(116_667));
-    assert_eq!(bench.estimated_1rm.as_deref(), Some("116.667 kg"));
+    assert_eq!(bench.estimated_1rm.as_deref(), Some("116.7 kg"));
     let push = view
         .records
         .iter()

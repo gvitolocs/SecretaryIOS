@@ -1,4 +1,5 @@
-//! Command line: `serve` (default) and `token issue|list|revoke`.
+//! Command line: `serve` (default), `token issue|list|revoke` and
+//! `user set|show` and `service-token generate`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -31,6 +32,102 @@ pub enum Command {
         #[command(subcommand)]
         action: TokenAction,
     },
+    /// Manage the single owner account (email + password login).
+    User {
+        /// Overrides SECRETARY_DATA_DIR.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        action: UserAction,
+    },
+    /// Manage the service token Lucina uses for /v1/insights/summary.
+    ServiceToken {
+        #[command(subcommand)]
+        action: ServiceTokenAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UserAction {
+    /// Create the owner or change its password. The password is read from
+    /// stdin (one line, at least 8 characters). There is exactly one user:
+    /// a different email than the stored one needs --replace.
+    Set {
+        #[arg(long)]
+        email: String,
+        /// Read the password from stdin (required; never pass it as an argument).
+        #[arg(long, required = true)]
+        password_stdin: bool,
+        /// Replace an existing owner that has a different email.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Print the owner email and timestamps (never the hash).
+    Show,
+}
+
+/// Run a `user` action reading the password from `input`.
+pub fn run_user(
+    data_dir_flag: Option<PathBuf>,
+    action: UserAction,
+    input: &mut dyn std::io::BufRead,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let store = crate::owner::OwnerStore::new(data_dir(data_dir_flag));
+    match action {
+        UserAction::Set {
+            email,
+            password_stdin: _,
+            replace,
+        } => {
+            let mut line = String::new();
+            input.read_line(&mut line)?;
+            let password = line.trim_end_matches(['\n', '\r']);
+            let owner = store.set(&email, password, replace)?;
+            writeln!(
+                out,
+                "owner set: {} (updated {})",
+                owner.email, owner.updated_at
+            )?;
+        }
+        UserAction::Show => match store.load()? {
+            Some(o) => {
+                writeln!(out, "email:      {}", o.email)?;
+                writeln!(out, "created:    {}", o.created_at)?;
+                writeln!(out, "updated:    {}", o.updated_at)?;
+                writeln!(out, "failed:     {}", o.failed_count)?;
+                if let Some(until) = o.locked_until {
+                    writeln!(out, "locked until (unix): {until}")?;
+                }
+            }
+            None => writeln!(out, "no owner account in {}", store.path().display())?,
+        },
+    }
+    Ok(())
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServiceTokenAction {
+    /// Write a fresh `svc_…` token to PATH (mode 0600) and print only the
+    /// path. Point SECRETARY_SERVICE_TOKEN_FILE at it and give the same file
+    /// to Lucina.
+    Generate {
+        path: PathBuf,
+        /// Replace an existing file.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// Run a `service-token` action, writing human output to `out`.
+pub fn run_service_token(action: ServiceTokenAction, out: &mut dyn Write) -> anyhow::Result<()> {
+    match action {
+        ServiceTokenAction::Generate { path, force } => {
+            crate::service::write_new(&path, force)?;
+            writeln!(out, "service token written to {} (0600)", path.display())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -125,6 +222,15 @@ pub fn main_with(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Token { data_dir, action } => {
             run_token(data_dir, action, &mut std::io::stdout().lock())
+        }
+        Command::User { data_dir, action } => run_user(
+            data_dir,
+            action,
+            &mut std::io::stdin().lock(),
+            &mut std::io::stdout().lock(),
+        ),
+        Command::ServiceToken { action } => {
+            run_service_token(action, &mut std::io::stdout().lock())
         }
     }
 }

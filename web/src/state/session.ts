@@ -1,7 +1,9 @@
 import { createSignal } from "solid-js";
 import { setUnauthorizedHandler, toApiError } from "../api/client";
 import { api } from "../api/secretary";
+import { resetBody } from "./body";
 import { clearChat } from "./chat";
+import { resetGym } from "./gym";
 import { resetShopping } from "./shopping";
 
 export type SessionState =
@@ -16,6 +18,8 @@ export { session };
 function forgetLocalData(): void {
   clearChat();
   resetShopping();
+  resetGym();
+  resetBody();
 }
 
 export async function checkSession(): Promise<void> {
@@ -33,9 +37,9 @@ export async function checkSession(): Promise<void> {
   }
 }
 
-/** Throws ApiError on failure (401 bad key, 429 rate limited, …). */
-export async function signIn(token: string): Promise<void> {
-  await api.login(token);
+/** Throws ApiError on failure (401 invalid_credentials, 429 rate_limited / account_locked, …). */
+export async function signIn(email: string, password: string): Promise<void> {
+  await api.login(email, password);
   await checkSession();
   const now = session();
   if (now.status === "anon") {
