@@ -9,6 +9,8 @@
 //! | `SECRETARY_UPSTREAM_LEGACY` | — | enables `/v1/upstream/*` (legacy shopping API base) |
 //! | `SECRETARY_UPSTREAM_SERVICES` | — | enables `/v1/upstream/*` (service-family base) |
 //! | `SECRETARY_UPSTREAM_CATALOG` | — | local catalog JSON for `/v1/upstream/catalog_local` |
+//! | `SECRETARY_WEB_DIR` | — | static web app served at `/` (SPA fallback) |
+//! | `SECRETARY_TRUST_PROXY` | `0` | `1`: take the client IP from `X-Forwarded-For` (Caddy in front) |
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -38,9 +40,13 @@ pub struct Config {
     pub lucina_token: Option<String>,
     pub data_dir: PathBuf,
     pub upstream: Option<UpstreamConfig>,
+    pub web_dir: Option<PathBuf>,
+    pub trust_proxy: bool,
     pub timeouts: Timeouts,
     pub upstream_timeout: Duration,
     pub rate_limit_per_minute: u32,
+    /// `POST /v1/session` attempts per client IP per minute.
+    pub login_rate_per_minute: u32,
     pub health_timeout: Duration,
     pub health_ttl: Duration,
 }
@@ -53,6 +59,8 @@ impl std::fmt::Debug for Config {
             .field("lucina_token", &self.lucina_token.as_ref().map(|_| "<set>"))
             .field("data_dir", &self.data_dir)
             .field("upstream", &self.upstream)
+            .field("web_dir", &self.web_dir)
+            .field("trust_proxy", &self.trust_proxy)
             .field("timeouts", &self.timeouts)
             .field("rate_limit_per_minute", &self.rate_limit_per_minute)
             .finish()
@@ -69,9 +77,12 @@ impl Config {
             lucina_token,
             data_dir: PathBuf::from(DEFAULT_DATA_DIR),
             upstream: None,
+            web_dir: None,
+            trust_proxy: false,
             timeouts: Timeouts::default(),
             upstream_timeout: Duration::from_secs(15),
             rate_limit_per_minute: 60,
+            login_rate_per_minute: 5,
             health_timeout: Duration::from_secs(3),
             health_ttl: Duration::from_secs(10),
         }
@@ -94,6 +105,12 @@ impl Config {
         if let Some(d) = get("SECRETARY_DATA_DIR") {
             cfg.data_dir = PathBuf::from(d);
         }
+        cfg.web_dir = get("SECRETARY_WEB_DIR").map(PathBuf::from);
+        cfg.trust_proxy = match get("SECRETARY_TRUST_PROXY").as_deref() {
+            None | Some("0") | Some("false") => false,
+            Some("1") | Some("true") => true,
+            Some(v) => bail!("SECRETARY_TRUST_PROXY={v}: expected 0 or 1"),
+        };
         if let Some(path) = get("SECRETARY_LUCINA_TOKEN_FILE") {
             cfg.lucina_token = Some(read_token_file(&path)?);
         }

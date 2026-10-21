@@ -1,10 +1,11 @@
 //! secretary-server: the thin, authenticated gateway between the Secretary
-//! iOS app and Lucina.
+//! clients (iOS app, web app at the same origin) and Lucina.
 //!
-//! It owns auth (device tokens), validation (via `secretary-core`),
-//! forwarding with the server-held Lucina token, and error mapping. It owns
-//! no product logic.
+//! It owns auth (device tokens, browser cookie sessions), validation (via
+//! `secretary-core`), forwarding with the server-held Lucina token, error
+//! mapping and static file serving. It owns no product logic.
 
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod devices;
@@ -12,34 +13,48 @@ pub mod error;
 pub mod health;
 pub mod ratelimit;
 pub mod routes;
+pub mod sessions;
 pub mod upstream;
+pub mod web;
 
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
-use axum::http::{header, HeaderMap};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
+use axum::http::{header, HeaderName, HeaderValue};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use secretary_core::LucinaClient;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::sensitive_headers::SetSensitiveRequestHeadersLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 
+pub use auth::DeviceId;
 pub use config::Config;
-use devices::{AuthResult, DeviceAuth, DeviceStore};
+use devices::{DeviceAuth, DeviceStore};
 use error::ApiError;
 use health::HealthCache;
 use ratelimit::RateLimiter;
+use sessions::{SessionAuth, SessionStore};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Sent on every response.
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
     pub devices: DeviceAuth,
+    pub sessions: SessionAuth,
     pub limiter: RateLimiter,
+    pub login_limiter: RateLimiter,
     pub health: HealthCache,
     pub upstream: Option<upstream::Upstream>,
+    pub web_dir: Option<PathBuf>,
+    pub trust_proxy: bool,
 }
 
 #[derive(Clone)]
@@ -65,9 +80,13 @@ impl AppState {
         Ok(Self(Arc::new(Inner {
             lucina,
             devices: DeviceAuth::new(DeviceStore::new(&cfg.data_dir)),
+            sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
+            login_limiter: RateLimiter::new(cfg.login_rate_per_minute),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,
+            web_dir: cfg.web_dir.clone(),
+            trust_proxy: cfg.trust_proxy,
         })))
     }
 
@@ -82,52 +101,8 @@ impl AppState {
     }
 }
 
-/// The authenticated device, inserted by [`require_device`].
-#[derive(Debug, Clone)]
-pub struct DeviceId(pub String);
-
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    let v = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, token) = v.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
-}
-
-/// Device-token auth + per-device rate limit for every protected route.
-async fn require_device(
-    State(st): State<AppState>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
-    let token = bearer(req.headers())
-        .filter(|t| t.starts_with(devices::TOKEN_PREFIX))
-        .ok_or_else(|| ApiError::unauthorized("missing or malformed device token"))?;
-    let device_id = match st.devices.authenticate(token) {
-        Ok(AuthResult::Ok { device_id }) => device_id,
-        Ok(AuthResult::Revoked) => return Err(ApiError::unauthorized("device token revoked")),
-        Ok(AuthResult::Unknown) => return Err(ApiError::unauthorized("unknown device token")),
-        Err(e) => {
-            tracing::error!(error = %e, "device registry unreadable; denying");
-            return Err(ApiError::internal("device registry unavailable"));
-        }
-    };
-    if let Err(wait) = st.limiter.check(&device_id) {
-        let mut e = ApiError::new(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "rate_limited",
-            "too many requests; slow down",
-        );
-        e.retry_after = Some(wait.as_secs().max(1));
-        return Err(e);
-    }
-    req.extensions_mut().insert(DeviceId(device_id.clone()));
-    let mut resp = next.run(req).await;
-    // For the access log (the id is not a secret).
-    resp.extensions_mut().insert(DeviceId(device_id));
-    Ok(resp)
-}
-
-/// Access log: method, route template, status, latency, body length. Never
-/// the URI (ids, query), headers or bodies.
+/// Access log: method, route template, status, latency, body length and the
+/// device id. Never the URI (ids, query), headers, cookies or bodies.
 async fn access_log(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let route = req
@@ -158,9 +133,11 @@ async fn access_log(req: Request, next: Next) -> Response {
     resp
 }
 
-async fn not_found(req: Request) -> Response {
-    tracing::info!(method = %req.method(), route = "<unmatched>", status = 404, "request");
-    ApiError::not_found().into_response()
+fn static_header(name: &'static str, value: &'static str) -> SetResponseHeaderLayer<HeaderValue> {
+    SetResponseHeaderLayer::overriding(
+        HeaderName::from_static(name),
+        HeaderValue::from_static(value),
+    )
 }
 
 /// The full HTTP surface.
@@ -171,23 +148,37 @@ pub fn app(state: AppState) -> Router {
     }
     let protected = protected.route_layer(middleware::from_fn_with_state(
         state.clone(),
-        require_device,
+        auth::require_device,
     ));
 
-    Router::new()
+    let api = Router::new()
         .merge(routes::public())
+        .merge(auth::session_routes())
         .merge(protected)
-        .route_layer(middleware::from_fn(access_log))
-        .fallback(not_found)
+        .route_layer(SetResponseHeaderLayer::if_not_present(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store"),
+        ))
+        .route_layer(middleware::from_fn(access_log));
+
+    api.fallback(web::fallback)
         .with_state(state)
         .layer(DefaultBodyLimit::max(config::BODY_LIMIT))
         .layer(SetSensitiveRequestHeadersLayer::new([
             header::AUTHORIZATION,
-            header::HeaderName::from_static("x-upstream-authorization"),
+            header::COOKIE,
+            header::SET_COOKIE,
+            HeaderName::from_static("x-upstream-authorization"),
         ]))
         .layer(CatchPanicLayer::custom(|_| {
             ApiError::internal("internal error").into_response()
         }))
+        .layer(static_header(
+            "content-security-policy",
+            CONTENT_SECURITY_POLICY,
+        ))
+        .layer(static_header("x-content-type-options", "nosniff"))
+        .layer(static_header("referrer-policy", "no-referrer"))
 }
 
 /// Resolves on SIGTERM or Ctrl-C.
@@ -210,6 +201,21 @@ pub async fn shutdown_signal() {
     tracing::info!("shutdown signal received; draining");
 }
 
+/// Serve `router` on `listener` with peer addresses available to handlers
+/// (the login rate limit needs them).
+pub async fn serve_on(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+}
+
 /// Bind and serve until SIGTERM.
 pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     let state = AppState::new(&cfg)?;
@@ -219,10 +225,20 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     if !DeviceStore::new(&cfg.data_dir).path().exists() {
         tracing::warn!(dir = %cfg.data_dir.display(), "no devices.json yet: every request will be 401 until `token issue`");
     }
+    if let Some(dir) = &cfg.web_dir {
+        if !dir.join("index.html").exists() {
+            tracing::warn!(dir = %dir.display(), "SECRETARY_WEB_DIR has no index.html");
+        }
+    }
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
-    tracing::info!(addr = %cfg.bind, version = VERSION, upstream = state.upstream.is_some(), "secretary-server listening");
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    tracing::info!(
+        addr = %cfg.bind,
+        version = VERSION,
+        upstream = state.upstream.is_some(),
+        web = cfg.web_dir.is_some(),
+        trust_proxy = cfg.trust_proxy,
+        "secretary-server listening"
+    );
+    serve_on(listener, app(state), shutdown_signal()).await?;
     Ok(())
 }

@@ -42,7 +42,8 @@ pub enum TokenAction {
     },
     /// List devices (never prints tokens or hashes).
     List,
-    /// Revoke a device by id; takes effect on the running server immediately.
+    /// Revoke a device by id and end its browser sessions; takes effect on
+    /// the running server immediately.
     Revoke { id: String },
 }
 
@@ -87,8 +88,12 @@ pub fn run_token(
                 )?;
             }
         }
-        TokenAction::Revoke { id } => match store.revoke(&id)? {
-            Some(d) => writeln!(out, "revoked {} ({})", d.id, d.name)?,
+        TokenAction::Revoke { id } => match crate::sessions::revoke_device(store.dir(), &id)? {
+            Some((d, n)) => writeln!(
+                out,
+                "revoked {} ({}); {n} browser session(s) ended",
+                d.id, d.name
+            )?,
             None => anyhow::bail!("no device with id {id}"),
         },
     }

@@ -17,6 +17,9 @@ pub struct LucinaStatus {
     /// `not_configured`, or Lucina's error code); absent when reachable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Lucina contract version from its `/health` (`apiVersion`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<u64>,
 }
 
 pub struct HealthCache {
@@ -53,6 +56,7 @@ impl HealthCache {
                 reachable: false,
                 latency_ms: None,
                 error: Some("not_configured".into()),
+                api_version: None,
             };
         };
         let start = Instant::now();
@@ -62,30 +66,35 @@ impl HealthCache {
         let ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         use secretary_core::Error as E;
         match res {
-            Ok(_) => LucinaStatus {
+            Ok(data) => LucinaStatus {
                 reachable: true,
                 latency_ms: Some(ms),
                 error: None,
+                api_version: data.get("apiVersion").and_then(Value::as_u64),
             },
             Err(E::Api { code, .. }) => LucinaStatus {
                 reachable: false,
                 latency_ms: Some(ms),
                 error: Some(code),
+                api_version: None,
             },
             Err(E::Decode(_)) => LucinaStatus {
                 reachable: false,
                 latency_ms: Some(ms),
                 error: Some("lucina_error".into()),
+                api_version: None,
             },
             Err(E::Timeout) => LucinaStatus {
                 reachable: false,
                 latency_ms: None,
                 error: Some("lucina_timeout".into()),
+                api_version: None,
             },
             Err(_) => LucinaStatus {
                 reachable: false,
                 latency_ms: None,
                 error: Some("lucina_unreachable".into()),
+                api_version: None,
             },
         }
     }

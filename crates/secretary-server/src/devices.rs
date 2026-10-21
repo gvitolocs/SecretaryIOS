@@ -84,6 +84,75 @@ fn validate_name(name: &str) -> io::Result<()> {
     Ok(())
 }
 
+// -- shared file helpers (also used by `sessions`) ---------------------------
+
+pub(crate) fn ensure_dir(dir: &Path) -> io::Result<()> {
+    if !dir.exists() {
+        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    }
+    Ok(())
+}
+
+/// Exclusive lock on `dir/name`, held for the lifetime of the returned file.
+pub(crate) fn lock_file(dir: &Path, name: &str) -> io::Result<File> {
+    ensure_dir(dir)?;
+    let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(dir.join(name))?;
+    f.lock()?;
+    Ok(f)
+}
+
+/// A JSON array file; missing means empty.
+pub(crate) fn load_json_vec<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<Vec<T>> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Write `value` to `dir/name` atomically: temp file 0600, fsync, rename,
+/// fsync the directory.
+pub(crate) fn save_json_atomic<T: Serialize + ?Sized>(
+    dir: &Path,
+    name: &str,
+    value: &T,
+) -> io::Result<()> {
+    ensure_dir(dir)?;
+    let tmp = dir.join(format!(".{name}.tmp"));
+    let mut f = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    let mut json = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
+    json.push(b'\n');
+    f.write_all(&json)?;
+    f.sync_all()?;
+    drop(f);
+    fs::rename(&tmp, dir.join(name))?;
+    File::open(dir)?.sync_all()
+}
+
+/// mtime + size of a file, `None` when missing: the reload trigger.
+pub(crate) fn file_stamp(path: &Path) -> io::Result<Option<(SystemTime, u64)>> {
+    match fs::metadata(path) {
+        Ok(m) => Ok(Some((m.modified()?, m.len()))),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn random_b64<const N: usize>() -> io::Result<String> {
+    Ok(URL_SAFE_NO_PAD.encode(random_bytes::<N>()?))
+}
+
 /// The on-disk registry.
 #[derive(Debug, Clone)]
 pub struct DeviceStore {
@@ -103,55 +172,17 @@ impl DeviceStore {
         self.dir.join(DEVICES_FILE)
     }
 
-    fn ensure_dir(&self) -> io::Result<()> {
-        if !self.dir.exists() {
-            DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&self.dir)?;
-        }
-        Ok(())
-    }
-
-    /// Exclusive lock held for the lifetime of the returned file.
     fn lock(&self) -> io::Result<File> {
-        self.ensure_dir()?;
-        let f = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .open(self.dir.join(LOCK_FILE))?;
-        f.lock()?;
-        Ok(f)
+        lock_file(&self.dir, LOCK_FILE)
     }
 
     /// All devices; a missing file is an empty registry.
     pub fn load(&self) -> io::Result<Vec<Device>> {
-        match fs::read(self.path()) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
+        load_json_vec(&self.path())
     }
 
     fn save(&self, devices: &[Device]) -> io::Result<()> {
-        self.ensure_dir()?;
-        let tmp = self.dir.join(format!(".{DEVICES_FILE}.tmp"));
-        let mut f = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        let mut json = serde_json::to_vec_pretty(devices).map_err(io::Error::other)?;
-        json.push(b'\n');
-        f.write_all(&json)?;
-        f.sync_all()?;
-        drop(f);
-        fs::rename(&tmp, self.path())?;
-        File::open(&self.dir)?.sync_all()
+        save_json_atomic(&self.dir, DEVICES_FILE, devices)
     }
 
     /// Register a device; returns it and the plaintext token (shown once).
@@ -206,7 +237,7 @@ impl DeviceStore {
 /// Result of checking a presented token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthResult {
-    Ok { device_id: String },
+    Ok { device_id: String, name: String },
     Unknown,
     Revoked,
 }
@@ -234,10 +265,54 @@ impl DeviceAuth {
     }
 
     fn stamp(&self) -> io::Result<Option<(SystemTime, u64)>> {
-        match fs::metadata(self.store.path()) {
-            Ok(m) => Ok(Some((m.modified()?, m.len()))),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
+        file_stamp(&self.store.path())
+    }
+
+    pub fn store(&self) -> &DeviceStore {
+        &self.store
+    }
+
+    fn refreshed(&self) -> io::Result<std::sync::MutexGuard<'_, Cache>> {
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        let stamp = self.stamp()?;
+        if !cache.loaded || cache.stamp != stamp {
+            cache.devices = self.store.load()?;
+            cache.stamp = stamp;
+            cache.loaded = true;
+        }
+        Ok(cache)
+    }
+
+    /// Current state of device `id` (used by cookie sessions, so a revoke
+    /// takes effect on sessions too). Records `lastSeenAt` when active.
+    pub fn active_device(&self, id: &str) -> io::Result<Option<Device>> {
+        let mut cache = self.refreshed()?;
+        let found = cache
+            .devices
+            .iter()
+            .find(|d| d.id == id && !d.revoked)
+            .cloned();
+        if found.is_some() {
+            self.mark_seen(&mut cache, id);
+        }
+        Ok(found)
+    }
+
+    fn mark_seen(&self, cache: &mut Cache, device_id: &str) {
+        let due = cache
+            .touched
+            .get(device_id)
+            .is_none_or(|t| t.elapsed() >= TOUCH_EVERY);
+        if due {
+            cache.touched.insert(device_id.to_owned(), Instant::now());
+            let store = self.store.clone();
+            let id = device_id.to_owned();
+            // Best effort, off the request path.
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = store.touch(&id, &now_rfc3339()) {
+                    tracing::warn!(error = %e, "could not persist lastSeenAt");
+                }
+            });
         }
     }
 
@@ -246,13 +321,7 @@ impl DeviceAuth {
     /// Errors (unreadable/corrupt registry) must be treated as a denial.
     pub fn authenticate(&self, token: &str) -> io::Result<AuthResult> {
         let presented = hash_token(token);
-        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
-        let stamp = self.stamp()?;
-        if !cache.loaded || cache.stamp != stamp {
-            cache.devices = self.store.load()?;
-            cache.stamp = stamp;
-            cache.loaded = true;
-        }
+        let mut cache = self.refreshed()?;
         let mut found: Option<&Device> = None;
         for d in &cache.devices {
             let eq: bool = d.hash.as_bytes().ct_eq(presented.as_bytes()).into();
@@ -265,24 +334,12 @@ impl DeviceAuth {
             Some(d) if d.revoked => AuthResult::Revoked,
             Some(d) => AuthResult::Ok {
                 device_id: d.id.clone(),
+                name: d.name.clone(),
             },
         };
-        if let AuthResult::Ok { device_id } = &result {
-            let due = cache
-                .touched
-                .get(device_id)
-                .is_none_or(|t| t.elapsed() >= TOUCH_EVERY);
-            if due {
-                cache.touched.insert(device_id.clone(), Instant::now());
-                let store = self.store.clone();
-                let id = device_id.clone();
-                // Best effort, off the request path.
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = store.touch(&id, &now_rfc3339()) {
-                        tracing::warn!(error = %e, "could not persist lastSeenAt");
-                    }
-                });
-            }
+        if let AuthResult::Ok { device_id, .. } = &result {
+            let id = device_id.clone();
+            self.mark_seen(&mut cache, &id);
         }
         Ok(result)
     }

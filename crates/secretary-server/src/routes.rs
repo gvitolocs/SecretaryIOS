@@ -3,6 +3,7 @@
 //! returns Lucina's `data` unwrapped.
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::routing::{delete, get, patch};
 use axum::{Json, Router};
 use secretary_core::models::{AgendaQuery, ChatRequest, CreateReminder, ReminderQuery};
@@ -12,10 +13,14 @@ use serde_json::{json, Value};
 use crate::error::{ApiError, JsonBody, QueryArgs};
 use crate::AppState;
 
-type ApiResult = Result<Json<Value>, ApiError>;
+type ApiResult = Result<(StatusCode, Json<Value>), ApiError>;
 
+/// Forward and return Lucina's `data` (after the call's unwrap) with
+/// Lucina's 2xx status (201 for a created reminder or shopping item).
 async fn forward(st: &AppState, call: Call) -> ApiResult {
-    Ok(Json(st.lucina()?.call::<Value>(&call).await?))
+    let (status, data) = st.lucina()?.call_with_status::<Value>(&call).await?;
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    Ok((status, Json(data)))
 }
 
 async fn health(State(st): State<AppState>) -> Json<Value> {
