@@ -3,5 +3,25 @@ name = "lucina-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Lucina's tool plugins, registry, agent loop and confirmation flow"
 
 [dependencies]
+lucina-llm = { path = "../lucina-llm" }
+lucina-store = { path = "../lucina-store" }
+lucina-grocery = { path = "../lucina-grocery" }
+async-trait = { workspace = true }
+schemars = "1"
+jsonschema = { version = "0.59", default-features = false }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"

@@ -312,6 +312,11 @@ impl GroceryRepo {
         &self.pool
     }
 
+    /// The current shopping catalog.
+    pub fn catalog_index(&self) -> std::sync::Arc<CatalogIndex> {
+        self.catalog.index()
+    }
+
     /// Seed `grocery.canonical_products` once (as Node's `ready()`).
     async fn ready(&self) -> Result<()> {
         self.seeded
