@@ -16,7 +16,9 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [ ] Lucina plugins as Rust tools: weather, places, web, notes, calculator, reminders, shopping, device,
       gym/body, memory search, translate, plus the useful Hermes upstream tools
 - [ ] Rebuild image generation and spreadsheet graphs as Rust tools (owner, 2026-10-21)
-- [ ] Lucina MCP (`crates/secretary-mcp`, being built): Claude Code, ChatGPT connector (OAuth), Grokbot
+- [x] Lucina MCP live at https://getsecretary.tech/mcp (8bc9cc9, p1 `secretary-mcp`), Claude Code connected
+- [ ] Lucina guard for MCP turns (allowlist of actions) + strip the MCP prefix before intents
+- [ ] Connect ChatGPT (OAuth custom connector) and Grok (xAI remote MCP or Grok Bot app) after the guard
 
 ## Waiting
 ### Web
