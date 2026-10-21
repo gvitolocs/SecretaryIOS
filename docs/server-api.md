@@ -273,6 +273,272 @@ Errors: `400 invalid_status`, `404 item_not_found`.
 
 All shopping routes may answer `503 grocery_unavailable`.
 
+## Local modules: gym and body
+
+The gym and body-weight modules are Rust engines (`crates/secretary-gym`,
+`crates/secretary-body`) that the server hosts with persistent files in
+`$SECRETARY_DATA_DIR` (`gym.json`, `body.json`, atomic writes, mode 0600).
+The iOS app links the same engines through `secretary-ffi`
+(`SecretaryCore.h`) and speaks the same JSON. Lucina is not involved. The
+clients are thin: they send commands and render the returned view; every
+rule, unit conversion, statistic and label is computed in Rust.
+
+### The command protocol (both modules)
+
+Every write is one JSON request:
+
+```json
+{
+  "op_id": "3f0c6f9e-7c1d-4a51-9d8e-2b6a1f0e9c11",
+  "expected_revision": 12,
+  "timezone": "Europe/Rome",
+  "command": { "type": "log_entry", "weight_grams": 80500 }
+}
+```
+
+| Field | Rules |
+|---|---|
+| `op_id` | Required for writes. 1–128 bytes, not blank. Generate one per user action (a UUID) and keep it with the queued command. |
+| `expected_revision` | Required for writes: the `revision` of the state the user saw. |
+| `timezone` | Optional IANA name, default `UTC`. Decides calendar days, weeks and date labels. Unknown names → `invalid_command`. |
+| `command` | `{"type": "<snake_case>", …fields}`. Unknown fields are ignored; unknown types are `invalid_command`. |
+
+Query commands (`snapshot`, `parse_weight`, and for the gym also `clock`,
+`search_exercises`, `export_json`, `export_csv`) need neither `op_id` nor
+`expected_revision` and never change state.
+
+Write semantics, in this order:
+
+1. `op_id` already used for the **same** command → success with
+   `"replayed": true`; nothing changes; the response carries the current
+   view (even if the revision moved on since). Resending a queued command is
+   always safe.
+2. `op_id` already used for a **different** command → `op_id_reused`.
+3. `expected_revision` ≠ current revision → `conflict`.
+4. The command is applied to a copy, validated, written to disk atomically,
+   and only then becomes the live state (revision + 1). Any rejection leaves
+   the state byte-for-byte unchanged.
+
+Response:
+
+```json
+{ "ok": true, "replayed": false, "view": { … } }
+{ "ok": false, "replayed": false, "code": "conflict", "error": "State changed. Refresh and retry the edit." }
+```
+
+`code`: `invalid_command` (validation, bad JSON, unknown timezone),
+`conflict`, `op_id_reused`, `storage_error` (the server could not write its
+file). `error` is a human message (English) that can be shown as is.
+
+**Offline queue recipe (phone or browser):** for each user action create
+`{op_id: uuid(), expected_revision: <revision shown>, timezone, command}`,
+persist it, send queued requests in order, and resend them verbatim after a
+crash or timeout. `replayed: true` counts as success. On `conflict`, fetch
+the state, rebuild the command against it **with a new op_id**, and ask the
+user if the change no longer makes sense. Never reuse an op_id for a
+different command.
+
+### HTTP routes
+
+| Route | Body | Notes |
+|---|---|---|
+| `GET /v1/gym/state?timezone=Europe/Rome` | — | The `snapshot` view. |
+| `GET /v1/gym/clock?timezone=…` | — | The `clock` query (cheap; poll it for the rest timer). |
+| `POST /v1/gym/command` | a request as above | Any gym command, queries included (`clock` works here without `op_id`). Body up to 16 MiB (backups for `restore_json`). |
+| `GET /v1/body/state?timezone=…` | — | The body `snapshot` view. |
+| `POST /v1/body/command` | a request as above | Body up to 256 KiB. |
+
+Auth is the same as for every `/v1` route (device Bearer, or cookie plus
+`X-Secretary-CSRF: 1` on POST). POST bodies need `Content-Type:
+application/json`.
+
+The response body is always the engine response above (`{ok, replayed,
+code?, error?, view?, …}`), also on errors, with this status:
+
+| Engine result | HTTP |
+|---|---|
+| `ok: true` (replays included) | 200 |
+| `conflict` | 409 |
+| `invalid_command`, `op_id_reused` | 422 |
+| `storage_error` | 500 |
+
+Errors raised before the engine runs (401, 403 `csrf`, 413, 415, 429) use
+the server's usual `{"error": {"code", "message"}}` shape.
+
+### Weights on the wire
+
+Integer grams are the canonical unit everywhere (`weight_grams`,
+`goal_grams`, `volume_grams`, …); stored state never contains floats. The
+user's display unit (`kg` or `lb`) is a setting of each module. For text
+input, the engines own the parsing:
+
+- `{"type": "parse_weight", "value": "176,5", "unit": "lb"}` (query, both
+  modules; `unit` defaults to the module's display unit) →
+  `{"ok": true, "replayed": false, "weight_grams": 80060}`. Up to three
+  decimals, `,` or `.` as separator; lb → g uses 1 lb = 453.59237 g, rounded
+  to the nearest gram.
+- Commands that take a weight accept either `weight_grams` (integer) or
+  `weight` (a decimal string in the display unit, parsed as above), never
+  both.
+
+Every view carries preformatted labels in the display unit; clients should
+show those instead of formatting numbers themselves.
+
+### Body module
+
+Body weight lives here only. (The gym's `record_measurement` keeps
+`body_fat` and `waist`; `kind: "body_weight"` is rejected there since this
+module exists. Old gym `body_weight` measurements stay readable in the gym
+state.)
+
+Commands:
+
+| `type` | Fields | |
+|---|---|---|
+| `snapshot` | — | query |
+| `parse_weight` | `value: string`, `unit?: "kg"\|"lb"` | query |
+| `log_entry` | `weight_grams?: int` or `weight?: string` (exactly one), `measured_ms?: int` (default now), `note?: string` | |
+| `edit_entry` | `entry_id: string`, then any of `weight_grams`/`weight` (at most one), `measured_ms`, `note` (at least one field) | omitted fields keep their value |
+| `delete_entry` | `entry_id: string` | |
+| `update_settings` | `unit: "kg"\|"lb"`, `goal_grams?: int \| null` or `goal?: string` | replaces the settings; no goal clears it |
+
+Limits: weight and goal 1 000–650 000 g; `measured_ms` ≤ now + 24 h; note ≤
+1 000 bytes; ≤ 50 000 entries.
+
+View:
+
+```json
+{
+  "revision": 3,
+  "settings": { "unit": "kg", "goal_grams": 78000 },
+  "entries": [ { "id": "…", "weight_grams": 80500, "measured_ms": 1792584000000, "note": "", "created_ms": …, "updated_ms": … } ],
+  "stats": {
+    "count": 3,
+    "current_grams": 80500, "current_measured_ms": 1792584000000,
+    "avg7_grams": 80800, "weekly_change_grams": -400,
+    "min_grams": 80500, "max_grams": 81200,
+    "trend30_grams": -700, "trend90_grams": null,
+    "goal_grams": 78000, "goal_distance_grams": 2800, "goal_reached": false
+  },
+  "series": [ { "entry_id": "…", "measured_ms": 1792411200000, "weight_grams": 81200, "avg7_grams": 81200 } ],
+  "labels": { "<entry_id>": "80.5 kg" },
+  "stat_labels": { "current": "80.5 kg", "avg7": "80.8 kg", "weekly_change": "-0.4 kg", "…": "…" }
+}
+```
+
+- `entries`: newest first (by `measured_ms`). `series`: the same entries
+  oldest first, each with the 7-day average at that point (for the line).
+- `avg7(t)` = mean of the entries measured in `(t − 7 days, t]`, rounded
+  half up to the gram. `avg7_grams` = `avg7` at the latest entry.
+- `current_grams` = the latest entry's weight.
+- `weekly_change_grams` = `avg7(latest) − avg7(latest − 7 days)`; null when
+  no entry falls in `(latest − 14 d, latest − 7 d]`.
+- `trend30_grams` / `trend90_grams`: over the entries measured in the last 30
+  / 90 days (ending now), `avg7(last of them) − avg7(first of them)`; null
+  with fewer than 2 such entries.
+- `min_grams` / `max_grams`: over all entries.
+- `goal_distance_grams` = `avg7_grams − goal_grams` (positive: still above
+  the goal). `goal_reached`: for a goal below the first-ever entry (losing)
+  `avg7 ≤ goal`, otherwise `avg7 ≥ goal`.
+- Every stat is null when there is not enough data (`count` 0 → all null).
+- `stat_labels` keys (present when the stat is non-null): `current`, `avg7`,
+  `weekly_change`, `min`, `max`, `trend30`, `trend90`, `goal`,
+  `goal_distance`. Signed values carry a sign (`-0.4 kg`, `+1.2 kg`).
+  Labels use one decimal.
+
+### Gym module
+
+Commands (fields are required unless marked `?`; weights as above):
+
+| `type` | Fields | Query? |
+|---|---|---|
+| `snapshot` | — | yes |
+| `clock` | — | yes; returns `clock` instead of `view` |
+| `parse_weight` | `value`, `unit?` | yes; returns `weight_grams` |
+| `search_exercises` | `query: string` | yes; returns `exercises` (and `view`) |
+| `export_json` | — | yes; `text` = pretty JSON backup (no receipts) |
+| `export_csv` | — | yes; `text` = CSV of completed sets |
+| `start_workout` | `title: string` (1–120 bytes), `routine_id?: string` | |
+| `repeat_workout` | `workout_id: string` (a finished workout) | starts a new active workout with the same title, exercises and set values (sets unchecked) |
+| `rename_workout` | `title` | |
+| `set_notes` | `notes: string` (≤ 8000 bytes), `exercise_id?: string` (a workout-exercise id; omitted = workout notes) | |
+| `add_exercise` | `exercise_id` (catalog id) | |
+| `remove_exercise` | `exercise_id` (workout-exercise id) | |
+| `reorder_exercises` | `ids: [string]` (a permutation of the workout-exercise ids) | |
+| `add_set` | `exercise_id` (workout-exercise id) | copies the last set |
+| `edit_set` | `set_id`, `weight_grams` or `weight` (exactly one), `reps: int` (≤ 1000), `seconds: int` (≤ 86400), `distance_meters: int` (≤ 1 000 000), `kind: "normal"\|"warmup"\|"drop"\|"failure"` | the set must be unchecked; fields that do not apply to the exercise kind are zeroed |
+| `complete_set` | `set_id`, `completed: bool` | checking a set starts the rest timer |
+| `remove_set` | `set_id` | |
+| `finish_workout` | — | needs ≥ 1 completed set |
+| `cancel_workout` | — | |
+| `save_routine` | `name`, `exercise_ids?: [catalog id]`, `from_active?: bool` | |
+| `delete_routine` | `routine_id` | |
+| `delete_workout` | `workout_id` | |
+| `create_exercise` | `name`, `muscle`, `equipment` (1–120 bytes each), `kind: "weight_reps"\|"reps_only"\|"timed"\|"distance_time"` | |
+| `start_rest` | `seconds: int` (1–3600) | needs an active workout |
+| `stop_rest` | — | |
+| `update_settings` | `weight_unit: "kg"\|"lb"`, `rest_seconds: int` (1–3600), `weekly_goal: int` (1–14) | |
+| `record_measurement` | `kind: "body_fat"\|"waist"`, `value: string` (decimal; % or cm) | |
+| `delete_measurement` | `measurement_id` | |
+| `restore_json` | `backup: string` (an `export_json` text) | keeps revision and receipts |
+
+View (`view` in every successful response except `clock` and
+`parse_weight`):
+
+| Field | |
+|---|---|
+| `state` | `schema_version`, `revision`, `settings {weight_unit, rest_seconds, weekly_goal}`, `exercises[]` (catalog, sorted by name), `routines[]`, `active` (workout or null), `history[]` (newest first), `measurements[]` (newest first), `rest {workout_id, deadline_ms}` or null. Workout: `{id, title, notes, started_ms, finished_ms, exercises: [{id, exercise_id, notes, sets: [{id, kind, weight_grams, reps, seconds, distance_meters, completed}]}]}`. |
+| `summary` | `workouts`, `completed_sets`, `weekly_workouts`, `weekly_goal`, `volume` (label), `active_volume` (label), `active_duration` (label), `active_elapsed_seconds` (int), `active_completed_sets` |
+| `records[]` | per catalog exercise with history: `exercise_id`, `name`, `weight` (label), `reps`, `volume` (label), `seconds`, `distance_meters`, `estimated_1rm` (label or null), `estimated_1rm_grams` (int or null; Epley `w·(1 + reps/30)`, `w` for single reps) |
+| `chart[]` | last 14 finished workouts, oldest first: `{id, label: "21 Oct", volume: number (display unit), volume_grams: int}` |
+| `exercise_charts` | `{catalog exercise id: ChartPoint[]}`: the same per exercise (its volume in each of its last 14 workouts) |
+| `rest_remaining` | seconds |
+| `weight_labels` | `{set id: "60"}` (number in the display unit, no unit) |
+| `previous_labels` | `{workout-exercise id: "60 kg × 8"}` (last time's set) |
+| `measurement_labels` | `{measurement id: "18.5%"}` |
+| `workout_labels` | `{workout id: {sets, volume, duration}}` |
+
+`clock`: `{"rest_remaining": 42, "active_duration": "12m 05s", "active_elapsed_seconds": 725}`.
+Tick `active_elapsed_seconds` locally between refreshes.
+
+## Insights for Lucina
+
+### `GET /v1/insights/summary?timezone=Europe/Rome&workouts=5`
+
+Read-only, compact JSON for Lucina to reason over. It accepts **only** a
+service token: `Authorization: Bearer svc_…`, the token stored in
+`SECRETARY_SERVICE_TOKEN_FILE` (create one with `secretary-server
+service-token generate <path>`; the file is written 0600 and the token is
+never printed). Device tokens and cookies get `401` here, and a service
+token gets `401` on every other route. Without `SECRETARY_SERVICE_TOKEN_FILE`
+the route answers `503 service_token_not_configured`. `workouts` is 1–20
+(default 5).
+
+```json
+{
+  "generated_ms": 1792600000000,
+  "timezone": "Europe/Rome",
+  "gym": {
+    "unit": "kg", "weekly_goal": 3, "workouts_this_week": 2,
+    "recent_workouts": [
+      { "id": "…", "title": "Push", "finished_ms": …, "date": "2026-10-20", "duration_min": 58,
+        "completed_sets": 15, "volume_grams": 8240000, "volume_label": "8240 kg",
+        "exercises": ["Bench Press", "Overhead Press"],
+        "prs": [ { "exercise_id": "bench-press", "name": "Bench Press", "weight_grams": 82500, "reps": 5, "label": "82.5 kg × 5" } ] }
+    ],
+    "weekly_volume": [ { "week_start": "2026-10-19", "workouts": 2, "volume_grams": 15100000, "volume_label": "15100 kg" } ]
+  },
+  "body": { "unit": "kg", "stats": { …the body stats… }, "stat_labels": { … } }
+}
+```
+
+- `recent_workouts`: newest first. A PR is a completed non-warmup set of a
+  weight × reps exercise heavier than every such set of that exercise in all
+  earlier workouts (a first-ever performance is not a PR); the heaviest one
+  per exercise is listed.
+- `weekly_volume`: the last 8 weeks (Monday starts, in `timezone`),
+  oldest first, zero-filled.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -285,13 +551,17 @@ All shopping routes may answer `503 grocery_unavailable`.
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
 | 409 | `already_sent` | Lucina | Cancelling a delivered reminder. |
+| 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
 | 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server) / 64 KiB (Lucina). |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
+| 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |
 | 500 | `internal` | server | Unexpected server failure. |
+| 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
+| 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
 
