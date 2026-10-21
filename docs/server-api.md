@@ -158,7 +158,7 @@ and can be revoked there.
 ### `POST /v1/session/password` (authenticated)
 
 ```json
-{ "currentPassword": "…", "newPassword": "at least 12 characters" }
+{ "currentPassword": "…", "newPassword": "at least 8 characters" }
 ```
 
 Cookie clients need `X-Secretary-CSRF: 1`. `200`:
@@ -171,7 +171,7 @@ Every browser session except the caller's own cookie session ends (with a
 Bearer token: every browser session). Device tokens stay valid. Errors:
 `403 invalid_credentials` (wrong current password; counts toward the
 lockout; 403 so the app does not log out), `400 bad_request` (new password
-shorter than 12 characters or over 1024 bytes), `429 account_locked`, `409
+shorter than 8 characters or over 1024 bytes), `429 account_locked`, `409
 no_owner_account`.
 
 ### `GET /v1/session`

@@ -18,7 +18,7 @@ describe("AccountDialog", () => {
     const calls = stubFetch(() => ({ body: { ok: true } }));
     render(() => <AccountDialog open onClose={vi.fn()} />);
     fill("dev-password-123", "short", "short");
-    expect(await screen.findByRole("alert")).toHaveTextContent("at least 12 characters");
+    expect(await screen.findByRole("alert")).toHaveTextContent("at least 8 characters");
     fill("dev-password-123", "a-much-longer-pass", "a-much-longer-pasS");
     expect(await screen.findByRole("alert")).toHaveTextContent("don't match");
     expect(calls).toHaveLength(0);

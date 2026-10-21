@@ -29,7 +29,7 @@ use crate::devices::{lock_file, now_rfc3339, save_json_atomic};
 
 const OWNER_FILE: &str = "owner.json";
 const LOCK_FILE: &str = "owner.lock";
-pub const MIN_PASSWORD_CHARS: usize = 12;
+pub const MIN_PASSWORD_CHARS: usize = 8;
 pub const MAX_PASSWORD_BYTES: usize = 1024;
 pub const LOCK_AFTER: u32 = 10;
 pub const FIRST_LOCK: Duration = Duration::from_secs(15 * 60);

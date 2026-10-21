@@ -365,7 +365,7 @@ fn user_cli_set_show_and_single_user_rule() {
     };
     let out = set(EMAIL, PASSWORD, false).unwrap();
     assert!(out.contains(EMAIL) && !out.contains(PASSWORD));
-    assert!(set(EMAIL, "too short", false).is_err());
+    assert!(set(EMAIL, "short12", false).is_err());
     let err = set("other@example.com", PASSWORD, false).unwrap_err();
     assert!(format!("{err:#}").contains("--replace"));
     set("other@example.com", PASSWORD, true).unwrap();

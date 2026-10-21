@@ -50,7 +50,7 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum UserAction {
     /// Create the owner or change its password. The password is read from
-    /// stdin (one line, at least 12 characters). There is exactly one user:
+    /// stdin (one line, at least 8 characters). There is exactly one user:
     /// a different email than the stored one needs --replace.
     Set {
         #[arg(long)]

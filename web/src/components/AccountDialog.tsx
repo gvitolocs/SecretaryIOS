@@ -2,7 +2,7 @@ import { createEffect, createSignal, on, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
 
-export const MIN_PASSWORD_LENGTH = 12;
+export const MIN_PASSWORD_LENGTH = 8;
 
 /** Account panel opened from the header: change the single user's password. */
 export function AccountDialog(props: { open: boolean; onClose: () => void }) {
