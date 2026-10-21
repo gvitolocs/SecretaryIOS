@@ -19,10 +19,10 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 
 ## Waiting
 ### Web
-- [ ] Persistent full-body Lucina in the right column on desktop, compact on mobile; `/lucina/` retired
+- [x] Persistent full-body Lucina in the right column on desktop, compact on mobile; `/lucina/` retired (20e811e, live)
 - [ ] Shopping identical to the Bring! layout (icons decision pending)
 - [ ] Gym parity with Lucina Gym, plus the left-clipping fix
-- [ ] i18n: it / en / da, defaulting to the browser language, with an override
+- [x] i18n: it / en / da for shell, chat, login, weight (20e811e); Gym and Shopping still to adopt it
 - [ ] Deploy the new web shell
 
 ### Avatar
