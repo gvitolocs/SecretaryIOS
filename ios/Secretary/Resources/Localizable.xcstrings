@@ -89,6 +89,22 @@
         }
       }
     },
+    "%lld" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld"
+          }
+        }
+      }
+    },
     "%lld / %lld workouts" : {
       "localizations" : {
         "da" : {
@@ -241,6 +257,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Una chiave del dispositivo da `secretary-server token issue`. Resta solo nel Portachiavi di questo iPhone."
+          }
+        }
+      }
+    },
+    "A limit for Lucina" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un limite per Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En grænse for Lucina"
           }
         }
       }
@@ -407,32 +439,32 @@
     },
     "Add the Lucina filter to a Focus in Settings → Focus, so Lucina knows when you are at work, asleep or driving." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiungi il filtro Lucina a una Full immersion in Impostazioni → Full immersion, così Lucina sa quando lavori, dormi o guidi."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tilføj Lucina-filteret til et fokus i Indstillinger → Fokus, så Lucina ved, hvornår du arbejder, sover eller kører."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi il filtro Lucina a una Full immersion in Impostazioni → Full immersion, così Lucina sa quando lavori, dormi o guidi."
           }
         }
       }
     },
     "Add the reminder “%@”" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiungere il promemoria “%@”"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tilføj påmindelsen “%@”"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungere il promemoria “%@”"
           }
         }
       }
@@ -455,32 +487,32 @@
     },
     "Add to shopping" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiungi alla spesa"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Føj til indkøb"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi alla spesa"
           }
         }
       }
     },
     "Add “%@” to your calendar" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiungere “%@” al calendario"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Føj “%@” til din kalender"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungere “%@” al calendario"
           }
         }
       }
@@ -519,16 +551,16 @@
     },
     "Added %@ to the list." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ aggiunto alla lista."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ er føjet til listen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ aggiunto alla lista."
           }
         }
       }
@@ -551,16 +583,16 @@
     },
     "Adds an item to the current shopping list." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiunge un articolo alla lista della spesa attuale."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Føjer en vare til den aktuelle indkøbsliste."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiunge un articolo alla lista della spesa attuale."
           }
         }
       }
@@ -583,48 +615,48 @@
     },
     "Alarm" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sveglia"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Alarm"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sveglia"
           }
         }
       }
     },
     "Alarms and timers" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sveglie e timer"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Alarmer og timere"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sveglie e timer"
           }
         }
       }
     },
     "Alarms, reminders, calendar, Health, places, Focus, Safari and Screen Time: choose what Lucina may see and do." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sveglie, promemoria, calendario, Salute, luoghi, Full immersion, Safari e Tempo di utilizzo: scegli cosa Lucina può vedere e fare."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Alarmer, påmindelser, kalender, Sundhed, steder, Fokus, Safari og Skærmtid: vælg, hvad Lucina må se og gøre."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sveglie, promemoria, calendario, Salute, luoghi, Full immersion, Safari e Tempo di utilizzo: scegli cosa Lucina può vedere e fare."
           }
         }
       }
@@ -647,16 +679,16 @@
     },
     "Allow" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Consenti"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tillad"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti"
           }
         }
       }
@@ -677,18 +709,34 @@
         }
       }
     },
-    "Ask Lucina" : {
+    "Apps and websites" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Chiedi a Lucina"
+            "value" : "App e siti web"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Apps og websteder"
+          }
+        }
+      }
+    },
+    "Ask Lucina" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Spørg Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiedi a Lucina"
           }
         }
       }
@@ -839,32 +887,32 @@
     },
     "Browsing and Screen Time" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Navigazione e Tempo di utilizzo"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Browsing og Skærmtid"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Navigazione e Tempo di utilizzo"
           }
         }
       }
     },
     "Calendar" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Calendario"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kalender"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendario"
           }
         }
       }
@@ -935,16 +983,16 @@
     },
     "Cancel the timer %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Annullare il timer %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Annullér timeren %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Annullare il timer %@"
           }
         }
       }
@@ -1111,16 +1159,16 @@
     },
     "Complete the reminder %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Completare il promemoria %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fuldfør påmindelsen %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Completare il promemoria %@"
           }
         }
       }
@@ -1159,16 +1207,16 @@
     },
     "Continue" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Continua"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fortsæt"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Continua"
           }
         }
       }
@@ -1191,16 +1239,16 @@
     },
     "Couldn't add it to the list." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Impossibile aggiungerlo alla lista."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kunne ikke føje den til listen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile aggiungerlo alla lista."
           }
         }
       }
@@ -1255,16 +1303,16 @@
     },
     "Couldn't log the weight." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Impossibile registrare il peso."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kunne ikke gemme vægten."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile registrare il peso."
           }
         }
       }
@@ -1578,48 +1626,48 @@
     },
     "Delete the alarm %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Eliminare la sveglia %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Slet alarmen %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminare la sveglia %@"
           }
         }
       }
     },
     "Delete the event %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Eliminare l'evento %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Slet begivenheden %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminare l'evento %@"
           }
         }
       }
     },
     "Delete the reminder %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Eliminare il promemoria %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Slet påmindelsen %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminare il promemoria %@"
           }
         }
       }
@@ -1834,16 +1882,16 @@
     },
     "Don't allow" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Non consentire"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tillad ikke"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non consentire"
           }
         }
       }
@@ -2349,32 +2397,32 @@
     },
     "Focus" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Full immersion"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fokus"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Full immersion"
           }
         }
       }
     },
     "Focus name" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nome della Full immersion"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fokusnavn"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nome della Full immersion"
           }
         }
       }
@@ -2419,16 +2467,16 @@
     },
     "From Apple Health" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Da Apple Salute"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fra Apple Sundhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Da Apple Salute"
           }
         }
       }
@@ -2579,32 +2627,32 @@
     },
     "Health" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Salute"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sundhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salute"
           }
         }
       }
     },
     "Health isn't available on this device." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Salute non è disponibile su questo dispositivo."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sundhed er ikke tilgængelig på denne enhed."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salute non è disponibile su questo dispositivo."
           }
         }
       }
@@ -2675,16 +2723,16 @@
     },
     "How much do you weigh?" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quanto pesi?"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hvor meget vejer du?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quanto pesi?"
           }
         }
       }
@@ -2707,16 +2755,16 @@
     },
     "In Settings → Focus, open a Focus, add a Focus Filter and choose Secretary." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In Impostazioni → Full immersion, apri una Full immersion, aggiungi un filtro e scegli Secretary."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "I Indstillinger → Fokus: åbn et fokus, tilføj et fokusfilter, og vælg Secretary."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In Impostazioni → Full immersion, apri una Full immersion, aggiungi un filtro e scegli Secretary."
           }
         }
       }
@@ -2822,16 +2870,32 @@
     },
     "Lets Lucina know which Focus is on." : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fortæller Lucina, hvilket fokus der er slået til."
+          }
+        },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fa sapere a Lucina quale Full immersion è attiva."
           }
+        }
+      }
+    },
+    "Limit: %lld min a day" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limite: %lld min al giorno"
+          }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Fortæller Lucina, hvilket fokus der er slået til."
+            "value" : "Grænse: %lld min om dagen"
           }
         }
       }
@@ -2956,48 +3020,48 @@
     },
     "Log weight" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Registra peso"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gem vægt"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra peso"
           }
         }
       }
     },
     "Logged %@." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Registrato %@."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gemt: %@."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registrato %@."
           }
         }
       }
     },
     "Logs a weigh-in in the Weight tab, in your unit." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Registra una pesata nella scheda Peso, nella tua unità."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gemmer en vejning under fanen Vægt i din enhed."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra una pesata nella scheda Peso, nella tua unità."
           }
         }
       }
@@ -3074,32 +3138,32 @@
     },
     "Lucina can add and complete reminders and sees the upcoming ones. Deleting asks you first." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina può aggiungere e completare promemoria e vede quelli in arrivo. Per eliminarli ti chiede prima."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina kan tilføje og fuldføre påmindelser og ser de kommende. Sletning spørger dig først."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina può aggiungere e completare promemoria e vede quelli in arrivo. Per eliminarli ti chiede prima."
           }
         }
       }
     },
     "Lucina can set and delete alarms and timers she made (Clock's own alarms are out of reach). Deleting asks you first." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina può impostare ed eliminare le sveglie e i timer che ha creato (quelli dell'app Orologio restano fuori portata). Per eliminarli ti chiede prima."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina kan sætte og slette alarmer og timere, hun har lavet (Urs egne alarmer kan hun ikke røre). Sletning spørger dig først."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina può impostare ed eliminare le sveglie e i timer che ha creato (quelli dell'app Orologio restano fuori portata). Per eliminarli ti chiede prima."
           }
         }
       }
@@ -3138,16 +3202,16 @@
     },
     "Lucina didn't answer. Check the chat in Secretary." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina non ha risposto. Controlla la chat in Secretary."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina svarede ikke. Se chatten i Secretary."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non ha risposto. Controlla la chat in Secretary."
           }
         }
       }
@@ -3312,6 +3376,22 @@
         }
       }
     },
+    "Lucina no longer gets Screen Time notes." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non riceve più avvisi da Tempo di utilizzo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina får ikke længere Skærmtid-beskeder."
+          }
+        }
+      }
+    },
     "Lucina online" : {
       "localizations" : {
         "da" : {
@@ -3330,16 +3410,16 @@
     },
     "Lucina only sees and changes what you turn on here. Everything goes to your own server and Lucina, never to anyone else." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina vede e cambia solo ciò che attivi qui. Tutto va al tuo server e a Lucina, mai a nessun altro."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina ser og ændrer kun det, du slår til her. Alt går til din egen server og Lucina, aldrig til andre."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina vede e cambia solo ciò che attivi qui. Tutto va al tuo server e a Lucina, mai a nessun altro."
           }
         }
       }
@@ -3378,16 +3458,16 @@
     },
     "Lucina sees the next week of events and can add or delete events after you confirm." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina vede gli eventi della prossima settimana e può aggiungerne o eliminarne dopo la tua conferma."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina ser den næste uges begivenheder og kan tilføje eller slette begivenheder, når du har bekræftet."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina vede gli eventi della prossima settimana e può aggiungerne o eliminarne dopo la tua conferma."
           }
         }
       }
@@ -3426,32 +3506,32 @@
     },
     "Lucina wants to" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina vuole"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina vil"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina vuole"
           }
         }
       }
     },
     "Lucina's access" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Accesso di Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucinas adgang"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accesso di Lucina"
           }
         }
       }
@@ -3554,16 +3634,16 @@
     },
     "Message" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Messaggio"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Besked"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Messaggio"
           }
         }
       }
@@ -3680,6 +3760,22 @@
         }
       }
     },
+    "Name for Lucina" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nome per Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Navn til Lucina"
+          }
+        }
+      }
+    },
     "Name, muscle, or equipment" : {
       "localizations" : {
         "da" : {
@@ -3698,16 +3794,16 @@
     },
     "Needs iOS 26." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Richiede iOS 26."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kræver iOS 26."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Richiede iOS 26."
           }
         }
       }
@@ -3890,16 +3986,16 @@
     },
     "Not now" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Non ora"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ikke nu"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non ora"
           }
         }
       }
@@ -4050,32 +4146,32 @@
     },
     "Open Secretary and sign in first." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apri prima Secretary e accedi."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Åbn Secretary og log ind først."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri prima Secretary e accedi."
           }
         }
       }
     },
     "Open Settings" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apri Impostazioni"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Åbn Indstillinger"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Impostazioni"
           }
         }
       }
@@ -4178,16 +4274,16 @@
     },
     "Places you visit" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Luoghi che visiti"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Steder, du besøger"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Luoghi che visiti"
           }
         }
       }
@@ -4258,16 +4354,16 @@
     },
     "Recent commands from Lucina" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Comandi recenti di Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Seneste kommandoer fra Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Comandi recenti di Lucina"
           }
         }
       }
@@ -4290,16 +4386,16 @@
     },
     "Reminders" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Promemoria"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Påmindelser"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Promemoria"
           }
         }
       }
@@ -4428,6 +4524,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sostituire i dati della palestra con questo backup?"
+          }
+        }
+      }
+    },
+    "Report and limits" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Report e limiti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rapport og grænser"
           }
         }
       }
@@ -4578,16 +4690,16 @@
     },
     "Safari websites" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Siti in Safari"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Websteder i Safari"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Siti in Safari"
           }
         }
       }
@@ -4674,16 +4786,16 @@
     },
     "Screen Time" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tempo di utilizzo"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skærmtid"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tempo di utilizzo"
           }
         }
       }
@@ -4773,16 +4885,16 @@
     },
     "Sends a message to Lucina and returns her answer." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Invia un messaggio a Lucina e restituisce la sua risposta."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sender en besked til Lucina og returnerer hendes svar."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Invia un messaggio a Lucina e restituisce la sua risposta."
           }
         }
       }
@@ -4933,6 +5045,12 @@
     },
     "Set an alarm at %@ %@" : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt en alarm kl. %@ %@"
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "new",
@@ -4943,12 +5061,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Impostare una sveglia alle %@ %@"
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sæt en alarm kl. %@ %@"
           }
         }
       }
@@ -5195,16 +5307,16 @@
     },
     "Start a timer %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Avviare un timer %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Start en timer %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avviare un timer %@"
           }
         }
       }
@@ -5241,34 +5353,50 @@
         }
       }
     },
-    "Start workout" : {
+    "Start watching" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Inizia allenamento"
+            "value" : "Inizia a osservare"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Begynd at holde øje"
+          }
+        }
+      }
+    },
+    "Start workout" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Start træning"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inizia allenamento"
           }
         }
       }
     },
     "Starts an empty workout in the Gym tab." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inizia un allenamento libero nella scheda Palestra."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Starter en tom træning under fanen Træning."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inizia un allenamento libero nella scheda Palestra."
           }
         }
       }
@@ -5291,16 +5419,16 @@
     },
     "Stop" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ferma"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stop"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferma"
           }
         }
       }
@@ -5317,6 +5445,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Smetti di ascoltare"
+          }
+        }
+      }
+    },
+    "Stop watching" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smetti di osservare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop med at holde øje"
           }
         }
       }
@@ -5355,32 +5499,32 @@
     },
     "Tell Lucina" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Avvisa Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fortæl Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvisa Lucina"
           }
         }
       }
     },
     "Tell Lucina: %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Avvisa Lucina: %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fortæl Lucina: %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvisa Lucina: %@"
           }
         }
       }
@@ -5467,16 +5611,16 @@
     },
     "The Safari extension and the Screen Time report are separate parts of the app; see the notes under each." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L'estensione di Safari e il report di Tempo di utilizzo sono parti separate dell'app; vedi le note sotto ciascuno."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Safari-udvidelsen og Skærmtid-rapporten er separate dele af appen; se noterne under hver."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'estensione di Safari e il report di Tempo di utilizzo sono parti separate dell'app; vedi le note sotto ciascuno."
           }
         }
       }
@@ -5611,16 +5755,16 @@
     },
     "The server doesn't accept device events yet; they wait on the phone and go out once it does." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il server non accetta ancora gli eventi del dispositivo; restano sul telefono e partono appena può."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serveren tager ikke imod enhedshændelser endnu; de venter på telefonen og sendes, så snart den gør."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il server non accetta ancora gli eventi del dispositivo; restano sul telefono e partono appena può."
           }
         }
       }
@@ -5883,13 +6027,13 @@
     },
     "Timer" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Timer"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Timer"
@@ -5925,6 +6069,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Da comprare · %lld"
+          }
+        }
+      }
+    },
+    "Today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I dag"
           }
         }
       }
@@ -6171,32 +6331,32 @@
     },
     "Turn on Secretary in Settings → Apps → Safari → Extensions, and allow it on all websites." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Attiva Secretary in Impostazioni → App → Safari → Estensioni e consentilo su tutti i siti."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Slå Secretary til i Indstillinger → Apps → Safari → Udvidelser, og tillad den på alle websteder."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attiva Secretary in Impostazioni → App → Safari → Estensioni e consentilo su tutti i siti."
           }
         }
       }
     },
     "Turned off in iOS Settings." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Disattivato nelle Impostazioni di iOS."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Slået fra i iOS-indstillinger."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disattivato nelle Impostazioni di iOS."
           }
         }
       }
@@ -6459,32 +6619,32 @@
     },
     "Waiting for permission." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In attesa del permesso."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Venter på tilladelse."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa del permesso."
           }
         }
       }
     },
     "Waiting to send" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In attesa di invio"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Venter på at blive sendt"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa di invio"
           }
         }
       }
@@ -6517,6 +6677,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serie di riscaldamento escluse"
+          }
+        }
+      }
+    },
+    "Watching. Lucina hears “%@” when it happens." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In osservazione. Lucina riceve “%@” quando succede."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Holder øje. Lucina hører “%@”, når det sker."
           }
         }
       }
@@ -6587,16 +6763,16 @@
     },
     "Weight from Apple Health goes to the Weight tab, your gym workouts go to Health, and Lucina gets a daily summary (steps, sleep, workouts)." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il peso da Apple Salute va nella scheda Peso, i tuoi allenamenti vanno in Salute e Lucina riceve un riepilogo giornaliero (passi, sonno, allenamenti)."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Vægt fra Apple Sundhed går til fanen Vægt, dine træninger går til Sundhed, og Lucina får et dagligt resumé (skridt, søvn, træninger)."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il peso da Apple Salute va nella scheda Peso, i tuoi allenamenti vanno in Salute e Lucina riceve un riepilogo giornaliero (passi, sonno, allenamenti)."
           }
         }
       }
@@ -6635,32 +6811,32 @@
     },
     "What do you want to ask Lucina?" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cosa vuoi chiedere a Lucina?"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hvad vil du spørge Lucina om?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cosa vuoi chiedere a Lucina?"
           }
         }
       }
     },
     "What should I add?" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cosa devo aggiungere?"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hvad skal jeg tilføje?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cosa devo aggiungere?"
           }
         }
       }
@@ -6681,34 +6857,50 @@
         }
       }
     },
-    "When you arrive at or leave a place, Lucina learns where and for how long. Needs “Always” location access." : {
+    "When the chosen apps pass the limit today, Lucina gets a note with the name above. iOS never shares which apps or how long." : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Quando arrivi o lasci un luogo, Lucina sa dove e per quanto. Richiede l'accesso alla posizione “Sempre”."
+            "value" : "Quando le app scelte superano il limite oggi, Lucina riceve un avviso con il nome sopra. iOS non rivela mai quali app né per quanto."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Når de valgte apps passerer grænsen i dag, får Lucina en besked med navnet ovenfor. iOS deler aldrig hvilke apps eller hvor længe."
+          }
+        }
+      }
+    },
+    "When you arrive at or leave a place, Lucina learns where and for how long. Needs “Always” location access." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Når du ankommer til eller forlader et sted, får Lucina at vide hvor og hvor længe. Kræver lokalitetsadgang “Altid”."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando arrivi o lasci un luogo, Lucina sa dove e per quanto. Richiede l'accesso alla posizione “Sempre”."
           }
         }
       }
     },
     "With the Secretary Safari extension on, Lucina sees the sites (domain and title) you visit in Safari. Other browsers stay private." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Con l'estensione Secretary di Safari attiva, Lucina vede i siti (dominio e titolo) che visiti in Safari. Gli altri browser restano privati."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Med Secretary-udvidelsen i Safari slået til ser Lucina de websteder (domæne og titel), du besøger i Safari. Andre browsere forbliver private."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Con l'estensione Secretary di Safari attiva, Lucina vede i siti (dominio e titolo) che visiti in Safari. Gli altri browser restano privati."
           }
         }
       }
@@ -6731,16 +6923,16 @@
     },
     "Workout" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Allenamento"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Træning"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allenamento"
           }
         }
       }
@@ -6827,16 +7019,16 @@
     },
     "Your Screen Time report inside the app, and a note to Lucina when an app passes a limit you set. The numbers never leave the phone." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il report di Tempo di utilizzo nell'app, e un avviso a Lucina quando un'app supera un limite che imposti. I numeri non lasciano mai il telefono."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Din Skærmtid-rapport i appen og en besked til Lucina, når en app passerer en grænse, du sætter. Tallene forlader aldrig telefonen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il report di Tempo di utilizzo nell'app, e un avviso a Lucina quando un'app supera un limite che imposti. I numeri non lasciano mai il telefono."
           }
         }
       }

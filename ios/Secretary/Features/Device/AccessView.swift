@@ -99,6 +99,13 @@ struct AccessView: View {
                 Text("Turn on Secretary in Settings → Apps → Safari → Extensions, and allow it on all websites.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            #if canImport(FamilyControls) && canImport(DeviceActivity)
+            if source == .screenTime && hub.access.status(.screenTime) == .on {
+                NavigationLink("Report and limits") { ScreenTimeView() }
+                    .font(.subheadline)
+                    .accessibilityIdentifier("screenTimeReport")
+            }
+            #endif
             if source == .focus && hub.access.isOn(.focus) {
                 Text("In Settings → Focus, open a Focus, add a Focus Filter and choose Secretary.")
                     .font(.caption).foregroundStyle(.secondary)

@@ -6,6 +6,8 @@ import Security
 struct KeychainStore: Sendable {
     let service: String
     let account: String
+    /// A shared access group (the Safari and Screen Time extensions read the bridge item).
+    var accessGroup: String? = nil
 
     static let accessKey = KeychainStore(service: "tech.getsecretary.app", account: "device-access-key")
 
@@ -15,11 +17,13 @@ struct KeychainStore: Sendable {
     }
 
     private var baseQuery: [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
+        if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+        return query
     }
 
     func read() throws -> String? {
@@ -75,5 +79,39 @@ struct KeychainStore: Sendable {
             throw KeychainError.unexpectedStatus(status)
         }
         return attributes[kSecAttrAccessible as String] as? String
+    }
+}
+
+/// What the app's extensions need to report to the server on their own: the device token
+/// and the server addresses, in the shared keychain group. Written only while a source
+/// that uses an extension (Safari, Screen Time) is on; removed on sign-out.
+struct BridgeCredentials: Codable, Equatable, Sendable {
+    var token: String
+    var endpoints: [String]
+    var sources: [String]
+
+    /// `$(AppIdentifierPrefix)tech.getsecretary.shared`, from Info.plist.
+    static var accessGroup: String? {
+        guard let group = Bundle.main.object(forInfoDictionaryKey: "SecretaryKeychainGroup") as? String,
+              !group.hasPrefix("$(") else { return nil }
+        return group
+    }
+
+    static var store: KeychainStore? {
+        accessGroup.map { KeychainStore(service: "tech.getsecretary.shared", account: "bridge", accessGroup: $0) }
+    }
+
+    static func read() -> BridgeCredentials? {
+        guard let raw = try? store?.read(), let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(BridgeCredentials.self, from: data)
+    }
+
+    static func write(_ credentials: BridgeCredentials?) {
+        guard let store else { return }
+        if let credentials, let data = try? JSONEncoder().encode(credentials), let text = String(data: data, encoding: .utf8) {
+            try? store.save(text)
+        } else {
+            try? store.delete()
+        }
     }
 }

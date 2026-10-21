@@ -88,3 +88,37 @@ route (CSRF-exempt, as on the real server), `POST /v1/auth/device` and
 - Push notifications for reminders (APNs, server side + a device-registration route).
 - `LucinaStage` (the animated avatar with voice) in the slot above the chat transcript.
 - TestFlight, which needs the owner's paid Apple developer team.
+
+## Device bridge (docs/device-bridge.md)
+
+Settings → Lucina's access turns each source on, with an explanation before iOS asks:
+
+| Source | How | Notes |
+|---|---|---|
+| Alarms, timers | AlarmKit (iOS 26) | Only alarms Secretary made; Clock's own alarms are out of reach. |
+| Reminders, calendar | EventKit, full access | Deletes and calendar changes need a tap in the app. |
+| Health | HealthKit | Weight → Weight tab; weigh-ins and gym workouts → Health; daily summary and workouts → Lucina. |
+| Places | CoreLocation visits | Needs "Always". Coordinates rounded to ~10 m. |
+| Focus | Focus filter intent | Add "Tell Lucina" to a Focus in iOS Settings. |
+| Safari | Safari Web Extension (`Extensions/SecretarySafari`) | Domain + title, once per domain per 5 min; the user enables it in Safari. |
+| Screen Time | DeviceActivity report + monitor extensions | Report shown in-app; only the name of a passed limit reaches Lucina. |
+
+Siri / Shortcuts: Ask Lucina, Add to shopping, Start workout, Log weight.
+
+Commands arrive as timeline items (`meta.kind: "device_command"`), are run once, acked with
+`POST /v1/device/commands/{id}/result`, expire after 10 minutes, and are ignored when they
+predate this install or sign-in. Events queue on disk until `POST /v1/device/events` answers 200.
+
+Extensions reach the server themselves: the app writes the token and server URLs to the
+shared keychain group (`$(AppIdentifierPrefix)tech.getsecretary.shared`) only while Safari or
+Screen Time is on.
+
+### Signing on the free Personal Team (tested 2026-10-21)
+
+- Signs and installs: HealthKit, Family Controls (development), keychain sharing, Siri,
+  AlarmKit, EventKit, location, the Safari extension and both DeviceActivity extensions.
+- Refused: **App Groups** ("profile doesn't match the application-groups entitlement"), so
+  nothing here relies on them.
+- Needs the paid Apple Developer Program: Family Controls **distribution** (Apple must
+  approve it for TestFlight / App Store), TestFlight itself, push notifications (APNs), and
+  profiles longer than 7 days.

@@ -407,8 +407,10 @@ final class DeviceHub {
     @ObservationIgnored private let eventStore = EKEventStore()
     @ObservationIgnored private var changeObserver: NSObjectProtocol?
     @ObservationIgnored private var changeDebounce: Task<Void, Never>?
+    @ObservationIgnored private let client: APIClient
 
     init(client: APIClient, weight: WeightStore) {
+        self.client = client
         bridge = DeviceBridge(client: { DeviceClient(client: client) })
         executors = DeviceExecutors(access: access)
         health = HealthCollector(bridge: bridge, weight: weight)
@@ -420,6 +422,7 @@ final class DeviceHub {
     /// Turns a source on (asking iOS for permission, with the explanation shown first) or off.
     func set(_ source: DeviceSource, on: Bool) async {
         access.setOn(source, on)
+        defer { syncCredentials() }
         guard on else {
             stop(source)
             return
@@ -452,6 +455,18 @@ final class DeviceHub {
         await bridge.reportState(force: true)
     }
 
+    /// Lets the Safari and Screen Time extensions send their events: the token and server
+    /// addresses go to the shared keychain group only while one of those sources is on.
+    func syncCredentials() {
+        let sources = [DeviceSource.safari, .screenTime].filter { access.isOn($0) }.map(\.rawValue)
+        guard !sources.isEmpty, let token = client.accessKey, !token.isEmpty else {
+            BridgeCredentials.write(nil)
+            return
+        }
+        let endpoints = [client.baseURL] + client.endpoints.filter { $0 != client.baseURL }
+        BridgeCredentials.write(BridgeCredentials(token: token, endpoints: endpoints.map(\.absoluteString), sources: sources))
+    }
+
     private func stop(_ source: DeviceSource) {
         switch source {
         case .location: location.stop()
@@ -462,6 +477,7 @@ final class DeviceHub {
 
     /// On launch and each foreground: start what's on, deliver queued events, refresh state.
     func resume() async {
+        syncCredentials()
         if access.isOn(.location) { location.start() }
         if access.isOn(.reminders) || access.isOn(.calendar) { observeEventStore() }
         if access.isOn(.health) { health.stop(); await health.start() }
@@ -494,6 +510,7 @@ final class DeviceHub {
 
     func reset() {
         bridge.reset()
+        BridgeCredentials.write(nil)
         for source in DeviceSource.allCases { access.setOn(source, false) }
         location.stop()
         health.stop()

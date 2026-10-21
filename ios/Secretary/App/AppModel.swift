@@ -167,6 +167,7 @@ final class AppModel {
         deviceName = nil
         lucina.stopEverything()
         device.bridge.reset()
+        BridgeCredentials.write(nil)
         lucina.expanded = false
         chat.clear()
         shopping.reset()
