@@ -312,9 +312,17 @@ fn routines_custom_exercises_search_and_measurements_are_functional() {
         json!({"type":"start_workout","title":"Simple","routine_id":id}),
     );
     assert_eq!(e.state().active.as_ref().unwrap().exercises.len(), 2);
+    // Body weight moved to secretary-body; the gym keeps body fat and waist.
+    assert!(
+        !send(
+            &mut e,
+            json!({"type":"record_measurement","kind":"body_weight","value":"80.5"})
+        )
+        .ok
+    );
     ok(
         &mut e,
-        json!({"type":"record_measurement","kind":"body_weight","value":"80.5"}),
+        json!({"type":"record_measurement","kind":"waist","value":"80.5"}),
     );
     assert!(
         !send(

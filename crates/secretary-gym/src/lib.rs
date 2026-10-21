@@ -1,5 +1,6 @@
 //! Domain transitions, atomic persistence, replay protection and presentation.
 pub mod catalog;
+pub mod insights;
 pub mod kernel;
 pub mod models;
 mod presentation;
@@ -88,10 +89,7 @@ impl Engine {
                 replayed: false,
                 error: Some(error),
                 code: Some(code.into()),
-                view: None,
-                text: None,
-                exercises: None,
-                clock: None,
+                ..Default::default()
             },
         }
     }
@@ -115,13 +113,16 @@ impl Engine {
         if matches!(req.command, Command::Clock) {
             return Ok(Response {
                 ok: true,
-                replayed: false,
-                error: None,
-                code: None,
-                view: None,
-                text: None,
-                exercises: None,
                 clock: Some(presentation::clock(&self.state, now)),
+                ..Default::default()
+            });
+        }
+        if let Command::ParseWeight { value, unit } = &req.command {
+            let unit = unit.as_deref().unwrap_or(&self.state.settings.weight_unit);
+            return Ok(Response {
+                ok: true,
+                weight_grams: Some(parse_weight(value, unit).map_err(invalid)?),
+                ..Default::default()
             });
         }
         let mut text = None;
@@ -203,12 +204,10 @@ impl Engine {
         Ok(Response {
             ok: true,
             replayed,
-            error: None,
-            code: None,
             view: Some(presentation::view(&self.state, now, tz)),
             text,
             exercises,
-            clock: None,
+            ..Default::default()
         })
     }
 
@@ -412,6 +411,43 @@ fn apply(s: &mut State, command: Command, now: u64) -> Result<()> {
             });
             s.rest = None;
         }
+        Command::RepeatWorkout { workout_id } => {
+            if s.active.is_some() {
+                return Err("Finish or discard your current workout first".into());
+            }
+            let source = s
+                .history
+                .iter()
+                .find(|w| w.id == workout_id)
+                .ok_or("Workout not found")?;
+            let exercises = source
+                .exercises
+                .iter()
+                .map(|e| WorkoutExercise {
+                    id: id(),
+                    exercise_id: e.exercise_id.clone(),
+                    notes: String::new(),
+                    sets: e
+                        .sets
+                        .iter()
+                        .map(|x| WorkoutSet {
+                            id: id(),
+                            completed: false,
+                            ..x.clone()
+                        })
+                        .collect(),
+                })
+                .collect();
+            s.active = Some(Workout {
+                id: id(),
+                title: source.title.clone(),
+                notes: String::new(),
+                started_ms: now,
+                finished_ms: None,
+                exercises,
+            });
+            s.rest = None;
+        }
         Command::RenameWorkout { title } => active(s)?.title = name(&title)?,
         Command::SetNotes { notes, exercise_id } => {
             if notes.len() > 8000 {
@@ -490,12 +526,18 @@ fn apply(s: &mut State, command: Command, now: u64) -> Result<()> {
         Command::EditSet {
             set_id,
             weight,
+            weight_grams,
             reps,
             seconds,
             distance_meters,
             kind,
         } => {
-            let grams = parse_weight(&weight, &s.settings.weight_unit)?;
+            let grams = match (weight, weight_grams) {
+                (Some(text), None) => parse_weight(&text, &s.settings.weight_unit)?,
+                (None, Some(grams)) if grams <= 2_000_000 => grams,
+                (None, Some(_)) => return Err("Weight exceeds 2,000 kg".into()),
+                _ => return Err("Give exactly one of weight or weight_grams".into()),
+            };
             let exercise_id = active(s)?
                 .exercises
                 .iter()
@@ -652,11 +694,12 @@ fn apply(s: &mut State, command: Command, now: u64) -> Result<()> {
             }
         }
         Command::RecordMeasurement { kind, value } => {
-            let value_milli = if kind == "body_weight" {
-                parse_weight(&value, &s.settings.weight_unit)?
-            } else {
-                decimal_milli(&value)?
-            };
+            // Body weight is owned by the body module (secretary-body). Old
+            // body_weight measurements stay valid and readable here.
+            if kind == "body_weight" {
+                return Err("Log body weight in the body module".into());
+            }
+            let value_milli = decimal_milli(&value)?;
             s.measurements.push(Measurement {
                 id: id(),
                 timestamp_ms: now,

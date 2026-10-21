@@ -15,7 +15,7 @@ pub fn weight(grams: u64, unit: &str) -> String {
         grams as f64 / 1000.0
     })
 }
-fn volume(grams: u64, unit: &str) -> String {
+pub(crate) fn volume(grams: u64, unit: &str) -> String {
     format!("{} {}", weight(grams, unit), unit)
 }
 fn duration(ms: u64) -> String {
@@ -26,7 +26,7 @@ fn duration(ms: u64) -> String {
         format!("{}m {:02}s", secs / 60, secs % 60)
     }
 }
-fn workout_volume(w: &Workout) -> u64 {
+pub(crate) fn workout_volume(w: &Workout) -> u64 {
     w.exercises
         .iter()
         .flat_map(|e| &e.sets)
@@ -40,25 +40,59 @@ fn workout_volume(w: &Workout) -> u64 {
         })
         .sum()
 }
-fn completed(w: &Workout) -> usize {
+pub(crate) fn completed(w: &Workout) -> usize {
     w.exercises
         .iter()
         .flat_map(|e| &e.sets)
         .filter(|set| set.completed)
         .count()
 }
+fn active_elapsed_ms(state: &State, now: u64) -> u64 {
+    state
+        .active
+        .as_ref()
+        .map_or(0, |w| now.saturating_sub(w.started_ms))
+}
+/// Epley estimate `w * (1 + reps/30)`, rounded half up; a single rep is `w`.
+pub(crate) fn estimated_1rm(weight_grams: u64, reps: u64) -> u64 {
+    if reps <= 1 {
+        weight_grams
+    } else {
+        (weight_grams * (30 + reps) + 15) / 30
+    }
+}
+pub(crate) fn chart_point(
+    id: &str,
+    finished_ms: u64,
+    grams: u64,
+    unit: &str,
+    tz: chrono_tz::Tz,
+) -> ChartPoint {
+    ChartPoint {
+        id: id.to_string(),
+        label: tz
+            .timestamp_millis_opt(finished_ms as i64)
+            .single()
+            .unwrap()
+            .format("%d %b")
+            .to_string(),
+        volume: if unit == "lb" {
+            grams as f64 / 453.59237
+        } else {
+            grams as f64 / 1000.0
+        },
+        volume_grams: grams,
+    }
+}
 pub fn clock(state: &State, now: u64) -> Clock {
+    let elapsed = active_elapsed_ms(state, now);
     Clock {
         rest_remaining: state
             .rest
             .as_ref()
             .map_or(0, |r| kernel::rest_remaining(r.deadline_ms, now)),
-        active_duration: duration(
-            state
-                .active
-                .as_ref()
-                .map_or(0, |w| now.saturating_sub(w.started_ms)),
-        ),
+        active_duration: duration(elapsed),
+        active_elapsed_seconds: elapsed / 1000,
     }
 }
 fn set_label(set: &WorkoutSet, kind: &ExerciseKind, unit: &str) -> String {
@@ -108,12 +142,8 @@ pub fn view(state: &State, now: u64, tz: chrono_tz::Tz) -> View {
         weekly_goal: state.settings.weekly_goal,
         volume: volume(state.history.iter().map(workout_volume).sum(), unit),
         active_volume: volume(state.active.as_ref().map_or(0, workout_volume), unit),
-        active_duration: duration(
-            state
-                .active
-                .as_ref()
-                .map_or(0, |w| now.saturating_sub(w.started_ms)),
-        ),
+        active_duration: duration(active_elapsed_ms(state, now)),
+        active_elapsed_seconds: active_elapsed_ms(state, now) / 1000,
         active_completed_sets: state.active.as_ref().map_or(0, completed),
     };
     let mut weight_labels = BTreeMap::new();
@@ -163,6 +193,14 @@ pub fn view(state: &State, now: u64, tz: chrono_tz::Tz) -> View {
         let best = sets
             .iter()
             .fold(0, |n, set| kernel::best_record(n, set.weight_grams));
+        let e1rm = (e.kind == ExerciseKind::WeightReps)
+            .then(|| {
+                sets.iter()
+                    .filter(|x| x.weight_grams > 0 && x.reps > 0)
+                    .map(|x| estimated_1rm(x.weight_grams, x.reps))
+                    .max()
+            })
+            .flatten();
         records.push(Record {
             exercise_id: e.id.clone(),
             name: e.name.clone(),
@@ -177,6 +215,8 @@ pub fn view(state: &State, now: u64, tz: chrono_tz::Tz) -> View {
             ),
             seconds: sets.iter().map(|x| x.seconds).max().unwrap_or(0),
             distance_meters: sets.iter().map(|x| x.distance_meters).max().unwrap_or(0),
+            estimated_1rm: e1rm.map(|g| volume(g, unit)),
+            estimated_1rm_grams: e1rm,
         });
     }
     let chart = visible
@@ -184,21 +224,40 @@ pub fn view(state: &State, now: u64, tz: chrono_tz::Tz) -> View {
         .iter()
         .take(14)
         .rev()
-        .map(|w| ChartPoint {
-            id: w.id.clone(),
-            label: tz
-                .timestamp_millis_opt(w.finished_ms.unwrap() as i64)
-                .single()
-                .unwrap()
-                .format("%d %b")
-                .to_string(),
-            volume: if unit == "lb" {
-                workout_volume(w) as f64 / 453.59237
-            } else {
-                workout_volume(w) as f64 / 1000.0
-            },
-        })
+        .map(|w| chart_point(&w.id, w.finished_ms.unwrap(), workout_volume(w), unit, tz))
         .collect();
+    // visible.history is newest first; keep each exercise's last 14 workouts.
+    let mut exercise_charts: BTreeMap<String, Vec<ChartPoint>> = BTreeMap::new();
+    for w in &visible.history {
+        for e in &w.exercises {
+            if !e
+                .sets
+                .iter()
+                .any(|x| x.completed && x.kind != SetKind::Warmup)
+            {
+                continue;
+            }
+            let points = exercise_charts.entry(e.exercise_id.clone()).or_default();
+            if points.len() < 14 {
+                let grams = e
+                    .sets
+                    .iter()
+                    .map(|x| {
+                        kernel::set_volume(
+                            x.weight_grams,
+                            x.reps,
+                            x.completed,
+                            x.kind == SetKind::Warmup,
+                        )
+                    })
+                    .sum();
+                points.push(chart_point(&w.id, w.finished_ms.unwrap(), grams, unit, tz));
+            }
+        }
+    }
+    for points in exercise_charts.values_mut() {
+        points.reverse();
+    }
     let measurement_labels = state
         .measurements
         .iter()
@@ -216,6 +275,7 @@ pub fn view(state: &State, now: u64, tz: chrono_tz::Tz) -> View {
         summary,
         records,
         chart,
+        exercise_charts,
         rest_remaining: state
             .rest
             .as_ref()

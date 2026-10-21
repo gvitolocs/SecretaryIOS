@@ -131,12 +131,22 @@ pub enum Command {
     SearchExercises {
         query: String,
     },
+    /// Query: parse a decimal weight string to integer grams.
+    ParseWeight {
+        value: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unit: Option<String>,
+    },
     ExportJson,
     ExportCsv,
     StartWorkout {
         title: String,
         #[serde(default)]
         routine_id: Option<String>,
+    },
+    /// Start a new active workout that copies a finished one.
+    RepeatWorkout {
+        workout_id: String,
     },
     RenameWorkout {
         title: String,
@@ -160,7 +170,13 @@ pub enum Command {
     },
     EditSet {
         set_id: String,
-        weight: String,
+        /// Decimal string in the display unit; exactly one of `weight` and
+        /// `weight_grams`. Absent fields are not serialized, so the receipt
+        /// fingerprint of the original string-only form is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight_grams: Option<u64>,
         reps: u64,
         seconds: u64,
         distance_meters: u64,
@@ -222,6 +238,7 @@ impl Command {
             Self::Snapshot
                 | Self::Clock
                 | Self::SearchExercises { .. }
+                | Self::ParseWeight { .. }
                 | Self::ExportJson
                 | Self::ExportCsv
         )
@@ -237,6 +254,7 @@ pub struct Summary {
     pub volume: String,
     pub active_volume: String,
     pub active_duration: String,
+    pub active_elapsed_seconds: u64,
     pub active_completed_sets: usize,
 }
 
@@ -249,6 +267,9 @@ pub struct Record {
     pub volume: String,
     pub seconds: u64,
     pub distance_meters: u64,
+    /// Best Epley estimate over completed non-warmup weighted sets.
+    pub estimated_1rm: Option<String>,
+    pub estimated_1rm_grams: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -256,6 +277,7 @@ pub struct ChartPoint {
     pub id: String,
     pub label: String,
     pub volume: f64,
+    pub volume_grams: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -271,6 +293,8 @@ pub struct View {
     pub summary: Summary,
     pub records: Vec<Record>,
     pub chart: Vec<ChartPoint>,
+    /// Catalog exercise id → its volume in each of its last 14 workouts.
+    pub exercise_charts: BTreeMap<String, Vec<ChartPoint>>,
     pub rest_remaining: u64,
     pub weight_labels: BTreeMap<String, String>,
     pub previous_labels: BTreeMap<String, String>,
@@ -278,7 +302,7 @@ pub struct View {
     pub workout_labels: BTreeMap<String, WorkoutSummary>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Response {
     pub ok: bool,
     pub replayed: bool,
@@ -294,10 +318,13 @@ pub struct Response {
     pub exercises: Option<Vec<Exercise>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clock: Option<Clock>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight_grams: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Clock {
     pub rest_remaining: u64,
     pub active_duration: String,
+    pub active_elapsed_seconds: u64,
 }
