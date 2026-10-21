@@ -111,3 +111,15 @@ export function restRemainingNow(
   if (!clock) return 0;
   return Math.max(0, clock.rest_remaining - Math.floor((nowMs - clock.receivedAt) / 1000));
 }
+
+/**
+ * Live workout duration in seconds: the server's `active_elapsed_seconds`
+ * plus local ticking since it arrived. Null when the engine does not send it.
+ */
+export function elapsedNow(
+  clock: { active_elapsed_seconds?: number; receivedAt: number } | null,
+  nowMs: number,
+): number | null {
+  if (!clock || typeof clock.active_elapsed_seconds !== "number") return null;
+  return clock.active_elapsed_seconds + Math.max(0, Math.floor((nowMs - clock.receivedAt) / 1000));
+}

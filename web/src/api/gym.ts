@@ -193,7 +193,28 @@ export type GymCommand =
   | { type: "create_exercise"; name: string; muscle: string; equipment: string; kind: ExerciseKind }
   | { type: "start_rest"; seconds: number }
   | { type: "stop_rest" }
-  | { type: "update_settings"; weight_unit: string; rest_seconds: number; weekly_goal: number };
+  | { type: "update_settings"; weight_unit: string; rest_seconds: number; weekly_goal: number }
+  | { type: "record_measurement"; kind: GymMeasurementKind; value: string }
+  | { type: "delete_measurement"; measurement_id: string }
+  | { type: "export_json" }
+  | { type: "export_csv" }
+  | { type: "restore_json"; backup: string };
+
+/** Kinds the gym engine records; body weight lives in the body module (Weight tab). */
+export type GymMeasurementKind = "body_fat" | "waist";
+
+export const MEASUREMENT_KINDS: { kind: GymMeasurementKind; unit: string }[] = [
+  { kind: "body_fat", unit: "%" },
+  { kind: "waist", unit: "cm" },
+];
+
+/** The engine's request cap (crates/secretary-gym MAX_INPUT; /v1/gym/command body limit). */
+export const GYM_MAX_INPUT_BYTES = 16 * 1024 * 1024;
+
+/** Rest timer presets, as in the original Lucina Gym settings. */
+export const REST_PRESETS = [30, 45, 60, 90, 120, 180, 300] as const;
+
+const RESTORE_TIMEOUT_MS = 120_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -225,5 +246,7 @@ export async function getGymClock(timezone: string): Promise<GymClock> {
 }
 
 export function sendGymCommand(envelope: GymEnvelope): Promise<GymResponse> {
-  return request<GymResponse>("POST", "/v1/gym/command", { body: envelope });
+  // A backup can be up to 16 MiB; give its upload more time than a tap.
+  const timeoutMs = envelope.command.type === "restore_json" ? RESTORE_TIMEOUT_MS : undefined;
+  return request<GymResponse>("POST", "/v1/gym/command", { body: envelope, timeoutMs });
 }

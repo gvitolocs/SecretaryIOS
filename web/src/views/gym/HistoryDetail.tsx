@@ -3,23 +3,26 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import type { GymView, Workout, WorkoutExercise } from "../../api/gym";
 import { formatDateTime } from "../../lib/units";
 import { runGym } from "../../state/gym";
-import { ConfirmButton, exerciseById, GymPage, SET_KIND_LABELS, setBadge, setsText, setValueText } from "./shared";
+import { ConfirmButton, exerciseById, GymPage, JOURNAL_HREF, setBadge, setKindLabel, setsText, setValueText } from "./shared";
+import { gt } from "./strings";
+
+// One journal entry (HistoryView.swift `WorkoutDetail`).
 
 function ExerciseBlock(props: { view: GymView; item: WorkoutExercise }) {
   const exercise = createMemo(() => exerciseById(props.view, props.item.exercise_id));
   return (
-    <section class="card" aria-label={exercise()?.name ?? "Exercise"}>
-      <h2 class="exercise-name">{exercise()?.name ?? "Exercise"}</h2>
+    <section class="card" aria-label={exercise()?.name ?? gt("exercise")}>
+      <h2 class="exercise-name">{exercise()?.name ?? gt("exercise")}</h2>
       <ol class="detail-sets">
         <For each={props.item.sets}>
           {(set, i) => (
             <li class="detail-set" classList={{ "detail-set--skipped": !set.completed }}>
-              <span class="set-badge" classList={{ "set-badge--flag": set.kind !== "normal" }} title={SET_KIND_LABELS[set.kind]}>
+              <span class="set-badge" classList={{ "set-badge--flag": set.kind !== "normal" }} title={setKindLabel(set.kind)}>
                 {setBadge(set.kind, i())}
               </span>
-              <span class="sr-only">{SET_KIND_LABELS[set.kind]} set,</span>
+              <span class="sr-only">{gt("setKindSr", { kind: setKindLabel(set.kind) })}</span>
               <span class="detail-set-value">{setValueText(props.view, set, exercise()?.kind ?? "weight_reps")}</span>
-              <span class="detail-set-state">{set.completed ? "Done" : "Skipped"}</span>
+              <span class="detail-set-state">{gt(set.completed ? "setDone" : "setSkipped")}</span>
             </li>
           )}
         </For>
@@ -49,10 +52,10 @@ function Detail(props: { view: GymView; workout: Workout }) {
 
   return (
     <>
-      <A href="/gym/history" class="back-link">
-        ‹ History
+      <A href={JOURNAL_HREF} class="back-link">
+        {gt("backJournal")}
       </A>
-      <h1 class="view-title">{props.workout.title}</h1>
+      <h1 class="view-title gym-title">{props.workout.title}</h1>
       <p class="muted">
         {formatDateTime(props.workout.finished_ms ?? props.workout.started_ms)}
         <Show when={label()}>{(l) => ` · ${l().duration} · ${setsText(l().sets)} · ${l().volume}`}</Show>
@@ -68,19 +71,20 @@ function Detail(props: { view: GymView; workout: Workout }) {
           disabled={repeating() || Boolean(props.view.state.active)}
           onClick={() => void repeat()}
         >
-          Repeat workout
+          {gt("repeatWorkout")}
         </button>
         <ConfirmButton
-          label="Delete"
-          confirmLabel="Delete workout"
+          label={gt("delete")}
+          confirmLabel={gt("deleteWorkout")}
+          prompt={gt("deleteWorkoutPrompt")}
           onConfirm={async () => {
             const res = await runGym({ type: "delete_workout", workout_id: props.workout.id });
-            if (res?.ok) navigate("/gym/history");
+            if (res?.ok) navigate(JOURNAL_HREF);
           }}
         />
       </div>
       <Show when={props.view.state.active}>
-        <p class="muted small">Finish or discard your current workout before repeating this one.</p>
+        <p class="muted small">{gt("repeatBlocked")}</p>
       </Show>
     </>
   );
@@ -95,9 +99,9 @@ export default function HistoryDetailView() {
           when={view().state.history.find((w) => w.id === params.id)}
           fallback={
             <div class="empty">
-              <p class="empty-title">Workout not found.</p>
-              <A href="/gym/history" class="btn btn-link">
-                Back to history
+              <p class="empty-title">{gt("workoutNotFound")}</p>
+              <A href={JOURNAL_HREF} class="btn btn-link">
+                {gt("backToJournal")}
               </A>
             </div>
           }

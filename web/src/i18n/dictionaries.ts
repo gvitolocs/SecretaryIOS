@@ -3,10 +3,11 @@
 
 import { chat } from "./dict/chat";
 import { common } from "./dict/common";
+import { gym } from "./dict/gym";
 import { login } from "./dict/login";
 import { shell } from "./dict/shell";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { common, shell, chat, login, weight };
+export const dictionaries = { common, shell, chat, login, weight, gym };
 
 export type Dictionaries = typeof dictionaries;
