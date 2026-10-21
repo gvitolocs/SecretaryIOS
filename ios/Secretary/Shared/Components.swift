@@ -4,6 +4,9 @@ import SwiftUI
 /// system materials and grouped backgrounds, so light and dark mode come for free.
 enum Theme {
     static let accent = Color.accentColor
+    /// Filled surfaces that carry white text (buttons, the user's bubbles): deep teal in
+    /// both modes, because the lighter dark-mode accent is too pale under white text.
+    static let accentFill = Color("AccentFill")
     static let page = Color(uiColor: .systemGroupedBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
     static let field = Color(uiColor: .tertiarySystemFill)
@@ -74,6 +77,7 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.borderedProminent)
         .buttonBorderShape(.roundedRectangle(radius: 14))
+        .tint(Theme.accentFill)
         .disabled(isBusy)
     }
 }

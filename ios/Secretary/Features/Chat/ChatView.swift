@@ -1,10 +1,17 @@
 import SwiftUI
 
-struct ChatView: View {
+/// The Chat tab, built from parts so other surfaces can reuse them:
+/// `[stage] + ChatTranscript + ChatComposer`. A future `LucinaStage` (the animated
+/// avatar with voice) goes in the `stage` slot above the transcript; the transcript
+/// and composer only depend on `ChatStore`.
+struct ChatView<Stage: View>: View {
     @Environment(ChatStore.self) private var store
     @Environment(AppModel.self) private var app
-    @State private var draft = ""
-    @FocusState private var composerFocused: Bool
+    private let stage: Stage
+
+    init(@ViewBuilder stage: () -> Stage) {
+        self.stage = stage()
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,35 +20,49 @@ struct ChatView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 6)
             }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        if store.messages.isEmpty {
-                            emptyState
-                        }
-                        ForEach(store.messages) { message in
-                            MessageRow(message: message)
-                                .id(message.id)
-                        }
-                        if store.isSending {
-                            ThinkingBubble().id("thinking")
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 12)
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .defaultScrollAnchor(.bottom)
-                .onChange(of: store.messages.count) { _, _ in scrollToEnd(proxy) }
-                .onChange(of: store.isSending) { _, _ in scrollToEnd(proxy) }
-                .onAppear { scrollToEnd(proxy, animated: false) }
-            }
-            composer
+            stage
+            ChatTranscript()
+            ChatComposer()
         }
         .background(Theme.page)
         .navigationTitle("Lucina")
         .navigationBarTitleDisplayMode(.inline)
         .task { store.resumePolling() }
+    }
+}
+
+extension ChatView where Stage == EmptyView {
+    init() { self.init { EmptyView() } }
+}
+
+/// The scrolling list of bubbles, job cards and the thinking indicator.
+struct ChatTranscript: View {
+    @Environment(ChatStore.self) private var store
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    if store.messages.isEmpty {
+                        emptyState
+                    }
+                    ForEach(store.messages) { message in
+                        MessageRow(message: message)
+                            .id(message.id)
+                    }
+                    if store.isSending {
+                        ThinkingBubble().id("thinking")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: store.messages.count) { _, _ in scrollToEnd(proxy) }
+            .onChange(of: store.isSending) { _, _ in scrollToEnd(proxy) }
+            .onAppear { scrollToEnd(proxy, animated: false) }
+        }
     }
 
     private var emptyState: some View {
@@ -61,17 +82,42 @@ struct ChatView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var composer: some View {
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let target = store.isSending ? "thinking" : store.messages.last?.id
+        guard let target else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(target, anchor: .bottom)
+        }
+    }
+}
+
+/// The message field and send button. Sends on return.
+struct ChatComposer: View {
+    @Environment(ChatStore.self) private var store
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("Message Lucina", text: $draft, axis: .vertical)
                 .lineLimit(1...6)
                 .submitLabel(.send)
                 .onSubmit(send)
-                .focused($composerFocused)
+                .focused($focused)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(Theme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .accessibilityIdentifier("chatComposer")
+                .onChange(of: draft) { _, value in
+                    // A multi-line field inserts a newline on return instead of submitting:
+                    // treat a typed trailing newline as "send".
+                    if value.hasSuffix("\n") {
+                        draft = String(value.dropLast())
+                        send()
+                    }
+                }
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 34))
@@ -104,19 +150,9 @@ struct ChatView: View {
         guard canSend else { return }
         let text = draft
         draft = ""
-        composerFocused = true
+        focused = true
         Task {
             if !(await store.send(text)) { draft = text }
-        }
-    }
-
-    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        let target = store.isSending ? "thinking" : store.messages.last?.id
-        guard let target else { return }
-        if animated {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .bottom) }
-        } else {
-            proxy.scrollTo(target, anchor: .bottom)
         }
     }
 }
@@ -137,7 +173,7 @@ private struct MessageRow: View {
                         .padding(.vertical, 10)
                         .foregroundStyle(isUser ? Color.white : Color.primary)
                         .tint(isUser ? Color.white : Theme.accent)
-                        .background(isUser ? AnyShapeStyle(Theme.accent) : AnyShapeStyle(Theme.card),
+                        .background(isUser ? AnyShapeStyle(Theme.accentFill) : AnyShapeStyle(Theme.card),
                                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .opacity(message.status == .sending ? 0.7 : 1)
                         .accessibilityLabel(Text("\(isUser ? "You" : "Lucina"): \(message.text)"))

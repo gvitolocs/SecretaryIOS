@@ -86,7 +86,7 @@ final class AppModel {
     /// Email + password → device token (`POST /v1/auth/device`).
     func signIn(email: String, password: String) async throws {
         let request = DeviceLoginRequest(email: email.trimmingCharacters(in: .whitespacesAndNewlines),
-                                         password: password, deviceName: UIDevice.current.name)
+                                         password: password, deviceName: String(UIDevice.current.name.prefix(64)))
         let token = try await api.login(request)
         try await adopt(token: token.token, deviceName: token.deviceName)
     }

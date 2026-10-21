@@ -129,7 +129,8 @@ final class GymStore {
             let apiError = APIError.wrap(error)
             onTransportError?(apiError)
             if !quiet {
-                actionError = apiError.isConnectivity || apiError.status == 502 || apiError.status == 504
+                let unreachable = apiError.isConnectivity || apiError.status == 502 || apiError.status == 504
+                actionError = unreachable && apiError.code != "host_not_found"
                     ? "Secretary's server isn't reachable. That change wasn't saved."
                     : apiError.userMessage
             }

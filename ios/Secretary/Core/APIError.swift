@@ -12,7 +12,10 @@ enum APIError: Error, Equatable, Sendable {
     case lucinaOffline(code: String, message: String)
     /// Any other non-2xx answer with (or without) the `{"error":{code,message}}` envelope.
     case server(status: Int, code: String, message: String)
-    /// The request never got an HTTP answer (offline, DNS, refused, TLS...).
+    /// The host name did not resolve (NSURLErrorCannotFindHost / NSURLErrorDNSLookupFailed):
+    /// usually DNS or a VPN on the phone, not the server.
+    case hostNotFound(host: String)
+    /// The request never got an HTTP answer (offline, refused, TLS...).
     case network(message: String)
     /// The client-side timeout fired (15 s, or 125 s for chat).
     case timeout
@@ -27,7 +30,7 @@ enum APIError: Error, Equatable, Sendable {
         case .rateLimited: return 429
         case let .lucinaOffline(code, _): return code == "lucina_timeout" ? 504 : 502
         case let .server(status, _, _): return status
-        case .network, .timeout, .decoding, .invalidURL: return 0
+        case .hostNotFound, .network, .timeout, .decoding, .invalidURL: return 0
         }
     }
 
@@ -37,6 +40,7 @@ enum APIError: Error, Equatable, Sendable {
         case let .rateLimited(code, _, _): return code
         case let .lucinaOffline(code, _): return code
         case let .server(_, code, _): return code
+        case .hostNotFound: return "host_not_found"
         case .network: return "network"
         case .timeout: return "timeout"
         case .decoding: return "decoding"
@@ -61,6 +65,8 @@ enum APIError: Error, Equatable, Sendable {
         case let .server(status, _, message):
             if !message.isEmpty { return message }
             return status >= 500 ? "The server had a problem. Please try again." : "Request failed (\(status))."
+        case let .hostNotFound(host):
+            return "Can't find \(host) \u{2014} check DNS/VPN."
         case .network:
             return "Can't reach the server. Check your connection."
         case .timeout:
@@ -86,7 +92,7 @@ enum APIError: Error, Equatable, Sendable {
     /// The server itself could not be reached (as opposed to an answer we didn't like).
     var isConnectivity: Bool {
         switch self {
-        case .network, .timeout: return true
+        case .hostNotFound, .network, .timeout: return true
         default: return false
         }
     }
@@ -95,7 +101,11 @@ enum APIError: Error, Equatable, Sendable {
         if let api = error as? APIError { return api }
         if error is DecodingError { return .decoding(message: String(describing: error)) }
         if let url = error as? URLError {
-            return url.code == .timedOut ? .timeout : .network(message: url.localizedDescription)
+            if url.code == .timedOut { return .timeout }
+            if url.code == .cannotFindHost || url.code == .dnsLookupFailed {
+                return .hostNotFound(host: url.failingURL?.host ?? "the server")
+            }
+            return .network(message: url.localizedDescription)
         }
         return .network(message: error.localizedDescription)
     }

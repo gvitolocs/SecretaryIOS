@@ -84,6 +84,7 @@ struct WeightView: View {
                 if logging { ProgressView() } else { Text("Log").bold() }
             }
             .buttonStyle(.borderedProminent)
+            .tint(Theme.accentFill)
             .disabled(quickValue.trimmingCharacters(in: .whitespaces).isEmpty || logging)
             .accessibilityIdentifier("weightLogButton")
         }
@@ -158,6 +159,12 @@ struct WeightView: View {
         }
         .chartYScale(domain: low...high)
         .chartYAxis { AxisMarks(position: .leading) }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine()
+                AxisValueLabel(format: .dateTime.day().month(.abbreviated), collisionResolution: .greedy)
+            }
+        }
         .frame(height: 200)
         .padding(.vertical, 8)
         .accessibilityLabel("Weight trend with the 7-day average")

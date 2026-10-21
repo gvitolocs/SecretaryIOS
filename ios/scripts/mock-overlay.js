@@ -27,7 +27,7 @@ if (path === "/v1/auth/device" && method === "POST") {
   const deviceName = typeof body.deviceName === "string" && body.deviceName.trim() ? body.deviceName.trim() : "iPhone";
   const deviceId = randomUUID();
   iosTokens.set(token, { deviceName, deviceId });
-  return send(res, 200, { token, deviceId, deviceName });
+  return send(res, 201, { token, deviceId, deviceName });
 }
 if (path === "/v1/session/password" && method === "POST") {
   const s = currentSession(req);
@@ -36,10 +36,10 @@ if (path === "/v1/session/password" && method === "POST") {
   if (typeof body.currentPassword !== "string" || body.currentPassword !== iosPassword) {
     return fail(res, 403, "invalid_credentials", "current password is wrong");
   }
-  if (typeof body.newPassword !== "string" || body.newPassword.length < 12) {
-    return fail(res, 400, "bad_request", "newPassword must be at least 12 characters");
+  if (typeof body.newPassword !== "string" || body.newPassword.length < 8) {
+    return fail(res, 400, "bad_request", "newPassword must be at least 8 characters");
   }
   iosPassword = body.newPassword;
-  return send(res, 200, { ok: true });
+  return send(res, 200, { changed: true, sessionsRevoked: 0 });
 }
 // ---- end iOS overlay ----

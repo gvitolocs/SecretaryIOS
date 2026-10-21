@@ -118,6 +118,8 @@ final class APIClient: @unchecked Sendable {
             (data, urlResponse) = try await session.data(for: request)
         } catch let error as URLError where error.code == .timedOut {
             throw APIError.timeout
+        } catch let error as URLError where error.code == .cannotFindHost || error.code == .dnsLookupFailed {
+            throw APIError.hostNotFound(host: url.host ?? "the server")
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as URLError where error.code == .cancelled {

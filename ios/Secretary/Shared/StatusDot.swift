@@ -22,7 +22,7 @@ struct StatusDot: View {
         case .unknown: return .gray
         case .online: return .green
         case .lucinaDown: return .orange
-        case .serverDown: return .red
+        case .serverDown, .hostNotFound: return .red
         }
     }
 }

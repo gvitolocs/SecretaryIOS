@@ -73,12 +73,12 @@ final class ChatStore {
         return fresh
     }
 
-    static func isValidSessionId(_ value: String) -> Bool {
+    nonisolated static func isValidSessionId(_ value: String) -> Bool {
         !value.isEmpty && value.count <= 64 && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
     }
 
     /// The server accepts 1-4000 characters and no control characters other than newline and tab.
-    static func clean(_ text: String) -> String {
+    nonisolated static func clean(_ text: String) -> String {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
         let scalars = normalized.unicodeScalars.filter { scalar in
             scalar == "\n" || scalar == "\t" || !(scalar.value < 0x20 || scalar.value == 0x7F)
@@ -140,7 +140,7 @@ final class ChatStore {
         }
     }
 
-    static func describe(_ error: APIError) -> String {
+    nonisolated static func describe(_ error: APIError) -> String {
         switch error.code {
         case "lucina_unreachable": return "Lucina is offline. Not delivered."
         case "lucina_timeout": return "Lucina didn't answer in time."
@@ -148,6 +148,7 @@ final class ChatStore {
         case "timeout": return "No answer in time."
         default: break
         }
+        if case .hostNotFound = error { return error.userMessage }
         if error.isConnectivity { return "Couldn't reach the server." }
         if error.status == 401 { return "You were signed out." }
         if error.status == 429 { return "Too many messages; wait a moment." }

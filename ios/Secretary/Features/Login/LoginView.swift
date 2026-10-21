@@ -83,7 +83,7 @@ struct LoginView: View {
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 76, height: 76)
-                .background(Theme.accent.gradient, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .background(Theme.accentFill.gradient, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .accessibilityHidden(true)
             Text("Secretary").font(.largeTitle.bold())
             Text("Sign in to talk to Lucina, keep the shopping list, and log your training.")
@@ -183,7 +183,7 @@ struct LoginView: View {
             mode = .accessKey
             self.error = "This server doesn't offer password sign-in yet. Use your access key."
         default:
-            self.error = error.isConnectivity ? "Can't reach the server. Check your connection." : error.userMessage
+            self.error = error.userMessage
         }
     }
 }

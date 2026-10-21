@@ -97,7 +97,7 @@ final class WeightStore {
             guard mine == generation else { return false }
             let apiError = APIError.wrap(error)
             onTransportError?(apiError)
-            actionError = apiError.isConnectivity ? "Secretary's server isn't reachable. That entry wasn't saved." : apiError.userMessage
+            actionError = apiError.isConnectivity && apiError.code != "host_not_found" ? "Secretary's server isn't reachable. That entry wasn't saved." : apiError.userMessage
             return false
         }
     }

@@ -96,7 +96,7 @@ private struct ChangePasswordView: View {
             Form {
                 Section {
                     SecureField("Current password", text: $current).textContentType(.password)
-                    SecureField("New password", text: $new).textContentType(.newPassword)
+                    SecureField("New password (8+ characters)", text: $new).textContentType(.newPassword)
                     SecureField("Repeat new password", text: $confirm).textContentType(.newPassword)
                 }
                 if let message {
@@ -118,6 +118,7 @@ private struct ChangePasswordView: View {
 
     private func save() async {
         guard new == confirm else { message = "The new passwords don't match."; return }
+        guard new.count >= 8 else { message = "Use at least 8 characters."; return }
         busy = true
         defer { busy = false }
         do {

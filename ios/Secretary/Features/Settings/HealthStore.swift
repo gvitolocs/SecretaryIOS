@@ -10,6 +10,8 @@ final class HealthStore {
         case online(latencyMs: Int?)
         case lucinaDown(reason: String?)
         case serverDown
+        /// The host name did not resolve (DNS or VPN on this device).
+        case hostNotFound(host: String)
     }
 
     private(set) var status: Status = .unknown
@@ -32,7 +34,11 @@ final class HealthStore {
                 status = .lucinaDown(reason: health.lucina?.error)
             }
         } catch {
-            status = .serverDown
+            if case let .hostNotFound(host) = APIError.wrap(error) {
+                status = .hostNotFound(host: host)
+            } else {
+                status = .serverDown
+            }
         }
         checkedAt = Date()
     }
@@ -56,6 +62,7 @@ final class HealthStore {
             default: return "Lucina is offline"
             }
         case .serverDown: return "Server unreachable"
+        case let .hostNotFound(host): return "Can't find \(host) \u{2014} check DNS/VPN"
         }
     }
 }

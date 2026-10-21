@@ -157,14 +157,14 @@ struct TrainingView: View {
                 }
                 .font(.headline)
                 .padding(14)
-                .foregroundStyle(Theme.accent)
+                .foregroundStyle(Theme.accentFill)
                 .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .accessibilityIdentifier("continueWorkout")
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.accent.gradient, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background(Theme.accentFill.gradient, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     private func routineCard(_ routine: Routine) -> some View {
