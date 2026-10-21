@@ -1,9 +1,4 @@
-// ---- iOS overlay state (inserted by ios/scripts/run-mock.sh) ----
-const IOS_EMAIL = "owner@example.test";
-let iosPassword = process.env.MOCK_PASSWORD ?? "dev-password-123";
-/** @type {Map<string, {deviceName: string, deviceId: string}>} */
-const iosTokens = new Map();
-const iosLock = new Map();
+// ---- iOS overlay state: timeline ----
 const iosTimeline = [];
 let iosSeq = 0;
 const iosStreams = new Set();

@@ -29,7 +29,7 @@ struct MainTabs: View {
             NavigationStack { ChatView().lucinaStatusToolbar() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
-            NavigationStack { ShoppingView().lucinaStatusToolbar() }
+            NavigationStack { ShoppingTab().lucinaStatusToolbar() }
                 .tabItem { Label("Shopping", systemImage: "cart") }
                 .tag(AppModel.Tab.shopping)
             NavigationStack { GymScreen() }

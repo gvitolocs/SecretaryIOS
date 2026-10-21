@@ -122,21 +122,27 @@ final class SecretaryFlowTests: XCTestCase {
     // MARK: - Shopping
 
     func testShoppingAddAndToggle() {
-        let app = launch()
+        let app = launch(tab: "shopping")
         signIn(app)
-        app.tabBars.buttons["Shopping"].tap()
-        let field = app.textFields["shoppingAddField"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        // Shopping v2: tiles, search to add, tap to buy.
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "tile-")).firstMatch
+            .waitForExistence(timeout: 15), "seeded tiles")
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
         let name = "UITest \(Int.random(in: 1000...9999))"
-        field.tap()
-        field.typeText(name + "\n")
-        let row = app.buttons["shopping-\(name)"]
-        XCTAssertTrue(row.waitForExistence(timeout: 10), "added item")
-        XCTAssertEqual(row.value as? String, "To buy")
-        row.tap()
-        let predicate = NSPredicate(format: "value == %@", "Bought")
-        expectation(for: predicate, evaluatedWith: app.buttons["shopping-\(name)"])
+        search.tap()
+        search.typeText(name)
+        let free = app.buttons["suggestion-free"]
+        XCTAssertTrue(free.waitForExistence(timeout: 5))
+        free.tap()
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() }
+        let tile = app.descendants(matching: .any)["tile-\(name)"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 10), "added tile")
+        XCTAssertEqual(tile.value as? String, "To buy")
+        tile.tap()
+        expectation(for: NSPredicate(format: "value == %@", "Bought"), evaluatedWith: app.descendants(matching: .any)["tile-\(name)"])
         waitForExpectations(timeout: 10)
+        XCTAssertTrue(app.buttons["undo"].waitForExistence(timeout: 3), "undo offered")
         attach(app, "Shopping")
     }
 

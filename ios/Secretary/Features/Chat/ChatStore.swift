@@ -187,12 +187,15 @@ final class ChatStore {
     }
 
     private func runStream() async {
-        var delay: Duration = .seconds(1)
+        // docs/server-api.md: reconnect with backoff 1 s, 2 s, 5 s, 10 s, 30 s.
+        let backoff: [Duration] = [.seconds(1), .seconds(2), .seconds(5), .seconds(10), .seconds(30)]
+        var attempt = 0
         while !Task.isCancelled {
+            var wait = backoff[min(attempt, backoff.count - 1)]
             do {
                 let bytes = try await api().client.openStream("/v1/timeline/stream", lastEventId: lastEventId)
                 isLive = true
-                delay = .seconds(1)
+                attempt = 0
                 // Fill anything missed while disconnected (in case Last-Event-ID isn't honoured).
                 await refresh()
                 try await Self.readEvents(bytes) { [weak self] event in
@@ -204,11 +207,13 @@ final class ChatStore {
                 let apiError = APIError.wrap(error)
                 if apiError.endsSession { onTransportError?(apiError); break }
                 if apiError.status == 404 { break } // no stream on this server; pages still work
+                // 429 too_many_streams says when to come back.
+                if case let .rateLimited(_, retryAfter?, _) = apiError { wait = max(wait, .seconds(retryAfter)) }
             }
+            attempt += 1
             isLive = false
             if Task.isCancelled { break }
-            try? await Task.sleep(for: delay)
-            delay = min(delay * 2, .seconds(30))
+            try? await Task.sleep(for: wait)
         }
         isLive = false
         streamTask = nil

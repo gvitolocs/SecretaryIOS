@@ -26,6 +26,7 @@ final class AppModel {
 
     let chat: ChatStore
     let shopping: ShoppingStore
+    let shoppingV2: ShoppingV2Store
     /// Replaced when the owner moves training between the iPhone and the server.
     private(set) var gym: GymStore
     private(set) var gymLocation: GymLocation
@@ -42,6 +43,7 @@ final class AppModel {
             try? keychain.delete()
             try? FileManager.default.removeItem(at: ChatStore.defaultFileURL)
             try? FileManager.default.removeItem(at: FFIGymEngine.defaultFileURL)
+            try? FileManager.default.removeItem(at: ShoppingV2Store.defaultFileURL)
             defaults.removeObject(forKey: GymLocation.key)
             defaults.removeObject(forKey: ChatStore.sessionIdKey)
         }
@@ -52,6 +54,7 @@ final class AppModel {
         baseURL = client.baseURL
         chat = ChatStore(api: { SecretaryAPI(client: client) })
         shopping = ShoppingStore(api: { SecretaryAPI(client: client) })
+        shoppingV2 = ShoppingV2Store(api: { ShoppingV2Client(client: client) })
         let location = GymLocation(rawValue: defaults.string(forKey: GymLocation.key) ?? "") ?? .device
         let engine = Result { try FFIGymEngine(fileURL: FFIGymEngine.defaultFileURL) }
         let device = try? engine.get()
@@ -75,6 +78,7 @@ final class AppModel {
         chat.onTransportSuccess = onSuccess
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
+        shoppingV2.onTransportError = onError
         gym.onTransportError = onError
         transportErrorHandler = onError
         weight.onTransportError = onError
@@ -151,6 +155,7 @@ final class AppModel {
         deviceName = nil
         chat.clear()
         shopping.reset()
+        shoppingV2.reset()
         gym.reset()
         weight.reset()
         lucinaNotice = nil

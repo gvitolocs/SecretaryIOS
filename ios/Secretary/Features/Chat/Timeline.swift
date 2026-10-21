@@ -115,7 +115,11 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
         id = try c.decode(FlexibleID.self, forKey: .id).value
         ts = Self.decodeDate(c) ?? Date(timeIntervalSince1970: 0)
         channel = TimelineChannel(raw: c.lenient(String.self, .channel, "other"))
-        role = c.lenient(String.self, .role, "lucina") == "user" ? .user : .lucina
+        // Items with a role other than user/lucina are skipped (docs: timeline item).
+        guard let role = Role(rawValue: c.lenient(String.self, .role, "")) else {
+            throw DecodingError.dataCorruptedError(forKey: .role, in: c, debugDescription: "unsupported role")
+        }
+        self.role = role
         text = c.lenient(String.self, .text, "")
         clientMessageId = c.lenientOptional(String.self, .clientMessageId)
         replyTo = c.lenientOptional(FlexibleID.self, .replyTo)?.value
@@ -170,7 +174,8 @@ struct TimelinePage: Decodable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        items = try c.decodeIfPresent([TimelineItem].self, forKey: .items) ?? []
+        // One odd item must not hide the page: undecodable ones are skipped.
+        items = (try c.decodeIfPresent([Lossy<TimelineItem>].self, forKey: .items) ?? []).compactMap(\.value)
         nextBefore = c.lenientOptional(FlexibleID.self, .nextBefore)?.value
     }
 
@@ -303,5 +308,14 @@ struct SSEParser {
         }
         buffer.removeFirst(start)
         return out
+    }
+}
+
+/// Decodes a value or nil, so one bad element doesn't fail a whole array.
+struct Lossy<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }

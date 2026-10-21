@@ -75,6 +75,14 @@ final class TimelineMergeTests: XCTestCase {
         XCTAssertEqual(page.items.count, 1)
         XCTAssertNil(page.nextBefore)
 
+        // Items with another role, or that don't decode, are skipped; the page survives.
+        let mixed = try decoder.decode(TimelinePage.self, from: Data("""
+        {"items":[{"id":"a","ts":1,"channel":"web","role":"system","text":"x"},{"ts":2},
+                  {"id":"b","ts":3,"channel":"web","role":"user","text":"kept"}],"nextBefore":"a"}
+        """.utf8))
+        XCTAssertEqual(mixed.items.map(\.id), ["b"])
+        XCTAssertEqual(mixed.nextBefore, "a")
+
         // The cache round-trips local state.
         var local = minimal
         local.localStatus = .error
