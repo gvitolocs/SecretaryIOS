@@ -1,0 +1,21 @@
+# Lucina MCP on p1: paste inside the `getsecretary.tech { … }` block of
+# /etc/caddy/Caddyfile (deploy/Caddyfile.p1), ABOVE the final catch-all
+# `handle { reverse_proxy 127.0.0.1:8800 }`. Everything else stays on
+# secretary-server.
+
+	@lucina_mcp path /mcp /mcp/* /oauth/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/*
+	handle @lucina_mcp {
+		# Caddy sets X-Forwarded-For to the real peer (a client-sent value is
+		# not trusted without `trusted_proxies`); secretary-mcp
+		# (SECRETARY_MCP_TRUST_PROXY=1) rate-limits OAuth logins on its
+		# right-most entry.
+		reverse_proxy 127.0.0.1:8810 {
+			# ask_lucina can take up to two minutes; stream progress at once.
+			flush_interval -1
+		}
+	}
+
+# And in the same site's `log { format filter { … } }`, also drop the
+# OAuth redirect (it carries the one-time authorization code):
+#
+#			resp_headers>Location delete
