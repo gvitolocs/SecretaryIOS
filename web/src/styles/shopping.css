@@ -1,0 +1,1584 @@
+/* Shopping: a web copy of the Bring! home layout. Imported by views/Shopping.tsx only.
+   Dimensions are the original dp values as px (1dp ≈ 1 CSS px). Sources in the decompiled resources:
+   view_bring_item_tile (108 tall, 58 icon, 14/12 sp text, 8 radius), MainViewDecorator (16 side margin,
+   2+2 gap), home_view_toolbar (148 app bar), view_home_collapsible_section, fragment_item_search
+   (76 peek, 44 field), fragment_item_details_bottom_sheet, view_listchooser_user_list.
+   Colours: values/colors.xml and values-night/colors.xml. Icons are our own emoji; no assets or fonts are copied. */
+
+.bring {
+  /* Tile roles (same in light and dark, as in the original). */
+  --b-red: #f16a6f; /* red_500: to buy */
+  --b-teal: #6eb8ae; /* green_500: recently and catalog */
+  --b-slate: #6b7c85; /* black_300: suggestions */
+  --b-tile-text: #ffffff;
+  --b-green-700: #308579; /* primary buttons, links */
+  --b-red-600: #db5358; /* badges, destructive */
+
+  /* Light surfaces. */
+  --b-bg: #f7f9fa; /* view_background = white_400 */
+  --b-text: #1b2b33; /* textcolor_primary = black_600 */
+  --b-text-2: rgb(15 32 41 / 0.64); /* textcolor_secondary */
+  --b-sheet: #ebeef0; /* bottom_sheet_background = white_500 */
+  --b-section: #dfe3e6; /* section_background = white_550 */
+  --b-action: #bbc3c7; /* action/secondary button, chips, control tiles = white_700 */
+  --b-action-text: #0f2029;
+  --b-field: #ffffff;
+  --b-field-text: #25353d;
+  --b-hint: #6b7c85;
+  --b-grip: #3b4a52; /* gesture_indicator = black_450 */
+  --b-popup: #ffffff;
+  --b-current: #3b4a52; /* current_list_indicator */
+  --b-scrim: rgb(0 0 0 / 0.7); /* scrim_layer #b3000000 */
+  --b-snackbar: #0f2029;
+  --b-snackbar-text: #ffffff;
+
+  --b-font: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", "Arial Rounded MT Bold", system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --b-margin: 16px; /* home_view_horizontal_margin */
+  --b-gap: 4px; /* 2dp insets on each side */
+  --b-peek: 76px;
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--b-bg);
+  color: var(--b-text);
+  font-family: var(--b-font);
+  font-size: 16px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .bring {
+    --b-bg: #303f47; /* black_500 */
+    --b-text: #ffffff;
+    --b-text-2: rgb(255 255 255 / 0.64);
+    --b-sheet: #25353d; /* black_550 */
+    --b-section: #25353d;
+    --b-action: #46545c; /* black_400 */
+    --b-action-text: #ffffff;
+    --b-grip: #d3d8db; /* white_600 */
+    --b-popup: #0f2029; /* black_650 */
+    --b-current: #ffffff;
+  }
+
+  :root:not([data-theme="light"]) .bring .bring-chip,
+  :root:not([data-theme="light"]) .bring .bring-control {
+    background: #0f2029; /* specification / secondary = black_650 */
+  }
+}
+
+:root[data-theme="dark"] .bring {
+  --b-bg: #303f47;
+  --b-text: #ffffff;
+  --b-text-2: rgb(255 255 255 / 0.64);
+  --b-sheet: #25353d;
+  --b-section: #25353d;
+  --b-action: #46545c;
+  --b-action-text: #ffffff;
+  --b-grip: #d3d8db;
+  --b-popup: #0f2029;
+  --b-current: #ffffff;
+}
+
+.bring-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(var(--b-peek) + 24px + var(--safe-bottom, 0px));
+  container-type: inline-size;
+  container-name: bring;
+}
+
+.bring-muted {
+  margin: 0;
+  color: var(--b-text-2);
+  font-size: 14px;
+}
+
+.bring-center {
+  padding: 32px var(--b-margin);
+  text-align: center;
+}
+
+.bring-pad {
+  padding: 0 var(--b-margin) 8px;
+}
+
+/* ---------- App bar (148 px, collapses to the 56 px toolbar) ---------- */
+
+.bring-appbar {
+  position: sticky;
+  top: -92px;
+  z-index: 4;
+  height: 148px;
+  overflow: visible;
+  background: var(--b-bg);
+}
+
+.bring-appbar::before {
+  /* Stands in for the list's theme header image (shown at 0.7 alpha in the original). */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--b-theme, var(--b-teal)) 0%, transparent 100%);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.bring-appbar-art {
+  position: absolute;
+  right: 72px;
+  bottom: 8px;
+  font-size: 84px;
+  line-height: 1;
+  opacity: 0.7;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.bring-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 10px 0 var(--b-margin);
+}
+
+.bring-back-pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px 0 2px;
+  border: 0;
+  border-radius: 16px;
+  background: var(--b-section);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  /* 44 px hit area around the 32 px pill. */
+  position: relative;
+}
+
+.bring-back-pill::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+.bring-chevron-back {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  position: relative;
+}
+
+.bring-chevron-back::before {
+  content: "";
+  position: absolute;
+  top: 11px;
+  left: 13px;
+  width: 9px;
+  height: 9px;
+  border-left: 2.5px solid currentColor;
+  border-bottom: 2.5px solid currentColor;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.bring-toolbar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  font-size: 22px;
+  font-weight: 700;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.bring-toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.bring-appbar--collapsed .bring-toolbar {
+  background: var(--b-bg);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.08);
+}
+
+.bring-appbar--collapsed .bring-toolbar-title {
+  opacity: 1;
+}
+
+.bring-appbar--collapsed .bring-title,
+.bring-appbar--collapsed .bring-appbar-art {
+  opacity: 0;
+}
+
+.bring-title {
+  position: absolute;
+  left: 20px; /* expandedTitleMarginStart */
+  right: var(--b-margin);
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 28px; /* Title2 */
+  font-weight: 700;
+  line-height: 1.15;
+  transition: opacity 0.15s ease;
+}
+
+.bring-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bring-round-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--b-text);
+  font-size: 22px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-round-btn:hover {
+  background: color-mix(in srgb, var(--b-text) 8%, transparent);
+}
+
+.bring-sync {
+  max-width: 13em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--b-text-2);
+  font-size: 12px;
+}
+
+.bring-sync--offline {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--b-section);
+  color: var(--b-text);
+}
+
+/* Badge (TextAppearance.Badge on badge_background_round). */
+.bring-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 24px;
+  padding: 4px 12px;
+  border-radius: 16px;
+  background: var(--b-red-600);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.bring-badge--title {
+  padding: 5px 10px;
+  font-size: 14px;
+}
+
+/* ---------- Popup menus ---------- */
+
+.bring-menu {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: calc(100% - 20px);
+  padding: 6px 0;
+  border-radius: 8px;
+  background: var(--b-popup);
+  color: var(--b-text);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.22);
+}
+
+.bring-section {
+  position: relative;
+}
+
+.bring-menu--section {
+  top: 48px;
+  right: var(--b-margin);
+}
+
+.bring-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-menu-row:hover {
+  background: color-mix(in srgb, var(--b-text) 6%, transparent);
+}
+
+.bring-menu-row input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--b-green-700);
+}
+
+.bring-menu-select {
+  min-height: 36px;
+  border: 1px solid var(--b-action);
+  border-radius: 8px;
+  background: var(--b-field);
+  color: var(--b-field-text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.bring-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 var(--b-margin) 8px;
+  padding: 4px 4px 4px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--b-red-600) 14%, var(--b-bg));
+  font-size: 14px;
+}
+
+.bring-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.bring-notice-close {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+/* ---------- Grid ---------- */
+
+.bring-board {
+  min-width: 0;
+}
+
+/* 3 columns (bring_column_count); 5 and 7 on tablet widths (values-sw600dp-port / -land).
+   A container query, so a side column next to the view is accounted for. */
+.bring-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--b-gap);
+  padding: 0 var(--b-margin);
+  min-width: 0;
+}
+
+@container bring (min-width: 600px) {
+  .bring-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@container bring (min-width: 960px) {
+  .bring-grid {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}
+
+/* view_home_group_title: Body.Bold, 16 top / 8 bottom. */
+.bring-group-title {
+  margin: 16px var(--b-margin) 8px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bring-tobuy {
+  padding-top: 4px;
+}
+
+/* ---------- Tile (view_bring_item_tile) ---------- */
+
+.tile {
+  position: relative;
+  min-width: 0;
+}
+
+.tile-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  height: 108px;
+  padding: 8px 4px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-teal);
+  color: var(--b-tile-text);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  overflow: hidden;
+}
+
+.tile-main::after {
+  /* Ripple stand-in (the original's white ripple). */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: #ffffff;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+
+.tile-main:active::after {
+  opacity: 0.25;
+  transition: none;
+}
+
+.tile-main:focus-visible {
+  outline: 3px solid var(--b-text);
+  outline-offset: 2px;
+}
+
+.tile--need .tile-main {
+  background: var(--b-red);
+}
+
+.tile--custom .tile-main {
+  background: var(--b-slate);
+}
+
+.tile-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: calc(100% - 24px);
+  height: 58px;
+  font-size: 44px;
+  line-height: 1;
+}
+
+.tile-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.25);
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.tile-name {
+  display: -webkit-box;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 15px;
+  overflow-wrap: anywhere;
+}
+
+.tile-name--long {
+  font-size: 12px;
+  line-height: 13px;
+}
+
+/* With a specification there is room for one name line (the original's name view shrinks to fit). */
+.tile--has-spec .tile-name {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.tile-spec {
+  max-width: 100%;
+  margin-top: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 14px;
+  min-height: 14px;
+}
+
+/* "Recently" edit mode: the selection circle top-right (ivRecentlySelectionStatus). */
+.tile-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+}
+
+.tile--checked .tile-check {
+  background: #ffffff;
+}
+
+.tile--checked .tile-check::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--b-teal);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+.tile--editing:not(.tile--checked) .tile-main {
+  opacity: 0.85;
+}
+
+/* Details button: not part of the original tile, so it only shows for keyboard focus and mouse hover.
+   Touch users long-press, as in the app. */
+.tile-info {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: 44px;
+  height: 44px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: #ffffff;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.tile-info span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.22);
+  font: italic 700 12px/1 Georgia, serif;
+}
+
+.tile-info:focus-visible,
+.tile:focus-within .tile-info {
+  opacity: 1;
+}
+
+.tile-info:focus-visible {
+  outline: 3px solid var(--b-text);
+  outline-offset: -3px;
+  border-radius: 10px;
+}
+
+@media (hover: hover) {
+  .tile:hover .tile-info {
+    opacity: 1;
+  }
+}
+
+/* ---------- Empty state (view_home_nothing_to_purchase) ---------- */
+
+.bring-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  text-align: center;
+}
+
+.bring-empty-art {
+  font-size: 72px;
+  line-height: 1;
+}
+
+.bring-empty-title {
+  margin: 16px 32px 0;
+  font-size: 22px; /* Title3 */
+  font-weight: 700;
+}
+
+.bring-empty-hint {
+  margin: 8px 32px 0;
+  font-size: 12px; /* Small */
+  max-width: 32em;
+}
+
+/* ---------- Collapsible section header (view_home_collapsible_section) ---------- */
+
+.bring-section-head {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 16px var(--b-margin) 8px;
+}
+
+.bring-section-toggle {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  margin: -6px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-section-chevron {
+  position: relative;
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.bring-section-chevron::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.bring-section-chevron--open::before {
+  top: 0;
+  left: 2px;
+  transform: rotate(45deg);
+}
+
+.bring-section-title {
+  min-width: 0;
+  margin-left: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 18px; /* Title4 */
+  font-weight: 700;
+}
+
+.bring-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -7px -7px -7px 0;
+  border: 0;
+  background: transparent;
+  color: var(--b-text);
+  cursor: pointer;
+}
+
+.bring-more span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--b-section);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+/* view_home_edit_recently: 40 px bar, Cancel left, Remove right. */
+.bring-edit-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 var(--b-margin) 8px;
+}
+
+/* ---------- Buttons (Button: 48 min height, 8 radius, Body text) ---------- */
+
+.bring-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.bring-btn--small {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.bring-btn--block {
+  width: 100%;
+}
+
+.bring-btn--primary {
+  background: var(--b-green-700);
+  color: #ffffff;
+}
+
+.bring-btn--secondary {
+  background: var(--b-action);
+  color: var(--b-action-text);
+}
+
+.bring-btn--destructive {
+  background: var(--b-red-600);
+  color: #ffffff;
+}
+
+.bring-text-btn {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  font-size: 14px; /* Caption */
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-field {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-field);
+  color: var(--b-field-text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.bring-field::placeholder {
+  color: var(--b-hint);
+}
+
+.bring-field:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 0;
+}
+
+.bring-label {
+  color: var(--b-text-2);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* ---------- Bottom sheets: shared ---------- */
+
+.bring-sheet-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 22px; /* 42 x 22 with 8 padding */
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bring-sheet-handle span,
+.bring-sheet-grip {
+  display: block;
+  width: 42px;
+  height: 5px;
+  border-radius: 8px;
+  background: var(--b-grip);
+  opacity: 0.6;
+}
+
+.bring-sheet-grip {
+  margin: 12px auto 0;
+}
+
+/* ---------- Search sheet (fragment_item_search: peek 76) ---------- */
+
+.bring-search {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  max-width: 640px; /* material_bottom_sheet_max_width */
+  min-height: var(--b-peek);
+  max-height: var(--b-peek);
+  margin: 0 auto;
+  padding-bottom: var(--safe-bottom, 0px);
+  border-radius: 16px 16px 0 0;
+  background: var(--b-sheet);
+  box-shadow: 0 -2px 10px rgb(0 0 0 / 0.12);
+  transition: max-height 0.22s ease;
+  overflow: hidden;
+}
+
+.bring-search--open {
+  max-height: calc(100% - 24px);
+  height: calc(100% - 24px);
+}
+
+.bring-search-row {
+  display: flex;
+  align-items: center;
+  flex: none;
+  padding-left: var(--b-margin);
+}
+
+.bring-search-field {
+  flex: 1;
+  min-width: 0;
+  height: 44px; /* search_components_height */
+  padding: 2px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: #ffffff; /* search_bar_text_field_background */
+  color: #25353d;
+  font: inherit;
+  font-size: 16px;
+}
+
+.bring-search-field::placeholder {
+  color: #6b7c85;
+}
+
+.bring-search-field::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
+.bring-search-field:focus-visible {
+  outline: 2px solid var(--b-green-700);
+  outline-offset: 0;
+}
+
+.bring-search-add {
+  position: relative;
+  flex: none;
+  width: 72px; /* 44 button + 12 / 16 padding */
+  height: 44px;
+  padding: 0 16px 0 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bring-search-add span {
+  position: absolute;
+  top: 0;
+  left: 12px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--b-green-700);
+}
+
+.bring-search-add span::before,
+.bring-search-add span::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 2.5px;
+  margin: -1.25px 0 0 -9px;
+  border-radius: 2px;
+  background: #ffffff;
+}
+
+.bring-search-add span::after {
+  transform: rotate(90deg);
+}
+
+.bring-search-done {
+  flex: none;
+  min-width: 44px;
+  height: 44px;
+  margin-right: var(--b-margin);
+  padding: 0 0 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--b-text-2);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-search-results {
+  flex: 1;
+  min-height: 0;
+  margin-top: 12px;
+  padding-bottom: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  container-type: inline-size;
+  container-name: bring;
+}
+
+.bring-search-results .bring-group-title {
+  margin-top: 0;
+}
+
+.bring-search-results > .bring-muted {
+  padding: 12px var(--b-margin);
+}
+
+/* ---------- Snackbar (undo) ---------- */
+
+.bring-snackbar-region {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--b-peek) + 8px + var(--safe-bottom, 0px));
+  z-index: 9;
+  display: flex;
+  justify-content: center;
+  padding: 0 8px;
+  pointer-events: none;
+}
+
+.bring-snackbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 560px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 2px 4px 2px 16px;
+  border-radius: 4px;
+  background: var(--b-snackbar);
+  color: var(--b-snackbar-text);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 0.3);
+  font-size: 14px;
+  pointer-events: auto;
+  animation: bring-rise 0.18s ease-out;
+}
+
+.bring-snackbar-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bring-snackbar-action,
+.bring-snackbar-close {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--b-teal); /* color_accent */
+  font: inherit;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.bring-snackbar-close {
+  color: rgb(255 255 255 / 0.64);
+  font-size: 20px;
+  text-transform: none;
+}
+
+@keyframes bring-rise {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+
+/* ---------- Item details sheet ---------- */
+
+.bring-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.3); /* home_view_bottom_sheet_shadow_alpha */
+}
+
+.bring-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100% - 24px);
+  border-radius: 16px 16px 0 0;
+  background: var(--b-sheet);
+  color: var(--b-text);
+  box-shadow: 0 -4px 18px rgb(0 0 0 / 0.18);
+  animation: bring-rise 0.2s ease-out;
+}
+
+.bring-details-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 12px 16px 0 16.5px;
+}
+
+.bring-details-icon {
+  flex: none;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.bring-details-name {
+  display: -webkit-box;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 22px; /* Title3 */
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.bring-details-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+  padding-bottom: calc(8px + var(--safe-bottom, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* view_item_details_title: Body.Bold, 32 top / 8 bottom, 16 start. */
+.bring-details-title {
+  margin: 32px 16px 8px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bring-details-body > .bring-details-title:first-child {
+  margin-top: 16px;
+}
+
+.bring-details-body > .bring-field {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 8px 16px 0;
+}
+
+/* Specification chips: 36 tall, 8 padding/radius, 8 apart; active = red. */
+.bring-chips {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 8px 16px 0;
+}
+
+.bring-chip {
+  position: relative;
+  min-width: 36px;
+  height: 36px;
+  margin: 4px 8px 4px 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-action);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.bring-chip::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+
+.bring-chip--on {
+  background: var(--b-red);
+  color: #ffffff;
+}
+
+.bring-qty-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 16px 0;
+}
+
+.bring-qty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  color: var(--b-text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bring-qty .bring-field {
+  font-weight: 400;
+}
+
+.bring-qty:first-child {
+  flex: 0 0 8em;
+}
+
+/* view_item_details_settings: control tiles, 45% basis, 12 padding, 8 margin, 16 below. */
+.bring-controls {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0 8px;
+}
+
+.bring-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 45%;
+  min-width: 0;
+  margin: 0 8px 16px;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-action);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 12px; /* Small */
+  cursor: pointer;
+}
+
+.bring-control[aria-expanded="true"] {
+  outline: 2px solid var(--b-text);
+  outline-offset: -2px;
+}
+
+.bring-control-icon {
+  height: 25px;
+  margin-bottom: 8px;
+  font-size: 22px;
+  line-height: 25px;
+}
+
+.bring-control > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bring-panel {
+  display: flex;
+  flex-direction: column;
+  margin: -8px 16px 8px;
+  border-radius: 8px;
+  background: var(--b-bg);
+  overflow: hidden;
+}
+
+.bring-panel > .bring-field {
+  border-radius: 0;
+}
+
+.bring-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  border-top: 1px solid var(--b-section);
+  background: transparent;
+  color: var(--b-text);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-option:first-child {
+  border-top: 0;
+}
+
+.bring-option[aria-checked="true"] {
+  font-weight: 700;
+}
+
+.bring-option[aria-checked="true"]::after {
+  content: "✓";
+  margin-left: auto;
+  color: var(--b-green-700);
+}
+
+/* view_item_details_history */
+.bring-history {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 16px;
+}
+
+.bring-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--b-teal);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.bring-history-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bring-history-who {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.bring-history-when {
+  font-size: 14px;
+  opacity: 0.6;
+}
+
+.bring-details-body > .bring-btn--destructive {
+  display: flex;
+  width: calc(100% - 32px);
+  margin: 16px;
+}
+
+/* ---------- List chooser (fragment_bring_list_chooser) ---------- */
+
+.bring-chooser {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--b-bg);
+  color: var(--b-text);
+  animation: bring-slide 0.2s ease-out;
+}
+
+@keyframes bring-slide {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+.bring-chooser-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 56px;
+  padding: 0 var(--b-margin) 0 4px;
+  background: var(--b-bg);
+}
+
+.bring-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--b-text);
+  cursor: pointer;
+}
+
+.bring-chooser-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.bring-cards {
+  margin: 0;
+  padding: 12px 0 0; /* bring_margin */
+  list-style: none;
+}
+
+.bring-card-item {
+  margin: 0 var(--b-margin) 8px;
+}
+
+.bring-card {
+  position: relative;
+  display: flex;
+  min-height: 112px;
+  border-radius: 8px;
+  background: var(--b-theme, var(--b-teal));
+  color: #ffffff;
+  overflow: hidden;
+}
+
+.bring-card--current::after {
+  /* selected_user_list_border: 2 px ring. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--b-current);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.bring-card-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 16px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bring-card-art {
+  position: absolute;
+  right: 56px;
+  bottom: -6px;
+  font-size: 72px;
+  line-height: 1;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.bring-card-name {
+  position: relative;
+  max-width: 100%;
+  margin-top: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 28px; /* Title2 */
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+}
+
+.bring-card-current {
+  position: relative;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.9;
+}
+
+.bring-gear {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  margin: 8px 8px 0 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.bring-gear:hover,
+.bring-gear[aria-expanded="true"] {
+  background: rgb(255 255 255 / 0.2);
+}
+
+.bring-list-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--b-sheet);
+}
+
+.bring-list-settings .bring-muted {
+  font-size: 14px;
+}
+
+.bring-create {
+  margin: 16px var(--b-margin) 24px;
+}
+
+/* view_list_chooser_create_list: action background, 40 px circle, Title3 with a plus. */
+.bring-create-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 72px;
+  padding: 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--b-action);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 22px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bring-create-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--b-bg);
+  font-size: 26px;
+  line-height: 1;
+}
+
+/* List themes stand in for the original's photo backgrounds. */
+.bring-theme--home {
+  --b-theme: #6eb8ae;
+}
+.bring-theme--grocery {
+  --b-theme: #f16a6f;
+}
+.bring-theme--work {
+  --b-theme: #5b7fb5;
+}
+.bring-theme--holiday {
+  --b-theme: #e9a23b;
+}
+.bring-theme--garden {
+  --b-theme: #6aa84f;
+}
+.bring-theme--hardware {
+  --b-theme: #6b7c85;
+}
+.bring-theme--baby {
+  --b-theme: #c47fb8;
+}
+.bring-theme--other {
+  --b-theme: #8a7f72;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bring-search,
+  .bring-sheet,
+  .bring-snackbar,
+  .bring-chooser,
+  .tile-main::after {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Phones: the shell's floating Lucina avatar (.dock--float, bottom-right above the tab bar) would cover the
+   round add button, so the search row leaves room for it while it is shown. */
+body:has(.dock--float:not(.dock--open)) .bring-search-row {
+  padding-right: 64px;
+}
