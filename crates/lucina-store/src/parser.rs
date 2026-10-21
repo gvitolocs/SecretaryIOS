@@ -141,13 +141,14 @@ pub fn parse_date_part(
     static NAMED: LazyLock<Regex> = LazyLock::new(|| re(r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$"));
     static US: LazyLock<Regex> = LazyLock::new(|| re(r"^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$"));
     let s = normalize_ws(date_part);
-    let num =
-        |c: &fancy_regex::Captures, i: usize| c.get(i).and_then(|m| m.as_str().parse::<u32>().ok());
-    let parts = if let Some(c) = ISO.captures(&s).ok().flatten() {
+    let num = |c: &fancy_regex::Captures<'_, str>, i: usize| {
+        c.get(i).and_then(|m| m.as_str().parse::<u32>().ok())
+    };
+    let parts = if let Some(c) = ISO.captures(s.as_str()).ok().flatten() {
         Some((num(&c, 1)? as i32, num(&c, 2)?, num(&c, 3)?))
-    } else if let Some(c) = NAMED.captures(&s).ok().flatten() {
+    } else if let Some(c) = NAMED.captures(s.as_str()).ok().flatten() {
         month_number(c.get(2)?.as_str()).and_then(|m| Some((num(&c, 3)? as i32, m, num(&c, 1)?)))
-    } else if let Some(c) = US.captures(&s).ok().flatten() {
+    } else if let Some(c) = US.captures(s.as_str()).ok().flatten() {
         month_number(c.get(1)?.as_str()).and_then(|m| Some((num(&c, 3)? as i32, m, num(&c, 2)?)))
     } else {
         None
