@@ -82,10 +82,18 @@ export default function Login() {
 
   return (
     <main class="login">
+      <div class="login-bg" aria-hidden="true">
+        <span class="login-orbit login-orbit--3" />
+        <span class="login-orbit login-orbit--1" />
+        <span class="login-orbit login-orbit--2" />
+      </div>
       <form class="login-card" onSubmit={onSubmit} novalidate>
         <div class="login-mark" aria-hidden="true">
-          <img src="/icon-192.png" alt="" width="48" height="48" />
+          <img src="/icon-192.png" alt="" width="60" height="60" />
         </div>
+        <p class="login-eyebrow" aria-hidden="true">
+          Lucina · Secretary
+        </p>
         <h1 class="login-title">Secretary</h1>
         <p class="login-sub">{t("login.sub")}</p>
         <label class="field-label" for="login-email">

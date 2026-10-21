@@ -3,7 +3,9 @@ import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch
 import { speechLang, t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
 import { loadStage, type StageModule } from "../lib/stageLoader";
+import { effectiveTheme, stageQuality } from "../state/appearance";
 import { onLucinaReply } from "../state/chat";
+import { lucinaActivity, setLucinaActivity, type LucinaActivity } from "../state/stage";
 import { CloseIcon, CollapseIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
@@ -25,6 +27,14 @@ export function storedMuted(): boolean {
 }
 
 type Mode = "loading" | "ready" | "fallback";
+
+const WAVE_BARS = 14;
+const STATE_LABELS: Record<LucinaActivity, Parameters<typeof t>[0]> = {
+  idle: "shell.stateIdle",
+  listening: "shell.stateListening",
+  thinking: "shell.stateThinking",
+  speaking: "shell.stateSpeaking",
+};
 
 /**
  * Lucina on a three.js stage. She thinks while a message is in flight, speaks
@@ -82,6 +92,8 @@ export function LucinaPanel(props: {
         framing: props.framing,
         muteStorageKey: MUTE_KEY,
         muted: true,
+        // Sky, holo floor, particles, rim light, bloom on "high" (packages/lucina-stage/src/scene).
+        environment: { quality: stageQuality(), theme: effectiveTheme() },
       });
       if (disposed) {
         s.dispose();
@@ -89,8 +101,13 @@ export function LucinaPanel(props: {
       }
       stage = s;
       s.setMuted(muted());
-      s.onTap(() => void talk());
+      s.onStateChange((next) => setLucinaActivity(next));
+      s.onTap((e) => {
+        s.react(e.point);
+        void talk();
+      });
       if (props.thinking) s.setState("thinking");
+      if (import.meta.env.DEV) (window as unknown as { __lucina?: unknown }).__lucina = { stage: s, mod };
       setMode("ready");
     } catch {
       // No WebGL (or the stage failed to start): show her portrait instead.
@@ -107,7 +124,11 @@ export function LucinaPanel(props: {
     ttsCtrl?.abort();
     stage?.dispose();
     stage = null;
+    setLucinaActivity("idle");
   });
+
+  createEffect(on(effectiveTheme, (theme) => stage?.setTheme(theme), { defer: true }));
+  createEffect(on(stageQuality, (q) => stage?.setQuality(q), { defer: true }));
 
   createEffect(
     on(
@@ -202,8 +223,15 @@ export function LucinaPanel(props: {
     }
   }
 
+  const activity = (): LucinaActivity => (listening() ? "listening" : mode() === "ready" ? lucinaActivity() : props.thinking ? "thinking" : "idle");
+
   return (
-    <section class="stage" classList={{ "stage--listening": listening() }} aria-label={t("shell.lucina")}>
+    <section
+      class="stage"
+      classList={{ "stage--listening": listening() }}
+      data-state={activity()}
+      aria-label={t("shell.lucina")}
+    >
       <Switch>
         <Match when={mode() === "fallback"}>
           <button type="button" class="stage-portrait" onClick={() => void talk()} aria-label={t("shell.lucinaTalk")}>
@@ -214,16 +242,22 @@ export function LucinaPanel(props: {
           <canvas ref={canvas} class="stage-canvas" role="img" aria-label={t("shell.lucinaCanvas")} />
           <Show when={mode() === "loading"}>
             <div class="stage-loading" role="status">
-              <span class="spinner" aria-hidden="true" />
+              <span class="holo-loader" aria-hidden="true" />
               <span>{t("shell.lucinaLoading")}</span>
             </div>
           </Show>
         </Match>
       </Switch>
+      <div class="stage-hud" aria-hidden="true">
+        <span class="stage-hud-dot" />
+        <span class="stage-hud-name">{t("shell.lucina")}</span>
+        <span class="stage-hud-sep" />
+        <span>{t(STATE_LABELS[activity()])}</span>
+      </div>
       <div class="stage-controls">
         <button
           type="button"
-          class="icon-btn stage-btn"
+          class="icon-btn stage-btn stage-btn--mic"
           classList={{ "stage-btn--on": listening() }}
           onClick={() => void talk()}
           disabled={props.thinking && !listening()}
@@ -267,12 +301,17 @@ export function LucinaPanel(props: {
           <CloseIcon />
         </button>
       </div>
-      <Show when={listening()}>
+      <Show when={activity() === "listening"}>
+        <div class="stage-wave" aria-hidden="true">
+          {Array.from({ length: WAVE_BARS }, (_, i) => (
+            <span style={{ "animation-delay": `${-((i * 137) % 1000) / 1000}s` }} />
+          ))}
+        </div>
         <span class="stage-pill" role="status">
           {t("shell.lucinaListening")}
         </span>
       </Show>
-      <Show when={!listening() && (note() ?? (hint() ? t("shell.lucinaHint") : null))}>
+      <Show when={activity() !== "listening" && (note() ?? (hint() ? t("shell.lucinaHint") : null))}>
         {(text) => (
           <span class="stage-pill stage-pill--note" role="status">
             {text()}

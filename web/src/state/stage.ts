@@ -19,3 +19,8 @@ export function setStageHidden(hidden: boolean): void {
 export function reloadStageFromStorage(): void {
   setHidden(readString("local", HIDDEN_KEY) === "1");
 }
+
+/** What Lucina's stage is doing now (idle, listening, thinking, speaking), for the shell's UI. */
+export type LucinaActivity = "idle" | "listening" | "thinking" | "speaking";
+const [activity, setActivity] = createSignal<LucinaActivity>("idle");
+export { activity as lucinaActivity, setActivity as setLucinaActivity };

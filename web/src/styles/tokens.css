@@ -1,0 +1,233 @@
+/*
+ * Secretary design system: "Nebula" (dark, default look) and "Pearl" (light).
+ * Holographic accents (cyan -> violet -> magenta), glass panels, neon glows, a fine grain.
+ * Every component reads these tokens; the legacy names (--bg, --surface, --accent, ...)
+ * are kept so older rules follow the new palette.
+ *
+ * Theme: dark unless the device prefers light, overridable with <html data-theme="dark|light">
+ * (the account panel's Appearance setting).
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- Palette: Nebula ---- */
+  --void: #04050d;
+  --bg: #070915;
+  --bg-elev: #0d1024;
+  --surface: rgb(22 26 54 / 0.62);
+  --surface-solid: #12162e;
+  --surface-2: rgb(150 170 255 / 0.08);
+  --surface-3: rgb(150 170 255 / 0.14);
+  --glass: rgb(18 22 48 / 0.55);
+  --glass-strong: rgb(14 17 38 / 0.82);
+  --glass-hi: rgb(255 255 255 / 0.07);
+  --text: #eef1ff;
+  --text-muted: #a0a8cc;
+  --text-dim: #6e7699;
+  --border: rgb(150 175 255 / 0.15);
+  --border-strong: rgb(150 200 255 / 0.3);
+  --hairline: rgb(255 255 255 / 0.06);
+
+  --cyan: #3cf2ff;
+  --violet: #a67bff;
+  --magenta: #ff5fd2;
+  --lime: #c6ff5e;
+  --amber: #ffc857;
+  --neon-red: #ff4d6d;
+  --neon-teal: #2ee6c5;
+
+  --accent: #49e6ff;
+  --accent-strong: #9af6ff;
+  --accent-contrast: #031019;
+  --accent-soft: rgb(60 242 255 / 0.12);
+  --accent-2: var(--violet);
+  --accent-3: var(--magenta);
+
+  --user-bubble: linear-gradient(135deg, #0b6f8c 0%, #4b35c4 62%, #7a2fb4 100%);
+  --user-bubble-text: #f5f7ff;
+
+  --ok: #3dffa8;
+  --warn: #ffc857;
+  --bad: #ff5a7a;
+  --danger-text: #ff9db1;
+  --danger-bg: rgb(255 77 109 / 0.12);
+  --notice-bg: rgb(255 200 87 / 0.1);
+  --notice-text: #ffe2a3;
+
+  --grad-holo: linear-gradient(120deg, #3cf2ff 0%, #a67bff 48%, #ff5fd2 100%);
+  --grad-holo-soft: linear-gradient(120deg, rgb(60 242 255 / 0.22), rgb(166 123 255 / 0.2) 50%, rgb(255 95 210 / 0.18));
+  --grad-primary: linear-gradient(120deg, #22d3ee 0%, #6d5dfc 60%, #b14dff 100%);
+  --grad-border: linear-gradient(140deg, rgb(60 242 255 / 0.55), rgb(166 123 255 / 0.25) 45%, rgb(255 95 210 / 0.5));
+
+  /* ---- Glow + depth ---- */
+  --glow-accent: 0 0 0 1px rgb(60 242 255 / 0.35), 0 0 18px rgb(60 242 255 / 0.3);
+  --glow-violet: 0 0 0 1px rgb(166 123 255 / 0.4), 0 0 22px rgb(166 123 255 / 0.35);
+  --glow-text: 0 0 12px rgb(60 242 255 / 0.55);
+  --shadow: 0 1px 0 var(--hairline) inset, 0 10px 30px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 1px 0 var(--hairline) inset, 0 24px 60px rgb(0 0 0 / 0.55);
+  --blur: 18px;
+  --blur-strong: 28px;
+  --scrim: rgb(3 4 12 / 0.62);
+  --grain-opacity: 0.07;
+  --aurora-a: rgb(130 90 255 / 0.3);
+  --aurora-b: rgb(40 220 255 / 0.18);
+  --aurora-c: rgb(255 80 200 / 0.16);
+
+  /* ---- Shape + space ---- */
+  --gutter: 16px;
+  --tap: 44px;
+  --radius: 20px;
+  --radius-sm: 14px;
+  --radius-xs: 10px;
+  --radius-lg: 26px;
+  --radius-xl: 34px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 28px;
+  --space-7: 40px;
+  --rail-w: 104px;
+  --dock-h: 66px;
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --pad-left: max(var(--gutter), var(--safe-left));
+  --pad-right: max(var(--gutter), var(--safe-right));
+
+  /* ---- Type ---- */
+  --font: "Sora Variable", "Sora", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font);
+  --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-2xs: 0.6875rem;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.875rem;
+  --fs-md: 1rem;
+  --fs-lg: 1.125rem;
+  --fs-xl: 1.375rem;
+  --fs-2xl: 1.75rem;
+  --fs-3xl: 2.375rem;
+  --tracking-hud: 0.14em;
+
+  /* ---- Motion ---- */
+  --dur-1: 120ms;
+  --dur-2: 220ms;
+  --dur-3: 380ms;
+  --dur-4: 640ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ---- Palette: Pearl (light) ---- */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --void: #e7e9f7;
+    --bg: #eef0fb;
+    --bg-elev: #ffffff;
+    --surface: rgb(255 255 255 / 0.7);
+    --surface-solid: #ffffff;
+    --surface-2: rgb(70 80 160 / 0.07);
+    --surface-3: rgb(70 80 160 / 0.12);
+    --glass: rgb(255 255 255 / 0.62);
+    --glass-strong: rgb(255 255 255 / 0.88);
+    --glass-hi: rgb(255 255 255 / 0.9);
+    --text: #12142b;
+    --text-muted: #555b7e;
+    --text-dim: #7c82a3;
+    --border: rgb(60 70 150 / 0.14);
+    --border-strong: rgb(60 90 190 / 0.3);
+    --hairline: rgb(255 255 255 / 0.8);
+    --cyan: #0896b8;
+    --violet: #6a4dff;
+    --magenta: #c2339f;
+    --lime: #5d9c00;
+    --amber: #b27300;
+    --neon-red: #f0365c;
+    --neon-teal: #0fb39a;
+    --accent: #06809e;
+    --accent-strong: #045f76;
+    --accent-contrast: #ffffff;
+    --accent-soft: rgb(8 150 184 / 0.12);
+    --user-bubble: linear-gradient(135deg, #0a7fa0 0%, #5a40e0 70%, #8a35c8 100%);
+    --ok: #0f9d63;
+    --warn: #b27300;
+    --bad: #d6304f;
+    --danger-text: #b0213f;
+    --danger-bg: rgb(240 54 92 / 0.1);
+    --notice-bg: rgb(255 186 40 / 0.16);
+    --notice-text: #6b4600;
+    --grad-holo: linear-gradient(120deg, #0aa6c4 0%, #6a4dff 50%, #d23bb0 100%);
+    --grad-holo-soft: linear-gradient(120deg, rgb(10 166 196 / 0.14), rgb(106 77 255 / 0.12) 50%, rgb(210 59 176 / 0.12));
+    --grad-primary: linear-gradient(120deg, #0891b2 0%, #5b4bf0 65%, #9b3fe6 100%);
+    --grad-border: linear-gradient(140deg, rgb(10 166 196 / 0.45), rgb(106 77 255 / 0.2) 45%, rgb(210 59 176 / 0.4));
+    --glow-accent: 0 0 0 1px rgb(8 150 184 / 0.35), 0 4px 18px rgb(8 150 184 / 0.22);
+    --glow-violet: 0 0 0 1px rgb(106 77 255 / 0.35), 0 4px 20px rgb(106 77 255 / 0.22);
+    --glow-text: none;
+    --shadow: 0 1px 0 var(--hairline) inset, 0 8px 26px rgb(40 50 120 / 0.1);
+    --shadow-lg: 0 1px 0 var(--hairline) inset, 0 22px 60px rgb(40 50 120 / 0.18);
+    --scrim: rgb(30 34 70 / 0.32);
+    --grain-opacity: 0.05;
+    --aurora-a: rgb(140 110 255 / 0.22);
+    --aurora-b: rgb(40 200 240 / 0.2);
+    --aurora-c: rgb(255 120 210 / 0.16);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --void: #e7e9f7;
+  --bg: #eef0fb;
+  --bg-elev: #ffffff;
+  --surface: rgb(255 255 255 / 0.7);
+  --surface-solid: #ffffff;
+  --surface-2: rgb(70 80 160 / 0.07);
+  --surface-3: rgb(70 80 160 / 0.12);
+  --glass: rgb(255 255 255 / 0.62);
+  --glass-strong: rgb(255 255 255 / 0.88);
+  --glass-hi: rgb(255 255 255 / 0.9);
+  --text: #12142b;
+  --text-muted: #555b7e;
+  --text-dim: #7c82a3;
+  --border: rgb(60 70 150 / 0.14);
+  --border-strong: rgb(60 90 190 / 0.3);
+  --hairline: rgb(255 255 255 / 0.8);
+  --cyan: #0896b8;
+  --violet: #6a4dff;
+  --magenta: #c2339f;
+  --lime: #5d9c00;
+  --amber: #b27300;
+  --neon-red: #f0365c;
+  --neon-teal: #0fb39a;
+  --accent: #06809e;
+  --accent-strong: #045f76;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgb(8 150 184 / 0.12);
+  --user-bubble: linear-gradient(135deg, #0a7fa0 0%, #5a40e0 70%, #8a35c8 100%);
+  --ok: #0f9d63;
+  --warn: #b27300;
+  --bad: #d6304f;
+  --danger-text: #b0213f;
+  --danger-bg: rgb(240 54 92 / 0.1);
+  --notice-bg: rgb(255 186 40 / 0.16);
+  --notice-text: #6b4600;
+  --grad-holo: linear-gradient(120deg, #0aa6c4 0%, #6a4dff 50%, #d23bb0 100%);
+  --grad-holo-soft: linear-gradient(120deg, rgb(10 166 196 / 0.14), rgb(106 77 255 / 0.12) 50%, rgb(210 59 176 / 0.12));
+  --grad-primary: linear-gradient(120deg, #0891b2 0%, #5b4bf0 65%, #9b3fe6 100%);
+  --grad-border: linear-gradient(140deg, rgb(10 166 196 / 0.45), rgb(106 77 255 / 0.2) 45%, rgb(210 59 176 / 0.4));
+  --glow-accent: 0 0 0 1px rgb(8 150 184 / 0.35), 0 4px 18px rgb(8 150 184 / 0.22);
+  --glow-violet: 0 0 0 1px rgb(106 77 255 / 0.35), 0 4px 20px rgb(106 77 255 / 0.22);
+  --glow-text: none;
+  --shadow: 0 1px 0 var(--hairline) inset, 0 8px 26px rgb(40 50 120 / 0.1);
+  --shadow-lg: 0 1px 0 var(--hairline) inset, 0 22px 60px rgb(40 50 120 / 0.18);
+  --scrim: rgb(30 34 70 / 0.32);
+  --grain-opacity: 0.05;
+  --aurora-a: rgb(140 110 255 / 0.22);
+  --aurora-b: rgb(40 200 240 / 0.2);
+  --aurora-c: rgb(255 120 210 / 0.16);
+}

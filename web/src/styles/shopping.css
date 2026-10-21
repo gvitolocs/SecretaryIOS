@@ -6,34 +6,40 @@
    Colours: values/colors.xml and values-night/colors.xml. Icons are our own emoji; no assets or fonts are copied. */
 
 .bring {
-  /* Tile roles (same in light and dark, as in the original). */
-  --b-red: #f16a6f; /* red_500: to buy */
-  --b-teal: #6eb8ae; /* green_500: recently and catalog */
-  --b-slate: #6b7c85; /* black_300: suggestions */
+  /* Tile roles, as in the original: red = to buy, teal = recently used / catalog, slate = custom.
+     Neon skin (styles/tokens.css): the same meanings as glowing gradients. */
+  --b-red: #ff3b6b;
+  --b-red-hi: #ff7a95;
+  --b-red-lo: #d3175a;
+  --b-teal: #14cfc1;
+  --b-teal-hi: #5cf6e4;
+  --b-teal-lo: #0a8f9f;
+  --b-slate: #5d66a0;
+  --b-slate-hi: #8890c8;
+  --b-slate-lo: #434a7c;
   --b-tile-text: #ffffff;
-  --b-green-700: #308579; /* primary buttons, links */
-  --b-red-600: #db5358; /* badges, destructive */
+  --b-green-700: #5b5bf0; /* primary buttons, links: the app accent */
+  --b-red-600: #ff2e63; /* badges, destructive */
 
-  /* Light surfaces. */
-  --b-bg: #f7f9fa; /* view_background = white_400 */
-  --b-text: #1b2b33; /* textcolor_primary = black_600 */
-  --b-text-2: rgb(15 32 41 / 0.64); /* textcolor_secondary */
-  --b-sheet: #ebeef0; /* bottom_sheet_background = white_500 */
-  --b-section: #dfe3e6; /* section_background = white_550 */
-  --b-action: #bbc3c7; /* action/secondary button, chips, control tiles = white_700 */
-  --b-action-text: #0f2029;
-  --b-field: #ffffff;
-  --b-field-text: #25353d;
-  --b-hint: #6b7c85;
-  --b-grip: #3b4a52; /* gesture_indicator = black_450 */
-  --b-popup: #ffffff;
-  --b-current: #3b4a52; /* current_list_indicator */
-  --b-scrim: rgb(0 0 0 / 0.7); /* scrim_layer #b3000000 */
-  --b-snackbar: #0f2029;
-  --b-snackbar-text: #ffffff;
+  /* Surfaces follow the app theme. */
+  --b-bg: var(--bg);
+  --b-text: var(--text);
+  --b-text-2: var(--text-muted);
+  --b-sheet: var(--glass-strong);
+  --b-section: var(--surface-3);
+  --b-action: var(--surface-3);
+  --b-action-text: var(--text);
+  --b-field: color-mix(in srgb, var(--surface-solid) 70%, transparent);
+  --b-field-text: var(--text);
+  --b-hint: var(--text-dim);
+  --b-grip: var(--text-dim);
+  --b-popup: var(--surface-solid);
+  --b-current: var(--accent);
+  --b-scrim: var(--scrim);
+  --b-snackbar: var(--glass-strong);
+  --b-snackbar-text: var(--text);
 
-  --b-font: ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", "Arial Rounded MT Bold", system-ui, -apple-system,
-    "Segoe UI", Roboto, sans-serif;
+  --b-font: var(--font);
   --b-margin: 16px; /* home_view_horizontal_margin */
   --b-gap: 4px; /* 2dp insets on each side */
   --b-peek: 76px;
@@ -45,43 +51,10 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--b-bg);
+  background: transparent;
   color: var(--b-text);
   font-family: var(--b-font);
   font-size: 16px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .bring {
-    --b-bg: #303f47; /* black_500 */
-    --b-text: #ffffff;
-    --b-text-2: rgb(255 255 255 / 0.64);
-    --b-sheet: #25353d; /* black_550 */
-    --b-section: #25353d;
-    --b-action: #46545c; /* black_400 */
-    --b-action-text: #ffffff;
-    --b-grip: #d3d8db; /* white_600 */
-    --b-popup: #0f2029; /* black_650 */
-    --b-current: #ffffff;
-  }
-
-  :root:not([data-theme="light"]) .bring .bring-chip,
-  :root:not([data-theme="light"]) .bring .bring-control {
-    background: #0f2029; /* specification / secondary = black_650 */
-  }
-}
-
-:root[data-theme="dark"] .bring {
-  --b-bg: #303f47;
-  --b-text: #ffffff;
-  --b-text-2: rgb(255 255 255 / 0.64);
-  --b-sheet: #25353d;
-  --b-section: #25353d;
-  --b-action: #46545c;
-  --b-action-text: #ffffff;
-  --b-grip: #d3d8db;
-  --b-popup: #0f2029;
-  --b-current: #ffffff;
 }
 
 .bring-scroll {
@@ -1581,4 +1554,332 @@
    round add button, so the search row leaves room for it while it is shown. */
 body:has(.dock--float:not(.dock--open)) .bring-search-row {
   padding-right: 64px;
+}
+
+
+/* ======================================================================
+   Neon skin. Layout, sizes and gestures above are the Bring! originals and
+   stay as they are; this only restyles surfaces, colours and motion.
+   ====================================================================== */
+
+.bring-appbar {
+  background: transparent;
+}
+
+.bring-appbar::before {
+  background:
+    radial-gradient(80% 120% at 20% 0%, color-mix(in srgb, var(--b-theme, var(--b-teal)) 55%, transparent), transparent 70%),
+    radial-gradient(60% 100% at 90% 10%, color-mix(in srgb, var(--violet) 40%, transparent), transparent 70%);
+  opacity: 0.45;
+}
+
+.bring-appbar-art {
+  filter: drop-shadow(0 0 24px color-mix(in srgb, var(--b-theme, var(--b-teal)) 70%, transparent));
+}
+
+.bring-appbar--collapsed .bring-toolbar {
+  background: var(--glass-strong);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.2);
+  -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
+  backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
+}
+
+.bring-title,
+.bring-toolbar-title {
+  font-family: var(--font-display);
+  letter-spacing: -0.025em;
+}
+
+.bring-back-pill {
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.bring-badge {
+  background: linear-gradient(135deg, #ff6b8a, #ff2e63);
+  box-shadow: 0 0 14px rgb(255 46 99 / 0.55);
+  font-family: var(--mono);
+}
+
+.bring-menu {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  animation: pop-in var(--dur-2) var(--ease-out) both;
+  transform-origin: 100% 0;
+}
+
+/* Tiles: glossy gradients with a coloured glow; the colour still says what the tile is. */
+.tile-main {
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 70% at 50% -10%, rgb(255 255 255 / 0.32), transparent 60%),
+    linear-gradient(160deg, var(--b-teal-hi), var(--b-teal) 48%, var(--b-teal-lo));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    inset 0 0 0 1px rgb(255 255 255 / 0.12),
+    0 6px 18px -6px color-mix(in srgb, var(--b-teal) 70%, transparent);
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    box-shadow var(--dur-2) var(--ease-out),
+    filter var(--dur-2) var(--ease-out);
+}
+
+.tile--need .tile-main {
+  background:
+    radial-gradient(120% 70% at 50% -10%, rgb(255 255 255 / 0.3), transparent 60%),
+    linear-gradient(160deg, var(--b-red-hi), var(--b-red) 48%, var(--b-red-lo));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    inset 0 0 0 1px rgb(255 255 255 / 0.14),
+    0 0 0 1px rgb(255 59 107 / 0.35),
+    0 8px 24px -6px rgb(255 59 107 / 0.75);
+}
+
+.tile--custom .tile-main {
+  background:
+    radial-gradient(120% 70% at 50% -10%, rgb(255 255 255 / 0.26), transparent 60%),
+    linear-gradient(160deg, var(--b-slate-hi), var(--b-slate) 48%, var(--b-slate-lo));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    inset 0 0 0 1px rgb(255 255 255 / 0.1),
+    0 6px 18px -8px rgb(93 102 160 / 0.8);
+}
+
+/* A scanning sheen across the to-buy tiles, now and then. */
+.tile--need .tile-main::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / 0.28) 50%, transparent 65%) -150% 0 / 250% 100% no-repeat;
+  animation: tile-sheen 7s var(--ease-in-out) infinite;
+  pointer-events: none;
+}
+
+.tile:nth-child(3n + 1) .tile-main::before {
+  animation-delay: 1.3s;
+}
+
+.tile:nth-child(3n + 2) .tile-main::before {
+  animation-delay: 2.6s;
+}
+
+@media (hover: hover) {
+  .tile-main:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.08) saturate(1.08);
+  }
+}
+
+.tile-main:active {
+  transform: scale(0.94);
+  transition-duration: var(--dur-1);
+}
+
+.tile-main::after {
+  background: radial-gradient(circle at 50% 50%, #ffffff, transparent 70%);
+}
+
+.tile-main:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.tile-icon {
+  filter: drop-shadow(0 3px 6px rgb(0 0 0 / 0.25));
+  transition: transform var(--dur-3) var(--ease-spring);
+}
+
+@media (hover: hover) {
+  .tile-main:hover .tile-icon {
+    transform: scale(1.08) translateY(-1px);
+  }
+}
+
+.tile-initial {
+  background: rgb(255 255 255 / 0.22);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.35);
+}
+
+.tile-name {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.tile-spec {
+  opacity: 0.85;
+  font-size: 11px;
+}
+
+/* Tiles appear with a small pop (FLIP in flip.ts handles moves between sections). */
+.tile {
+  animation: tile-in var(--dur-3) var(--ease-spring) both;
+}
+
+.bring-section-head {
+  font-family: var(--font-display);
+}
+
+.bring-btn {
+  border-radius: 999px;
+  transition:
+    transform var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    filter var(--dur-2) var(--ease-out);
+}
+
+.bring-btn:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+.bring-btn--primary {
+  background: var(--grad-primary);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--violet) 40%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.bring-btn--secondary {
+  border: 1px solid var(--border);
+}
+
+.bring-btn--destructive {
+  background: linear-gradient(135deg, #ff6b8a, #ff2e63);
+  box-shadow: 0 6px 20px rgb(255 46 99 / 0.35);
+}
+
+.bring-field {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.bring-field:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* Bottom search sheet: glass, holo edge on top. */
+.bring-search,
+.bring-sheet {
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 24px 24px 0 0;
+  box-shadow: 0 -12px 40px rgb(0 0 0 / 0.35), inset 0 1px 0 var(--hairline);
+  -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.6);
+  backdrop-filter: blur(var(--blur-strong)) saturate(1.6);
+}
+
+.bring-search::before,
+.bring-sheet::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 24px;
+  right: 24px;
+  height: 1px;
+  background: var(--grad-holo);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.bring-sheet {
+  animation: sheet-up var(--dur-3) var(--ease-out) both;
+}
+
+.bring-search-field {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--b-field);
+  color: var(--b-field-text);
+  padding-left: 18px;
+}
+
+.bring-search-field::placeholder {
+  color: var(--text-dim);
+}
+
+.bring-search-field:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent), 0 0 24px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.bring-search-add span {
+  background: var(--grad-primary);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--violet) 55%, transparent);
+  transition: transform var(--dur-2) var(--ease-spring);
+}
+
+.bring-search-add:hover span {
+  transform: rotate(90deg) scale(1.06);
+}
+
+.bring-scrim {
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  animation: scrim-in var(--dur-2) var(--ease-out) both;
+}
+
+.bring-snackbar {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg), 0 0 24px color-mix(in srgb, var(--cyan) 15%, transparent);
+  -webkit-backdrop-filter: blur(var(--blur-strong));
+  backdrop-filter: blur(var(--blur-strong));
+  animation: rise-in var(--dur-3) var(--ease-spring) both;
+}
+
+.bring-chip,
+.bring-control {
+  border: 1px solid var(--border);
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+
+.bring-chip:active,
+.bring-control:active {
+  transform: scale(0.96);
+}
+
+.bring-chip--on {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--b-red-hi), var(--b-red));
+  box-shadow: 0 0 16px rgb(255 59 107 / 0.45);
+}
+
+.bring-chooser,
+.bring-chooser-bar {
+  background: var(--b-bg);
+}
+
+.bring-card {
+  border-radius: 16px;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.3), 0 10px 28px -10px color-mix(in srgb, var(--b-theme, var(--b-teal)) 80%, transparent);
+}
+
+.bring-create-btn {
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+}
+
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+}
+
+@keyframes tile-sheen {
+  0%,
+  70% {
+    background-position: -150% 0;
+  }
+  100% {
+    background-position: 150% 0;
+  }
 }

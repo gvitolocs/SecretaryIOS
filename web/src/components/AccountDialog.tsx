@@ -1,7 +1,29 @@
 import { createEffect, createSignal, on, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
-import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale } from "../i18n";
+import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
+import {
+  QUALITIES,
+  setStageQuality,
+  setThemeSetting,
+  stageQuality,
+  THEMES,
+  themeSetting,
+  type StageQualitySetting,
+  type ThemeSetting,
+} from "../state/appearance";
+
+const THEME_LABELS: Record<ThemeSetting, MessageKey> = {
+  system: "shell.themeSystem",
+  dark: "shell.themeDark",
+  light: "shell.themeLight",
+};
+const QUALITY_LABELS: Record<StageQualitySetting, MessageKey> = {
+  auto: "shell.qualityAuto",
+  low: "shell.qualityLow",
+  medium: "shell.qualityMedium",
+  high: "shell.qualityHigh",
+};
 
 export const MIN_PASSWORD_LENGTH = 8;
 
@@ -106,6 +128,44 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
                 </option>
               ))}
             </select>
+          </div>
+          <div class="settings-form appearance">
+            <h3 class="field-label">{t("shell.appearance")}</h3>
+            <span class="field-label appearance-label" id="appearance-theme">
+              {t("shell.theme")}
+            </span>
+            <div class="segmented segmented--wide" role="group" aria-labelledby="appearance-theme">
+              {THEMES.map((v) => (
+                <button
+                  type="button"
+                  class="segmented-btn"
+                  classList={{ "segmented-btn--active": themeSetting() === v }}
+                  aria-pressed={themeSetting() === v ? "true" : "false"}
+                  onClick={() => setThemeSetting(v)}
+                >
+                  {t(THEME_LABELS[v])}
+                </button>
+              ))}
+            </div>
+            <span class="field-label appearance-label" id="appearance-quality">
+              {t("shell.stageQuality")}
+            </span>
+            <div class="segmented segmented--wide" role="group" aria-labelledby="appearance-quality" aria-describedby="appearance-quality-hint">
+              {QUALITIES.map((v) => (
+                <button
+                  type="button"
+                  class="segmented-btn"
+                  classList={{ "segmented-btn--active": stageQuality() === v }}
+                  aria-pressed={stageQuality() === v ? "true" : "false"}
+                  onClick={() => setStageQuality(v)}
+                >
+                  {t(QUALITY_LABELS[v])}
+                </button>
+              ))}
+            </div>
+            <p id="appearance-quality-hint" class="muted small">
+              {t("shell.stageQualityHint")}
+            </p>
           </div>
           <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>
             <h3 class="field-label">{t("shell.changePassword")}</h3>

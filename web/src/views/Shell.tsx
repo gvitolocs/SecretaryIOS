@@ -1,5 +1,5 @@
-import { A } from "@solidjs/router";
-import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { A, useLocation } from "@solidjs/router";
+import { createEffect, createSignal, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
 import { AvatarIcon, ChatIcon, DumbbellIcon, ListIcon, LogoutIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
@@ -34,10 +34,42 @@ function NavLinks(props: { class: string }) {
   );
 }
 
+function reducedMotion(): boolean {
+  try {
+    return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
+}
+
+/** The page fades up into place when the section changes (not on first paint). */
+function useRouteTransition(target: () => HTMLElement | undefined) {
+  const location = useLocation();
+  createEffect(
+    on(
+      () => location.pathname,
+      () => {
+        const el = target();
+        if (!el || reducedMotion() || typeof el.animate !== "function") return;
+        el.animate(
+          [
+            { opacity: 0, transform: "translateY(10px) scale(0.995)", filter: "blur(6px)" },
+            { opacity: 1, transform: "none", filter: "blur(0)" },
+          ],
+          { duration: 380, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+        );
+      },
+      { defer: true },
+    ),
+  );
+}
+
 export default function Shell(props: { children?: JSX.Element }) {
   const [loggingOut, setLoggingOut] = createSignal(false);
   const [accountOpen, setAccountOpen] = createSignal(false);
   let accountButton: HTMLButtonElement | undefined;
+  let main: HTMLElement | undefined;
+  useRouteTransition(() => main);
 
   onMount(() => {
     void checkHealth();
@@ -123,8 +155,16 @@ export default function Shell(props: { children?: JSX.Element }) {
       </Show>
       {/* Page column + Lucina. The dock lives here so it survives navigation. */}
       <div class="shell-body">
-        <main class="content" id="main" tabindex="-1">
-          {props.children}
+        <main class="content" id="main" tabindex="-1" ref={main}>
+          <Suspense
+            fallback={
+              <div class="route-loading" role="status" aria-label={t("common.loading")}>
+                <span class="holo-loader" aria-hidden="true" />
+              </div>
+            }
+          >
+            {props.children}
+          </Suspense>
         </main>
         <LucinaDock />
       </div>

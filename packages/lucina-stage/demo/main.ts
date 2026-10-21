@@ -49,6 +49,15 @@ async function main(): Promise<void> {
     framing: framingParam,
     fetchInit: { credentials: 'include' },
     ...(q.has('reduced') ? { reducedMotion: true } : {}),
+    // ?env (optionally ?env=high|medium|low and ?theme=light): the stage set from src/scene/.
+    ...(q.has('env')
+      ? {
+          environment: {
+            quality: (['low', 'medium', 'high'].includes(q.get('env') ?? '') ? q.get('env') : 'auto') as 'auto',
+            theme: q.get('theme') === 'light' ? 'light' : 'dark',
+          },
+        }
+      : {}),
     onError: (e) => log(`model error: ${String(e)}`),
   });
   (window as unknown as { stage: LucinaStage }).stage = stage;

@@ -10,58 +10,54 @@
  */
 
 .gym-theme {
-  --gym-bg: #f5f4ee;
-  --gym-forest: #214d3d;
-  --gym-forest-strong: #183a2e;
-  --gym-ink: #1f2621;
-  --gym-muted: #737a70;
-  /* #737A70 is 4.0:1 on the background; small text uses a slightly deeper
-     tone of it to meet WCAG AA (4.8:1). */
-  --gym-muted-text: #666d63;
-  --gym-lime: #d4ed91;
-  --gym-surface: #ffffff;
-  --gym-stroke: rgb(31 38 33 / 0.04);
+  /* Neon skin (styles/tokens.css): the original's forest + lime become indigo + neon lime,
+     on the app's glass surfaces. Structure and sizes below are the Lucina Gym originals. */
+  --gym-bg: transparent;
+  --gym-forest: #3b2fc0;
+  --gym-forest-strong: #2c2296;
+  --gym-ink: var(--text);
+  --gym-muted: var(--text-muted);
+  --gym-muted-text: var(--text-muted);
+  --gym-lime: #c6ff5e;
+  --gym-surface: var(--glass);
+  --gym-stroke: var(--border);
   --gym-on-forest: #ffffff;
-  --gym-bar: var(--gym-forest);
-  --gym-rounded: ui-rounded, "SF Pro Rounded", "Nunito", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --gym-bar: var(--gym-lime);
+  --gym-rounded: var(--font);
 
-  --bg: var(--gym-bg);
-  --surface: var(--gym-surface);
-  --surface-2: #ebeae2;
-  --text: var(--gym-ink);
-  --text-muted: var(--gym-muted-text);
-  --border: rgb(31 38 33 / 0.1);
-  --accent: var(--gym-forest);
-  --accent-strong: var(--gym-forest-strong);
-  --accent-contrast: #ffffff;
-  --accent-soft: rgb(212 237 145 / 0.45);
-  --shadow: none;
+  --surface: var(--glass);
+  /* Lime carries the accent on the dark glass; dark text sits on lime. */
+  --accent: var(--gym-lime);
+  --accent-strong: #dcff9c;
+  --accent-contrast: #15210a;
+  --accent-soft: rgb(198 255 94 / 0.14);
 
-  color-scheme: light;
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
 }
 
-@media (prefers-color-scheme: dark) {
-  .gym-theme {
-    --gym-bg: #0d110f;
-    --gym-ink: #e8ede6;
-    --gym-muted: #8f998b;
-    --gym-muted-text: #a5aea1;
-    --gym-surface: #161c19;
-    --gym-stroke: rgb(232 237 230 / 0.07);
-    --gym-bar: var(--gym-lime);
-
-    --surface-2: #212924;
-    --border: rgb(232 237 230 / 0.12);
-    /* Lime carries the accent on near-black; forest text sits on lime. */
-    --accent: var(--gym-lime);
-    --accent-strong: #e3f5b3;
-    --accent-contrast: #16352a;
-    --accent-soft: rgb(212 237 145 / 0.16);
-
-    color-scheme: dark;
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .gym-theme {
+    --gym-forest: #4b38d8;
+    --gym-forest-strong: #3a2ab4;
+    --gym-lime: #c6ff5e;
+    --gym-bar: #5b3fd6;
+    --accent: #5b3fd6;
+    --accent-strong: #4a2fc0;
+    --accent-contrast: #ffffff;
+    --accent-soft: rgb(91 63 214 / 0.12);
   }
+}
+
+:root[data-theme="light"] .gym-theme {
+  --gym-forest: #4b38d8;
+  --gym-forest-strong: #3a2ab4;
+  --gym-lime: #c6ff5e;
+  --gym-bar: #5b3fd6;
+  --accent: #5b3fd6;
+  --accent-strong: #4a2fc0;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgb(91 63 214 / 0.12);
 }
 
 /* ---------- Page column ----------
@@ -869,4 +865,96 @@
 
 .gym-settings-card > p.muted {
   margin: 0;
+}
+
+
+/* ======================================================================
+   Neon skin: glass cards, the active workout as a holo card, glowing lime
+   highlights. Layout is unchanged.
+   ====================================================================== */
+
+.gym-theme .card {
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.3);
+  backdrop-filter: blur(var(--blur)) saturate(1.3);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.gym-theme .gym-subnav {
+  border: 1px solid var(--border);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.gym-theme .gym-subnav-tab {
+  transition:
+    background-color var(--dur-2) var(--ease-out),
+    color var(--dur-2) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.gym-theme .gym-subnav-tab--active {
+  background: var(--grad-holo-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cyan) 35%, transparent), 0 0 18px color-mix(in srgb, var(--cyan) 18%, transparent);
+  color: var(--text);
+}
+
+.gym-theme .gym-title,
+.gym-hero-title {
+  background: linear-gradient(100deg, var(--text) 35%, color-mix(in srgb, var(--text) 50%, var(--gym-lime)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.gym-theme .gym-eyebrow {
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.gym-active {
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgb(60 242 255 / 0.25), transparent 60%),
+    var(--grad-primary);
+  box-shadow: 0 14px 44px color-mix(in srgb, var(--violet) 45%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.gym-active-continue {
+  box-shadow: 0 0 20px rgb(198 255 94 / 0.45);
+  transition:
+    transform var(--dur-1) var(--ease-out),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.gym-active-continue:active {
+  transform: scale(0.97);
+}
+
+.gym-theme .btn--primary,
+.gym-theme .gym-primary {
+  background: var(--grad-primary);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 8px 26px color-mix(in srgb, var(--violet) 40%, transparent), inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.gym-theme .weekly-bar::-webkit-progress-value {
+  background: linear-gradient(90deg, var(--cyan), var(--gym-lime));
+  box-shadow: 0 0 10px var(--gym-lime);
+}
+
+.gym-theme .weekly-bar::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--cyan), var(--gym-lime));
+}
+
+.gym-play {
+  border: 1px solid var(--border);
+  transition:
+    transform var(--dur-2) var(--ease-spring),
+    box-shadow var(--dur-2) var(--ease-out);
+}
+
+.gym-play:not(:disabled):hover {
+  transform: scale(1.08);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 40%, transparent);
 }

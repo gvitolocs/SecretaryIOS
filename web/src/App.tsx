@@ -19,7 +19,7 @@ export default function App(props: RouteSectionProps) {
       <Match when={status() === "loading"}>
         <div class="splash" role="status" aria-label={t("common.loading")}>
           <span class="brand-mark" aria-hidden="true">
-            <img src="/icon-192.png" alt="" width="32" height="32" />
+            <img src="/icon-192.png" alt="" width="76" height="76" />
           </span>
         </div>
       </Match>
