@@ -19,3 +19,5 @@ export { ClipPlayer, clipLibraryFrom, loadClipLibrary, DEFAULT_STATE_CLIPS } fro
 export type { ClipInfo, ClipLibrary, PlayOptions } from './clips';
 export type { RigReport } from './rig';
 export * from './types';
+export { isStageQuality, registerClip, STAGE_QUALITIES } from './scene';
+export type { Clip, ClipSample, EnvironmentOptions, StageQuality, StageQualitySetting, StageTheme } from './scene';
