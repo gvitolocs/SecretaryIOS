@@ -127,15 +127,16 @@ final class SecretaryFlowTests: XCTestCase {
         // Shopping v2: tiles, search to add, tap to buy.
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "tile-")).firstMatch
             .waitForExistence(timeout: 15), "seeded tiles")
-        let search = app.searchFields.firstMatch
-        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        // Bring!-style search sheet.
+        app.buttons["shoppingSearch"].tap()
+        let field = app.textFields["shoppingSearchField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
         let name = "UITest \(Int.random(in: 1000...9999))"
-        search.tap()
-        search.typeText(name)
-        let free = app.buttons["suggestion-free"]
+        field.typeText(name)
+        let free = app.descendants(matching: .any)["suggestion-free"]
         XCTAssertTrue(free.waitForExistence(timeout: 5))
         free.tap()
-        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() }
+        app.buttons["searchDone"].tap()
         let tile = app.descendants(matching: .any)["tile-\(name)"]
         XCTAssertTrue(tile.waitForExistence(timeout: 10), "added tile")
         XCTAssertEqual(tile.value as? String, "To buy")
