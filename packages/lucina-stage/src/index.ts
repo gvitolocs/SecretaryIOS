@@ -15,5 +15,7 @@ export type { FrameListener, FrameSample } from './stats';
 export { normalizeManifest, resolveBones, resolveMorphs } from './manifest';
 export type { NormalizedManifest, CameraFraming } from './manifest';
 export { synthSpeechWav } from './synth';
+export { ClipPlayer, clipLibraryFrom, loadClipLibrary, DEFAULT_STATE_CLIPS } from './clips';
+export type { ClipInfo, ClipLibrary, PlayOptions } from './clips';
 export type { RigReport } from './rig';
 export * from './types';

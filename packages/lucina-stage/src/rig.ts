@@ -37,6 +37,10 @@ export interface RigReport {
 const _e = new Euler(0, 0, 0, 'YXZ');
 const _d = new Quaternion();
 const _q = new Quaternion();
+const _p = new Quaternion();
+const _pi = new Quaternion();
+const _pw = new Quaternion();
+const _cw = new Quaternion();
 
 export class Rig {
   readonly bones: Partial<Record<LogicalBone, BoneBinding>> = {};
@@ -135,16 +139,45 @@ export class Rig {
     return found;
   }
 
-  apply(frame: AnimFrame): void {
+  /**
+   * Puts the bound logical bones back to rest. Call before an AnimationMixer update when clips
+   * play underneath, so bones a clip does not animate do not accumulate procedural deltas.
+   */
+  restoreBones(): void {
+    for (const b of Object.values(this.bones)) b?.node.quaternion.copy(b.rest);
+  }
+
+  /**
+   * Applies a procedural frame.
+   * Default: deltas on top of the rest pose (procedural-only stage).
+   * `layered`: deltas on top of the bones' current pose (set by a clip mixer this frame); the
+   * parent frame is read live, static offsets are skipped for clip-driven bones, and the spine/chest
+   * deltas (breathing, weight shift, lean) are scaled by `bodyGain` since clips carry their own.
+   */
+  apply(frame: AnimFrame, layered?: { driven: ReadonlySet<string>; bodyGain?: number }): void {
+    let containerInv: Quaternion | null = null;
+    if (layered) {
+      this.container.updateMatrixWorld(true);
+      containerInv = this.container.getWorldQuaternion(_cw).invert();
+    }
     for (const [lb, binding] of Object.entries(this.bones) as [LogicalBone, BoneBinding][]) {
       if (lb === 'eyes' && this.useEyePair) continue;
       const r = frame.bones[lb];
-      _e.set(r.x, r.y, r.z, 'YXZ');
+      const driven = layered?.driven.has(binding.node.name) ?? false;
+      const gain = layered && (lb === 'spine' || lb === 'chest') ? (layered.bodyGain ?? 0.35) : 1;
+      _e.set(r.x * gain, r.y * gain, r.z * gain, 'YXZ');
       _d.setFromEuler(_e);
       const off = this.offsets[lb];
-      if (off) _d.multiply(off);
-      // local = parentInv * delta * parent * rest
-      _q.copy(binding.parentInv).multiply(_d).multiply(binding.parent).multiply(binding.rest);
+      if (off && !driven) _d.multiply(off);
+      if (layered && binding.node.parent) {
+        // local = parentInv * delta * parent * current, with the parent's posed rotation
+        _p.copy(containerInv!).multiply(binding.node.parent.getWorldQuaternion(_pw));
+        _pi.copy(_p).invert();
+        _q.copy(_pi).multiply(_d).multiply(_p).multiply(driven ? binding.node.quaternion : binding.rest);
+      } else {
+        // local = parentInv * delta * parent * rest
+        _q.copy(binding.parentInv).multiply(_d).multiply(binding.parent).multiply(binding.rest);
+      }
       binding.node.quaternion.copy(_q);
     }
     for (const t of this.allTargets) t.influences[t.index] = 0;

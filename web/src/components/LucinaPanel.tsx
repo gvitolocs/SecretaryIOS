@@ -13,6 +13,9 @@ const HINT_MS = 8_000;
 /** Served behind the session (never public): the model may only be used privately. */
 export const MODEL_URL = "/v1/assets/lucina.glb";
 export const MANIFEST_URL = "/v1/assets/manifest.json";
+/** Body animation clips (same skeleton as lucina.glb). Missing file = procedural idle. */
+export const CLIPS_URL = "/v1/assets/lucina-anims.glb";
+export const CLIPS_META_URL = "/v1/assets/clips.json";
 export const TTS_URL = "/v1/tts";
 const AUTH: RequestInit = { credentials: "include", headers: { "X-Secretary-CSRF": "1" } };
 
@@ -73,6 +76,8 @@ export function LucinaPanel(props: {
       const s = await mod.createLucinaStage(canvas, {
         modelUrl: MODEL_URL,
         manifestUrl: MANIFEST_URL,
+        clipsUrl: CLIPS_URL,
+        clipsMetaUrl: CLIPS_META_URL,
         fetchInit: AUTH,
         framing: props.framing,
         muteStorageKey: MUTE_KEY,
