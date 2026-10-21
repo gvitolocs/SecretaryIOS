@@ -9,6 +9,8 @@ struct SettingsView: View {
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
     @State private var serverDraft = ""
     @State private var serverError: String?
+    @State private var testing = false
+    @State private var probes: [APIClient.Probe] = []
 
     var body: some View {
         Form {
@@ -20,9 +22,38 @@ struct SettingsView: View {
                     }
                 }
                 .accessibilityElement(children: .combine)
+                LabeledContent("Connection", value: app.endpointLabel)
+                    .accessibilityIdentifier("activeEndpoint")
                 LabeledContent("Address", value: app.baseURL.host ?? app.baseURL.absoluteString)
                 if let version = health.version { LabeledContent("Server version", value: version) }
-                Button("Check again", systemImage: "arrow.clockwise") { Task { await health.refresh() } }
+                Button {
+                    Task { await runConnectionTest() }
+                } label: {
+                    HStack {
+                        Label("Test connection", systemImage: "antenna.radiowaves.left.and.right")
+                        Spacer()
+                        if testing { ProgressView() }
+                    }
+                }
+                .disabled(testing)
+                .accessibilityIdentifier("testConnection")
+                ForEach(probes, id: \.url) { probe in
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: probe.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(probe.ok ? .green : .red)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ServerConfig.label(for: probe.url)).font(.subheadline.weight(.semibold))
+                            Text(probe.url.host ?? probe.url.absoluteString).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(probe.latencyMs.map { "\($0) ms" } ?? (probe.error ?? "Failed"))
+                            .font(.caption)
+                            .foregroundStyle(probe.ok ? Color.secondary : Color.red)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
             }
 
             Section("This device") {
@@ -55,6 +86,13 @@ struct SettingsView: View {
             Text("The device token is deleted from this iPhone. The local chat history is cleared too.")
         }
         .sheet(isPresented: $showPassword) { ChangePasswordView() }
+    }
+
+    private func runConnectionTest() async {
+        testing = true
+        defer { testing = false }
+        probes = await app.testConnection()
+        await health.refresh()
     }
 
     @ViewBuilder private var developerSection: some View {

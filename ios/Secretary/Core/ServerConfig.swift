@@ -5,6 +5,25 @@ import Foundation
 /// developer row in Settings.
 enum ServerConfig {
     static let production = URL(string: "https://getsecretary.tech")!
+    /// The same secretary-server behind `tailscale serve`, reachable only inside the tailnet.
+    /// Used when the public name does not resolve (e.g. the Tailscale client's DNS on the phone).
+    static let tailnet = URL(string: "https://secretary-p1.tail75dcfc.ts.net")!
+    /// Same server, same data, same device token: tried in this order.
+    static let productionEndpoints = [production, tailnet]
+
+    static func label(for url: URL) -> String {
+        switch url.host?.lowercased() {
+        case production.host?.lowercased(): return "Public"
+        case tailnet.host?.lowercased(): return "Private (Tailscale)"
+        default: return url.host ?? url.absoluteString
+        }
+    }
+
+    /// The endpoint list: a Debug override pins a single URL, otherwise public then tailnet.
+    static func resolvedEndpoints(defaults: UserDefaults = .standard) -> [URL] {
+        let url = resolvedBaseURL(defaults: defaults)
+        return url == production ? productionEndpoints : [url]
+    }
 
     /// Launch argument (UserDefaults argument domain), Debug only.
     static let launchArgumentKey = "SecretaryBaseURL"

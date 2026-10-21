@@ -185,7 +185,7 @@ struct SecretaryAPI: Sendable {
     }
 
     func chat(_ request: ChatRequest) async throws -> ChatResponse {
-        try await client.send("POST", "/v1/chat", body: request, timeout: APIClient.chatTimeout)
+        try await client.send("POST", "/v1/chat", body: request, timeout: APIClient.chatTimeout, idempotent: true)
     }
 
     func job(_ id: String) async throws -> JobInfo {

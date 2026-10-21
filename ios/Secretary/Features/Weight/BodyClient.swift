@@ -327,7 +327,7 @@ struct BodyClient: Sendable {
         } catch {
             throw APIError.decoding(message: "Could not encode the body command: \(error)")
         }
-        let response = try await client.send("POST", "/v1/body/command", body: body, passThrough: HTTPGymTransport.engineStatuses)
+        let response = try await client.send("POST", "/v1/body/command", body: body, passThrough: HTTPGymTransport.engineStatuses, idempotent: true)
         if response.status == 500, !HTTPGymTransport.looksLikeEngineBody(response.data) {
             throw APIClient.error(for: response)
         }

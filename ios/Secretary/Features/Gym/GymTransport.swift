@@ -39,7 +39,7 @@ struct HTTPGymTransport: GymTransport {
         }
         let response = try await client.send("POST", "/v1/gym/command", body: body,
                                               timeout: request.command.type == "restore_json" ? 60 : APIClient.defaultTimeout,
-                                              passThrough: Self.engineStatuses)
+                                              passThrough: Self.engineStatuses, idempotent: true)
         if response.status == 500, !Self.looksLikeEngineBody(response.data) {
             throw APIClient.error(for: response)
         }

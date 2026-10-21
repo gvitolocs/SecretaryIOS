@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// One accent (deep teal, from the asset catalog, with a lighter dark-mode variant) on
+/// One accent (indigo #4A5BB5 from the Lucina icon, #7F8FE0 in dark mode) on
 /// system materials and grouped backgrounds, so light and dark mode come for free.
 enum Theme {
     static let accent = Color.accentColor
-    /// Filled surfaces that carry white text (buttons, the user's bubbles): deep teal in
-    /// both modes, because the lighter dark-mode accent is too pale under white text.
+    /// Filled surfaces that carry white text (buttons, the user's bubbles): #4A5BB5 in
+    /// both modes (6.1:1 under white), because #7F8FE0 is only 3:1 under white text.
     static let accentFill = Color("AccentFill")
     static let page = Color(uiColor: .systemGroupedBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)

@@ -69,7 +69,7 @@ final class WeightStore {
         let body = client()
         do {
             let outcome = try await EngineRetry.run(
-                opId: opId, revision: start,
+                opId: opId, nextOpId: makeOpId, revision: start,
                 send: { opId, expected in
                     try await body.send(EngineRequest(opId: opId, expectedRevision: expected, timezone: tz, command: command))
                 },

@@ -98,6 +98,7 @@ final class GymStore {
         do {
             let outcome = try await EngineRetry.run(
                 opId: opId,
+                nextOpId: makeOpId,
                 revision: startRevision,
                 send: { [transport] opId, expected in
                     try await transport.send(EngineRequest(opId: opId, expectedRevision: expected, timezone: tz, command: command))

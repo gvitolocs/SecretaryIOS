@@ -6,10 +6,15 @@ import os
 /// - Auth: `Authorization: Bearer <device key>` on every request when a key is set
 ///   (Bearer requests need no CSRF header).
 /// - Timeouts: 15 s by default, 125 s for chat (the server allows Lucina 120 s).
+/// - Endpoints: an ordered list of base URLs for the *same* server (public, then the
+///   private Tailscale name). A request that fails at the network layer is retried once
+///   on the next endpoint; HTTP answers (any status) never fall back. The endpoint that
+///   last worked is remembered and tried first.
 /// - Errors: every failure becomes an `APIError`.
 final class APIClient: @unchecked Sendable {
     static let defaultTimeout: TimeInterval = 15
     static let chatTimeout: TimeInterval = 125
+    static let preferredEndpointKey = "secretary.server.lastWorkingEndpoint"
 
     struct Response: Sendable {
         let status: Int
@@ -18,15 +23,24 @@ final class APIClient: @unchecked Sendable {
     }
 
     private struct Config {
-        var baseURL: URL
+        var endpoints: [URL]
+        /// Index into `endpoints` of the one tried first.
+        var active: Int
         var accessKey: String?
     }
 
     private let config: OSAllocatedUnfairLock<Config>
     private let session: URLSession
+    private let defaults: UserDefaults?
+    /// Called (on any thread) when the active endpoint changes.
+    var onEndpointChange: (@Sendable (URL) -> Void)?
 
-    init(baseURL: URL, accessKey: String? = nil, session: URLSession? = nil) {
-        config = OSAllocatedUnfairLock(initialState: Config(baseURL: baseURL, accessKey: accessKey))
+    init(endpoints: [URL], accessKey: String? = nil, session: URLSession? = nil, defaults: UserDefaults? = .standard) {
+        precondition(!endpoints.isEmpty, "at least one endpoint")
+        self.defaults = defaults
+        let remembered = defaults?.string(forKey: Self.preferredEndpointKey)
+        let active = endpoints.firstIndex { $0.absoluteString == remembered } ?? 0
+        config = OSAllocatedUnfairLock(initialState: Config(endpoints: endpoints, active: active, accessKey: accessKey))
         if let session {
             self.session = session
         } else {
@@ -39,14 +53,46 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    var baseURL: URL {
-        get { config.withLock { $0.baseURL } }
-        set { config.withLock { $0.baseURL = newValue } }
+    convenience init(baseURL: URL, accessKey: String? = nil, session: URLSession? = nil) {
+        self.init(endpoints: [baseURL], accessKey: accessKey, session: session, defaults: nil)
+    }
+
+    /// The endpoint requests go to first.
+    var baseURL: URL { config.withLock { $0.endpoints[$0.active] } }
+
+    var endpoints: [URL] { config.withLock { $0.endpoints } }
+
+    var primaryURL: URL { config.withLock { $0.endpoints[0] } }
+
+    /// Replaces the endpoint list (debug server override). Starts on the remembered one if present.
+    func setEndpoints(_ endpoints: [URL]) {
+        guard !endpoints.isEmpty else { return }
+        let remembered = defaults?.string(forKey: Self.preferredEndpointKey)
+        let url: URL = config.withLock { config in
+            config.endpoints = endpoints
+            config.active = endpoints.firstIndex { $0.absoluteString == remembered } ?? 0
+            return config.endpoints[config.active]
+        }
+        onEndpointChange?(url)
     }
 
     var accessKey: String? {
         get { config.withLock { $0.accessKey } }
         set { config.withLock { $0.accessKey = newValue } }
+    }
+
+    /// Makes `url` the endpoint tried first and remembers it.
+    func markWorking(_ url: URL) {
+        let changed: Bool = config.withLock { config in
+            guard let index = config.endpoints.firstIndex(of: url), index != config.active else { return false }
+            config.active = index
+            return true
+        }
+        guard changed else { return }
+        if config.withLock({ $0.endpoints.count }) > 1 {
+            defaults?.set(url.absoluteString, forKey: Self.preferredEndpointKey)
+        }
+        onEndpointChange?(url)
     }
 
     static let encoder: JSONEncoder = {
@@ -64,14 +110,15 @@ final class APIClient: @unchecked Sendable {
         return try decode(T.self, from: response)
     }
 
-    func send<T: Decodable, B: Encodable>(_ method: String, _ path: String, body: B, timeout: TimeInterval = defaultTimeout) async throws -> T {
+    func send<T: Decodable, B: Encodable>(_ method: String, _ path: String, body: B, timeout: TimeInterval = defaultTimeout,
+                                          idempotent: Bool? = nil) async throws -> T {
         let data: Data
         do {
             data = try Self.encoder.encode(body)
         } catch {
             throw APIError.decoding(message: "Could not encode the request: \(error)")
         }
-        let response = try await send(method, path, query: [], body: data, timeout: timeout)
+        let response = try await send(method, path, query: [], body: data, timeout: timeout, idempotent: idempotent)
         return try decode(T.self, from: response)
     }
 
@@ -83,16 +130,67 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
+    // MARK: - Fallback rules
+
+    /// Failures where the request certainly never reached a server: safe to send elsewhere.
+    static let unreachedCodes: Set<URLError.Code> = [.cannotFindHost, .dnsLookupFailed, .cannotConnectToHost]
+    /// Failures where it might have: only idempotent requests move on.
+    static let ambiguousCodes: Set<URLError.Code> = [.timedOut, .networkConnectionLost]
+
+    static func shouldFallBack(_ code: URLError.Code, idempotent: Bool) -> Bool {
+        unreachedCodes.contains(code) || (idempotent && ambiguousCodes.contains(code))
+    }
+
     // MARK: - Raw request
 
     /// Sends a request and returns the 2xx response. Non-2xx statuses throw, except the
     /// statuses listed in `passThrough`, which are returned as is (the gym/body engines
     /// answer 409/422/500 with an engine body the caller wants to read).
+    ///
+    /// `idempotent` (default: everything but POST) decides whether a timeout or a dropped
+    /// connection may be retried on the next endpoint. Chat (`clientMessageId`) and engine
+    /// commands (`op_id`) are idempotent POSTs and say so.
     func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data?,
               timeout: TimeInterval = defaultTimeout, passThrough: Set<Int> = [],
-              authenticated: Bool = true) async throws -> Response {
+              authenticated: Bool = true, idempotent: Bool? = nil) async throws -> Response {
         let snapshot = config.withLock { $0 }
-        guard var components = URLComponents(url: snapshot.baseURL, resolvingAgainstBaseURL: false),
+        let order = [snapshot.active] + snapshot.endpoints.indices.filter { $0 != snapshot.active }
+        let canRetry = idempotent ?? (method != "POST")
+        var lastError: URLError?
+        for (attempt, index) in order.prefix(2).enumerated() {
+            let base = snapshot.endpoints[index]
+            let request = try makeRequest(base: base, method: method, path: path, query: query, body: body, timeout: timeout,
+                                          accessKey: authenticated ? snapshot.accessKey : nil)
+            do {
+                let (data, urlResponse) = try await session.data(for: request)
+                guard let http = urlResponse as? HTTPURLResponse else {
+                    throw APIError.network(message: "Not an HTTP response.")
+                }
+                // Any HTTP answer means this endpoint reaches the server.
+                markWorking(base)
+                var headers: [String: String] = [:]
+                for (key, value) in http.allHeaderFields {
+                    if let key = key as? String, let value = value as? String { headers[key.lowercased()] = value }
+                }
+                let response = Response(status: http.statusCode, data: data, headers: headers)
+                if (200..<300).contains(http.statusCode) || passThrough.contains(http.statusCode) {
+                    return response
+                }
+                throw Self.error(for: response)
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch let error as URLError {
+                lastError = error
+                if attempt == 0, order.count > 1, Self.shouldFallBack(error.code, idempotent: canRetry) { continue }
+                throw Self.map(error, host: base.host)
+            }
+        }
+        throw Self.map(lastError ?? URLError(.unknown), host: snapshot.endpoints[snapshot.active].host)
+    }
+
+    private func makeRequest(base: URL, method: String, path: String, query: [URLQueryItem], body: Data?,
+                             timeout: TimeInterval, accessKey: String?) throws -> URLRequest {
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false),
               let scheme = components.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
             throw APIError.invalidURL
         }
@@ -104,42 +202,62 @@ final class APIClient: @unchecked Sendable {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if authenticated, let key = snapshot.accessKey, !key.isEmpty {
-            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if let accessKey, !accessKey.isEmpty {
+            request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
         }
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-
-        let data: Data
-        let urlResponse: URLResponse
-        do {
-            (data, urlResponse) = try await session.data(for: request)
-        } catch let error as URLError where error.code == .timedOut {
-            throw APIError.timeout
-        } catch let error as URLError where error.code == .cannotFindHost || error.code == .dnsLookupFailed {
-            throw APIError.hostNotFound(host: url.host ?? "the server")
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            throw CancellationError()
-        } catch {
-            throw APIError.network(message: error.localizedDescription)
-        }
-        guard let http = urlResponse as? HTTPURLResponse else {
-            throw APIError.network(message: "Not an HTTP response.")
-        }
-        var headers: [String: String] = [:]
-        for (key, value) in http.allHeaderFields {
-            if let key = key as? String, let value = value as? String { headers[key.lowercased()] = value }
-        }
-        let response = Response(status: http.statusCode, data: data, headers: headers)
-        if (200..<300).contains(http.statusCode) || passThrough.contains(http.statusCode) {
-            return response
-        }
-        throw Self.error(for: response)
+        return request
     }
+
+    static func map(_ error: URLError, host: String?) -> APIError {
+        switch error.code {
+        case .timedOut: return .timeout
+        case .cannotFindHost, .dnsLookupFailed: return .hostNotFound(host: host ?? "the server")
+        default: return .network(message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - Probing
+
+    struct Probe: Equatable, Sendable {
+        let url: URL
+        /// Round trip in milliseconds when the server answered `/v1/health`.
+        let latencyMs: Int?
+        let error: String?
+        var ok: Bool { latencyMs != nil }
+    }
+
+    /// `GET /v1/health` on one endpoint, without fallback (no auth, short timeout).
+    func probe(_ base: URL, timeout: TimeInterval = 6) async -> Probe {
+        do {
+            let request = try makeRequest(base: base, method: "GET", path: "/v1/health", query: [], body: nil,
+                                          timeout: timeout, accessKey: nil)
+            let start = Date()
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return Probe(url: base, latencyMs: nil, error: "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            }
+            return Probe(url: base, latencyMs: max(1, Int(Date().timeIntervalSince(start) * 1000)), error: nil)
+        } catch let error as URLError {
+            return Probe(url: base, latencyMs: nil, error: Self.map(error, host: base.host).userMessage)
+        } catch {
+            return Probe(url: base, latencyMs: nil, error: APIError.wrap(error).userMessage)
+        }
+    }
+
+    /// When a fallback endpoint is active, checks the primary and switches back if it answers.
+    @discardableResult
+    func reprobePrimary() async -> Bool {
+        let (primary, onPrimary) = config.withLock { ($0.endpoints[0], $0.active == 0) }
+        guard !onPrimary else { return true }
+        let result = await probe(primary)
+        if result.ok { markWorking(primary) }
+        return result.ok
+    }
+
 
     // MARK: - Error mapping
 

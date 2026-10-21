@@ -13,6 +13,7 @@ final class AppModel {
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
+    /// The endpoint requests currently go to first (public or the tailnet name).
     private(set) var baseURL: URL
     /// Why the user is looking at the sign-in screen (expired token, ...).
     var signedOutReason: String?
@@ -32,17 +33,17 @@ final class AppModel {
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
     init(keychain: KeychainStore = .accessKey, defaults: UserDefaults = .standard) {
-        let baseURL = ServerConfig.resolvedBaseURL(defaults: defaults)
         let launch = LaunchOptions(defaults: defaults)
         if launch.resetState {
             try? keychain.delete()
             try? FileManager.default.removeItem(at: ChatStore.defaultFileURL)
             defaults.removeObject(forKey: ChatStore.sessionIdKey)
         }
-        let client = APIClient(baseURL: baseURL, accessKey: try? keychain.read())
+        let client = APIClient(endpoints: ServerConfig.resolvedEndpoints(defaults: defaults), accessKey: try? keychain.read(),
+                               defaults: defaults)
         self.client = client
         self.keychain = keychain
-        self.baseURL = baseURL
+        baseURL = client.baseURL
         chat = ChatStore(api: { SecretaryAPI(client: client) })
         shopping = ShoppingStore(api: { SecretaryAPI(client: client) })
         gym = GymStore(transport: HTTPGymTransport(client: client))
@@ -58,6 +59,9 @@ final class AppModel {
         shopping.onTransportSuccess = onSuccess
         gym.onTransportError = onError
         weight.onTransportError = onError
+        client.onEndpointChange = { [weak self] url in
+            Task { @MainActor in self?.baseURL = url }
+        }
     }
 
     // MARK: - Session
@@ -149,6 +153,32 @@ final class AppModel {
         }
     }
 
+    // MARK: - Endpoints
+
+    var endpointLabel: String { ServerConfig.label(for: baseURL) }
+
+    var endpoints: [URL] { client.endpoints }
+
+    /// While a fallback endpoint is active, re-probes the primary every few minutes and
+    /// switches back when it answers.
+    func watchPrimary(every interval: Duration = .seconds(180)) async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: interval)
+            if Task.isCancelled { break }
+            await client.reprobePrimary()
+        }
+    }
+
+    /// Probes every endpoint (no fallback) for the Settings "Test connection" button.
+    func testConnection() async -> [APIClient.Probe] {
+        var results: [APIClient.Probe] = []
+        for url in client.endpoints { results.append(await client.probe(url)) }
+        if let first = results.first(where: \.ok), !results.contains(where: { $0.ok && $0.url == baseURL }) {
+            client.markWorking(first.url)
+        }
+        return results
+    }
+
     // MARK: - Debug server override
 
     var canOverrideServer: Bool { ServerConfig.isDebugBuild && !ServerConfig.isPinnedByLaunchArgument() }
@@ -163,8 +193,8 @@ final class AppModel {
             UserDefaults.standard.removeObject(forKey: ServerConfig.overrideKey)
         }
         signOut()
-        baseURL = ServerConfig.resolvedBaseURL()
-        client.baseURL = baseURL
+        client.setEndpoints(ServerConfig.resolvedEndpoints())
+        baseURL = client.baseURL
         Task { await health.refresh() }
         return true
     }

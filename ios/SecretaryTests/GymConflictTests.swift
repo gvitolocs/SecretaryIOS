@@ -55,7 +55,7 @@ final class GymConflictTests: XCTestCase {
         GymStore(transport: transport, makeOpId: { [unowned self] in opIds += 1; return "op-\(opIds)" }, timezone: { "Europe/Rome" })
     }
 
-    func testConflictRefetchesAndRetriesOnceWithTheSameOpId() async throws {
+    func testConflictRefetchesAndRetriesOnceWithANewOpId() async throws {
         let transport = FakeGymTransport(revision: 3, script: [
             { _ in FakeGymTransport.conflict() },
             { expected in try! FakeGymTransport.response(ok: true, revision: expected + 1) },
@@ -69,7 +69,7 @@ final class GymConflictTests: XCTestCase {
 
         XCTAssertNotNil(response)
         XCTAssertEqual(transport.sent.count, 2)
-        XCTAssertEqual(transport.sent.map(\.opId), ["op-1", "op-1"], "the retry reuses the op_id")
+        XCTAssertEqual(transport.sent.map(\.opId), ["op-1", "op-2"], "the retry gets a new op_id (docs: offline queue recipe)")
         XCTAssertEqual(transport.sent.map(\.expectedRevision), [3, 5], "the retry uses the refetched revision")
         XCTAssertEqual(transport.sent.map(\.command), [.startRest(seconds: 90), .startRest(seconds: 90)])
         XCTAssertEqual(transport.sent.first?.timezone, "Europe/Rome")
@@ -137,7 +137,7 @@ final class GymConflictTests: XCTestCase {
     func testEngineRetryHelperDirectly() async throws {
         var calls: [(String, Int)] = []
         let outcome = try await EngineRetry.run(
-            opId: "x", revision: 1,
+            opId: "x", nextOpId: { "y" }, revision: 1,
             send: { (op: String, rev: Int) -> GymResponse in
                 calls.append((op, rev))
                 return rev == 1 ? FakeGymTransport.conflict() : try FakeGymTransport.response(ok: true, revision: 8)
@@ -145,7 +145,7 @@ final class GymConflictTests: XCTestCase {
             refetch: { 7 })
         guard case let .success(response) = outcome else { return XCTFail("expected success") }
         XCTAssertEqual(response.viewRevision, 8)
-        XCTAssertEqual(calls.map(\.0), ["x", "x"])
+        XCTAssertEqual(calls.map(\.0), ["x", "y"])
         XCTAssertEqual(calls.map(\.1), [1, 7])
     }
 

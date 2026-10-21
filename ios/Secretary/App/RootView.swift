@@ -44,7 +44,10 @@ struct MainTabs: View {
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
-            await app.health.poll()
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await app.health.poll() }
+                group.addTask { await app.watchPrimary() }
+            }
         }
     }
 }

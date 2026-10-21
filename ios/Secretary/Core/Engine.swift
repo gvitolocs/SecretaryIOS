@@ -40,29 +40,33 @@ enum EngineOutcome<Response: EngineResponse>: Sendable {
 enum EngineRetry {
     static let conflictMessage = "This changed somewhere else. I refreshed it; please try again."
 
-    /// Sends one user action with conflict handling:
-    /// on `conflict`, refetch the state and resend **once** with the same `op_id`
-    /// (a conflict never consumes an op_id, so the resend is still idempotent) and the
-    /// fresh revision. A second conflict is reported, never retried in a loop.
+    /// Sends one user action with conflict handling (docs/server-api.md, offline queue
+    /// recipe, as the server and web app do): on `conflict`, refetch the state and resend
+    /// the command **once** against the fresh revision **with a new op_id**. A second
+    /// conflict is reported, never retried in a loop.
     ///
     /// - Parameters:
     ///   - opId: generated once per user action by the caller.
+    ///   - nextOpId: makes the op_id for the conflict retry.
     ///   - revision: the revision the user saw.
     ///   - send: sends the request for a given `expected_revision`.
     ///   - refetch: loads the current state and returns its revision.
     static func run<Response: EngineResponse>(
         opId: String,
+        nextOpId: () -> String,
         revision: Int,
         send: (_ opId: String, _ expectedRevision: Int) async throws -> Response,
         refetch: () async throws -> Int
     ) async throws -> EngineOutcome<Response> {
         var expected = revision
+        var currentOpId = opId
         for attempt in 0..<2 {
-            let response = try await send(opId, expected)
+            let response = try await send(currentOpId, expected)
             if response.ok { return .success(response) }
             guard response.code == "conflict" else { return .rejected(response) }
             if attempt == 0 {
                 expected = try await refetch()
+                currentOpId = nextOpId()
                 continue
             }
             return .conflict(response)

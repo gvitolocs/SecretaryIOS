@@ -26,7 +26,7 @@ Secretary/Features/Gym/     GymTransport (HTTP now, FFI later), GymStore, ported
 Secretary/Features/Weight/  BodyClient.swift (all body wire knowledge), WeightStore, WeightView
 Secretary/Features/Settings/ health, device, sign out, change password
 scripts/run-mock.sh         runs the web mock with an iOS overlay (Bearer, /v1/auth/device)
-scripts/make-icon.swift     generates the app icon PNGs
+Resources/…/AppIcon        the Lucina portrait (personal fan art: private builds only, never the App Store)
 screenshots/                every tab, light and dark
 ```
 
