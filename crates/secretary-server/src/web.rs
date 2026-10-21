@@ -8,12 +8,15 @@
 //! - `/assets/*` (content-hashed build output) is
 //!   `Cache-Control: public, max-age=31536000, immutable`; everything else,
 //!   `index.html` included, is `no-cache`.
+//! - Files from the web directory (and the SPA `index.html`) carry
+//!   [`crate::WEB_CONTENT_SECURITY_POLICY`] (WebAssembly and blob URLs for
+//!   the 3D stage); JSON 404s keep the strict API policy.
 
 use std::path::Path;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
@@ -70,6 +73,10 @@ pub async fn fallback(State(st): State<AppState>, req: Request) -> Response {
     }
     let ok = resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED;
     if ok {
+        resp.headers_mut().insert(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(crate::WEB_CONTENT_SECURITY_POLICY),
+        );
         let cc = if path.starts_with("/assets/") {
             IMMUTABLE
         } else {

@@ -933,19 +933,46 @@ async fn security_headers_on_every_response() {
     let tmp = tempfile::tempdir().unwrap();
     let web = web_dir(tmp.path());
     let h = Harness::new(move |c, _| c.web_dir = Some(web)).await;
+    const STRICT: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'";
+    // The web app (3D stage: WebAssembly decoder, blob textures/audio/workers).
+    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'";
     let responses = [
-        h.http.get(h.url("/v1/health")).send().await.unwrap(),
-        h.http.get(h.url("/v1/shopping")).send().await.unwrap(), // 401
-        h.http.get(h.url("/v1/nope")).send().await.unwrap(),     // 404
-        h.http.get(h.url("/")).send().await.unwrap(),            // static
-        h.req(Method::GET, "/v1/shopping").send().await.unwrap(), // 200 forwarded
+        (
+            STRICT,
+            h.http.get(h.url("/v1/health")).send().await.unwrap(),
+        ),
+        (
+            STRICT,
+            h.http.get(h.url("/v1/shopping")).send().await.unwrap(),
+        ), // 401
+        (STRICT, h.http.get(h.url("/v1/nope")).send().await.unwrap()), // 404
+        (
+            STRICT,
+            h.http
+                .get(h.url("/assets/missing.js"))
+                .send()
+                .await
+                .unwrap(),
+        ), // web 404 (JSON)
+        (WEB, h.http.get(h.url("/")).send().await.unwrap()),           // index.html
+        (WEB, h.http.get(h.url("/agenda")).send().await.unwrap()),     // SPA fallback
+        (
+            WEB,
+            h.http
+                .get(h.url("/assets/app-3f2a1c.js"))
+                .send()
+                .await
+                .unwrap(),
+        ), // asset
+        (
+            STRICT,
+            h.req(Method::GET, "/v1/shopping").send().await.unwrap(),
+        ), // 200 forwarded
     ];
-    for r in responses {
+    for (csp, r) in responses {
         let hd = r.headers();
-        assert_eq!(
-            hd["content-security-policy"],
-            "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
-        );
+        assert_eq!(hd["content-security-policy"], csp, "{}", r.url());
+        assert_eq!(hd.get_all("content-security-policy").iter().count(), 1);
         assert_eq!(hd["x-content-type-options"], "nosniff");
         assert_eq!(hd["referrer-policy"], "no-referrer");
         assert!(!hd.contains_key("access-control-allow-origin"));

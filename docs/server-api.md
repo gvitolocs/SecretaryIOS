@@ -1050,14 +1050,34 @@ With `SECRETARY_WEB_DIR` set, the server also serves the built web app at
   (emit content-hashed file names there); everything else, `index.html`
   included → `no-cache`.
 
-Every response (API and static) carries:
+Every response carries `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: no-referrer`, and one of two Content Security Policies.
+
+`/v1` responses (and JSON errors, such as a missing static file) get the
+strict policy:
 
 ```
 Content-Security-Policy: default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'
-X-Content-Type-Options: nosniff
-Referrer-Policy: no-referrer
 ```
 
-So the web build must not use inline `<script>`, remote scripts/fonts or
+Files served from the web directory, the SPA `index.html` included, get the
+web app policy, which the 3D Lucina stage in Chat needs:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'
+```
+
+| Directive | Why |
+|---|---|
+| `script-src 'wasm-unsafe-eval'` | The meshopt GLB decoder is WebAssembly. It does not allow `eval`. |
+| `img-src blob:` | GLTFLoader turns textures embedded in the GLB into `blob:` URLs. |
+| `connect-src blob: data:` | The loader fetches those `blob:`/`data:` URLs. |
+| `media-src blob:` | TTS audio played from a `blob:` URL. |
+| `worker-src blob:` | Decoder workers started from `blob:` URLs. |
+| `base-uri 'none'` | No `<base>` tag can redirect relative URLs. |
+
+It matches the standalone `/lucina/` page that Caddy serves
+(`deploy/Caddyfile.p1`). Neither policy allows inline `<script>` or remote
+origins, so the web build must not use inline `<script>`, remote scripts or fonts, or
 remote images (`imageUrl` from a `generate_image` job will not render in an
 `<img>` under this CSP; open it as a link instead).

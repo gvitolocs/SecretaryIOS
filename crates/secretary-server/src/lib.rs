@@ -50,8 +50,20 @@ use sessions::{SessionAuth, SessionStore};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Sent on every response.
+/// The strict policy: every `/v1` response and anything not served from the
+/// web app (JSON 404s included).
 pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'";
+
+/// The web app's policy (files served from `SECRETARY_WEB_DIR`, the SPA
+/// `index.html` included). The 3D Lucina stage needs, beyond the strict one:
+/// - `script-src 'wasm-unsafe-eval'`: the meshopt decoder is WebAssembly;
+/// - `img-src blob:`: GLTFLoader turns GLB-embedded textures into blob URLs;
+/// - `connect-src blob: data:`, `media-src blob:`, `worker-src blob:`:
+///   fetches of those URLs, audio and decoder workers.
+///
+/// Plus `base-uri 'none'`. Same directives as the standalone `/lucina/`
+/// page in `deploy/Caddyfile.p1`.
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
@@ -216,9 +228,10 @@ pub fn app(state: AppState) -> Router {
         .layer(CatchPanicLayer::custom(|_| {
             ApiError::internal("internal error").into_response()
         }))
-        .layer(static_header(
-            "content-security-policy",
-            CONTENT_SECURITY_POLICY,
+        // `if_not_present`: the web fallback sets WEB_CONTENT_SECURITY_POLICY.
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         ))
         .layer(static_header("x-content-type-options", "nosniff"))
         .layer(static_header("referrer-policy", "no-referrer"))
