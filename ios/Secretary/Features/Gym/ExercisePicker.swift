@@ -13,11 +13,11 @@ struct ExercisePicker: View {
                 Button { onSelect(exercise) } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(exercise.name).font(.headline).foregroundStyle(.primary)
-                            Text("\(exercise.muscle) · \(exercise.equipment)").font(.caption).foregroundStyle(.secondary)
+                            Text(exercise.name).font(.headline).foregroundStyle(GymPalette.ink)
+                            Text("\(exercise.muscle) · \(exercise.equipment)").font(.caption).foregroundStyle(GymPalette.muted)
                         }
                         Spacer()
-                        Image(systemName: "plus.circle").foregroundStyle(Theme.accent).accessibilityHidden(true)
+                        Image(systemName: "plus.circle").foregroundStyle(GymPalette.forest).accessibilityHidden(true)
                     }
                     .contentShape(Rectangle())
                 }
@@ -29,6 +29,8 @@ struct ExercisePicker: View {
                     ContentUnavailableView.search(text: query)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(GymPalette.background)
             .searchable(text: $query, prompt: "Name, muscle, or equipment")
             .navigationTitle("Exercises")
             .navigationBarTitleDisplayMode(.inline)
@@ -39,7 +41,7 @@ struct ExercisePicker: View {
                         .accessibilityLabel("Create exercise")
                 }
             }
-            .sheet(isPresented: $showCreate) { CreateExerciseScreen() }
+            .sheet(isPresented: $showCreate) { CreateExerciseScreen().gymStyle() }
         }
     }
 }

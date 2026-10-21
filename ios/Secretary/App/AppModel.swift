@@ -26,7 +26,11 @@ final class AppModel {
 
     let chat: ChatStore
     let shopping: ShoppingStore
-    let gym: GymStore
+    /// Replaced when the owner moves training between the iPhone and the server.
+    private(set) var gym: GymStore
+    private(set) var gymLocation: GymLocation
+    /// Set when the on-device engine could not open (the server engine is used instead).
+    private(set) var gymEngineError: String?
     let weight: WeightStore
     let health: HealthStore
 
@@ -37,6 +41,8 @@ final class AppModel {
         if launch.resetState {
             try? keychain.delete()
             try? FileManager.default.removeItem(at: ChatStore.defaultFileURL)
+            try? FileManager.default.removeItem(at: FFIGymEngine.defaultFileURL)
+            defaults.removeObject(forKey: GymLocation.key)
             defaults.removeObject(forKey: ChatStore.sessionIdKey)
         }
         let client = APIClient(endpoints: ServerConfig.resolvedEndpoints(defaults: defaults), accessKey: try? keychain.read(),
@@ -46,7 +52,19 @@ final class AppModel {
         baseURL = client.baseURL
         chat = ChatStore(api: { SecretaryAPI(client: client) })
         shopping = ShoppingStore(api: { SecretaryAPI(client: client) })
-        gym = GymStore(transport: HTTPGymTransport(client: client))
+        let location = GymLocation(rawValue: defaults.string(forKey: GymLocation.key) ?? "") ?? .device
+        let engine = Result { try FFIGymEngine(fileURL: FFIGymEngine.defaultFileURL) }
+        let device = try? engine.get()
+        deviceEngine = device
+        if location == .device, let device {
+            gym = GymStore(transport: FFIGymTransport(engine: device), clockInterval: .seconds(1))
+            gymLocation = .device
+            gymEngineError = nil
+        } else {
+            gym = GymStore(transport: HTTPGymTransport(client: client))
+            gymLocation = .server
+            if case let .failure(error) = engine { gymEngineError = error.localizedDescription } else { gymEngineError = nil }
+        }
         weight = WeightStore(client: { BodyClient(client: client) })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         if let tab = launch.initialTab { selectedTab = tab }
@@ -58,6 +76,7 @@ final class AppModel {
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         gym.onTransportError = onError
+        transportErrorHandler = onError
         weight.onTransportError = onError
         client.onEndpointChange = { [weak self] url in
             Task { @MainActor in self?.baseURL = url }
@@ -153,6 +172,51 @@ final class AppModel {
         }
     }
 
+    // MARK: - Gym engine
+
+    @ObservationIgnored private var transportErrorHandler: ((APIError) -> Void)?
+    /// One engine handle per file, shared by the store and sync.
+    @ObservationIgnored private var deviceEngine: FFIGymEngine?
+
+    private func makeGymStore(_ location: GymLocation) -> GymStore {
+        let store: GymStore
+        if location == .device, let engine = deviceEngine {
+            store = GymStore(transport: FFIGymTransport(engine: engine), clockInterval: .seconds(1))
+        } else {
+            store = GymStore(transport: HTTPGymTransport(client: client))
+        }
+        store.onTransportError = transportErrorHandler
+        return store
+    }
+
+    func setGymLocation(_ location: GymLocation) {
+        guard location != gymLocation else { return }
+        UserDefaults.standard.set(location.rawValue, forKey: GymLocation.key)
+        guard location == .server || deviceEngine != nil else { return }
+        let store = makeGymStore(location)
+        gym.reset()
+        gym = store
+        gymLocation = location
+        Task { await store.refresh() }
+    }
+
+    private func gymSync() throws -> GymSync {
+        guard let engine = deviceEngine else { throw GymSync.SyncError.failed(gymEngineError ?? "The on-device gym engine isn't available.") }
+        return GymSync(device: FFIGymTransport(engine: engine), server: HTTPGymTransport(client: client))
+    }
+
+    /// Replaces the server's gym data with this iPhone's.
+    func uploadGymToServer() async throws {
+        try await gymSync().upload()
+        await gym.refresh()
+    }
+
+    /// Replaces this iPhone's gym data with the server's.
+    func downloadGymFromServer() async throws {
+        try await gymSync().download()
+        await gym.refresh()
+    }
+
     // MARK: - Endpoints
 
     var endpointLabel: String { ServerConfig.label(for: baseURL) }
@@ -213,4 +277,16 @@ struct LaunchOptions {
         initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
         #endif
     }
+}
+
+/// Where the gym engine runs.
+enum GymLocation: String, CaseIterable, Sendable {
+    /// `secretary-ffi` on this iPhone: works offline (like the original LucinaGym).
+    case device
+    /// `/v1/gym/*` on secretary-server: shared with the web app, needs the network.
+    case server
+
+    static let key = "secretary.gym.location"
+
+    var title: String { self == .device ? "On this iPhone" : "On the server" }
 }

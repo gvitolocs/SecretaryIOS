@@ -140,51 +140,82 @@ final class SecretaryFlowTests: XCTestCase {
         attach(app, "Shopping")
     }
 
-    // MARK: - Gym
+    // MARK: - Gym (on-device engine, like the original LucinaGym tests)
 
-    func testGymWorkoutFlow() {
-        let app = launch()
-        signIn(app)
-        app.tabBars.buttons["Gym"].tap()
-
-        // A workout left over from an earlier run is discarded first.
-        if app.buttons["continueWorkout"].waitForExistence(timeout: 5) {
-            app.buttons["continueWorkout"].tap()
-            app.buttons["Workout options"].tap()
-            app.buttons["Discard workout"].tap()
-            app.buttons["Discard workout"].firstMatch.tap()
-        }
-        let start = app.buttons["startWorkout"]
-        XCTAssertTrue(start.waitForExistence(timeout: 10))
-        start.tap()
-
+    /// Fills the first weight field, completes the set and finishes the workout.
+    private func logBenchSet(_ app: XCUIApplication, weight value: String) {
         let add = app.buttons["addExercise"]
         XCTAssertTrue(add.waitForExistence(timeout: 10))
         add.tap()
         let bench = app.buttons["exercise-bench-press"]
         XCTAssertTrue(bench.waitForExistence(timeout: 10))
         bench.tap()
-
         let weight = app.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "weight-")).firstMatch
         XCTAssertTrue(weight.waitForExistence(timeout: 10))
         weight.tap()
         let previous = weight.value as? String ?? ""
-        weight.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + "62.5")
+        weight.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + value)
         if app.toolbars.buttons["Done"].exists { app.toolbars.buttons["Done"].tap() }
-
         let complete = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "complete-set-")).firstMatch
         XCTAssertTrue(complete.waitForExistence(timeout: 5))
         complete.tap()
         XCTAssertTrue(app.descendants(matching: .any)["restTimer"].waitForExistence(timeout: 10), "rest timer started")
-        XCTAssertTrue(app.buttons["Uncheck set 1"].waitForExistence(timeout: 5))
-        attach(app, "Workout")
+    }
 
+    func testGymWorkoutPersistsAcrossRelaunch() {
+        let app = launch(tab: "gym")
+        signIn(app)
+        let start = app.buttons["startWorkout"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Make time\nfor strength."].exists || app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "for strength")).firstMatch.exists)
+        start.tap()
+        logBenchSet(app, weight: "62.5")
+        attach(app, "Workout")
         app.buttons["finishWorkout"].tap()
-        XCTAssertTrue(start.waitForExistence(timeout: 10), "back on the training screen")
-        app.segmentedControls["gymSection"].buttons["History"].tap()
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "62.5 kg")).firstMatch.waitForExistence(timeout: 5)
-            || app.buttons.matching(NSPredicate(format: "identifier == %@", "history-Workout")).firstMatch.waitForExistence(timeout: 5),
-                      "finished workout in the journal")
+        XCTAssertTrue(start.waitForExistence(timeout: 10), "back on Training")
+        app.buttons["gymSection-Journal"].tap()
+        XCTAssertTrue(app.buttons["history-Workout"].firstMatch.waitForExistence(timeout: 8), "finished workout in the journal")
+
+        // The on-device engine file survives a relaunch.
+        app.terminate()
+        let relaunched = launch(reset: false, tab: "gym")
+        XCTAssertTrue(relaunched.buttons["gymSection-Progress"].waitForExistence(timeout: 15))
+        relaunched.buttons["gymSection-Progress"].tap()
+        XCTAssertTrue(relaunched.staticTexts["Bench Press"].firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(relaunched.staticTexts["62.5 kg"].firstMatch.exists)
+        attach(relaunched, "Progress after relaunch")
+    }
+
+    func testGymRoutineCanBeDiscardedWithoutCreatingHistory() {
+        let app = launch(tab: "gym")
+        signIn(app)
+        XCTAssertTrue(app.buttons["Start Full Body"].waitForExistence(timeout: 12))
+        app.buttons["Start Full Body"].tap()
+        XCTAssertTrue(app.buttons["Workout options"].waitForExistence(timeout: 8))
+        app.buttons["Workout options"].tap()
+        app.buttons["Discard workout"].tap()
+        app.buttons["Discard workout"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["startWorkout"].waitForExistence(timeout: 8))
+        app.buttons["gymSection-Journal"].tap()
+        XCTAssertTrue(app.staticTexts["Your story starts here"].waitForExistence(timeout: 8))
+    }
+
+    func testGymRepeatOpensTheWorkout() {
+        let app = launch(tab: "gym")
+        signIn(app)
+        XCTAssertTrue(app.buttons["startWorkout"].waitForExistence(timeout: 10))
+        app.buttons["startWorkout"].tap()
+        logBenchSet(app, weight: "50")
+        app.buttons["finishWorkout"].tap()
+        app.buttons["gymSection-Journal"].tap()
+        let entry = app.buttons["history-Workout"].firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 8))
+        entry.tap()
+        let repeatButton = app.buttons["repeatWorkout"]
+        XCTAssertTrue(repeatButton.waitForExistence(timeout: 8))
+        repeatButton.tap()
+        XCTAssertTrue(app.buttons["finishWorkout"].waitForExistence(timeout: 8), "the repeated workout opens")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "complete-set-")).firstMatch.exists)
     }
 
     // MARK: - Weight

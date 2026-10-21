@@ -32,7 +32,7 @@ struct MainTabs: View {
             NavigationStack { ShoppingView().lucinaStatusToolbar() }
                 .tabItem { Label("Shopping", systemImage: "cart") }
                 .tag(AppModel.Tab.shopping)
-            NavigationStack { GymScreen().lucinaStatusToolbar() }
+            NavigationStack { GymScreen() }
                 .tabItem { Label("Gym", systemImage: "dumbbell") }
                 .tag(AppModel.Tab.gym)
             NavigationStack { WeightView().lucinaStatusToolbar() }

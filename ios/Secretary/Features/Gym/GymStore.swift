@@ -16,13 +16,16 @@ final class GymStore {
     private(set) var pending = 0
     var loadError: String?
     var actionError: String?
-    /// The workout sheet shows its own error alert while it is up.
+    /// The workout sheet is up (it shows its own error alert then). Set to open it, e.g.
+    /// after repeating a workout from the journal.
     var isPresentingWorkout = false
 
     @ObservationIgnored private let transport: GymTransport
     @ObservationIgnored private let queue = SerialQueue()
     @ObservationIgnored private let makeOpId: () -> String
     @ObservationIgnored private let timezone: () -> String
+    /// How often the open workout re-reads the engine clock (cheap on the device engine).
+    @ObservationIgnored let clockInterval: Duration
     @ObservationIgnored private var generation = 0
     /// Called with transport failures (401 → sign out, offline → banner).
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
@@ -30,8 +33,10 @@ final class GymStore {
 
     init(transport: GymTransport,
          makeOpId: @escaping () -> String = { UUID().uuidString.lowercased() },
-         timezone: @escaping () -> String = { EngineClock.timezone }) {
+         timezone: @escaping () -> String = { EngineClock.timezone },
+         clockInterval: Duration = .seconds(15)) {
         self.transport = transport
+        self.clockInterval = clockInterval
         self.makeOpId = makeOpId
         self.timezone = timezone
     }

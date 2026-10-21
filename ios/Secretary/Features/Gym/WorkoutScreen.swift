@@ -15,49 +15,48 @@ struct WorkoutScreen: View {
         NavigationStack {
             ScrollView {
                 if let view = store.view, let workout = view.state.active {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 20) {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
-                            VStack(spacing: 12) {
-                                Card {
-                                    HStack(alignment: .top) {
-                                        Metric(value: store.activeDuration(at: context.date), label: "Duration")
-                                        Metric(value: view.summary.activeVolume, label: "Volume")
-                                        Metric(value: "\(view.summary.activeCompletedSets)", label: "Sets")
-                                    }
+                            VStack(alignment: .leading, spacing: 20) {
+                                HStack(alignment: .top) {
+                                    GymMetric(value: store.activeDuration(at: context.date), label: "Duration")
+                                    GymMetric(value: view.summary.activeVolume, label: "Volume")
+                                    GymMetric(value: "\(view.summary.activeCompletedSets)", label: "Sets")
                                 }
                                 let remaining = store.restRemaining(at: context.date)
                                 if remaining > 0 {
-                                    restBanner(remaining)
+                                    HStack {
+                                        Image(systemName: "timer").accessibilityHidden(true)
+                                        Text("Rest · \(remaining)s").font(.headline.monospacedDigit())
+                                        Spacer()
+                                        Button("Skip") { Task { await store.run(.stopRest) } }
+                                    }
+                                    .padding(16)
+                                    .background(GymPalette.lime.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
+                                    .accessibilityElement(children: .contain)
+                                    .accessibilityIdentifier("restTimer")
                                 }
                             }
                         }
-
                         TextField("Workout notes", text: $notes, axis: .vertical)
                             .font(.subheadline)
                             .padding(14)
-                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .background(.white, in: RoundedRectangle(cornerRadius: 14))
                             .onSubmit { saveNotes() }
-
                         ForEach(workout.exercises) { exercise in
                             ExerciseCard(exercise: exercise, view: view)
                         }
-
-                        PrimaryButton(title: "Add exercise") { showExercises = true }
+                        GymPrimaryButton(title: "Add exercise") { showExercises = true }
                             .accessibilityIdentifier("addExercise")
-
-                        Button("Start rest timer", systemImage: "timer") {
+                        Button("Start rest timer") {
                             Task { await store.run(.startRest(seconds: view.state.settings.restSeconds)) }
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
                     }
-                    .padding(16)
-                } else if store.view != nil {
-                    ContentUnavailableView("No workout in progress", systemImage: "figure.strengthtraining.traditional")
-                        .padding(.top, 60)
+                    .padding(20)
                 }
             }
-            .background(Theme.page)
+            .background(GymPalette.background)
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(store.view?.state.active?.title ?? "Workout")
             .navigationBarTitleDisplayMode(.inline)
@@ -65,27 +64,24 @@ struct WorkoutScreen: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close") { saveNotes(); dismiss() }
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Menu {
-                        Button("Rename workout", systemImage: "pencil") {
-                            name = store.view?.state.active?.title ?? "Workout"; rename = true
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack {
+                        Menu {
+                            Button("Rename workout") { name = store.view?.state.active?.title ?? "Workout"; rename = true }
+                            Button("Save as routine") { name = store.view?.state.active?.title ?? "Routine"; saveRoutine = true }
+                            Button("Discard workout", role: .destructive) { discard = true }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
                         }
-                        Button("Save as routine", systemImage: "square.and.arrow.down") {
-                            name = store.view?.state.active?.title ?? "Routine"; saveRoutine = true
+                        .accessibilityLabel("Workout options")
+                        Button {
+                            Task { await finish() }
+                        } label: {
+                            Text("Finish").fontWeight(.bold)
                         }
-                        Button("Discard workout", systemImage: "trash", role: .destructive) { discard = true }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
+                        .disabled(store.view?.state.active == nil || finishing)
+                        .accessibilityIdentifier("finishWorkout")
                     }
-                    .accessibilityLabel("Workout options")
-
-                    Button {
-                        Task { await finish() }
-                    } label: {
-                        if finishing { ProgressView() } else { Text("Finish").bold() }
-                    }
-                    .disabled(store.view?.state.active == nil || finishing)
-                    .accessibilityIdentifier("finishWorkout")
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -93,10 +89,13 @@ struct WorkoutScreen: View {
                 }
             }
             .onAppear { notes = store.view?.state.active?.notes ?? "" }
+            // Swiping the sheet away must not lose typed notes (set rows save on their own).
+            .onDisappear { saveNotes() }
             .task {
-                // Cheap clock poll so the rest timer and duration stay honest; the 1 s tick is local.
+                // The rest timer and duration tick locally each second; this re-reads the
+                // engine clock (every second on the device engine, like the original).
                 while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(15))
+                    try? await Task.sleep(for: store.clockInterval)
                     if Task.isCancelled { break }
                     await store.tickClock()
                 }
@@ -107,6 +106,7 @@ struct WorkoutScreen: View {
                         if await store.run(.addExercise(exerciseId: exercise.id)) != nil { showExercises = false }
                     }
                 }
+                .gymStyle()
             }
             .confirmationDialog("Discard this workout?", isPresented: $discard, titleVisibility: .visible) {
                 Button("Discard workout", role: .destructive) {
@@ -123,7 +123,7 @@ struct WorkoutScreen: View {
                 Button("Save") { Task { await store.run(.saveRoutine(name: name, exerciseIds: nil, fromActive: true)) } }
                 Button("Cancel", role: .cancel) {}
             }
-            .alert("Couldn't save that change", isPresented: Binding(
+            .alert("Couldn\u{2019}t save that change", isPresented: Binding(
                 get: { store.actionError != nil && !showExercises },
                 set: { if !$0 { store.actionError = nil } }
             )) {
@@ -132,21 +132,6 @@ struct WorkoutScreen: View {
                 Text(store.actionError ?? "")
             }
         }
-    }
-
-    private func restBanner(_ remaining: Int) -> some View {
-        HStack {
-            Image(systemName: "timer").accessibilityHidden(true)
-            Text("Rest · \(remaining / 60):\(String(format: "%02d", remaining % 60))")
-                .font(.headline.monospacedDigit())
-            Spacer()
-            Button("Skip") { Task { await store.run(.stopRest) } }
-                .buttonStyle(.bordered)
-        }
-        .padding(14)
-        .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("restTimer")
     }
 
     private func saveNotes() {
@@ -160,7 +145,7 @@ struct WorkoutScreen: View {
         defer { finishing = false }
         endEditing()
         saveNotes()
-        // Let pending set edits (saved on blur) land first; the store queue keeps the order.
+        // Pending set edits (saved on blur) go first: the store queue keeps the order.
         if await store.run(.finishWorkout) != nil { dismiss() }
     }
 }
@@ -174,28 +159,30 @@ struct ExerciseCard: View {
     private var kind: ExerciseKind { definition?.exerciseKind ?? .weightReps }
 
     var body: some View {
-        Card {
+        GymCard {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(definition?.name ?? "Exercise").font(.headline)
                     if let previous = view.previousLabels[exercise.id] {
-                        Text("Previous · \(previous)").font(.caption).foregroundStyle(.secondary)
+                        Text("Previous · \(previous)").font(.caption).foregroundStyle(GymPalette.muted)
                     }
                 }
                 Spacer()
                 Menu {
-                    Button("Remove exercise", systemImage: "trash", role: .destructive) {
+                    Button("Remove exercise", role: .destructive) {
                         Task { await store.run(.removeExercise(exerciseId: exercise.id)) }
                     }
                 } label: {
-                    Image(systemName: "ellipsis").padding(8)
+                    Image(systemName: "ellipsis").padding(6)
                 }
-                .accessibilityLabel("Options for \(definition?.name ?? "exercise")")
+                .accessibilityLabel("Exercise options")
             }
             HStack {
-                Eyebrow(text: "Set").frame(width: 36, alignment: .leading)
-                Eyebrow(text: fieldsLabel).frame(maxWidth: .infinity)
-                Eyebrow(text: "Done")
+                GymEyebrow(text: "Set").frame(width: 50, alignment: .leading)
+                Spacer()
+                GymEyebrow(text: fieldsLabel)
+                Spacer()
+                GymEyebrow(text: "Done")
             }
             ForEach(Array(exercise.sets.enumerated()), id: \.element.id) { index, set in
                 SetRow(set: set, number: index + 1, kind: kind, weightLabel: view.weightLabels[set.id] ?? "0")
@@ -207,10 +194,9 @@ struct ExerciseCard: View {
                     .font(.subheadline.bold())
                     .frame(maxWidth: .infinity)
                     .padding(10)
-                    .background(Theme.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(GymPalette.background, in: RoundedRectangle(cornerRadius: 10))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Theme.accent)
             .accessibilityIdentifier("addSet-\(exercise.exerciseId)")
         }
     }
@@ -219,8 +205,8 @@ struct ExerciseCard: View {
         switch kind {
         case .repsOnly: return "Reps"
         case .timed: return "Seconds"
-        case .distanceTime: return "Meters · seconds"
-        case .weightReps: return "\(view.unit) · reps"
+        case .distanceTime: return "Meters / seconds"
+        case .weightReps: return "\(view.unit) / reps"
         }
     }
 }
@@ -233,9 +219,9 @@ struct SetRow: View {
     let weightLabel: String
 
     @State private var weight = "0"
-    @State private var reps = "0"
-    @State private var seconds = "0"
-    @State private var distance = "0"
+    @State private var reps = "8"
+    @State private var seconds = "60"
+    @State private var distance = "1000"
     @State private var setKind = "normal"
     @FocusState private var focused: Bool
 
@@ -245,30 +231,28 @@ struct SetRow: View {
                 ForEach(SetKind.allCases, id: \.self) { value in
                     Button(value.title) { setKind = value.rawValue; Task { _ = await save() } }
                 }
-                Button("Delete set", systemImage: "trash", role: .destructive) {
-                    Task { await store.run(.removeSet(setId: set.id)) }
-                }
+                Button("Delete set", role: .destructive) { Task { await store.run(.removeSet(setId: set.id)) } }
             } label: {
                 Text(setKind == "normal" ? "\(number)" : String(setKind.prefix(1)).uppercased())
                     .font(.caption.bold())
-                    .frame(width: 32, height: 38)
-                    .background(Theme.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(width: 28, height: 36)
+                    .background(GymPalette.background, in: RoundedRectangle(cornerRadius: 8))
             }
             .disabled(set.completed)
-            .accessibilityLabel("Set \(number), \(SetKind(rawValue: setKind)?.title ?? setKind)")
+            .accessibilityLabel("Set \(number) type")
 
             if kind == .weightReps { field("Weight", value: $weight, id: "weight-\(set.id)") }
-            if kind == .weightReps || kind == .repsOnly { field("Reps", value: $reps, id: "reps-\(set.id)", decimal: false) }
-            if kind == .distanceTime { field("Meters", value: $distance, id: "distance-\(set.id)", decimal: false) }
-            if kind == .timed || kind == .distanceTime { field("Seconds", value: $seconds, id: "seconds-\(set.id)", decimal: false) }
+            if kind == .weightReps || kind == .repsOnly { field("Reps", value: $reps, id: "reps-\(set.id)") }
+            if kind == .distanceTime { field("Meters", value: $distance, id: "distance-\(set.id)") }
+            if kind == .timed || kind == .distanceTime { field("Seconds", value: $seconds, id: "seconds-\(set.id)") }
 
             Button {
                 focused = false
                 Task { await toggle() }
             } label: {
                 Image(systemName: set.completed ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 28))
-                    .foregroundStyle(set.completed ? Theme.accent : Color.secondary.opacity(0.6))
+                    .font(.system(size: 27))
+                    .foregroundStyle(set.completed ? GymPalette.forest : GymPalette.muted.opacity(0.45))
                     .frame(minWidth: 44, minHeight: 44)
             }
             .buttonStyle(.plain)
@@ -279,6 +263,10 @@ struct SetRow: View {
         .onChange(of: set) { _, _ in if !focused { load() } }
         .onChange(of: focused) { _, isFocused in
             if !isFocused, store.setIsEditable(set.id), isDirty { Task { _ = await save(quiet: true) } }
+        }
+        // Closing the sheet or scrolling away keeps what was typed (as the original did).
+        .onDisappear {
+            if store.setIsEditable(set.id), isDirty { Task { _ = await save(quiet: true) } }
         }
     }
 
@@ -304,18 +292,17 @@ struct SetRow: View {
         }
     }
 
-    private func field(_ title: String, value: Binding<String>, id: String, decimal: Bool = true) -> some View {
+    private func field(_ title: String, value: Binding<String>, id: String) -> some View {
         TextField(title, text: value)
-            .keyboardType(decimal ? .decimalPad : .numberPad)
+            .keyboardType(.decimalPad)
             .multilineTextAlignment(.center)
-            .font(.body.monospacedDigit())
-            .padding(.vertical, 9)
+            .gymFieldFont()
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity)
-            .background(set.completed ? Theme.accent.opacity(0.16) : Theme.field,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background(set.completed ? GymPalette.lime.opacity(0.35) : GymPalette.background, in: RoundedRectangle(cornerRadius: 9))
             .disabled(set.completed)
             .focused($focused)
-            .accessibilityLabel("\(title), set \(number)")
+            .accessibilityLabel(title)
             .accessibilityIdentifier(id)
     }
 

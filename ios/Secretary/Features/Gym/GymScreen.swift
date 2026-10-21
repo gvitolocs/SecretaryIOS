@@ -1,39 +1,41 @@
 import SwiftUI
 
-/// The Gym tab: training, history and progress, ported from LucinaGym. Everything shown
-/// comes from the engine view.
+/// The Gym tab: the LucinaGym app (Training, Journal, Progress, Settings) with its
+/// original look. Everything shown comes from the engine view.
 struct GymScreen: View {
     @Environment(GymStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
 
     enum Section: String, CaseIterable, Identifiable {
-        case train = "Train", history = "History", progress = "Progress"
+        case training = "Training", journal = "Journal", progress = "Progress", settings = "Settings"
         var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .training: return "dumbbell"
+            case .journal: return "book.closed"
+            case .progress: return "chart.xyaxis.line"
+            case .settings: return "slider.horizontal.3"
+            }
+        }
     }
 
-    @State private var section: Section = .train
-    @State private var showSettings = false
+    @State private var section: Section = .training
 
     var body: some View {
+        @Bindable var store = store
         VStack(spacing: 0) {
-            Picker("Section", selection: $section) {
-                ForEach(Section.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-            .accessibilityIdentifier("gymSection")
-
+            sectionBar
             Group {
                 if let view = store.view {
                     switch section {
-                    case .train: TrainingView(view: view)
-                    case .history: HistoryView(view: view)
+                    case .training: TrainingView(view: view)
+                    case .journal: HistoryView(view: view)
                     case .progress: ProgressScreen(view: view)
+                    case .settings: GymSettingsScreen()
                     }
                 } else if let error = store.loadError {
                     ContentUnavailableView {
-                        Label("Couldn't load your training", systemImage: "dumbbell")
+                        Label("Couldn\u{2019}t open your gym data", systemImage: "externaldrive.badge.exclamationmark")
                     } description: {
                         Text(error)
                     } actions: {
@@ -42,26 +44,19 @@ struct GymScreen: View {
                     }
                     .frame(maxHeight: .infinity)
                 } else {
-                    ProgressView("Loading your training…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
-        .background(Theme.page)
-        .navigationTitle("Gym")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3") }
-                    .accessibilityLabel("Gym settings")
-                    .disabled(store.view == nil)
-            }
-        }
-        .sheet(isPresented: $showSettings) { GymSettingsScreen() }
+        .background(GymPalette.background)
+        .toolbar(.hidden, for: .navigationBar)
+        .gymStyle()
+        .sheet(isPresented: $store.isPresentingWorkout) { WorkoutScreen().gymStyle() }
         .task { if store.view == nil { await store.refresh() } }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await store.refresh() } }
         }
-        .alert("Couldn't save that change", isPresented: Binding(
+        .alert("Couldn\u{2019}t save that change", isPresented: Binding(
             get: { store.actionError != nil && !store.isPresentingWorkout },
             set: { if !$0 { store.actionError = nil } }
         )) {
@@ -70,86 +65,134 @@ struct GymScreen: View {
             Text(store.actionError ?? "")
         }
     }
+
+    /// The original app's four tabs, as a bar at the top of the Gym tab.
+    private var sectionBar: some View {
+        HStack(spacing: 6) {
+            ForEach(Section.allCases) { item in
+                Button {
+                    section = item
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: item.icon).font(.system(size: 15, weight: .semibold))
+                        Text(item.rawValue).font(.system(size: 11, weight: .semibold, design: .rounded))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(section == item ? Color.white : GymPalette.muted)
+                    .background(section == item ? GymPalette.forest : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(item.rawValue)
+                .accessibilityAddTraits(section == item ? .isSelected : [])
+                .accessibilityIdentifier("gymSection-\(item.rawValue)")
+            }
+        }
+        .padding(5)
+        .background(.white, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(GymPalette.ink.opacity(0.04)))
+        .padding(.horizontal, 22)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
+    }
 }
 
 struct TrainingView: View {
     @Environment(GymStore.self) private var store
     let view: GymView
-    @State private var showWorkout = false
     @State private var showRoutine = false
-    @State private var starting = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                weekCard
+            VStack(alignment: .leading, spacing: 24) {
+                HStack {
+                    GymEyebrow(text: "Lucina / Gym")
+                    Spacer()
+                    Image(systemName: "sparkle").foregroundStyle(GymPalette.forest).accessibilityHidden(true)
+                }
+                Text("Make time\nfor strength.")
+                    .font(.system(size: 40, weight: .semibold, design: .rounded))
+                    .tracking(-1.5)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
+                HStack(alignment: .bottom) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        GymEyebrow(text: "This week")
+                        Text("\(view.summary.weeklyWorkouts) / \(view.summary.weeklyGoal) workouts").font(.headline)
+                    }
+                    Spacer()
+                    Image(systemName: "calendar").font(.title2).foregroundStyle(GymPalette.forest).accessibilityHidden(true)
+                }
+                .accessibilityElement(children: .combine)
+                ProgressView(value: Double(min(view.summary.weeklyWorkouts, max(view.summary.weeklyGoal, 1))),
+                             total: Double(max(view.summary.weeklyGoal, 1)))
+                    .tint(GymPalette.forest)
+                    .accessibilityLabel("Weekly goal")
                 if let active = view.state.active {
                     activeCard(active)
                 } else {
-                    PrimaryButton(title: "Start empty workout", icon: "play.fill", isBusy: starting) {
+                    GymPrimaryButton(title: "Start empty workout", icon: "play.fill") {
                         Task { await start(nil) }
                     }
                     .accessibilityIdentifier("startWorkout")
                 }
-
                 HStack {
                     Text("Your routines").font(.title2.bold())
                     Spacer()
                     Button { showRoutine = true } label: { Image(systemName: "plus.circle.fill").font(.title2) }
                         .accessibilityLabel("Create routine")
                 }
-                if view.state.routines.isEmpty {
-                    Text("Save a workout as a routine to start it again in one tap.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
                 ForEach(view.state.routines) { routine in
-                    routineCard(routine)
-                }
-
-                Card {
-                    HStack(alignment: .top) {
-                        Metric(value: "\(view.summary.workouts)", label: "Sessions")
-                        Metric(value: "\(view.summary.completedSets)", label: "Sets")
-                        Metric(value: view.summary.volume, label: "Volume")
+                    GymCard {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(routine.name).font(.title3.bold())
+                                Text(routine.exercises.compactMap { view.exercise($0.exerciseId)?.name }.joined(separator: " · "))
+                                    .font(.subheadline).foregroundStyle(GymPalette.muted).lineLimit(2)
+                            }
+                            Spacer()
+                            Button { Task { await start(routine) } } label: {
+                                Image(systemName: "play.fill").padding(13).background(GymPalette.background, in: Circle())
+                            }
+                            .disabled(view.state.active != nil)
+                            .accessibilityLabel("Start \(routine.name)")
+                        }
+                        GymEyebrow(text: "\(routine.exercises.count) exercises")
+                    }
+                    .contextMenu {
+                        Button("Delete routine", role: .destructive) {
+                            Task { await store.run(.deleteRoutine(routineId: routine.id)) }
+                        }
                     }
                 }
+                HStack(alignment: .top) {
+                    GymMetric(value: "\(view.summary.workouts)", label: "Sessions")
+                    GymMetric(value: "\(view.summary.completedSets)", label: "Sets logged")
+                    GymMetric(value: view.summary.volume, label: "Total volume")
+                }
+                .padding(.vertical, 12)
+                Text("A little stronger, one session at a time.")
+                    .font(.footnote)
+                    .foregroundStyle(GymPalette.muted)
+                    .padding(.bottom, 16)
             }
-            .padding(16)
+            .padding(22)
         }
         .refreshable { await store.refresh() }
-        .sheet(isPresented: $showWorkout) { WorkoutScreen() }
-        .sheet(isPresented: $showRoutine) { RoutineBuilder() }
-        .onChange(of: showWorkout) { _, shown in store.isPresentingWorkout = shown }
-    }
-
-    private var weekCard: some View {
-        Card {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Eyebrow(text: "This week")
-                    Text("\(view.summary.weeklyWorkouts) of \(view.summary.weeklyGoal) workouts")
-                        .font(.headline)
-                }
-                Spacer()
-                Image(systemName: "calendar").font(.title2).foregroundStyle(Theme.accent).accessibilityHidden(true)
-            }
-            ProgressView(value: Double(min(view.summary.weeklyWorkouts, max(view.summary.weeklyGoal, 1))),
-                         total: Double(max(view.summary.weeklyGoal, 1)))
-                .accessibilityLabel("Weekly goal")
-                .accessibilityValue("\(view.summary.weeklyWorkouts) of \(view.summary.weeklyGoal) workouts")
-        }
+        .sheet(isPresented: $showRoutine) { RoutineBuilder().gymStyle() }
     }
 
     private func activeCard(_ active: Workout) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("IN PROGRESS").font(.caption2.bold()).tracking(1.5).foregroundStyle(.white.opacity(0.8))
-            Text(active.title).font(.title.bold()).foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("IN PROGRESS").font(.caption2.bold()).tracking(2).foregroundStyle(GymPalette.lime)
+            Text(active.title).font(.title.bold())
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text("\(store.activeDuration(at: context.date)) · \(view.summary.activeCompletedSets) sets · \(view.summary.activeVolume)")
                     .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(.white.opacity(0.75))
             }
-            Button { showWorkout = true } label: {
+            Button { store.isPresentingWorkout = true } label: {
                 HStack {
                     Text("Continue workout")
                     Spacer()
@@ -157,47 +200,20 @@ struct TrainingView: View {
                 }
                 .font(.headline)
                 .padding(14)
-                .foregroundStyle(Theme.accentFill)
-                .background(.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .foregroundStyle(GymPalette.forest)
+                .background(GymPalette.lime, in: RoundedRectangle(cornerRadius: 12))
             }
             .accessibilityIdentifier("continueWorkout")
         }
-        .padding(20)
+        .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.accentFill.gradient, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-    }
-
-    private func routineCard(_ routine: Routine) -> some View {
-        Card {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(routine.name).font(.title3.bold())
-                    Text(routine.exercises.compactMap { view.exercise($0.exerciseId)?.name }.joined(separator: " · "))
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                }
-                Spacer()
-                Button { Task { await start(routine) } } label: {
-                    Image(systemName: "play.fill")
-                        .padding(12)
-                        .background(Theme.field, in: Circle())
-                }
-                .disabled(view.state.active != nil || starting)
-                .accessibilityLabel("Start \(routine.name)")
-            }
-            Eyebrow(text: "\(routine.exercises.count) exercises")
-        }
-        .contextMenu {
-            Button("Delete routine", systemImage: "trash", role: .destructive) {
-                Task { await store.run(.deleteRoutine(routineId: routine.id)) }
-            }
-        }
+        .foregroundStyle(.white)
+        .background(GymPalette.forest, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private func start(_ routine: Routine?) async {
-        starting = true
-        defer { starting = false }
         if await store.run(.startWorkout(title: routine?.name ?? "Workout", routineId: routine?.id)) != nil {
-            showWorkout = true
+            store.isPresentingWorkout = true
         }
     }
 }

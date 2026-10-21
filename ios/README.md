@@ -32,7 +32,11 @@ screenshots/                every tab, light and dark
 
 ## Build and test
 
+The gym runs the Rust engine on the device, so build the static library first
+(`ios/Frameworks/`, gitignored; needs the `aarch64-apple-ios` and `-sim` targets):
+
 ```sh
+scripts/build-ios-core.sh        # from the repo root: SecretaryCore.xcframework
 cd ios
 xcodegen generate
 SIM=05958E3F-AAC6-4F62-9E00-B318CF024A11   # "Secretary iPhone 17"
@@ -74,9 +78,13 @@ route (CSRF-exempt, as on the real server), `POST /v1/auth/device` and
 
 ## Next
 
-- `FFIGymTransport` (and a body equivalent): link `SecretaryCore.xcframework`
-  from `scripts/build-ios-core.sh` and call the engine in-process for offline
-  use, with a persisted command queue. No view changes needed.
+- Gym is local-first: `FFIGymTransport` runs `secretary-ffi` on `Application Support/Secretary/gym.json`
+  (offline, like the original LucinaGym). Gym settings can move training to the server engine, and
+  upload/download the whole history (`export_json` → `restore_json`). Live op replay between the two
+  engines is not possible as is: each engine creates its own workout/set ids, so a command recorded on
+  one refers to ids the other never made. Two-way sync needs engine-side id assignment from the client
+  (or an id map) first.
+- A body-weight `FFIBodyTransport` the same way (`secretary_body_*` is already in the library).
 - Push notifications for reminders (APNs, server side + a device-registration route).
 - `LucinaStage` (the animated avatar with voice) in the slot above the chat transcript.
 - TestFlight, which needs the owner's paid Apple developer team.

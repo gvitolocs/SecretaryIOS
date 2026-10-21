@@ -43,6 +43,9 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     dependencies:
+      # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
+      - framework: Frameworks/SecretaryCore.xcframework
+        embed: false
       - sdk: Security.framework
     settings:
       base:
