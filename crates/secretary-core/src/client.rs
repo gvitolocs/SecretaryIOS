@@ -16,7 +16,8 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CreateReminder,
-    CreatedReminder, Envelope, Health, Job, Reminder, ReminderQuery, ReminderScope,
+    CreatedReminder, Envelope, Health, Job, ReminderList, ReminderQuery, ReminderScope,
+    ShoppingItem,
 };
 use crate::validate;
 
@@ -56,6 +57,8 @@ pub struct Call {
     query: Vec<(&'static str, String)>,
     body: Option<Value>,
     class: TimeoutClass,
+    /// Unwrap this key of `data` (`{items}` -> array, `{item}` -> item).
+    extract: Option<&'static str>,
 }
 
 impl Call {
@@ -66,7 +69,13 @@ impl Call {
             query: Vec::new(),
             body: None,
             class: TimeoutClass::Default,
+            extract: None,
         }
+    }
+
+    fn extracting(mut self, key: &'static str) -> Self {
+        self.extract = Some(key);
+        self
     }
 
     fn with_body(mut self, body: Value) -> Self {
@@ -82,7 +91,9 @@ impl Call {
     /// `POST /chat`.
     pub fn chat(req: &ChatRequest) -> Result<Self> {
         validate::text("message", &req.message, validate::MAX_MESSAGE_CHARS)?;
-        validate::opt_id("sessionId", req.session_id.as_deref())?;
+        if let Some(sid) = req.session_id.as_deref() {
+            validate::session_id("sessionId", sid)?;
+        }
         validate::opt_id("clientMessageId", req.client_message_id.as_deref())?;
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
@@ -148,22 +159,27 @@ impl Call {
         Ok(call)
     }
 
-    /// `GET /shopping`.
+    /// `GET /shopping`; Lucina's `{items}` is unwrapped to the array.
     pub fn shopping() -> Self {
-        Self::new(Method::GET, &["shopping"])
+        Self::new(Method::GET, &["shopping"]).extracting("items")
     }
 
-    /// `POST /shopping` (item body passed through; must be an object).
+    /// `POST /shopping` `{rawName, product?}`; `{item}` is unwrapped.
     pub fn shopping_add(body: Value) -> Result<Self> {
-        validate::object("body", &body)?;
-        Ok(Self::new(Method::POST, &["shopping"]).with_body(body))
+        validate::shopping_item(&body)?;
+        Ok(Self::new(Method::POST, &["shopping"])
+            .with_body(body)
+            .extracting("item"))
     }
 
-    /// `PATCH /shopping/{itemId}` (body passed through; must be an object).
+    /// `PATCH /shopping/{itemId}` (body passed through; must be an object,
+    /// Lucina accepts `{status: needed|purchased}`); `{item}` is unwrapped.
     pub fn shopping_update(item_id: &str, body: Value) -> Result<Self> {
         validate::id("itemId", item_id)?;
         validate::object("body", &body)?;
-        Ok(Self::new(Method::PATCH, &["shopping", item_id]).with_body(body))
+        Ok(Self::new(Method::PATCH, &["shopping", item_id])
+            .with_body(body)
+            .extracting("item"))
     }
 
     pub fn method(&self) -> &Method {
@@ -251,11 +267,17 @@ impl LucinaClient {
     /// Send `call` under its class deadline and decode `data` as `T`
     /// (`serde_json::Value` for a pure passthrough).
     pub async fn call<T: DeserializeOwned>(&self, call: &Call) -> Result<T> {
+        Ok(self.call_with_status(call).await?.1)
+    }
+
+    /// Like [`Self::call`], also returning Lucina's 2xx status (201 for a
+    /// newly created reminder or shopping item, 200 otherwise).
+    pub async fn call_with_status<T: DeserializeOwned>(&self, call: &Call) -> Result<(u16, T)> {
         let timeout = match call.class {
             TimeoutClass::Chat => self.timeouts.chat,
             TimeoutClass::Default => self.timeouts.default,
         };
-        self.call_with_timeout(call, timeout).await
+        self.send(call, timeout).await
     }
 
     /// Like [`Self::call`] with an explicit deadline (e.g. a health probe).
@@ -264,6 +286,10 @@ impl LucinaClient {
         call: &Call,
         timeout: Duration,
     ) -> Result<T> {
+        Ok(self.send(call, timeout).await?.1)
+    }
+
+    async fn send<T: DeserializeOwned>(&self, call: &Call, timeout: Duration) -> Result<(u16, T)> {
         let mut req = self
             .http
             .request(call.method.clone(), self.url(call))
@@ -276,7 +302,18 @@ impl LucinaClient {
         let resp = req.send().await.map_err(Error::from_reqwest)?;
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
-        decode_response(status.as_u16(), &bytes)
+        let data: Value = decode_response(status.as_u16(), &bytes)?;
+        let data = match call.extract {
+            None => data,
+            Some(key) => match data {
+                Value::Object(mut m) => m
+                    .remove(key)
+                    .ok_or_else(|| Error::Decode(format!("data has no `{key}` field")))?,
+                _ => return Err(Error::Decode(format!("data is not an object with `{key}`"))),
+            },
+        };
+        let out = serde_json::from_value(data).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok((status.as_u16(), out))
     }
 
     // -- typed helpers ----------------------------------------------------
@@ -293,7 +330,7 @@ impl LucinaClient {
         self.call(&Call::job(id)?).await
     }
 
-    pub async fn reminders(&self, q: &ReminderQuery) -> Result<Vec<Reminder>> {
+    pub async fn reminders(&self, q: &ReminderQuery) -> Result<ReminderList> {
         self.call(&Call::reminders(q)?).await
     }
 
@@ -307,6 +344,10 @@ impl LucinaClient {
 
     pub async fn agenda(&self, q: &AgendaQuery) -> Result<Agenda> {
         self.call(&Call::agenda(q)?).await
+    }
+
+    pub async fn shopping(&self) -> Result<Vec<ShoppingItem>> {
+        self.call(&Call::shopping()).await
     }
 }
 
@@ -388,6 +429,7 @@ mod tests {
         })
         .is_err());
         assert!(Call::shopping_add(json!("milk")).is_err());
+        assert!(Call::shopping_add(json!({"rawName": "latte"})).is_ok());
         assert_eq!(
             Call::chat(&ChatRequest {
                 message: "hi".into(),

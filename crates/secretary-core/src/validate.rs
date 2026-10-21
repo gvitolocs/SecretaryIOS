@@ -11,10 +11,17 @@ use time::macros::format_description;
 
 use crate::error::{Error, Result};
 
+// Limits mirror Lucina's (docs/secretary-api.md in Lucina), so the app gets
+// a 400 from us instead of a round trip.
+
 /// Max characters of a chat message.
-pub const MAX_MESSAGE_CHARS: usize = 8_000;
+pub const MAX_MESSAGE_CHARS: usize = 4_000;
 /// Max characters of reminder text / natural-language reminder input.
-pub const MAX_TEXT_CHARS: usize = 1_000;
+pub const MAX_TEXT_CHARS: usize = 500;
+/// Max characters of a shopping `rawName` / `product`.
+pub const MAX_SHOPPING_NAME_CHARS: usize = 200;
+/// Max length of a chat `sessionId` (`[A-Za-z0-9_-]`).
+pub const MAX_SESSION_ID_LEN: usize = 64;
 /// Max length of any id (job, reminder, shopping item, session, client message).
 pub const MAX_ID_LEN: usize = 128;
 
@@ -41,6 +48,22 @@ pub fn id(field: &'static str, s: &str) -> Result<()> {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b':'))
     {
         return Err(invalid(field, "may only contain A-Z a-z 0-9 _ - . :"));
+    }
+    Ok(())
+}
+
+/// A chat session id: 1..=64 bytes of `[A-Za-z0-9_-]` (Lucina's rule).
+pub fn session_id(field: &'static str, s: &str) -> Result<()> {
+    if s.is_empty()
+        || s.len() > MAX_SESSION_ID_LEN
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(invalid(
+            field,
+            format!("must be 1..={MAX_SESSION_ID_LEN} characters of A-Z a-z 0-9 _ -"),
+        ));
     }
     Ok(())
 }
@@ -96,6 +119,22 @@ pub fn object(field: &'static str, v: &Value) -> Result<()> {
     }
 }
 
+/// `POST /shopping` body: object with string `rawName` (required) and
+/// optional string `product`, each 1..=200 characters. Other fields pass.
+pub fn shopping_item(v: &Value) -> Result<()> {
+    object("body", v)?;
+    match v.get("rawName") {
+        Some(Value::String(s)) => text("rawName", s, MAX_SHOPPING_NAME_CHARS)?,
+        _ => return Err(invalid("rawName", "is required and must be a string")),
+    }
+    match v.get("product") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) => text("product", s, MAX_SHOPPING_NAME_CHARS)?,
+        Some(_) => return Err(invalid("product", "must be a string")),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +167,10 @@ mod tests {
         assert!(flag("f", "yes").is_err());
         assert!(object("body", &json!({"name": "milk"})).is_ok());
         assert!(object("body", &json!(["milk"])).is_err());
+        assert!(shopping_item(&json!({"rawName": "latte", "product": "milk"})).is_ok());
+        assert!(shopping_item(&json!({"name": "milk"})).is_err());
+        assert!(shopping_item(&json!({"rawName": "x", "product": 3})).is_err());
+        assert!(session_id("sessionId", "iphone_1-a").is_ok());
+        assert!(session_id("sessionId", "a.b").is_err());
     }
 }

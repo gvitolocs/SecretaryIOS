@@ -32,6 +32,9 @@ pub struct Health {
     pub time_zone: Option<String>,
     #[serde(default)]
     pub now: Option<String>,
+    /// Contract version (`1`).
+    #[serde(default)]
+    pub api_version: Option<u32>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -52,12 +55,25 @@ pub struct ChatRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ChatReply {
     pub reply: String,
-    /// What Lucina decided to do with the message (e.g. `"reminder.create"`);
-    /// kept opaque so new actions need no server release.
+    /// What Lucina did: `reply`, `grocery`, `list_reminders`,
+    /// `schedule_reminder`, or an async action (`graph_task`,
+    /// `generate_image`, …). Kept opaque so new actions need no release.
     #[serde(default)]
     pub action: Value,
+    /// Set for a started async action; poll `GET /jobs/{id}`.
     #[serde(default)]
     pub job: Option<JobRef>,
+    /// Full Honcho session id used (`secretary_<sessionId>`).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub client_message_id: Option<String>,
+    /// Only for `action: schedule_reminder` when a reminder exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder: Option<Reminder>,
+    /// `true` on a `clientMessageId` replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -84,8 +100,15 @@ pub struct Job {
     pub status: JobStatus,
     #[serde(default)]
     pub action: Value,
+    /// Reply text once `done`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// Failure text when `status` is `error` (`"interrupted"` after a restart).
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Only for `generate_image` with an http(s) result.
+    #[serde(default)]
+    pub image_url: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(flatten)]
@@ -117,6 +140,21 @@ pub struct Reminder {
     pub created_at: Option<String>,
     #[serde(default)]
     pub sent_at: Option<String>,
+    #[serde(default)]
+    pub cancelled_at: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /reminders` data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderList {
+    pub scope: ReminderScope,
+    pub include_sent: bool,
+    #[serde(default)]
+    pub time_zone: Option<String>,
+    pub reminders: Vec<Reminder>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -169,6 +207,9 @@ pub struct CreatedReminder {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CancelledReminder {
+    /// `false` when it was already cancelled.
+    #[serde(default)]
+    pub cancelled: bool,
     pub reminder: Reminder,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -249,7 +290,7 @@ mod tests {
         let raw = json!({
             "id": "r1", "text": "call mum", "dueAt": "2026-10-22T09:00:00+02:00",
             "timeZone": "Europe/Rome", "status": "pending", "source": "chat",
-            "createdAt": "2026-10-21T10:00:00Z", "sentAt": null, "priority": 2
+            "createdAt": "2026-10-21T10:00:00Z", "sentAt": null, "cancelledAt": null, "priority": 2
         });
         let r: Reminder = serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(r.status, ReminderStatus::Pending);
