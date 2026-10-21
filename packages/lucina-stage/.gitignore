@@ -1,0 +1,6 @@
+node_modules/
+dist/
+# The Lucina model may not be redistributed: never commit it.
+*.glb
+*.gltf
+*.pmx
