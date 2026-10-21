@@ -31,6 +31,7 @@ export class FakeStage {
     return () => {};
   });
   readonly nod = vi.fn();
+  readonly setFraming = vi.fn();
   readonly unlockAudio = vi.fn(async () => {});
   readonly dispose = vi.fn();
 

@@ -1,12 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { chat, reloadChatFromStorage } from "../state/chat";
 import { installEventSource, MockEventSource } from "../test/eventsource";
 import { deferred, stubFetch, type Call, type Handler } from "../test/fetch";
 import ChatView from "./Chat";
-
-// No WebGL or audio in tests: the Lucina stage is a fake.
-vi.mock("../lib/stageLoader", () => import("../test/stage"));
 
 const EMPTY_PAGE = { body: { items: [], nextBefore: null } };
 

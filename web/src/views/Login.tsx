@@ -1,18 +1,18 @@
 import { createMemo, createSignal, onCleanup, Show } from "solid-js";
 import { toApiError, type ApiError } from "../api/client";
+import { t } from "../i18n";
 import { formatCountdown } from "../lib/units";
 import { signIn } from "../state/session";
 
 // Single-user sign-in: email + password (POST /v1/session). The field
 // attributes let iCloud Keychain and browser password managers fill it.
 
-export const INVALID_CREDENTIALS = "Email or password is incorrect";
 
 /** Message for a failed sign-in; 429s are handled by the countdown instead. */
 export function loginErrorMessage(err: ApiError): string {
-  if (err.status === 401) return INVALID_CREDENTIALS;
-  if (err.isNetwork) return "Can't reach the server. Check your connection and try again.";
-  return err.message || "Sign-in failed. Please try again.";
+  if (err.status === 401) return t("login.invalid");
+  if (err.isNetwork) return t("login.unreachable");
+  return err.message || t("login.failed");
 }
 
 export default function Login() {
@@ -58,7 +58,7 @@ export default function Login() {
     if (pending() || locked()) return;
     const address = email().trim();
     if (!address || !password()) {
-      setError("Enter your email and password.");
+      setError(t("login.enterBoth"));
       (address ? passwordInput : emailInput)?.focus();
       return;
     }
@@ -87,9 +87,9 @@ export default function Login() {
           <img src="/icon-192.png" alt="" width="48" height="48" />
         </div>
         <h1 class="login-title">Secretary</h1>
-        <p class="login-sub">Sign in to continue.</p>
+        <p class="login-sub">{t("login.sub")}</p>
         <label class="field-label" for="login-email">
-          Email
+          {t("login.email")}
         </label>
         <input
           ref={emailInput}
@@ -108,7 +108,7 @@ export default function Login() {
           autofocus
         />
         <label class="field-label login-password-label" for="login-password">
-          Password
+          {t("login.password")}
         </label>
         <div class="password-field">
           <input
@@ -134,7 +134,7 @@ export default function Login() {
             aria-controls="login-password"
             onClick={() => setShowPassword((v) => !v)}
           >
-            {showPassword() ? "Hide" : "Show"}
+            {showPassword() ? t("login.hide") : t("login.show")}
           </button>
         </div>
         <Show when={error()}>
@@ -146,14 +146,12 @@ export default function Login() {
         </Show>
         <Show when={locked()}>
           <p class="form-error" role="alert">
-            {lock()?.code === "account_locked"
-              ? "Sign-in is locked after too many attempts."
-              : "Too many attempts."}{" "}
-            Try again in <span class="countdown">{formatCountdown(secondsLeft())}</span>.
+            {lock()?.code === "account_locked" ? t("login.locked") : t("login.tooMany")}{" "}
+            <span class="countdown">{t("login.tryAgainIn", { time: formatCountdown(secondsLeft()) })}</span>
           </p>
         </Show>
         <button class="btn btn--primary btn--block" type="submit" disabled={pending() || locked()}>
-          {pending() ? "Signing in…" : "Sign in"}
+          {pending() ? t("login.signingIn") : t("login.signIn")}
         </button>
       </form>
     </main>

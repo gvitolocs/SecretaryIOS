@@ -19,6 +19,7 @@ import {
   type StreamStatus,
   type TimelineItem,
 } from "../api/timeline";
+import { t } from "../i18n";
 import { chatSessionId, uuid } from "../lib/ids";
 import { readJSON, removeKey, writeJSON } from "../lib/storage";
 import { markLucinaOnline } from "./lucina";
@@ -88,7 +89,7 @@ function hydrate(): ChatMessage[] {
     if (!(CHANNELS as readonly string[]).includes(msg.channel)) continue;
     seen.add(msg.key);
     // A reload interrupted this send; let the user retry it.
-    out.push(msg.status === "sending" ? { ...msg, status: "error", error: "Not sent: the page was reloaded." } : msg);
+    out.push(msg.status === "sending" ? { ...msg, status: "error", error: t("chat.errReloaded") } : msg);
   }
   return out.sort(byTime);
 }
@@ -350,14 +351,14 @@ export function connectTimeline(): () => void {
 // ---- Sending -------------------------------------------------------------------
 
 export function describeChatError(err: ApiError): string {
-  if (err.code === "lucina_unreachable") return "Lucina is offline. Not delivered.";
-  if (err.code === "lucina_timeout") return "Lucina didn't answer in time.";
-  if (err.code === "lucina_error") return "Lucina ran into a problem.";
-  if (err.code === "timeout") return "No answer in time.";
-  if (err.isNetwork) return "Couldn't reach the server.";
-  if (err.status === 401) return "You were signed out.";
-  if (err.status === 429) return "Too many messages; wait a moment.";
-  return err.message || "Not delivered.";
+  if (err.code === "lucina_unreachable") return t("chat.errOffline");
+  if (err.code === "lucina_timeout") return t("chat.errTimeout");
+  if (err.code === "lucina_error") return t("chat.errProblem");
+  if (err.code === "timeout") return t("chat.errNoAnswer");
+  if (err.isNetwork) return t("chat.errNetwork");
+  if (err.status === 401) return t("chat.errSignedOut");
+  if (err.status === 429) return t("chat.errTooMany");
+  return err.message || t("chat.notDelivered");
 }
 
 async function deliver(key: string): Promise<void> {
@@ -517,11 +518,11 @@ async function pollJob(key: string): Promise<void> {
     const err = toApiError(e);
     if (!find(key)) return;
     if (err.status === 404 || err.code === "job_not_found") {
-      updateJob(key, { status: "error", pollError: "This job no longer exists." });
+      updateJob(key, { status: "error", pollError: t("chat.jobGone") });
       return;
     }
     if (err.status === 401) return; // Session ended; the app returns to login.
-    updateJob(key, { pollError: "Couldn't check on this job. Retrying…" });
+    updateJob(key, { pollError: t("chat.jobRetrying") });
     scheduleJobPoll(key);
   }
 }

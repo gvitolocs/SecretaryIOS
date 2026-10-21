@@ -1,9 +1,10 @@
-import type { LucinaStage, Voice } from "@secretary/lucina-stage";
+import type { Framing, LucinaStage, Voice } from "@secretary/lucina-stage";
 import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { speechLang, t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
 import { loadStage, type StageModule } from "../lib/stageLoader";
 import { onLucinaReply } from "../state/chat";
-import { CollapseIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { CloseIcon, CollapseIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
 export const MUTE_KEY = "lucina-stage:muted";
@@ -13,7 +14,6 @@ const HINT_MS = 8_000;
 export const MODEL_URL = "/v1/assets/lucina.glb";
 export const MANIFEST_URL = "/v1/assets/manifest.json";
 export const TTS_URL = "/v1/tts";
-export const VOICE_LANG = "it-IT";
 const AUTH: RequestInit = { credentials: "include", headers: { "X-Secretary-CSRF": "1" } };
 
 /** Muted unless the owner has unmuted before: sound must never come as a surprise. */
@@ -24,18 +24,24 @@ export function storedMuted(): boolean {
 type Mode = "loading" | "ready" | "fallback";
 
 /**
- * Lucina on a three.js stage above the transcript. She thinks while a message
- * is in flight, speaks replies aloud when unmuted, and listens when tapped.
- * Unmounting disposes the renderer (frees the GPU).
+ * Lucina on a three.js stage. She thinks while a message is in flight, speaks
+ * replies aloud when unmuted, and listens when tapped. The shell keeps one
+ * instance mounted for the whole session; unmounting disposes the renderer
+ * (frees the GPU).
  */
 export function LucinaPanel(props: {
+  /** "full" in the desktop side column, "bust" in the compact mobile views. */
+  framing: Framing;
   /** A message is waiting for Lucina's reply. */
   thinking: boolean;
   /** Send a voice transcript as a chat message. */
   onTranscript: (text: string) => void;
   /** Voice input is not available: move focus to the text composer. */
   onTypeInstead: () => void;
+  /** Hide the stage and free the GPU. */
   onCollapse: () => void;
+  /** Mobile float: shrink back to the avatar button (the stage stays loaded). */
+  onMinimize?: () => void;
 }) {
   const [mode, setMode] = createSignal<Mode>("loading");
   const [muted, setMuted] = createSignal(storedMuted());
@@ -62,12 +68,13 @@ export function LucinaPanel(props: {
     try {
       mod = await loadStage();
       if (disposed) return;
-      voice = mod.createVoice({ ttsUrl: TTS_URL, fetchInit: AUTH, lang: VOICE_LANG });
+      voice = mod.createVoice({ ttsUrl: TTS_URL, fetchInit: AUTH, lang: speechLang() });
       if (!canvas) throw new Error("canvas missing");
       const s = await mod.createLucinaStage(canvas, {
         modelUrl: MODEL_URL,
         manifestUrl: MANIFEST_URL,
         fetchInit: AUTH,
+        framing: props.framing,
         muteStorageKey: MUTE_KEY,
         muted: true,
       });
@@ -109,6 +116,14 @@ export function LucinaPanel(props: {
     ),
   );
 
+  createEffect(
+    on(
+      () => props.framing,
+      (framing) => stage?.setFraming(framing),
+      { defer: true },
+    ),
+  );
+
   /** Speaks a reply, only when unmuted (muted: no TTS request, no audio at all). */
   async function say(text: string) {
     const s = stage;
@@ -117,7 +132,7 @@ export function LucinaPanel(props: {
     const ctrl = new AbortController();
     ttsCtrl = ctrl;
     try {
-      const audio = await voice.speak(text, { lang: VOICE_LANG, signal: ctrl.signal });
+      const audio = await voice.speak(text, { lang: speechLang(), signal: ctrl.signal });
       if (stage !== s || muted() || ctrl.signal.aborted) return;
       await s.speak(audio);
     } catch {
@@ -151,7 +166,7 @@ export function LucinaPanel(props: {
     }
     if (props.thinking) return;
     if (!voice || !voice.listenSupported) {
-      setNote("Voice input isn't available here. Type your message instead.");
+      setNote(t("shell.voiceUnavailable"));
       props.onTypeInstead();
       return;
     }
@@ -161,19 +176,19 @@ export function LucinaPanel(props: {
     setListening(true);
     stage?.setState("listening");
     try {
-      const text = (await voice.listen({ lang: VOICE_LANG, signal: ctrl.signal, onSpeechStart: () => stage?.nod() })).trim();
+      const text = (await voice.listen({ lang: speechLang(), signal: ctrl.signal, onSpeechStart: () => stage?.nod() })).trim();
       if (text && !disposed) props.onTranscript(text);
     } catch (e) {
       const is = (code: Parameters<StageModule["isVoiceError"]>[1]) => !!mod?.isVoiceError(e, code);
       if (is("not-supported")) {
-        setNote("Voice input isn't available here. Type your message instead.");
+        setNote(t("shell.voiceUnavailable"));
         props.onTypeInstead();
       } else if (is("permission-denied") || is("audio-capture")) {
-        setNote("Lucina can't hear you: the microphone is blocked.");
+        setNote(t("shell.micBlocked"));
       } else if (is("no-speech")) {
-        setNote("I didn't catch that. Tap Lucina to try again.");
+        setNote(t("shell.noSpeech"));
       } else if (!is("aborted")) {
-        setNote("Voice input stopped working. Type your message instead.");
+        setNote(t("shell.voiceFailed"));
       }
     } finally {
       if (listenCtrl === ctrl) listenCtrl = null;
@@ -183,19 +198,19 @@ export function LucinaPanel(props: {
   }
 
   return (
-    <section class="stage" classList={{ "stage--listening": listening() }} aria-label="Lucina">
+    <section class="stage" classList={{ "stage--listening": listening() }} aria-label={t("shell.lucina")}>
       <Switch>
         <Match when={mode() === "fallback"}>
-          <button type="button" class="stage-portrait" onClick={() => void talk()} aria-label="Talk to Lucina">
+          <button type="button" class="stage-portrait" onClick={() => void talk()} aria-label={t("shell.lucinaTalk")}>
             <img src="/icon-512.png" alt="" width="512" height="512" />
           </button>
         </Match>
         <Match when={mode() !== "fallback"}>
-          <canvas ref={canvas} class="stage-canvas" role="img" aria-label="Lucina, animated" />
+          <canvas ref={canvas} class="stage-canvas" role="img" aria-label={t("shell.lucinaCanvas")} />
           <Show when={mode() === "loading"}>
             <div class="stage-loading" role="status">
               <span class="spinner" aria-hidden="true" />
-              <span>Lucina is getting ready…</span>
+              <span>{t("shell.lucinaLoading")}</span>
             </div>
           </Show>
         </Match>
@@ -207,8 +222,8 @@ export function LucinaPanel(props: {
           classList={{ "stage-btn--on": listening() }}
           onClick={() => void talk()}
           disabled={props.thinking && !listening()}
-          aria-label={listening() ? "Stop listening" : "Talk to Lucina"}
-          title={listening() ? "Stop listening" : "Talk to Lucina"}
+          aria-label={listening() ? t("shell.lucinaStop") : t("shell.lucinaTalk")}
+          title={listening() ? t("shell.lucinaStop") : t("shell.lucinaTalk")}
         >
           <MicIcon />
         </button>
@@ -217,30 +232,42 @@ export function LucinaPanel(props: {
           class="icon-btn stage-btn"
           onClick={toggleMute}
           aria-pressed={muted() ? "true" : "false"}
-          aria-label={muted() ? "Unmute Lucina" : "Mute Lucina"}
-          title={muted() ? "Lucina is muted" : "Lucina speaks her replies"}
+          aria-label={muted() ? t("shell.lucinaUnmute") : t("shell.lucinaMute")}
+          title={muted() ? t("shell.lucinaMutedTitle") : t("shell.lucinaSpeaksTitle")}
         >
           <Show when={muted()} fallback={<VolumeIcon />}>
             <VolumeOffIcon />
           </Show>
         </button>
+        <Show when={props.onMinimize}>
+          {(minimize) => (
+            <button
+              type="button"
+              class="icon-btn stage-btn"
+              onClick={() => minimize()()}
+              aria-label={t("shell.lucinaMinimize")}
+              title={t("shell.lucinaMinimize")}
+            >
+              <CollapseIcon />
+            </button>
+          )}
+        </Show>
         <button
           type="button"
           class="icon-btn stage-btn"
           onClick={() => props.onCollapse()}
-          aria-expanded="true"
-          aria-label="Hide Lucina"
-          title="Hide Lucina"
+          aria-label={t("shell.lucinaHide")}
+          title={t("shell.lucinaHideTitle")}
         >
-          <CollapseIcon />
+          <CloseIcon />
         </button>
       </div>
       <Show when={listening()}>
         <span class="stage-pill" role="status">
-          Listening…
+          {t("shell.lucinaListening")}
         </span>
       </Show>
-      <Show when={!listening() && (note() ?? (hint() ? "Tap Lucina to talk" : null))}>
+      <Show when={!listening() && (note() ?? (hint() ? t("shell.lucinaHint") : null))}>
         {(text) => (
           <span class="stage-pill stage-pill--note" role="status">
             {text()}
