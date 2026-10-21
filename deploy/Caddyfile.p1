@@ -1,0 +1,39 @@
+# p1 = Secretary app only (pokoin.com sites moved to p2 on 2026-10-21).
+getsecretary.tech {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+	}
+
+	# Standalone 3D Lucina page. The stage needs WebAssembly (meshopt) and blob: URLs
+	# (GLB textures, audio), so this path gets its own CSP. Everything else is unchanged.
+	redir /lucina /lucina/ 308
+	handle_path /lucina/* {
+		root * /srv/lucina-page
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"
+			Cache-Control "no-cache"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+		}
+		file_server
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8800
+	}
+
+	log {
+		output stderr
+		format filter {
+			request>headers>Authorization delete
+			request>headers>Cookie delete
+			resp_headers>Set-Cookie delete
+		}
+	}
+}
+
+www.getsecretary.tech {
+	redir https://getsecretary.tech{uri} permanent
+}
