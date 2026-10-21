@@ -42,6 +42,10 @@ pub struct Device {
     pub last_seen_at: Option<String>,
     #[serde(default)]
     pub revoked: bool,
+    /// The device that browser sessions from an email + password login
+    /// hang off (named "web"; its token is never shown to anyone).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub web_login: bool,
 }
 
 pub fn now_rfc3339() -> String {
@@ -198,10 +202,33 @@ impl DeviceStore {
             created_at: now_rfc3339(),
             last_seen_at: None,
             revoked: false,
+            web_login: false,
         };
         devices.push(device.clone());
         self.save(&devices)?;
         Ok((device, token))
+    }
+
+    /// The active `web_login` device, created on first use.
+    pub fn ensure_web_login(&self) -> io::Result<Device> {
+        let _lock = self.lock()?;
+        let mut devices = self.load()?;
+        if let Some(d) = devices.iter().find(|d| d.web_login && !d.revoked) {
+            return Ok(d.clone());
+        }
+        let device = Device {
+            id: format!("dev_{}", URL_SAFE_NO_PAD.encode(random_bytes::<8>()?)),
+            name: "web".to_owned(),
+            // hash of a token nobody ever sees: Bearer use is impossible
+            hash: hash_token(&generate_token()?),
+            created_at: now_rfc3339(),
+            last_seen_at: None,
+            revoked: false,
+            web_login: true,
+        };
+        devices.push(device.clone());
+        self.save(&devices)?;
+        Ok(device)
     }
 
     pub fn list(&self) -> io::Result<Vec<Device>> {

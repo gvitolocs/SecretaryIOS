@@ -24,17 +24,43 @@ or the `{ok, data}` envelope.
 
 ## Authentication
 
-Every `/v1` route except `GET /v1/health` and `/v1/session` needs one of:
+Every `/v1` route except `GET /v1/health`, `/v1/session` and
+`POST /v1/auth/device` needs one of:
 
 | Client | How | Notes |
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary`; see [Insights](#insights-for-lucina). |
 
-- **Device tokens** are issued on the server with
+There is exactly **one user**, the owner. Ways in:
+
+- **Email + password** (the owner account): the web app logs in with
+  `POST /v1/session {email, password}`; native apps get a device token from
+  `POST /v1/auth/device {email, password, deviceName}`. The account is
+  created on the server with `secretary-server user set --email <e>
+  --password-stdin` (see `deploy/README.md`).
+- **Device tokens** are also issued on the server with
   `secretary-server token issue --name <name>` and shown once. Format: `sec_`
   + 43 base64url characters. Revoking a device (`token revoke <id>`) ends its
   Bearer access and all of its browser sessions on the next request.
+  `POST /v1/session {token}` still exchanges one for a browser cookie.
+
+Password rules:
+
+- Passwords are stored as Argon2id hashes (m = 19 MiB, t = 2, p = 1) in
+  `owner.json`. The email is case-insensitive.
+- Every failed password attempt answers the same `401 invalid_credentials`
+  (wrong email, wrong password, no account). An unknown email costs the
+  same Argon2 work as a known one.
+- **Lockout:** the 10th consecutive failed password attempt (whatever the
+  email) locks password logins for 15 minutes; each further failure after a
+  lock doubles it (30 min, 1 h, … at most 24 h). A success resets it. While
+  locked, `POST /v1/session {email,…}`, `POST /v1/auth/device` and the
+  password change answer `429 account_locked` with `Retry-After: <seconds>`.
+  Device-token login is never locked.
+- The per-IP login limit (5/minute, `429 rate_limited`) covers both password
+  routes and token login.
 - **CSRF:** the server sends no CORS headers, so a cross-site page cannot add
   `X-Secretary-CSRF` (a custom header forces a preflight that fails). The
   cookie is also `SameSite=Strict`. Bearer requests are exempt.
@@ -49,11 +75,11 @@ token`, `device token revoked`, `session expired or invalid`.
 ### Web app recipe
 
 ```js
-// login (once): exchange a device token for the cookie
+// login (once): email + password (or {token}) for the cookie
 await fetch("/v1/session", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ token }),
+  body: JSON.stringify({ email, password }),
 });
 
 // every later call: same origin, cookie sent automatically
@@ -75,13 +101,20 @@ app on startup whether the cookie is still good.
 
 ### `POST /v1/session`
 
-Request: `{"token": "sec_…"}` (a device token).
+Request, either:
+
+- `{"email": "owner@example.com", "password": "…"}` (the owner account), or
+- `{"token": "sec_…"}` (a device token).
 
 `200`:
 
 ```json
-{ "authenticated": true, "deviceName": "Giuseppe's iPhone" }
+{ "authenticated": true, "deviceName": "web" }
 ```
+
+(`deviceName` is `"web"` for a password login, else the token's device
+name.) Password logins hang off one server-side device named `web`;
+revoking it (`token revoke`) ends every password-login browser session.
 
 with
 
@@ -90,10 +123,56 @@ Set-Cookie: sec_session=<43 base64url chars>; HttpOnly; Secure; SameSite=Strict;
 ```
 
 The session lasts 30 days (not sliding). Only its SHA-256 is stored on the
-server. Errors: `400 bad_request` / `400 invalid_json` / `415
-unsupported_media_type` (body), `401 unauthorized` (unknown or revoked
-token), `429 rate_limited`. No CSRF header is needed here; the JSON
-content type already forces a CORS preflight for cross-site callers.
+server. Errors: `400 bad_request` (neither `token` nor `email`+`password`)
+/ `400 invalid_json` / `415 unsupported_media_type` (body), `401
+invalid_credentials` (password login), `401 unauthorized` (unknown or
+revoked token), `429 rate_limited` (per IP), `429 account_locked`
+(password lockout, with `Retry-After`). No CSRF header is needed here; the
+JSON content type already forces a CORS preflight for cross-site callers.
+
+```json
+{ "error": { "code": "invalid_credentials", "message": "wrong email or password" } }
+```
+
+### `POST /v1/auth/device` (no auth)
+
+For native apps: trade the owner's password for a new device token.
+
+```json
+{ "email": "owner@example.com", "password": "…", "deviceName": "Giuseppe's iPhone" }
+```
+
+`201`:
+
+```json
+{ "token": "sec_…43 chars…", "deviceId": "dev_Xk3…", "deviceName": "Giuseppe's iPhone" }
+```
+
+The token is shown only here (the server keeps its SHA-256); store it in
+the Keychain and send it as `Authorization: Bearer`. `deviceName`: 1–64
+printable characters. Errors as for the password login (`401
+invalid_credentials`, `429 rate_limited`, `429 account_locked`), plus `400
+bad_request` for a bad `deviceName`. The device appears in `token list`
+and can be revoked there.
+
+### `POST /v1/session/password` (authenticated)
+
+```json
+{ "currentPassword": "…", "newPassword": "at least 12 characters" }
+```
+
+Cookie clients need `X-Secretary-CSRF: 1`. `200`:
+
+```json
+{ "changed": true, "sessionsRevoked": 2 }
+```
+
+Every browser session except the caller's own cookie session ends (with a
+Bearer token: every browser session). Device tokens stay valid. Errors:
+`403 invalid_credentials` (wrong current password; counts toward the
+lockout; 403 so the app does not log out), `400 bad_request` (new password
+shorter than 12 characters or over 1024 bytes), `429 account_locked`, `409
+no_owner_account`.
 
 ### `GET /v1/session`
 
@@ -374,7 +453,7 @@ input, the engines own the parsing:
 
 - `{"type": "parse_weight", "value": "176,5", "unit": "lb"}` (query, both
   modules; `unit` defaults to the module's display unit) →
-  `{"ok": true, "replayed": false, "weight_grams": 80060}`. Up to three
+  `{"ok": true, "replayed": false, "weight_grams": 80059}`. Up to three
   decimals, `,` or `.` as separator; lb → g uses 1 lb = 453.59237 g, rounded
   to the nearest gram.
 - Commands that take a weight accept either `weight_grams` (integer) or

@@ -13,6 +13,7 @@ pub mod engines;
 pub mod error;
 pub mod health;
 pub mod insights;
+pub mod owner;
 pub mod ratelimit;
 pub mod routes;
 pub mod service;
@@ -62,6 +63,8 @@ pub struct Inner {
     pub engines: engines::Engines,
     /// `None` when `SECRETARY_SERVICE_TOKEN_FILE` is unset.
     pub service_token: Option<service::ServiceToken>,
+    /// The single owner account (`owner.json`).
+    pub owner: owner::OwnerStore,
 }
 
 #[derive(Clone)]
@@ -96,6 +99,7 @@ impl AppState {
             trust_proxy: cfg.trust_proxy,
             engines: engines::Engines::open(&cfg.data_dir)?,
             service_token: cfg.service_token.clone(),
+            owner: owner::OwnerStore::new(&cfg.data_dir),
         })))
     }
 
@@ -151,7 +155,9 @@ fn static_header(name: &'static str, value: &'static str) -> SetResponseHeaderLa
 
 /// The full HTTP surface.
 pub fn app(state: AppState) -> Router {
-    let mut protected = routes::protected().merge(engines::routes());
+    let mut protected = routes::protected()
+        .merge(engines::routes())
+        .merge(auth::account_routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -240,6 +246,8 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
             tracing::warn!(dir = %dir.display(), "SECRETARY_WEB_DIR has no index.html");
         }
     }
+    // The dummy Argon2 hash for unknown emails, computed before the first login.
+    tokio::task::spawn_blocking(owner::warm_up);
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     tracing::info!(
         addr = %cfg.bind,

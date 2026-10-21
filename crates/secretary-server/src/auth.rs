@@ -7,8 +7,10 @@
 //!   `X-Secretary-CSRF: 1`, else 403 `csrf`. A cross-site page cannot add
 //!   that header without a CORS preflight, and the server sends no CORS
 //!   headers. Bearer requests are exempt.
-//! - `/v1/session` (login/status/logout) is public; login is rate limited
-//!   per client IP.
+//! - `/v1/session` (login/status/logout) and `/v1/auth/device` are public;
+//!   logins are rate limited per client IP. Login is a device token
+//!   (`{token}`) or the single owner account (`{email, password}`, see
+//!   [`crate::owner`]; password logins also lock out after repeated failures).
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -16,13 +18,14 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::devices::{AuthResult, TOKEN_PREFIX};
 use crate::error::{ApiError, JsonBody};
+use crate::owner::Verdict;
 use crate::sessions::{clear_cookie, cookie_value, set_cookie};
 use crate::AppState;
 
@@ -171,9 +174,81 @@ pub fn client_ip(st: &AppState, req_headers: &HeaderMap, peer: Option<SocketAddr
     peer.map_or_else(|| "unknown".to_owned(), |p| p.ip().to_string())
 }
 
+/// `{token}` (device token) or `{email, password}` (the owner account).
 #[derive(Deserialize)]
 struct LoginBody {
-    token: String,
+    token: Option<String>,
+    email: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceLoginBody {
+    email: String,
+    password: String,
+    device_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PasswordChangeBody {
+    current_password: String,
+    new_password: String,
+}
+
+pub fn invalid_credentials() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "invalid_credentials",
+        "wrong email or password",
+    )
+}
+
+fn account_locked(wait: std::time::Duration) -> ApiError {
+    let mut e = ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "account_locked",
+        "too many failed password attempts; try again later",
+    );
+    e.retry_after = Some(wait.as_secs().max(1));
+    e
+}
+
+/// Check the owner's email + password off the async runtime.
+/// `Ok(())`, 401 `invalid_credentials` or 429 `account_locked`.
+async fn check_password(st: &AppState, email: String, password: String) -> Result<(), ApiError> {
+    let store = st.owner.clone();
+    let verdict = tokio::task::spawn_blocking(move || store.verify(&email, &password))
+        .await
+        .map_err(|_| ApiError::internal("password check failed"))?
+        .map_err(|e| registry_error(&e))?;
+    match verdict {
+        Verdict::Ok => Ok(()),
+        Verdict::Invalid => Err(invalid_credentials()),
+        Verdict::Locked(wait) => Err(account_locked(wait)),
+    }
+}
+
+fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
+    let ip = client_ip(st, req.headers(), peer);
+    st.login_limiter.check(&ip).map_err(ApiError::rate_limited)
+}
+
+async fn new_session(st: &AppState, ident: Identity) -> Result<Response, ApiError> {
+    let store = st.sessions.store().clone();
+    let did = ident.device_id.clone();
+    let sid = tokio::task::spawn_blocking(move || store.create(&did))
+        .await
+        .map_err(|_| ApiError::internal("session store failed"))?
+        .map_err(|e| registry_error(&e))?;
+    let mut resp = session_json(Some(&ident)).into_response();
+    resp.extensions_mut().insert(DeviceId(ident.device_id));
+    Ok(with_cookie(resp, &set_cookie(&sid)))
 }
 
 fn session_json(ident: Option<&Identity>) -> Json<serde_json::Value> {
@@ -190,20 +265,44 @@ fn with_cookie(mut resp: Response, cookie: &str) -> Response {
     resp
 }
 
-/// `POST /v1/session {token}`: exchange a device token for a cookie.
+/// `POST /v1/session {token}` or `{email, password}`: log in a browser
+/// (sets the session cookie).
 async fn login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
-    let peer = req
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0);
-    let ip = client_ip(&st, req.headers(), peer);
-    if let Err(wait) = st.login_limiter.check(&ip) {
-        return Err(ApiError::rate_limited(wait));
-    }
+    login_ip_check(&st, &req)?;
     let JsonBody(body) =
         <JsonBody<LoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
             .await?;
-    let token = body.token.trim();
+    let token = match body {
+        LoginBody {
+            token: Some(token), ..
+        } => token,
+        LoginBody {
+            email: Some(email),
+            password: Some(password),
+            ..
+        } => {
+            check_password(&st, email, password).await?;
+            let devices = st.devices.store().clone();
+            let dev = tokio::task::spawn_blocking(move || devices.ensure_web_login())
+                .await
+                .map_err(|_| ApiError::internal("device store failed"))?
+                .map_err(|e| registry_error(&e))?;
+            let ident = Identity {
+                device_id: dev.id,
+                device_name: dev.name,
+                via: Via::Cookie,
+            };
+            return new_session(&st, ident).await;
+        }
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "send {token} or {email, password}",
+            ))
+        }
+    };
+    let token = token.trim();
     if !token.starts_with(TOKEN_PREFIX) {
         return Err(ApiError::unauthorized("unknown device token"));
     }
@@ -216,20 +315,103 @@ async fn login(State(st): State<AppState>, req: Request) -> Result<Response, Api
         AuthResult::Revoked => return Err(ApiError::unauthorized("device token revoked")),
         AuthResult::Unknown => return Err(ApiError::unauthorized("unknown device token")),
     };
-    let store = st.sessions.store().clone();
-    let did = device_id.clone();
-    let sid = tokio::task::spawn_blocking(move || store.create(&did))
-        .await
-        .map_err(|_| ApiError::internal("session store failed"))?
-        .map_err(|e| registry_error(&e))?;
     let ident = Identity {
         device_id,
         device_name: name,
         via: Via::Cookie,
     };
-    let mut resp = session_json(Some(&ident)).into_response();
-    resp.extensions_mut().insert(DeviceId(ident.device_id));
-    Ok(with_cookie(resp, &set_cookie(&sid)))
+    new_session(&st, ident).await
+}
+
+/// `POST /v1/auth/device {email, password, deviceName}`: native apps trade
+/// the owner's password for a new device token (shown once).
+async fn device_login(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
+    login_ip_check(&st, &req)?;
+    let JsonBody(body) =
+        <JsonBody<DeviceLoginBody> as axum::extract::FromRequest<AppState>>::from_request(req, &st)
+            .await?;
+    check_password(&st, body.email, body.password).await?;
+    let devices = st.devices.store().clone();
+    let name = body.device_name;
+    let issued = tokio::task::spawn_blocking(move || devices.issue(&name))
+        .await
+        .map_err(|_| ApiError::internal("device store failed"))?;
+    let (dev, token) = match issued {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                format!("deviceName: {e}"),
+            ))
+        }
+        Err(e) => return Err(registry_error(&e)),
+    };
+    let mut resp = (
+        StatusCode::CREATED,
+        Json(json!({"token": token, "deviceId": dev.id, "deviceName": dev.name})),
+    )
+        .into_response();
+    resp.extensions_mut().insert(DeviceId(dev.id));
+    Ok(resp)
+}
+
+/// `POST /v1/session/password {currentPassword, newPassword}` (authenticated):
+/// change the owner's password and end every other browser session.
+async fn change_password(
+    State(st): State<AppState>,
+    axum::Extension(ident): axum::Extension<Identity>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<PasswordChangeBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let owner = st.owner.clone();
+    let current = tokio::task::spawn_blocking(move || owner.load())
+        .await
+        .map_err(|_| ApiError::internal("owner store failed"))?
+        .map_err(|e| registry_error(&e))?;
+    let Some(current) = current else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "no_owner_account",
+            "no owner account; run `secretary-server user set` on the server",
+        ));
+    };
+    if let Err(e) = crate::owner::check_new_password(&body.new_password) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            format!("newPassword: {e}"),
+        ));
+    }
+    // A wrong current password is 403, not 401: the caller is still logged in.
+    match check_password(&st, current.email, body.current_password).await {
+        Err(e) if e.code == "invalid_credentials" => {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "invalid_credentials",
+                "the current password is wrong",
+            ))
+        }
+        other => other?,
+    }
+    let owner = st.owner.clone();
+    let sessions = st.sessions.store().clone();
+    let keep = (ident.via == Via::Cookie)
+        .then(|| cookie_value(&headers))
+        .flatten();
+    let revoked = tokio::task::spawn_blocking(move || {
+        owner.change_password(&body.new_password)?;
+        sessions.delete_all_except(keep.as_deref())
+    })
+    .await
+    .map_err(|_| ApiError::internal("owner store failed"))?
+    .map_err(|e| registry_error(&e))?;
+    Ok(Json(json!({"changed": true, "sessionsRevoked": revoked})))
+}
+
+/// Authenticated account routes (behind `require_device`).
+pub fn account_routes() -> Router<AppState> {
+    Router::new().route("/v1/session/password", post(change_password))
 }
 
 /// `GET /v1/session`: `{authenticated, deviceName}`; never 401.
@@ -258,5 +440,7 @@ async fn logout(State(st): State<AppState>, headers: HeaderMap) -> Result<Respon
 
 /// The public session routes.
 pub fn session_routes() -> Router<AppState> {
-    Router::new().route("/v1/session", get(status).post(login).delete(logout))
+    Router::new()
+        .route("/v1/session", get(status).post(login).delete(logout))
+        .route("/v1/auth/device", post(device_login))
 }

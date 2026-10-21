@@ -99,6 +99,17 @@ impl SessionStore {
         })
     }
 
+    /// Delete every session except the one with plaintext id `keep` (after a
+    /// password change). Returns how many were deleted.
+    pub fn delete_all_except(&self, keep: Option<&str>) -> io::Result<usize> {
+        let keep = keep.map(hash_token);
+        self.modify(|s| {
+            let n = s.len();
+            s.retain(|x| keep.as_deref() == Some(x.hash.as_str()));
+            n - s.len()
+        })
+    }
+
     /// Delete every session of a device (on revoke). Returns how many.
     pub fn delete_for_device(&self, device_id: &str) -> io::Result<usize> {
         self.modify(|s| {

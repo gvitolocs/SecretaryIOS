@@ -47,7 +47,8 @@ curl -s http://127.0.0.1:8800/v1/health     # lucina.reachable should be true
 ```
 
 `StateDirectory=secretary` creates `/var/lib/secretary` (0700, owned by
-`secretary`). It holds `devices.json` and `sessions.json` (0600, hashes only)
+`secretary`). It holds `devices.json`, `sessions.json`, `owner.json` (0600, hashes only),
+the module files `gym.json` and `body.json` (0600) with their `.lock` files
 and, if used, `web/`.
 
 ## 3. Issue the first device token
@@ -69,6 +70,33 @@ sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary secretary-server tok
 
 A revoke works on the running server at once, and ends that device's browser
 sessions too. No restart needed.
+
+## 3b. Owner account (email + password login)
+
+There is exactly one user. Set its email and password as the service user;
+the password is read from stdin (one line, at least 12 characters) and never
+appears in the shell history or the process list:
+
+```bash
+sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary \
+  /usr/local/bin/secretary-server user set --email owner@example.com --password-stdin
+# type the password, Enter (or: read -rs PW; printf "%s\n" "$PW" | sudo -u secretary … user set …; unset PW)
+sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary secretary-server user show
+```
+
+Running `user set` again with the same email changes the password and clears
+a lockout. A different email is refused unless `--replace` is given. The
+file is `/var/lib/secretary/owner.json` (0600, Argon2id hash only). No
+restart is needed. The web app then logs in with email + password, and the
+iOS app gets its device token from `POST /v1/auth/device`.
+
+## 3c. Service token for Lucina (optional)
+
+```bash
+sudo -u secretary /usr/local/bin/secretary-server service-token generate /etc/secretary/service.token
+# then set SECRETARY_SERVICE_TOKEN_FILE=/etc/secretary/service.token and restart;
+# give Lucina the same file content over a private channel
+```
 
 ## 4. Web app
 
@@ -106,7 +134,8 @@ behind Caddy. Exposed directly, it would let clients forge
 | `SECRETARY_BIND` | `127.0.0.1:8800` | listen address |
 | `SECRETARY_LUCINA_URL` | `http://127.0.0.1:18788` | Lucina origin |
 | `SECRETARY_LUCINA_TOKEN_FILE` | unset | Lucina Bearer token file. Unset: data routes answer `503 lucina_not_configured` |
-| `SECRETARY_DATA_DIR` | `/var/lib/secretary` | device and session registries |
+| `SECRETARY_DATA_DIR` | `/var/lib/secretary` | devices, sessions, owner account, gym and body data |
+| `SECRETARY_SERVICE_TOKEN_FILE` | unset | `svc_…` token file for Lucina. Unset: `/v1/insights/summary` answers `503 service_token_not_configured` |
 | `SECRETARY_WEB_DIR` | unset | static web app at `/` |
 | `SECRETARY_TRUST_PROXY` | `0` | `1`: client IP from `X-Forwarded-For` |
 | `SECRETARY_UPSTREAM_LEGACY` / `_SERVICES` / `_CATALOG` | unset | enable `/v1/upstream/*` |
