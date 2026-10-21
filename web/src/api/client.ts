@@ -38,6 +38,8 @@ type Method = "GET" | "POST" | "PATCH" | "DELETE";
 export interface RequestOptions {
   body?: unknown;
   timeoutMs?: number;
+  /** Extra request headers (e.g. X-Secretary-Client). */
+  headers?: Record<string, string>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -85,7 +87,7 @@ async function readBody(res: Response): Promise<unknown> {
 }
 
 export async function request<T>(method: Method, path: string, opts: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+  const headers: Record<string, string> = { Accept: "application/json", ...(opts.headers ?? {}) };
   if (method !== "GET") headers["X-Secretary-CSRF"] = "1";
   let body: string | undefined;
   if (opts.body !== undefined) {

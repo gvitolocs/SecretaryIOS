@@ -12,6 +12,8 @@ const proxy = {
 
 export default defineConfig({
   plugins: [solid()],
+  // The Lucina stage package is linked from ../packages; use one copy of three.
+  resolve: { dedupe: ["three"] },
   server: { port: 5173, strictPort: true, proxy },
   preview: { port: 4173, strictPort: true, proxy },
   build: {
@@ -22,6 +24,8 @@ export default defineConfig({
     // The polyfill is unnecessary for the browsers we target and keeps the
     // output free of anything resembling inline script.
     modulePreload: { polyfill: false },
+    // The Lucina stage chunk (three.js, ~700 kB) is loaded lazily by Chat only.
+    chunkSizeWarningLimit: 800,
   },
   test: {
     environment: "jsdom",
