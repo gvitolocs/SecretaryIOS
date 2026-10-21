@@ -84,7 +84,7 @@ export default function Login() {
     <main class="login">
       <form class="login-card" onSubmit={onSubmit} novalidate>
         <div class="login-mark" aria-hidden="true">
-          S
+          <img src="/icon-192.png" alt="" width="48" height="48" />
         </div>
         <h1 class="login-title">Secretary</h1>
         <p class="login-sub">Sign in to continue.</p>

@@ -2008,3 +2008,16 @@ section + .settings-block {
   min-height: var(--tap);
   font-size: 0.9375rem;
 }
+
+/* Lucina portrait as the brand mark (owner choice, 2026-10-21) */
+.brand-mark,
+.login-mark {
+  overflow: hidden;
+}
+.brand-mark img,
+.login-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}

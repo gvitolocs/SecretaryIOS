@@ -68,7 +68,7 @@ export default function Shell(props: { children?: JSX.Element }) {
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">
-            S
+            <img src="/icon-192.png" alt="" width="32" height="32" />
           </span>
           <span class="brand-name">Secretary</span>
         </div>
