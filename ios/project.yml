@@ -40,6 +40,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
         # Only plain-HTTP to local hosts (the dev mock); everything else must be HTTPS.
+        NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing."
+        NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
     dependencies:

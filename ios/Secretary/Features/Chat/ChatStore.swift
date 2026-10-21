@@ -247,14 +247,25 @@ final class ChatStore {
     /// Adds an optimistic bubble and sends it. Returns false when nothing was sent.
     @discardableResult
     func send(_ text: String) async -> Bool {
+        await post(text) != nil
+    }
+
+    /// Sends like `send` and returns Lucina's reply text (nil when nothing was sent or it
+    /// failed). Used by the voice stage to speak the answer.
+    func ask(_ text: String) async -> String? {
+        guard let outcome = await post(text) else { return nil }
+        return outcome
+    }
+
+    /// nil: not sent. Otherwise the reply text ("" when the send failed; the bubble shows why).
+    private func post(_ text: String) async -> String? {
         let message = Self.clean(text)
-        guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return false }
+        guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return nil }
         let clientId = UUID().uuidString
         items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
                                   clientMessageId: clientId, localStatus: .sending))
         persist()
-        await deliver(clientId: clientId, text: message)
-        return true
+        return await deliver(clientId: clientId, text: message) ?? ""
     }
 
     /// Resends a failed message with the same `clientMessageId` (idempotent on the server).
@@ -267,7 +278,8 @@ final class ChatStore {
         await deliver(clientId: clientId, text: items[index].text)
     }
 
-    private func deliver(clientId: String, text: String) async {
+    @discardableResult
+    private func deliver(clientId: String, text: String) async -> String? {
         isSending = true
         defer { isSending = false }
         let localId = TimelineItem.localPrefix + clientId
@@ -275,7 +287,7 @@ final class ChatStore {
             let response = try await api().chat(ChatRequest(message: text, sessionId: sessionId, clientMessageId: clientId))
             onTransportSuccess?()
             guard let index = items.firstIndex(where: { $0.id == localId || $0.clientMessageId == clientId && $0.role == .user })
-            else { return } // cleared (sign-out) or already replaced by the stream
+            else { return response.reply } // cleared (sign-out) or already replaced by the stream
             let sentAt = items[index].ts
             let userId = response.userItemId ?? localId
             let replyId = response.lucinaItemId ?? (TimelineItem.localPrefix + "reply-" + clientId)
@@ -300,13 +312,15 @@ final class ChatStore {
                 if !JobInfo.isTerminal(job.status) { startPolling(itemId: replyId, delay: pollInterval) }
             }
             persist()
+            return response.reply
         } catch {
             let apiError = APIError.wrap(error)
             onTransportError?(apiError)
-            guard let index = items.firstIndex(where: { $0.id == localId }) else { return }
+            guard let index = items.firstIndex(where: { $0.id == localId }) else { return nil }
             items[index].localStatus = .error
             items[index].localError = Self.describe(apiError)
             persist()
+            return nil
         }
     }
 

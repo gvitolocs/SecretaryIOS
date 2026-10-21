@@ -224,6 +224,26 @@ final class SecretaryFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "complete-set-")).firstMatch.exists)
     }
 
+    // MARK: - Lucina stage
+
+    func testLucinaBubbleExpandsMutedByDefault() {
+        let app = launch()
+        signIn(app)
+        let bubble = app.descendants(matching: .any)["lucinaBubble"]
+        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "Lucina floats over the tabs")
+        sleep(4) // let WebGL draw for the screenshot
+        attach(app, "Lucina bubble")
+        bubble.tap()
+        let mute = app.buttons["lucinaMute"]
+        XCTAssertTrue(mute.waitForExistence(timeout: 5), "expanded stage")
+        XCTAssertEqual(mute.value as? String, "Muted", "no sound until the owner turns it on")
+        XCTAssertTrue(app.buttons["lucinaMic"].exists)
+        sleep(3)
+        attach(app, "Lucina full body")
+        app.buttons["lucinaClose"].tap()
+        XCTAssertTrue(bubble.waitForExistence(timeout: 5))
+    }
+
     // MARK: - Weight
 
     func testWeightLogEntry() {

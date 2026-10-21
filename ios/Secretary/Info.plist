@@ -27,6 +27,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Your words are turned into text so Lucina can answer them.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

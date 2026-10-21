@@ -67,6 +67,8 @@ struct ChatTitle: View {
 /// and the thinking indicator. Scrolling to the top loads older messages.
 struct ChatTranscript: View {
     @Environment(ChatStore.self) private var store
+    /// The end of the list is on screen; new messages only scroll it when it is.
+    @State private var atBottom = true
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -93,6 +95,11 @@ struct ChatTranscript: View {
                     if store.isSending {
                         ThinkingBubble().id("thinking")
                     }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.endId)
+                        .onAppear { atBottom = true }
+                        .onDisappear { atBottom = false }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)
@@ -100,8 +107,10 @@ struct ChatTranscript: View {
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
             .refreshable { await store.refresh() }
-            .onChange(of: store.items.last?.id) { _, _ in scrollToEnd(proxy) }
-            .onChange(of: store.isSending) { _, _ in scrollToEnd(proxy) }
+            .onChange(of: store.items.last?.id) { _, _ in
+                if atBottom || store.items.last?.isLocal == true { scrollToEnd(proxy) }
+            }
+            .onChange(of: store.isSending) { _, sending in if sending { scrollToEnd(proxy) } }
             .onAppear { scrollToEnd(proxy, animated: false) }
         }
     }
@@ -160,13 +169,20 @@ struct ChatTranscript: View {
         }
     }
 
+    static let endId = "transcript-end"
+
+    /// Lazy rows have estimated heights, so one `scrollTo` can land short of the end:
+    /// scroll again once the new rows are laid out.
     private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        let target = store.isSending ? "thinking" : store.items.last?.id
-        guard let target else { return }
-        if animated {
-            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .bottom) }
-        } else {
-            proxy.scrollTo(target, anchor: .bottom)
+        Task { @MainActor in
+            await Task.yield()
+            if animated {
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.endId, anchor: .bottom) }
+            } else {
+                proxy.scrollTo(Self.endId, anchor: .bottom)
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            proxy.scrollTo(Self.endId, anchor: .bottom)
         }
     }
 }

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Lucina</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; -webkit-user-select: none; }
+  canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Lucina"></canvas>
+<script type="module">
+// The iOS host page for packages/lucina-stage. Swift serves this page, the bundle and the
+// private model under lucina-app://stage/ (the model and manifest are proxied by Swift
+// with the device token, so no token ever reaches this page). Audio plays only when Swift
+// asks: the stage starts muted and nothing here plays on its own.
+import { createLucinaStage } from './lucina-stage.standalone.js';
+
+const post = (type, payload = {}) => {
+  try { window.webkit.messageHandlers.lucina.postMessage({ type, ...payload }); } catch (_) { /* not in the app */ }
+};
+const canvas = document.getElementById('stage');
+let stage = null;
+let starting = null;
+
+window.lucina = {
+  start(opts) {
+    if (starting) return starting;
+    starting = (async () => {
+      try {
+        stage = await createLucinaStage(canvas, {
+          modelUrl: opts.modelUrl,
+          manifestUrl: opts.manifestUrl,
+          framing: opts.framing || 'bust',
+          muted: opts.muted !== false,
+          muteStorageKey: null,
+          reducedMotion: opts.reducedMotion ?? undefined,
+          maxPixelRatio: 2,
+          onError: (e) => post('error', { message: String((e && e.message) || e) }),
+        });
+        stage.onStateChange((next) => post('state', { state: next }));
+        stage.onTap(() => post('tap'));
+        post('ready', { placeholder: !!stage.info.placeholder });
+      } catch (e) {
+        post('error', { message: String((e && e.message) || e), fatal: true });
+      }
+    })();
+    return starting;
+  },
+  setFraming(f) { stage && stage.setFraming(f); },
+  setState(s) { stage && stage.setState(s); },
+  setMuted(m) { stage && stage.setMuted(!!m); },
+  setReducedMotion(r) { stage && stage.setReducedMotion(r); },
+  nod() { stage && stage.nod(); },
+  setExpression(e, w) { stage && stage.setExpression(e || null, w); },
+  stop() { stage && stage.stopSpeaking(); },
+  resize() { stage && stage.resize(); },
+  /** Fetches audio Swift prepared (same origin) and lip-syncs it. */
+  async speak(url) {
+    if (!stage) return;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('audio ' + response.status);
+      const data = await response.arrayBuffer();
+      await stage.unlockAudio();
+      await stage.speak(data);
+    } catch (e) {
+      post('error', { message: String((e && e.message) || e) });
+    } finally {
+      post('spoken');
+    }
+  },
+};
+post('loaded');
+</script>
+</body>
+</html>

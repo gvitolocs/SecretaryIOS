@@ -194,6 +194,15 @@ struct SecretaryAPI: Sendable {
                               headers: ["X-Secretary-Client": "ios"])
     }
 
+    /// `POST /v1/tts`: MP3 bytes of Lucina's voice for `text` (1-1200 characters).
+    func tts(_ text: String, lang: String? = nil) async throws -> Data {
+        struct Body: Encodable { let text: String; let lang: String? }
+        let body = try APIClient.encoder.encode(Body(text: String(text.prefix(1200)), lang: lang))
+        let response = try await client.send("POST", "/v1/tts", body: body, timeout: 60, idempotent: true,
+                                             headers: ["Accept": "audio/mpeg"])
+        return response.data
+    }
+
     /// `GET /v1/timeline?before=&limit=`: newest first.
     func timeline(before: String? = nil, limit: Int = 50) async throws -> TimelinePage {
         var query = [URLQueryItem(name: "limit", value: String(limit))]

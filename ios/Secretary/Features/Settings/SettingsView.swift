@@ -63,6 +63,17 @@ struct SettingsView: View {
                     .accessibilityIdentifier("signOut")
             }
 
+            Section {
+                Toggle("Show Lucina", isOn: Binding(get: { app.lucina.enabled }, set: { app.lucina.enabled = $0 }))
+                    .accessibilityIdentifier("lucinaEnabled")
+                Toggle("Voice replies", isOn: Binding(get: { !app.lucina.muted }, set: { app.lucina.muted = !$0 }))
+                    .accessibilityIdentifier("lucinaVoice")
+            } header: {
+                Text("Lucina")
+            } footer: {
+                Text("Lucina floats over every tab (a column on iPad and in landscape). Her voice is off until you turn it on; she only speaks to answer you.")
+            }
+
             Section("About") {
                 LabeledContent("Version", value: Bundle.main.versionLabel)
                     .contentShape(Rectangle())

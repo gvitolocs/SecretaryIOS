@@ -34,6 +34,7 @@ final class AppModel {
     private(set) var gymEngineError: String?
     let weight: WeightStore
     let health: HealthStore
+    let lucina: LucinaStageController
 
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
@@ -70,6 +71,7 @@ final class AppModel {
         }
         weight = WeightStore(client: { BodyClient(client: client) })
         health = HealthStore(api: { SecretaryAPI(client: client) })
+        lucina = LucinaStageController(client: client, chat: chat)
         if let tab = launch.initialTab { selectedTab = tab }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
@@ -153,6 +155,8 @@ final class AppModel {
         try? keychain.delete()
         client.accessKey = nil
         deviceName = nil
+        lucina.stopEverything()
+        lucina.expanded = false
         chat.clear()
         shopping.reset()
         shoppingV2.reset()

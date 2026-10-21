@@ -22,10 +22,35 @@ struct RootView: View {
 struct MainTabs: View {
     @Environment(AppModel.self) private var app
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSize
+    @Environment(\.verticalSizeClass) private var verticalSize
+
+    /// iPad, or an iPhone in landscape: Lucina gets a full-body column beside the tabs.
+    private var sideColumn: Bool { horizontalSize == .regular || verticalSize == .compact }
 
     var body: some View {
+        Group {
+            if app.lucina.enabled && sideColumn {
+                HStack(spacing: 0) {
+                    tabs
+                    Divider()
+                    LucinaColumn(controller: app.lucina)
+                        .frame(width: horizontalSize == .regular ? 340 : 260)
+                }
+            } else {
+                tabs.overlay {
+                    if app.lucina.enabled { LucinaOverlay(controller: app.lucina) }
+                }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { app.lucina.stopEverything() }
+        }
+    }
+
+    private var tabs: some View {
         @Bindable var app = app
-        TabView(selection: $app.selectedTab) {
+        return TabView(selection: $app.selectedTab) {
             NavigationStack { ChatView().lucinaStatusToolbar() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
