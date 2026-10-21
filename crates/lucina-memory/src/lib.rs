@@ -114,7 +114,9 @@ impl HonchoConfig {
         if let Some(v) = get("HONCHO_AGENT_PEER_ID") {
             c.agent_peer_id = v.trim().to_owned();
         }
-        if let Some(v) = get("LUCINA_OWNER_USER_PEER_ID").or_else(|| get("LUCINA_GMAIL_LEARN_USER_PEER_ID")) {
+        if let Some(v) =
+            get("LUCINA_OWNER_USER_PEER_ID").or_else(|| get("LUCINA_GMAIL_LEARN_USER_PEER_ID"))
+        {
             c.owner_peer_id = v.trim().to_owned();
         }
         c.use_vector_search = get("HONCHO_USE_VECTOR_SEARCH").is_some_and(|v| v.trim() == "true");
@@ -200,7 +202,9 @@ pub struct HonchoClient {
 
 impl std::fmt::Debug for HonchoClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HonchoClient").field("cfg", &self.cfg).finish()
+        f.debug_struct("HonchoClient")
+            .field("cfg", &self.cfg)
+            .finish()
     }
 }
 
@@ -212,7 +216,11 @@ impl HonchoClient {
             .timeout(cfg.timeout)
             .build()
             .map_err(|e| MemoryError::Transport(e.to_string()))?;
-        Ok(Self { cfg, http, ensured: tokio::sync::Mutex::new(HashSet::new()) })
+        Ok(Self {
+            cfg,
+            http,
+            ensured: tokio::sync::Mutex::new(HashSet::new()),
+        })
     }
 
     pub fn config(&self) -> &HonchoConfig {
@@ -220,7 +228,10 @@ impl HonchoClient {
     }
 
     fn ws_url(&self, rest: &str) -> String {
-        format!("{}/v3/workspaces/{}{rest}", self.cfg.base_url, self.cfg.workspace_id)
+        format!(
+            "{}/v3/workspaces/{}{rest}",
+            self.cfg.base_url, self.cfg.workspace_id
+        )
     }
 
     async fn send(&self, rb: reqwest::RequestBuilder) -> Result<Value, MemoryError> {
@@ -230,9 +241,15 @@ impl HonchoClient {
             .await
             .map_err(|e| MemoryError::Transport(e.without_url().to_string()))?;
         let status = resp.status();
-        let text = resp.text().await.map_err(|e| MemoryError::Transport(e.without_url().to_string()))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| MemoryError::Transport(e.without_url().to_string()))?;
         if !status.is_success() {
-            return Err(MemoryError::Status { status: status.as_u16(), body: text.chars().take(200).collect() });
+            return Err(MemoryError::Status {
+                status: status.as_u16(),
+                body: text.chars().take(200).collect(),
+            });
         }
         if text.trim().is_empty() {
             return Ok(Value::Null);
@@ -256,36 +273,63 @@ impl HonchoClient {
 
     pub async fn ensure_workspace(&self) -> Result<(), MemoryError> {
         let url = format!("{}/v3/workspaces", self.cfg.base_url);
-        self.ensure("ws".into(), url, json!({"id": self.cfg.workspace_id})).await
+        self.ensure("ws".into(), url, json!({"id": self.cfg.workspace_id}))
+            .await
     }
 
     pub async fn ensure_peer(&self, peer_id: &str) -> Result<(), MemoryError> {
         self.ensure_workspace().await?;
-        self.ensure(format!("peer:{peer_id}"), self.ws_url("/peers"), json!({"id": peer_id})).await
+        self.ensure(
+            format!("peer:{peer_id}"),
+            self.ws_url("/peers"),
+            json!({"id": peer_id}),
+        )
+        .await
     }
 
     pub async fn ensure_session(&self, session_id: &str) -> Result<(), MemoryError> {
         self.ensure_workspace().await?;
-        self.ensure(format!("session:{session_id}"), self.ws_url("/sessions"), json!({"id": session_id})).await
+        self.ensure(
+            format!("session:{session_id}"),
+            self.ws_url("/sessions"),
+            json!({"id": session_id}),
+        )
+        .await
     }
 
     /// `POST /sessions/{id}/peers` with `{peerId: {}}`.
     pub async fn add_peers(&self, session_id: &str, peers: &[&str]) -> Result<(), MemoryError> {
-        let body: serde_json::Map<String, Value> = peers.iter().map(|p| ((*p).to_owned(), json!({}))).collect();
-        self.post(self.ws_url(&format!("/sessions/{session_id}/peers")), Value::Object(body)).await?;
+        let body: serde_json::Map<String, Value> =
+            peers.iter().map(|p| ((*p).to_owned(), json!({}))).collect();
+        self.post(
+            self.ws_url(&format!("/sessions/{session_id}/peers")),
+            Value::Object(body),
+        )
+        .await?;
         Ok(())
     }
 
     /// `POST /sessions/{id}/messages` with `{messages: [{peer_id, content, metadata}]}`.
-    pub async fn add_messages(&self, session_id: &str, messages: &[NewMessage]) -> Result<Vec<HonchoMessage>, MemoryError> {
+    pub async fn add_messages(
+        &self,
+        session_id: &str,
+        messages: &[NewMessage],
+    ) -> Result<Vec<HonchoMessage>, MemoryError> {
         let v = self
-            .post(self.ws_url(&format!("/sessions/{session_id}/messages")), json!({"messages": messages}))
+            .post(
+                self.ws_url(&format!("/sessions/{session_id}/messages")),
+                json!({"messages": messages}),
+            )
             .await?;
         Ok(serde_json::from_value(v).unwrap_or_default())
     }
 
     /// `GET /sessions/{id}/context` (read-only).
-    pub async fn session_context(&self, session_id: &str, q: &ContextQuery) -> Result<SessionContext, MemoryError> {
+    pub async fn session_context(
+        &self,
+        session_id: &str,
+        q: &ContextQuery,
+    ) -> Result<SessionContext, MemoryError> {
         let mut query: Vec<(&str, String)> = vec![("summary", q.summary.to_string())];
         if let Some(t) = q.tokens {
             query.push(("tokens", t.to_string()));
@@ -309,13 +353,23 @@ impl HonchoClient {
             query.push(("limit_to_session", l.to_string()));
         }
         let v = self
-            .send(self.http.get(self.ws_url(&format!("/sessions/{session_id}/context"))).query(&query))
+            .send(
+                self.http
+                    .get(self.ws_url(&format!("/sessions/{session_id}/context")))
+                    .query(&query),
+            )
             .await?;
         serde_json::from_value(v).map_err(|e| MemoryError::Decode(e.to_string()))
     }
 
     /// `POST /peers/{id}/representation` (read-only).
-    pub async fn representation(&self, peer_id: &str, session_id: Option<&str>, target: Option<&str>, search_query: Option<&str>) -> Result<String, MemoryError> {
+    pub async fn representation(
+        &self,
+        peer_id: &str,
+        session_id: Option<&str>,
+        target: Option<&str>,
+        search_query: Option<&str>,
+    ) -> Result<String, MemoryError> {
         let mut body = serde_json::Map::new();
         if let Some(s) = session_id {
             body.insert("session_id".into(), json!(s));
@@ -327,7 +381,12 @@ impl HonchoClient {
             body.insert("search_query".into(), json!(q));
             body.insert("search_top_k".into(), json!(5));
         }
-        let v = self.post(self.ws_url(&format!("/peers/{peer_id}/representation")), Value::Object(body)).await?;
+        let v = self
+            .post(
+                self.ws_url(&format!("/peers/{peer_id}/representation")),
+                Value::Object(body),
+            )
+            .await?;
         Ok(match v.get("representation") {
             Some(Value::String(s)) => s.clone(),
             Some(other) => other.to_string(),
@@ -335,22 +394,53 @@ impl HonchoClient {
         })
     }
 
-    async fn search_at(&self, url: String, query: &str, limit: u32) -> Result<Vec<HonchoMessage>, MemoryError> {
-        let v = self.post(url, json!({"query": query, "limit": limit.clamp(1, 100)})).await?;
+    async fn search_at(
+        &self,
+        url: String,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HonchoMessage>, MemoryError> {
+        let v = self
+            .post(url, json!({"query": query, "limit": limit.clamp(1, 100)}))
+            .await?;
         Ok(serde_json::from_value(v).unwrap_or_default())
     }
 
     /// Semantic message search in the whole workspace (read-only).
-    pub async fn search_workspace(&self, query: &str, limit: u32) -> Result<Vec<HonchoMessage>, MemoryError> {
+    pub async fn search_workspace(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HonchoMessage>, MemoryError> {
         self.search_at(self.ws_url("/search"), query, limit).await
     }
 
-    pub async fn search_session(&self, session_id: &str, query: &str, limit: u32) -> Result<Vec<HonchoMessage>, MemoryError> {
-        self.search_at(self.ws_url(&format!("/sessions/{session_id}/search")), query, limit).await
+    pub async fn search_session(
+        &self,
+        session_id: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HonchoMessage>, MemoryError> {
+        self.search_at(
+            self.ws_url(&format!("/sessions/{session_id}/search")),
+            query,
+            limit,
+        )
+        .await
     }
 
-    pub async fn search_peer(&self, peer_id: &str, query: &str, limit: u32) -> Result<Vec<HonchoMessage>, MemoryError> {
-        self.search_at(self.ws_url(&format!("/peers/{peer_id}/search")), query, limit).await
+    pub async fn search_peer(
+        &self,
+        peer_id: &str,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HonchoMessage>, MemoryError> {
+        self.search_at(
+            self.ws_url(&format!("/peers/{peer_id}/search")),
+            query,
+            limit,
+        )
+        .await
     }
 }
 
@@ -377,7 +467,11 @@ fn render_jsonish(v: &Value) -> String {
 /// HONCHO_RECALL layout of the Node policy path), at most 6000 characters.
 pub fn render_context(ctx: &SessionContext, query: Option<&str>) -> String {
     let mut parts = Vec::new();
-    if let Some(s) = ctx.summary.as_ref().filter(|s| !s.content.trim().is_empty() && s.content.trim() != "null") {
+    if let Some(s) = ctx
+        .summary
+        .as_ref()
+        .filter(|s| !s.content.trim().is_empty() && s.content.trim() != "null")
+    {
         parts.push(clip(
             &format!(
                 "Honcho session summary (derived {}; treat as background, not as current state):\n{}",
@@ -387,7 +481,11 @@ pub fn render_context(ctx: &SessionContext, query: Option<&str>) -> String {
             1500,
         ));
     }
-    let rep = ctx.peer_representation.as_ref().map(render_jsonish).unwrap_or_default();
+    let rep = ctx
+        .peer_representation
+        .as_ref()
+        .map(render_jsonish)
+        .unwrap_or_default();
     if !rep.is_empty() && rep != "null" {
         let label = match query {
             Some(q) => format!(
@@ -398,7 +496,11 @@ pub fn render_context(ctx: &SessionContext, query: Option<&str>) -> String {
         };
         parts.push(clip(&format!("{label}\n{rep}"), 2500));
     }
-    let card = ctx.peer_card.as_ref().map(render_jsonish).unwrap_or_default();
+    let card = ctx
+        .peer_card
+        .as_ref()
+        .map(render_jsonish)
+        .unwrap_or_default();
     if !card.is_empty() && card != "null" {
         parts.push(clip(&format!("Honcho peer card:\n{card}"), 800));
     }
@@ -406,11 +508,20 @@ pub fn render_context(ctx: &SessionContext, query: Option<&str>) -> String {
         .messages
         .iter()
         .filter(|m| !m.content.trim().is_empty())
-        .map(|m| format!("{}: {}", m.peer_id.as_deref().unwrap_or("unknown"), m.content.trim()))
+        .map(|m| {
+            format!(
+                "{}: {}",
+                m.peer_id.as_deref().unwrap_or("unknown"),
+                m.content.trim()
+            )
+        })
         .collect();
     if !messages.is_empty() {
         parts.push(clip(
-            &format!("Honcho recent session messages (session tail):\n{}", messages.join("\n")),
+            &format!(
+                "Honcho recent session messages (session tail):\n{}",
+                messages.join("\n")
+            ),
             1200,
         ));
     }
@@ -440,7 +551,10 @@ impl Memory {
     }
 
     pub fn off() -> Self {
-        Self { mode: MemoryMode::Off, client: None }
+        Self {
+            mode: MemoryMode::Off,
+            client: None,
+        }
     }
 
     pub fn mode(&self) -> MemoryMode {
@@ -454,8 +568,15 @@ impl Memory {
     /// Context for a turn: one read-only `session.context` call (summary,
     /// representation conditioned on the prompt when vector search is on,
     /// session tail). Never fails: errors become an empty context.
-    pub async fn build_context(&self, user_peer_id: &str, session_id: &str, prompt: &str) -> String {
-        let Some(c) = &self.client else { return String::new() };
+    pub async fn build_context(
+        &self,
+        user_peer_id: &str,
+        session_id: &str,
+        prompt: &str,
+    ) -> String {
+        let Some(c) = &self.client else {
+            return String::new();
+        };
         let cfg = c.config();
         let search = cfg.use_vector_search.then_some(prompt);
         let q = ContextQuery {
@@ -481,7 +602,13 @@ impl Memory {
     /// Store one exchange (`readwrite` only), as Node's `rememberWithClient`:
     /// get-or-create peers and session, add both peers, add two messages
     /// with `metadata.role`.
-    pub async fn remember(&self, user_peer_id: &str, session_id: &str, user_text: &str, assistant_text: &str) -> Result<(), MemoryError> {
+    pub async fn remember(
+        &self,
+        user_peer_id: &str,
+        session_id: &str,
+        user_text: &str,
+        assistant_text: &str,
+    ) -> Result<(), MemoryError> {
         let c = match (self.mode, &self.client) {
             (MemoryMode::ReadWrite, Some(c)) => c,
             (MemoryMode::Off, _) | (_, None) => return Err(MemoryError::Off),
@@ -495,8 +622,16 @@ impl Memory {
         c.add_messages(
             session_id,
             &[
-                NewMessage { peer_id: user_peer_id.into(), content: user_text.into(), metadata: json!({"role": "user"}) },
-                NewMessage { peer_id: agent, content: assistant_text.into(), metadata: json!({"role": "assistant"}) },
+                NewMessage {
+                    peer_id: user_peer_id.into(),
+                    content: user_text.into(),
+                    metadata: json!({"role": "user"}),
+                },
+                NewMessage {
+                    peer_id: agent,
+                    content: assistant_text.into(),
+                    metadata: json!({"role": "assistant"}),
+                },
             ],
         )
         .await?;
@@ -506,7 +641,8 @@ impl Memory {
     /// Semantic search over the owner's messages (read-only, any mode but off).
     pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<HonchoMessage>, MemoryError> {
         let c = self.client.as_ref().ok_or(MemoryError::Off)?;
-        c.search_peer(&c.config().owner_peer_id.clone(), query, limit).await
+        c.search_peer(&c.config().owner_peer_id.clone(), query, limit)
+            .await
     }
 }
 
@@ -514,7 +650,11 @@ impl Memory {
 /// (`honchoSessionId` in `src/secretary-api.js`).
 pub fn secretary_session_id(requested: &str, default_session: &str) -> String {
     let raw = if requested.is_empty() {
-        if default_session.is_empty() { "app" } else { default_session }
+        if default_session.is_empty() {
+            "app"
+        } else {
+            default_session
+        }
     } else {
         requested
     };

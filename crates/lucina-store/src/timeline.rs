@@ -106,7 +106,19 @@ impl Meta {
         macro_rules! take {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f; } )* };
         }
-        take!(chat_title, guild_name, channel_name, kind, job_id, list_id, command_id, is_dm, ok, command, tool);
+        take!(
+            chat_title,
+            guild_name,
+            channel_name,
+            kind,
+            job_id,
+            list_id,
+            command_id,
+            is_dm,
+            ok,
+            command,
+            tool
+        );
         self
     }
 }
@@ -177,7 +189,9 @@ fn normalize_command(raw: &RawValue) -> Option<Box<RawValue>> {
     }
     let args = cmd
         .args
-        .filter(|a| a.get().trim_start().starts_with('{') && a.get().len() <= MAX_COMMAND_ARGS_CHARS)
+        .filter(|a| {
+            a.get().trim_start().starts_with('{') && a.get().len() <= MAX_COMMAND_ARGS_CHARS
+        })
         .map(|a| a.get().to_owned())
         .unwrap_or_else(|| "{}".into());
     let expires = cmd
@@ -186,7 +200,10 @@ fn normalize_command(raw: &RawValue) -> Option<Box<RawValue>> {
         .and_then(parse_js_date)
         .map(|d| serde_json::Value::String(iso_ms(d)))
         .unwrap_or(serde_json::Value::Null);
-    let requires = matches!(cmd.requires_confirmation, Some(serde_json::Value::Bool(true)));
+    let requires = matches!(
+        cmd.requires_confirmation,
+        Some(serde_json::Value::Bool(true))
+    );
     let text = format!(
         r#"{{"id":{},"type":{},"args":{},"expiresAt":{},"requiresConfirmation":{}}}"#,
         serde_json::to_string(&id).ok()?,
@@ -253,7 +270,9 @@ pub fn normalize(input: NewItem, now: i64) -> Result<TimelineItem> {
         .as_deref()
         .and_then(parse_js_date)
         .map(iso_ms)
-        .unwrap_or_else(|| iso_ms(chrono::DateTime::from_timestamp_millis(now).unwrap_or_default()));
+        .unwrap_or_else(|| {
+            iso_ms(chrono::DateTime::from_timestamp_millis(now).unwrap_or_default())
+        });
     Ok(TimelineItem {
         id: input
             .id
@@ -263,7 +282,10 @@ pub fn normalize(input: NewItem, now: i64) -> Result<TimelineItem> {
         channel: input.channel,
         role: input.role,
         text,
-        client_message_id: clean_string(input.client_message_id.as_deref(), MAX_CLIENT_MESSAGE_ID_CHARS),
+        client_message_id: clean_string(
+            input.client_message_id.as_deref(),
+            MAX_CLIENT_MESSAGE_ID_CHARS,
+        ),
         reply_to: input.reply_to.filter(|id| is_timeline_id(id)),
         attachments: (!attachments.is_empty()).then_some(attachments),
         meta: normalize_meta(input.meta),
@@ -393,9 +415,15 @@ impl Inner {
             }
             let line = &buffer[line_start..i];
             if !line.is_empty() {
-                if let (Ok(text), Ok(IdOnly { id: serde_json::Value::String(id) })) =
-                    (std::str::from_utf8(line), serde_json::from_slice::<IdOnly>(line))
-                {
+                if let (
+                    Ok(text),
+                    Ok(IdOnly {
+                        id: serde_json::Value::String(id),
+                    }),
+                ) = (
+                    std::str::from_utf8(line),
+                    serde_json::from_slice::<IdOnly>(line),
+                ) {
                     if is_timeline_id(&id) {
                         let entry = Entry {
                             id: id.clone(),
@@ -404,7 +432,10 @@ impl Inner {
                             length: line.len(),
                         };
                         if self.insert_entry(entry) {
-                            added.push(StoredItem { id, raw: Arc::from(text) });
+                            added.push(StoredItem {
+                                id,
+                                raw: Arc::from(text),
+                            });
                         }
                     }
                 }
@@ -529,18 +560,30 @@ impl Inner {
         let mut handles: HashMap<u64, Option<fs::File>> = HashMap::new();
         for entry in selected {
             if let Some(raw) = self.cache.get(&entry.id) {
-                out.push(StoredItem { id: entry.id.clone(), raw: raw.clone() });
+                out.push(StoredItem {
+                    id: entry.id.clone(),
+                    raw: raw.clone(),
+                });
                 continue;
             }
-            let handle = handles.entry(entry.gen).or_insert_with(|| fs::File::open(self.path_for_gen(entry.gen)).ok());
-            let Some(file) = handle.as_mut() else { continue };
+            let handle = handles
+                .entry(entry.gen)
+                .or_insert_with(|| fs::File::open(self.path_for_gen(entry.gen)).ok());
+            let Some(file) = handle.as_mut() else {
+                continue;
+            };
             let mut buf = vec![0u8; entry.length];
-            if file.seek(SeekFrom::Start(entry.offset)).is_err() || file.read_exact(&mut buf).is_err() {
+            if file.seek(SeekFrom::Start(entry.offset)).is_err()
+                || file.read_exact(&mut buf).is_err()
+            {
                 continue;
             }
             if let Ok(text) = String::from_utf8(buf) {
                 if serde_json::from_str::<IdOnly>(&text).is_ok() {
-                    out.push(StoredItem { id: entry.id.clone(), raw: Arc::from(text) });
+                    out.push(StoredItem {
+                        id: entry.id.clone(),
+                        raw: Arc::from(text),
+                    });
                 }
             }
         }
@@ -557,7 +600,9 @@ pub struct TimelineStore {
 
 impl std::fmt::Debug for TimelineStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TimelineStore").field("recording", &self.recording).finish()
+        f.debug_struct("TimelineStore")
+            .field("recording", &self.recording)
+            .finish()
     }
 }
 
@@ -608,14 +653,21 @@ impl TimelineStore {
             inner.write_lines(&format!("{line}\n"))?;
             let raw: Arc<str> = Arc::from(line.as_str());
             inner.cache_item(&item.id, raw.clone());
-            let _ = self.tx.send(StoredItem { id: item.id.clone(), raw });
+            let _ = self.tx.send(StoredItem {
+                id: item.id.clone(),
+                raw,
+            });
         }
         Ok(item)
     }
 
     /// Newest first; `before` is an exclusive id cursor. Returns
     /// `(items, nextBefore)`.
-    pub fn list(&self, before: Option<&str>, limit: usize) -> Result<(Vec<StoredItem>, Option<String>)> {
+    pub fn list(
+        &self,
+        before: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<StoredItem>, Option<String>)> {
         let size = limit.clamp(1, MAX_LIST_LIMIT);
         let mut inner = self.lock();
         inner.refresh()?;
@@ -691,7 +743,11 @@ pub struct TimelineTurn {
 }
 
 impl TimelineTurn {
-    pub fn new(store: Arc<TimelineStore>, channel: &str, client_message_id: Option<String>) -> Self {
+    pub fn new(
+        store: Arc<TimelineStore>,
+        channel: &str,
+        client_message_id: Option<String>,
+    ) -> Self {
         Self {
             store,
             channel: channel.to_owned(),
@@ -731,7 +787,12 @@ impl TimelineTurn {
     }
 
     /// A Lucina item replying to the owner's message.
-    pub fn record_lucina(&self, text: &str, attachments: Vec<Attachment>, meta: Option<Meta>) -> Option<TimelineItem> {
+    pub fn record_lucina(
+        &self,
+        text: &str,
+        attachments: Vec<Attachment>,
+        meta: Option<Meta>,
+    ) -> Option<TimelineItem> {
         self.store.record(NewItem {
             channel: self.channel.clone(),
             role: "lucina".into(),
@@ -765,9 +826,14 @@ mod tests {
     fn appends_lists_and_pages() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), DEFAULT_MAX_BYTES);
-        let ids: Vec<String> = (0..5).map(|i| s.append(item(&format!("m{i}"))).unwrap().id).collect();
+        let ids: Vec<String> = (0..5)
+            .map(|i| s.append(item(&format!("m{i}"))).unwrap().id)
+            .collect();
         let (page, next) = s.list(None, 2).unwrap();
-        assert_eq!(page.iter().map(|i| i.id.clone()).collect::<Vec<_>>(), vec![ids[4].clone(), ids[3].clone()]);
+        assert_eq!(
+            page.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![ids[4].clone(), ids[3].clone()]
+        );
         assert_eq!(next.as_deref(), Some(ids[3].as_str()));
         let (page, next) = s.list(next.as_deref(), 10).unwrap();
         assert_eq!(page.len(), 3);
@@ -788,8 +854,21 @@ mod tests {
                 text: "  ciao \"x\"\n ".into(),
                 client_message_id: Some("c1".into()),
                 reply_to: Some("01K83ZK4Q6X1V9W2D3E4F5G6H7".into()),
-                attachments: vec![Attachment { kind: "image".into(), name: None }, Attachment { kind: "bogus".into(), name: None }],
-                meta: Some(Meta { is_dm: Some(true), kind: Some("tool".into()), ..Meta::default() }),
+                attachments: vec![
+                    Attachment {
+                        kind: "image".into(),
+                        name: None,
+                    },
+                    Attachment {
+                        kind: "bogus".into(),
+                        name: None,
+                    },
+                ],
+                meta: Some(Meta {
+                    is_dm: Some(true),
+                    kind: Some("tool".into()),
+                    ..Meta::default()
+                }),
                 ts: Some("2026-10-21T16:30:02.118Z".into()),
                 ..NewItem::default()
             })
@@ -808,7 +887,12 @@ mod tests {
     fn rejects_bad_items() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), DEFAULT_MAX_BYTES);
-        assert!(s.append(NewItem { channel: "sms".into(), ..item("x") }).is_err());
+        assert!(s
+            .append(NewItem {
+                channel: "sms".into(),
+                ..item("x")
+            })
+            .is_err());
         assert!(s.append(item("   ")).is_err());
         let long = "é".repeat(9000);
         assert_eq!(s.append(item(&long)).unwrap().text.chars().count(), 8000);
@@ -832,11 +916,17 @@ mod tests {
         assert_eq!(s.len().unwrap(), 3);
         // a fresh store sees the same items
         let fresh = store(dir.path(), 600);
-        let all: Vec<String> = fresh.read_all().unwrap().into_iter().map(|i| i.id).collect();
+        let all: Vec<String> = fresh
+            .read_all()
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
         assert_eq!(all, vec![a.id.clone(), foreign.id.clone(), b.id.clone()]);
         // rotation keeps two old files and still serves their items
         for i in 0..20 {
-            s.append(item(&format!("filler {i} {}", "x".repeat(40)))).unwrap();
+            s.append(item(&format!("filler {i} {}", "x".repeat(40))))
+                .unwrap();
         }
         assert!(dir.path().join("timeline.jsonl.1").exists());
         let (latest, _) = s.list(None, 3).unwrap();

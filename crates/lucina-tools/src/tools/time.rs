@@ -31,8 +31,15 @@ impl Tool for TimeTool {
     }
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
-        let tz: Tz = match a.timezone.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(name) => name.parse().map_err(|_| ToolError::new(format!("unknown time zone {name:?}")))?,
+        let tz: Tz = match a
+            .timezone
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(name) => name
+                .parse()
+                .map_err(|_| ToolError::new(format!("unknown time zone {name:?}")))?,
             None => ctx.env.time_zone,
         };
         let local = ctx.now.with_timezone(&tz);

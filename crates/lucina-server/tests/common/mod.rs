@@ -28,7 +28,9 @@ pub fn script(v: Value) -> Script {
 
 pub async fn harness(s: Script, tweak: impl FnOnce(&mut Config)) -> H {
     let dir = tempfile::tempdir().unwrap();
-    let fake = fake::spawn("127.0.0.1:0".parse().unwrap(), s, None).await.unwrap();
+    let fake = fake::spawn("127.0.0.1:0".parse().unwrap(), s, None)
+        .await
+        .unwrap();
     let mut cfg = Config::for_data_dir(dir.path());
     cfg.secretary_enabled = true;
     cfg.token = Some(TOKEN.into());
@@ -46,14 +48,22 @@ pub async fn harness(s: Script, tweak: impl FnOnce(&mut Config)) -> H {
         max_retries: 0,
         ..DeepSeekConfig::default()
     };
-    cfg.grocery_database_url = std::env::var("LUCINA_TEST_DATABASE_URL").ok().filter(|u| u.contains("lucina_test"));
+    cfg.grocery_database_url = std::env::var("LUCINA_TEST_DATABASE_URL")
+        .ok()
+        .filter(|u| u.contains("lucina_test"));
     tweak(&mut cfg);
     let state = AppState::build(cfg, None).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = app(state.clone());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    H { base: format!("http://{addr}"), http: reqwest::Client::new(), fake, state, dir }
+    H {
+        base: format!("http://{addr}"),
+        http: reqwest::Client::new(),
+        fake,
+        state,
+        dir,
+    }
 }
 
 impl H {
@@ -61,7 +71,12 @@ impl H {
         format!("{}/api/secretary{p}", self.base)
     }
 
-    pub async fn call(&self, method: reqwest::Method, p: &str, body: Option<Value>) -> (u16, Value, reqwest::header::HeaderMap) {
+    pub async fn call(
+        &self,
+        method: reqwest::Method,
+        p: &str,
+        body: Option<Value>,
+    ) -> (u16, Value, reqwest::header::HeaderMap) {
         let mut rb = self.http.request(method, self.url(p)).bearer_auth(TOKEN);
         if let Some(b) = body {
             rb = rb.json(&b);
@@ -83,7 +98,12 @@ impl H {
     }
 
     pub async fn chat(&self, message: &str) -> Value {
-        let (s, b) = self.post("/chat", json!({"message": message, "sessionId": "test", "channel": "ios"})).await;
+        let (s, b) = self
+            .post(
+                "/chat",
+                json!({"message": message, "sessionId": "test", "channel": "ios"}),
+            )
+            .await;
         assert_eq!(s, 200, "{b}");
         b["data"].clone()
     }

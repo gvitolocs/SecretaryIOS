@@ -54,7 +54,10 @@ impl Tool for PlacesTool {
             query.push(("email", email.clone()));
         }
         ctx.env.nominatim_gate.wait().await;
-        let url = format!("{}/search", ctx.env.endpoints.nominatim.trim_end_matches('/'));
+        let url = format!(
+            "{}/search",
+            ctx.env.endpoints.nominatim.trim_end_matches('/')
+        );
         let resp = ctx
             .env
             .http
@@ -65,9 +68,15 @@ impl Tool for PlacesTool {
             .await
             .map_err(|e| ToolError::new(format!("nominatim unreachable: {}", e.without_url())))?;
         if !resp.status().is_success() {
-            return Err(ToolError::new(format!("nominatim HTTP {}", resp.status().as_u16())));
+            return Err(ToolError::new(format!(
+                "nominatim HTTP {}",
+                resp.status().as_u16()
+            )));
         }
-        let v: Value = resp.json().await.map_err(|e| ToolError::new(format!("nominatim response: {e}")))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| ToolError::new(format!("nominatim response: {e}")))?;
         let results: Vec<Value> = v
             .as_array()
             .into_iter()
@@ -83,6 +92,8 @@ impl Tool for PlacesTool {
                 })
             })
             .collect();
-        Ok(json!({"query": q, "results": results, "source": "OpenStreetMap Nominatim (© OpenStreetMap contributors)"}))
+        Ok(
+            json!({"query": q, "results": results, "source": "OpenStreetMap Nominatim (© OpenStreetMap contributors)"}),
+        )
     }
 }

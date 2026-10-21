@@ -11,7 +11,9 @@ use lucina_store::reminders::{CreateReminder, ReminderStore};
 use lucina_store::timeline::{NewItem, TimelineItem, TimelineStore, DEFAULT_MAX_BYTES};
 
 fn fixture(var: &str) -> Option<PathBuf> {
-    std::env::var_os(var).map(PathBuf::from).filter(|p| p.exists())
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
 }
 
 #[test]
@@ -30,7 +32,8 @@ fn timeline_round_trips_every_line() {
 
     // 1. every line parses into the typed item and re-serializes byte for byte
     for (n, line) in lines.iter().enumerate() {
-        let item: TimelineItem = serde_json::from_str(line).unwrap_or_else(|e| panic!("line {n}: {e}"));
+        let item: TimelineItem =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line {n}: {e}"));
         let again = serde_json::to_string(&item).unwrap();
         assert_eq!(&again, line, "line {n} does not round-trip");
     }
@@ -52,7 +55,12 @@ fn timeline_round_trips_every_line() {
 
     // 3. appending keeps every existing byte
     store
-        .append(NewItem { channel: "web".into(), role: "user".into(), text: "compat probe".into(), ..NewItem::default() })
+        .append(NewItem {
+            channel: "web".into(),
+            role: "user".into(),
+            text: "compat probe".into(),
+            ..NewItem::default()
+        })
         .unwrap();
     let after = std::fs::read(&path).unwrap();
     assert_eq!(&after[..original.len()], &original[..]);
@@ -70,7 +78,10 @@ fn reminders_round_trip_and_append() {
     let path = dir.path().join("reminders.json");
     std::fs::copy(&src, &path).unwrap();
     let original = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(ReminderStore::reserialize(original.as_bytes()).unwrap(), original);
+    assert_eq!(
+        ReminderStore::reserialize(original.as_bytes()).unwrap(),
+        original
+    );
 
     let store = ReminderStore::new(&path, 500);
     let before = store.list(true).unwrap();

@@ -22,7 +22,11 @@ pub struct WriteError {
 
 impl WriteError {
     pub fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
-        Self { status, code: code.into(), message: message.into() }
+        Self {
+            status,
+            code: code.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -84,7 +88,10 @@ pub struct NodeForwarder {
 
 impl std::fmt::Debug for NodeForwarder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeForwarder").field("base", &self.base).field("token", &self.token.as_ref().map(|_| "<redacted>")).finish()
+        f.debug_struct("NodeForwarder")
+            .field("base", &self.base)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
     }
 }
 
@@ -93,33 +100,53 @@ impl NodeForwarder {
         Self {
             base: base.trim_end_matches('/').to_owned(),
             token: token.filter(|t| !t.is_empty()),
-            http: reqwest::Client::builder().timeout(Duration::from_secs(15)).build().expect("http client"),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .expect("http client"),
         }
     }
 
     fn unconfigured() -> WriteError {
-        WriteError::new(503, "reminders_disabled", "Reminder writes go to the Node Lucina and LUCINA_NODE_TOKEN_FILE is not set")
+        WriteError::new(
+            503,
+            "reminders_disabled",
+            "Reminder writes go to the Node Lucina and LUCINA_NODE_TOKEN_FILE is not set",
+        )
     }
 
     async fn send(&self, rb: reqwest::RequestBuilder) -> Forwarded {
         let token = self.token.as_ref().ok_or_else(Self::unconfigured)?;
-        let resp = rb
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(|e| WriteError::new(503, "reminders_disabled", format!("Node Lucina unreachable: {}", e.without_url())))?;
+        let resp = rb.bearer_auth(token).send().await.map_err(|e| {
+            WriteError::new(
+                503,
+                "reminders_disabled",
+                format!("Node Lucina unreachable: {}", e.without_url()),
+            )
+        })?;
         let status = resp.status().as_u16();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
         if body["ok"] == json!(true) {
             return Ok((status, body["data"].clone()));
         }
-        let code = body["error"].as_str().unwrap_or("internal_error").to_owned();
+        let code = body["error"]
+            .as_str()
+            .unwrap_or("internal_error")
+            .to_owned();
         let message = body["message"].as_str().unwrap_or("").to_owned();
         // Node's 401/404-for-disabled mean the forward itself is misconfigured.
         if status == 401 || (status == 404 && code == "not_found") {
-            return Err(WriteError::new(503, "reminders_disabled", format!("Node Lucina refused the forward ({status} {code})")));
+            return Err(WriteError::new(
+                503,
+                "reminders_disabled",
+                format!("Node Lucina refused the forward ({status} {code})"),
+            ));
         }
-        Err(WriteError { status, code, message })
+        Err(WriteError {
+            status,
+            code,
+            message,
+        })
     }
 }
 
@@ -154,24 +181,51 @@ impl ReminderWriter for NodeForwarder {
 
     async fn create(&self, input: CreateReminder) -> Result<(bool, Reminder), WriteError> {
         let (_, data) = self
-            .send(self.http.post(format!("{}/api/secretary/reminders", self.base)).json(&json!({"text": input.text, "dueAt": input.due_at})))
+            .send(
+                self.http
+                    .post(format!("{}/api/secretary/reminders", self.base))
+                    .json(&json!({"text": input.text, "dueAt": input.due_at})),
+            )
             .await?;
-        Ok((data["created"] == json!(true), reminder_from_public(&data["reminder"])))
+        Ok((
+            data["created"] == json!(true),
+            reminder_from_public(&data["reminder"]),
+        ))
     }
 
     async fn cancel(&self, id: &str, _owner_chat_id: &str) -> Result<CancelOutcome, WriteError> {
-        match self.send(self.http.delete(format!("{}/api/secretary/reminders/{id}", self.base))).await {
+        match self
+            .send(
+                self.http
+                    .delete(format!("{}/api/secretary/reminders/{id}", self.base)),
+            )
+            .await
+        {
             Ok((_, data)) => {
                 let r = reminder_from_public(&data["reminder"]);
-                Ok(if data["cancelled"] == json!(true) { CancelOutcome::Cancelled(r) } else { CancelOutcome::AlreadyCancelled(r) })
+                Ok(if data["cancelled"] == json!(true) {
+                    CancelOutcome::Cancelled(r)
+                } else {
+                    CancelOutcome::AlreadyCancelled(r)
+                })
             }
             Err(e) if e.code == "reminder_not_found" => Ok(CancelOutcome::NotFound),
-            Err(e) if e.code == "already_sent" => Ok(CancelOutcome::AlreadySent(Reminder { id: id.to_owned(), ..reminder_from_public(&json!({"status": "sent"})) })),
+            Err(e) if e.code == "already_sent" => Ok(CancelOutcome::AlreadySent(Reminder {
+                id: id.to_owned(),
+                ..reminder_from_public(&json!({"status": "sent"}))
+            })),
             Err(e) => Err(e),
         }
     }
 
     async fn forward_create(&self, body: &Value) -> Option<Forwarded> {
-        Some(self.send(self.http.post(format!("{}/api/secretary/reminders", self.base)).json(body)).await)
+        Some(
+            self.send(
+                self.http
+                    .post(format!("{}/api/secretary/reminders", self.base))
+                    .json(body),
+            )
+            .await,
+        )
     }
 }

@@ -21,7 +21,11 @@ const RECHECK: Duration = Duration::from_secs(30);
 pub fn fold(text: &str) -> String {
     let mut out = String::new();
     let mut gap = false;
-    for c in text.nfd().filter(|c| !is_combining_mark(*c)).flat_map(char::to_lowercase) {
+    for c in text
+        .nfd()
+        .filter(|c| !is_combining_mark(*c))
+        .flat_map(char::to_lowercase)
+    {
         if c.is_alphanumeric() {
             if gap && !out.is_empty() {
                 out.push(' ');
@@ -65,7 +69,10 @@ pub struct CatalogIndex {
 fn strings(v: Option<&Value>) -> Vec<String> {
     match v {
         Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str().map(str::to_owned))
+            .collect(),
         Some(Value::Object(o)) => o.values().flat_map(|x| strings(Some(x))).collect(),
         _ => Vec::new(),
     }
@@ -73,8 +80,16 @@ fn strings(v: Option<&Value>) -> Vec<String> {
 
 impl CatalogIndex {
     pub fn build(data: &Value) -> Self {
-        let mut idx = CatalogIndex { version: data.get("version").cloned(), ..Default::default() };
-        for item in data.get("items").and_then(Value::as_array).into_iter().flatten() {
+        let mut idx = CatalogIndex {
+            version: data.get("version").cloned(),
+            ..Default::default()
+        };
+        for item in data
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let Some(id) = item.get("id").and_then(|v| match v {
                 Value::String(s) if !s.is_empty() => Some(s.clone()),
                 Value::Number(n) => Some(n.to_string()),
@@ -85,13 +100,20 @@ impl CatalogIndex {
             let names: HashMap<String, String> = item
                 .get("names")
                 .and_then(Value::as_object)
-                .map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned()))).collect())
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                        .collect()
+                })
                 .unwrap_or_default();
             let entry = CatalogItem {
                 id: id.clone(),
                 name: item.get("name").and_then(Value::as_str).map(str::to_owned),
                 names: names.clone(),
-                section: item.get("section").and_then(Value::as_str).map(str::to_owned),
+                section: item
+                    .get("section")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 icon: item.get("icon").and_then(Value::as_str).map(str::to_owned),
             };
             let mut terms = vec![id.clone()];
@@ -152,7 +174,9 @@ pub struct Catalog {
 
 impl std::fmt::Debug for Catalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Catalog").field("candidates", &self.candidates).finish()
+        f.debug_struct("Catalog")
+            .field("candidates", &self.candidates)
+            .finish()
     }
 }
 
@@ -160,7 +184,12 @@ impl Catalog {
     pub fn from_paths(candidates: Vec<PathBuf>) -> Self {
         Self {
             candidates,
-            cached: Mutex::new(Cached { index: Arc::new(CatalogIndex::default()), file: None, mtime: None, checked: None }),
+            cached: Mutex::new(Cached {
+                index: Arc::new(CatalogIndex::default()),
+                file: None,
+                mtime: None,
+                checked: None,
+            }),
             fixed: None,
         }
     }
@@ -169,13 +198,18 @@ impl Catalog {
     pub fn default_paths(explicit: Option<PathBuf>, data_dir: &std::path::Path) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = explicit.into_iter().collect();
         v.push(data_dir.join("shopping-catalog.v1.json"));
-        v.push(PathBuf::from("/home/nez/Projects/SecretaryIOS/assets/catalog/catalog.v1.json"));
+        v.push(PathBuf::from(
+            "/home/nez/Projects/SecretaryIOS/assets/catalog/catalog.v1.json",
+        ));
         v
     }
 
     /// A fixed catalog (tests).
     pub fn fixed(data: &Value) -> Self {
-        Self { fixed: Some(Arc::new(CatalogIndex::build(data))), ..Self::from_paths(Vec::new()) }
+        Self {
+            fixed: Some(Arc::new(CatalogIndex::build(data))),
+            ..Self::from_paths(Vec::new())
+        }
     }
 
     pub fn index(&self) -> Arc<CatalogIndex> {
@@ -188,12 +222,17 @@ impl Catalog {
         }
         c.checked = Some(Instant::now());
         for file in &self.candidates {
-            let Ok(meta) = std::fs::metadata(file) else { continue };
+            let Ok(meta) = std::fs::metadata(file) else {
+                continue;
+            };
             let mtime = meta.modified().ok();
             if c.file.as_ref() == Some(file) && c.mtime == mtime {
                 return c.index.clone();
             }
-            match std::fs::read(file).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string())) {
+            match std::fs::read(file)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string()))
+            {
                 Ok(data) => {
                     let index = Arc::new(CatalogIndex::build(&data));
                     tracing::info!(file = %file.display(), items = index.len(), "shopping catalog loaded");
@@ -201,7 +240,9 @@ impl Catalog {
                     c.file = Some(file.clone());
                     c.mtime = mtime;
                 }
-                Err(e) => tracing::warn!(file = %file.display(), error = %e, "shopping catalog unreadable"),
+                Err(e) => {
+                    tracing::warn!(file = %file.display(), error = %e, "shopping catalog unreadable")
+                }
             }
             return c.index.clone();
         }
@@ -229,7 +270,10 @@ mod tests {
         assert_eq!(idx.find("MELA").unwrap().id, "apple");
         assert_eq!(idx.find("æbler").unwrap().id, "apple");
         assert_eq!(idx.find("bananas").unwrap().id, "banana");
-        assert_eq!(idx.find("apple").unwrap().display_name().as_deref(), Some("Mele"));
+        assert_eq!(
+            idx.find("apple").unwrap().display_name().as_deref(),
+            Some("Mele")
+        );
         assert!(idx.find("kiwi").is_none());
     }
 }

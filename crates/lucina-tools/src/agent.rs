@@ -25,7 +25,12 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        Self { max_rounds: MAX_ROUNDS, deadline: Duration::from_secs(90), model: None, temperature: Some(0.4) }
+        Self {
+            max_rounds: MAX_ROUNDS,
+            deadline: Duration::from_secs(90),
+            model: None,
+            temperature: Some(0.4),
+        }
     }
 }
 
@@ -81,13 +86,27 @@ fn clip_output(v: &Value) -> String {
 
 /// Execute one validated call now (no confirmation check): the path for a
 /// confirmed pending action, and the inner step of [`run`].
-pub async fn execute(registry: &Registry, name: &str, args: Value, ctx: &Ctx, timeout: Duration) -> (bool, Value, String) {
+pub async fn execute(
+    registry: &Registry,
+    name: &str,
+    args: Value,
+    ctx: &Ctx,
+    timeout: Duration,
+) -> (bool, Value, String) {
     let Some(tool) = registry.get(name) else {
-        return (false, json!({"error": format!("unknown tool {name}")}), name.to_owned());
+        return (
+            false,
+            json!({"error": format!("unknown tool {name}")}),
+            name.to_owned(),
+        );
     };
     let summary = tool.summarize(&args);
     if is_denied_name(name) || tool.moves_money() {
-        return (false, json!({"error": "refused: Lucina never buys anything or moves money"}), summary);
+        return (
+            false,
+            json!({"error": "refused: Lucina never buys anything or moves money"}),
+            summary,
+        );
     }
     if let Err(e) = registry.validate(name, &args) {
         return (false, json!({"error": e}), summary);
@@ -129,7 +148,9 @@ async fn handle_call(
         }
     };
     if let Some(tool) = registry.get(&name) {
-        let gated = tool.needs_confirmation(&args) && !is_denied_name(&name) && registry.validate(&name, &args).is_ok();
+        let gated = tool.needs_confirmation(&args)
+            && !is_denied_name(&name)
+            && registry.validate(&name, &args).is_ok();
         if gated {
             let summary = tool.summarize(&args);
             let action = pending.create(&ctx.session_id, &name, args.clone(), &summary, ctx.now);
@@ -152,7 +173,16 @@ async fn handle_call(
         }
     }
     let (ok, output, summary) = execute(registry, &name, args.clone(), ctx, remaining).await;
-    ToolRecord { call_id: call.id.clone(), name, args, ok, output, summary, pending: None, ms: started.elapsed().as_millis() as u64 }
+    ToolRecord {
+        call_id: call.id.clone(),
+        name,
+        args,
+        ok,
+        output,
+        summary,
+        pending: None,
+        ms: started.elapsed().as_millis() as u64,
+    }
 }
 
 /// Run the loop. `on_executed` sees every executed (not deferred) tool call
@@ -172,28 +202,62 @@ pub async fn run(
     for round in 0..cfg.max_rounds.max(1) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Ok(AgentOutcome { text: String::new(), rounds: round, records, stop: Stop::Deadline, messages });
+            return Ok(AgentOutcome {
+                text: String::new(),
+                rounds: round,
+                records,
+                stop: Stop::Deadline,
+                messages,
+            });
         }
         let last = round + 1 == cfg.max_rounds.max(1);
         let request = ChatRequest {
             model: cfg.model.clone(),
             messages: messages.clone(),
-            tools: if specs.is_empty() { Vec::new() } else { specs.clone() },
-            tool_choice: (!specs.is_empty()).then(|| if last { "none".to_owned() } else { "auto".to_owned() }),
+            tools: if specs.is_empty() {
+                Vec::new()
+            } else {
+                specs.clone()
+            },
+            tool_choice: (!specs.is_empty()).then(|| {
+                if last {
+                    "none".to_owned()
+                } else {
+                    "auto".to_owned()
+                }
+            }),
             temperature: cfg.temperature,
             max_tokens: None,
             purpose: "agent",
         };
         let response = match tokio::time::timeout(remaining, model.complete(request)).await {
             Ok(r) => r?,
-            Err(_) => return Ok(AgentOutcome { text: String::new(), rounds: round + 1, records, stop: Stop::Deadline, messages }),
+            Err(_) => {
+                return Ok(AgentOutcome {
+                    text: String::new(),
+                    rounds: round + 1,
+                    records,
+                    stop: Stop::Deadline,
+                    messages,
+                })
+            }
         };
         let calls = response.tool_calls().to_vec();
         if calls.is_empty() || last {
             let text = response.message.text().trim().to_owned();
             messages.push(response.message);
-            let stop = if last && !calls.is_empty() { Stop::MaxRounds } else { Stop::Answered };
-            return Ok(AgentOutcome { text, rounds: round + 1, records, stop, messages });
+            let stop = if last && !calls.is_empty() {
+                Stop::MaxRounds
+            } else {
+                Stop::Answered
+            };
+            return Ok(AgentOutcome {
+                text,
+                rounds: round + 1,
+                records,
+                stop,
+                messages,
+            });
         }
         messages.push(Message {
             role: Role::Assistant,
@@ -209,9 +273,18 @@ pub async fn run(
                 on_executed(&record);
             }
             tracing::info!(tool = %record.name, ok = record.ok, deferred = record.pending.is_some(), ms = record.ms, "tool call");
-            messages.push(Message::tool_result(call.id.clone(), clip_output(&record.output)));
+            messages.push(Message::tool_result(
+                call.id.clone(),
+                clip_output(&record.output),
+            ));
             records.push(record);
         }
     }
-    Ok(AgentOutcome { text: String::new(), rounds: cfg.max_rounds, records, stop: Stop::MaxRounds, messages })
+    Ok(AgentOutcome {
+        text: String::new(),
+        rounds: cfg.max_rounds,
+        records,
+        stop: Stop::MaxRounds,
+        messages,
+    })
 }

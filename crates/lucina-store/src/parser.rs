@@ -80,10 +80,13 @@ fn month_number(name: &str) -> Option<u32> {
 }
 
 static AT_TIME_1: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)^(?:please\s+)?(?:avvisami|ricordami|remind\s+me(?:\s+to)?|set\s+a\s+reminder(?:\s+(?:for|at))?)\s+(?:(?:oggi|today)\s+)?(?:alle|at|for)\s+(\d{1,2})(?:[:.](\d{2}))?(?:\s+(?:di\s+(?:fare\s+)?|to\s+))?\s*(.*)$")
+    re(
+        r"(?i)^(?:please\s+)?(?:avvisami|ricordami|remind\s+me(?:\s+to)?|set\s+a\s+reminder(?:\s+(?:for|at))?)\s+(?:(?:oggi|today)\s+)?(?:alle|at|for)\s+(\d{1,2})(?:[:.](\d{2}))?(?:\s+(?:di\s+(?:fare\s+)?|to\s+))?\s*(.*)$",
+    )
 });
-static AT_TIME_2: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?i)^(?:alle|at)\s+(\d{1,2})[:.](\d{2})\s+(?:di\s+(?:fare\s+)?|to\s+)?\s*(.+)$"));
+static AT_TIME_2: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)^(?:alle|at)\s+(\d{1,2})[:.](\d{2})\s+(?:di\s+(?:fare\s+)?|to\s+)?\s*(.+)$")
+});
 
 /// "alle 21:30 di …", "remind me at 9 to …" (today, or tomorrow when past).
 pub fn parse_at_time(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError> {
@@ -98,7 +101,10 @@ pub fn parse_at_time(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError>
             None => return Err("unparsed_time"),
         },
     };
-    let hour: u32 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(99);
+    let hour: u32 = caps
+        .get(1)
+        .and_then(|m| m.as_str().parse().ok())
+        .unwrap_or(99);
     let minute: u32 = match caps.get(2) {
         Some(m) => m.as_str().parse().unwrap_or(99),
         None => o.default_minute,
@@ -111,10 +117,12 @@ pub fn parse_at_time(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError>
         return Err("invalid_time");
     }
     let mut parts = today_parts(o.tz, o.now);
-    let mut due = zoned_to_utc(o.tz, parts.0, parts.1, parts.2, hour, minute, 0).ok_or("invalid_date")?;
+    let mut due =
+        zoned_to_utc(o.tz, parts.0, parts.1, parts.2, hour, minute, 0).ok_or("invalid_date")?;
     if due <= o.now {
         parts = add_days(parts, 1);
-        due = zoned_to_utc(o.tz, parts.0, parts.1, parts.2, hour, minute, 0).ok_or("invalid_date")?;
+        due =
+            zoned_to_utc(o.tz, parts.0, parts.1, parts.2, hour, minute, 0).ok_or("invalid_date")?;
     }
     Ok(Parsed {
         text: body,
@@ -125,12 +133,16 @@ pub fn parse_at_time(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError>
 }
 
 /// "2026-08-28", "28 August 2026", "August 28, 2026" at the default hour.
-pub fn parse_date_part(date_part: &str, o: &ParseOptions) -> Option<Result<(DateTime<Utc>, String), ParseError>> {
+pub fn parse_date_part(
+    date_part: &str,
+    o: &ParseOptions,
+) -> Option<Result<(DateTime<Utc>, String), ParseError>> {
     static ISO: LazyLock<Regex> = LazyLock::new(|| re(r"^(\d{4})-(\d{2})-(\d{2})$"));
     static NAMED: LazyLock<Regex> = LazyLock::new(|| re(r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$"));
     static US: LazyLock<Regex> = LazyLock::new(|| re(r"^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$"));
     let s = normalize_ws(date_part);
-    let num = |c: &fancy_regex::Captures, i: usize| c.get(i).and_then(|m| m.as_str().parse::<u32>().ok());
+    let num =
+        |c: &fancy_regex::Captures, i: usize| c.get(i).and_then(|m| m.as_str().parse::<u32>().ok());
     let parts = if let Some(c) = ISO.captures(&s).ok().flatten() {
         Some((num(&c, 1)? as i32, num(&c, 2)?, num(&c, 3)?))
     } else if let Some(c) = NAMED.captures(&s).ok().flatten() {
@@ -222,18 +234,25 @@ struct Duration2 {
 }
 
 static RE_CONNECTOR: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^[\s,]*(?:e|ed|and|\+)[\s,]+"));
-static RE_MEZZ: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^mezz(?:['’] ?or[ae]|orett[ae])(?![a-z])"));
-static RE_TRE_QUARTI: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^tre\s+quarti\s+d['’ ]?ora(?![a-z])"));
-static RE_QUARTO: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^(?:un\s+)?quarto\s+d['’ ]?ora(?![a-z])"));
+static RE_MEZZ: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^mezz(?:['’] ?or[ae]|orett[ae])(?![a-z])"));
+static RE_TRE_QUARTI: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^tre\s+quarti\s+d['’ ]?ora(?![a-z])"));
+static RE_QUARTO: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^(?:un\s+)?quarto\s+d['’ ]?ora(?![a-z])"));
 static RE_HALF_HOUR: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^half\s+an?\s+hour(?![a-z])"));
 static RE_HALF: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)^(?:a\s+|an\s+|un\s+|una\s+)?(?:half|mezza|mezzo|met[àa])(?![a-z])"));
 static RE_QTY: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^(\d+(?:[.,]\d+)?)"));
 static RE_NUMBER_WORD: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)^(?:uno|una|un|one|a|an|due|two|tre|three|quattro|four|cinque|five|sei|six|sette|seven|otto|eight|nove|nine|dieci|ten|dodici|twelve|quindici|fifteen|venti|twenty|trenta|thirty|quaranta|forty|cinquanta|fifty)(?![a-z])")
+    re(
+        r"(?i)^(?:uno|una|un|one|a|an|due|two|tre|three|quattro|four|cinque|five|sei|six|sette|seven|otto|eight|nove|nine|dieci|ten|dodici|twelve|quindici|fifteen|venti|twenty|trenta|thirty|quaranta|forty|cinquanta|fifty)(?![a-z])",
+    )
 });
 static RE_UNIT: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)^['’ ]?(seconds?|secondi|secondo|secs?|minutes?|minuti|minuto|mins?|min|hours?|hrs?|hr|orett[ae]|oras?|ora|ore|days?|giorn[oi]|[smhd])(?![a-z])")
+    re(
+        r"(?i)^['’ ]?(seconds?|secondi|secondo|secs?|minutes?|minuti|minuto|mins?|min|hours?|hrs?|hr|orett[ae]|oras?|ora|ore|days?|giorn[oi]|[smhd])(?![a-z])",
+    )
 });
 
 fn find_at<'a>(r: &Regex, s: &'a str) -> Option<fancy_regex::Match<'a>> {
@@ -310,28 +329,41 @@ fn parse_duration_expression(value: &str) -> Option<Duration2> {
     if segments < 1 || total < 5_000.0 || total > 180.0 * UNIT_D {
         return None;
     }
-    Some(Duration2 { ms: total, consumed: i })
+    Some(Duration2 {
+        ms: total,
+        consumed: i,
+    })
 }
 
 static TIMER_PREFIX_STRIP: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         re(r"(?i)^(?:please|per\s+favore|perfavore)[\s,!.]*"),
-        re(r"(?i)^(?:ciao|hey|hi|hello|salve|ei|yo|ok|okay)(?:[\s,!.]*(?:lucina|flar?e|hermes))?[\s,!.]*"),
+        re(
+            r"(?i)^(?:ciao|hey|hi|hello|salve|ei|yo|ok|okay)(?:[\s,!.]*(?:lucina|flar?e|hermes))?[\s,!.]*",
+        ),
         re(r"(?i)^(?:can\s+you|could\s+you|puoi|potresti|mi\s+puoi)[\s,!]*"),
         re(r"(?i)^(?:lucina|hermes)[\s,!.]*"),
-        re(r"(?i)^(?:set|start|metti|avvia|imposta|attiva)\s+(?:a\s+|un\s+|una\s+)?(?:new\s+|nuovo\s+)?"),
+        re(
+            r"(?i)^(?:set|start|metti|avvia|imposta|attiva)\s+(?:a\s+|un\s+|una\s+)?(?:new\s+|nuovo\s+)?",
+        ),
     ]
 });
-static TIMER_KEYWORD: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^timer(?![a-z])(?:\s+(?:for|of|di)\b)?[\s:：]*"));
+static TIMER_KEYWORD: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^timer(?![a-z])(?:\s+(?:for|of|di)\b)?[\s:：]*"));
 static REMINDER_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)^(remind\s+me(?:\s+to)?|ricordami(?:\s+di|a)?|avvisami(?:\s+di|a)?|svegliami|wake\s+me(?:\s+up)?|set\s+a\s+reminder|mandami\s+un\s+promemoria)[\s,!:]*\s*")
+    re(
+        r"(?i)^(remind\s+me(?:\s+to)?|ricordami(?:\s+di|a)?|avvisami(?:\s+di|a)?|svegliami|wake\s+me(?:\s+up)?|set\s+a\s+reminder|mandami\s+un\s+promemoria)[\s,!:]*\s*",
+    )
 });
 static RELATIVE_PREP: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^(?:in|after|tra|fra)\s+"));
 static TIMER_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)^(?:how|what|when|where|why|who|quanto|quanta|quanti|quante|quando|come|che|cosa|perche'|perché)[\s?!.,]")
+    re(
+        r"(?i)^(?:how|what|when|where|why|who|quanto|quanta|quanti|quante|quando|come|che|cosa|perche'|perché)[\s?!.,]",
+    )
 });
 static BODY_LEAD: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^(?:to|di|per|che)\s+"));
-static BODY_POLITE_TAIL: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)\s*(?:please|per\s+favore|perfavore)[\s.!]*$"));
+static BODY_POLITE_TAIL: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)\s*(?:please|per\s+favore|perfavore)[\s.!]*$"));
 
 fn replace_first(r: &Regex, s: &str) -> String {
     r.replace(s, "").into_owned()
@@ -355,7 +387,10 @@ pub fn parse_relative(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError
             is_timer = true;
             stripped = stripped[m.end()..].to_owned();
         } else if let Some(c) = REMINDER_PREFIX.captures(&stripped).ok().flatten() {
-            let word = c.get(1).map(|m| m.as_str().to_lowercase()).unwrap_or_default();
+            let word = c
+                .get(1)
+                .map(|m| m.as_str().to_lowercase())
+                .unwrap_or_default();
             if word.starts_with("sveglia") || word.starts_with("wake") {
                 is_wake = true;
             }
@@ -386,8 +421,14 @@ pub fn parse_relative(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError
         duration.consumed.min(expr_norm.len())
     } else {
         // Non-ASCII case changes: map by characters.
-        let chars = expr_norm.to_lowercase()[..duration.consumed].chars().count();
-        expr_norm.char_indices().nth(chars).map(|(b, _)| b).unwrap_or(expr_norm.len())
+        let chars = expr_norm.to_lowercase()[..duration.consumed]
+            .chars()
+            .count();
+        expr_norm
+            .char_indices()
+            .nth(chars)
+            .map(|(b, _)| b)
+            .unwrap_or(expr_norm.len())
     };
     let mut body = normalize_ws(&expr_norm[consumed..]);
     body = replace_first(&BODY_LEAD, &body);
@@ -398,7 +439,11 @@ pub fn parse_relative(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError
         }
         body = format!(
             "{} ({})",
-            if is_wake && !is_timer { "Sveglia" } else { "Timer" },
+            if is_wake && !is_timer {
+                "Sveglia"
+            } else {
+                "Timer"
+            },
             format_duration_short(duration.ms)
         );
     }
@@ -413,7 +458,9 @@ pub fn parse_relative(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError
 }
 
 static REMIND_PREFIX_DATE: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)^(?:please\s+)?(?:remind me(?:\s+to)?|set a reminder(?:\s+for)?|ricordami(?:\s+di)?)\s+(?:on\s+|for\s+|il\s+|per\s+il\s+)?(.+)$")
+    re(
+        r"(?i)^(?:please\s+)?(?:remind me(?:\s+to)?|set a reminder(?:\s+for)?|ricordami(?:\s+di)?)\s+(?:on\s+|for\s+|il\s+|per\s+il\s+)?(.+)$",
+    )
 });
 
 fn split_date_and_body(text: &str) -> (String, String) {
@@ -421,7 +468,10 @@ fn split_date_and_body(text: &str) -> (String, String) {
     for sep in [" — ", " – ", " - ", " —", " –", " -"] {
         if let Some(idx) = raw.find(sep) {
             if idx > 0 {
-                return (raw[..idx].trim().to_owned(), raw[idx + sep.len()..].trim().to_owned());
+                return (
+                    raw[..idx].trim().to_owned(),
+                    raw[idx + sep.len()..].trim().to_owned(),
+                );
             }
         }
     }
@@ -480,7 +530,8 @@ mod tests {
 
     #[test]
     fn at_time() {
-        let p = parse_reminder_message("Ricordami alle 18:30 di chiamare la mamma", &opts()).unwrap();
+        let p =
+            parse_reminder_message("Ricordami alle 18:30 di chiamare la mamma", &opts()).unwrap();
         assert_eq!(p.text, "chiamare la mamma");
         assert_eq!(p.due_at_iso(), "2026-10-21T16:30:00.000Z");
         let p = parse_reminder_message("alle 9:30 di fare la doccia", &opts()).unwrap();
@@ -489,7 +540,10 @@ mod tests {
         let p = parse_reminder_message("remind me at 21 to stretch", &opts()).unwrap();
         assert_eq!(p.text, "stretch");
         assert_eq!(p.due_at_iso(), "2026-10-21T19:00:00.000Z");
-        assert_eq!(parse_at_time("ricordami alle 25 di x", &opts()), Err("invalid_time"));
+        assert_eq!(
+            parse_at_time("ricordami alle 25 di x", &opts()),
+            Err("invalid_time")
+        );
     }
 
     #[test]
@@ -509,20 +563,33 @@ mod tests {
         assert_eq!(p.due_at, o.now + Duration::minutes(90));
         let p = parse_reminder_message("svegliami tra 20 minuti", &o).unwrap();
         assert_eq!(p.text, "Sveglia (20m)");
-        assert_eq!(parse_relative("how long until the timer ends?", &o), Err("question_not_timer"));
+        assert_eq!(
+            parse_relative("how long until the timer ends?", &o),
+            Err("question_not_timer")
+        );
         assert_eq!(parse_relative("timer 3", &o), Err("unparsed_time"));
     }
 
     #[test]
     fn dates() {
         let o = opts();
-        let p = parse_reminder_message("28 November 2026 — unsubscribe from Google AI Plus", &o).unwrap();
+        let p = parse_reminder_message("28 November 2026 — unsubscribe from Google AI Plus", &o)
+            .unwrap();
         assert_eq!(p.text, "unsubscribe from Google AI Plus");
         assert_eq!(p.due_at_iso(), "2026-11-28T08:00:00.000Z");
         let p = parse_reminder_message("remind me on 2026-12-01 - pay rent", &o).unwrap();
         assert_eq!(p.due_at_iso(), "2026-12-01T08:00:00.000Z");
-        assert_eq!(parse_reminder_message("28 August 2026 — late", &o), Err("due_in_past"));
-        assert_eq!(parse_reminder_message("domani forse", &o), Err("missing_body"));
-        assert_eq!(parse_reminder_message("blah - blah", &o), Err("unparsed_date"));
+        assert_eq!(
+            parse_reminder_message("28 August 2026 — late", &o),
+            Err("due_in_past")
+        );
+        assert_eq!(
+            parse_reminder_message("domani forse", &o),
+            Err("missing_body")
+        );
+        assert_eq!(
+            parse_reminder_message("blah - blah", &o),
+            Err("unparsed_date")
+        );
     }
 }

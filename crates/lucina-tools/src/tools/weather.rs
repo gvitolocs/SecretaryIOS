@@ -54,27 +54,47 @@ struct Place {
 
 async fn geocode(ctx: &Ctx, query: &str) -> Result<Place, ToolError> {
     let (name, country) = match query.split_once(',') {
-        Some((n, c)) => (n.trim(), Some(c.trim().to_lowercase()).filter(|c| !c.is_empty())),
+        Some((n, c)) => (
+            n.trim(),
+            Some(c.trim().to_lowercase()).filter(|c| !c.is_empty()),
+        ),
         None => (query.trim(), None),
     };
-    let url = format!("{}/v1/search", ctx.env.endpoints.open_meteo_geocoding.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/search",
+        ctx.env.endpoints.open_meteo_geocoding.trim_end_matches('/')
+    );
     let resp = ctx
         .env
         .http
         .get(url)
-        .query(&[("name", name), ("count", "10"), ("language", "en"), ("format", "json")])
+        .query(&[
+            ("name", name),
+            ("count", "10"),
+            ("language", "en"),
+            ("format", "json"),
+        ])
         .send()
         .await
         .map_err(|e| ToolError::new(format!("geocoding unreachable: {}", e.without_url())))?;
     if !resp.status().is_success() {
-        return Err(ToolError::new(format!("geocoding HTTP {}", resp.status().as_u16())));
+        return Err(ToolError::new(format!(
+            "geocoding HTTP {}",
+            resp.status().as_u16()
+        )));
     }
-    let v: Value = resp.json().await.map_err(|e| ToolError::new(format!("geocoding response: {e}")))?;
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| ToolError::new(format!("geocoding response: {e}")))?;
     let results = v["results"].as_array().cloned().unwrap_or_default();
     let matches_country = |r: &Value| {
         country.as_ref().is_none_or(|c| {
-            r["country"].as_str().is_some_and(|x| x.to_lowercase().contains(c.as_str()) || c.contains(&x.to_lowercase()))
-                || r["country_code"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(c))
+            r["country"].as_str().is_some_and(|x| {
+                x.to_lowercase().contains(c.as_str()) || c.contains(&x.to_lowercase())
+            }) || r["country_code"]
+                .as_str()
+                .is_some_and(|x| x.eq_ignore_ascii_case(c))
         })
     };
     let r = results
@@ -86,8 +106,12 @@ async fn geocode(ctx: &Ctx, query: &str) -> Result<Place, ToolError> {
         name: r["name"].as_str().unwrap_or(name).to_owned(),
         country: r["country"].as_str().map(str::to_owned),
         admin: r["admin1"].as_str().map(str::to_owned),
-        lat: r["latitude"].as_f64().ok_or_else(|| ToolError::new("geocoding: no latitude"))?,
-        lon: r["longitude"].as_f64().ok_or_else(|| ToolError::new("geocoding: no longitude"))?,
+        lat: r["latitude"]
+            .as_f64()
+            .ok_or_else(|| ToolError::new("geocoding: no latitude"))?,
+        lon: r["longitude"]
+            .as_f64()
+            .ok_or_else(|| ToolError::new("geocoding: no longitude"))?,
     })
 }
 
@@ -110,14 +134,28 @@ impl Tool for WeatherTool {
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
         let days = a.days.unwrap_or(3).clamp(1, 7);
-        let place = match a.location.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let place = match a
+            .location
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(q) => geocode(ctx, q).await?,
             None => {
                 let d = &ctx.env.default_location;
-                Place { name: d.name.clone(), country: None, admin: None, lat: d.latitude, lon: d.longitude }
+                Place {
+                    name: d.name.clone(),
+                    country: None,
+                    admin: None,
+                    lat: d.latitude,
+                    lon: d.longitude,
+                }
             }
         };
-        let url = format!("{}/v1/forecast", ctx.env.endpoints.open_meteo_forecast.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/forecast",
+            ctx.env.endpoints.open_meteo_forecast.trim_end_matches('/')
+        );
         let resp = ctx
             .env
             .http
@@ -134,9 +172,15 @@ impl Tool for WeatherTool {
             .await
             .map_err(|e| ToolError::new(format!("forecast unreachable: {}", e.without_url())))?;
         if !resp.status().is_success() {
-            return Err(ToolError::new(format!("forecast HTTP {}", resp.status().as_u16())));
+            return Err(ToolError::new(format!(
+                "forecast HTTP {}",
+                resp.status().as_u16()
+            )));
         }
-        let v: Value = resp.json().await.map_err(|e| ToolError::new(format!("forecast response: {e}")))?;
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| ToolError::new(format!("forecast response: {e}")))?;
         let cur = &v["current"];
         let d = &v["daily"];
         let n = d["time"].as_array().map(Vec::len).unwrap_or(0);

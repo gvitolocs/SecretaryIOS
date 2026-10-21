@@ -38,7 +38,11 @@ pub fn parse_js_date(value: &str) -> Option<DateTime<Utc>> {
             return Some(Utc.from_utc_datetime(&n));
         }
     }
-    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    ] {
         if let Ok(n) = NaiveDateTime::parse_from_str(s, fmt) {
             return Some(Utc.from_utc_datetime(&n));
         }

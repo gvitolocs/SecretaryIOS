@@ -30,7 +30,8 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             i += 1;
             continue;
         }
-        if c.is_ascii_digit() || (c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())) {
+        if c.is_ascii_digit() || (c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()))
+        {
             let start = i;
             while i < chars.len()
                 && (chars[i].is_ascii_digit()
@@ -55,8 +56,14 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
                     i = j;
                 }
             }
-            let normalized = if text.contains(',') && !text.contains('.') { text.replace(',', ".") } else { text.replace(',', "") };
-            let n: f64 = normalized.parse().map_err(|_| format!("bad number {text:?}"))?;
+            let normalized = if text.contains(',') && !text.contains('.') {
+                text.replace(',', ".")
+            } else {
+                text.replace(',', "")
+            };
+            let n: f64 = normalized
+                .parse()
+                .map_err(|_| format!("bad number {text:?}"))?;
             out.push(Tok::Num(n));
             continue;
         }
@@ -231,7 +238,11 @@ pub fn evaluate(src: &str) -> Result<f64, String> {
     if toks.is_empty() {
         return Err("empty expression".into());
     }
-    let mut p = Parser { toks, pos: 0, depth: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
     let v = p.expr()?;
     if p.pos < p.toks.len() {
         return Err(format!("unexpected {:?}", p.toks[p.pos]));
@@ -246,7 +257,11 @@ pub fn evaluate(src: &str) -> Result<f64, String> {
 pub fn format_number(v: f64) -> String {
     let s = format!("{:.10}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "-0" { "0".into() } else { s.to_owned() }
+    if s == "-0" {
+        "0".into()
+    } else {
+        s.to_owned()
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -307,7 +322,9 @@ mod tests {
         }
         assert_eq!(format_number(evaluate("17% * 230").unwrap()), "39.1");
         assert_eq!(format_number(evaluate("1/3").unwrap()), "0.3333333333");
-        for bad in ["1/0", "2 +", "(1", "rm -rf", "sqrt(-1)", "", "foo(2)", "2 ** ", "1e999*10"] {
+        for bad in [
+            "1/0", "2 +", "(1", "rm -rf", "sqrt(-1)", "", "foo(2)", "2 ** ", "1e999*10",
+        ] {
             assert!(evaluate(bad).is_err(), "{bad}");
         }
     }

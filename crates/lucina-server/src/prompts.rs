@@ -23,9 +23,14 @@ pub struct Prompts {
 }
 
 fn read_clip(path: &Path, max: usize, marker: &str) -> String {
-    let text = std::fs::read_to_string(path).map(|s| s.trim().to_owned()).unwrap_or_default();
+    let text = std::fs::read_to_string(path)
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default();
     if text.chars().count() > max {
-        format!("{}\n\n[{marker} truncated]", text.chars().take(max).collect::<String>())
+        format!(
+            "{}\n\n[{marker} truncated]",
+            text.chars().take(max).collect::<String>()
+        )
     } else {
         text
     }
@@ -50,13 +55,19 @@ impl Prompts {
             host_label: cfg.host_label.clone(),
             oracle_monitor_enabled: cfg.oracle_monitor_enabled,
         };
-        let brief = [p.runtime_context_line(), read_clip(&cfg.operator_brief_path, usize::MAX, "")]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let brief = [
+            p.runtime_context_line(),
+            read_clip(&cfg.operator_brief_path, usize::MAX, ""),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
         p.operator_brief = if brief.chars().count() > 2800 {
-            format!("{}\n\n[operator brief truncated]", brief.chars().take(2800).collect::<String>())
+            format!(
+                "{}\n\n[operator brief truncated]",
+                brief.chars().take(2800).collect::<String>()
+            )
         } else {
             brief
         };
@@ -76,7 +87,9 @@ impl Prompts {
     }
 
     pub fn persona_block(&self) -> String {
-        if (self.persona_name == "Lucina" || self.persona_name == "Hermes") && !self.persona_doc.is_empty() {
+        if (self.persona_name == "Lucina" || self.persona_name == "Hermes")
+            && !self.persona_doc.is_empty()
+        {
             format!("Persona background:\n{}", self.persona_doc)
         } else {
             String::new()
@@ -87,7 +100,10 @@ impl Prompts {
         if self.recovery_companion.is_empty() {
             String::new()
         } else {
-            format!("Recovery companion protocol (primary Lucina persona for Giuseppe):\n{}", self.recovery_companion)
+            format!(
+                "Recovery companion protocol (primary Lucina persona for Giuseppe):\n{}",
+                self.recovery_companion
+            )
         }
     }
 
@@ -115,11 +131,23 @@ impl Prompts {
     }
 
     /// System prompt of `generateReply` for Lucina.
-    pub fn reply_system(&self, platform: &str, user_text: &str, memory: &str, extra_system: &str, knowledge: &str, now: DateTime<Utc>) -> String {
+    pub fn reply_system(
+        &self,
+        platform: &str,
+        user_text: &str,
+        memory: &str,
+        extra_system: &str,
+        knowledge: &str,
+        now: DateTime<Utc>,
+    ) -> String {
         let p = &self.persona_name;
         let is_lucina = p == "Lucina" || p == "Hermes";
         let vulnerable = looks_like_vulnerable_support(user_text);
-        let recovery = if is_lucina && vulnerable { self.recovery_block() } else { String::new() };
+        let recovery = if is_lucina && vulnerable {
+            self.recovery_block()
+        } else {
+            String::new()
+        };
         let casual = is_lucina && !vulnerable && !looks_like_complex_request(user_text, memory);
         let mut parts: Vec<String> = vec![
             Self::current_date_line(now),
@@ -171,7 +199,14 @@ impl Prompts {
 
     /// User message of `generateReply`/`planResponse`.
     pub fn user_block(user_label: &str, memory: &str, message: &str) -> String {
-        let mut parts = vec![format!("User: {}", if user_label.is_empty() { "unknown" } else { user_label })];
+        let mut parts = vec![format!(
+            "User: {}",
+            if user_label.is_empty() {
+                "unknown"
+            } else {
+                user_label
+            }
+        )];
         if !memory.is_empty() {
             parts.push(format!("Memory context:\n{memory}"));
         }
@@ -180,11 +215,21 @@ impl Prompts {
     }
 
     /// `generateSkillReply`: (userText, extraSystem, knowledgeContext).
-    pub fn skill_reply_parts(&self, user_text: &str, skill_name: &str, skill_result: &str, skill_instruction: &str) -> (String, String, String) {
+    pub fn skill_reply_parts(
+        &self,
+        user_text: &str,
+        skill_name: &str,
+        skill_result: &str,
+        skill_instruction: &str,
+    ) -> (String, String, String) {
         let p = &self.persona_name;
         let knowledge = format!(
             "Skill/tool used: {}\n\nInternal skill result:\n{}",
-            if skill_name.is_empty() { "Hermes skill" } else { skill_name },
+            if skill_name.is_empty() {
+                "Hermes skill"
+            } else {
+                skill_name
+            },
             skill_result.chars().take(12_000).collect::<String>()
         );
         let user = [
@@ -256,9 +301,22 @@ impl Prompts {
     }
 
     pub fn intent_user(platform: &str, user_label: &str, memory: &str, message: &str) -> String {
-        let mut parts = vec![format!("Platform: {}", if platform.is_empty() { "unknown" } else { platform }), format!("User: {user_label}")];
+        let mut parts = vec![
+            format!(
+                "Platform: {}",
+                if platform.is_empty() {
+                    "unknown"
+                } else {
+                    platform
+                }
+            ),
+            format!("User: {user_label}"),
+        ];
         if !memory.is_empty() {
-            parts.push(format!("Memory context (may be truncated):\n{}", memory.chars().take(1500).collect::<String>()));
+            parts.push(format!(
+                "Memory context (may be truncated):\n{}",
+                memory.chars().take(1500).collect::<String>()
+            ));
         }
         parts.push(format!("Message:\n{message}"));
         parts.join("\n\n")
@@ -268,13 +326,26 @@ impl Prompts {
     pub fn plan_system(&self) -> String {
         let p = &self.persona_name;
         let host = &self.host_label;
-        let operator = [self.persona_block(), self.runtime_context_line(), self.recovery_block(), self.operator_brief.clone()]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let oracle_skill = if self.oracle_monitor_enabled { "Oracle instance CPU/memory resource monitoring for Lucina, " } else { "" };
-        let oracle_decide = if self.oracle_monitor_enabled { format!(", wants {p} to check Oracle instance CPU/memory status") } else { String::new() };
+        let operator = [
+            self.persona_block(),
+            self.runtime_context_line(),
+            self.recovery_block(),
+            self.operator_brief.clone(),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+        let oracle_skill = if self.oracle_monitor_enabled {
+            "Oracle instance CPU/memory resource monitoring for Lucina, "
+        } else {
+            ""
+        };
+        let oracle_decide = if self.oracle_monitor_enabled {
+            format!(", wants {p} to check Oracle instance CPU/memory status")
+        } else {
+            String::new()
+        };
         let lines: Vec<String> = vec![
             format!("You are {p}, a concise helpful assistant connected to chat platforms through Hermes."),
             "On Telegram the operator may use a display name like Pokoin or @pokoinpos — that is Giuseppe's personal account, NOT the Pokoin product or Poko support bot. Never greet the operator as Pokoin or ask what Pokoin help they need.".into(),
@@ -334,11 +405,25 @@ impl Prompts {
             r#"{"action":"reply","text":"..."} or {"action":"schedule_reminder","text":"...","dueDate":"YYYY-MM-DD or HH:MM","ack":"..."} or {"action":"web_crawl_task","url":"https://...","query":"...","ack":"..."} or {"action":"generate_image","prompt":"...","caption":"..."} or {"action":"graph_task","prompt":"...","spreadsheetName":"...","caption":"..."} or {"action":"spreadsheet_update_task","prompt":"...","spreadsheetName":"...","ack":"..."} or {"action":"poko_news_scout_retry","ack":"..."} or {"action":"social_post_task","text":"...","target":"telegram","ack":"..."} or {"action":"oracle_monitor_task","ack":"..."} or {"action":"model_status_task","ack":"..."} or {"action":"revive_qwen_task","ack":"..."} or {"action":"discord_admin_task","operation":"setup_support|create_text_channel|create_voice_channel|create_category|create_role|assign_role|grant_channel_access|lock_channel|create_thread|pin_message|create_invite|server_summary","categoryName":"...","channelName":"...","textChannelNames":["..."],"voiceChannelNames":["..."],"includePoko":true,"targetBot":"Poko","roleName":"...","makeAdmin":true,"assignToRequester":true,"topic":"..."} or {"action":"cursor_task","prompt":"...","ack":"..."}"#.into(),
             "Use the supplied memory context when relevant for text replies.".into(),
         ];
-        lines.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+        lines
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     pub fn plan_user(platform: &str, user_label: &str, memory: &str, message: &str) -> String {
-        let mut parts = vec![format!("Platform: {}", if platform.is_empty() { "unknown" } else { platform }), format!("User: {user_label}")];
+        let mut parts = vec![
+            format!(
+                "Platform: {}",
+                if platform.is_empty() {
+                    "unknown"
+                } else {
+                    platform
+                }
+            ),
+            format!("User: {user_label}"),
+        ];
         if !memory.is_empty() {
             parts.push(format!("Memory context:\n{memory}"));
         }
@@ -348,7 +433,15 @@ impl Prompts {
 
     /// System prompt of the native tool loop (`LUCINA_PLANNER=tools`): the
     /// reply persona plus tool guidance.
-    pub fn agent_system(&self, platform: &str, user_text: &str, memory: &str, extra: &str, now: DateTime<Utc>, tz: Tz) -> String {
+    pub fn agent_system(
+        &self,
+        platform: &str,
+        user_text: &str,
+        memory: &str,
+        extra: &str,
+        now: DateTime<Utc>,
+        tz: Tz,
+    ) -> String {
         let local = now.with_timezone(&tz);
         let guidance = [
             format!("The owner's time zone is {} and it is now {} ({}).", tz.name(), local.format("%A %Y-%m-%d %H:%M"), local.format("%:z")),
@@ -360,7 +453,14 @@ impl Prompts {
             "Reply in the language of the owner's message.".into(),
         ]
         .join(" ");
-        self.reply_system(platform, user_text, memory, &format!("{extra} {guidance}"), "", now)
+        self.reply_system(
+            platform,
+            user_text,
+            memory,
+            &format!("{extra} {guidance}"),
+            "",
+            now,
+        )
     }
 }
 
@@ -373,7 +473,12 @@ fn re(s: &str) -> regex::Regex {
 fn looks_like_timer(t: &str) -> bool {
     lucina_store::parser::parse_relative(
         t,
-        &lucina_store::parser::ParseOptions { tz: chrono_tz::Europe::Rome, default_hour: 9, default_minute: 0, now: Utc::now() },
+        &lucina_store::parser::ParseOptions {
+            tz: chrono_tz::Europe::Rome,
+            default_hour: 9,
+            default_minute: 0,
+            now: Utc::now(),
+        },
     )
     .is_ok()
 }
@@ -389,7 +494,9 @@ pub fn looks_like_reminder_list(text: &str) -> bool {
     if !re(r"(?i)(promemoria|reminder|ricordami|avvisami|schedule)").is_match(text) {
         return false;
     }
-    if re(r"(?i)(programma|agenda)").is_match(text) && !re(r"(?i)(promemoria|reminder|ricordami)").is_match(text) {
+    if re(r"(?i)(programma|agenda)").is_match(text)
+        && !re(r"(?i)(promemoria|reminder|ricordami)").is_match(text)
+    {
         return false;
     }
     re(r"(?i)(ci sono|quali|lista|elenco|mostra|vedi|hai|oggi|today|futuro|future|futuri|programmati|pending|scheduled|upcoming|quanti|for the day|list|show)").is_match(text)
@@ -401,7 +508,9 @@ pub fn looks_like_reminder_request(text: &str) -> bool {
     if looks_like_reminder_list(text) {
         return false;
     }
-    if re(r"(?i)mi ricordi\s+(cosa|quando|perch|come|se|il motivo)").is_match(text) || re(r"(?i)remind me\s+(what|why|when|whether)\b").is_match(text) {
+    if re(r"(?i)mi ricordi\s+(cosa|quando|perch|come|se|il motivo)").is_match(text)
+        || re(r"(?i)remind me\s+(what|why|when|whether)\b").is_match(text)
+    {
         return false;
     }
     if looks_like_timer(text) {
@@ -425,7 +534,8 @@ pub fn looks_like_complex_request(text: &str, _memory: &str) -> bool {
 }
 
 pub fn looks_like_travel_info(text: &str) -> bool {
-    re(r"(?i)(voli|volo|flight|viaggio|trip|treno|train|orari|CPH|aarhus|aeroporto|airport)").is_match(text)
+    re(r"(?i)(voli|volo|flight|viaggio|trip|treno|train|orari|CPH|aarhus|aeroporto|airport)")
+        .is_match(text)
 }
 
 #[cfg(test)]
@@ -447,11 +557,17 @@ mod tests {
             Prompts::current_date_line(now),
             "Current date and time: Wednesday 21 October 2026 at 17:00 (Europe/Rome timezone). Relative expressions like \"last week\" or \"last month\" refer to this date."
         );
-        assert!(p.reply_system("Secretary app", "ciao", "", "", "", now).contains("You are Lucina, a concise helpful assistant connected to Secretary app."));
-        assert!(looks_like_reminder_request("ricordami alle 18:30 di chiamare la mamma"));
+        assert!(p
+            .reply_system("Secretary app", "ciao", "", "", "", now)
+            .contains("You are Lucina, a concise helpful assistant connected to Secretary app."));
+        assert!(looks_like_reminder_request(
+            "ricordami alle 18:30 di chiamare la mamma"
+        ));
         assert!(looks_like_reminder_request("Timer 20 minutes"));
         assert!(!looks_like_reminder_request("quali promemoria ho oggi?"));
         assert!(looks_like_reminder_list("quali promemoria ho oggi?"));
-        assert!(!looks_like_reminder_request("che tempo fa domani a Copenhagen?"));
+        assert!(!looks_like_reminder_request(
+            "che tempo fa domani a Copenhagen?"
+        ));
     }
 }

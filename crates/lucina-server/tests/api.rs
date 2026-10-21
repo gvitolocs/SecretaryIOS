@@ -44,18 +44,46 @@ async fn envelope_auth_and_routing() {
     let (s, b, hd) = h.call(Method::DELETE, "/chat", None).await;
     assert_eq!((s, b["error"].as_str()), (405, Some("method_not_allowed")));
     assert_eq!(hd["allow"], "POST");
-    let (s, b, _) = raw(h.http.post(h.url("/chat")).bearer_auth(TOKEN).body("{not json")).await;
+    let (s, b, _) = raw(h
+        .http
+        .post(h.url("/chat"))
+        .bearer_auth(TOKEN)
+        .body("{not json"))
+    .await;
     assert_eq!((s, b["error"].as_str()), (400, Some("invalid_json")));
     let (s, b, _) = raw(h.http.post(h.url("/chat")).bearer_auth(TOKEN).body("[1]")).await;
     assert_eq!((s, b["error"].as_str()), (400, Some("bad_request")));
-    let (s, b, _) = raw(h.http.post(h.url("/chat")).bearer_auth(TOKEN).body(format!("{{\"message\":\"{}\"}}", "x".repeat(70_000)))).await;
+    let (s, b, _) = raw(h
+        .http
+        .post(h.url("/chat"))
+        .bearer_auth(TOKEN)
+        .body(format!("{{\"message\":\"{}\"}}", "x".repeat(70_000))))
+    .await;
     assert_eq!((s, b["error"].as_str()), (413, Some("payload_too_large")));
-    for bad in [json!({}), json!({"message": "  "}), json!({"message": "x", "channel": "sms"}), json!({"message": "x", "sessionId": "a b"}), json!({"message": 5})] {
-        assert_eq!(h.post("/chat", bad.clone()).await.1["error"], "bad_request", "{bad}");
+    for bad in [
+        json!({}),
+        json!({"message": "  "}),
+        json!({"message": "x", "channel": "sms"}),
+        json!({"message": "x", "sessionId": "a b"}),
+        json!({"message": 5}),
+    ] {
+        assert_eq!(
+            h.post("/chat", bad.clone()).await.1["error"],
+            "bad_request",
+            "{bad}"
+        );
     }
     assert_eq!(h.get("/jobs/nope").await.1["error"], "job_not_found");
     // /health (no auth) reports shadow mode
-    let v: Value = h.http.get(format!("{}/health", h.base)).send().await.unwrap().json().await.unwrap();
+    let v: Value = h
+        .http
+        .get(format!("{}/health", h.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     assert_eq!(v["channels"], json!({"telegram": false, "discord": false}));
     assert_eq!(v["planner"], "json");
     // disabled API: 404 before auth
@@ -87,12 +115,25 @@ async fn chat_reply_timeline_and_client_message_dedupe() {
     let (_, again) = h.post("/chat", body).await;
     assert_eq!(again["data"]["duplicate"], true);
     assert_eq!(again["data"]["lucinaItemId"], d["lucinaItemId"]);
-    assert_eq!(h.fake.requests().len(), calls, "a replay does not run the turn");
+    assert_eq!(
+        h.fake.requests().len(),
+        calls,
+        "a replay does not run the turn"
+    );
     // the planner saw the verbatim classifier prompt and the Secretary platform
     let reqs = h.fake.requests();
-    assert!(reqs[0]["messages"][0]["content"].as_str().unwrap().starts_with("You classify Lucina user messages before tool execution."));
-    assert!(reqs[0]["messages"][1]["content"].as_str().unwrap().starts_with("Platform: secretary\n\nUser: Giuseppe (operator, Secretary app)"));
-    assert!(reqs[1]["messages"][0]["content"].as_str().unwrap().contains("Persona background:"));
+    assert!(reqs[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("You classify Lucina user messages before tool execution."));
+    assert!(reqs[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("Platform: secretary\n\nUser: Giuseppe (operator, Secretary app)"));
+    assert!(reqs[1]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Persona background:"));
 }
 
 #[tokio::test]
@@ -109,10 +150,16 @@ async fn chat_schedules_and_lists_reminders_in_json_mode() {
     assert_eq!(d["action"], "schedule_reminder");
     assert_eq!(d["reminder"]["text"], "chiamare la mamma");
     assert_eq!(d["reminder"]["source"], "secretary");
-    assert!(d["reply"].as_str().unwrap().starts_with("Reminder set for "));
+    assert!(d["reply"]
+        .as_str()
+        .unwrap()
+        .starts_with("Reminder set for "));
     let d = h.chat("quali promemoria ho?").await;
     assert_eq!(d["action"], "list_reminders");
-    assert!(d["reply"].as_str().unwrap().contains("chiamare la mamma"), "{d}");
+    assert!(
+        d["reply"].as_str().unwrap().contains("chiamare la mamma"),
+        "{d}"
+    );
 }
 
 async fn weather_mock() -> MockServer {
@@ -152,8 +199,16 @@ async fn tools_mode_runs_tools_and_records_them() {
     assert_eq!(d["reply"], "Domani a Copenaghen: pioggia leggera, 5-10 °C.");
     assert_eq!(d["action"], "reply");
     let reqs = h.fake.requests();
-    let tool_msg = reqs[1]["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap();
-    assert!(tool_msg["content"].as_str().unwrap().contains("\"light rain\""));
+    let tool_msg = reqs[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .unwrap();
+    assert!(tool_msg["content"]
+        .as_str()
+        .unwrap()
+        .contains("\"light rain\""));
     let lines = h.timeline_lines();
     assert_eq!(lines.len(), 3, "user, tool, reply");
     assert_eq!(lines[1]["meta"]["kind"], "tool");
@@ -184,54 +239,112 @@ async fn confirmation_flow_across_turns() {
     let d = h.chat("cancella il promemoria del dentista").await;
     assert_eq!(d["reply"], "Vuoi davvero cancellarlo? Rispondi sì.");
     let (_, list) = h.get("/reminders").await;
-    assert_eq!(list["data"]["reminders"].as_array().unwrap().len(), 1, "not cancelled in the same turn");
-    assert!(h.timeline_lines().iter().all(|l| l["meta"]["kind"] != "tool"), "a deferred call is not an executed tool");
+    assert_eq!(
+        list["data"]["reminders"].as_array().unwrap().len(),
+        1,
+        "not cancelled in the same turn"
+    );
+    assert!(
+        h.timeline_lines()
+            .iter()
+            .all(|l| l["meta"]["kind"] != "tool"),
+        "a deferred call is not an executed tool"
+    );
     let d = h.chat("sì").await;
     assert_eq!(d["reply"], "Fatto, l'ho cancellato.");
     let (_, list) = h.get("/reminders?includeSent=1").await;
     assert_eq!(list["data"]["reminders"][0]["status"], "cancelled");
-    let tools: Vec<Value> = h.timeline_lines().into_iter().filter(|l| l["meta"]["kind"] == "tool").collect();
+    let tools: Vec<Value> = h
+        .timeline_lines()
+        .into_iter()
+        .filter(|l| l["meta"]["kind"] == "tool")
+        .collect();
     assert_eq!(tools.len(), 1);
     // nothing pending any more: a second yes is an ordinary message
-    assert!(h.state.pending.current("secretary_test", chrono::Utc::now()).is_none());
+    assert!(h
+        .state
+        .pending
+        .current("secretary_test", chrono::Utc::now())
+        .is_none());
 }
 
 #[tokio::test]
 async fn reminder_routes() {
     let h = harness(chat_script("x"), |_| {}).await;
-    let (s, b) = h.post("/reminders", json!({"text": "Call the dentist", "dueAt": "2099-10-22T09:30:00+02:00"})).await;
+    let (s, b) = h
+        .post(
+            "/reminders",
+            json!({"text": "Call the dentist", "dueAt": "2099-10-22T09:30:00+02:00"}),
+        )
+        .await;
     assert_eq!(s, 201);
     let r = &b["data"]["reminder"];
     assert_eq!(r["dueAt"], "2099-10-22T07:30:00.000Z");
     assert_eq!(r["status"], "pending");
     assert_eq!(r["timeZone"], "Europe/Rome");
     assert_eq!(r["sentAt"], Value::Null);
-    let (s, b) = h.post("/reminders", json!({"text": "Call the dentist", "dueAt": "2099-10-22T09:30:00+02:00"})).await;
+    let (s, b) = h
+        .post(
+            "/reminders",
+            json!({"text": "Call the dentist", "dueAt": "2099-10-22T09:30:00+02:00"}),
+        )
+        .await;
     assert_eq!((s, b["data"]["created"].as_bool()), (200, Some(false)));
-    let (s, b) = h.post("/reminders", json!({"naturalText": "remind me in 3 hours to stretch"})).await;
+    let (s, b) = h
+        .post(
+            "/reminders",
+            json!({"naturalText": "remind me in 3 hours to stretch"}),
+        )
+        .await;
     assert_eq!(s, 201, "{b}");
     assert_eq!(b["data"]["reminder"]["text"], "stretch");
     for (body, code) in [
-        (json!({"text": "x", "dueAt": "2001-01-01T00:00:00Z"}), "due_in_past"),
-        (json!({"text": "x", "dueAt": "2099-01-01T00:00:00"}), "bad_request"),
+        (
+            json!({"text": "x", "dueAt": "2001-01-01T00:00:00Z"}),
+            "due_in_past",
+        ),
+        (
+            json!({"text": "x", "dueAt": "2099-01-01T00:00:00"}),
+            "bad_request",
+        ),
         (json!({"text": "x"}), "bad_request"),
         (json!({"naturalText": "boh"}), "unparseable_reminder"),
         (json!({"naturalText": "28 August 2001 — x"}), "due_in_past"),
-        (json!({"naturalText": "in 2 hours x", "text": "y"}), "bad_request"),
+        (
+            json!({"naturalText": "in 2 hours x", "text": "y"}),
+            "bad_request",
+        ),
         (json!({"text": 5, "dueAt": "x"}), "bad_request"),
     ] {
-        assert_eq!(h.post("/reminders", body.clone()).await.1["error"], code, "{body}");
+        assert_eq!(
+            h.post("/reminders", body.clone()).await.1["error"],
+            code,
+            "{body}"
+        );
     }
     let (_, list) = h.get("/reminders?scope=upcoming").await;
     assert_eq!(list["data"]["reminders"].as_array().unwrap().len(), 2);
     assert_eq!(list["data"]["includeSent"], false);
-    assert_eq!(h.get("/reminders?scope=week").await.1["error"], "bad_request");
-    assert_eq!(h.get("/reminders?includeSent=2").await.1["error"], "bad_request");
-    let id = list["data"]["reminders"][1]["id"].as_str().unwrap().to_owned();
-    let (s, b, _) = h.call(Method::DELETE, &format!("/reminders/{id}"), None).await;
+    assert_eq!(
+        h.get("/reminders?scope=week").await.1["error"],
+        "bad_request"
+    );
+    assert_eq!(
+        h.get("/reminders?includeSent=2").await.1["error"],
+        "bad_request"
+    );
+    let id = list["data"]["reminders"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (s, b, _) = h
+        .call(Method::DELETE, &format!("/reminders/{id}"), None)
+        .await;
     assert_eq!((s, b["data"]["cancelled"].as_bool()), (200, Some(true)));
     assert_eq!(b["data"]["reminder"]["status"], "cancelled");
-    let (_, b, _) = h.call(Method::DELETE, &format!("/reminders/{id}"), None).await;
+    let (_, b, _) = h
+        .call(Method::DELETE, &format!("/reminders/{id}"), None)
+        .await;
     assert_eq!(b["data"]["cancelled"], false);
     let (s, b, _) = h.call(Method::DELETE, "/reminders/unknown-id", None).await;
     assert_eq!((s, b["error"].as_str()), (404, Some("reminder_not_found")));
@@ -241,9 +354,26 @@ async fn reminder_routes() {
     assert_eq!(all["data"]["reminders"].as_array().unwrap().len(), 2);
     // reminders disabled / no owner chat
     let off = harness(chat_script("x"), |c| c.reminders_enabled = false).await;
-    assert_eq!(off.post("/reminders", json!({"text": "x", "dueAt": "2099-01-01T00:00:00Z"})).await.1["error"], "reminders_disabled");
+    assert_eq!(
+        off.post(
+            "/reminders",
+            json!({"text": "x", "dueAt": "2099-01-01T00:00:00Z"})
+        )
+        .await
+        .1["error"],
+        "reminders_disabled"
+    );
     let nochat = harness(chat_script("x"), |c| c.owner_chat_id = None).await;
-    assert_eq!(nochat.post("/reminders", json!({"text": "x", "dueAt": "2099-01-01T00:00:00Z"})).await.1["error"], "owner_chat_unconfigured");
+    assert_eq!(
+        nochat
+            .post(
+                "/reminders",
+                json!({"text": "x", "dueAt": "2099-01-01T00:00:00Z"})
+            )
+            .await
+            .1["error"],
+        "owner_chat_unconfigured"
+    );
 }
 
 #[tokio::test]
@@ -263,15 +393,28 @@ async fn reminder_writes_forward_to_node() {
         c.node_token = Some("node-token".into());
     })
     .await;
-    let (s, b) = h.post("/reminders", json!({"naturalText": "remind me in 3 hours to stretch"})).await;
+    let (s, b) = h
+        .post(
+            "/reminders",
+            json!({"naturalText": "remind me in 3 hours to stretch"}),
+        )
+        .await;
     assert_eq!((s, b["data"]["reminder"]["id"].as_str()), (201, Some("n1")));
-    assert!(!h.dir.path().join("reminders.json").exists(), "Rust never wrote the file");
+    assert!(
+        !h.dir.path().join("reminders.json").exists(),
+        "Rust never wrote the file"
+    );
     let none = harness(chat_script("x"), |c| {
         c.reminders_writer = lucina_server::WriterKind::Node;
         c.node_token = None;
     })
     .await;
-    let (s, b) = none.post("/reminders", json!({"text": "x", "dueAt": "2099-01-01T00:00:00Z"})).await;
+    let (s, b) = none
+        .post(
+            "/reminders",
+            json!({"text": "x", "dueAt": "2099-01-01T00:00:00Z"}),
+        )
+        .await;
     assert_eq!((s, b["error"].as_str()), (503, Some("reminders_disabled")));
 }
 
@@ -282,7 +425,10 @@ async fn agenda_briefing_cache() {
     assert_eq!(s, 200, "{b}");
     let d = &b["data"];
     assert_eq!(d["date"], "2099-10-22");
-    assert_eq!(d["briefing"], "Giornata libera. Nessun impegno. Riposa. Uno. Due. Tre.");
+    assert_eq!(
+        d["briefing"],
+        "Giornata libera. Nessun impegno. Riposa. Uno. Due. Tre."
+    );
     assert_eq!(d["briefingCached"], false);
     assert!(d["briefingGeneratedAt"].is_string());
     let n = h.fake.requests().len();
@@ -292,13 +438,23 @@ async fn agenda_briefing_cache() {
     let (_, b) = h.get("/agenda?date=2099-10-22&refresh=1").await;
     assert_eq!(b["data"]["briefingCached"], false);
     // a new reminder that day invalidates the cache
-    h.post("/reminders", json!({"text": "dentista", "dueAt": "2099-10-22T09:30:00+02:00"})).await;
+    h.post(
+        "/reminders",
+        json!({"text": "dentista", "dueAt": "2099-10-22T09:30:00+02:00"}),
+    )
+    .await;
     let (_, b) = h.get("/agenda?date=2099-10-22").await;
     assert_eq!(b["data"]["briefingCached"], false);
     assert_eq!(b["data"]["reminders"][0]["text"], "dentista");
-    let prompt = h.fake.requests().last().unwrap()["messages"][0]["content"].as_str().unwrap().to_owned();
+    let prompt = h.fake.requests().last().unwrap()["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert!(prompt.contains("- 09:30 dentista"), "{prompt}");
-    assert_eq!(h.get("/agenda?date=2099-02-30").await.1["error"], "bad_request");
+    assert_eq!(
+        h.get("/agenda?date=2099-02-30").await.1["error"],
+        "bad_request"
+    );
     assert_eq!(h.get("/agenda?refresh=x").await.1["error"], "bad_request");
 }
 
@@ -311,23 +467,41 @@ async fn timeline_pages_and_sse() {
     let (_, b) = h.get("/timeline?limit=4").await;
     let items = b["data"]["items"].as_array().unwrap().clone();
     assert_eq!(items.len(), 4);
-    assert!(items[0]["id"].as_str().unwrap() > items[1]["id"].as_str().unwrap(), "newest first");
+    assert!(
+        items[0]["id"].as_str().unwrap() > items[1]["id"].as_str().unwrap(),
+        "newest first"
+    );
     let next = b["data"]["nextBefore"].as_str().unwrap().to_owned();
     let (_, b) = h.get(&format!("/timeline?before={next}&limit=200")).await;
     assert_eq!(b["data"]["items"].as_array().unwrap().len(), 2);
     assert_eq!(b["data"]["nextBefore"], Value::Null);
     assert_eq!(h.get("/timeline?limit=0").await.1["error"], "bad_request");
-    assert_eq!(h.get("/timeline?before=nope").await.1["error"], "bad_request");
+    assert_eq!(
+        h.get("/timeline?before=nope").await.1["error"],
+        "bad_request"
+    );
 
     // SSE: replay after Last-Event-ID, then live items and pings
     let oldest = b["data"]["items"][1]["id"].as_str().unwrap().to_owned();
-    let resp = h.http.get(h.url("/timeline/stream")).bearer_auth(TOKEN).header("last-event-id", &oldest).send().await.unwrap();
-    assert_eq!(resp.headers()["content-type"], "text/event-stream; charset=utf-8");
+    let resp = h
+        .http
+        .get(h.url("/timeline/stream"))
+        .bearer_auth(TOKEN)
+        .header("last-event-id", &oldest)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.headers()["content-type"],
+        "text/event-stream; charset=utf-8"
+    );
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while buf.matches("event: item").count() < 5 && tokio::time::Instant::now() < deadline {
-        if let Ok(Some(Ok(chunk))) = tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+        if let Ok(Some(Ok(chunk))) =
+            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
+        {
             buf.push_str(&String::from_utf8_lossy(&chunk));
         }
     }
@@ -336,18 +510,30 @@ async fn timeline_pages_and_sse() {
     // a live item from this process, and a line appended by another writer
     h.chat("live").await;
     let foreign = lucina_store::timeline::normalize(
-        lucina_store::NewItem { channel: "telegram".into(), role: "user".into(), text: "from node".into(), ..Default::default() },
+        lucina_store::NewItem {
+            channel: "telegram".into(),
+            role: "user".into(),
+            text: "from node".into(),
+            ..Default::default()
+        },
         chrono::Utc::now().timestamp_millis(),
     )
     .unwrap();
     {
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().append(true).open(h.dir.path().join("timeline.jsonl")).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(h.dir.path().join("timeline.jsonl"))
+            .unwrap();
         writeln!(f, "{}", serde_json::to_string(&foreign).unwrap()).unwrap();
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while !(buf.contains("from node") && buf.contains(": ping")) && tokio::time::Instant::now() < deadline {
-        if let Ok(Some(Ok(chunk))) = tokio::time::timeout(Duration::from_millis(500), stream.next()).await {
+    while !(buf.contains("from node") && buf.contains(": ping"))
+        && tokio::time::Instant::now() < deadline
+    {
+        if let Ok(Some(Ok(chunk))) =
+            tokio::time::timeout(Duration::from_millis(500), stream.next()).await
+        {
             buf.push_str(&String::from_utf8_lossy(&chunk));
         }
     }
@@ -355,12 +541,31 @@ async fn timeline_pages_and_sse() {
     assert!(buf.contains("from node"), "tail-follow: {buf}");
     assert!(buf.contains(": ping\n\n"));
     // stream limit
-    let _second = h.http.get(h.url("/timeline/stream")).bearer_auth(TOKEN).send().await.unwrap();
-    let third = h.http.get(h.url("/timeline/stream")).bearer_auth(TOKEN).send().await.unwrap();
+    let _second = h
+        .http
+        .get(h.url("/timeline/stream"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    let third = h
+        .http
+        .get(h.url("/timeline/stream"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(third.status().as_u16(), 429);
     let b: Value = third.json().await.unwrap();
     assert_eq!(b["error"], "too_many_streams");
-    let bad = h.http.get(h.url("/timeline/stream")).bearer_auth(TOKEN).header("last-event-id", "x").send().await.unwrap();
+    let bad = h
+        .http
+        .get(h.url("/timeline/stream"))
+        .bearer_auth(TOKEN)
+        .header("last-event-id", "x")
+        .send()
+        .await
+        .unwrap();
     assert!(bad.status().as_u16() == 400 || bad.status().as_u16() == 429);
 }
 
@@ -374,28 +579,102 @@ async fn device_bridge_routes() {
     ]})).await;
     assert_eq!(s, 200);
     assert_eq!(b["data"]["accepted"], json!(["e1"]));
-    assert_eq!(b["data"]["rejected"][0], json!({"index": 1, "id": "x", "error": "invalid_type"}));
-    assert_eq!(h.post("/device/events", json!({"events": []})).await.1["error"], "bad_request");
-    let (s, b) = h.post("/device/state", json!({"alarms": [{"id": "A1", "time": "7:00"}], "focus": {"mode": "Work"}})).await;
+    assert_eq!(
+        b["data"]["rejected"][0],
+        json!({"index": 1, "id": "x", "error": "invalid_type"})
+    );
+    assert_eq!(
+        h.post("/device/events", json!({"events": []})).await.1["error"],
+        "bad_request"
+    );
+    let (s, b) = h
+        .post(
+            "/device/state",
+            json!({"alarms": [{"id": "A1", "time": "7:00"}], "focus": {"mode": "Work"}}),
+        )
+        .await;
     assert_eq!(s, 200);
-    assert_eq!(b["data"]["counts"], json!({"alarms": 1, "timers": 0, "reminders": 0, "events": 0}));
-    assert_eq!(h.get("/device/state").await.1["data"]["state"]["alarms"][0]["time"], "07:00");
-    assert_eq!(h.get("/device/commands").await.1["data"]["commands"], json!([]));
-    let c = h.state.device.create_command("alarm.delete", json!({"id": "A1", "time": "07:00"}), "ios", "en", chrono::Utc::now()).unwrap();
+    assert_eq!(
+        b["data"]["counts"],
+        json!({"alarms": 1, "timers": 0, "reminders": 0, "events": 0})
+    );
+    assert_eq!(
+        h.get("/device/state").await.1["data"]["state"]["alarms"][0]["time"],
+        "07:00"
+    );
+    assert_eq!(
+        h.get("/device/commands").await.1["data"]["commands"],
+        json!([])
+    );
+    let c = h
+        .state
+        .device
+        .create_command(
+            "alarm.delete",
+            json!({"id": "A1", "time": "07:00"}),
+            "ios",
+            "en",
+            chrono::Utc::now(),
+        )
+        .unwrap();
     let id = c["id"].as_str().unwrap();
-    assert_eq!(h.get("/device/commands").await.1["data"]["commands"][0]["requiresConfirmation"], true);
-    let (s, b) = h.post(&format!("/device/commands/{id}/result"), json!({"ok": true, "deviceObjectId": "A1"})).await;
+    assert_eq!(
+        h.get("/device/commands").await.1["data"]["commands"][0]["requiresConfirmation"],
+        true
+    );
+    let (s, b) = h
+        .post(
+            &format!("/device/commands/{id}/result"),
+            json!({"ok": true, "deviceObjectId": "A1"}),
+        )
+        .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["data"]["duplicate"], false);
     assert_eq!(b["data"]["command"]["status"], "done");
     let confirmation = b["data"]["confirmationItemId"].as_str().unwrap().to_owned();
-    let line = h.timeline_lines().into_iter().find(|l| l["id"] == json!(confirmation)).unwrap();
+    let line = h
+        .timeline_lines()
+        .into_iter()
+        .find(|l| l["id"] == json!(confirmation))
+        .unwrap();
     assert_eq!(line["text"], "Done: your 07:00 alarm is deleted.");
-    assert_eq!(line["meta"], json!({"kind": "device_command_result", "commandId": id, "ok": true}));
-    assert_eq!(h.post(&format!("/device/commands/{id}/result"), json!({"ok": true})).await.1["data"]["duplicate"], true);
-    assert_eq!(h.post(&format!("/device/commands/{id}/result"), json!({"ok": false})).await.1["error"], "already_resolved");
-    assert_eq!(h.post(&format!("/device/commands/{id}/result"), json!({"ok": "yes"})).await.1["error"], "bad_request");
-    assert_eq!(h.get("/device/commands/00000000-0000-0000-0000-000000000000").await.1["error"], "command_not_found");
+    assert_eq!(
+        line["meta"],
+        json!({"kind": "device_command_result", "commandId": id, "ok": true})
+    );
+    assert_eq!(
+        h.post(
+            &format!("/device/commands/{id}/result"),
+            json!({"ok": true})
+        )
+        .await
+        .1["data"]["duplicate"],
+        true
+    );
+    assert_eq!(
+        h.post(
+            &format!("/device/commands/{id}/result"),
+            json!({"ok": false})
+        )
+        .await
+        .1["error"],
+        "already_resolved"
+    );
+    assert_eq!(
+        h.post(
+            &format!("/device/commands/{id}/result"),
+            json!({"ok": "yes"})
+        )
+        .await
+        .1["error"],
+        "bad_request"
+    );
+    assert_eq!(
+        h.get("/device/commands/00000000-0000-0000-0000-000000000000")
+            .await
+            .1["error"],
+        "command_not_found"
+    );
     assert_eq!(h.get("/device/x").await.1["error"], "not_found");
 }
 
@@ -404,24 +683,62 @@ async fn shopping_routes() {
     let h = harness(chat_script("ok"), |_| {}).await;
     if h.state.grocery.is_none() {
         assert_eq!(h.get("/shopping").await.1["error"], "grocery_unavailable");
-        assert_eq!(h.get("/shopping/lists").await.1["error"], "grocery_unavailable");
+        assert_eq!(
+            h.get("/shopping/lists").await.1["error"],
+            "grocery_unavailable"
+        );
         let (s, _, hd) = h.call(Method::PUT, "/shopping", None).await;
         assert_eq!((s, hd["allow"].to_str().unwrap()), (405, "GET, POST"));
         return eprintln!("LUCINA_TEST_DATABASE_URL unset: only the unavailable path was tested");
     }
     let user = format!("api-{}", uuid::Uuid::new_v4());
     let h = harness(chat_script("ok"), move |c| c.grocery_user_id = user).await;
-    let (s, b) = h.post("/shopping", json!({"rawName": "latte", "channel": "ios"})).await;
+    let (s, b) = h
+        .post("/shopping", json!({"rawName": "latte", "channel": "ios"}))
+        .await;
     assert_eq!(s, 201, "{b}");
     let item = b["data"]["item"].clone();
-    assert_eq!((item["product"].as_str(), item["status"].as_str()), (Some("milk"), Some("needed")));
+    assert_eq!(
+        (item["product"].as_str(), item["status"].as_str()),
+        (Some("milk"), Some("needed"))
+    );
     let id = item["id"].as_str().unwrap().to_owned();
-    let (s, b, _) = h.call(Method::PATCH, &format!("/shopping/{id}"), Some(json!({"status": "purchased"}))).await;
+    let (s, b, _) = h
+        .call(
+            Method::PATCH,
+            &format!("/shopping/{id}"),
+            Some(json!({"status": "purchased"})),
+        )
+        .await;
     assert_eq!(s, 200);
-    assert_eq!(b["data"]["item"], json!({"id": id, "product": "latte", "status": "purchased"}));
-    assert_eq!(h.call(Method::PATCH, &format!("/shopping/{id}"), Some(json!({"status": "eaten"}))).await.1["error"], "invalid_status");
-    assert_eq!(h.call(Method::PATCH, "/shopping/zz", Some(json!({"status": "needed"}))).await.1["error"], "item_not_found");
-    assert_eq!(h.get("/shopping").await.1["data"]["items"][0]["status"], "purchased");
+    assert_eq!(
+        b["data"]["item"],
+        json!({"id": id, "product": "latte", "status": "purchased"})
+    );
+    assert_eq!(
+        h.call(
+            Method::PATCH,
+            &format!("/shopping/{id}"),
+            Some(json!({"status": "eaten"}))
+        )
+        .await
+        .1["error"],
+        "invalid_status"
+    );
+    assert_eq!(
+        h.call(
+            Method::PATCH,
+            "/shopping/zz",
+            Some(json!({"status": "needed"}))
+        )
+        .await
+        .1["error"],
+        "item_not_found"
+    );
+    assert_eq!(
+        h.get("/shopping").await.1["data"]["items"][0]["status"],
+        "purchased"
+    );
     let (_, lists) = h.get("/shopping/lists").await;
     assert_eq!(lists["data"]["lists"][0]["isDefault"], true);
     let (s, b) = h.post("/shopping/lists/default/ops", json!({"expectedRevision": 0, "ops": [{"opId": uuid::Uuid::new_v4().to_string(), "type": "need", "itemId": id}]})).await;
@@ -430,8 +747,21 @@ async fn shopping_routes() {
     let (s, b) = h.post("/shopping/lists/default/ops", json!({"ops": [{"opId": uuid::Uuid::new_v4().to_string(), "type": "need", "itemId": id}], "channel": "ios"})).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["data"]["items"][0]["updatedBy"], "ios");
-    assert_eq!(h.post("/shopping/lists/default/ops", json!({"expectedRevision": 1.5, "ops": []})).await.1["error"], "bad_request");
-    assert_eq!(h.get("/shopping/lists/not-a-list!").await.1["error"], "list_not_found");
-    let (_, b, _) = h.call(Method::DELETE, "/shopping/lists/default", None).await;
+    assert_eq!(
+        h.post(
+            "/shopping/lists/default/ops",
+            json!({"expectedRevision": 1.5, "ops": []})
+        )
+        .await
+        .1["error"],
+        "bad_request"
+    );
+    assert_eq!(
+        h.get("/shopping/lists/not-a-list!").await.1["error"],
+        "list_not_found"
+    );
+    let (_, b, _) = h
+        .call(Method::DELETE, "/shopping/lists/default", None)
+        .await;
     assert_eq!(b["error"], "default_list");
 }

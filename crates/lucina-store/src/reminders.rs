@@ -166,7 +166,8 @@ impl ReminderStore {
 
     /// Create (or return the identical pending one): `(created, reminder)`.
     pub fn create(&self, input: CreateReminder) -> Result<(bool, Reminder)> {
-        let due = parse_js_date(&input.due_at).ok_or_else(|| StoreError::Invalid("Invalid reminder dueAt".into()))?;
+        let due = parse_js_date(&input.due_at)
+            .ok_or_else(|| StoreError::Invalid("Invalid reminder dueAt".into()))?;
         let text = input.text.trim().to_owned();
         if text.is_empty() {
             return Err(StoreError::Invalid("Reminder text is required".into()));
@@ -179,7 +180,9 @@ impl ReminderStore {
         let key = input
             .dedupe_key
             .filter(|k| !k.is_empty())
-            .unwrap_or_else(|| format!("{}:{}:{}", input.chat_id, input.due_at, text.to_lowercase()));
+            .unwrap_or_else(|| {
+                format!("{}:{}:{}", input.chat_id, input.due_at, text.to_lowercase())
+            });
         if let Some(existing) = store
             .reminders
             .iter()
@@ -192,11 +195,19 @@ impl ReminderStore {
             dedupe_key: key,
             text,
             due_at: iso_ms(due),
-            time_zone: if input.time_zone.is_empty() { "UTC".into() } else { input.time_zone },
+            time_zone: if input.time_zone.is_empty() {
+                "UTC".into()
+            } else {
+                input.time_zone
+            },
             chat_id: input.chat_id,
             user_peer_id: input.user_peer_id,
             user_label: input.user_label,
-            persona: if input.persona.is_empty() { "Lucina".into() } else { input.persona },
+            persona: if input.persona.is_empty() {
+                "Lucina".into()
+            } else {
+                input.persona
+            },
             source: Value::String(input.source),
             status: "pending".into(),
             created_at: Value::String(now_iso()),
@@ -281,7 +292,12 @@ impl ReminderStore {
 }
 
 /// Pending reminders, optionally only those due today in `tz`.
-pub fn filter_for_scope(reminders: &[Reminder], today_only: bool, tz: Tz, now: DateTime<Utc>) -> Vec<Reminder> {
+pub fn filter_for_scope(
+    reminders: &[Reminder],
+    today_only: bool,
+    tz: Tz,
+    now: DateTime<Utc>,
+) -> Vec<Reminder> {
     let today = ymd_in_tz(now, tz);
     reminders
         .iter()
@@ -291,7 +307,9 @@ pub fn filter_for_scope(reminders: &[Reminder], today_only: bool, tz: Tz, now: D
         .collect()
 }
 
-const IT_MONTHS: [&str; 12] = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
+const IT_MONTHS: [&str; 12] = [
+    "gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic",
+];
 
 /// `Intl.DateTimeFormat('it-IT', {dateStyle: 'medium', timeStyle: 'short'})`.
 pub fn format_it_medium(dt: DateTime<Utc>, tz: Tz) -> String {
@@ -311,17 +329,30 @@ pub fn format_it_medium(dt: DateTime<Utc>, tz: Tz) -> String {
 pub fn format_confirmation(reminder: &Reminder, tz: Tz) -> String {
     let when = reminder
         .due()
-        .map(|d| d.with_timezone(&tz).format("%A %-d %B %Y at %H:%M").to_string())
+        .map(|d| {
+            d.with_timezone(&tz)
+                .format("%A %-d %B %Y at %H:%M")
+                .to_string()
+        })
         .unwrap_or_else(|| reminder.due_at.clone());
     format!("Reminder set for {when} ({}): {}", tz.name(), reminder.text)
 }
 
 /// Node's `formatReminderList` (Italian).
-pub fn format_list(reminders: &[Reminder], tz: Tz, persona: &str, today_only: bool, now: DateTime<Utc>) -> String {
+pub fn format_list(
+    reminders: &[Reminder],
+    tz: Tz,
+    persona: &str,
+    today_only: bool,
+    now: DateTime<Utc>,
+) -> String {
     let mut pending = filter_for_scope(reminders, today_only, tz, now);
     if pending.is_empty() {
         return if today_only {
-            format!("{persona}: non hai promemoria in programma per oggi ({}).", tz.name())
+            format!(
+                "{persona}: non hai promemoria in programma per oggi ({}).",
+                tz.name()
+            )
         } else {
             format!("{persona}: non hai promemoria futuri in coda.")
         };
@@ -346,7 +377,12 @@ pub fn format_list(reminders: &[Reminder], tz: Tz, persona: &str, today_only: bo
 
 /// Node's `buildRecentDeliveredRemindersContext`: reminders delivered to
 /// `chat_id` in the last 48 h, newest first, at most 6.
-pub fn delivered_context(reminders: &[Reminder], chat_id: &str, tz: Tz, now: DateTime<Utc>) -> String {
+pub fn delivered_context(
+    reminders: &[Reminder],
+    chat_id: &str,
+    tz: Tz,
+    now: DateTime<Utc>,
+) -> String {
     let cutoff = now - chrono::Duration::hours(48);
     let mut sent: Vec<(&Reminder, DateTime<Utc>)> = reminders
         .iter()
@@ -357,14 +393,24 @@ pub fn delivered_context(reminders: &[Reminder], chat_id: &str, tz: Tz, now: Dat
     if sent.is_empty() {
         return String::new();
     }
-    sent.sort_by(|a, b| b.1.cmp(&a.1));
+    sent.sort_by_key(|s| std::cmp::Reverse(s.1));
     let lines: Vec<String> = sent
         .iter()
         .take(6)
         .enumerate()
-        .map(|(i, (r, d))| format!("{}. [delivered {}] {}", i + 1, format_it_medium(*d, tz), r.text.trim()))
+        .map(|(i, (r, d))| {
+            format!(
+                "{}. [delivered {}] {}",
+                i + 1,
+                format_it_medium(*d, tz),
+                r.text.trim()
+            )
+        })
         .collect();
-    format!("Recently delivered reminders in this chat:\n{}", lines.join("\n"))
+    format!(
+        "Recently delivered reminders in this chat:\n{}",
+        lines.join("\n")
+    )
 }
 
 /// `⏰ Reminder\n\n<text>`
@@ -397,7 +443,9 @@ mod tests {
         let s = ReminderStore::new(dir.path().join("reminders.json"), 500);
         let (created, r) = s.create(input("Call", "2030-01-01T09:00:00.000Z")).unwrap();
         assert!(created);
-        let (again, same) = s.create(input(" call ", "2030-01-01T09:00:00.000Z")).unwrap();
+        let (again, same) = s
+            .create(input(" call ", "2030-01-01T09:00:00.000Z"))
+            .unwrap();
         assert!(!again);
         assert_eq!(same.id, r.id);
         assert_eq!(s.list(false).unwrap().len(), 1);
@@ -405,12 +453,18 @@ mod tests {
             CancelOutcome::Cancelled(c) => assert!(c.cancelled_at.is_some()),
             other => panic!("{other:?}"),
         }
-        assert!(matches!(s.cancel(&r.id, None).unwrap(), CancelOutcome::AlreadyCancelled(_)));
+        assert!(matches!(
+            s.cancel(&r.id, None).unwrap(),
+            CancelOutcome::AlreadyCancelled(_)
+        ));
         assert_eq!(s.cancel(&r.id, Some("7")).unwrap(), CancelOutcome::NotFound);
         let (_, r2) = s.create(input("Due", "2020-01-01T09:00:00.000Z")).unwrap();
         let due = s.process_due(Utc::now(), |_| Ok(())).unwrap();
         assert_eq!(due.len(), 1);
-        assert!(matches!(s.cancel(&r2.id, None).unwrap(), CancelOutcome::AlreadySent(_)));
+        assert!(matches!(
+            s.cancel(&r2.id, None).unwrap(),
+            CancelOutcome::AlreadySent(_)
+        ));
         // file layout: pretty JSON, Node key order, cancelledAt last
         let text = std::fs::read_to_string(s.path()).unwrap();
         assert!(text.ends_with("}\n"));

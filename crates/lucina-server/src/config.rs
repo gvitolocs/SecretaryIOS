@@ -106,11 +106,17 @@ impl std::fmt::Debug for Config {
 }
 
 fn read_secret_file(path: &str) -> Option<String> {
-    std::fs::read_to_string(path.trim()).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(path.trim())
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
 fn first_csv(v: &str) -> Option<String> {
-    v.split(',').map(str::trim).find(|s| !s.is_empty() && !s.starts_with('-')).map(str::to_owned)
+    v.split(',')
+        .map(str::trim)
+        .find(|s| !s.is_empty() && !s.starts_with('-'))
+        .map(str::to_owned)
 }
 
 impl Config {
@@ -121,21 +127,45 @@ impl Config {
     /// Everything relative to `data_dir`, as if no variable was set.
     pub fn for_data_dir(data_dir: &Path) -> Self {
         let dir = data_dir.to_string_lossy().into_owned();
-        Self::from_lookup(move |k| (k == "LUCINA_DATA_DIR").then(|| dir.clone())).expect("defaults are valid")
+        Self::from_lookup(move |k| (k == "LUCINA_DATA_DIR").then(|| dir.clone()))
+            .expect("defaults are valid")
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
-        let flag = |k: &str, default: bool| get(k).map(|v| v.trim().eq_ignore_ascii_case("true")).unwrap_or(default);
-        let num = |k: &str, default: u64| get(k).and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(default);
+        let flag = |k: &str, default: bool| {
+            get(k)
+                .map(|v| v.trim().eq_ignore_ascii_case("true"))
+                .unwrap_or(default)
+        };
+        let num = |k: &str, default: u64| {
+            get(k)
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(default)
+        };
         let data_dir = PathBuf::from(get("LUCINA_DATA_DIR").unwrap_or_else(|| "data".into()));
-        let path_or = |k: &str, file: &str| get(k).map(PathBuf::from).unwrap_or_else(|| data_dir.join(file));
-        let owner_peer_id = get("LUCINA_OWNER_USER_PEER_ID").or_else(|| get("LUCINA_GMAIL_LEARN_USER_PEER_ID")).unwrap_or_else(|| "giuseppe".into());
-        let tz_name = get("LUCINA_REMINDER_TIMEZONE").or_else(|| get("LUCINA_TIMEZONE")).unwrap_or_else(|| "Europe/Rome".into());
-        let time_zone: Tz = tz_name.trim().parse().map_err(|_| anyhow::anyhow!("unknown time zone {tz_name}"))?;
-        let token = get("SECRETARY_API_TOKEN_FILE").and_then(|p| read_secret_file(&p)).or_else(|| get("SECRETARY_API_TOKEN"));
+        let path_or = |k: &str, file: &str| {
+            get(k)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_dir.join(file))
+        };
+        let owner_peer_id = get("LUCINA_OWNER_USER_PEER_ID")
+            .or_else(|| get("LUCINA_GMAIL_LEARN_USER_PEER_ID"))
+            .unwrap_or_else(|| "giuseppe".into());
+        let tz_name = get("LUCINA_REMINDER_TIMEZONE")
+            .or_else(|| get("LUCINA_TIMEZONE"))
+            .unwrap_or_else(|| "Europe/Rome".into());
+        let time_zone: Tz = tz_name
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("unknown time zone {tz_name}"))?;
+        let token = get("SECRETARY_API_TOKEN_FILE")
+            .and_then(|p| read_secret_file(&p))
+            .or_else(|| get("SECRETARY_API_TOKEN"));
         let memory_mode = match get("MEMORY_PROVIDER").as_deref().map(str::trim) {
             Some(p) if p != "honcho" => MemoryMode::Off,
-            _ => get("LUCINA_MEMORY_MODE").and_then(|m| MemoryMode::parse(&m)).unwrap_or(MemoryMode::ReadOnly),
+            _ => get("LUCINA_MEMORY_MODE")
+                .and_then(|m| MemoryMode::parse(&m))
+                .unwrap_or(MemoryMode::ReadOnly),
         };
         let lucina_docs = PathBuf::from("/home/nez/Projects/Lucina/docs");
         let mut default_location = Location::default();
@@ -159,13 +189,18 @@ impl Config {
             endpoints.nominatim = v;
         }
         Ok(Self {
-            bind: get("LUCINA_BIND").unwrap_or_else(|| DEFAULT_BIND.into()).parse()?,
+            bind: get("LUCINA_BIND")
+                .unwrap_or_else(|| DEFAULT_BIND.into())
+                .parse()?,
             persona: get("LUCINA_PERSONA_NAME").unwrap_or_else(|| "Lucina".into()),
-            host_label: get("LUCINA_HOST_LABEL").map(|s| s.to_lowercase()).unwrap_or_else(|| "nezopt".into()),
+            host_label: get("LUCINA_HOST_LABEL")
+                .map(|s| s.to_lowercase())
+                .unwrap_or_else(|| "nezopt".into()),
             secretary_enabled: get("SECRETARY_API_ENABLED").as_deref() == Some("true"),
             token,
             default_session: get("SECRETARY_SESSION_ID").unwrap_or_else(|| "secretary_app".into()),
-            grocery_user_id: get("SECRETARY_GROCERY_USER_ID").unwrap_or_else(|| owner_peer_id.clone()),
+            grocery_user_id: get("SECRETARY_GROCERY_USER_ID")
+                .unwrap_or_else(|| owner_peer_id.clone()),
             briefing_cache: Duration::from_millis(num("SECRETARY_BRIEFING_CACHE_MS", 900_000)),
             jobs_path: path_or("SECRETARY_JOBS_PATH", "secretary-jobs.json"),
             timeline_enabled: get("LUCINA_TIMELINE_ENABLED").as_deref() != Some("false"),
@@ -173,7 +208,9 @@ impl Config {
             timeline_max_bytes: num("LUCINA_TIMELINE_MAX_BYTES", 50 * 1024 * 1024),
             timeline_max_streams: num("LUCINA_TIMELINE_MAX_STREAMS", 8) as usize,
             timeline_ping: Duration::from_millis(num("LUCINA_TIMELINE_PING_MS", 20_000).max(10)),
-            reminders_enabled: get("LUCINA_REMINDERS_ENABLED").map(|v| v == "true").unwrap_or(true),
+            reminders_enabled: get("LUCINA_REMINDERS_ENABLED")
+                .map(|v| v == "true")
+                .unwrap_or(true),
             reminders_path: path_or("LUCINA_REMINDERS_STORE_PATH", "reminders.json"),
             time_zone,
             reminder_default_hour: num("LUCINA_REMINDER_DEFAULT_HOUR", 9) as u32,
@@ -193,7 +230,9 @@ impl Config {
             owner_peer_id,
             memory_mode,
             honcho: HonchoConfig::from_lookup(&get),
-            grocery_database_url: get("GROCERY_DATABASE_URL_FILE").and_then(|p| read_secret_file(&p)).or_else(|| get("GROCERY_DATABASE_URL")),
+            grocery_database_url: get("GROCERY_DATABASE_URL_FILE")
+                .and_then(|p| read_secret_file(&p))
+                .or_else(|| get("GROCERY_DATABASE_URL")),
             shopping_catalog_path: get("LUCINA_SHOPPING_CATALOG_PATH").map(PathBuf::from),
             deepseek: DeepSeekConfig::from_lookup(&get),
             planner: match get("LUCINA_PLANNER").as_deref().map(str::trim) {
@@ -204,8 +243,12 @@ impl Config {
             turn_deadline: Duration::from_millis(num("LUCINA_TURN_DEADLINE_MS", 90_000).max(1000)),
             oracle_monitor_enabled: flag("LUCINA_ORACLE_MONITOR_ENABLED", false),
             persona_path: get("LUCINA_PERSONA_PATH").map(PathBuf::from),
-            recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH").map(PathBuf::from).unwrap_or_else(|| lucina_docs.join("lucina-recovery-companion.md")),
-            operator_brief_path: get("LUCINA_OPERATOR_BRIEF_PATH").map(PathBuf::from).unwrap_or_else(|| lucina_docs.join("lucina-operator-brief.md")),
+            recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| lucina_docs.join("lucina-recovery-companion.md")),
+            operator_brief_path: get("LUCINA_OPERATOR_BRIEF_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| lucina_docs.join("lucina-operator-brief.md")),
             default_location,
             endpoints,
             nominatim_email: get("LUCINA_NOMINATIM_EMAIL"),

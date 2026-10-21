@@ -94,7 +94,9 @@ impl JobStore {
 
     fn read(&self) -> Result<Vec<Job>> {
         match std::fs::read(&self.path) {
-            Ok(bytes) => Ok(serde_json::from_slice::<JobsFile>(&bytes).map(|f| f.jobs).unwrap_or_default()),
+            Ok(bytes) => Ok(serde_json::from_slice::<JobsFile>(&bytes)
+                .map(|f| f.jobs)
+                .unwrap_or_default()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
             Err(e) => Err(e.into()),
         }
@@ -114,7 +116,10 @@ impl JobStore {
 
     pub fn insert(&self, job: Job) -> Result<Job> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.active.lock().unwrap_or_else(|e| e.into_inner()).insert(job.id.clone());
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(job.id.clone());
         let mut jobs = self.read()?;
         jobs.push(job.clone());
         self.write(jobs)?;
@@ -135,7 +140,10 @@ impl JobStore {
     }
 
     pub fn finish(&self, id: &str) {
-        self.active.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        self.active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
     }
 
     /// The job; a queued/running job this process does not own is marked
@@ -146,7 +154,11 @@ impl JobStore {
             self.read()?.into_iter().find(|j| j.id == id)
         };
         let Some(job) = job else { return Ok(None) };
-        let owned = self.active.lock().unwrap_or_else(|e| e.into_inner()).contains(&job.id);
+        let owned = self
+            .active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&job.id);
         if (job.status == "queued" || job.status == "running") && !owned {
             return self.update(id, |j| {
                 j.status = "error".into();

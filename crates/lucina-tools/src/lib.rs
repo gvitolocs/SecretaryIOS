@@ -105,7 +105,11 @@ pub struct Location {
 
 impl Default for Location {
     fn default() -> Self {
-        Self { name: "Copenhagen, Denmark".into(), latitude: 55.6761, longitude: 12.5683 }
+        Self {
+            name: "Copenhagen, Denmark".into(),
+            latitude: 55.6761,
+            longitude: 12.5683,
+        }
     }
 }
 
@@ -118,7 +122,10 @@ pub struct RateGate {
 
 impl RateGate {
     pub fn new(interval: Duration) -> Self {
-        Self { interval, last: tokio::sync::Mutex::new(None) }
+        Self {
+            interval,
+            last: tokio::sync::Mutex::new(None),
+        }
     }
 
     pub async fn wait(&self) {
@@ -161,7 +168,12 @@ pub struct ToolEnv {
 impl ToolEnv {
     /// Defaults for tests and tools that need little.
     pub fn new(data_dir: impl Into<PathBuf>, time_zone: Tz) -> Self {
-        let user_agent = concat!("lucina-rs/", env!("CARGO_PKG_VERSION"), " (private personal assistant)").to_owned();
+        let user_agent = concat!(
+            "lucina-rs/",
+            env!("CARGO_PKG_VERSION"),
+            " (private personal assistant)"
+        )
+        .to_owned();
         Self {
             http: reqwest::Client::builder()
                 .user_agent(user_agent.clone())
@@ -203,15 +215,27 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new(env: Arc<ToolEnv>, channel: &str, session_id: &str) -> Self {
-        Self { env, channel: channel.into(), session_id: session_id.into(), now: Utc::now(), effects: Mutex::new(Vec::new()) }
+        Self {
+            env,
+            channel: channel.into(),
+            session_id: session_id.into(),
+            now: Utc::now(),
+            effects: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn push_effect(&self, e: Effect) {
-        self.effects.lock().unwrap_or_else(|e| e.into_inner()).push(e);
+        self.effects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(e);
     }
 
     pub fn effects(&self) -> Vec<Effect> {
-        self.effects.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.effects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -265,8 +289,9 @@ pub fn schema_for<T: schemars::JsonSchema>() -> Value {
 /// Words that mark a purchase or money movement. Matched against the
 /// tokens of a tool name (`send_money` -> `send`, `money`).
 pub const DENY_TERMS: &[&str] = &[
-    "pay", "payment", "payments", "paypal", "buy", "checkout", "order", "orders", "transfer", "wire", "withdraw", "deposit",
-    "money", "trade", "trading", "invest", "crypto", "wallet", "bank", "iban", "card", "stripe", "invoice",
+    "pay", "payment", "payments", "paypal", "buy", "checkout", "order", "orders", "transfer",
+    "wire", "withdraw", "deposit", "money", "trade", "trading", "invest", "crypto", "wallet",
+    "bank", "iban", "card", "stripe", "invoice",
 ];
 
 pub fn is_denied_name(name: &str) -> bool {
@@ -292,7 +317,12 @@ impl ToolSelection {
         if t.eq_ignore_ascii_case("none") {
             return ToolSelection::Only(HashSet::new());
         }
-        ToolSelection::Only(t.split(',').map(|n| n.trim().to_ascii_lowercase()).filter(|n| !n.is_empty()).collect())
+        ToolSelection::Only(
+            t.split(',')
+                .map(|n| n.trim().to_ascii_lowercase())
+                .filter(|n| !n.is_empty())
+                .collect(),
+        )
     }
 
     pub fn allows(&self, name: &str) -> bool {
@@ -311,7 +341,9 @@ pub struct Registry {
 
 impl std::fmt::Debug for Registry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.tools.iter().map(|t| t.name())).finish()
+        f.debug_list()
+            .entries(self.tools.iter().map(|t| t.name()))
+            .finish()
     }
 }
 
@@ -325,12 +357,15 @@ impl Registry {
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<(), String> {
         let name = tool.name();
         if is_denied_name(name) || tool.moves_money() {
-            return Err(format!("tool {name} refused: no purchases and no money movement"));
+            return Err(format!(
+                "tool {name} refused: no purchases and no money movement"
+            ));
         }
         if self.validators.contains_key(name) {
             return Err(format!("tool {name} registered twice"));
         }
-        let validator = jsonschema::validator_for(&tool.parameters()).map_err(|e| format!("tool {name}: bad schema: {e}"))?;
+        let validator = jsonschema::validator_for(&tool.parameters())
+            .map_err(|e| format!("tool {name}: bad schema: {e}"))?;
         self.validators.insert(name.to_owned(), validator);
         self.tools.push(tool);
         Ok(())
@@ -369,8 +404,15 @@ impl Registry {
 
     /// Validate `args` against the tool's schema (first 3 errors).
     pub fn validate(&self, name: &str, args: &Value) -> Result<(), String> {
-        let v = self.validators.get(name).ok_or_else(|| format!("unknown tool {name}"))?;
-        let errors: Vec<String> = v.iter_errors(args).take(3).map(|e| format!("{e} at {}", e.instance_path())).collect();
+        let v = self
+            .validators
+            .get(name)
+            .ok_or_else(|| format!("unknown tool {name}"))?;
+        let errors: Vec<String> = v
+            .iter_errors(args)
+            .take(3)
+            .map(|e| format!("{e} at {}", e.instance_path()))
+            .collect();
         if errors.is_empty() {
             Ok(())
         } else {
@@ -410,7 +452,10 @@ mod tests {
         assert!(!is_denied_name("shopping"));
         assert!(!is_denied_name("reminders"));
         let mut r = Registry::new();
-        assert!(r.register(Arc::new(Payer)).unwrap_err().contains("no money movement"));
+        assert!(r
+            .register(Arc::new(Payer))
+            .unwrap_err()
+            .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
         assert_eq!(all.names().len(), 8);
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));

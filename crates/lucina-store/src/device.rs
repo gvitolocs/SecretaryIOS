@@ -22,8 +22,16 @@ use crate::timeutil::{iso_ms, parse_js_date};
 use crate::Result;
 
 pub const EVENT_TYPES: [&str; 10] = [
-    "web_visit", "location_visit", "health_summary", "workout", "focus_change", "screen_threshold", "calendar_change",
-    "reminder_change", "alarm_fired", "app_open",
+    "web_visit",
+    "location_visit",
+    "health_summary",
+    "workout",
+    "focus_change",
+    "screen_threshold",
+    "calendar_change",
+    "reminder_change",
+    "alarm_fired",
+    "app_open",
 ];
 pub const SOURCES: [&str; 4] = ["ios", "mac", "safari-ext", "chrome-ext"];
 pub const MAX_EVENTS_PER_BATCH: usize = 500;
@@ -46,15 +54,25 @@ fn clip_text(v: &Value, max: usize) -> String {
 
 fn opt_text(v: &Value, max: usize) -> Value {
     let t = clip_text(v, max);
-    if t.is_empty() { Value::Null } else { Value::String(t) }
+    if t.is_empty() {
+        Value::Null
+    } else {
+        Value::String(t)
+    }
 }
 
 fn clean_iso(v: &Value) -> Value {
-    v.as_str().and_then(parse_js_date).map(|d| Value::String(iso_ms(d))).unwrap_or(Value::Null)
+    v.as_str()
+        .and_then(parse_js_date)
+        .map(|d| Value::String(iso_ms(d)))
+        .unwrap_or(Value::Null)
 }
 
 fn clean_id(v: &Value) -> Option<String> {
-    v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.chars().take(200).collect())
+    v.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(200).collect())
 }
 
 /// Hostname of a URL or bare domain, lowercased, without `www.`.
@@ -64,17 +82,43 @@ pub fn domain_of(raw: &str) -> String {
         return String::new();
     }
     let rest = match raw.find("://") {
-        Some(i) if raw[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) && raw[..i].chars().next().is_some_and(|c| c.is_ascii_alphabetic()) => &raw[i + 3..],
+        Some(i)
+            if raw[..i]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+                && raw[..i]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic()) =>
+        {
+            &raw[i + 3..]
+        }
         _ => raw,
     };
     let host_port = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = host_port.rsplit_once('@').map(|(_, h)| h).unwrap_or(host_port);
-    let host = if host.starts_with('[') { host } else { host.split(':').next().unwrap_or("") };
+    let host = host_port
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(host_port);
+    let host = if host.starts_with('[') {
+        host
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
     let host = host.to_lowercase();
-    if host.is_empty() || host.contains(' ') || !host.chars().all(|c| c.is_alphanumeric() || ".-_[]:".contains(c)) {
+    if host.is_empty()
+        || host.contains(' ')
+        || !host
+            .chars()
+            .all(|c| c.is_alphanumeric() || ".-_[]:".contains(c))
+    {
         return String::new();
     }
-    host.strip_prefix("www.").unwrap_or(&host).chars().take(253).collect()
+    host.strip_prefix("www.")
+        .unwrap_or(&host)
+        .chars()
+        .take(253)
+        .collect()
 }
 
 fn js_number(v: &Value) -> Option<f64> {
@@ -88,9 +132,15 @@ fn js_number(v: &Value) -> Option<f64> {
     .filter(|n| n.is_finite())
 }
 
-fn sanitize_data(kind: &str, data: &Map<String, Value>) -> std::result::Result<Value, &'static str> {
+fn sanitize_data(
+    kind: &str,
+    data: &Map<String, Value>,
+) -> std::result::Result<Value, &'static str> {
     if kind == "web_visit" {
-        let src = data.get("domain").filter(|v| v.as_str().is_some_and(|s| !s.is_empty())).or_else(|| data.get("url"));
+        let src = data
+            .get("domain")
+            .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+            .or_else(|| data.get("url"));
         let domain = domain_of(src.and_then(Value::as_str).unwrap_or(""));
         if domain.is_empty() {
             return Err("missing_domain");
@@ -114,13 +164,23 @@ fn sanitize_data(kind: &str, data: &Map<String, Value>) -> std::result::Result<V
 }
 
 /// Validate one incoming event: the stored event or an error code.
-pub fn validate_event(input: &Value, now: DateTime<Utc>, retention_days: i64) -> std::result::Result<Value, &'static str> {
+pub fn validate_event(
+    input: &Value,
+    now: DateTime<Utc>,
+    retention_days: i64,
+) -> std::result::Result<Value, &'static str> {
     let obj = input.as_object().ok_or("not_an_object")?;
     let id = obj.get("id").and_then(Value::as_str).filter(|s| {
-        (1..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+        (1..=128).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
     });
     let id = id.ok_or("invalid_id")?;
-    let ts = obj.get("ts").and_then(Value::as_str).and_then(parse_js_date).ok_or("invalid_ts")?;
+    let ts = obj
+        .get("ts")
+        .and_then(Value::as_str)
+        .and_then(parse_js_date)
+        .ok_or("invalid_ts")?;
     let now_ms = now.timestamp_millis();
     if ts.timestamp_millis() > now_ms + DAY_MS {
         return Err("ts_in_future");
@@ -128,8 +188,16 @@ pub fn validate_event(input: &Value, now: DateTime<Utc>, retention_days: i64) ->
     if ts.timestamp_millis() < now_ms - retention_days * DAY_MS {
         return Err("too_old");
     }
-    let kind = obj.get("type").and_then(Value::as_str).filter(|t| EVENT_TYPES.contains(t)).ok_or("invalid_type")?;
-    let source = obj.get("source").and_then(Value::as_str).filter(|s| SOURCES.contains(s)).ok_or("invalid_source")?;
+    let kind = obj
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|t| EVENT_TYPES.contains(t))
+        .ok_or("invalid_type")?;
+    let source = obj
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|s| SOURCES.contains(s))
+        .ok_or("invalid_source")?;
     let empty = Map::new();
     let data = match obj.get("data") {
         None | Some(Value::Null) => &empty,
@@ -137,7 +205,9 @@ pub fn validate_event(input: &Value, now: DateTime<Utc>, retention_days: i64) ->
         Some(_) => return Err("invalid_data"),
     };
     let data = sanitize_data(kind, data)?;
-    Ok(json!({"id": id, "ts": iso_ms(ts), "type": kind, "source": source, "data": data, "receivedAt": iso_ms(now)}))
+    Ok(
+        json!({"id": id, "ts": iso_ms(ts), "type": kind, "source": source, "data": data, "receivedAt": iso_ms(now)}),
+    )
 }
 
 struct EventsInner {
@@ -164,7 +234,13 @@ impl DeviceEventStore {
         Self {
             path: path.into(),
             retention_days: retention_days.max(1),
-            inner: Mutex::new(EventsInner { loaded: false, events: Vec::new(), ids: HashSet::new(), last_compact_ms: 0, last_received_ms: 0 }),
+            inner: Mutex::new(EventsInner {
+                loaded: false,
+                events: Vec::new(),
+                ids: HashSet::new(),
+                last_compact_ms: 0,
+                last_received_ms: 0,
+            }),
         }
     }
 
@@ -182,7 +258,11 @@ impl DeviceEventStore {
             if let Ok(ev) = serde_json::from_str::<Value>(line) {
                 if let Some(id) = ev["id"].as_str().map(str::to_owned) {
                     if g.ids.insert(id) {
-                        let r = ev["receivedAt"].as_str().and_then(parse_js_date).map(|d| d.timestamp_millis()).unwrap_or(0);
+                        let r = ev["receivedAt"]
+                            .as_str()
+                            .and_then(parse_js_date)
+                            .map(|d| d.timestamp_millis())
+                            .unwrap_or(0);
                         g.last_received_ms = g.last_received_ms.max(r);
                         g.events.push(ev);
                     }
@@ -199,13 +279,20 @@ impl DeviceEventStore {
             return Ok(());
         }
         g.last_compact_ms = now_ms;
-        let cutoff = iso_ms(DateTime::from_timestamp_millis(now_ms - self.retention_days * DAY_MS).unwrap_or_default());
+        let cutoff = iso_ms(
+            DateTime::from_timestamp_millis(now_ms - self.retention_days * DAY_MS)
+                .unwrap_or_default(),
+        );
         let before = g.events.len();
         g.events.retain(|e| ts_of(e) >= cutoff.as_str());
         if g.events.len() == before {
             return Ok(());
         }
-        g.ids = g.events.iter().filter_map(|e| e["id"].as_str().map(str::to_owned)).collect();
+        g.ids = g
+            .events
+            .iter()
+            .filter_map(|e| e["id"].as_str().map(str::to_owned))
+            .collect();
         let text: String = g.events.iter().map(|e| format!("{e}\n")).collect();
         write_atomic(&self.path, text.as_bytes())?;
         Ok(())
@@ -215,7 +302,8 @@ impl DeviceEventStore {
     pub fn ingest(&self, inputs: &[Value], now: DateTime<Utc>) -> Result<Value> {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.load(&mut g)?;
-        let (mut accepted, mut duplicates, mut rejected, mut fresh) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut accepted, mut duplicates, mut rejected, mut fresh) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (index, input) in inputs.iter().enumerate() {
             match validate_event(input, now, self.retention_days) {
                 Err(error) => {
@@ -253,7 +341,11 @@ impl DeviceEventStore {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.load(&mut g)?;
         let (f, t) = (iso_ms(from), iso_ms(to));
-        Ok(g.events.iter().filter(|e| ts_of(e) >= f.as_str() && ts_of(e) < t.as_str()).cloned().collect())
+        Ok(g.events
+            .iter()
+            .filter(|e| ts_of(e) >= f.as_str() && ts_of(e) < t.as_str())
+            .cloned()
+            .collect())
     }
 
     pub fn last_received_ms(&self) -> Result<i64> {
@@ -274,7 +366,12 @@ pub fn normalize_clock(v: &Value) -> Option<String> {
     };
     let (h, rest) = s.split_once([':', '.'])?;
     let m: String = rest.chars().take(2).collect();
-    if h.is_empty() || h.len() > 2 || m.len() != 2 || !h.bytes().all(|b| b.is_ascii_digit()) || !m.bytes().all(|b| b.is_ascii_digit()) {
+    if h.is_empty()
+        || h.len() > 2
+        || m.len() != 2
+        || !h.bytes().all(|b| b.is_ascii_digit())
+        || !m.bytes().all(|b| b.is_ascii_digit())
+    {
         return None;
     }
     let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
@@ -286,7 +383,9 @@ fn clean_entry(list: &str, e: &Value) -> Option<Value> {
     match list {
         "alarms" => {
             let time = normalize_clock(&e["time"])?;
-            Some(json!({"id": id, "time": time, "label": opt_text(&e["label"], MAX_TEXT), "enabled": e["enabled"] != json!(false), "repeat": opt_text(&e["repeat"], 40)}))
+            Some(
+                json!({"id": id, "time": time, "label": opt_text(&e["label"], MAX_TEXT), "enabled": e["enabled"] != json!(false), "repeat": opt_text(&e["repeat"], 40)}),
+            )
         }
         "timers" => Some(json!({
             "id": id, "label": opt_text(&e["label"], MAX_TEXT), "endsAt": clean_iso(&e["endsAt"]),
@@ -312,8 +411,15 @@ pub fn validate_state(body: &Value, now: DateTime<Utc>) -> std::result::Result<V
     let mut state = Map::new();
     state.insert("receivedAt".into(), json!(iso_ms(now)));
     let ts = clean_iso(obj.get("ts").unwrap_or(&Value::Null));
-    state.insert("ts".into(), if ts.is_null() { json!(iso_ms(now)) } else { ts });
-    let source = obj.get("source").and_then(Value::as_str).filter(|s| SOURCES.contains(s)).unwrap_or("ios");
+    state.insert(
+        "ts".into(),
+        if ts.is_null() { json!(iso_ms(now)) } else { ts },
+    );
+    let source = obj
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|s| SOURCES.contains(s))
+        .unwrap_or("ios");
     state.insert("source".into(), json!(source));
     for key in ["alarms", "timers", "reminders", "events"] {
         let list = match obj.get(key) {
@@ -324,17 +430,30 @@ pub fn validate_state(body: &Value, now: DateTime<Utc>) -> std::result::Result<V
         if list.len() > MAX_STATE_ITEMS {
             return Err(format!("{key} has more than {MAX_STATE_ITEMS} entries"));
         }
-        let cleaned: Vec<Value> = list.iter().filter(|e| e.is_object()).filter_map(|e| clean_entry(key, e)).collect();
+        let cleaned: Vec<Value> = list
+            .iter()
+            .filter(|e| e.is_object())
+            .filter_map(|e| clean_entry(key, e))
+            .collect();
         state.insert(key.into(), Value::Array(cleaned));
     }
     let focus = obj.get("focus").filter(|f| f.is_object());
     let mode = focus.map(|f| clip_text(&f["mode"], 60)).unwrap_or_default();
-    state.insert("focus".into(), if mode.is_empty() { Value::Null } else { json!({"mode": mode, "since": clean_iso(&focus.unwrap()["since"])}) });
+    state.insert(
+        "focus".into(),
+        if mode.is_empty() {
+            Value::Null
+        } else {
+            json!({"mode": mode, "since": clean_iso(&focus.unwrap()["since"])})
+        },
+    );
     Ok(Value::Object(state))
 }
 
 fn read_json(path: &Path) -> Option<Value> {
-    std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok())
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
 fn write_pretty(path: &Path, v: &Value) -> Result<()> {
@@ -347,12 +466,26 @@ fn write_pretty(path: &Path, v: &Value) -> Result<()> {
 
 /// Deletes/cancels and anything outside alarms, timers and reminders need a tap.
 pub fn requires_confirmation(kind: &str) -> bool {
-    kind.ends_with(".delete") || kind.ends_with(".cancel") || !(kind.starts_with("alarm.") || kind.starts_with("timer.") || kind.starts_with("reminder."))
+    kind.ends_with(".delete")
+        || kind.ends_with(".cancel")
+        || !(kind.starts_with("alarm.")
+            || kind.starts_with("timer.")
+            || kind.starts_with("reminder."))
 }
 
 pub fn public_command(c: &Value, now: DateTime<Utc>) -> Value {
-    let expired = c["status"] == "pending" && c["expiresAt"].as_str().and_then(parse_js_date).is_none_or(|e| e <= now);
-    let or_null = |k: &str| if c[k].is_null() || c[k] == json!("") { Value::Null } else { c[k].clone() };
+    let expired = c["status"] == "pending"
+        && c["expiresAt"]
+            .as_str()
+            .and_then(parse_js_date)
+            .is_none_or(|e| e <= now);
+    let or_null = |k: &str| {
+        if c[k].is_null() || c[k] == json!("") {
+            Value::Null
+        } else {
+            c[k].clone()
+        }
+    };
     json!({
         "id": c["id"], "type": c["type"], "args": c["args"],
         "status": if expired { json!("expired") } else { c["status"].clone() },
@@ -386,7 +519,12 @@ pub struct DeviceStore {
 }
 
 impl DeviceStore {
-    pub fn new(data_dir: &Path, retention_days: i64, command_ttl_ms: i64, reachable_minutes: i64) -> Self {
+    pub fn new(
+        data_dir: &Path,
+        retention_days: i64,
+        command_ttl_ms: i64,
+        reachable_minutes: i64,
+    ) -> Self {
         Self::with_paths(
             data_dir.join("device-context.jsonl"),
             data_dir.join("device-state.json"),
@@ -397,7 +535,14 @@ impl DeviceStore {
         )
     }
 
-    pub fn with_paths(events: PathBuf, state: PathBuf, commands: PathBuf, retention_days: i64, command_ttl_ms: i64, reachable_minutes: i64) -> Self {
+    pub fn with_paths(
+        events: PathBuf,
+        state: PathBuf,
+        commands: PathBuf,
+        retention_days: i64,
+        command_ttl_ms: i64,
+        reachable_minutes: i64,
+    ) -> Self {
         Self {
             events: DeviceEventStore::new(events, retention_days),
             state_path: state,
@@ -418,21 +563,37 @@ impl DeviceStore {
     }
 
     pub fn reachable(&self, now: DateTime<Utc>) -> bool {
-        let state_ms = self.read_state().and_then(|s| s["receivedAt"].as_str().and_then(parse_js_date)).map(|d| d.timestamp_millis()).unwrap_or(0);
+        let state_ms = self
+            .read_state()
+            .and_then(|s| s["receivedAt"].as_str().and_then(parse_js_date))
+            .map(|d| d.timestamp_millis())
+            .unwrap_or(0);
         let last = state_ms.max(self.events.last_received_ms().unwrap_or(0));
         last > 0 && now.timestamp_millis() - last <= self.reachable_minutes * 60_000
     }
 
     fn commands(&self) -> Vec<Value> {
-        read_json(&self.commands_path).and_then(|v| v["commands"].as_array().cloned()).unwrap_or_default()
+        read_json(&self.commands_path)
+            .and_then(|v| v["commands"].as_array().cloned())
+            .unwrap_or_default()
     }
 
     fn write_commands(&self, list: &[Value]) -> Result<()> {
         let skip = list.len().saturating_sub(COMMANDS_KEEP);
-        write_pretty(&self.commands_path, &json!({"commands": &list[skip..], "updatedAt": iso_ms(Utc::now())}))
+        write_pretty(
+            &self.commands_path,
+            &json!({"commands": &list[skip..], "updatedAt": iso_ms(Utc::now())}),
+        )
     }
 
-    pub fn create_command(&self, kind: &str, args: Value, channel: &str, lang: &str, now: DateTime<Utc>) -> Result<Value> {
+    pub fn create_command(
+        &self,
+        kind: &str,
+        args: Value,
+        channel: &str,
+        lang: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Value> {
         let cmd = json!({
             "id": uuid::Uuid::new_v4().to_string(), "type": kind, "args": args, "channel": channel, "lang": lang,
             "requiresConfirmation": requires_confirmation(kind), "status": "pending", "createdAt": iso_ms(now),
@@ -449,7 +610,9 @@ impl DeviceStore {
     pub fn update_command(&self, id: &str, patch: Value) -> Result<Option<Value>> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut list = self.commands();
-        let Some(c) = list.iter_mut().find(|c| c["id"] == json!(id)) else { return Ok(None) };
+        let Some(c) = list.iter_mut().find(|c| c["id"] == json!(id)) else {
+            return Ok(None);
+        };
         if let (Some(obj), Some(p)) = (c.as_object_mut(), patch.as_object()) {
             for (k, v) in p {
                 obj.insert(k.clone(), v.clone());
@@ -467,15 +630,31 @@ impl DeviceStore {
     pub fn pending_commands(&self, now: DateTime<Utc>) -> Vec<Value> {
         self.commands()
             .into_iter()
-            .filter(|c| c["status"] == "pending" && c["expiresAt"].as_str().and_then(parse_js_date).is_some_and(|e| e > now))
+            .filter(|c| {
+                c["status"] == "pending"
+                    && c["expiresAt"]
+                        .as_str()
+                        .and_then(parse_js_date)
+                        .is_some_and(|e| e > now)
+            })
             .collect()
     }
 
     /// Record the phone's outcome: `(command, duplicate)`.
-    pub fn record_result(&self, id: &str, ok: bool, error: &str, device_object_id: &str, now: DateTime<Utc>) -> std::result::Result<(Value, bool), ResultError> {
+    pub fn record_result(
+        &self,
+        id: &str,
+        ok: bool,
+        error: &str,
+        device_object_id: &str,
+        now: DateTime<Utc>,
+    ) -> std::result::Result<(Value, bool), ResultError> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut list = self.commands();
-        let c = list.iter_mut().find(|c| c["id"] == json!(id)).ok_or(ResultError::NotFound)?;
+        let c = list
+            .iter_mut()
+            .find(|c| c["id"] == json!(id))
+            .ok_or(ResultError::NotFound)?;
         let err = clip_text(&json!(error), 300);
         let obj = clip_text(&json!(device_object_id), 200);
         let result = json!({
@@ -489,23 +668,40 @@ impl DeviceStore {
             }
             return Err(ResultError::AlreadyResolved);
         }
-        if c["expiresAt"].as_str().and_then(parse_js_date).is_none_or(|e| e <= now) {
+        if c["expiresAt"]
+            .as_str()
+            .and_then(parse_js_date)
+            .is_none_or(|e| e <= now)
+        {
             return Err(ResultError::Expired);
         }
         c["result"] = result;
         c["status"] = json!(if ok { "done" } else { "failed" });
         c["resultAt"] = json!(iso_ms(now));
         let out = c.clone();
-        self.write_commands(&list).map_err(|_| ResultError::NotFound)?;
+        self.write_commands(&list)
+            .map_err(|_| ResultError::NotFound)?;
         Ok((out, false))
     }
 }
 
 fn duration_text(seconds: i64, lang: &str) -> String {
-    let w = if lang == "da" { ["t", "min", "s"] } else { ["h", "min", "s"] };
+    let w = if lang == "da" {
+        ["t", "min", "s"]
+    } else {
+        ["h", "min", "s"]
+    };
     let (h, m, s) = (seconds / 3600, (seconds % 3600) / 60, seconds % 60);
-    let parts: Vec<String> = [(h, w[0]), (m, w[1]), (s, w[2])].iter().filter(|(n, _)| *n != 0).map(|(n, u)| format!("{n} {u}")).collect();
-    if parts.is_empty() { format!("0 {}", w[2]) } else { parts.join(" ") }
+    let parts: Vec<String> = [(h, w[0]), (m, w[1]), (s, w[2])]
+        .iter()
+        .filter(|(n, _)| *n != 0)
+        .map(|(n, u)| format!("{n} {u}"))
+        .collect();
+    if parts.is_empty() {
+        format!("0 {}", w[2])
+    } else {
+        parts.join(" ")
+    }
 }
 
 /// Lucina's confirmation text once the phone reported a result
@@ -516,7 +712,11 @@ pub fn result_text(c: &Value) -> String {
     let s = |k: &str| a[k].as_str().unwrap_or("").to_owned();
     if c["result"]["ok"] != json!(true) {
         let e = c["result"]["error"].as_str().unwrap_or("");
-        let sep = if e.is_empty() { String::new() } else { format!(": {e}") };
+        let sep = if e.is_empty() {
+            String::new()
+        } else {
+            format!(": {e}")
+        };
         return match lang {
             "it" => format!("Il telefono non ci è riuscito{sep}."),
             "da" => format!("Telefonen kunne ikke gøre det{sep}."),
@@ -573,16 +773,40 @@ mod tests {
         let out = s.events.ingest(&batch, now).unwrap();
         assert_eq!(out["accepted"], json!(["e1", "e6"]));
         assert_eq!(out["duplicates"], json!(["e1"]));
-        let errors: Vec<&str> = out["rejected"].as_array().unwrap().iter().map(|r| r["error"].as_str().unwrap()).collect();
-        assert_eq!(errors, vec!["invalid_id", "too_old", "invalid_type", "missing_domain", "not_an_object"]);
+        let errors: Vec<&str> = out["rejected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["error"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            errors,
+            vec![
+                "invalid_id",
+                "too_old",
+                "invalid_type",
+                "missing_domain",
+                "not_an_object"
+            ]
+        );
         let text = std::fs::read_to_string(dir.path().join("device-context.jsonl")).unwrap();
-        assert!(!text.contains("token=secret") && text.contains("\"domain\":\"github.com\"") && text.contains("\"title\":\"PR #12\""));
+        assert!(
+            !text.contains("token=secret")
+                && text.contains("\"domain\":\"github.com\"")
+                && text.contains("\"title\":\"PR #12\"")
+        );
         assert!(s.reachable(now));
         // a fresh store reloads and still dedupes
         let s2 = DeviceStore::new(dir.path(), 90, 600_000, 360);
-        assert_eq!(s2.events.ingest(&[batch[0].clone()], now).unwrap()["duplicates"], json!(["e1"]));
+        assert_eq!(
+            s2.events.ingest(&[batch[0].clone()], now).unwrap()["duplicates"],
+            json!(["e1"])
+        );
         assert_eq!(domain_of("news.ycombinator.com"), "news.ycombinator.com");
-        assert_eq!(domain_of("http://user:pw@WWW.example.org:8080/a"), "example.org");
+        assert_eq!(
+            domain_of("http://user:pw@WWW.example.org:8080/a"),
+            "example.org"
+        );
     }
 
     #[test]
@@ -592,7 +816,10 @@ mod tests {
         let now = Utc::now();
         let state = validate_state(&json!({"source": "ios", "alarms": [{"id": "A1", "time": "7:00", "label": "Gym"}, {"id": "A2", "time": "25:00"}, {"time": "08:00"}],
             "timers": [{"id": "T1", "seconds": "600"}], "events": [{"id": "E1", "title": "Dentist"}], "focus": {"mode": "Work"}}), now).unwrap();
-        assert_eq!(state["alarms"], json!([{"id": "A1", "time": "07:00", "label": "Gym", "enabled": true, "repeat": null}]));
+        assert_eq!(
+            state["alarms"],
+            json!([{"id": "A1", "time": "07:00", "label": "Gym", "enabled": true, "repeat": null}])
+        );
         assert_eq!(state["timers"][0]["seconds"], 600);
         assert_eq!(state["events"], json!([]));
         assert_eq!(state["focus"]["mode"], "Work");
@@ -600,20 +827,45 @@ mod tests {
         s.save_state(&state).unwrap();
         assert_eq!(s.read_state().unwrap()["alarms"][0]["id"], "A1");
 
-        let c = s.create_command("alarm.delete", json!({"id": "A1", "time": "07:00"}), "ios", "it", now).unwrap();
+        let c = s
+            .create_command(
+                "alarm.delete",
+                json!({"id": "A1", "time": "07:00"}),
+                "ios",
+                "it",
+                now,
+            )
+            .unwrap();
         assert_eq!(c["requiresConfirmation"], true);
         assert_eq!(s.pending_commands(now).len(), 1);
         let id = c["id"].as_str().unwrap();
-        assert_eq!(s.record_result("nope", true, "", "", now), Err(ResultError::NotFound));
+        assert_eq!(
+            s.record_result("nope", true, "", "", now),
+            Err(ResultError::NotFound)
+        );
         let (done, dup) = s.record_result(id, true, "", "A1", now).unwrap();
         assert!(!dup);
         assert_eq!(done["status"], "done");
         assert_eq!(result_text(&done), "Fatto: sveglia delle 07:00 eliminata.");
         assert!(s.record_result(id, true, "", "A1", now).unwrap().1);
-        assert_eq!(s.record_result(id, false, "x", "", now), Err(ResultError::AlreadyResolved));
-        let late = s.create_command("timer.start", json!({"seconds": 600}), "web", "en", now - chrono::Duration::minutes(11)).unwrap();
+        assert_eq!(
+            s.record_result(id, false, "x", "", now),
+            Err(ResultError::AlreadyResolved)
+        );
+        let late = s
+            .create_command(
+                "timer.start",
+                json!({"seconds": 600}),
+                "web",
+                "en",
+                now - chrono::Duration::minutes(11),
+            )
+            .unwrap();
         assert_eq!(public_command(&late, now)["status"], "expired");
-        assert_eq!(s.record_result(late["id"].as_str().unwrap(), true, "", "", now), Err(ResultError::Expired));
+        assert_eq!(
+            s.record_result(late["id"].as_str().unwrap(), true, "", "", now),
+            Err(ResultError::Expired)
+        );
         assert!(!requires_confirmation("timer.start") && requires_confirmation("calendar.create"));
     }
 }

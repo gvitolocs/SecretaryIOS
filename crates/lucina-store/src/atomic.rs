@@ -72,7 +72,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
         // no temp files left behind
         assert_eq!(fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);

@@ -29,11 +29,21 @@ struct Args {
 
 pub struct ShoppingTool;
 
-async fn resolve_list(ctx: &Ctx, repo: &lucina_grocery::GroceryRepo, wanted: Option<&str>) -> Result<String, ToolError> {
-    let Some(w) = wanted.map(str::trim).filter(|s| !s.is_empty() && *s != "default") else {
+async fn resolve_list(
+    ctx: &Ctx,
+    repo: &lucina_grocery::GroceryRepo,
+    wanted: Option<&str>,
+) -> Result<String, ToolError> {
+    let Some(w) = wanted
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "default")
+    else {
         return Ok("default".into());
     };
-    let lists = repo.list_lists(&ctx.env.grocery_user_id).await.map_err(|e| ToolError::new(e.to_string()))?;
+    let lists = repo
+        .list_lists(&ctx.env.grocery_user_id)
+        .await
+        .map_err(|e| ToolError::new(e.to_string()))?;
     lists
         .iter()
         .find(|l| l["id"] == json!(w) || fold(l["name"].as_str().unwrap_or("")) == fold(w))
@@ -65,13 +75,31 @@ impl Tool for ShoppingTool {
     }
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
-        let repo = ctx.env.grocery.as_ref().ok_or_else(|| ToolError::new("grocery_unavailable: the grocery database is not configured"))?;
+        let repo = ctx.env.grocery.as_ref().ok_or_else(|| {
+            ToolError::new("grocery_unavailable: the grocery database is not configured")
+        })?;
         let user = &ctx.env.grocery_user_id;
         let list_id = resolve_list(ctx, repo, a.list.as_deref()).await?;
-        let modifier = if matches!(ctx.channel.as_str(), "web" | "ios" | "telegram" | "discord" | "alexa") { ctx.channel.as_str() } else { "lucina" };
-        let items: Vec<String> = a.items.unwrap_or_default().into_iter().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).take(50).collect();
+        let modifier = if matches!(
+            ctx.channel.as_str(),
+            "web" | "ios" | "telegram" | "discord" | "alexa"
+        ) {
+            ctx.channel.as_str()
+        } else {
+            "lucina"
+        };
+        let items: Vec<String> = a
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .take(50)
+            .collect();
         let state = if a.action == Action::List {
-            repo.list_state(user, &list_id).await.map_err(|e| ToolError::new(e.to_string()))?
+            repo.list_state(user, &list_id)
+                .await
+                .map_err(|e| ToolError::new(e.to_string()))?
         } else {
             if items.is_empty() {
                 return Err(ToolError::new("items is required"));
@@ -79,14 +107,18 @@ impl Tool for ShoppingTool {
             let ops: Vec<Value> = if a.action == Action::Add {
                 items.iter().map(|n| json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "name": n})).collect()
             } else {
-                let current = repo.list_state(user, &list_id).await.map_err(|e| ToolError::new(e.to_string()))?;
+                let current = repo
+                    .list_state(user, &list_id)
+                    .await
+                    .map_err(|e| ToolError::new(e.to_string()))?;
                 let idx = repo.catalog_index();
                 let mut ops = Vec::new();
                 let mut missing = Vec::new();
                 for n in &items {
                     let cid = idx.find(n).map(|e| e.id.clone());
                     let hit = current["items"].as_array().into_iter().flatten().find(|i| {
-                        fold(i["name"].as_str().unwrap_or("")) == fold(n) || (cid.is_some() && i["catalogId"].as_str() == cid.as_deref())
+                        fold(i["name"].as_str().unwrap_or("")) == fold(n)
+                            || (cid.is_some() && i["catalogId"].as_str() == cid.as_deref())
                     });
                     match hit {
                         Some(i) => ops.push(json!({
@@ -98,16 +130,24 @@ impl Tool for ShoppingTool {
                     }
                 }
                 if ops.is_empty() {
-                    return Err(ToolError::new(format!("not on the list: {}", missing.join(", "))));
+                    return Err(ToolError::new(format!(
+                        "not on the list: {}",
+                        missing.join(", ")
+                    )));
                 }
                 ops
             };
-            let out = repo.apply_ops(user, &list_id, &Value::Array(ops), None, modifier).await.map_err(|e| ToolError::new(e.to_string()))?;
+            let out = repo
+                .apply_ops(user, &list_id, &Value::Array(ops), None, modifier)
+                .await
+                .map_err(|e| ToolError::new(e.to_string()))?;
             json!({"list": out.list, "revision": out.revision, "items": out.items, "rejected": out.rejected})
         };
         let id = state["list"]["id"].as_str().unwrap_or_default().to_owned();
         if a.action != Action::List {
-            ctx.push_effect(Effect::Shopping { list_id: id.clone() });
+            ctx.push_effect(Effect::Shopping {
+                list_id: id.clone(),
+            });
         }
         let all = state["items"].as_array().cloned().unwrap_or_default();
         Ok(json!({

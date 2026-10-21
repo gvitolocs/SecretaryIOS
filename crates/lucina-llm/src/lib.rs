@@ -118,7 +118,11 @@ pub struct ToolFunction {
 }
 
 impl Tool {
-    pub fn function(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
+    pub fn function(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+    ) -> Self {
         Self {
             kind: "function".into(),
             function: ToolFunction {
@@ -361,7 +365,10 @@ impl DeepSeek {
         Ok(Self {
             cfg,
             http,
-            key_cache: Mutex::new(KeyCache { value: String::new(), checked: None }),
+            key_cache: Mutex::new(KeyCache {
+                value: String::new(),
+                checked: None,
+            }),
             usage: Arc::new(UsageTotals::default()),
         })
     }
@@ -381,8 +388,13 @@ impl DeepSeek {
             KeySource::None => None,
             KeySource::File(path) => {
                 let mut cache = self.key_cache.lock().unwrap_or_else(|e| e.into_inner());
-                if cache.checked.is_none_or(|t| t.elapsed() > Duration::from_secs(5)) {
-                    cache.value = std::fs::read_to_string(path).map(|s| s.trim().to_owned()).unwrap_or_default();
+                if cache
+                    .checked
+                    .is_none_or(|t| t.elapsed() > Duration::from_secs(5))
+                {
+                    cache.value = std::fs::read_to_string(path)
+                        .map(|s| s.trim().to_owned())
+                        .unwrap_or_default();
                     cache.checked = Some(Instant::now());
                 }
                 (!cache.value.is_empty()).then(|| cache.value.clone())
@@ -395,7 +407,11 @@ impl DeepSeek {
             model,
             messages: &req.messages,
             tools: &req.tools,
-            tool_choice: if req.tools.is_empty() { None } else { req.tool_choice.as_deref() },
+            tool_choice: if req.tools.is_empty() {
+                None
+            } else {
+                req.tool_choice.as_deref()
+            },
             temperature: req.temperature,
             max_tokens: req.max_tokens,
             stream,
@@ -404,10 +420,22 @@ impl DeepSeek {
     }
 
     /// One HTTP attempt; returns the response once the status is 2xx.
-    async fn send_once(&self, req: &ChatRequest, model: &str, stream: bool) -> Result<reqwest::Response, (LlmError, Option<Duration>)> {
+    async fn send_once(
+        &self,
+        req: &ChatRequest,
+        model: &str,
+        stream: bool,
+    ) -> Result<reqwest::Response, (LlmError, Option<Duration>)> {
         let key = self.api_key().ok_or((LlmError::NoKey, None))?;
-        let url = format!("{}/chat/completions", self.cfg.base_url.trim_end_matches('/'));
-        let mut builder = self.http.post(url).bearer_auth(key).json(&self.body(req, model, stream));
+        let url = format!(
+            "{}/chat/completions",
+            self.cfg.base_url.trim_end_matches('/')
+        );
+        let mut builder = self
+            .http
+            .post(url)
+            .bearer_auth(key)
+            .json(&self.body(req, model, stream));
         if !stream {
             builder = builder.timeout(self.cfg.timeout);
         }
@@ -428,12 +456,29 @@ impl DeepSeek {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<u64>().ok())
             .map(|s| Duration::from_secs(s.min(10)));
-        let body: String = resp.text().await.unwrap_or_default().chars().take(300).collect();
-        Err((LlmError::Status { status: status.as_u16(), body }, retry_after))
+        let body: String = resp
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect();
+        Err((
+            LlmError::Status {
+                status: status.as_u16(),
+                body,
+            },
+            retry_after,
+        ))
     }
 
     /// Send with retries on 429/5xx/transport errors.
-    async fn send(&self, req: &ChatRequest, model: &str, stream: bool) -> Result<reqwest::Response, LlmError> {
+    async fn send(
+        &self,
+        req: &ChatRequest,
+        model: &str,
+        stream: bool,
+    ) -> Result<reqwest::Response, LlmError> {
         let mut attempt = 0u32;
         loop {
             match self.send_once(req, model, stream).await {
@@ -443,7 +488,9 @@ impl DeepSeek {
                         return Err(err);
                     }
                     let base = self.cfg.backoff.as_millis() as u64 * (1u64 << attempt.min(5));
-                    let wait = retry_after.unwrap_or_else(|| Duration::from_millis((base + jitter(base / 2 + 1)).min(10_000)));
+                    let wait = retry_after.unwrap_or_else(|| {
+                        Duration::from_millis((base + jitter(base / 2 + 1)).min(10_000))
+                    });
                     tracing::warn!(model, attempt = attempt + 1, wait_ms = wait.as_millis() as u64, error = %err, "deepseek retry");
                     tokio::time::sleep(wait).await;
                     attempt += 1;
@@ -455,8 +502,12 @@ impl DeepSeek {
     fn record(&self, purpose: &str, model: &str, usage: Option<&Usage>, started: Instant) {
         self.usage.calls.fetch_add(1, Ordering::Relaxed);
         let u = usage.cloned().unwrap_or_default();
-        self.usage.prompt_tokens.fetch_add(u.prompt_tokens, Ordering::Relaxed);
-        self.usage.completion_tokens.fetch_add(u.completion_tokens, Ordering::Relaxed);
+        self.usage
+            .prompt_tokens
+            .fetch_add(u.prompt_tokens, Ordering::Relaxed);
+        self.usage
+            .completion_tokens
+            .fetch_add(u.completion_tokens, Ordering::Relaxed);
         tracing::info!(
             target: "lucina_llm::usage",
             purpose,
@@ -477,10 +528,19 @@ impl DeepSeek {
         let result = async {
             let resp = self.send(&req, &model, false).await?;
             let text = resp.text().await.map_err(|e| {
-                if e.is_timeout() { LlmError::Timeout } else { LlmError::Transport(e.without_url().to_string()) }
+                if e.is_timeout() {
+                    LlmError::Timeout
+                } else {
+                    LlmError::Transport(e.without_url().to_string())
+                }
             })?;
-            let wire: WireResponse = serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
-            let choice = wire.choices.into_iter().next().ok_or_else(|| LlmError::Decode("no choices".into()))?;
+            let wire: WireResponse =
+                serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
+            let choice = wire
+                .choices
+                .into_iter()
+                .next()
+                .ok_or_else(|| LlmError::Decode("no choices".into()))?;
             Ok(ChatResponse {
                 message: choice.message,
                 finish_reason: choice.finish_reason,
@@ -501,7 +561,11 @@ impl DeepSeek {
 
     /// Streaming completion: `on_delta` gets each content fragment; the
     /// assembled response (tool calls included) is returned at the end.
-    pub async fn stream(&self, req: ChatRequest, mut on_delta: impl FnMut(&str) + Send) -> Result<ChatResponse, LlmError> {
+    pub async fn stream(
+        &self,
+        req: ChatRequest,
+        mut on_delta: impl FnMut(&str) + Send,
+    ) -> Result<ChatResponse, LlmError> {
         let started = Instant::now();
         let model = req.model.clone().unwrap_or_else(|| self.cfg.model.clone());
         let resp = match self.send(&req, &model, true).await {
@@ -516,7 +580,9 @@ impl DeepSeek {
         let mut bytes = resp.bytes_stream();
         let deadline = tokio::time::Instant::now() + self.cfg.timeout;
         loop {
-            let next = tokio::time::timeout_at(deadline, bytes.next()).await.map_err(|_| LlmError::Timeout)?;
+            let next = tokio::time::timeout_at(deadline, bytes.next())
+                .await
+                .map_err(|_| LlmError::Timeout)?;
             let Some(chunk) = next else { break };
             let chunk = chunk.map_err(|e| LlmError::Transport(e.without_url().to_string()))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -558,7 +624,11 @@ pub struct StreamAccumulator {
 
 impl StreamAccumulator {
     /// Feed one SSE line. Returns `true` on `data: [DONE]`.
-    pub fn feed_line(&mut self, line: &str, on_delta: &mut (impl FnMut(&str) + ?Sized)) -> Result<bool, LlmError> {
+    pub fn feed_line(
+        &mut self,
+        line: &str,
+        on_delta: &mut (impl FnMut(&str) + ?Sized),
+    ) -> Result<bool, LlmError> {
         let Some(data) = line.strip_prefix("data:") else {
             return Ok(false); // comments (": keep-alive"), event:, id:, blank
         };
@@ -569,7 +639,8 @@ impl StreamAccumulator {
         if data.is_empty() {
             return Ok(false);
         }
-        let v: Value = serde_json::from_str(data).map_err(|e| LlmError::Decode(format!("stream chunk: {e}")))?;
+        let v: Value = serde_json::from_str(data)
+            .map_err(|e| LlmError::Decode(format!("stream chunk: {e}")))?;
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             self.model = Some(m.to_owned());
         }
@@ -582,7 +653,9 @@ impl StreamAccumulator {
         if let Some(fr) = choice.get("finish_reason").and_then(Value::as_str) {
             self.finish_reason = Some(fr.to_owned());
         }
-        let Some(delta) = choice.get("delta") else { return Ok(false) };
+        let Some(delta) = choice.get("delta") else {
+            return Ok(false);
+        };
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             if !text.is_empty() {
                 self.content.push_str(text);
@@ -594,12 +667,18 @@ impl StreamAccumulator {
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
-                let index = call.get("index").and_then(Value::as_u64).unwrap_or(self.calls.len() as u64) as usize;
+                let index = call
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(self.calls.len() as u64) as usize;
                 while self.calls.len() <= index {
                     self.calls.push(ToolCall {
                         id: String::new(),
                         kind: "function".into(),
-                        function: FunctionCall { name: String::new(), arguments: String::new() },
+                        function: FunctionCall {
+                            name: String::new(),
+                            arguments: String::new(),
+                        },
                     });
                 }
                 let slot = &mut self.calls[index];
@@ -620,7 +699,11 @@ impl StreamAccumulator {
     }
 
     pub fn finish(self, model: &str) -> ChatResponse {
-        let calls: Vec<ToolCall> = self.calls.into_iter().filter(|c| !c.function.name.is_empty()).collect();
+        let calls: Vec<ToolCall> = self
+            .calls
+            .into_iter()
+            .filter(|c| !c.function.name.is_empty())
+            .collect();
         ChatResponse {
             message: Message {
                 role: Role::Assistant,
@@ -668,7 +751,10 @@ impl ScriptedModel {
             .map(|(i, (name, args))| ToolCall {
                 id: format!("call_{}_{i}", self.requests_len()),
                 kind: "function".into(),
-                function: FunctionCall { name: (*name).into(), arguments: args.to_string() },
+                function: FunctionCall {
+                    name: (*name).into(),
+                    arguments: args.to_string(),
+                },
             })
             .collect();
         self.push(Ok(ChatResponse {

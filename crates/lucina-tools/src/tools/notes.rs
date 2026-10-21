@@ -80,12 +80,20 @@ fn list(ctx: &Ctx) -> Vec<(String, std::time::SystemTime, String)> {
                 .next()
                 .and_then(|l| l.strip_prefix("# "))
                 .map(str::to_owned)
-                .unwrap_or_else(|| p.file_stem().unwrap_or_default().to_string_lossy().into_owned());
-            let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                .unwrap_or_else(|| {
+                    p.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                });
+            let mtime = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
             out.push((title, mtime, text));
         }
     }
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|n| std::cmp::Reverse(n.1));
     out
 }
 
@@ -109,7 +117,10 @@ impl Tool for NotesTool {
         format!(
             "notes {} {}",
             args["action"].as_str().unwrap_or(""),
-            args["title"].as_str().or(args["query"].as_str()).unwrap_or("")
+            args["title"]
+                .as_str()
+                .or(args["query"].as_str())
+                .unwrap_or("")
         )
         .trim()
         .to_owned()
@@ -117,17 +128,24 @@ impl Tool for NotesTool {
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
         let req = |v: &Option<String>, what: &str| {
-            v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).ok_or_else(|| ToolError::new(format!("{what} is required")))
+            v.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| ToolError::new(format!("{what} is required")))
         };
         match a.action {
-            Action::List => Ok(json!({"notes": list(ctx).into_iter().take(100).map(|(t, m, _)| json!({
+            Action::List => Ok(
+                json!({"notes": list(ctx).into_iter().take(100).map(|(t, m, _)| json!({
                 "title": t,
                 "modified": chrono::DateTime::<chrono::Utc>::from(m).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            })).collect::<Vec<_>>()})),
+            })).collect::<Vec<_>>()}),
+            ),
             Action::Read => {
                 let title = req(&a.title, "title")?;
                 let p = path_for(ctx, &title)?;
-                let text = std::fs::read_to_string(&p).map_err(|_| ToolError::new(format!("no note titled {title:?}")))?;
+                let text = std::fs::read_to_string(&p)
+                    .map_err(|_| ToolError::new(format!("no note titled {title:?}")))?;
                 Ok(json!({"title": title, "content": text.chars().take(8000).collect::<String>()}))
             }
             Action::Create | Action::Append => {
@@ -136,7 +154,11 @@ impl Tool for NotesTool {
                 let p = path_for(ctx, &title)?;
                 let existing = std::fs::read_to_string(&p).ok();
                 let text = match (a.action, existing) {
-                    (Action::Create, Some(_)) => return Err(ToolError::new(format!("a note titled {title:?} exists; use append"))),
+                    (Action::Create, Some(_)) => {
+                        return Err(ToolError::new(format!(
+                            "a note titled {title:?} exists; use append"
+                        )))
+                    }
                     (Action::Create, None) => format!("# {title}\n\n{content}\n"),
                     (_, Some(old)) => format!("{}\n{content}\n", old.trim_end()),
                     (_, None) => format!("# {title}\n\n{content}\n"),
@@ -144,8 +166,11 @@ impl Tool for NotesTool {
                 if text.chars().count() > MAX_NOTE_CHARS {
                     return Err(ToolError::new("note too long"));
                 }
-                lucina_store::write_atomic(&p, text.as_bytes()).map_err(|e| ToolError::new(format!("write failed: {e}")))?;
-                ctx.push_effect(Effect::Note { title: title.clone() });
+                lucina_store::write_atomic(&p, text.as_bytes())
+                    .map_err(|e| ToolError::new(format!("write failed: {e}")))?;
+                ctx.push_effect(Effect::Note {
+                    title: title.clone(),
+                });
                 Ok(json!({"saved": true, "title": title, "chars": text.chars().count()}))
             }
             Action::Search => {
@@ -153,8 +178,14 @@ impl Tool for NotesTool {
                 let hits: Vec<Value> = list(ctx)
                     .into_iter()
                     .filter_map(|(t, _, text)| {
-                        let lines: Vec<String> = text.lines().filter(|l| l.to_lowercase().contains(&q)).take(5).map(str::to_owned).collect();
-                        (t.to_lowercase().contains(&q) || !lines.is_empty()).then(|| json!({"title": t, "lines": lines}))
+                        let lines: Vec<String> = text
+                            .lines()
+                            .filter(|l| l.to_lowercase().contains(&q))
+                            .take(5)
+                            .map(str::to_owned)
+                            .collect();
+                        (t.to_lowercase().contains(&q) || !lines.is_empty())
+                            .then(|| json!({"title": t, "lines": lines}))
                     })
                     .take(20)
                     .collect();

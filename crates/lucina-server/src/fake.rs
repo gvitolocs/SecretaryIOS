@@ -72,10 +72,17 @@ pub fn kind_of(req: &Value) -> &'static str {
     if req["tools"].as_array().is_some_and(|t| !t.is_empty()) {
         return "agent";
     }
-    let system = req["messages"].as_array().and_then(|m| m.iter().find(|x| x["role"] == "system")).and_then(|m| m["content"].as_str()).unwrap_or("");
+    let system = req["messages"]
+        .as_array()
+        .and_then(|m| m.iter().find(|x| x["role"] == "system"))
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or("");
     if system.starts_with("You classify ") {
         "intent"
-    } else if system.contains("a concise helpful assistant connected to chat platforms through Hermes") && system.contains("Return only compact JSON with this schema:") {
+    } else if system
+        .contains("a concise helpful assistant connected to chat platforms through Hermes")
+        && system.contains("Return only compact JSON with this schema:")
+    {
         "plan"
     } else {
         "reply"
@@ -92,13 +99,19 @@ fn last_user(req: &Value) -> String {
 }
 
 fn after_tool(req: &Value) -> bool {
-    req["messages"].as_array().and_then(|m| m.last()).is_some_and(|m| m["role"] == "tool")
+    req["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .is_some_and(|m| m["role"] == "tool")
 }
 
 fn matches(rule: &Rule, req: &Value) -> bool {
     let kind = kind_of(req);
     rule.kind.as_deref().is_none_or(|k| k == "any" || k == kind)
-        && rule.contains.as_deref().is_none_or(|c| last_user(req).to_lowercase().contains(&c.to_lowercase()))
+        && rule
+            .contains
+            .as_deref()
+            .is_none_or(|c| last_user(req).to_lowercase().contains(&c.to_lowercase()))
         && rule.after_tool.is_none_or(|a| a == after_tool(req))
 }
 
@@ -111,7 +124,11 @@ fn completion(rule: Option<&Rule>, n: usize) -> Value {
             .map(|(i, c)| json!({"id": format!("call_{n}_{i}"), "type": "function", "function": {"name": c.name, "arguments": c.arguments.to_string()}}))
             .collect()
     });
-    let finish = if calls.is_some() { "tool_calls" } else { "stop" };
+    let finish = if calls.is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
     let mut message = json!({"role": "assistant", "content": content.unwrap_or_else(|| if calls.is_some() { String::new() } else { "{\"action\":\"reply\",\"text\":\"ok\"}".into() })});
     if let Some(c) = calls {
         message["tool_calls"] = Value::Array(c);
@@ -133,13 +150,19 @@ async fn chat(State(st): State<Arc<FakeState>>, Json(req): Json<Value>) -> Json<
     if let Some(path) = &st.record {
         use std::io::Write;
         let line = json!({"kind": kind_of(&req), "lastUser": last_user(&req), "afterTool": after_tool(&req), "request": req});
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{line}");
         }
     }
     let rule = {
         let mut rules = st.rules.lock().unwrap();
-        let hit = rules.iter_mut().find(|(r, used)| !(*used && r.once) && matches(r, &req));
+        let hit = rules
+            .iter_mut()
+            .find(|(r, used)| !(*used && r.once) && matches(r, &req));
         hit.map(|(r, used)| {
             *used = true;
             r.clone()
@@ -167,16 +190,29 @@ pub fn router(script: Script, record: Option<PathBuf>) -> (Router, Arc<FakeState
         requests: Mutex::new(Vec::new()),
         record,
     });
-    (Router::new().route("/v1/chat/completions", post(chat)).route("/chat/completions", post(chat)).with_state(state.clone()), state)
+    (
+        Router::new()
+            .route("/v1/chat/completions", post(chat))
+            .route("/chat/completions", post(chat))
+            .with_state(state.clone()),
+        state,
+    )
 }
 
 /// Serve on `addr` (port 0 for an ephemeral port).
-pub async fn spawn(addr: SocketAddr, script: Script, record: Option<PathBuf>) -> std::io::Result<Fake> {
+pub async fn spawn(
+    addr: SocketAddr,
+    script: Script,
+    record: Option<PathBuf>,
+) -> std::io::Result<Fake> {
     let (app, state) = router(script, record);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let local = listener.local_addr()?;
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    Ok(Fake { base_url: format!("http://{local}/v1"), state })
+    Ok(Fake {
+        base_url: format!("http://{local}/v1"),
+        state,
+    })
 }

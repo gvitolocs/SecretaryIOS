@@ -16,7 +16,9 @@ use axum::Router;
 use chrono::{NaiveDate, Utc};
 use futures_util::StreamExt;
 use lucina_grocery::GroceryError;
-use lucina_store::device::{public_command, result_text, validate_state, ResultError, MAX_EVENTS_PER_BATCH};
+use lucina_store::device::{
+    public_command, result_text, validate_state, ResultError, MAX_EVENTS_PER_BATCH,
+};
 use lucina_store::reminders::{filter_for_scope, CancelOutcome, CreateReminder, Reminder};
 use lucina_store::timeline::{Meta, NewItem, MAX_LIST_LIMIT};
 use lucina_store::timeutil::{iso_ms, now_iso, parse_js_date, utf16_len, ymd_in_tz};
@@ -49,7 +51,13 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
-        Self { status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), code: code.into(), message: message.into(), allow: None, extra: None }
+        Self {
+            status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            code: code.into(),
+            message: message.into(),
+            allow: None,
+            extra: None,
+        }
     }
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(400, "bad_request", message)
@@ -61,7 +69,11 @@ impl ApiError {
         Self::new(500, "internal_error", "")
     }
     pub fn method_not_allowed(allowed: &[&str]) -> Self {
-        let mut e = Self::new(405, "method_not_allowed", format!("Allowed: {}", allowed.join(", ")));
+        let mut e = Self::new(
+            405,
+            "method_not_allowed",
+            format!("Allowed: {}", allowed.join(", ")),
+        );
         e.allow = Some(allowed.join(", "));
         e
     }
@@ -70,7 +82,10 @@ impl ApiError {
 fn json_response(status: StatusCode, body: &Value) -> Response {
     let mut resp = (status, body.to_string()).into_response();
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     resp
 }
@@ -80,7 +95,10 @@ pub fn ok(data: Value) -> Response {
 }
 
 pub fn ok_status(status: u16, data: Value) -> Response {
-    json_response(StatusCode::from_u16(status).unwrap_or(StatusCode::OK), &json!({"ok": true, "data": data}))
+    json_response(
+        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+        &json!({"ok": true, "data": data}),
+    )
 }
 
 impl IntoResponse for ApiError {
@@ -95,7 +113,11 @@ impl IntoResponse for ApiError {
             }
         }
         let mut resp = json_response(self.status, &body);
-        if let Some(allow) = self.allow.as_deref().and_then(|a| HeaderValue::from_str(a).ok()) {
+        if let Some(allow) = self
+            .allow
+            .as_deref()
+            .and_then(|a| HeaderValue::from_str(a).ok())
+        {
             resp.headers_mut().insert(header::ALLOW, allow);
         }
         resp
@@ -107,15 +129,26 @@ type ApiResult = Result<Response, ApiError>;
 // ---------------------------------------------------------------- body helpers
 
 pub async fn read_json(body: Body, limit: usize) -> Result<Value, ApiError> {
-    let bytes = axum::body::to_bytes(body, limit + 1).await.map_err(|_| ApiError::new(413, "payload_too_large", format!("Body exceeds {limit} bytes")))?;
+    let bytes = axum::body::to_bytes(body, limit + 1).await.map_err(|_| {
+        ApiError::new(
+            413,
+            "payload_too_large",
+            format!("Body exceeds {limit} bytes"),
+        )
+    })?;
     if bytes.len() > limit {
-        return Err(ApiError::new(413, "payload_too_large", format!("Body exceeds {limit} bytes")));
+        return Err(ApiError::new(
+            413,
+            "payload_too_large",
+            format!("Body exceeds {limit} bytes"),
+        ));
     }
     let text = String::from_utf8_lossy(&bytes);
     if text.trim().is_empty() {
         return Ok(json!({}));
     }
-    let v: Value = serde_json::from_str(&text).map_err(|_| ApiError::new(400, "invalid_json", "Body is not valid JSON"))?;
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|_| ApiError::new(400, "invalid_json", "Body is not valid JSON"))?;
     if !v.is_object() {
         return Err(ApiError::bad_request("JSON body must be an object"));
     }
@@ -129,7 +162,9 @@ pub fn optional_string(body: &Value, key: &str, max: usize) -> Result<String, Ap
         Some(Value::String(s)) => {
             let t = lucina_store::timeutil::js_trim(s);
             if utf16_len(t) > max {
-                return Err(ApiError::bad_request(format!("{key} must be at most {max} characters")));
+                return Err(ApiError::bad_request(format!(
+                    "{key} must be at most {max} characters"
+                )));
             }
             Ok(t.to_owned())
         }
@@ -156,7 +191,10 @@ fn decode(s: &str) -> String {
         match bytes[i] {
             b'+' => out.push(b' '),
             b'%' if i + 2 < bytes.len() => {
-                if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"), 16) {
+                if let Ok(b) = u8::from_str_radix(
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"),
+                    16,
+                ) {
                     out.push(b);
                     i += 3;
                     continue;
@@ -211,24 +249,41 @@ async fn health(State(st): State<AppState>) -> Response {
     )
 }
 
-async fn secretary(State(st): State<AppState>, method: Method, uri: Uri, headers: HeaderMap, body: Body) -> Response {
+async fn secretary(
+    State(st): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     if !st.cfg.secretary_enabled {
         return ApiError::not_found().into_response();
     }
     let provided = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split_once(' ').filter(|(s, _)| s.eq_ignore_ascii_case("bearer")).map(|(_, t)| t.trim().to_owned()))
+        .and_then(|v| {
+            v.split_once(' ')
+                .filter(|(s, _)| s.eq_ignore_ascii_case("bearer"))
+                .map(|(_, t)| t.trim().to_owned())
+        })
         .unwrap_or_default();
     let authorized = match st.cfg.token.as_deref() {
-        Some(expected) if !provided.is_empty() => provided.len() == expected.len() && bool::from(provided.as_bytes().ct_eq(expected.as_bytes())),
+        Some(expected) if !provided.is_empty() => {
+            provided.len() == expected.len()
+                && bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
+        }
         _ => false,
     };
     if !authorized {
         return ApiError::new(401, "unauthorized", "").into_response();
     }
     let path = uri.path().trim_start_matches("/api/secretary").to_owned();
-    let parts: Vec<String> = path.split('/').filter(|s| !s.is_empty()).map(decode).collect();
+    let parts: Vec<String> = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(decode)
+        .collect();
     match route(&st, &method, &uri, &headers, &parts, body).await {
         Ok(r) => r,
         Err(e) => {
@@ -241,7 +296,14 @@ async fn secretary(State(st): State<AppState>, method: Method, uri: Uri, headers
     }
 }
 
-async fn route(st: &AppState, method: &Method, uri: &Uri, headers: &HeaderMap, parts: &[String], body: Body) -> ApiResult {
+async fn route(
+    st: &AppState,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    parts: &[String],
+    body: Body,
+) -> ApiResult {
     let p = |i: usize| parts.get(i).map(String::as_str);
     let (resource, id, extra, fourth) = (p(0), p(1), p(2), p(3));
     if resource == Some("device") {
@@ -292,7 +354,13 @@ async fn route(st: &AppState, method: &Method, uri: &Uri, headers: &HeaderMap, p
         }
         (Some("jobs"), Some(id)) => {
             only(&["GET"])?;
-            let job = if is_reminder_id(id) { st.jobs.find(id).map_err(|e| ApiError::new(500, "internal_error", e.to_string()))? } else { None };
+            let job = if is_reminder_id(id) {
+                st.jobs
+                    .find(id)
+                    .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?
+            } else {
+                None
+            };
             let job = job.ok_or_else(|| ApiError::new(404, "job_not_found", "No such job"))?;
             Ok(ok(job.public()))
         }
@@ -310,7 +378,11 @@ async fn route(st: &AppState, method: &Method, uri: &Uri, headers: &HeaderMap, p
             agenda(st, uri).await
         }
         (Some("shopping"), id) => {
-            let allowed: &[&str] = if id.is_some() { &["PATCH"] } else { &["GET", "POST"] };
+            let allowed: &[&str] = if id.is_some() {
+                &["PATCH"]
+            } else {
+                &["GET", "POST"]
+            };
             only(allowed)?;
             shopping_legacy(st, method, id, body).await
         }
@@ -321,7 +393,9 @@ async fn route(st: &AppState, method: &Method, uri: &Uri, headers: &HeaderMap, p
 // ---------------------------------------------------------------- reminders
 
 pub fn owner_reminders(st: &AppState) -> Result<Vec<Reminder>, ApiError> {
-    let Some(chat) = st.cfg.owner_chat_id.as_deref().filter(|c| !c.is_empty()) else { return Ok(Vec::new()) };
+    let Some(chat) = st.cfg.owner_chat_id.as_deref().filter(|c| !c.is_empty()) else {
+        return Ok(Vec::new());
+    };
     Ok(st
         .reminders
         .list(true)
@@ -344,9 +418,13 @@ fn flag01(v: Option<String>, name: &str) -> Result<bool, ApiError> {
 }
 
 fn list_reminders(st: &AppState, uri: &Uri) -> ApiResult {
-    let scope = query_param(uri, "scope").filter(|s| !s.is_empty()).unwrap_or_else(|| "upcoming".into());
+    let scope = query_param(uri, "scope")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "upcoming".into());
     if !["upcoming", "today", "all"].contains(&scope.as_str()) {
-        return Err(ApiError::bad_request("scope must be upcoming, today or all"));
+        return Err(ApiError::bad_request(
+            "scope must be upcoming, today or all",
+        ));
     }
     let include_sent = match query_param(uri, "includeSent").filter(|s| !s.is_empty()) {
         None => false,
@@ -359,51 +437,118 @@ fn list_reminders(st: &AppState, uri: &Uri) -> ApiResult {
     let mut list = filter_for_scope(&all, scope == "today", tz, now);
     if include_sent {
         let today = ymd_in_tz(now, tz);
-        list.extend(all.iter().filter(|r| r.status != "pending").filter(|r| scope != "today" || r.due().is_some_and(|d| ymd_in_tz(d, tz) == today)).cloned());
+        list.extend(
+            all.iter()
+                .filter(|r| r.status != "pending")
+                .filter(|r| scope != "today" || r.due().is_some_and(|d| ymd_in_tz(d, tz) == today))
+                .cloned(),
+        );
     }
     list.sort_by(by_due);
-    Ok(ok(json!({"scope": scope, "includeSent": include_sent, "timeZone": tz.name(), "reminders": list.iter().map(Reminder::public).collect::<Vec<_>>()})))
+    Ok(ok(
+        json!({"scope": scope, "includeSent": include_sent, "timeZone": tz.name(), "reminders": list.iter().map(Reminder::public).collect::<Vec<_>>()}),
+    ))
 }
 
 fn iso_with_offset(s: &str) -> bool {
-    regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$").map(|r| r.is_match(s)).unwrap_or(false)
+    regex::Regex::new(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$",
+    )
+    .map(|r| r.is_match(s))
+    .unwrap_or(false)
 }
 
 async fn create_reminder(st: &AppState, body: Body) -> ApiResult {
     let body = read_json(body, MAX_BODY_BYTES).await?;
     if !st.cfg.reminders_enabled {
-        return Err(ApiError::new(503, "reminders_disabled", "Reminders are disabled on this host"));
+        return Err(ApiError::new(
+            503,
+            "reminders_disabled",
+            "Reminders are disabled on this host",
+        ));
     }
-    let chat = st.cfg.owner_chat_id.clone().filter(|c| !c.is_empty()).ok_or_else(|| ApiError::new(503, "owner_chat_unconfigured", "No owner Telegram chat is configured"))?;
+    let chat = st
+        .cfg
+        .owner_chat_id
+        .clone()
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| {
+            ApiError::new(
+                503,
+                "owner_chat_unconfigured",
+                "No owner Telegram chat is configured",
+            )
+        })?;
     let tz = st.cfg.time_zone;
     let natural = optional_string(&body, "naturalText", MAX_REMINDER_TEXT_CHARS)?;
     let text = optional_string(&body, "text", MAX_REMINDER_TEXT_CHARS)?;
     let due_raw = optional_string(&body, "dueAt", 40)?;
     let (reminder_text, due_at, forward_body) = if !natural.is_empty() {
         if !text.is_empty() || !due_raw.is_empty() {
-            return Err(ApiError::bad_request("send either {text, dueAt} or {naturalText}, not both"));
+            return Err(ApiError::bad_request(
+                "send either {text, dueAt} or {naturalText}, not both",
+            ));
         }
         let parsed = lucina_store::parser::parse_reminder_message(
             &natural,
-            &lucina_store::parser::ParseOptions { tz, default_hour: st.cfg.reminder_default_hour, default_minute: st.cfg.reminder_default_minute, now: Utc::now() },
+            &lucina_store::parser::ParseOptions {
+                tz,
+                default_hour: st.cfg.reminder_default_hour,
+                default_minute: st.cfg.reminder_default_minute,
+                now: Utc::now(),
+            },
         );
         match parsed {
-            Ok(p) => (p.text.clone(), p.due_at_iso(), json!({"naturalText": natural})),
-            Err("due_in_past") => return Err(ApiError::new(400, "due_in_past", "The reminder time is in the past")),
-            Err(e) => return Err(ApiError::new(400, "unparseable_reminder", format!("Could not parse the reminder ({e})"))),
+            Ok(p) => (
+                p.text.clone(),
+                p.due_at_iso(),
+                json!({"naturalText": natural}),
+            ),
+            Err("due_in_past") => {
+                return Err(ApiError::new(
+                    400,
+                    "due_in_past",
+                    "The reminder time is in the past",
+                ))
+            }
+            Err(e) => {
+                return Err(ApiError::new(
+                    400,
+                    "unparseable_reminder",
+                    format!("Could not parse the reminder ({e})"),
+                ))
+            }
         }
     } else {
         if text.is_empty() {
-            return Err(ApiError::bad_request("text is required (or send naturalText)"));
+            return Err(ApiError::bad_request(
+                "text is required (or send naturalText)",
+            ));
         }
         if due_raw.is_empty() {
-            return Err(ApiError::bad_request("dueAt is required (or send naturalText)"));
+            return Err(ApiError::bad_request(
+                "dueAt is required (or send naturalText)",
+            ));
         }
-        let due = parse_js_date(&due_raw).filter(|_| iso_with_offset(&due_raw)).ok_or_else(|| ApiError::bad_request("dueAt must be ISO 8601 with a UTC offset, e.g. 2026-10-22T09:30:00+02:00"))?;
+        let due = parse_js_date(&due_raw)
+            .filter(|_| iso_with_offset(&due_raw))
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "dueAt must be ISO 8601 with a UTC offset, e.g. 2026-10-22T09:30:00+02:00",
+                )
+            })?;
         if due <= Utc::now() {
-            return Err(ApiError::new(400, "due_in_past", "The reminder time is in the past"));
+            return Err(ApiError::new(
+                400,
+                "due_in_past",
+                "The reminder time is in the past",
+            ));
         }
-        (text.clone(), iso_ms(due), json!({"text": text, "dueAt": due_raw}))
+        (
+            text.clone(),
+            iso_ms(due),
+            json!({"text": text, "dueAt": due_raw}),
+        )
     };
     // Phase 1: the Node Lucina owns reminders.json; forward the request as is.
     if let Some(forwarded) = st.writer.forward_create(&forward_body).await {
@@ -425,7 +570,10 @@ async fn create_reminder(st: &AppState, body: Body) -> ApiResult {
         })
         .await
         .map_err(|e| ApiError::new(e.status, &e.code, e.message))?;
-    Ok(ok_status(if created { 201 } else { 200 }, json!({"created": created, "reminder": reminder.public()})))
+    Ok(ok_status(
+        if created { 201 } else { 200 },
+        json!({"created": created, "reminder": reminder.public()}),
+    ))
 }
 
 async fn cancel_reminder(st: &AppState, id: &str) -> ApiResult {
@@ -433,11 +581,27 @@ async fn cancel_reminder(st: &AppState, id: &str) -> ApiResult {
     if !is_reminder_id(id) {
         return Err(not_found());
     }
-    let chat = st.cfg.owner_chat_id.clone().filter(|c| !c.is_empty()).ok_or_else(not_found)?;
-    match st.writer.cancel(id, &chat).await.map_err(|e| ApiError::new(e.status, &e.code, e.message))? {
+    let chat = st
+        .cfg
+        .owner_chat_id
+        .clone()
+        .filter(|c| !c.is_empty())
+        .ok_or_else(not_found)?;
+    match st
+        .writer
+        .cancel(id, &chat)
+        .await
+        .map_err(|e| ApiError::new(e.status, &e.code, e.message))?
+    {
         CancelOutcome::Cancelled(r) => Ok(ok(json!({"cancelled": true, "reminder": r.public()}))),
-        CancelOutcome::AlreadyCancelled(r) => Ok(ok(json!({"cancelled": false, "reminder": r.public()}))),
-        CancelOutcome::AlreadySent(_) => Err(ApiError::new(409, "already_sent", "The reminder was already delivered")),
+        CancelOutcome::AlreadyCancelled(r) => {
+            Ok(ok(json!({"cancelled": false, "reminder": r.public()})))
+        }
+        CancelOutcome::AlreadySent(_) => Err(ApiError::new(
+            409,
+            "already_sent",
+            "The reminder was already delivered",
+        )),
         CancelOutcome::NotFound => Err(not_found()),
     }
 }
@@ -476,13 +640,23 @@ pub fn clip_sentences(text: &str, max: usize) -> String {
     if start < chars.len() {
         sentences.push(chars[start..].iter().collect());
     }
-    sentences.into_iter().take(max).collect::<String>().trim().to_owned()
+    sentences
+        .into_iter()
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
     let tz = st.cfg.time_zone;
-    let date = query_param(uri, "date").filter(|d| !d.is_empty()).unwrap_or_else(|| ymd_in_tz(Utc::now(), tz));
-    let valid = date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-' && NaiveDate::parse_from_str(&date, "%Y-%m-%d").is_ok();
+    let date = query_param(uri, "date")
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| ymd_in_tz(Utc::now(), tz));
+    let valid = date.len() == 10
+        && date.as_bytes()[4] == b'-'
+        && date.as_bytes()[7] == b'-'
+        && NaiveDate::parse_from_str(&date, "%Y-%m-%d").is_ok();
     if !valid {
         return Err(ApiError::bad_request("date must be YYYY-MM-DD"));
     }
@@ -496,31 +670,62 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
         .filter(|r| r.due().is_some_and(|d| ymd_in_tz(d, tz) == date))
         .collect();
     reminders.sort_by(by_due);
-    let fingerprint = reminders.iter().map(|r| format!("{}:{}:{}", r.id, r.status, r.due_at)).collect::<Vec<_>>().join("|");
+    let fingerprint = reminders
+        .iter()
+        .map(|r| format!("{}:{}:{}", r.id, r.status, r.due_at))
+        .collect::<Vec<_>>()
+        .join("|");
     let ttl = st.cfg.briefing_cache;
     let mut cache = st.briefings.lock().await;
     cache.retain(|_, b| b.at.elapsed() <= ttl);
     while cache.len() > BRIEFING_CACHE_KEEP {
-        let oldest = cache.iter().min_by_key(|(_, b)| b.at).map(|(k, _)| k.clone());
+        let oldest = cache
+            .iter()
+            .min_by_key(|(_, b)| b.at)
+            .map(|(k, _)| k.clone());
         if let Some(k) = oldest {
             cache.remove(&k);
         }
     }
-    let fresh = cache.get(&date).is_some_and(|b| b.fingerprint == fingerprint && b.at.elapsed() < ttl && b.text.is_some());
+    let fresh = cache
+        .get(&date)
+        .is_some_and(|b| b.fingerprint == fingerprint && b.at.elapsed() < ttl && b.text.is_some());
     let mut cached = fresh && !refresh;
     if !cached {
-        let memory = st.memory.build_context(&st.cfg.owner_peer_id, &lucina_memory::secretary_session_id("", &st.cfg.default_session), &format!("Daily agenda briefing for {date}")).await;
+        let memory = st
+            .memory
+            .build_context(
+                &st.cfg.owner_peer_id,
+                &lucina_memory::secretary_session_id("", &st.cfg.default_session),
+                &format!("Daily agenda briefing for {date}"),
+            )
+            .await;
         let lines: Vec<String> = reminders
             .iter()
             .map(|r| {
-                let t = r.due().map(|d| d.with_timezone(&tz).format("%H:%M").to_string()).unwrap_or_default();
-                format!("- {t} {}{}", r.text, if r.status == "sent" { " (already delivered)" } else { "" })
+                let t = r
+                    .due()
+                    .map(|d| d.with_timezone(&tz).format("%H:%M").to_string())
+                    .unwrap_or_default();
+                format!(
+                    "- {t} {}{}",
+                    r.text,
+                    if r.status == "sent" {
+                        " (already delivered)"
+                    } else {
+                        ""
+                    }
+                )
             })
             .collect();
         let skill_result = format!(
             "Date: {date} ({})\n{}",
             tz.name(),
-            if lines.is_empty() { "Reminders for that day: none.".to_owned() } else { format!("Reminders for that day:\n{}", lines.join("\n")) }
+            if lines.is_empty() {
+                "Reminders for that day: none.".to_owned()
+            } else {
+                format!("Reminders for that day:\n{}", lines.join("\n"))
+            }
         );
         let persona = &st.cfg.persona;
         let instruction = [
@@ -531,15 +736,32 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
         ]
         .join(" ");
         let user_text = format!("Give me my daily briefing for {date}.");
-        let t = crate::planner::TurnInput { user_text: &user_text, memory: &memory, user_label: USER_LABEL, platform: PLATFORM_LABEL };
-        let text = match st.planner.generate_skill_reply(&t, "Secretary daily agenda", &skill_result, &instruction).await {
+        let t = crate::planner::TurnInput {
+            user_text: &user_text,
+            memory: &memory,
+            user_label: USER_LABEL,
+            platform: PLATFORM_LABEL,
+        };
+        let text = match st
+            .planner
+            .generate_skill_reply(&t, "Secretary daily agenda", &skill_result, &instruction)
+            .await
+        {
             Ok(t) => Some(clip_sentences(&t, BRIEFING_MAX_SENTENCES)).filter(|s| !s.is_empty()),
             Err(e) => {
                 tracing::error!(%date, error = %e, "secretary briefing failed");
                 None
             }
         };
-        cache.insert(date.clone(), Briefing { at: Instant::now(), fingerprint, generated_at: now_iso(), text });
+        cache.insert(
+            date.clone(),
+            Briefing {
+                at: Instant::now(),
+                fingerprint,
+                generated_at: now_iso(),
+                text,
+            },
+        );
         cached = false;
     }
     let entry = cache.get(&date).expect("just inserted");
@@ -562,7 +784,12 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
 
 fn grocery_error(e: GroceryError) -> ApiError {
     match e {
-        GroceryError::Shopping { code, message, revision, conflicts } => {
+        GroceryError::Shopping {
+            code,
+            message,
+            revision,
+            conflicts,
+        } => {
             let status = match code {
                 "list_not_found" | "item_not_found" => 404,
                 "default_list" | "revision_conflict" => 409,
@@ -574,7 +801,11 @@ fn grocery_error(e: GroceryError) -> ApiError {
             }
             err
         }
-        GroceryError::Unavailable(_) => ApiError::new(503, "grocery_unavailable", "The grocery database is unreachable"),
+        GroceryError::Unavailable(_) => ApiError::new(
+            503,
+            "grocery_unavailable",
+            "The grocery database is unreachable",
+        ),
         GroceryError::Db(e) => ApiError::new(500, "internal_error", e.to_string()),
     }
 }
@@ -587,14 +818,27 @@ fn shopping_channel(body: &Value) -> &'static str {
 }
 
 fn repo(st: &AppState) -> Result<&lucina_grocery::GroceryRepo, ApiError> {
-    st.grocery.as_deref().ok_or_else(|| ApiError::new(503, "grocery_unavailable", "The grocery service is not configured"))
+    st.grocery.as_deref().ok_or_else(|| {
+        ApiError::new(
+            503,
+            "grocery_unavailable",
+            "The grocery service is not configured",
+        )
+    })
 }
 
-async fn shopping_legacy(st: &AppState, method: &Method, item_id: Option<&str>, body: Body) -> ApiResult {
+async fn shopping_legacy(
+    st: &AppState,
+    method: &Method,
+    item_id: Option<&str>,
+    body: Body,
+) -> ApiResult {
     let repo = repo(st)?;
     let user = &st.cfg.grocery_user_id;
     match (method.as_str(), item_id) {
-        ("GET", None) => Ok(ok(json!({"items": repo.legacy_list(user).await.map_err(grocery_error)?}))),
+        ("GET", None) => Ok(ok(
+            json!({"items": repo.legacy_list(user).await.map_err(grocery_error)?}),
+        )),
         ("POST", None) => {
             let body = read_json(body, MAX_BODY_BYTES).await?;
             let raw = optional_string(&body, "rawName", MAX_SHOPPING_NAME_CHARS)?;
@@ -602,37 +846,71 @@ async fn shopping_legacy(st: &AppState, method: &Method, item_id: Option<&str>, 
                 return Err(ApiError::bad_request("rawName is required"));
             }
             let product = optional_string(&body, "product", MAX_SHOPPING_NAME_CHARS)?;
-            let canonical = lucina_grocery::resolve_canonical_product(if product.is_empty() { &raw } else { &product });
-            let item = repo.add_item(user, &canonical, &raw, shopping_channel(&body)).await.map_err(grocery_error)?;
+            let canonical = lucina_grocery::resolve_canonical_product(if product.is_empty() {
+                &raw
+            } else {
+                &product
+            });
+            let item = repo
+                .add_item(user, &canonical, &raw, shopping_channel(&body))
+                .await
+                .map_err(grocery_error)?;
             Ok(ok_status(201, json!({"item": item})))
         }
         ("PATCH", Some(id)) => {
             if !is_item_id(id) {
-                return Err(ApiError::new(404, "item_not_found", "No such shopping-list item"));
+                return Err(ApiError::new(
+                    404,
+                    "item_not_found",
+                    "No such shopping-list item",
+                ));
             }
             let body = read_json(body, MAX_BODY_BYTES).await?;
-            let status = body["status"].as_str().filter(|s| *s == "needed" || *s == "purchased").ok_or_else(|| ApiError::new(400, "invalid_status", "status must be needed or purchased"))?;
-            let item = repo.legacy_set_status(user, id, status, shopping_channel(&body)).await.map_err(grocery_error)?;
+            let status = body["status"]
+                .as_str()
+                .filter(|s| *s == "needed" || *s == "purchased")
+                .ok_or_else(|| {
+                    ApiError::new(400, "invalid_status", "status must be needed or purchased")
+                })?;
+            let item = repo
+                .legacy_set_status(user, id, status, shopping_channel(&body))
+                .await
+                .map_err(grocery_error)?;
             Ok(ok(json!({"item": item})))
         }
         _ => Err(ApiError::not_found()),
     }
 }
 
-async fn shopping_lists(st: &AppState, method: &Method, list_id: Option<&str>, sub: Option<&str>, body: Body) -> ApiResult {
+async fn shopping_lists(
+    st: &AppState,
+    method: &Method,
+    list_id: Option<&str>,
+    sub: Option<&str>,
+    body: Body,
+) -> ApiResult {
     let repo = repo(st)?;
     let user = &st.cfg.grocery_user_id;
     if let Some(id) = list_id {
         if id != "default" && !is_item_id(id) {
-            return Err(ApiError::new(404, "list_not_found", "No such shopping list"));
+            return Err(ApiError::new(
+                404,
+                "list_not_found",
+                "No such shopping list",
+            ));
         }
     }
     let Some(id) = list_id else {
         return match method.as_str() {
-            "GET" => Ok(ok(json!({"lists": repo.list_lists(user).await.map_err(grocery_error)?}))),
+            "GET" => Ok(ok(
+                json!({"lists": repo.list_lists(user).await.map_err(grocery_error)?}),
+            )),
             "POST" => {
                 let body = read_json(body, MAX_BODY_BYTES).await?;
-                Ok(ok_status(201, json!({"list": repo.create_list(user, &body).await.map_err(grocery_error)?})))
+                Ok(ok_status(
+                    201,
+                    json!({"list": repo.create_list(user, &body).await.map_err(grocery_error)?}),
+                ))
             }
             _ => Err(ApiError::method_not_allowed(&["GET", "POST"])),
         };
@@ -645,25 +923,41 @@ async fn shopping_lists(st: &AppState, method: &Method, list_id: Option<&str>, s
         let expected = match &body["expectedRevision"] {
             Value::Null => None,
             Value::Number(n) if n.as_i64().is_some() => n.as_i64(),
-            Value::Number(n) if n.as_f64().is_some_and(|f| f.fract() == 0.0 && f.abs() < 9e15) => n.as_f64().map(|f| f as i64),
+            Value::Number(n)
+                if n.as_f64()
+                    .is_some_and(|f| f.fract() == 0.0 && f.abs() < 9e15) =>
+            {
+                n.as_f64().map(|f| f as i64)
+            }
             _ => return Err(ApiError::bad_request("expectedRevision must be an integer")),
         };
-        let out = repo.apply_ops(user, id, &body["ops"], expected, shopping_channel(&body)).await.map_err(grocery_error)?;
+        let out = repo
+            .apply_ops(user, id, &body["ops"], expected, shopping_channel(&body))
+            .await
+            .map_err(grocery_error)?;
         return Ok(ok(out.to_json()));
     }
     if sub.is_some() {
         return Err(ApiError::not_found());
     }
     match method.as_str() {
-        "GET" => Ok(ok(repo.list_state(user, id).await.map_err(grocery_error)?)),
+        "GET" => Ok(ok(repo
+            .list_state(user, id)
+            .await
+            .map_err(grocery_error)?)),
         "PATCH" => {
             let body = read_json(body, MAX_BODY_BYTES).await?;
             if body.get("name").is_none() && body.get("theme").is_none() {
                 return Err(ApiError::bad_request("send name and/or theme"));
             }
-            Ok(ok(json!({"list": repo.update_list(user, id, &body).await.map_err(grocery_error)?})))
+            Ok(ok(
+                json!({"list": repo.update_list(user, id, &body).await.map_err(grocery_error)?}),
+            ))
         }
-        "DELETE" => Ok(ok(repo.delete_list(user, id).await.map_err(grocery_error)?)),
+        "DELETE" => Ok(ok(repo
+            .delete_list(user, id)
+            .await
+            .map_err(grocery_error)?)),
         _ => Err(ApiError::method_not_allowed(&["GET", "PATCH", "DELETE"])),
     }
 }
@@ -674,7 +968,9 @@ fn timeline_id_param(v: Option<String>, name: &str) -> Result<Option<String>, Ap
     match v.filter(|s| !s.is_empty()) {
         None => Ok(None),
         Some(id) if is_timeline_id(&id) => Ok(Some(id)),
-        Some(_) => Err(ApiError::bad_request(format!("{name} must be a timeline item id"))),
+        Some(_) => Err(ApiError::bad_request(format!(
+            "{name} must be a timeline item id"
+        ))),
     }
 }
 
@@ -695,19 +991,36 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
     let limit = match query_param(uri, "limit").filter(|s| !s.is_empty()) {
         None => 50,
         Some(l) => {
-            let n = (l.len() <= 3 && l.bytes().all(|b| b.is_ascii_digit())).then(|| l.parse::<usize>().ok()).flatten();
+            let n = (l.len() <= 3 && l.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| l.parse::<usize>().ok())
+                .flatten();
             match n {
                 Some(n) if (1..=MAX_LIST_LIMIT).contains(&n) => n,
-                _ => return Err(ApiError::bad_request(format!("limit must be an integer from 1 to {MAX_LIST_LIMIT}"))),
+                _ => {
+                    return Err(ApiError::bad_request(format!(
+                        "limit must be an integer from 1 to {MAX_LIST_LIMIT}"
+                    )))
+                }
             }
         }
     };
-    let (items, next) = st.timeline.list(before.as_deref(), limit).map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
+    let (items, next) = st
+        .timeline
+        .list(before.as_deref(), limit)
+        .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
     // Items are served as stored: Node-written lines reach the client verbatim.
-    let body = format!(r#"{{"ok":true,"data":{{"items":{},"nextBefore":{}}}}}"#, raw_array(&items), serde_json::to_string(&next).unwrap_or_else(|_| "null".into()));
+    let body = format!(
+        r#"{{"ok":true,"data":{{"items":{},"nextBefore":{}}}}}"#,
+        raw_array(&items),
+        serde_json::to_string(&next).unwrap_or_else(|_| "null".into())
+    );
     let mut resp = (StatusCode::OK, body).into_response();
-    resp.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json; charset=utf-8"));
-    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok(resp)
 }
 
@@ -730,23 +1043,40 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
     let max = st.cfg.timeline_max_streams;
     if st.streams.fetch_add(1, Ordering::SeqCst) >= max {
         st.streams.fetch_sub(1, Ordering::SeqCst);
-        return Err(ApiError::new(429, "too_many_streams", format!("At most {max} timeline streams at once")));
+        return Err(ApiError::new(
+            429,
+            "too_many_streams",
+            format!("At most {max} timeline streams at once"),
+        ));
     }
     let guard = StreamGuard(st.clone());
-    let header_id = headers.get("last-event-id").and_then(|v| v.to_str().ok()).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
-    let last = timeline_id_param(header_id.or_else(|| query_param(uri, "lastEventId")), "Last-Event-ID")?;
+    let header_id = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let last = timeline_id_param(
+        header_id.or_else(|| query_param(uri, "lastEventId")),
+        "Last-Event-ID",
+    )?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
     let store = st.timeline.clone();
     let ping = st.cfg.timeline_ping;
     let mut live = store.subscribe();
     tokio::spawn(async move {
         let _guard = guard;
-        if tx.send(Bytes::from_static(b"retry: 5000\n: connected\n\n")).await.is_err() {
+        if tx
+            .send(Bytes::from_static(b"retry: 5000\n: connected\n\n"))
+            .await
+            .is_err()
+        {
             return;
         }
         let mut cursor: String = match &last {
             Some(id) => {
-                let Ok(items) = store.after(id, TIMELINE_REPLAY_MAX) else { return };
+                let Ok(items) = store.after(id, TIMELINE_REPLAY_MAX) else {
+                    return;
+                };
                 let mut cur = id.clone();
                 for it in &items {
                     if tx.send(sse_item(it)).await.is_err() {
@@ -756,10 +1086,17 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                 }
                 cur
             }
-            None => store.list(None, 1).ok().and_then(|(i, _)| i.first().map(|x| x.id.clone())).unwrap_or_default(),
+            None => store
+                .list(None, 1)
+                .ok()
+                .and_then(|(i, _)| i.first().map(|x| x.id.clone()))
+                .unwrap_or_default(),
         };
         let mut ping_tick = tokio::time::interval_at(tokio::time::Instant::now() + ping, ping);
-        let mut follow = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(1), Duration::from_secs(1));
+        let mut follow = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
         loop {
             let batch: Vec<lucina_store::timeline::StoredItem> = tokio::select! {
                 msg = live.recv() => match msg {
@@ -788,7 +1125,10 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, Infallible>);
     let mut resp = Response::new(Body::from_stream(stream));
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/event-stream; charset=utf-8"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
     h.insert("x-accel-buffering", HeaderValue::from_static("no"));
@@ -801,8 +1141,16 @@ fn is_command_id(s: &str) -> bool {
     s.len() == 36 && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
 }
 
-async fn device(st: &AppState, method: &Method, sub: Option<&str>, command_id: Option<&str>, action: Option<&str>, body: Body) -> ApiResult {
-    let internal = |e: lucina_store::StoreError| ApiError::new(500, "internal_error", e.to_string());
+async fn device(
+    st: &AppState,
+    method: &Method,
+    sub: Option<&str>,
+    command_id: Option<&str>,
+    action: Option<&str>,
+    body: Body,
+) -> ApiResult {
+    let internal =
+        |e: lucina_store::StoreError| ApiError::new(500, "internal_error", e.to_string());
     let now = Utc::now();
     match (sub, command_id) {
         (Some("events"), None) => {
@@ -810,12 +1158,20 @@ async fn device(st: &AppState, method: &Method, sub: Option<&str>, command_id: O
                 return Err(ApiError::method_not_allowed(&["POST"]));
             }
             let body = read_json(body, MAX_DEVICE_BODY_BYTES).await?;
-            let events = body["events"].as_array().filter(|a| !a.is_empty()).ok_or_else(|| ApiError::bad_request("events must be a non-empty array"))?;
+            let events = body["events"]
+                .as_array()
+                .filter(|a| !a.is_empty())
+                .ok_or_else(|| ApiError::bad_request("events must be a non-empty array"))?;
             if events.len() > MAX_EVENTS_PER_BATCH {
-                return Err(ApiError::bad_request(format!("at most {MAX_EVENTS_PER_BATCH} events per request")));
+                return Err(ApiError::bad_request(format!(
+                    "at most {MAX_EVENTS_PER_BATCH} events per request"
+                )));
             }
             let out = st.device.events.ingest(events, now).map_err(internal)?;
-            tracing::info!(accepted = out["accepted"].as_array().map(Vec::len).unwrap_or(0), "secretary device events");
+            tracing::info!(
+                accepted = out["accepted"].as_array().map(Vec::len).unwrap_or(0),
+                "secretary device events"
+            );
             Ok(ok(out))
         }
         (Some("state"), None) => match method.as_str() {
@@ -837,7 +1193,9 @@ async fn device(st: &AppState, method: &Method, sub: Option<&str>, command_id: O
             if method != Method::GET {
                 return Err(ApiError::method_not_allowed(&["GET"]));
             }
-            Ok(ok(json!({"commands": st.device.pending_commands(now).iter().map(|c| public_command(c, now)).collect::<Vec<_>>()})))
+            Ok(ok(
+                json!({"commands": st.device.pending_commands(now).iter().map(|c| public_command(c, now)).collect::<Vec<_>>()}),
+            ))
         }
         (Some("commands"), Some(id)) => {
             let not_found = || ApiError::new(404, "command_not_found", "No such device command");
@@ -857,7 +1215,9 @@ async fn device(st: &AppState, method: &Method, sub: Option<&str>, command_id: O
                         return Err(ApiError::method_not_allowed(&["POST"]));
                     }
                     let body = read_json(body, MAX_BODY_BYTES).await?;
-                    let okv = body["ok"].as_bool().ok_or_else(|| ApiError::bad_request("ok must be a boolean"))?;
+                    let okv = body["ok"]
+                        .as_bool()
+                        .ok_or_else(|| ApiError::bad_request("ok must be a boolean"))?;
                     for key in ["error", "deviceObjectId"] {
                         if !(body[key].is_null() || body[key].is_string()) {
                             return Err(ApiError::bad_request(format!("{key} must be a string")));
@@ -865,11 +1225,25 @@ async fn device(st: &AppState, method: &Method, sub: Option<&str>, command_id: O
                     }
                     let (mut command, duplicate) = st
                         .device
-                        .record_result(id, okv, body["error"].as_str().unwrap_or(""), body["deviceObjectId"].as_str().unwrap_or(""), now)
+                        .record_result(
+                            id,
+                            okv,
+                            body["error"].as_str().unwrap_or(""),
+                            body["deviceObjectId"].as_str().unwrap_or(""),
+                            now,
+                        )
                         .map_err(|e| match e {
                             ResultError::NotFound => not_found(),
-                            ResultError::Expired => ApiError::new(409, "command_expired", "The command expired before a result arrived"),
-                            ResultError::AlreadyResolved => ApiError::new(409, "already_resolved", "A different result was already recorded"),
+                            ResultError::Expired => ApiError::new(
+                                409,
+                                "command_expired",
+                                "The command expired before a result arrived",
+                            ),
+                            ResultError::AlreadyResolved => ApiError::new(
+                                409,
+                                "already_resolved",
+                                "A different result was already recorded",
+                            ),
                         })?;
                     if !duplicate {
                         let item = st.timeline.record(NewItem {
@@ -877,11 +1251,18 @@ async fn device(st: &AppState, method: &Method, sub: Option<&str>, command_id: O
                             role: "lucina".into(),
                             text: result_text(&command),
                             reply_to: command["timelineItemId"].as_str().map(str::to_owned),
-                            meta: Some(Meta { command_id: command["id"].as_str().map(str::to_owned), ok: command["result"]["ok"].as_bool(), ..Meta::kind("device_command_result") }),
+                            meta: Some(Meta {
+                                command_id: command["id"].as_str().map(str::to_owned),
+                                ok: command["result"]["ok"].as_bool(),
+                                ..Meta::kind("device_command_result")
+                            }),
                             ..NewItem::default()
                         });
                         if let Some(item) = item {
-                            if let Ok(Some(c)) = st.device.update_command(id, json!({"confirmationItemId": item.id})) {
+                            if let Ok(Some(c)) = st
+                                .device
+                                .update_command(id, json!({"confirmationItemId": item.id}))
+                            {
                                 command = c;
                             }
                         }
@@ -905,9 +1286,16 @@ mod tests {
 
     #[test]
     fn sentences_and_ids() {
-        assert_eq!(clip_sentences("Uno. Due!  Tre? Quattro. Cinque. Sei. Sette.", 6), "Uno. Due! Tre? Quattro. Cinque. Sei.");
+        assert_eq!(
+            clip_sentences("Uno. Due!  Tre? Quattro. Cinque. Sei. Sette.", 6),
+            "Uno. Due! Tre? Quattro. Cinque. Sei."
+        );
         assert_eq!(clip_sentences("v1.2 is out. ok", 6), "v1.2 is out. ok");
-        assert!(iso_with_offset("2026-10-22T09:30:00+02:00") && iso_with_offset("2026-10-22T07:30Z") && !iso_with_offset("2026-10-22T09:30:00"));
+        assert!(
+            iso_with_offset("2026-10-22T09:30:00+02:00")
+                && iso_with_offset("2026-10-22T07:30Z")
+                && !iso_with_offset("2026-10-22T09:30:00")
+        );
         assert_eq!(decode("a%20b+c"), "a b c");
         assert!(is_item_id("3d0b8a52-1f7e") && !is_item_id("zz"));
     }

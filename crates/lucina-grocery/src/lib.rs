@@ -25,10 +25,22 @@ use uuid::Uuid;
 pub use catalog::{Catalog, CatalogIndex};
 pub use products::{resolve_canonical_product, Product};
 
-pub const THEMES: [&str; 8] = ["home", "grocery", "work", "holiday", "garden", "hardware", "baby", "other"];
+pub const THEMES: [&str; 8] = [
+    "home", "grocery", "work", "holiday", "garden", "hardware", "baby", "other",
+];
 pub const MODIFIERS: [&str; 6] = ["telegram", "discord", "web", "ios", "alexa", "lucina"];
 pub const OP_TYPES: [&str; 11] = [
-    "add", "need", "purchase", "remove", "set_spec", "set_quantity", "set_section", "rename", "move", "clear_recent", "reorder",
+    "add",
+    "need",
+    "purchase",
+    "remove",
+    "set_spec",
+    "set_quantity",
+    "set_section",
+    "rename",
+    "move",
+    "clear_recent",
+    "reorder",
 ];
 pub const MAX_OPS_PER_BATCH: usize = 200;
 pub const DEFAULT_LIST_NAME: &str = "Casa";
@@ -52,7 +64,12 @@ fn name_key_sql(param: &str) -> String {
 #[derive(Debug, thiserror::Error)]
 pub enum GroceryError {
     #[error("{message}")]
-    Shopping { code: &'static str, message: String, revision: Option<i64>, conflicts: Vec<String> },
+    Shopping {
+        code: &'static str,
+        message: String,
+        revision: Option<i64>,
+        conflicts: Vec<String>,
+    },
     #[error("grocery database unreachable: {0}")]
     Unavailable(String),
     #[error("grocery database: {0}")]
@@ -61,7 +78,12 @@ pub enum GroceryError {
 
 impl GroceryError {
     fn shopping(code: &'static str, message: impl Into<String>) -> Self {
-        GroceryError::Shopping { code, message: message.into(), revision: None, conflicts: Vec::new() }
+        GroceryError::Shopping {
+            code,
+            message: message.into(),
+            revision: None,
+            conflicts: Vec::new(),
+        }
     }
 
     pub fn code(&self) -> &'static str {
@@ -75,8 +97,14 @@ impl GroceryError {
 
 fn is_unavailable(e: &sqlx::Error) -> bool {
     match e {
-        sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::Tls(_) | sqlx::Error::WorkerCrashed => true,
-        sqlx::Error::Database(db) => matches!(db.code().as_deref(), Some("57P01" | "57P03" | "53300")),
+        sqlx::Error::Io(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::WorkerCrashed => true,
+        sqlx::Error::Database(db) => {
+            matches!(db.code().as_deref(), Some("57P01" | "57P03" | "53300"))
+        }
         other => {
             let s = other.to_string().to_lowercase();
             s.contains("timeout") || s.contains("connect") || s.contains("terminat")
@@ -305,7 +333,11 @@ impl GroceryRepo {
     }
 
     pub fn with_pool(pool: PgPool, catalog: Catalog) -> Self {
-        Self { pool, catalog, seeded: tokio::sync::OnceCell::new() }
+        Self {
+            pool,
+            catalog,
+            seeded: tokio::sync::OnceCell::new(),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -392,14 +424,21 @@ impl GroceryRepo {
         .bind(DEFAULT_LIST_NAME)
         .execute(&mut *conn)
         .await?;
-        Ok(sqlx::query_as::<_, ListRow>("SELECT * FROM grocery.shopping_lists WHERE user_id = $1 AND is_default")
-            .bind(user_id)
-            .fetch_one(&mut *conn)
-            .await?)
+        Ok(sqlx::query_as::<_, ListRow>(
+            "SELECT * FROM grocery.shopping_lists WHERE user_id = $1 AND is_default",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *conn)
+        .await?)
     }
 
     /// A live list by id or `default`; `None` when unknown.
-    async fn resolve_list(conn: &mut PgConnection, user_id: &str, list_id: &str, for_update: bool) -> Result<Option<ListRow>> {
+    async fn resolve_list(
+        conn: &mut PgConnection,
+        user_id: &str,
+        list_id: &str,
+        for_update: bool,
+    ) -> Result<Option<ListRow>> {
         let lock = if for_update { " FOR UPDATE" } else { "" };
         if list_id == "default" {
             Self::ensure_default_list(conn, user_id).await?;
@@ -410,7 +449,9 @@ impl GroceryRepo {
             .fetch_optional(&mut *conn)
             .await?);
         }
-        let Ok(id) = Uuid::parse_str(list_id) else { return Ok(None) };
+        let Ok(id) = Uuid::parse_str(list_id) else {
+            return Ok(None);
+        };
         if !is_uuid(list_id) {
             return Ok(None);
         }
@@ -423,17 +464,30 @@ impl GroceryRepo {
         .await?)
     }
 
-    async fn require_list(conn: &mut PgConnection, user_id: &str, list_id: &str, for_update: bool) -> Result<ListRow> {
+    async fn require_list(
+        conn: &mut PgConnection,
+        user_id: &str,
+        list_id: &str,
+        for_update: bool,
+    ) -> Result<ListRow> {
         Self::resolve_list(conn, user_id, list_id, for_update)
             .await?
             .ok_or_else(|| GroceryError::shopping("list_not_found", "No such shopping list"))
     }
 
-    fn clean_text(v: Option<&Value>, max: usize, field: &str, required: bool) -> Result<Option<String>> {
+    fn clean_text(
+        v: Option<&Value>,
+        max: usize,
+        field: &str,
+        required: bool,
+    ) -> Result<Option<String>> {
         match v {
             None | Some(Value::Null) => {
                 if required {
-                    Err(GroceryError::shopping("bad_request", format!("{field} is required")))
+                    Err(GroceryError::shopping(
+                        "bad_request",
+                        format!("{field} is required"),
+                    ))
                 } else {
                     Ok(None)
                 }
@@ -441,14 +495,23 @@ impl GroceryRepo {
             Some(Value::String(s)) => {
                 let t = s.trim();
                 if required && t.is_empty() {
-                    return Err(GroceryError::shopping("bad_request", format!("{field} is required")));
+                    return Err(GroceryError::shopping(
+                        "bad_request",
+                        format!("{field} is required"),
+                    ));
                 }
                 if js_len(t) > max {
-                    return Err(GroceryError::shopping("bad_request", format!("{field} must be at most {max} characters")));
+                    return Err(GroceryError::shopping(
+                        "bad_request",
+                        format!("{field} must be at most {max} characters"),
+                    ));
                 }
                 Ok(Some(t.to_owned()))
             }
-            Some(_) => Err(GroceryError::shopping("bad_request", format!("{field} must be a string"))),
+            Some(_) => Err(GroceryError::shopping(
+                "bad_request",
+                format!("{field} must be a string"),
+            )),
         }
     }
 
@@ -456,7 +519,10 @@ impl GroceryRepo {
         match v {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(s)) if THEMES.contains(&s.as_str()) => Ok(Some(s.clone())),
-            Some(_) => Err(GroceryError::shopping("bad_request", format!("theme must be one of {}", THEMES.join(", ")))),
+            Some(_) => Err(GroceryError::shopping(
+                "bad_request",
+                format!("theme must be one of {}", THEMES.join(", ")),
+            )),
         }
     }
 
@@ -479,7 +545,8 @@ impl GroceryRepo {
 
     /// `body`: `{name, theme?}`.
     pub async fn create_list(&self, user_id: &str, body: &Value) -> Result<Value> {
-        let name = Self::clean_text(body.get("name"), MAX_LIST_NAME, "name", true)?.unwrap_or_default();
+        let name =
+            Self::clean_text(body.get("name"), MAX_LIST_NAME, "name", true)?.unwrap_or_default();
         let theme = Self::clean_theme(body.get("theme"))?.unwrap_or_else(|| "home".into());
         self.ready().await?;
         let mut conn = self.pool.acquire().await?;
@@ -503,10 +570,13 @@ impl GroceryRepo {
             None => None,
             v => Self::clean_text(v, MAX_LIST_NAME, "name", true)?,
         };
-        let theme = match body.get("theme") {
-            None => None,
-            v => Some(Self::clean_theme(v)?.ok_or_else(|| GroceryError::shopping("bad_request", "theme must be a string"))?),
-        };
+        let theme =
+            match body.get("theme") {
+                None => None,
+                v => Some(Self::clean_theme(v)?.ok_or_else(|| {
+                    GroceryError::shopping("bad_request", "theme must be a string")
+                })?),
+            };
         self.ready().await?;
         let mut tx = self.pool.begin().await?;
         let list = Self::require_list(&mut tx, user_id, list_id, true).await?;
@@ -528,7 +598,10 @@ impl GroceryRepo {
         let mut tx = self.pool.begin().await?;
         let list = Self::require_list(&mut tx, user_id, list_id, true).await?;
         if list.is_default {
-            return Err(GroceryError::shopping("default_list", "The default list cannot be deleted"));
+            return Err(GroceryError::shopping(
+                "default_list",
+                "The default list cannot be deleted",
+            ));
         }
         let revision = list.revision + 1;
         sqlx::query("UPDATE grocery.shopping_list_items SET status = 'removed', rev = $2, updated_at = now() WHERE list_id = $1 AND status <> 'removed'")
@@ -545,7 +618,12 @@ impl GroceryRepo {
         Ok(json!({"id": list.id.to_string(), "deleted": true}))
     }
 
-    async fn state_for(&self, conn: &mut PgConnection, list: &ListRow, revision: i64) -> Result<(Value, i64, Vec<Value>)> {
+    async fn state_for(
+        &self,
+        conn: &mut PgConnection,
+        list: &ListRow,
+        revision: i64,
+    ) -> Result<(Value, i64, Vec<Value>)> {
         let rows = sqlx::query_as::<_, ItemRow>(&format!(
             "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status IN ('needed', 'recent') \
              ORDER BY (i.status = 'needed') DESC, i.position NULLS LAST, i.created_at, i.id"
@@ -553,7 +631,11 @@ impl GroceryRepo {
         .bind(list.id)
         .fetch_all(&mut *conn)
         .await?;
-        Ok((Self::short_list(list), revision, rows.iter().map(|r| self.public_item(r)).collect()))
+        Ok((
+            Self::short_list(list),
+            revision,
+            rows.iter().map(|r| self.public_item(r)).collect(),
+        ))
     }
 
     /// `{list, revision, items}`: needed items first (by position), then recent.
@@ -568,23 +650,36 @@ impl GroceryRepo {
     // ------------------------------------------------------------ ops
 
     fn validate_ops(ops: &Value) -> Result<&Vec<Value>> {
-        let arr = ops
-            .as_array()
-            .filter(|a| !a.is_empty())
-            .ok_or_else(|| GroceryError::shopping("bad_request", "ops must be a non-empty array"))?;
+        let arr = ops.as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
+            GroceryError::shopping("bad_request", "ops must be a non-empty array")
+        })?;
         if arr.len() > MAX_OPS_PER_BATCH {
-            return Err(GroceryError::shopping("bad_request", format!("at most {MAX_OPS_PER_BATCH} ops per batch")));
+            return Err(GroceryError::shopping(
+                "bad_request",
+                format!("at most {MAX_OPS_PER_BATCH} ops per batch"),
+            ));
         }
         for op in arr {
             if !op.is_object() {
-                return Err(GroceryError::shopping("bad_request", "each op must be an object"));
+                return Err(GroceryError::shopping(
+                    "bad_request",
+                    "each op must be an object",
+                ));
             }
             if !str_field(op, "opId").is_some_and(is_uuid) {
-                return Err(GroceryError::shopping("bad_request", "each op needs a uuid opId"));
+                return Err(GroceryError::shopping(
+                    "bad_request",
+                    "each op needs a uuid opId",
+                ));
             }
             match str_field(op, "type") {
                 Some(t) if OP_TYPES.contains(&t) => {}
-                _ => return Err(GroceryError::shopping("bad_request", format!("unknown op type {}", op.get("type").unwrap_or(&Value::Null)))),
+                _ => {
+                    return Err(GroceryError::shopping(
+                        "bad_request",
+                        format!("unknown op type {}", op.get("type").unwrap_or(&Value::Null)),
+                    ))
+                }
             }
         }
         Ok(arr)
@@ -610,7 +705,13 @@ impl GroceryRepo {
         Ok((catalog_id, display))
     }
 
-    async fn find_active_by_key(conn: &mut PgConnection, list_id: Uuid, catalog_id: Option<&str>, display: &str, for_update: bool) -> std::result::Result<Option<ItemRow>, sqlx::Error> {
+    async fn find_active_by_key(
+        conn: &mut PgConnection,
+        list_id: Uuid,
+        catalog_id: Option<&str>,
+        display: &str,
+        for_update: bool,
+    ) -> std::result::Result<Option<ItemRow>, sqlx::Error> {
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status <> 'removed' \
                AND (COALESCE(i.catalog_item_id, i.name_key) = COALESCE($2, {k}) OR (i.catalog_item_id IS NULL AND i.name_key = {k})) \
@@ -626,8 +727,15 @@ impl GroceryRepo {
             .await
     }
 
-    async fn item_in_list(conn: &mut PgConnection, list_id: Uuid, item_id: Option<&str>) -> OpResult<ItemRow> {
-        let Some(id) = item_id.filter(|s| is_uuid(s)).and_then(|s| Uuid::parse_str(s).ok()) else {
+    async fn item_in_list(
+        conn: &mut PgConnection,
+        list_id: Uuid,
+        item_id: Option<&str>,
+    ) -> OpResult<ItemRow> {
+        let Some(id) = item_id
+            .filter(|s| is_uuid(s))
+            .and_then(|s| Uuid::parse_str(s).ok())
+        else {
             return Err(OpError::Rejected("item_not_found"));
         };
         sqlx::query_as::<_, ItemRow>(&format!(
@@ -640,7 +748,10 @@ impl GroceryRepo {
         .ok_or(OpError::Rejected("item_not_found"))
     }
 
-    async fn next_position(conn: &mut PgConnection, list_id: Uuid) -> std::result::Result<i32, sqlx::Error> {
+    async fn next_position(
+        conn: &mut PgConnection,
+        list_id: Uuid,
+    ) -> std::result::Result<i32, sqlx::Error> {
         let row = sqlx::query("SELECT (COALESCE(max(position), 0) + 1)::int AS position FROM grocery.shopping_list_items WHERE list_id = $1")
             .bind(list_id)
             .fetch_one(&mut *conn)
@@ -649,7 +760,13 @@ impl GroceryRepo {
     }
 
     /// Ops that would overwrite changes made after a stale `expectedRevision`.
-    async fn find_conflicts(&self, conn: &mut PgConnection, list: &ListRow, ops: &[&Value], expected: i64) -> Result<Vec<String>> {
+    async fn find_conflicts(
+        &self,
+        conn: &mut PgConnection,
+        list: &ListRow,
+        ops: &[&Value],
+        expected: i64,
+    ) -> Result<Vec<String>> {
         let mut conflicts = Vec::new();
         for op in ops {
             let kind = str_field(op, "type").unwrap_or("");
@@ -657,19 +774,30 @@ impl GroceryRepo {
                 continue;
             }
             let rev = if kind == "add" {
-                let overwrites = ["spec", "quantity", "unit", "section"].iter().any(|k| op.get(*k).is_some_and(|v| !v.is_null()));
+                let overwrites = ["spec", "quantity", "unit", "section"]
+                    .iter()
+                    .any(|k| op.get(*k).is_some_and(|v| !v.is_null()));
                 if !overwrites {
                     continue;
                 }
-                let Ok((cid, display)) = self.add_target(op) else { continue };
-                Self::find_active_by_key(conn, list.id, cid.as_deref(), &display, false).await?.map(|r| r.rev)
-            } else if let Some(id) = str_field(op, "itemId").filter(|s| is_uuid(s)).and_then(|s| Uuid::parse_str(s).ok()) {
-                sqlx::query("SELECT rev FROM grocery.shopping_list_items WHERE id = $1 AND list_id = $2")
-                    .bind(id)
-                    .bind(list.id)
-                    .fetch_optional(&mut *conn)
+                let Ok((cid, display)) = self.add_target(op) else {
+                    continue;
+                };
+                Self::find_active_by_key(conn, list.id, cid.as_deref(), &display, false)
                     .await?
-                    .map(|r| r.get::<i64, _>("rev"))
+                    .map(|r| r.rev)
+            } else if let Some(id) = str_field(op, "itemId")
+                .filter(|s| is_uuid(s))
+                .and_then(|s| Uuid::parse_str(s).ok())
+            {
+                sqlx::query(
+                    "SELECT rev FROM grocery.shopping_list_items WHERE id = $1 AND list_id = $2",
+                )
+                .bind(id)
+                .bind(list.id)
+                .fetch_optional(&mut *conn)
+                .await?
+                .map(|r| r.get::<i64, _>("rev"))
             } else {
                 None
             };
@@ -680,8 +808,18 @@ impl GroceryRepo {
         Ok(conflicts)
     }
 
-    async fn touch(conn: &mut PgConnection, ctx: &Ctx<'_>, item_id: Uuid, assignments: &str, rev: Option<i64>) -> std::result::Result<(), sqlx::Error> {
-        let sets = if assignments.is_empty() { String::new() } else { format!("{assignments}, ") };
+    async fn touch(
+        conn: &mut PgConnection,
+        ctx: &Ctx<'_>,
+        item_id: Uuid,
+        assignments: &str,
+        rev: Option<i64>,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let sets = if assignments.is_empty() {
+            String::new()
+        } else {
+            format!("{assignments}, ")
+        };
         sqlx::query(&format!(
             "UPDATE grocery.shopping_list_items SET {sets}rev = $2, modified_by = $3, updated_at = now() WHERE id = $1"
         ))
@@ -693,8 +831,14 @@ impl GroceryRepo {
         Ok(())
     }
 
-    async fn target_list(conn: &mut PgConnection, ctx: &mut Ctx<'_>, to: Option<&str>) -> OpResult<(Uuid, i64)> {
-        let Some(to) = to else { return Err(OpError::Rejected("list_not_found")) };
+    async fn target_list(
+        conn: &mut PgConnection,
+        ctx: &mut Ctx<'_>,
+        to: Option<&str>,
+    ) -> OpResult<(Uuid, i64)> {
+        let Some(to) = to else {
+            return Err(OpError::Rejected("list_not_found"));
+        };
         let target = Self::resolve_list(conn, ctx.user_id, to, true)
             .await
             .map_err(|e| match e {
@@ -703,11 +847,19 @@ impl GroceryRepo {
                 GroceryError::Shopping { .. } => OpError::Rejected("list_not_found"),
             })?
             .ok_or(OpError::Rejected("list_not_found"))?;
-        let entry = ctx.targets.entry(target.id).or_insert(Target { id: target.id, next_rev: target.revision + 1 });
+        let entry = ctx.targets.entry(target.id).or_insert(Target {
+            id: target.id,
+            next_rev: target.revision + 1,
+        });
         Ok((entry.id, entry.next_rev))
     }
 
-    async fn apply_one(&self, conn: &mut PgConnection, ctx: &mut Ctx<'_>, op: &Value) -> OpResult<Option<Uuid>> {
+    async fn apply_one(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &mut Ctx<'_>,
+        op: &Value,
+    ) -> OpResult<Option<Uuid>> {
         let list_id = ctx.list.id;
         let kind = str_field(op, "type").unwrap_or("");
         match kind {
@@ -717,7 +869,10 @@ impl GroceryRepo {
                 let quantity = op_quantity(op.get("quantity"))?;
                 let unit = op_text(op.get("unit"), MAX_UNIT, false)?;
                 let section = op_text(op.get("section"), MAX_SECTION, false)?;
-                if let Some(existing) = Self::find_active_by_key(conn, list_id, catalog_id.as_deref(), &display, true).await? {
+                if let Some(existing) =
+                    Self::find_active_by_key(conn, list_id, catalog_id.as_deref(), &display, true)
+                        .await?
+                {
                     // Re-adding moves a recent item back to needed; one active row per key.
                     sqlx::query(
                         "UPDATE grocery.shopping_list_items SET status = 'needed', purchased_at = NULL, \
@@ -792,9 +947,15 @@ impl GroceryRepo {
                 match kind {
                     "set_spec" => {
                         let spec = op_text(op.get("spec"), MAX_SPEC, false)?;
-                        sqlx::query(&format!("UPDATE grocery.shopping_list_items SET specification = $4, {base}"))
-                            .bind(item.id).bind(ctx.rev).bind(ctx.modified_by).bind(spec)
-                            .execute(&mut *conn).await?;
+                        sqlx::query(&format!(
+                            "UPDATE grocery.shopping_list_items SET specification = $4, {base}"
+                        ))
+                        .bind(item.id)
+                        .bind(ctx.rev)
+                        .bind(ctx.modified_by)
+                        .bind(spec)
+                        .execute(&mut *conn)
+                        .await?;
                     }
                     "set_quantity" => {
                         let q = op_quantity(op.get("quantity"))?;
@@ -805,15 +966,27 @@ impl GroceryRepo {
                     }
                     "set_section" => {
                         let section = op_text(op.get("section"), MAX_SECTION, false)?;
-                        sqlx::query(&format!("UPDATE grocery.shopping_list_items SET section_override = $4, {base}"))
-                            .bind(item.id).bind(ctx.rev).bind(ctx.modified_by).bind(section)
-                            .execute(&mut *conn).await?;
+                        sqlx::query(&format!(
+                            "UPDATE grocery.shopping_list_items SET section_override = $4, {base}"
+                        ))
+                        .bind(item.id)
+                        .bind(ctx.rev)
+                        .bind(ctx.modified_by)
+                        .bind(section)
+                        .execute(&mut *conn)
+                        .await?;
                     }
                     _ => {
                         let name = op_text(op.get("name"), MAX_NAME, true)?;
-                        sqlx::query(&format!("UPDATE grocery.shopping_list_items SET raw_name = $4, {base}"))
-                            .bind(item.id).bind(ctx.rev).bind(ctx.modified_by).bind(name)
-                            .execute(&mut *conn).await?;
+                        sqlx::query(&format!(
+                            "UPDATE grocery.shopping_list_items SET raw_name = $4, {base}"
+                        ))
+                        .bind(item.id)
+                        .bind(ctx.rev)
+                        .bind(ctx.modified_by)
+                        .bind(name)
+                        .execute(&mut *conn)
+                        .await?;
                     }
                 }
                 Ok(Some(item.id))
@@ -821,7 +994,10 @@ impl GroceryRepo {
             "reorder" => {
                 let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
                 let position = op.get("position").map(js_to_number).unwrap_or(f64::NAN);
-                if !position.is_finite() || position.fract() != 0.0 || !(0.0..=1e6).contains(&position) {
+                if !position.is_finite()
+                    || position.fract() != 0.0
+                    || !(0.0..=1e6).contains(&position)
+                {
                     return Err(OpError::Rejected("invalid_position"));
                 }
                 if item.status == "removed" {
@@ -856,10 +1032,25 @@ impl GroceryRepo {
                     return Err(OpError::Rejected("same_list"));
                 }
                 let (target_id, target_rev) = Self::target_list(conn, ctx, to).await?;
-                if let Some(clash) = Self::find_active_by_key(conn, target_id, item.catalog_item_id.as_deref(), &item.raw_name, true).await? {
+                if let Some(clash) = Self::find_active_by_key(
+                    conn,
+                    target_id,
+                    item.catalog_item_id.as_deref(),
+                    &item.raw_name,
+                    true,
+                )
+                .await?
+                {
                     // Already on the target list: merge into that row.
                     if item.status == "needed" {
-                        Self::touch(conn, ctx, clash.id, "status = 'needed', purchased_at = NULL", Some(target_rev)).await?;
+                        Self::touch(
+                            conn,
+                            ctx,
+                            clash.id,
+                            "status = 'needed', purchased_at = NULL",
+                            Some(target_rev),
+                        )
+                        .await?;
                     }
                     Self::touch(conn, ctx, item.id, "status = 'removed'", None).await?;
                     return Ok(Some(clash.id));
@@ -887,18 +1078,36 @@ impl GroceryRepo {
     }
 
     /// Apply an op batch to one list in one transaction (see module docs).
-    pub async fn apply_ops(&self, user_id: &str, list_id: &str, ops: &Value, expected_revision: Option<i64>, modified_by: &str) -> Result<OpsOutcome> {
+    pub async fn apply_ops(
+        &self,
+        user_id: &str,
+        list_id: &str,
+        ops: &Value,
+        expected_revision: Option<i64>,
+        modified_by: &str,
+    ) -> Result<OpsOutcome> {
         let ops = Self::validate_ops(ops)?;
-        let modifier = if MODIFIERS.contains(&modified_by) { modified_by } else { "lucina" };
+        let modifier = if MODIFIERS.contains(&modified_by) {
+            modified_by
+        } else {
+            "lucina"
+        };
         self.ready().await?;
         let mut tx = self.pool.begin().await?;
         let list = Self::require_list(&mut tx, user_id, list_id, true).await?;
-        let ids: Vec<Uuid> = ops.iter().filter_map(|o| str_field(o, "opId").and_then(|s| Uuid::parse_str(s).ok())).collect();
-        let seen_rows = sqlx::query("SELECT op_id FROM grocery.shopping_ops WHERE op_id = ANY($1::uuid[])")
-            .bind(&ids)
-            .fetch_all(&mut *tx)
-            .await?;
-        let mut seen: HashSet<String> = seen_rows.iter().map(|r| r.get::<Uuid, _>("op_id").to_string()).collect();
+        let ids: Vec<Uuid> = ops
+            .iter()
+            .filter_map(|o| str_field(o, "opId").and_then(|s| Uuid::parse_str(s).ok()))
+            .collect();
+        let seen_rows =
+            sqlx::query("SELECT op_id FROM grocery.shopping_ops WHERE op_id = ANY($1::uuid[])")
+                .bind(&ids)
+                .fetch_all(&mut *tx)
+                .await?;
+        let mut seen: HashSet<String> = seen_rows
+            .iter()
+            .map(|r| r.get::<Uuid, _>("op_id").to_string())
+            .collect();
         let mut duplicates = Vec::new();
         let mut fresh: Vec<&Value> = Vec::new();
         for op in ops {
@@ -913,7 +1122,9 @@ impl GroceryRepo {
         }
         let revision = list.revision;
         if let Some(expected) = expected_revision.filter(|e| *e < revision) {
-            let conflicts = self.find_conflicts(&mut tx, &list, &fresh, expected).await?;
+            let conflicts = self
+                .find_conflicts(&mut tx, &list, &fresh, expected)
+                .await?;
             if !conflicts.is_empty() {
                 return Err(GroceryError::Shopping {
                     code: "revision_conflict",
@@ -923,51 +1134,87 @@ impl GroceryRepo {
                 });
             }
         }
-        let mut ctx = Ctx { list: &list, user_id, modified_by: modifier, rev: revision + 1, targets: HashMap::new() };
+        let mut ctx = Ctx {
+            list: &list,
+            user_id,
+            modified_by: modifier,
+            rev: revision + 1,
+            targets: HashMap::new(),
+        };
         let mut applied = Vec::new();
         let mut rejected: Vec<(String, &'static str)> = Vec::new();
         let mut item_ids = HashMap::new();
         for op in &fresh {
             let op_id = str_field(op, "opId").unwrap_or("").to_owned();
-            sqlx::query("SAVEPOINT shopping_op").execute(&mut *tx).await?;
+            sqlx::query("SAVEPOINT shopping_op")
+                .execute(&mut *tx)
+                .await?;
             match self.apply_one(&mut tx, &mut ctx, op).await {
                 Ok(item) => {
-                    sqlx::query("RELEASE SAVEPOINT shopping_op").execute(&mut *tx).await?;
+                    sqlx::query("RELEASE SAVEPOINT shopping_op")
+                        .execute(&mut *tx)
+                        .await?;
                     if let Some(id) = item {
                         item_ids.insert(op_id.clone(), id.to_string());
                     }
                     applied.push(op_id);
                 }
                 Err(err) => {
-                    sqlx::query("ROLLBACK TO SAVEPOINT shopping_op").execute(&mut *tx).await?;
+                    sqlx::query("ROLLBACK TO SAVEPOINT shopping_op")
+                        .execute(&mut *tx)
+                        .await?;
                     match err {
                         OpError::Rejected(code) => rejected.push((op_id, code)),
-                        OpError::Db(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23505") => rejected.push((op_id, "duplicate_item")),
+                        OpError::Db(sqlx::Error::Database(db))
+                            if db.code().as_deref() == Some("23505") =>
+                        {
+                            rejected.push((op_id, "duplicate_item"))
+                        }
                         OpError::Db(e) => return Err(e.into()),
                     }
                 }
             }
         }
-        let new_revision = if applied.is_empty() { revision } else { revision + 1 };
+        let new_revision = if applied.is_empty() {
+            revision
+        } else {
+            revision + 1
+        };
         if !applied.is_empty() {
-            sqlx::query("UPDATE grocery.shopping_lists SET revision = $2, updated_at = now() WHERE id = $1")
-                .bind(list.id)
-                .bind(new_revision)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE grocery.shopping_lists SET revision = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(list.id)
+            .bind(new_revision)
+            .execute(&mut *tx)
+            .await?;
         }
         for target in ctx.targets.values() {
-            sqlx::query("UPDATE grocery.shopping_lists SET revision = $2, updated_at = now() WHERE id = $1")
-                .bind(target.id)
-                .bind(target.next_rev)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE grocery.shopping_lists SET revision = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(target.id)
+            .bind(target.next_rev)
+            .execute(&mut *tx)
+            .await?;
         }
-        let type_of: HashMap<&str, &str> = fresh.iter().map(|o| (str_field(o, "opId").unwrap_or(""), str_field(o, "type").unwrap_or(""))).collect();
+        let type_of: HashMap<&str, &str> = fresh
+            .iter()
+            .map(|o| {
+                (
+                    str_field(o, "opId").unwrap_or(""),
+                    str_field(o, "type").unwrap_or(""),
+                )
+            })
+            .collect();
         let receipts = applied
             .iter()
             .map(|id| (id.as_str(), "applied", None))
-            .chain(rejected.iter().map(|(id, e)| (id.as_str(), "rejected", Some(*e))));
+            .chain(
+                rejected
+                    .iter()
+                    .map(|(id, e)| (id.as_str(), "rejected", Some(*e))),
+            );
         for (op_id, outcome, error) in receipts {
             sqlx::query(
                 "INSERT INTO grocery.shopping_ops (op_id, list_id, user_id, op_type, outcome, error, revision, modified_by) \
@@ -990,7 +1237,10 @@ impl GroceryRepo {
             revision: new_revision,
             applied,
             duplicates,
-            rejected: rejected.into_iter().map(|(op_id, error)| json!({"opId": op_id, "error": error})).collect(),
+            rejected: rejected
+                .into_iter()
+                .map(|(op_id, error)| json!({"opId": op_id, "error": error}))
+                .collect(),
             list: list_json,
             items,
             item_ids,
@@ -1000,14 +1250,36 @@ impl GroceryRepo {
     // ------------------------------------------------------------ legacy (v1) + chat helpers
 
     /// Legacy add (`POST /shopping`, chat intents): an `add` op on the default list.
-    pub async fn add_item(&self, user_id: &str, product: &Product, raw_name: &str, modified_by: &str) -> Result<Value> {
+    pub async fn add_item(
+        &self,
+        user_id: &str,
+        product: &Product,
+        raw_name: &str,
+        modified_by: &str,
+    ) -> Result<Value> {
         let op_id = Uuid::new_v4().to_string();
-        let name = if raw_name.trim().is_empty() { product.name.clone() } else { raw_name.to_owned() };
+        let name = if raw_name.trim().is_empty() {
+            product.name.clone()
+        } else {
+            raw_name.to_owned()
+        };
         let out = self
-            .apply_ops(user_id, "default", &json!([{"opId": op_id, "type": "add", "name": name}]), None, modified_by)
+            .apply_ops(
+                user_id,
+                "default",
+                &json!([{"opId": op_id, "type": "add", "name": name}]),
+                None,
+                modified_by,
+            )
             .await?;
         if let Some(r) = out.rejected.first() {
-            return Err(GroceryError::shopping("bad_request", format!("Shopping-list add rejected: {}", r["error"].as_str().unwrap_or(""))));
+            return Err(GroceryError::shopping(
+                "bad_request",
+                format!(
+                    "Shopping-list add rejected: {}",
+                    r["error"].as_str().unwrap_or("")
+                ),
+            ));
         }
         let item_id = out.item_ids.get(&op_id).cloned().unwrap_or_default();
         let item = out
@@ -1015,7 +1287,9 @@ impl GroceryRepo {
             .iter()
             .find(|i| i["id"] == json!(item_id))
             .cloned()
-            .ok_or_else(|| GroceryError::shopping("item_not_found", "Shopping-list item not found"))?;
+            .ok_or_else(|| {
+                GroceryError::shopping("item_not_found", "Shopping-list item not found")
+            })?;
         Ok(json!({
             "id": item["id"],
             "product": product.name,
@@ -1029,7 +1303,12 @@ impl GroceryRepo {
     }
 
     /// Legacy remove (chat): `remove` ops for matching items on the default list.
-    pub async fn remove_items_named(&self, user_id: &str, raw_name: &str, modified_by: &str) -> Result<(usize, String)> {
+    pub async fn remove_items_named(
+        &self,
+        user_id: &str,
+        raw_name: &str,
+        modified_by: &str,
+    ) -> Result<(usize, String)> {
         self.ready().await?;
         let mut conn = self.pool.acquire().await?;
         let list = Self::ensure_default_list(&mut conn, user_id).await?;
@@ -1055,7 +1334,15 @@ impl GroceryRepo {
             .iter()
             .map(|r| json!({"opId": Uuid::new_v4().to_string(), "type": "remove", "itemId": r.get::<Uuid, _>("id").to_string()}))
             .collect();
-        let out = self.apply_ops(user_id, &list.id.to_string(), &Value::Array(ops), None, modified_by).await?;
+        let out = self
+            .apply_ops(
+                user_id,
+                &list.id.to_string(),
+                &Value::Array(ops),
+                None,
+                modified_by,
+            )
+            .await?;
         Ok((out.applied.len(), list.id.to_string()))
     }
 
@@ -1092,9 +1379,18 @@ impl GroceryRepo {
     }
 
     /// Legacy `PATCH /shopping/:id` (`needed` | `purchased`): `{id, product, status}`.
-    pub async fn legacy_set_status(&self, user_id: &str, item_id: &str, status: &str, modified_by: &str) -> Result<Value> {
+    pub async fn legacy_set_status(
+        &self,
+        user_id: &str,
+        item_id: &str,
+        status: &str,
+        modified_by: &str,
+    ) -> Result<Value> {
         if status != "needed" && status != "purchased" {
-            return Err(GroceryError::shopping("invalid_status", "status must be needed or purchased"));
+            return Err(GroceryError::shopping(
+                "invalid_status",
+                "status must be needed or purchased",
+            ));
         }
         self.ready().await?;
         let not_found = || GroceryError::shopping("item_not_found", "No such shopping-list item");
@@ -1111,9 +1407,17 @@ impl GroceryRepo {
         drop(conn);
         let list_id: Uuid = row.get("list_id");
         let op = json!([{"opId": Uuid::new_v4().to_string(), "type": if status == "needed" { "need" } else { "purchase" }, "itemId": item_id.to_lowercase()}]);
-        let out = self.apply_ops(user_id, &list_id.to_string(), &op, None, modified_by).await?;
-        let item = out.items.iter().find(|i| i["id"] == json!(item_id.to_lowercase())).ok_or_else(not_found)?;
-        Ok(json!({"id": item["id"], "product": item["name"], "status": legacy_status(item["status"].as_str().unwrap_or(""))}))
+        let out = self
+            .apply_ops(user_id, &list_id.to_string(), &op, None, modified_by)
+            .await?;
+        let item = out
+            .items
+            .iter()
+            .find(|i| i["id"] == json!(item_id.to_lowercase()))
+            .ok_or_else(not_found)?;
+        Ok(
+            json!({"id": item["id"], "product": item["name"], "status": legacy_status(item["status"].as_str().unwrap_or(""))}),
+        )
     }
 
     /// Is the database reachable?

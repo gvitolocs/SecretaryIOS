@@ -20,7 +20,10 @@ fn cfg(server: &MockServer) -> HonchoConfig {
 #[test]
 fn session_ids_match_node() {
     assert_eq!(secretary_session_id("", "secretary_app"), "secretary_app");
-    assert_eq!(secretary_session_id("iphone", "secretary_app"), "secretary_iphone");
+    assert_eq!(
+        secretary_session_id("iphone", "secretary_app"),
+        "secretary_iphone"
+    );
     assert_eq!(secretary_session_id("secretary_ios", "x"), "secretary_ios");
     assert_eq!(secretary_session_id("", ""), "secretary_app");
 }
@@ -46,7 +49,9 @@ async fn context_is_read_only_and_rendered() {
         .mount(&server)
         .await;
     let mem = Memory::new(MemoryMode::ReadOnly, cfg(&server)).unwrap();
-    let ctx = mem.build_context("giuseppe", "secretary_app", "che tempo fa?").await;
+    let ctx = mem
+        .build_context("giuseppe", "secretary_app", "che tempo fa?")
+        .await;
     assert!(ctx.contains("Honcho session summary (derived 2026-10-20T10:00:00Z"));
     assert!(ctx.contains("Giuseppe lives in Copenhagen."));
     assert!(ctx.contains("conditioned on the CURRENT message: \"che tempo fa?\""));
@@ -61,26 +66,53 @@ async fn context_is_read_only_and_rendered() {
 #[tokio::test]
 async fn context_failure_is_empty() {
     let server = MockServer::start().await;
-    Mock::given(method("GET")).respond_with(ResponseTemplate::new(500)).mount(&server).await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
     let mem = Memory::new(MemoryMode::ReadOnly, cfg(&server)).unwrap();
-    assert_eq!(mem.build_context("giuseppe", "secretary_app", "x").await, "");
+    assert_eq!(
+        mem.build_context("giuseppe", "secretary_app", "x").await,
+        ""
+    );
     assert_eq!(Memory::off().build_context("giuseppe", "s", "x").await, "");
 }
 
 #[tokio::test]
 async fn remember_writes_like_node() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/v3/workspaces")).and(body_json(json!({"id": "hermes-peer1"})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "hermes-peer1"}))).expect(1).mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/v3/workspaces"))
+        .and(body_json(json!({"id": "hermes-peer1"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "hermes-peer1"})))
+        .expect(1)
+        .mount(&server)
+        .await;
     for peer in ["giuseppe", "hermes"] {
-        Mock::given(method("POST")).and(path("/v3/workspaces/hermes-peer1/peers")).and(body_json(json!({"id": peer})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": peer}))).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/v3/workspaces/hermes-peer1/peers"))
+            .and(body_json(json!({"id": peer})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": peer})))
+            .expect(1)
+            .mount(&server)
+            .await;
     }
-    Mock::given(method("POST")).and(path("/v3/workspaces/hermes-peer1/sessions")).and(body_json(json!({"id": "secretary_iphone"})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "secretary_iphone"}))).expect(1).mount(&server).await;
-    Mock::given(method("POST")).and(path("/v3/workspaces/hermes-peer1/sessions/secretary_iphone/peers"))
+    Mock::given(method("POST"))
+        .and(path("/v3/workspaces/hermes-peer1/sessions"))
+        .and(body_json(json!({"id": "secretary_iphone"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "secretary_iphone"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v3/workspaces/hermes-peer1/sessions/secretary_iphone/peers",
+        ))
         .and(body_json(json!({"giuseppe": {}, "hermes": {}})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({}))).expect(2).mount(&server).await;
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(2)
+        .mount(&server)
+        .await;
     Mock::given(method("POST")).and(path("/v3/workspaces/hermes-peer1/sessions/secretary_iphone/messages"))
         .and(body_json(json!({"messages": [
             {"peer_id": "giuseppe", "content": "[Secretary app] ciao", "metadata": {"role": "user"}},
@@ -89,22 +121,43 @@ async fn remember_writes_like_node() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([]))).expect(2).mount(&server).await;
     let mem = Memory::new(MemoryMode::ReadWrite, cfg(&server)).unwrap();
     for _ in 0..2 {
-        mem.remember("giuseppe", "secretary_iphone", "[Secretary app] ciao", "[action:reply]\n\nciao!").await.unwrap();
+        mem.remember(
+            "giuseppe",
+            "secretary_iphone",
+            "[Secretary app] ciao",
+            "[action:reply]\n\nciao!",
+        )
+        .await
+        .unwrap();
     }
 }
 
 #[tokio::test]
 async fn search_and_representation() {
     let server = MockServer::start().await;
-    Mock::given(method("POST")).and(path("/v3/workspaces/hermes-peer1/peers/giuseppe/search"))
+    Mock::given(method("POST"))
+        .and(path("/v3/workspaces/hermes-peer1/peers/giuseppe/search"))
         .and(body_json(json!({"query": "bike", "limit": 3})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"peer_id": "giuseppe", "content": "my bike"}])))
-        .mount(&server).await;
-    Mock::given(method("POST")).and(path("/v3/workspaces/hermes-peer1/peers/hermes/representation"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{"peer_id": "giuseppe", "content": "my bike"}])),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v3/workspaces/hermes-peer1/peers/hermes/representation",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"representation": "facts"})))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     let mem = Memory::new(MemoryMode::ReadOnly, cfg(&server)).unwrap();
     assert_eq!(mem.search("bike", 3).await.unwrap()[0].content, "my bike");
-    let rep = mem.client().unwrap().representation("hermes", None, Some("giuseppe"), Some("bike")).await.unwrap();
+    let rep = mem
+        .client()
+        .unwrap()
+        .representation("hermes", None, Some("giuseppe"), Some("bike"))
+        .await
+        .unwrap();
     assert_eq!(rep, "facts");
 }

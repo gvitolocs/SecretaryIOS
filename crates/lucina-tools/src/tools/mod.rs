@@ -28,6 +28,8 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
 }
 
 /// Parse validated arguments into the tool's typed struct.
-pub(crate) fn args<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, crate::ToolError> {
+pub(crate) fn args<T: serde::de::DeserializeOwned>(
+    v: serde_json::Value,
+) -> Result<T, crate::ToolError> {
     serde_json::from_value(v).map_err(|e| crate::ToolError::new(format!("invalid arguments: {e}")))
 }

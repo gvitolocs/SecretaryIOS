@@ -3,7 +3,9 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use lucina_llm::{ChatModel, ChatRequest, DeepSeek, DeepSeekConfig, KeySource, LlmError, Message, Tool};
+use lucina_llm::{
+    ChatModel, ChatRequest, DeepSeek, DeepSeekConfig, KeySource, LlmError, Message, Tool,
+};
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -23,7 +25,11 @@ fn client(server: &MockServer, key: KeySource) -> DeepSeek {
 fn req() -> ChatRequest {
     ChatRequest {
         messages: vec![Message::system("s"), Message::user("quanto fa 17% di 230?")],
-        tools: vec![Tool::function("calculator", "math", json!({"type": "object"}))],
+        tools: vec![Tool::function(
+            "calculator",
+            "math",
+            json!({"type": "object"}),
+        )],
         tool_choice: Some("auto".into()),
         purpose: "test",
         ..ChatRequest::default()
@@ -142,8 +148,14 @@ async fn streams_content_and_tool_calls() {
     ]
     .join("\n\n");
     Mock::given(method("POST"))
-        .and(body_partial_json(json!({"stream": true, "stream_options": {"include_usage": true}})))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-type", "text/event-stream").set_body_string(sse))
+        .and(body_partial_json(
+            json!({"stream": true, "stream_options": {"include_usage": true}}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
         .mount(&server)
         .await;
     let ds = client(&server, KeySource::Inline("k".into()));

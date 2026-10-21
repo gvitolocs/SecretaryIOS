@@ -55,7 +55,11 @@ pub fn new_id(now_ms: i64) -> String {
         st.last_ms = now_ms;
         st.last_random = random80() >> 1;
     }
-    format!("{}{}", encode_time(st.last_ms), encode_random(st.last_random))
+    format!(
+        "{}{}",
+        encode_time(st.last_ms),
+        encode_random(st.last_random)
+    )
 }
 
 /// `^[0-9A-HJKMNP-TV-Z]{26}$`

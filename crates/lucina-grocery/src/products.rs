@@ -10,16 +10,41 @@ pub struct Product {
 }
 
 const PRODUCT_ALIASES: &[(&str, &str, &str, &[&str])] = &[
-    ("chicken_breast", "chicken breast", "meat", &["chicken breast", "chicken fillet", "kyllingebryst", "kyllinge brystfilet"]),
+    (
+        "chicken_breast",
+        "chicken breast",
+        "meat",
+        &[
+            "chicken breast",
+            "chicken fillet",
+            "kyllingebryst",
+            "kyllinge brystfilet",
+        ],
+    ),
     ("chicken", "chicken", "meat", &["chicken", "kylling"]),
     ("mozzarella", "mozzarella", "dairy", &["mozzarella"]),
     ("ham", "ham", "meat", &["ham", "prosciutto cotto", "skinke"]),
-    ("prosciutto", "prosciutto", "meat", &["prosciutto", "parma ham", "parmaskinke"]),
-    ("pasta", "pasta", "pasta/rice", &["pasta", "spaghetti", "penne"]),
+    (
+        "prosciutto",
+        "prosciutto",
+        "meat",
+        &["prosciutto", "parma ham", "parmaskinke"],
+    ),
+    (
+        "pasta",
+        "pasta",
+        "pasta/rice",
+        &["pasta", "spaghetti", "penne"],
+    ),
     ("rice", "rice", "pasta/rice", &["rice", "ris"]),
     ("milk", "milk", "dairy", &["milk", "latte", "mælk"]),
     ("yogurt", "yogurt", "dairy", &["yogurt", "yoghurt"]),
-    ("rye_bread", "rye bread", "bakery", &["rye bread", "pane di segale", "rugbrød"]),
+    (
+        "rye_bread",
+        "rye bread",
+        "bakery",
+        &["rye bread", "pane di segale", "rugbrød"],
+    ),
     ("eggs", "eggs", "dairy", &["egg", "eggs", "æg"]),
 ];
 
@@ -54,15 +79,18 @@ fn product(entry: &(&str, &str, &str, &[&str]), confidence: f64) -> Product {
 
 pub fn resolve_canonical_product(raw: &str) -> Product {
     let query = normalize_product_name(raw);
-    if let Some(e) = PRODUCT_ALIASES.iter().find(|e| e.3.iter().any(|a| normalize_product_name(a) == query)) {
+    if let Some(e) = PRODUCT_ALIASES
+        .iter()
+        .find(|e| e.3.iter().any(|a| normalize_product_name(a) == query))
+    {
         return product(e, 1.0);
     }
     // Aliases must start at a word boundary so "ham" skips "shampoo".
     let padded = format!(" {query}");
-    if let Some(e) = PRODUCT_ALIASES
-        .iter()
-        .find(|e| e.3.iter().any(|a| padded.contains(&format!(" {}", normalize_product_name(a)))))
-    {
+    if let Some(e) = PRODUCT_ALIASES.iter().find(|e| {
+        e.3.iter()
+            .any(|a| padded.contains(&format!(" {}", normalize_product_name(a))))
+    }) {
         return product(e, 0.86);
     }
     let id: String = query
@@ -75,7 +103,11 @@ pub fn resolve_canonical_product(raw: &str) -> Product {
         .collect();
     let name = raw.trim().to_owned();
     Product {
-        id: if id.is_empty() { "unknown_product".into() } else { id },
+        id: if id.is_empty() {
+            "unknown_product".into()
+        } else {
+            id
+        },
         name: name.clone(),
         category: "other".into(),
         aliases: vec![name],
@@ -99,7 +131,10 @@ mod tests {
         assert_eq!(resolve_canonical_product("shampoo").id, "shampoo");
         assert_eq!(resolve_canonical_product("Pane di segale!").id, "rye_bread");
         let p = resolve_canonical_product("Pomodori San Marzano");
-        assert_eq!((p.id.as_str(), p.name.as_str(), p.category.as_str()), ("pomodori_san_marzano", "Pomodori San Marzano", "other"));
+        assert_eq!(
+            (p.id.as_str(), p.name.as_str(), p.category.as_str()),
+            ("pomodori_san_marzano", "Pomodori San Marzano", "other")
+        );
         assert_eq!(resolve_canonical_product("ñoño").id, "oo");
         assert_eq!(resolve_canonical_product("!!!").id, "unknown_product");
     }

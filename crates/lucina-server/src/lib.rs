@@ -33,7 +33,12 @@ use serde_json::Value;
 
 pub use config::{Config, PlannerMode, WriterKind};
 
-pub type SharedChat = futures_util::future::Shared<futures_util::future::BoxFuture<'static, Result<Value, api::ApiError>>>;
+pub type SharedChat = futures_util::future::Shared<
+    futures_util::future::BoxFuture<'static, Result<Value, api::ApiError>>,
+>;
+
+/// Reports whether the DeepSeek key is available (never the key).
+pub type KeyProbe = Box<dyn Fn() -> bool + Send + Sync>;
 
 pub struct Inner {
     pub cfg: Config,
@@ -45,7 +50,7 @@ pub struct Inner {
     pub memory: Arc<Memory>,
     pub model: Arc<dyn ChatModel>,
     pub usage: Option<Arc<UsageTotals>>,
-    pub deepseek_has_key: Box<dyn Fn() -> bool + Send + Sync>,
+    pub deepseek_has_key: KeyProbe,
     pub grocery: Option<Arc<GroceryRepo>>,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
@@ -71,24 +76,35 @@ impl std::ops::Deref for AppState {
 impl AppState {
     /// Wire everything from the config. `model: None` uses DeepSeek.
     pub fn build(cfg: Config, model: Option<Arc<dyn ChatModel>>) -> anyhow::Result<Self> {
-        let (model, usage, has_key): (Arc<dyn ChatModel>, Option<Arc<UsageTotals>>, Box<dyn Fn() -> bool + Send + Sync>) = match model {
-            Some(m) => (m, None, Box::new(|| true)),
-            None => {
-                let ds = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
-                let usage = ds.usage.clone();
-                let probe = ds.clone();
-                (ds, Some(usage), Box::new(move || probe.has_key()))
-            }
-        };
-        let timeline = Arc::new(TimelineStore::new(&cfg.timeline_path, cfg.timeline_max_bytes, cfg.timeline_enabled));
-        let reminders = Arc::new(ReminderStore::new(&cfg.reminders_path, cfg.reminder_max_stored));
+        let (model, usage, has_key): (Arc<dyn ChatModel>, Option<Arc<UsageTotals>>, KeyProbe) =
+            match model {
+                Some(m) => (m, None, Box::new(|| true)),
+                None => {
+                    let ds = Arc::new(DeepSeek::new(cfg.deepseek.clone())?);
+                    let usage = ds.usage.clone();
+                    let probe = ds.clone();
+                    (ds, Some(usage), Box::new(move || probe.has_key()))
+                }
+            };
+        let timeline = Arc::new(TimelineStore::new(
+            &cfg.timeline_path,
+            cfg.timeline_max_bytes,
+            cfg.timeline_enabled,
+        ));
+        let reminders = Arc::new(ReminderStore::new(
+            &cfg.reminders_path,
+            cfg.reminder_max_stored,
+        ));
         let writer: Arc<dyn ReminderWriter> = match cfg.reminders_writer {
             WriterKind::Local => Arc::new(LocalWriter(reminders.clone())),
             WriterKind::Node => Arc::new(NodeForwarder::new(&cfg.node_url, cfg.node_token.clone())),
         };
         let grocery = match &cfg.grocery_database_url {
             Some(url) => {
-                let catalog = Catalog::from_paths(Catalog::default_paths(cfg.shopping_catalog_path.clone(), &cfg.data_dir));
+                let catalog = Catalog::from_paths(Catalog::default_paths(
+                    cfg.shopping_catalog_path.clone(),
+                    &cfg.data_dir,
+                ));
                 Some(Arc::new(GroceryRepo::connect_lazy(url, catalog)?))
             }
             None => None,
@@ -115,17 +131,30 @@ impl AppState {
             reminders,
             writer,
             jobs: JobStore::new(&cfg.jobs_path),
-            device: DeviceStore::new(&cfg.data_dir, cfg.device_retention_days, cfg.device_command_ttl_ms, cfg.device_reachable_minutes),
+            device: DeviceStore::new(
+                &cfg.data_dir,
+                cfg.device_retention_days,
+                cfg.device_command_ttl_ms,
+                cfg.device_reachable_minutes,
+            ),
             memory,
-            planner: planner::Planner { model: model.clone(), prompts },
+            planner: planner::Planner {
+                model: model.clone(),
+                prompts,
+            },
             model,
             usage,
             deepseek_has_key: has_key,
             grocery,
             tool_env: Arc::new(env),
             registry,
-            pending: Arc::new(PendingStore::file(cfg.data_dir.join("lucina-rs/pending-actions.json"), DEFAULT_TTL)),
-            recent: Arc::new(RecentChat::new(Some(cfg.data_dir.join("lucina-rs/recent-chat.json")))),
+            pending: Arc::new(PendingStore::file(
+                cfg.data_dir.join("lucina-rs/pending-actions.json"),
+                DEFAULT_TTL,
+            )),
+            recent: Arc::new(RecentChat::new(Some(
+                cfg.data_dir.join("lucina-rs/recent-chat.json"),
+            ))),
             client_messages: Mutex::new(HashMap::new()),
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
@@ -150,7 +179,12 @@ impl AppState {
                 owner_chat_id: self.cfg.owner_chat_id.clone().unwrap_or_default(),
                 owner_peer_id: self.cfg.owner_peer_id.clone(),
             });
-            lucina_store::scheduler::spawn(self.reminders.clone(), sink, self.cfg.persona.clone(), self.cfg.scheduler_poll);
+            lucina_store::scheduler::spawn(
+                self.reminders.clone(),
+                sink,
+                self.cfg.persona.clone(),
+                self.cfg.scheduler_poll,
+            );
         }
     }
 }

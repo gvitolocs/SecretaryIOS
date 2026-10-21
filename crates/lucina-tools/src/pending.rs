@@ -53,11 +53,19 @@ pub struct PendingStore {
 
 impl PendingStore {
     pub fn file(path: impl Into<PathBuf>, ttl: Duration) -> Self {
-        Self { path: Some(path.into()), ttl, mem: Mutex::new(Vec::new()) }
+        Self {
+            path: Some(path.into()),
+            ttl,
+            mem: Mutex::new(Vec::new()),
+        }
     }
 
     pub fn memory(ttl: Duration) -> Self {
-        Self { path: None, ttl, mem: Mutex::new(Vec::new()) }
+        Self {
+            path: None,
+            ttl,
+            mem: Mutex::new(Vec::new()),
+        }
     }
 
     fn load(&self, guard: &mut Vec<PendingAction>) {
@@ -72,7 +80,8 @@ impl PendingStore {
 
     fn save(&self, list: &[PendingAction]) {
         if let Some(p) = &self.path {
-            let text = serde_json::to_string_pretty(&serde_json::json!({"pending": list})).unwrap_or_default();
+            let text = serde_json::to_string_pretty(&serde_json::json!({"pending": list}))
+                .unwrap_or_default();
             if let Err(e) = write_atomic(p, format!("{text}\n").as_bytes()) {
                 tracing::warn!(error = %e, "pending actions write failed");
             }
@@ -88,7 +97,14 @@ impl PendingStore {
     }
 
     /// Store a new pending action; one per session (a newer one replaces it).
-    pub fn create(&self, session_id: &str, tool: &str, args: Value, summary: &str, now: DateTime<Utc>) -> PendingAction {
+    pub fn create(
+        &self,
+        session_id: &str,
+        tool: &str,
+        args: Value,
+        summary: &str,
+        now: DateTime<Utc>,
+    ) -> PendingAction {
         let action = PendingAction {
             id: uuid::Uuid::new_v4().to_string(),
             session_id: session_id.to_owned(),
@@ -109,7 +125,10 @@ impl PendingStore {
     pub fn current(&self, session_id: &str, now: DateTime<Utc>) -> Option<PendingAction> {
         self.with(|list| {
             list.retain(|p| !p.expired(now));
-            list.iter().rev().find(|p| p.session_id == session_id).cloned()
+            list.iter()
+                .rev()
+                .find(|p| p.session_id == session_id)
+                .cloned()
         })
     }
 
@@ -131,12 +150,54 @@ pub enum Reply {
 }
 
 const YES: &[&str] = &[
-    "si", "sì", "sí", "yes", "y", "yep", "yeah", "ok", "okay", "confermo", "conferma", "certo", "procedi", "vai", "fallo",
-    "si procedi", "sì procedi", "si confermo", "sì confermo", "si grazie", "sì grazie", "si fallo", "sì fallo", "do it",
-    "go ahead", "confirm", "confirmed", "yes please", "yes do it", "ja", "jep", "bekræft", "gør det",
+    "si",
+    "sì",
+    "sí",
+    "yes",
+    "y",
+    "yep",
+    "yeah",
+    "ok",
+    "okay",
+    "confermo",
+    "conferma",
+    "certo",
+    "procedi",
+    "vai",
+    "fallo",
+    "si procedi",
+    "sì procedi",
+    "si confermo",
+    "sì confermo",
+    "si grazie",
+    "sì grazie",
+    "si fallo",
+    "sì fallo",
+    "do it",
+    "go ahead",
+    "confirm",
+    "confirmed",
+    "yes please",
+    "yes do it",
+    "ja",
+    "jep",
+    "bekræft",
+    "gør det",
 ];
 const NO: &[&str] = &[
-    "no", "n", "nope", "annulla", "lascia stare", "non farlo", "no grazie", "cancel", "stop", "don't", "dont", "nej", "lad være",
+    "no",
+    "n",
+    "nope",
+    "annulla",
+    "lascia stare",
+    "non farlo",
+    "no grazie",
+    "cancel",
+    "stop",
+    "don't",
+    "dont",
+    "nej",
+    "lad være",
 ];
 
 /// Strict: the whole message (lowercased, punctuation and emoji trimmed)
@@ -145,7 +206,13 @@ pub fn classify_reply(text: &str) -> Reply {
     let cleaned: String = text
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '\'' { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '\'' {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
     let norm = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     if YES.contains(&norm.as_str()) {
@@ -176,10 +243,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = PendingStore::file(dir.path().join("p.json"), DEFAULT_TTL);
         let now = Utc::now();
-        let p = s.create("sess", "reminders", serde_json::json!({"action": "cancel"}), "cancel x", now);
+        let p = s.create(
+            "sess",
+            "reminders",
+            serde_json::json!({"action": "cancel"}),
+            "cancel x",
+            now,
+        );
         assert_eq!(s.current("sess", now).unwrap().id, p.id);
         assert!(s.current("other", now).is_none());
-        assert!(s.current("sess", now + chrono::Duration::minutes(11)).is_none());
+        assert!(s
+            .current("sess", now + chrono::Duration::minutes(11))
+            .is_none());
         let p = s.create("sess", "reminders", serde_json::json!({}), "y", now);
         assert!(s.take(&p.id).is_some());
         assert!(s.take(&p.id).is_none());

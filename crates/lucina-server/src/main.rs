@@ -46,7 +46,11 @@ fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
         let (mut n, mut bad) = (0usize, 0usize);
         for line in text.split('\n').filter(|l| !l.is_empty()) {
             n += 1;
-            let same = serde_json::from_str::<lucina_store::TimelineItem>(line).ok().and_then(|i| serde_json::to_string(&i).ok()).as_deref() == Some(line);
+            let same = serde_json::from_str::<lucina_store::TimelineItem>(line)
+                .ok()
+                .and_then(|i| serde_json::to_string(&i).ok())
+                .as_deref()
+                == Some(line);
             if !same {
                 bad += 1;
             }
@@ -55,8 +59,15 @@ fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
         all_ok &= bad == 0;
     }
     if let Ok(bytes) = std::fs::read(dir.join("reminders.json")) {
-        let same = lucina_store::ReminderStore::reserialize(&bytes).ok().as_deref().map(str::as_bytes) == Some(&bytes[..]);
-        println!("reminders.json: {}", if same { "byte-identical" } else { "DIFFERS" });
+        let same = lucina_store::ReminderStore::reserialize(&bytes)
+            .ok()
+            .as_deref()
+            .map(str::as_bytes)
+            == Some(&bytes[..]);
+        println!(
+            "reminders.json: {}",
+            if same { "byte-identical" } else { "DIFFERS" }
+        );
         all_ok &= same;
     }
     Ok(all_ok)
@@ -64,7 +75,11 @@ fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
     match Cli::parse().cmd.unwrap_or(Cmd::Serve) {
         Cmd::Serve => {
             let cfg = Config::from_env()?;
@@ -80,7 +95,11 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await?;
         }
-        Cmd::FakeDeepseek { bind, script, record } => {
+        Cmd::FakeDeepseek {
+            bind,
+            script,
+            record,
+        } => {
             let script = match script {
                 Some(p) => serde_json::from_slice(&std::fs::read(p)?)?,
                 None => lucina_server::fake::Script::default(),

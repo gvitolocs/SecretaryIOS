@@ -38,7 +38,10 @@ pub struct RecentChat {
 
 impl RecentChat {
     pub fn new(path: Option<PathBuf>) -> Self {
-        Self { path, turns: Mutex::new(None) }
+        Self {
+            path,
+            turns: Mutex::new(None),
+        }
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut BTreeMap<String, Vec<Turn>>) -> R) -> R {
@@ -60,7 +63,11 @@ impl RecentChat {
         let snapshot = self.with(|map| {
             let turns = map.entry(chat_id.to_owned()).or_default();
             turns.push(Turn {
-                role: if role == "assistant" { "assistant".into() } else { "user".into() },
+                role: if role == "assistant" {
+                    "assistant".into()
+                } else {
+                    "user".into()
+                },
                 at: Some(iso_ms(at)),
                 text: clip_utf16(text.trim(), 1000),
             });
@@ -88,18 +95,27 @@ impl RecentChat {
         let lines: Vec<String> = turns
             .iter()
             .map(|t| {
-                let stamp = t
-                    .at
-                    .as_deref()
-                    .and_then(parse_js_date)
-                    .map(|d| format!("[{} {}]", d.with_timezone(&tz).format("%d/%m %H:%M"), tz.name()))
-                    .unwrap_or_else(|| "[time unknown]".into());
+                let stamp =
+                    t.at.as_deref()
+                        .and_then(parse_js_date)
+                        .map(|d| {
+                            format!(
+                                "[{} {}]",
+                                d.with_timezone(&tz).format("%d/%m %H:%M"),
+                                tz.name()
+                            )
+                        })
+                        .unwrap_or_else(|| "[time unknown]".into());
                 format!("{stamp} {}: {}", t.role, t.text)
             })
             .collect();
         let joined = lines.join("\n");
         let n = joined.chars().count();
-        let rendered: String = if n > CHARS_LIMIT { joined.chars().skip(n - CHARS_LIMIT).collect() } else { joined };
+        let rendered: String = if n > CHARS_LIMIT {
+            joined.chars().skip(n - CHARS_LIMIT).collect()
+        } else {
+            joined
+        };
         [
             format!("{MARKER} (most recent last; stamps show when each turn happened):"),
             "If the user asks you to reread what you sent, use these turns before older Honcho summaries or peer observations.".into(),
@@ -112,17 +128,38 @@ impl RecentChat {
     /// The "Turn metadata" block (Node `buildTurnMetadata` + `renderTurnMetadataBlock`).
     pub fn metadata_block(&self, chat_id: &str, tz: Tz, now: DateTime<Utc>) -> String {
         let turns = self.turns(chat_id);
-        let valid = |t: &Turn| t.at.as_deref().and_then(parse_js_date).filter(|d| *d <= now + chrono::Duration::minutes(5));
-        let last_user = turns.iter().rev().find(|t| t.role == "user").and_then(valid);
-        let last_asst = turns.iter().rev().find(|t| t.role == "assistant").and_then(valid);
+        let valid = |t: &Turn| {
+            t.at.as_deref()
+                .and_then(parse_js_date)
+                .filter(|d| *d <= now + chrono::Duration::minutes(5))
+        };
+        let last_user = turns
+            .iter()
+            .rev()
+            .find(|t| t.role == "user")
+            .and_then(valid);
+        let last_asst = turns
+            .iter()
+            .rev()
+            .find(|t| t.role == "assistant")
+            .and_then(valid);
         let last_activity = match (last_user, last_asst) {
             (Some(u), Some(a)) => Some(u.max(a)),
             (u, a) => u.or(a),
         };
-        let elapsed = last_activity.map(|d| ((now - d).num_milliseconds() as f64 / 1000.0).round().max(0.0) as i64);
+        let elapsed = last_activity.map(|d| {
+            ((now - d).num_milliseconds() as f64 / 1000.0)
+                .round()
+                .max(0.0) as i64
+        });
         let first_after_idle = elapsed.is_none_or(|s| s * 1000 >= IDLE_BOUNDARY_MS);
         let local = now.with_timezone(&tz);
-        let current_time = format!("{} {} ({})", local.format("%Y-%m-%d %H:%M:%S"), local.format("%Z"), tz.name());
+        let current_time = format!(
+            "{} {} ({})",
+            local.format("%Y-%m-%d %H:%M:%S"),
+            local.format("%Z"),
+            tz.name()
+        );
         let mut lines = vec![
             "Turn metadata (computed by code; authoritative for date/time):".to_owned(),
             format!("- current time: {current_time}"),
@@ -131,12 +168,18 @@ impl RecentChat {
         if let Some(s) = elapsed {
             lines.push(format!("- since last chat activity: {s}s"));
         }
-        lines.push(format!("- first turn after idle: {}", if first_after_idle { "yes" } else { "no" }));
+        lines.push(format!(
+            "- first turn after idle: {}",
+            if first_after_idle { "yes" } else { "no" }
+        ));
         if let Some(u) = last_user {
             lines.push(format!("- last user message: {}", iso_ms(u)));
         }
         lines.push(format!("- turn index (recent window): {}", turns.len() + 1));
-        lines.push("- Dates before the current date are in the past; do not treat them as upcoming.".into());
+        lines.push(
+            "- Dates before the current date are in the past; do not treat them as upcoming."
+                .into(),
+        );
         lines.join("\n")
     }
 }
@@ -155,7 +198,14 @@ pub fn clip_memory_for_reply(memory: &str, max_chars: usize) -> String {
             return format!("{MARKER} (tail)\n{tail}");
         }
         let head_budget = limit as i64 - recent.len() as i64 - 5;
-        let head = if head_budget > 80 { format!("{}\n…\n", chars[..head_budget as usize].iter().collect::<String>()) } else { String::new() };
+        let head = if head_budget > 80 {
+            format!(
+                "{}\n…\n",
+                chars[..head_budget as usize].iter().collect::<String>()
+            )
+        } else {
+            String::new()
+        };
         return format!("{head}{}", recent.iter().collect::<String>());
     }
     chars[chars.len() - limit..].iter().collect()
@@ -173,12 +223,22 @@ mod tests {
         let tz: Tz = "Europe/Rome".parse().unwrap();
         let t0 = Utc.with_ymd_and_hms(2026, 10, 21, 15, 0, 0).unwrap();
         r.append("secretary_app", "user", "ciao", t0);
-        r.append("secretary_app", "assistant", "ciao!", t0 + chrono::Duration::seconds(5));
+        r.append(
+            "secretary_app",
+            "assistant",
+            "ciao!",
+            t0 + chrono::Duration::seconds(5),
+        );
         let block = r.render("secretary_app", tz);
         assert!(block.starts_with("Recent chat turns (most recent last"));
-        assert!(block.ends_with("[21/10 17:00 Europe/Rome] user: ciao\n[21/10 17:00 Europe/Rome] assistant: ciao!"));
+        assert!(block.ends_with(
+            "[21/10 17:00 Europe/Rome] user: ciao\n[21/10 17:00 Europe/Rome] assistant: ciao!"
+        ));
         let meta = r.metadata_block("secretary_app", tz, t0 + chrono::Duration::seconds(65));
-        assert!(meta.contains("- current time: 2026-10-21 17:01:05 CEST (Europe/Rome)"), "{meta}");
+        assert!(
+            meta.contains("- current time: 2026-10-21 17:01:05 CEST (Europe/Rome)"),
+            "{meta}"
+        );
         assert!(meta.contains("- since last chat activity: 60s"));
         assert!(meta.contains("- first turn after idle: no"));
         assert!(meta.contains("- turn index (recent window): 3"));

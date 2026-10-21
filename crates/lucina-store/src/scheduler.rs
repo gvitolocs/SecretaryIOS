@@ -66,8 +66,16 @@ pub fn tick(store: &ReminderStore, sink: &dyn ReminderSink, persona: &str) -> us
 }
 
 /// Start the loop (only when `LUCINA_SCHEDULER=true`).
-pub fn spawn(store: Arc<ReminderStore>, sink: Arc<dyn ReminderSink>, persona: String, every: Duration) -> tokio::task::JoinHandle<()> {
-    tracing::info!(poll_ms = every.as_millis() as u64, "reminder scheduler started");
+pub fn spawn(
+    store: Arc<ReminderStore>,
+    sink: Arc<dyn ReminderSink>,
+    persona: String,
+    every: Duration,
+) -> tokio::task::JoinHandle<()> {
+    tracing::info!(
+        poll_ms = every.as_millis() as u64,
+        "reminder scheduler started"
+    );
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(every.max(Duration::from_secs(1)));
         loop {
@@ -100,7 +108,11 @@ mod tests {
                 source: "secretary".into(),
             })
             .unwrap();
-        let timeline = Arc::new(TimelineStore::new(dir.path().join("t.jsonl"), 1 << 20, true));
+        let timeline = Arc::new(TimelineStore::new(
+            dir.path().join("t.jsonl"),
+            1 << 20,
+            true,
+        ));
         let sink = TimelineSink {
             timeline: timeline.clone(),
             owner_chat_id: "42".into(),
@@ -110,7 +122,9 @@ mod tests {
         assert_eq!(tick(&store, &sink, "Lucina"), 0);
         let (items, _) = timeline.list(None, 10).unwrap();
         assert_eq!(items.len(), 1);
-        assert!(items[0].raw.contains(r#""meta":{"kind":"reminder","isDm":true}"#));
+        assert!(items[0]
+            .raw
+            .contains(r#""meta":{"kind":"reminder","isDm":true}"#));
         assert!(items[0].raw.contains("⏰ Reminder\\n\\nstretch"));
     }
 }
