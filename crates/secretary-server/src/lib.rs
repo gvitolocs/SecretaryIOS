@@ -9,10 +9,13 @@ pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod devices;
+pub mod engines;
 pub mod error;
 pub mod health;
+pub mod insights;
 pub mod ratelimit;
 pub mod routes;
+pub mod service;
 pub mod sessions;
 pub mod upstream;
 pub mod web;
@@ -55,6 +58,10 @@ pub struct Inner {
     pub upstream: Option<upstream::Upstream>,
     pub web_dir: Option<PathBuf>,
     pub trust_proxy: bool,
+    /// Gym and body engines (files in the data dir).
+    pub engines: engines::Engines,
+    /// `None` when `SECRETARY_SERVICE_TOKEN_FILE` is unset.
+    pub service_token: Option<service::ServiceToken>,
 }
 
 #[derive(Clone)]
@@ -87,6 +94,8 @@ impl AppState {
             upstream,
             web_dir: cfg.web_dir.clone(),
             trust_proxy: cfg.trust_proxy,
+            engines: engines::Engines::open(&cfg.data_dir)?,
+            service_token: cfg.service_token.clone(),
         })))
     }
 
@@ -142,7 +151,7 @@ fn static_header(name: &'static str, value: &'static str) -> SetResponseHeaderLa
 
 /// The full HTTP surface.
 pub fn app(state: AppState) -> Router {
-    let mut protected = routes::protected();
+    let mut protected = routes::protected().merge(engines::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -155,6 +164,7 @@ pub fn app(state: AppState) -> Router {
         .merge(routes::public())
         .merge(auth::session_routes())
         .merge(protected)
+        .merge(insights::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),

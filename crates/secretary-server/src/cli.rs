@@ -1,4 +1,5 @@
-//! Command line: `serve` (default) and `token issue|list|revoke`.
+//! Command line: `serve` (default), `token issue|list|revoke` and
+//! `service-token generate`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -31,6 +32,35 @@ pub enum Command {
         #[command(subcommand)]
         action: TokenAction,
     },
+    /// Manage the service token Lucina uses for /v1/insights/summary.
+    ServiceToken {
+        #[command(subcommand)]
+        action: ServiceTokenAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ServiceTokenAction {
+    /// Write a fresh `svc_…` token to PATH (mode 0600) and print only the
+    /// path. Point SECRETARY_SERVICE_TOKEN_FILE at it and give the same file
+    /// to Lucina.
+    Generate {
+        path: PathBuf,
+        /// Replace an existing file.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// Run a `service-token` action, writing human output to `out`.
+pub fn run_service_token(action: ServiceTokenAction, out: &mut dyn Write) -> anyhow::Result<()> {
+    match action {
+        ServiceTokenAction::Generate { path, force } => {
+            crate::service::write_new(&path, force)?;
+            writeln!(out, "service token written to {} (0600)", path.display())?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -125,6 +155,9 @@ pub fn main_with(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Token { data_dir, action } => {
             run_token(data_dir, action, &mut std::io::stdout().lock())
+        }
+        Command::ServiceToken { action } => {
+            run_service_token(action, &mut std::io::stdout().lock())
         }
     }
 }

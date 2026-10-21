@@ -5,7 +5,8 @@
 //! | `SECRETARY_BIND` | `127.0.0.1:8800` | listen address |
 //! | `SECRETARY_LUCINA_URL` | `http://127.0.0.1:18788` | Lucina origin (SSH relay on p1) |
 //! | `SECRETARY_LUCINA_TOKEN_FILE` | — | file with the Lucina Bearer token; required for the /v1 data routes |
-//! | `SECRETARY_DATA_DIR` | `/var/lib/secretary` | holds `devices.json` |
+//! | `SECRETARY_DATA_DIR` | `/var/lib/secretary` | holds `devices.json`, `sessions.json`, `gym.json`, `body.json` |
+//! | `SECRETARY_SERVICE_TOKEN_FILE` | — | file with the `svc_…` service token (Lucina); enables `/v1/insights/summary` |
 //! | `SECRETARY_UPSTREAM_LEGACY` | — | enables `/v1/upstream/*` (legacy shopping API base) |
 //! | `SECRETARY_UPSTREAM_SERVICES` | — | enables `/v1/upstream/*` (service-family base) |
 //! | `SECRETARY_UPSTREAM_CATALOG` | — | local catalog JSON for `/v1/upstream/catalog_local` |
@@ -42,6 +43,8 @@ pub struct Config {
     pub upstream: Option<UpstreamConfig>,
     pub web_dir: Option<PathBuf>,
     pub trust_proxy: bool,
+    /// `None` when `SECRETARY_SERVICE_TOKEN_FILE` is unset: insights 503.
+    pub service_token: Option<crate::service::ServiceToken>,
     pub timeouts: Timeouts,
     pub upstream_timeout: Duration,
     pub rate_limit_per_minute: u32,
@@ -61,6 +64,10 @@ impl std::fmt::Debug for Config {
             .field("upstream", &self.upstream)
             .field("web_dir", &self.web_dir)
             .field("trust_proxy", &self.trust_proxy)
+            .field(
+                "service_token",
+                &self.service_token.as_ref().map(|_| "<set>"),
+            )
             .field("timeouts", &self.timeouts)
             .field("rate_limit_per_minute", &self.rate_limit_per_minute)
             .finish()
@@ -79,6 +86,7 @@ impl Config {
             upstream: None,
             web_dir: None,
             trust_proxy: false,
+            service_token: None,
             timeouts: Timeouts::default(),
             upstream_timeout: Duration::from_secs(15),
             rate_limit_per_minute: 60,
@@ -113,6 +121,9 @@ impl Config {
         };
         if let Some(path) = get("SECRETARY_LUCINA_TOKEN_FILE") {
             cfg.lucina_token = Some(read_token_file(&path)?);
+        }
+        if let Some(path) = get("SECRETARY_SERVICE_TOKEN_FILE") {
+            cfg.service_token = Some(crate::service::ServiceToken::read_file(&path)?);
         }
         let upstream = UpstreamConfig {
             legacy: get("SECRETARY_UPSTREAM_LEGACY"),
