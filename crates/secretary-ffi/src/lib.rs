@@ -54,17 +54,19 @@ pub extern "C" fn secretary_version() -> *mut c_char {
     output(
         serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
-            "modules": ["gym"],
+            "modules": MODULES,
         })
         .to_string(),
     )
 }
 
-#[doc(hidden)]
-unsafe fn open_engine<E>(path: *const c_char) -> *mut Mutex<E>
-where
-    E: OpenModule,
-{
+/// One feature engine behind the C ABI: open a file, answer JSON with JSON.
+trait Module: Sized {
+    fn open(path: &str) -> std::result::Result<Self, String>;
+    fn request(&mut self, json: &str) -> String;
+}
+
+unsafe fn open_engine<E: Module>(path: *const c_char) -> *mut Mutex<E> {
     let result = catch_unwind(AssertUnwindSafe(|| {
         if path.is_null() {
             return Err("Missing storage path".into());
@@ -85,11 +87,7 @@ where
     }
 }
 
-#[doc(hidden)]
-unsafe fn request_engine<E>(handle: *mut Mutex<E>, json: *const c_char) -> *mut c_char
-where
-    E: RequestModule,
-{
+unsafe fn request_engine<E: Module>(handle: *mut Mutex<E>, json: *const c_char) -> *mut c_char {
     let result = catch_unwind(AssertUnwindSafe(|| {
         if handle.is_null() || json.is_null() {
             return failure("Missing handle or command");
@@ -100,41 +98,33 @@ where
         let Ok(mut engine) = (*handle).lock() else {
             return failure("Core lock is unavailable");
         };
-        serde_json::to_string(&engine.handle(input))
-            .unwrap_or_else(|_| failure("Response could not be encoded"))
+        engine.request(input)
     }));
     output(result.unwrap_or_else(|_| failure("Rust core rejected an internal failure")))
 }
 
-#[doc(hidden)]
 unsafe fn close_engine<E>(handle: *mut Mutex<E>) {
     if !handle.is_null() {
         drop(Box::from_raw(handle));
     }
 }
 
-trait OpenModule: Sized {
-    fn open(path: &str) -> std::result::Result<Self, String>;
-}
-
-trait RequestModule {
-    fn handle(&mut self, json: &str) -> secretary_gym::Response;
-}
-
-impl OpenModule for secretary_gym::Engine {
-    fn open(path: &str) -> std::result::Result<Self, String> {
-        secretary_gym::Engine::open(path)
-    }
-}
-
-impl RequestModule for secretary_gym::Engine {
-    fn handle(&mut self, json: &str) -> secretary_gym::Response {
-        secretary_gym::Engine::handle(self, json)
-    }
-}
-
+/// Exposes one engine type as `secretary_<module>_{open,request,close}`.
+/// The engine needs `open(path) -> Result<Self, String>` and
+/// `handle(&mut self, &str) -> impl Serialize`. Adding a module is one
+/// invocation plus its lines in `SecretaryCore.h` and `MODULES`.
 macro_rules! module {
-    ($module:ident, $open:ident, $request:ident, $close:ident, $engine:path) => {
+    ($engine:ty, $open:ident, $request:ident, $close:ident) => {
+        impl Module for $engine {
+            fn open(path: &str) -> std::result::Result<Self, String> {
+                <$engine>::open(path)
+            }
+            fn request(&mut self, json: &str) -> String {
+                serde_json::to_string(&<$engine>::handle(self, json))
+                    .unwrap_or_else(|_| failure("Response could not be encoded"))
+            }
+        }
+
         /// Opens the engine at `path`, creating parent directories if needed.
         /// Returns NULL on error; call `secretary_open_error`.
         ///
@@ -172,12 +162,20 @@ macro_rules! module {
     };
 }
 
+/// Module names reported by `secretary_version`.
+pub const MODULES: &[&str] = &["gym", "body"];
+
 module!(
-    gym,
+    secretary_gym::Engine,
     secretary_gym_open,
     secretary_gym_request,
-    secretary_gym_close,
-    secretary_gym::Engine
+    secretary_gym_close
+);
+module!(
+    secretary_body::Engine,
+    secretary_body_open,
+    secretary_body_request,
+    secretary_body_close
 );
 
 /// Alias of `secretary_open_error` for the SwiftUI port.

@@ -11,6 +11,9 @@ const EXPORTED: &[&str] = &[
     "secretary_gym_close",
     "secretary_gym_open_error",
     "secretary_gym_string_free",
+    "secretary_body_open",
+    "secretary_body_request",
+    "secretary_body_close",
 ];
 
 unsafe fn take(value: *mut c_char) -> String {
@@ -43,7 +46,7 @@ fn gym_request_roundtrip_through_the_c_abi() {
     let version: Value =
         serde_json::from_str(&unsafe { take(secretary_ffi::secretary_version()) }).unwrap();
     assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(version["modules"], serde_json::json!(["gym"]));
+    assert_eq!(version["modules"], serde_json::json!(["gym", "body"]));
 
     unsafe { secretary_ffi::secretary_gym_close(handle) };
 }
@@ -89,4 +92,37 @@ fn header_declares_every_exported_symbol() {
             "SecretaryCore.h is missing {name}"
         );
     }
+}
+
+#[test]
+fn body_module_uses_the_same_open_request_close_pattern() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = CString::new(dir.path().join("body.json").to_str().unwrap()).unwrap();
+    let handle = unsafe { secretary_ffi::secretary_body_open(path.as_ptr()) };
+    assert!(!handle.is_null());
+    let log = CString::new(
+        r#"{"op_id":"ffi-1","expected_revision":0,"command":{"type":"log_entry","weight":"80.5"}}"#,
+    )
+    .unwrap();
+    let json: Value = serde_json::from_str(&unsafe {
+        take(secretary_ffi::secretary_body_request(handle, log.as_ptr()))
+    })
+    .unwrap();
+    assert_eq!(json["ok"], true, "{json}");
+    assert_eq!(json["view"]["entries"][0]["weight_grams"], 80_500);
+    assert_eq!(json["view"]["stats"]["avg7_grams"], 80_500);
+    let again: Value = serde_json::from_str(&unsafe {
+        take(secretary_ffi::secretary_body_request(handle, log.as_ptr()))
+    })
+    .unwrap();
+    assert_eq!(again["replayed"], true);
+
+    let second = unsafe { secretary_ffi::secretary_body_open(path.as_ptr()) };
+    assert!(second.is_null());
+    let error = unsafe { take(secretary_ffi::secretary_open_error()) };
+    assert!(error.contains("already open"), "{error}");
+    unsafe { secretary_ffi::secretary_body_close(handle) };
+    let reopened = unsafe { secretary_ffi::secretary_body_open(path.as_ptr()) };
+    assert!(!reopened.is_null());
+    unsafe { secretary_ffi::secretary_body_close(reopened) };
 }
