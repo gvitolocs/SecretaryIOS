@@ -6,6 +6,12 @@ members = [
     "crates/secretary-gym",
     "crates/secretary-body",
     "crates/secretary-ffi",
+    "crates/lucina-llm",
+    "crates/lucina-store",
+    "crates/lucina-memory",
+    "crates/lucina-grocery",
+    "crates/lucina-tools",
+    "crates/lucina-server",
 ]
 
 [workspace.package]
@@ -25,6 +31,9 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 csv = "1"
 sha2 = "0.10"
+async-trait = "0.1"
+tracing = "0.1"
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

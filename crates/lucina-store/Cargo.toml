@@ -1,0 +1,21 @@
+[package]
+name = "lucina-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina's file stores: owner timeline (JSONL), reminders, jobs; Node-compatible formats"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+fancy-regex = "0.14"
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
