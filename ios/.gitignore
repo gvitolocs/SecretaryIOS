@@ -1,0 +1,9 @@
+# Xcode build output and the generated project (regenerate with `xcodegen generate`)
+build/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+*.xcresult/
+
+# local copy of the web mock server (uncommitted upstream; see scripts/run-mock.sh)
+.mock/

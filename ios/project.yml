@@ -1,0 +1,103 @@
+name: Secretary
+options:
+  bundleIdPrefix: tech.getsecretary
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+targets:
+  Secretary:
+    type: application
+    platform: iOS
+    sources:
+      - path: Secretary
+        excludes:
+          - "Info.plist"
+    info:
+      path: Secretary/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen:
+          UIColorName: AccentColor
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        # Only plain-HTTP to local hosts (the dev mock); everything else must be HTTPS.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    dependencies:
+      - sdk: Security.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app
+        PRODUCT_NAME: Secretary
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_EMIT_LOC_STRINGS: YES
+  SecretaryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [SecretaryTests]
+    dependencies:
+      - target: Secretary
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.tests
+  SecretaryUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [SecretaryUITests]
+    dependencies:
+      - target: Secretary
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.uitests
+        TEST_TARGET_NAME: Secretary
+schemes:
+  Secretary:
+    build:
+      targets:
+        Secretary: all
+        SecretaryTests: [test]
+        SecretaryUITests: [test]
+    run:
+      config: Debug
+      commandLineArguments:
+        "-SecretaryBaseURL http://localhost:8791": false
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - SecretaryTests
+        - SecretaryUITests
+  SecretaryUnit:
+    build:
+      targets:
+        Secretary: all
+        SecretaryTests: [test]
+    test:
+      config: Debug
+      targets:
+        - SecretaryTests

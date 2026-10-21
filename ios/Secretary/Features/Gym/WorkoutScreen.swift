@@ -1,0 +1,330 @@
+import SwiftUI
+
+struct WorkoutScreen: View {
+    @Environment(GymStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var showExercises = false
+    @State private var discard = false
+    @State private var rename = false
+    @State private var saveRoutine = false
+    @State private var name = ""
+    @State private var notes = ""
+    @State private var finishing = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let view = store.view, let workout = view.state.active {
+                    VStack(alignment: .leading, spacing: 16) {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            VStack(spacing: 12) {
+                                Card {
+                                    HStack(alignment: .top) {
+                                        Metric(value: store.activeDuration(at: context.date), label: "Duration")
+                                        Metric(value: view.summary.activeVolume, label: "Volume")
+                                        Metric(value: "\(view.summary.activeCompletedSets)", label: "Sets")
+                                    }
+                                }
+                                let remaining = store.restRemaining(at: context.date)
+                                if remaining > 0 {
+                                    restBanner(remaining)
+                                }
+                            }
+                        }
+
+                        TextField("Workout notes", text: $notes, axis: .vertical)
+                            .font(.subheadline)
+                            .padding(14)
+                            .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .onSubmit { saveNotes() }
+
+                        ForEach(workout.exercises) { exercise in
+                            ExerciseCard(exercise: exercise, view: view)
+                        }
+
+                        PrimaryButton(title: "Add exercise") { showExercises = true }
+                            .accessibilityIdentifier("addExercise")
+
+                        Button("Start rest timer", systemImage: "timer") {
+                            Task { await store.run(.startRest(seconds: view.state.settings.restSeconds)) }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                    }
+                    .padding(16)
+                } else if store.view != nil {
+                    ContentUnavailableView("No workout in progress", systemImage: "figure.strengthtraining.traditional")
+                        .padding(.top, 60)
+                }
+            }
+            .background(Theme.page)
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(store.view?.state.active?.title ?? "Workout")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { saveNotes(); dismiss() }
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Rename workout", systemImage: "pencil") {
+                            name = store.view?.state.active?.title ?? "Workout"; rename = true
+                        }
+                        Button("Save as routine", systemImage: "square.and.arrow.down") {
+                            name = store.view?.state.active?.title ?? "Routine"; saveRoutine = true
+                        }
+                        Button("Discard workout", systemImage: "trash", role: .destructive) { discard = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Workout options")
+
+                    Button {
+                        Task { await finish() }
+                    } label: {
+                        if finishing { ProgressView() } else { Text("Finish").bold() }
+                    }
+                    .disabled(store.view?.state.active == nil || finishing)
+                    .accessibilityIdentifier("finishWorkout")
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { endEditing() }
+                }
+            }
+            .onAppear { notes = store.view?.state.active?.notes ?? "" }
+            .task {
+                // Cheap clock poll so the rest timer and duration stay honest; the 1 s tick is local.
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(15))
+                    if Task.isCancelled { break }
+                    await store.tickClock()
+                }
+            }
+            .sheet(isPresented: $showExercises) {
+                ExercisePicker { exercise in
+                    Task {
+                        if await store.run(.addExercise(exerciseId: exercise.id)) != nil { showExercises = false }
+                    }
+                }
+            }
+            .confirmationDialog("Discard this workout?", isPresented: $discard, titleVisibility: .visible) {
+                Button("Discard workout", role: .destructive) {
+                    Task { if await store.run(.cancelWorkout) != nil { dismiss() } }
+                }
+            }
+            .alert("Workout name", isPresented: $rename) {
+                TextField("Name", text: $name)
+                Button("Save") { Task { await store.run(.renameWorkout(title: name)) } }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Save routine", isPresented: $saveRoutine) {
+                TextField("Name", text: $name)
+                Button("Save") { Task { await store.run(.saveRoutine(name: name, exerciseIds: nil, fromActive: true)) } }
+                Button("Cancel", role: .cancel) {}
+            }
+            .alert("Couldn't save that change", isPresented: Binding(
+                get: { store.actionError != nil && !showExercises },
+                set: { if !$0 { store.actionError = nil } }
+            )) {
+                Button("OK") { store.actionError = nil }
+            } message: {
+                Text(store.actionError ?? "")
+            }
+        }
+    }
+
+    private func restBanner(_ remaining: Int) -> some View {
+        HStack {
+            Image(systemName: "timer").accessibilityHidden(true)
+            Text("Rest · \(remaining / 60):\(String(format: "%02d", remaining % 60))")
+                .font(.headline.monospacedDigit())
+            Spacer()
+            Button("Skip") { Task { await store.run(.stopRest) } }
+                .buttonStyle(.bordered)
+        }
+        .padding(14)
+        .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("restTimer")
+    }
+
+    private func saveNotes() {
+        guard let active = store.view?.state.active, active.notes != notes else { return }
+        let text = notes
+        Task { await store.run(.setNotes(notes: text, exerciseId: nil), quiet: true) }
+    }
+
+    private func finish() async {
+        finishing = true
+        defer { finishing = false }
+        endEditing()
+        saveNotes()
+        // Let pending set edits (saved on blur) land first; the store queue keeps the order.
+        if await store.run(.finishWorkout) != nil { dismiss() }
+    }
+}
+
+struct ExerciseCard: View {
+    @Environment(GymStore.self) private var store
+    let exercise: WorkoutExercise
+    let view: GymView
+
+    private var definition: Exercise? { view.exercise(exercise.exerciseId) }
+    private var kind: ExerciseKind { definition?.exerciseKind ?? .weightReps }
+
+    var body: some View {
+        Card {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(definition?.name ?? "Exercise").font(.headline)
+                    if let previous = view.previousLabels[exercise.id] {
+                        Text("Previous · \(previous)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Menu {
+                    Button("Remove exercise", systemImage: "trash", role: .destructive) {
+                        Task { await store.run(.removeExercise(exerciseId: exercise.id)) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").padding(8)
+                }
+                .accessibilityLabel("Options for \(definition?.name ?? "exercise")")
+            }
+            HStack {
+                Eyebrow(text: "Set").frame(width: 36, alignment: .leading)
+                Eyebrow(text: fieldsLabel).frame(maxWidth: .infinity)
+                Eyebrow(text: "Done")
+            }
+            ForEach(Array(exercise.sets.enumerated()), id: \.element.id) { index, set in
+                SetRow(set: set, number: index + 1, kind: kind, weightLabel: view.weightLabels[set.id] ?? "0")
+            }
+            Button {
+                Task { await store.run(.addSet(exerciseId: exercise.id)) }
+            } label: {
+                Label("Add set", systemImage: "plus")
+                    .font(.subheadline.bold())
+                    .frame(maxWidth: .infinity)
+                    .padding(10)
+                    .background(Theme.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("addSet-\(exercise.exerciseId)")
+        }
+    }
+
+    private var fieldsLabel: String {
+        switch kind {
+        case .repsOnly: return "Reps"
+        case .timed: return "Seconds"
+        case .distanceTime: return "Meters · seconds"
+        case .weightReps: return "\(view.unit) · reps"
+        }
+    }
+}
+
+struct SetRow: View {
+    @Environment(GymStore.self) private var store
+    let set: WorkoutSet
+    let number: Int
+    let kind: ExerciseKind
+    let weightLabel: String
+
+    @State private var weight = "0"
+    @State private var reps = "0"
+    @State private var seconds = "0"
+    @State private var distance = "0"
+    @State private var setKind = "normal"
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(SetKind.allCases, id: \.self) { value in
+                    Button(value.title) { setKind = value.rawValue; Task { _ = await save() } }
+                }
+                Button("Delete set", systemImage: "trash", role: .destructive) {
+                    Task { await store.run(.removeSet(setId: set.id)) }
+                }
+            } label: {
+                Text(setKind == "normal" ? "\(number)" : String(setKind.prefix(1)).uppercased())
+                    .font(.caption.bold())
+                    .frame(width: 32, height: 38)
+                    .background(Theme.field, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .disabled(set.completed)
+            .accessibilityLabel("Set \(number), \(SetKind(rawValue: setKind)?.title ?? setKind)")
+
+            if kind == .weightReps { field("Weight", value: $weight, id: "weight-\(set.id)") }
+            if kind == .weightReps || kind == .repsOnly { field("Reps", value: $reps, id: "reps-\(set.id)", decimal: false) }
+            if kind == .distanceTime { field("Meters", value: $distance, id: "distance-\(set.id)", decimal: false) }
+            if kind == .timed || kind == .distanceTime { field("Seconds", value: $seconds, id: "seconds-\(set.id)", decimal: false) }
+
+            Button {
+                focused = false
+                Task { await toggle() }
+            } label: {
+                Image(systemName: set.completed ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 28))
+                    .foregroundStyle(set.completed ? Theme.accent : Color.secondary.opacity(0.6))
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(set.completed ? "Uncheck set \(number)" : "Complete set \(number)")
+            .accessibilityIdentifier("complete-set-\(set.id)")
+        }
+        .onAppear(perform: load)
+        .onChange(of: set) { _, _ in if !focused { load() } }
+        .onChange(of: focused) { _, isFocused in
+            if !isFocused, store.setIsEditable(set.id), isDirty { Task { _ = await save(quiet: true) } }
+        }
+    }
+
+    private func load() {
+        weight = weightLabel
+        reps = "\(set.reps)"
+        seconds = "\(set.seconds)"
+        distance = "\(set.distanceMeters)"
+        setKind = set.kind
+    }
+
+    private var isDirty: Bool {
+        weight != weightLabel || reps != "\(set.reps)" || seconds != "\(set.seconds)"
+            || distance != "\(set.distanceMeters)" || setKind != set.kind
+    }
+
+    private func toggle() async {
+        if set.completed {
+            await store.run(.completeSet(setId: set.id, completed: false))
+        } else {
+            if isDirty, !(await save()) { return }
+            await store.run(.completeSet(setId: set.id, completed: true))
+        }
+    }
+
+    private func field(_ title: String, value: Binding<String>, id: String, decimal: Bool = true) -> some View {
+        TextField(title, text: value)
+            .keyboardType(decimal ? .decimalPad : .numberPad)
+            .multilineTextAlignment(.center)
+            .font(.body.monospacedDigit())
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
+            .background(set.completed ? Theme.accent.opacity(0.16) : Theme.field,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .disabled(set.completed)
+            .focused($focused)
+            .accessibilityLabel("\(title), set \(number)")
+            .accessibilityIdentifier(id)
+    }
+
+    /// Sends the typed values; the engine parses the weight text and validates everything.
+    private func save(quiet: Bool = false) async -> Bool {
+        // Unparseable input becomes a value above every engine limit, so the engine rejects
+        // it with its own message (as LucinaGym did with UInt64.max).
+        func int(_ text: String) -> Int { Int(text.trimmingCharacters(in: .whitespaces)) ?? Int(Int32.max) }
+        return await store.run(.editSet(setId: set.id, weight: weight, reps: int(reps), seconds: int(seconds),
+                                        distanceMeters: int(distance), kind: setKind), quiet: quiet) != nil
+    }
+}

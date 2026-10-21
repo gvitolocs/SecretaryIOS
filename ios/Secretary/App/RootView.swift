@@ -1,0 +1,50 @@
+import SwiftUI
+
+struct RootView: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Group {
+            switch app.phase {
+            case .checking:
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).background(Theme.page)
+            case .signedOut:
+                LoginView()
+            case .signedIn:
+                MainTabs()
+            }
+        }
+        .animation(.default, value: app.phase)
+    }
+}
+
+struct MainTabs: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        @Bindable var app = app
+        TabView(selection: $app.selectedTab) {
+            NavigationStack { ChatView().lucinaStatusToolbar() }
+                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                .tag(AppModel.Tab.chat)
+            NavigationStack { ShoppingView().lucinaStatusToolbar() }
+                .tabItem { Label("Shopping", systemImage: "cart") }
+                .tag(AppModel.Tab.shopping)
+            NavigationStack { GymScreen().lucinaStatusToolbar() }
+                .tabItem { Label("Gym", systemImage: "dumbbell") }
+                .tag(AppModel.Tab.gym)
+            NavigationStack { WeightView().lucinaStatusToolbar() }
+                .tabItem { Label("Weight", systemImage: "scalemass") }
+                .tag(AppModel.Tab.weight)
+            NavigationStack { SettingsView().lucinaStatusToolbar() }
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppModel.Tab.settings)
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await app.health.poll()
+        }
+    }
+}
