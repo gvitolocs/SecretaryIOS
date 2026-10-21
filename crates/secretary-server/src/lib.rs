@@ -5,6 +5,7 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod assets;
 pub mod auth;
 pub mod cli;
 pub mod config;
@@ -18,6 +19,7 @@ pub mod ratelimit;
 pub mod routes;
 pub mod service;
 pub mod sessions;
+pub mod tts;
 pub mod upstream;
 pub mod web;
 
@@ -65,6 +67,8 @@ pub struct Inner {
     pub service_token: Option<service::ServiceToken>,
     /// The single owner account (`owner.json`).
     pub owner: owner::OwnerStore,
+    pub private_assets_dir: PathBuf,
+    pub tts: tts::Tts,
 }
 
 #[derive(Clone)]
@@ -100,6 +104,8 @@ impl AppState {
             engines: engines::Engines::open(&cfg.data_dir)?,
             service_token: cfg.service_token.clone(),
             owner: owner::OwnerStore::new(&cfg.data_dir),
+            private_assets_dir: cfg.private_assets_dir.clone(),
+            tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
         })))
     }
 
@@ -157,7 +163,9 @@ fn static_header(name: &'static str, value: &'static str) -> SetResponseHeaderLa
 pub fn app(state: AppState) -> Router {
     let mut protected = routes::protected()
         .merge(engines::routes())
-        .merge(auth::account_routes());
+        .merge(auth::account_routes())
+        .merge(assets::routes())
+        .merge(tts::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }

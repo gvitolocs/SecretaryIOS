@@ -620,6 +620,65 @@ the route answers `503 service_token_not_configured`. `workouts` is 1–20
 - `weekly_volume`: the last 8 weeks (Monday starts, in `timezone`),
   oldest first, zero-filled.
 
+## Avatar media
+
+### `GET /v1/assets/{name}` (authenticated)
+
+Private files for the 3D Lucina avatar (model, motions, textures, sounds),
+served from `SECRETARY_PRIVATE_ASSETS_DIR` (default
+`/var/lib/secretary/private-assets`) **only** to authenticated callers
+(device Bearer or the session cookie; no CSRF header needed for GET). The
+model's licence forbids redistribution, so there is no public URL for
+these files, and they are never written to the web build.
+
+- `name`: `[a-z0-9][a-z0-9._-]*`, at most 128 bytes, no `..`, no slashes.
+- Extensions and content types: `.glb` `model/gltf-binary`, `.json`
+  `application/json`, `.png` `image/png`, `.webp` `image/webp`, `.mp3`
+  `audio/mpeg`, `.vmd` `application/octet-stream`. Anything else is `404`.
+- `200` with `Cache-Control: private, max-age=86400`, `ETag`,
+  `Last-Modified`. `If-None-Match` → `304`. `Range: bytes=…` → `206`.
+- `404 not_found` for a missing or refused name; `401 unauthorized` without
+  auth.
+
+Browsers can use the URL directly (`fetch("/v1/assets/lucina.glb")`, same
+origin, cookie sent automatically). The iOS app sends its Bearer token.
+
+### `POST /v1/tts` (authenticated)
+
+```json
+{ "text": "Ciao Giuseppe, come stai oggi?", "voice": "if_sara", "lang": "it", "speed": 1.0 }
+```
+
+| Field | Rules |
+|---|---|
+| `text` | Required, 1–1200 characters (trimmed). |
+| `voice` | Optional; one of `SECRETARY_TTS_VOICES` (default `if_sara`, `af_heart`, `af_bella`, `bf_emma`). Wins over `lang`. |
+| `lang` | Optional, `it` or `en` (`it-IT` style accepted): `it` → `if_sara`, `en` → `af_heart`. |
+| `speed` | Optional, 0.5–2.0, default 1.0. |
+
+Without `voice` and `lang`, the server guesses: Italian (`if_sara`) when
+the text has at least two Italian stopwords (`che, non, per, sono, ciao, il,
+la, è, un, una, di, ti, mi, come, oggi`), or one in a text of at most three
+words; otherwise English (`af_heart`).
+
+`200`: the MP3 bytes, `Content-Type: audio/mpeg`, streamed as Kokoro
+produces them, plus `X-TTS-Voice: <voice used>`. The server proxies to
+Kokoro's OpenAI-compatible API (`POST {SECRETARY_TTS_URL}/v1/audio/speech`
+with `{model: "kokoro", input, voice, response_format: "mp3", speed}`;
+default URL `http://100.107.164.33:8880`, over Tailscale).
+
+Errors: `400 bad_request` (field rules above), `401`, `403 csrf` (cookie
+without `X-Secretary-CSRF: 1`), `429 rate_limited` (30 requests/minute per
+device, separate from the general limit; `Retry-After`), `502
+tts_unavailable` (Kokoro unreachable or failed), `504 tts_unavailable`
+(no answer within 30 s).
+
+```js
+const r = await api("/v1/tts", { method: "POST", body: { text } });
+const audio = new Audio(URL.createObjectURL(await r.blob()));
+await audio.play();
+```
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -641,10 +700,12 @@ the route answers `503 service_token_not_configured`. `workouts` is 1–20
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |
 | 502 | `lucina_unreachable` | server | Could not connect to Lucina. |
+| 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
+| 504 | `tts_unavailable` | server | Kokoro did not answer within 30 s. |
 
 Any other Lucina 4xx code is passed through with Lucina's status.
 

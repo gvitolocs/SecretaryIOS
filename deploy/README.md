@@ -136,6 +136,9 @@ behind Caddy. Exposed directly, it would let clients forge
 | `SECRETARY_LUCINA_TOKEN_FILE` | unset | Lucina Bearer token file. Unset: data routes answer `503 lucina_not_configured` |
 | `SECRETARY_DATA_DIR` | `/var/lib/secretary` | devices, sessions, owner account, gym and body data |
 | `SECRETARY_SERVICE_TOKEN_FILE` | unset | `svc_…` token file for Lucina. Unset: `/v1/insights/summary` answers `503 service_token_not_configured` |
+| `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only; keep the avatar model here, never in `web/`) |
+| `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro for `POST /v1/tts` (p1 must reach it over Tailscale) |
+| `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices clients may request |
 | `SECRETARY_WEB_DIR` | unset | static web app at `/` |
 | `SECRETARY_TRUST_PROXY` | `0` | `1`: client IP from `X-Forwarded-For` |
 | `SECRETARY_UPSTREAM_LEGACY` / `_SERVICES` / `_CATALOG` | unset | enable `/v1/upstream/*` |
