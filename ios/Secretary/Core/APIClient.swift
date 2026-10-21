@@ -111,14 +111,14 @@ final class APIClient: @unchecked Sendable {
     }
 
     func send<T: Decodable, B: Encodable>(_ method: String, _ path: String, body: B, timeout: TimeInterval = defaultTimeout,
-                                          idempotent: Bool? = nil) async throws -> T {
+                                          idempotent: Bool? = nil, headers: [String: String] = [:]) async throws -> T {
         let data: Data
         do {
             data = try Self.encoder.encode(body)
         } catch {
             throw APIError.decoding(message: "Could not encode the request: \(error)")
         }
-        let response = try await send(method, path, query: [], body: data, timeout: timeout, idempotent: idempotent)
+        let response = try await send(method, path, query: [], body: data, timeout: timeout, idempotent: idempotent, headers: headers)
         return try decode(T.self, from: response)
     }
 
@@ -152,7 +152,7 @@ final class APIClient: @unchecked Sendable {
     /// commands (`op_id`) are idempotent POSTs and say so.
     func send(_ method: String, _ path: String, query: [URLQueryItem] = [], body: Data?,
               timeout: TimeInterval = defaultTimeout, passThrough: Set<Int> = [],
-              authenticated: Bool = true, idempotent: Bool? = nil) async throws -> Response {
+              authenticated: Bool = true, idempotent: Bool? = nil, headers: [String: String] = [:]) async throws -> Response {
         let snapshot = config.withLock { $0 }
         let order = [snapshot.active] + snapshot.endpoints.indices.filter { $0 != snapshot.active }
         let canRetry = idempotent ?? (method != "POST")
@@ -160,7 +160,7 @@ final class APIClient: @unchecked Sendable {
         for (attempt, index) in order.prefix(2).enumerated() {
             let base = snapshot.endpoints[index]
             let request = try makeRequest(base: base, method: method, path: path, query: query, body: body, timeout: timeout,
-                                          accessKey: authenticated ? snapshot.accessKey : nil)
+                                          accessKey: authenticated ? snapshot.accessKey : nil, headers: headers)
             do {
                 let (data, urlResponse) = try await session.data(for: request)
                 guard let http = urlResponse as? HTTPURLResponse else {
@@ -168,11 +168,11 @@ final class APIClient: @unchecked Sendable {
                 }
                 // Any HTTP answer means this endpoint reaches the server.
                 markWorking(base)
-                var headers: [String: String] = [:]
+                var responseHeaders: [String: String] = [:]
                 for (key, value) in http.allHeaderFields {
-                    if let key = key as? String, let value = value as? String { headers[key.lowercased()] = value }
+                    if let key = key as? String, let value = value as? String { responseHeaders[key.lowercased()] = value }
                 }
-                let response = Response(status: http.statusCode, data: data, headers: headers)
+                let response = Response(status: http.statusCode, data: data, headers: responseHeaders)
                 if (200..<300).contains(http.statusCode) || passThrough.contains(http.statusCode) {
                     return response
                 }
@@ -189,7 +189,7 @@ final class APIClient: @unchecked Sendable {
     }
 
     private func makeRequest(base: URL, method: String, path: String, query: [URLQueryItem], body: Data?,
-                             timeout: TimeInterval, accessKey: String?) throws -> URLRequest {
+                             timeout: TimeInterval, accessKey: String?, headers: [String: String] = [:]) throws -> URLRequest {
         guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false),
               let scheme = components.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
             throw APIError.invalidURL
@@ -205,6 +205,7 @@ final class APIClient: @unchecked Sendable {
         if let accessKey, !accessKey.isEmpty {
             request.setValue("Bearer \(accessKey)", forHTTPHeaderField: "Authorization")
         }
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -217,6 +218,34 @@ final class APIClient: @unchecked Sendable {
         case .timedOut: return .timeout
         case .cannotFindHost, .dnsLookupFailed: return .hostNotFound(host: host ?? "the server")
         default: return .network(message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - Streaming
+
+    /// Opens a long-lived GET (Server-Sent Events) on the active endpoint with the Bearer
+    /// token. Throws the usual `APIError` for non-2xx answers. No endpoint fallback here:
+    /// the caller reconnects, and by then the active endpoint reflects other requests.
+    func openStream(_ path: String, lastEventId: String?, idleTimeout: TimeInterval = 75) async throws -> URLSession.AsyncBytes {
+        let snapshot = config.withLock { $0 }
+        let base = snapshot.endpoints[snapshot.active]
+        var headers = ["Accept": "text/event-stream", "Cache-Control": "no-cache"]
+        if let lastEventId { headers["Last-Event-ID"] = lastEventId }
+        let request = try makeRequest(base: base, method: "GET", path: path, query: [], body: nil, timeout: idleTimeout,
+                                      accessKey: snapshot.accessKey, headers: headers)
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else { throw APIError.network(message: "Not an HTTP response.") }
+            guard (200..<300).contains(http.statusCode) else {
+                var data = Data()
+                for try await byte in bytes { data.append(byte); if data.count > 16_384 { break } }
+                throw Self.error(for: Response(status: http.statusCode, data: data, headers: [:]))
+            }
+            return bytes
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw Self.map(error, host: base.host)
         }
     }
 

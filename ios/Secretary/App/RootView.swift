@@ -42,6 +42,10 @@ struct MainTabs: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppModel.Tab.settings)
         }
+        // The timeline stream runs only in the foreground; it pauses in the background.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            app.chat.setForeground(phase == .active)
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await withTaskGroup(of: Void.self) { group in

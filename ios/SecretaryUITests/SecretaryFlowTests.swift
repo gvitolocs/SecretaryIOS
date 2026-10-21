@@ -93,6 +93,32 @@ final class SecretaryFlowTests: XCTestCase {
         attach(app, "Chat")
     }
 
+    func testTimelineShowsOtherChannelsLive() async throws {
+        let app = launch()
+        signIn(app)
+        // Seeded history from other channels is on the timeline.
+        let badge = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "From Web")).firstMatch
+        XCTAssertTrue(badge.waitForExistence(timeout: 15), "web message with its source badge")
+        let live = app.descendants(matching: .any)["liveIndicator"]
+        XCTAssertTrue(live.waitForExistence(timeout: 15))
+        let connected = NSPredicate(format: "label BEGINSWITH %@", "Live")
+        expectation(for: connected, evaluatedWith: live)
+        waitForExpectations(timeout: 15)
+
+        // A Telegram message arrives through the stream while the app is open.
+        let text = "From Telegram \(Int.random(in: 1000...9999))"
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)/v1/_mock/timeline")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("1", forHTTPHeaderField: "X-Secretary-CSRF")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["channel": "telegram", "role": "user", "text": text])
+        _ = try await URLSession.shared.data(for: request)
+
+        let message = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "via Telegram: \(text)")).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 10), "live Telegram message")
+        attach(app, "Unified chat")
+    }
+
     // MARK: - Shopping
 
     func testShoppingAddAndToggle() {

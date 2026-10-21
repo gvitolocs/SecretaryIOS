@@ -14,41 +14,49 @@ struct ChatJob: Codable, Equatable, Sendable {
     var isTerminal: Bool { JobInfo.isTerminal(status) }
 }
 
-struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
-    enum Role: String, Codable, Sendable { case user, lucina }
-    enum Status: String, Codable, Sendable { case sending, sent, error }
-
-    /// For user messages this is also the `clientMessageId`, so a retry is idempotent.
-    let id: String
-    let role: Role
-    var text: String
-    let createdAt: Date
-    var status: Status?
-    var error: String?
-    var action: String?
-    var job: ChatJob?
-}
-
-/// The conversation with Lucina: optimistic sends, retries with the same
-/// `clientMessageId`, job polling every 3 s, persisted to a small JSON file.
+/// The one conversation with Lucina, across every channel.
+///
+/// Source of truth: the server timeline (`GET /v1/timeline` pages, `/v1/timeline/stream`
+/// live). Messages written here are sent with `POST /v1/chat` (`X-Secretary-Client: ios`),
+/// shown optimistically and reconciled with the server's copies by `clientMessageId`,
+/// `userItemId` and `lucinaItemId`. The last 50 items are cached for a fast first paint.
+///
+/// A server without the timeline (404) puts the store in local-only mode: the
+/// conversation is kept on the phone as before, and the timeline is tried again on the
+/// next foreground.
 @Observable
 @MainActor
 final class ChatStore {
+    enum Mode: Equatable { case unknown, server, localOnly }
+
     nonisolated static let maxCharacters = 4000
     nonisolated static let pollInterval: Duration = .seconds(3)
+    nonisolated static let pageSize = 50
+    nonisolated static let cacheSize = 50
+    nonisolated static let sessionIdKey = "secretary.chat.sessionId"
 
-    private(set) var messages: [ChatMessage] = []
+    /// Oldest first.
+    private(set) var items: [TimelineItem] = []
+    /// Job cards, keyed by the Lucina item that started them.
+    private(set) var jobs: [String: ChatJob] = [:]
+    private(set) var mode: Mode = .unknown
     private(set) var isSending = false
+    private(set) var isLoadingOlder = false
+    private(set) var hasOlder = false
+    /// The live stream is connected.
+    private(set) var isLive = false
+    private(set) var loadError: String?
 
     @ObservationIgnored private let api: () -> SecretaryAPI
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var pollers: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private let pollInterval: Duration
+    @ObservationIgnored private var nextBefore: String?
+    @ObservationIgnored private var lastEventId: String?
+    @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     @ObservationIgnored var onTransportSuccess: (() -> Void)?
-
-    nonisolated static let sessionIdKey = "secretary.chat.sessionId"
 
     init(api: @escaping () -> SecretaryAPI, fileURL: URL = ChatStore.defaultFileURL, defaults: UserDefaults = .standard,
          pollInterval: Duration = ChatStore.pollInterval) {
@@ -56,13 +64,17 @@ final class ChatStore {
         self.fileURL = fileURL
         self.defaults = defaults
         self.pollInterval = pollInterval
-        messages = Self.load(from: fileURL)
+        let cache = Self.load(from: fileURL)
+        items = cache.items
+        jobs = cache.jobs
+        lastEventId = cache.lastEventId
+        if cache.localOnly { mode = .localOnly }
     }
 
     nonisolated static var defaultFileURL: URL {
         let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("Secretary", isDirectory: true).appendingPathComponent("chat.json")
+        return base.appendingPathComponent("Secretary", isDirectory: true).appendingPathComponent("timeline.json")
     }
 
     /// Stable per install: `[A-Za-z0-9_-]{1,64}` as the server requires.
@@ -86,6 +98,145 @@ final class ChatStore {
         return String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    // MARK: - Timeline
+
+    /// Loads the newest page (first paint comes from the cache). A 404 switches to local-only mode.
+    func refresh() async {
+        do {
+            let page = try await api().timeline(limit: Self.pageSize)
+            onTransportSuccess?()
+            loadError = nil
+            if mode != .server {
+                // Coming from local-only or a cold start: the server copy replaces the cache,
+                // keeping only messages still waiting to be (re)sent.
+                items = items.filter { $0.isLocal && $0.localStatus != .sent }
+                mode = .server
+            }
+            apply(page.items)
+            // Only the first load decides the cursor; later refreshes just fill gaps.
+            if nextBefore == nil || !hasOlder {
+                nextBefore = page.nextBefore
+                hasOlder = page.nextBefore != nil
+            }
+        } catch {
+            let apiError = APIError.wrap(error)
+            if apiError.status == 404 {
+                mode = .localOnly
+                hasOlder = false
+                stopStream()
+                persist()
+                return
+            }
+            onTransportError?(apiError)
+            loadError = apiError.userMessage
+        }
+    }
+
+    /// Infinite scroll upward.
+    func loadOlder() async {
+        guard mode == .server, hasOlder, !isLoadingOlder, let cursor = nextBefore else { return }
+        isLoadingOlder = true
+        defer { isLoadingOlder = false }
+        do {
+            let page = try await api().timeline(before: cursor, limit: Self.pageSize)
+            apply(page.items, persistAfter: false)
+            nextBefore = page.nextBefore
+            hasOlder = page.nextBefore != nil
+        } catch {
+            onTransportError?(APIError.wrap(error))
+        }
+    }
+
+    /// Merges server items in (dedupe by id, reconcile optimistic bubbles).
+    func apply(_ incoming: [TimelineItem], persistAfter: Bool = true) {
+        guard !incoming.isEmpty else { return }
+        let result = TimelineMerge.merge(items, incoming)
+        items = result.items
+        for (old, new) in result.replaced {
+            if let job = jobs.removeValue(forKey: old), jobs[new] == nil { jobs[new] = job }
+        }
+        if persistAfter { persist() }
+    }
+
+    // MARK: - Live stream
+
+    /// Starts or stops the SSE connection (foreground only; the view calls this on scene changes).
+    func setForeground(_ active: Bool) {
+        if active {
+            Task {
+                if mode != .server { await refresh() }
+                if mode == .server { startStream() }
+            }
+            resumePolling()
+        } else {
+            stopStream()
+        }
+    }
+
+    func startStream() {
+        guard streamTask == nil, mode == .server else { return }
+        streamTask = Task { [weak self] in
+            await self?.runStream()
+        }
+    }
+
+    func stopStream() {
+        streamTask?.cancel()
+        streamTask = nil
+        isLive = false
+    }
+
+    private func runStream() async {
+        var delay: Duration = .seconds(1)
+        while !Task.isCancelled {
+            do {
+                let bytes = try await api().client.openStream("/v1/timeline/stream", lastEventId: lastEventId)
+                isLive = true
+                delay = .seconds(1)
+                // Fill anything missed while disconnected (in case Last-Event-ID isn't honoured).
+                await refresh()
+                try await Self.readEvents(bytes) { [weak self] event in
+                    self?.handle(event)
+                }
+            } catch is CancellationError {
+                break
+            } catch {
+                let apiError = APIError.wrap(error)
+                if apiError.endsSession { onTransportError?(apiError); break }
+                if apiError.status == 404 { break } // no stream on this server; pages still work
+            }
+            isLive = false
+            if Task.isCancelled { break }
+            try? await Task.sleep(for: delay)
+            delay = min(delay * 2, .seconds(30))
+        }
+        isLive = false
+        streamTask = nil
+    }
+
+    /// Reads SSE lines off the byte stream (not `bytes.lines`, which drops the blank lines
+    /// that end each event).
+    nonisolated private static func readEvents(_ bytes: URLSession.AsyncBytes,
+                                               onEvent: @MainActor @escaping (SSEEvent) -> Void) async throws {
+        var parser = SSEParser()
+        var buffer: [UInt8] = []
+        buffer.reserveCapacity(4096)
+        for try await byte in bytes {
+            buffer.append(byte)
+            guard byte == 0x0A || byte == 0x0D else { continue }
+            for line in SSEParser.lines(from: &buffer) {
+                if let event = parser.feed(line) { await onEvent(event) }
+            }
+        }
+    }
+
+    func handle(_ event: SSEEvent) {
+        if let id = event.id { lastEventId = id }
+        guard event.event == "item" || event.event == "message" else { return } // pings and unknown events
+        guard let item = try? JSONDecoder().decode(TimelineItem.self, from: Data(event.data.utf8)) else { return }
+        apply([item])
+    }
+
     // MARK: - Sending
 
     /// Adds an optimistic bubble and sends it. Returns false when nothing was sent.
@@ -93,49 +244,63 @@ final class ChatStore {
     func send(_ text: String) async -> Bool {
         let message = Self.clean(text)
         guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return false }
-        let id = UUID().uuidString
-        messages.append(ChatMessage(id: id, role: .user, text: message, createdAt: Date(), status: .sending))
+        let clientId = UUID().uuidString
+        items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
+                                  clientMessageId: clientId, localStatus: .sending))
         persist()
-        await deliver(id: id, text: message)
+        await deliver(clientId: clientId, text: message)
         return true
     }
 
-    /// Resends a failed message with the same `clientMessageId`.
-    func retry(_ id: String) async {
-        guard let index = messages.firstIndex(where: { $0.id == id }), messages[index].role == .user,
-              messages[index].status == .error, !isSending else { return }
-        messages[index].status = .sending
-        messages[index].error = nil
+    /// Resends a failed message with the same `clientMessageId` (idempotent on the server).
+    func retry(_ itemId: String) async {
+        guard let index = items.firstIndex(where: { $0.id == itemId }), items[index].localStatus == .error,
+              let clientId = items[index].clientMessageId, !isSending else { return }
+        items[index].localStatus = .sending
+        items[index].localError = nil
         persist()
-        await deliver(id: id, text: messages[index].text)
+        await deliver(clientId: clientId, text: items[index].text)
     }
 
-    private func deliver(id: String, text: String) async {
+    private func deliver(clientId: String, text: String) async {
         isSending = true
         defer { isSending = false }
+        let localId = TimelineItem.localPrefix + clientId
         do {
-            let response = try await api().chat(ChatRequest(message: text, sessionId: sessionId, clientMessageId: id))
+            let response = try await api().chat(ChatRequest(message: text, sessionId: sessionId, clientMessageId: clientId))
             onTransportSuccess?()
-            guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
-            messages[index].status = .sent
-            messages[index].error = nil
-            // A retry the server already answered comes back with duplicate: true; don't add the reply twice.
-            if response.duplicate, messages.contains(where: { $0.role == .lucina && $0.id == "reply-\(id)" }) {
-                persist()
-                return
+            guard let index = items.firstIndex(where: { $0.id == localId || $0.clientMessageId == clientId && $0.role == .user })
+            else { return } // cleared (sign-out) or already replaced by the stream
+            let sentAt = items[index].ts
+            let userId = response.userItemId ?? localId
+            let replyId = response.lucinaItemId ?? (TimelineItem.localPrefix + "reply-" + clientId)
+            var user = TimelineItem(id: userId, ts: sentAt, channel: .ios, role: .user, text: text, clientMessageId: clientId,
+                                    localStatus: response.userItemId == nil ? .sent : nil)
+            if items[index].id == userId { user.localStatus = items[index].isLocal ? .sent : nil }
+            let reply = TimelineItem(id: replyId, ts: max(Date(), sentAt.addingTimeInterval(0.001)), channel: .ios, role: .lucina,
+                                     text: response.reply, clientMessageId: clientId, replyTo: userId,
+                                     localStatus: response.lucinaItemId == nil ? .sent : nil)
+            if userId != localId { items.removeAll { $0.id == localId } }
+            // The stream may have delivered the real items first; never downgrade them.
+            var incoming: [TimelineItem] = []
+            if !items.contains(where: { $0.id == userId && !$0.isLocal }) { incoming.append(user) }
+            if !items.contains(where: { $0.id == replyId && !$0.isLocal })
+                && !items.contains(where: { $0.role == .lucina && !$0.isLocal && ($0.replyTo == userId || $0.clientMessageId == clientId) }) {
+                incoming.append(reply)
             }
-            let job = response.job.map { ChatJob(id: $0.id, status: $0.status, action: response.action) }
-            let reply = ChatMessage(id: "reply-\(id)", role: .lucina, text: response.reply, createdAt: Date(),
-                                    action: response.action, job: job)
-            messages.insert(reply, at: index + 1)
+            let merged = TimelineMerge.merge(items.filter { !incoming.map(\.id).contains($0.id) }, incoming)
+            items = merged.items
+            if let job = response.job {
+                jobs[replyId] = ChatJob(id: job.id, status: job.status, action: response.action)
+                if !JobInfo.isTerminal(job.status) { startPolling(itemId: replyId, delay: pollInterval) }
+            }
             persist()
-            if let job, !job.isTerminal { startPolling(messageId: reply.id, delay: pollInterval) }
         } catch {
             let apiError = APIError.wrap(error)
             onTransportError?(apiError)
-            guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
-            messages[index].status = .error
-            messages[index].error = Self.describe(apiError)
+            guard let index = items.firstIndex(where: { $0.id == localId }) else { return }
+            items[index].localStatus = .error
+            items[index].localError = Self.describe(apiError)
             persist()
         }
     }
@@ -158,8 +323,8 @@ final class ChatStore {
     // MARK: - Jobs
 
     func resumePolling() {
-        for message in messages where message.job.map({ !$0.isTerminal }) == true && pollers[message.id] == nil {
-            startPolling(messageId: message.id, delay: .zero)
+        for (itemId, job) in jobs where !job.isTerminal && pollers[itemId] == nil {
+            startPolling(itemId: itemId, delay: .zero)
         }
     }
 
@@ -168,42 +333,43 @@ final class ChatStore {
         pollers.removeAll()
     }
 
-    private func startPolling(messageId: String, delay: Duration) {
-        pollers[messageId]?.cancel()
-        pollers[messageId] = Task { [weak self] in
+    private func startPolling(itemId: String, delay: Duration) {
+        pollers[itemId]?.cancel()
+        pollers[itemId] = Task { [weak self] in
             var wait = delay
             while !Task.isCancelled {
                 if wait > .zero { try? await Task.sleep(for: wait) }
                 guard let self, !Task.isCancelled else { return }
-                let keepGoing = await self.pollOnce(messageId: messageId)
+                let keepGoing = await self.pollOnce(itemId: itemId)
                 if !keepGoing { break }
                 wait = self.pollInterval
             }
-            self?.pollers[messageId] = nil
+            self?.pollers[itemId] = nil
         }
     }
 
     /// Returns whether to keep polling.
-    private func pollOnce(messageId: String) async -> Bool {
-        guard let jobId = messages.first(where: { $0.id == messageId })?.job?.id else { return false }
+    private func pollOnce(itemId: String) async -> Bool {
+        // The card may have moved to a server id since polling started.
+        let key = jobs[itemId] != nil ? itemId : (jobs.first { $0.value.id == itemId }?.key ?? itemId)
+        guard let jobId = jobs[key]?.id else { return false }
         do {
             let info = try await api().job(jobId)
-            guard let index = messages.firstIndex(where: { $0.id == messageId }), var job = messages[index].job else { return false }
+            guard var job = jobs[key] else { return false }
             job.status = info.status
             job.pollError = nil
             if let action = info.action { job.action = action }
             if let result = info.result, !result.isNull { job.result = result.displayText }
             job.error = info.error
             if let url = info.imageUrl { job.imageUrl = url }
-            messages[index].job = job
+            jobs[key] = job
             persist()
             return !job.isTerminal
         } catch {
             let apiError = APIError.wrap(error)
-            guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return false }
             if apiError.code == "job_not_found" || apiError.status == 404 {
-                messages[index].job?.status = "error"
-                messages[index].job?.pollError = "This job no longer exists."
+                jobs[key]?.status = "error"
+                jobs[key]?.pollError = "This job no longer exists."
                 persist()
                 return false
             }
@@ -211,7 +377,7 @@ final class ChatStore {
                 onTransportError?(apiError)
                 return false
             }
-            messages[index].job?.pollError = "Couldn't check on this job. Retrying…"
+            jobs[key]?.pollError = "Couldn't check on this job. Retrying…"
             return true
         }
     }
@@ -220,35 +386,59 @@ final class ChatStore {
 
     func clear() {
         stopPolling()
-        messages = []
+        stopStream()
+        items = []
+        jobs = [:]
+        lastEventId = nil
+        nextBefore = nil
+        hasOlder = false
+        mode = .unknown
         try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent().appendingPathComponent("chat.json"))
+    }
+
+    struct Cache: Codable {
+        var items: [TimelineItem]
+        var jobs: [String: ChatJob]
+        var lastEventId: String?
+        var localOnly: Bool
     }
 
     private func persist() {
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .millisecondsSince1970
-            // Keep the file small: the last 500 messages are plenty for the phone.
-            let data = try encoder.encode(Array(messages.suffix(500)))
+            // Server mode: the newest 50 server items plus anything still unsent.
+            // Local-only mode: the phone is the only copy, so keep more.
+            let keep: [TimelineItem]
+            if mode == .localOnly {
+                keep = Array(items.suffix(500))
+            } else {
+                let server = items.filter { !$0.isLocal }.suffix(Self.cacheSize)
+                let unsent = items.filter { $0.isLocal && $0.localStatus != .sent }
+                keep = TimelineMerge.sorted(Array(server) + unsent)
+            }
+            let ids = Set(keep.map(\.id))
+            let cache = Cache(items: keep, jobs: jobs.filter { ids.contains($0.key) }, lastEventId: lastEventId,
+                              localOnly: mode == .localOnly)
+            let data = try JSONEncoder().encode(cache)
             try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
-            // Losing the local copy is not fatal; Lucina keeps the conversation.
+            // Losing the local cache is not fatal; the server keeps the conversation.
         }
     }
 
-    static func load(from url: URL) -> [ChatMessage] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .millisecondsSince1970
-        guard let stored = try? decoder.decode([ChatMessage].self, from: data) else { return [] }
-        return stored.map { message in
-            var message = message
-            if message.status == .sending {
-                message.status = .error
-                message.error = "Not sent: the app closed before Lucina answered."
-            }
-            return message
+    static func load(from url: URL) -> Cache {
+        guard let data = try? Data(contentsOf: url), var cache = try? JSONDecoder().decode(Cache.self, from: data) else {
+            return Cache(items: [], jobs: [:], lastEventId: nil, localOnly: false)
         }
+        cache.items = cache.items.map { item in
+            var item = item
+            if item.localStatus == .sending {
+                item.localStatus = .error
+                item.localError = "Not sent: the app closed before Lucina answered."
+            }
+            return item
+        }
+        return cache
     }
 }

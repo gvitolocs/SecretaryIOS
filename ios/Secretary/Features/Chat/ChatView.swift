@@ -3,7 +3,7 @@ import SwiftUI
 /// The Chat tab, built from parts so other surfaces can reuse them:
 /// `[stage] + ChatTranscript + ChatComposer`. A future `LucinaStage` (the animated
 /// avatar with voice) goes in the `stage` slot above the transcript; the transcript
-/// and composer only depend on `ChatStore`.
+/// and composer only depend on `ChatStore`. Nothing here plays audio.
 struct ChatView<Stage: View>: View {
     @Environment(ChatStore.self) private var store
     @Environment(AppModel.self) private var app
@@ -25,9 +25,10 @@ struct ChatView<Stage: View>: View {
             ChatComposer()
         }
         .background(Theme.page)
-        .navigationTitle("Lucina")
         .navigationBarTitleDisplayMode(.inline)
-        .task { store.resumePolling() }
+        .toolbar {
+            ToolbarItem(placement: .principal) { ChatTitle() }
+        }
     }
 }
 
@@ -35,7 +36,35 @@ extension ChatView where Stage == EmptyView {
     init() { self.init { EmptyView() } }
 }
 
-/// The scrolling list of bubbles, job cards and the thinking indicator.
+/// "Lucina" with a Live pill while the timeline stream is connected.
+struct ChatTitle: View {
+    @Environment(ChatStore.self) private var store
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Lucina").font(.headline)
+            if store.mode == .server {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(store.isLive ? Color.green : Color.secondary)
+                        .frame(width: 6, height: 6)
+                    Text(store.isLive ? "Live" : "Offline")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(store.isLive ? .primary : .secondary)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(.thinMaterial, in: Capsule())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(store.isLive ? "Live: new messages from every channel appear here" : "Not connected to live updates")
+                .accessibilityIdentifier("liveIndicator")
+            }
+        }
+    }
+}
+
+/// The scrolling list: day separators, bubbles with source badges, reminders, job cards,
+/// and the thinking indicator. Scrolling to the top loads older messages.
 struct ChatTranscript: View {
     @Environment(ChatStore.self) private var store
 
@@ -43,12 +72,23 @@ struct ChatTranscript: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    if store.messages.isEmpty {
+                    if store.hasOlder {
+                        HStack { Spacer(); ProgressView(); Spacer() }
+                            .padding(.vertical, 8)
+                            .onAppear { loadOlder(proxy) }
+                            .accessibilityLabel("Loading older messages")
+                    }
+                    if store.items.isEmpty {
                         emptyState
                     }
-                    ForEach(store.messages) { message in
-                        MessageRow(message: message)
-                            .id(message.id)
+                    ForEach(rows) { row in
+                        switch row {
+                        case let .day(date):
+                            DaySeparator(date: date)
+                        case let .message(item):
+                            MessageRow(item: item, job: store.jobs[item.id])
+                                .id(item.id)
+                        }
                     }
                     if store.isSending {
                         ThinkingBubble().id("thinking")
@@ -59,10 +99,39 @@ struct ChatTranscript: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
-            .onChange(of: store.messages.count) { _, _ in scrollToEnd(proxy) }
+            .refreshable { await store.refresh() }
+            .onChange(of: store.items.last?.id) { _, _ in scrollToEnd(proxy) }
             .onChange(of: store.isSending) { _, _ in scrollToEnd(proxy) }
             .onAppear { scrollToEnd(proxy, animated: false) }
         }
+    }
+
+    enum Row: Identifiable {
+        case day(Date)
+        case message(TimelineItem)
+
+        var id: String {
+            switch self {
+            case let .day(date): return "day-\(date.timeIntervalSince1970)"
+            case let .message(item): return item.id
+            }
+        }
+    }
+
+    /// Items with a separator before each new calendar day.
+    private var rows: [Row] {
+        var out: [Row] = []
+        var lastDay: Date?
+        let calendar = Calendar.current
+        for item in store.items {
+            let day = calendar.startOfDay(for: item.ts)
+            if day != lastDay {
+                out.append(.day(day))
+                lastDay = day
+            }
+            out.append(.message(item))
+        }
+        return out
     }
 
     private var emptyState: some View {
@@ -72,7 +141,7 @@ struct ChatTranscript: View {
                 .foregroundStyle(Theme.accent)
                 .accessibilityHidden(true)
             Text("Ask Lucina anything").font(.title3.bold())
-            Text("Reminders, the shopping list, errands. She remembers where you left off.")
+            Text("Reminders, the shopping list, errands. Messages from the web, Telegram, Discord and Alexa show up here too.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -82,14 +151,178 @@ struct ChatTranscript: View {
         .accessibilityElement(children: .combine)
     }
 
+    private func loadOlder(_ proxy: ScrollViewProxy) {
+        let anchor = store.items.first?.id
+        Task {
+            await store.loadOlder()
+            // Keep the message that was on top in place instead of jumping.
+            if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+        }
+    }
+
     private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        let target = store.isSending ? "thinking" : store.messages.last?.id
+        let target = store.isSending ? "thinking" : store.items.last?.id
         guard let target else { return }
         if animated {
             withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .bottom) }
         } else {
             proxy.scrollTo(target, anchor: .bottom)
         }
+    }
+}
+
+private struct DaySeparator: View {
+    let date: Date
+
+    var body: some View {
+        Text(label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(.thinMaterial, in: Capsule())
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private var label: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+        return date.formatted(sameYear ? .dateTime.weekday(.wide).day().month(.wide) : .dateTime.day().month(.wide).year())
+    }
+}
+
+/// Where a message came from: icon + label, plus the chat or server for Telegram/Discord.
+struct SourceBadge: View {
+    let item: TimelineItem
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: item.channel.symbol)
+                .imageScale(.small)
+                .accessibilityHidden(true)
+            Text(text)
+            Text("·").accessibilityHidden(true)
+            Text(item.ts.formatted(date: .omitted, time: .shortened))
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("From \(text), \(item.ts.formatted(date: .omitted, time: .shortened))")
+    }
+
+    private var text: String {
+        guard let meta = item.meta else { return item.channel.label }
+        if item.channel == .discord {
+            if meta.isDm == true { return "Discord DM" }
+            let place = [meta.guildName, meta.channelName.map { "#\($0)" }].compactMap { $0 }.joined(separator: " ")
+            return place.isEmpty ? "Discord" : "Discord · \(place)"
+        }
+        if item.channel == .telegram, let title = meta.chatTitle, meta.isDm != true {
+            return "Telegram · \(title)"
+        }
+        return item.channel.label
+    }
+}
+
+private struct MessageRow: View {
+    @Environment(ChatStore.self) private var store
+    let item: TimelineItem
+    let job: ChatJob?
+
+    var body: some View {
+        if item.meta?.isReminder == true {
+            ReminderCard(item: item)
+        } else {
+            bubbleRow
+        }
+    }
+
+    private var bubbleRow: some View {
+        let isUser = item.role == .user
+        return HStack {
+            if isUser { Spacer(minLength: 48) }
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+                if !item.text.isEmpty {
+                    Text(LinkText.attributed(item.text))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(isUser ? Color.white : Color.primary)
+                        .tint(isUser ? Color.white : Theme.accent)
+                        .background(isUser ? AnyShapeStyle(Theme.accentFill) : AnyShapeStyle(Theme.card),
+                                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .opacity(item.localStatus == .sending ? 0.7 : 1)
+                        .accessibilityLabel(Text("\(isUser ? "You" : "Lucina"), via \(item.channel.label): \(item.text)"))
+                        .accessibilityIdentifier(isUser ? "userMessage" : "lucinaMessage")
+                }
+                if !item.attachments.isEmpty {
+                    ForEach(Array(item.attachments.enumerated()), id: \.offset) { _, attachment in
+                        Label(attachment.name ?? attachment.kind.capitalized, systemImage: Self.symbol(for: attachment.kind))
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Theme.field, in: Capsule())
+                    }
+                }
+                if let job {
+                    JobCard(job: job)
+                }
+                if item.localStatus == .error {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).accessibilityHidden(true)
+                        Text(item.localError ?? "Not delivered.").font(.caption).foregroundStyle(.secondary)
+                        Button("Retry") { Task { await store.retry(item.id) } }
+                            .font(.caption.bold())
+                            .disabled(store.isSending)
+                            .accessibilityIdentifier("retryMessage")
+                    }
+                } else if item.localStatus == .sending {
+                    Text("Sending…").font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    SourceBadge(item: item)
+                        .padding(.horizontal, 4)
+                }
+            }
+            if !isUser { Spacer(minLength: 48) }
+        }
+    }
+
+    static func symbol(for kind: String) -> String {
+        switch kind.lowercased() {
+        case "image", "photo": return "photo"
+        case "audio", "voice": return "waveform"
+        case "video": return "video"
+        default: return "paperclip"
+        }
+    }
+}
+
+private struct ReminderCard: View {
+    let item: TimelineItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "bell.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Reminder").font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                Text(LinkText.attributed(item.text)).font(.subheadline).textSelection(.enabled)
+                SourceBadge(item: item)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.orange.opacity(0.35)))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("reminderCard")
     }
 }
 
@@ -153,49 +386,6 @@ struct ChatComposer: View {
         focused = true
         Task {
             if !(await store.send(text)) { draft = text }
-        }
-    }
-}
-
-private struct MessageRow: View {
-    @Environment(ChatStore.self) private var store
-    let message: ChatMessage
-
-    var body: some View {
-        let isUser = message.role == .user
-        HStack {
-            if isUser { Spacer(minLength: 48) }
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
-                if !message.text.isEmpty {
-                    Text(LinkText.attributed(message.text))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .foregroundStyle(isUser ? Color.white : Color.primary)
-                        .tint(isUser ? Color.white : Theme.accent)
-                        .background(isUser ? AnyShapeStyle(Theme.accentFill) : AnyShapeStyle(Theme.card),
-                                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .opacity(message.status == .sending ? 0.7 : 1)
-                        .accessibilityLabel(Text("\(isUser ? "You" : "Lucina"): \(message.text)"))
-                        .accessibilityIdentifier(isUser ? "userMessage" : "lucinaMessage")
-                }
-                if let job = message.job {
-                    JobCard(job: job)
-                }
-                if message.status == .error {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).accessibilityHidden(true)
-                        Text(message.error ?? "Not delivered.").font(.caption).foregroundStyle(.secondary)
-                        Button("Retry") { Task { await store.retry(message.id) } }
-                            .font(.caption.bold())
-                            .disabled(store.isSending)
-                            .accessibilityIdentifier("retryMessage")
-                    }
-                } else if message.status == .sending {
-                    Text("Sending…").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            if !isUser { Spacer(minLength: 48) }
         }
     }
 }

@@ -41,8 +41,10 @@ patch() {
             local $/; my $overlay = <$fh>;
             s/(\n  if \(path === "\/v1\/health" && method === "GET"\) \{)/\n$overlay$1/ or die "anchor /v1/health not found\n";
         ' "$out"
-        perl -0pi -e '
-            s/(const sessions = new Map\(\);)/$1\nconst IOS_EMAIL = "owner\@example.test";\nlet iosPassword = process.env.MOCK_PASSWORD ?? "dev-password-123";\n\/** \@type {Map<string, {deviceName: string, deviceId: string}>} *\/\nconst iosTokens = new Map();\nconst iosLock = new Map();/ or die "anchor sessions not found\n";
+        STATE="$here/mock-overlay-state.js" perl -0pi -e '
+            open(my $fh, "<", $ENV{STATE}) or die "state: $!";
+            local $/; my $state = <$fh>;
+            s/(const sessions = new Map\(\);)/$1\n$state/ or die "anchor sessions not found\n";
         ' "$out"
     fi
     if ! grep -q 'req.headers.authorization' "$out"; then

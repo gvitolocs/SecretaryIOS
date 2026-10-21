@@ -93,9 +93,14 @@ struct ChatResponse: Decodable, Equatable, Sendable {
     let job: JobRef?
     let sessionId: String?
     let duplicate: Bool
+    /// Timeline ids of the two messages this exchange created (unified chat servers).
+    let userItemId: String?
+    let lucinaItemId: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        userItemId = (try? c.decodeIfPresent(FlexibleID.self, forKey: .userItemId))?.value
+        lucinaItemId = (try? c.decodeIfPresent(FlexibleID.self, forKey: .lucinaItemId))?.value
         reply = (try? c.decodeIfPresent(String.self, forKey: .reply)) ?? ""
         action = try? c.decodeIfPresent(String.self, forKey: .action)
         job = try? c.decodeIfPresent(JobRef.self, forKey: .job)
@@ -103,7 +108,7 @@ struct ChatResponse: Decodable, Equatable, Sendable {
         duplicate = (try? c.decodeIfPresent(Bool.self, forKey: .duplicate)) ?? false
     }
 
-    private enum CodingKeys: String, CodingKey { case reply, action, job, sessionId, duplicate }
+    private enum CodingKeys: String, CodingKey { case reply, action, job, sessionId, duplicate, userItemId, lucinaItemId }
 }
 
 struct JobInfo: Decodable, Equatable, Sendable {
@@ -185,7 +190,15 @@ struct SecretaryAPI: Sendable {
     }
 
     func chat(_ request: ChatRequest) async throws -> ChatResponse {
-        try await client.send("POST", "/v1/chat", body: request, timeout: APIClient.chatTimeout, idempotent: true)
+        try await client.send("POST", "/v1/chat", body: request, timeout: APIClient.chatTimeout, idempotent: true,
+                              headers: ["X-Secretary-Client": "ios"])
+    }
+
+    /// `GET /v1/timeline?before=&limit=`: newest first.
+    func timeline(before: String? = nil, limit: Int = 50) async throws -> TimelinePage {
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before { query.append(URLQueryItem(name: "before", value: before)) }
+        return try await client.get("/v1/timeline", query: query)
     }
 
     func job(_ id: String) async throws -> JobInfo {
