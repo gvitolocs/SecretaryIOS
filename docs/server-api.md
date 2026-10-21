@@ -219,6 +219,12 @@ answered with an error).
 | `message` | Required, 1–4000 characters, not blank, no control characters except newline/tab. |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
+| `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+
+The channel comes from the `X-Secretary-Client: web|ios` request header,
+else from the body's `channel`, else defaults to `web`; the header wins when
+both are sent. Any other value is `400 bad_request`. The server always
+forwards a `channel` to Lucina.
 
 Server timeout 120 s (an LLM turn); use a client timeout of at least 125 s.
 
@@ -231,9 +237,17 @@ Server timeout 120 s (an LLM turn); use a client timeout of at least 125 s.
   "job": null,
   "sessionId": "secretary_iphone",
   "clientMessageId": "B1E4C0DE-2F0A-4B8C-9D11-7A6E5F4C3B2A",
-  "reminder": { "id": "…", "text": "chiamare la mamma", "dueAt": "2026-10-21T16:30:00.000Z", "…": "…" }
+  "reminder": { "id": "…", "text": "chiamare la mamma", "dueAt": "2026-10-21T16:30:00.000Z", "…": "…" },
+  "userItemId": "tl_0192…",
+  "lucinaItemId": "tl_0193…"
 }
 ```
+
+`userItemId` / `lucinaItemId` are the timeline ids of the stored message
+and of Lucina's reply (present when Lucina records the timeline). The same
+items also arrive on [`/v1/timeline/stream`](#get-v1timelinestream);
+de-duplicate by `id` (or by `clientMessageId` for the optimistic copy of
+your own message).
 
 `action` is `reply`, `grocery`, `list_reminders`, `schedule_reminder`
 (with `reminder` when one was created or already existed), or an async
@@ -259,6 +273,118 @@ Treat unknown `action` values as `reply`.
 `status`: `queued` → `running` → `done` | `error`. Poll every 2–5 s until
 `done` or `error`. `error: "interrupted"` means Lucina restarted mid-job.
 `404 job_not_found`.
+
+## Timeline
+
+The unified conversation: every message Lucina sees or sends, on every
+channel (Telegram, Discord, the web app, the iOS app, Alexa), as one list.
+Both routes need auth (Bearer or the session cookie); they are `GET`, so
+cookie callers need no CSRF header.
+
+Timeline item:
+
+```json
+{
+  "id": "tl_0193…",
+  "ts": 1761048003000,
+  "channel": "telegram",
+  "role": "lucina",
+  "text": "Fatto, te lo ricordo alle 18:30.",
+  "clientMessageId": "B1E4C0DE-…",
+  "replyTo": "tl_0192…",
+  "attachments": [{ "kind": "image", "name": "scontrino.jpg" }],
+  "meta": { "chatTitle": "Casa", "isDm": true },
+  "backfilled": true
+}
+```
+
+| Field | |
+|---|---|
+| `id` | Opaque id (string; treat a number as its decimal text). Also the pagination cursor and the SSE event id. |
+| `ts` | Epoch milliseconds. Parse an ISO 8601 string too: the server passes `ts` through as Lucina sent it. |
+| `channel` | `telegram`, `discord`, `web`, `ios`, `alexa` or `other`. Show unknown values as `other`. |
+| `role` | `user` or `lucina`. Skip items with any other role. |
+| `text` | May be empty (for example an attachment-only message). |
+| `clientMessageId` | Optional; set on messages sent through `POST /v1/chat` with one. |
+| `replyTo` | Optional id of the item this answers. |
+| `attachments` | Optional `[{kind: image\|voice\|file, name?}]`. |
+| `meta` | Optional `{chatTitle?, guildName?, channelName?, isDm?, kind?}` (`kind: "reminder"` for a delivered reminder). |
+| `backfilled` | Optional `true` for history imported after the fact. |
+
+Other fields may appear and are passed through unchanged.
+
+### `GET /v1/timeline?before=<id>&limit=50`
+
+Newest first. `200`:
+
+```json
+{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…" }
+```
+
+| Query | Rules |
+|---|---|
+| `before` | Optional item id (`[A-Za-z0-9_.:-]{1,128}`): only older items. Pass the previous page's `nextBefore`. |
+| `limit` | Optional integer 1–200; Lucina's default is 50. |
+
+`nextBefore` is `null` at the start of history. Anything else is `400
+bad_request` before Lucina is called. Timeout 15 s.
+
+### `GET /v1/timeline/stream`
+
+[Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html):
+new items as they happen, relayed unchanged from Lucina's
+`/api/secretary/timeline/stream` without buffering. Response headers:
+`Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-store`,
+`X-Accel-Buffering: no`.
+
+```
+: ping
+
+event: item
+id: tl_0193…
+data: {"id":"tl_0193…","ts":1761048003000,"channel":"web","role":"user","text":"Ciao"}
+
+```
+
+- `event: item` carries one timeline item as JSON in `data` (the raw
+  Lucina item, same shape as above). Ignore other event names.
+- `: ping` is a comment line Lucina sends every 20 s to keep proxies from
+  closing the idle connection. EventSource ignores it; hand-written parsers
+  must skip lines starting with `:`.
+- **Resuming:** send the last `id` you saw as the `Last-Event-ID` header and
+  Lucina replays everything after it. EventSource does this by itself when
+  it reconnects. A *new* EventSource cannot set headers, so pass
+  `?lastEventId=<id>` instead (the header wins if both are present). An id
+  outside the id charset is `400 bad_request`.
+- **Ending:** when Lucina's stream ends, fails, or sends nothing (not even a
+  ping) for 60 s, the server ends the response cleanly; it also ends every
+  stream when it shuts down. EventSource then reconnects on its own (after
+  its retry delay, sending `Last-Event-ID`). Native clients: reconnect with
+  backoff (1 s, 2 s, 5 s, 10 s, 30 s) and send `Last-Event-ID`.
+- **Errors before the stream starts** are ordinary JSON errors with a
+  status: `401`, `429 too_many_streams`, `502 lucina_error` /
+  `lucina_unreachable`, `504 lucina_timeout` (Lucina did not connect within
+  10 s or send headers within 60 s), `503 lucina_not_configured`.
+  EventSource gives up for good on a non-200 answer (`readyState` becomes
+  `CLOSED`): open a new one with backoff and reload the latest page with
+  `GET /v1/timeline` to fill the gap.
+- **Limits:** at most 4 open streams per device and 20 in total; beyond
+  that `429 too_many_streams` with `Retry-After: 5`. A stream counts once
+  against the per-device rate limit (when it opens), not per event. One
+  stream per tab or app is enough; close it when hidden for long.
+- There is no total duration limit on the stream.
+
+**Behind Caddy** nothing special is needed. Caddy's
+[`reverse_proxy`](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#streaming)
+flushes immediately when the upstream answers `Content-Type:
+text/event-stream` (it ignores `flush_interval` then), and it has no read,
+response-header or stream timeout by default. The `encode zstd gzip` in
+`deploy/Caddyfile.snippet` still compresses the stream, but
+[`encode`](https://caddyserver.com/docs/caddyfile/directives/encode) does not
+hold back `text/event-stream` responses to reach `minimum_length`: headers go
+out at once and the body is streamed as written. (Checked against Caddy's
+docs on 2026-10-21.) `X-Accel-Buffering: no` is for nginx, should one ever
+sit in front.
 
 ## Reminders
 
@@ -798,6 +924,7 @@ await audio.play();
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |
+| 429 | `too_many_streams` | server | Over 4 open timeline streams for this device or 20 in total; honour `Retry-After`. |
 | 500 | `internal` | server | Unexpected server failure. |
 | 500 | `storage_error` | gym/body engine | The server could not write the module file (engine body). |
 | 502 | `lucina_error` | server | Lucina failed (5xx), rejected the server's credentials, has the secretary API disabled, or answered off-contract. |

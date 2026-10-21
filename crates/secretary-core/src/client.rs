@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CreateReminder,
     CreatedReminder, Envelope, Health, Job, ReminderList, ReminderQuery, ReminderScope,
-    ShoppingItem,
+    ShoppingItem, TimelinePage, TimelineQuery,
 };
 use crate::validate;
 
@@ -30,6 +30,12 @@ pub struct Timeouts {
     pub default: Duration,
     /// TCP/TLS connect: 5 s by default.
     pub connect: Duration,
+    /// TCP/TLS connect of the timeline event stream: 10 s by default.
+    pub stream_connect: Duration,
+    /// The event stream ends when Lucina sends nothing (not even its 20 s
+    /// `: ping`) for this long: 60 s by default. Also bounds the wait for
+    /// the response headers. There is no total deadline on the stream.
+    pub stream_idle: Duration,
 }
 
 impl Default for Timeouts {
@@ -38,6 +44,8 @@ impl Default for Timeouts {
             chat: Duration::from_secs(120),
             default: Duration::from_secs(15),
             connect: Duration::from_secs(5),
+            stream_connect: Duration::from_secs(10),
+            stream_idle: Duration::from_secs(60),
         }
     }
 }
@@ -95,6 +103,9 @@ impl Call {
             validate::session_id("sessionId", sid)?;
         }
         validate::opt_id("clientMessageId", req.client_message_id.as_deref())?;
+        if let Some(c) = req.channel.as_deref() {
+            validate::chat_channel("channel", c)?;
+        }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
         call.class = TimeoutClass::Chat;
@@ -182,6 +193,20 @@ impl Call {
             .extracting("item"))
     }
 
+    /// `GET /timeline?before=&limit=` (newest first, `{items, nextBefore}`).
+    pub fn timeline(q: &TimelineQuery) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["timeline"]);
+        if let Some(b) = q.before.as_deref() {
+            validate::id("before", b)?;
+            call.query.push(("before", b.to_owned()));
+        }
+        if let Some(l) = q.limit.as_deref() {
+            let n = validate::bounded_int("limit", l, 1, validate::MAX_TIMELINE_LIMIT)?;
+            call.query.push(("limit", n.to_string()));
+        }
+        Ok(call)
+    }
+
     pub fn method(&self) -> &Method {
         &self.method
     }
@@ -205,6 +230,9 @@ impl Call {
 #[derive(Clone)]
 pub struct LucinaClient {
     http: reqwest::Client,
+    /// For the long-lived event stream: no gzip, its own connect and idle
+    /// timeouts, no total deadline.
+    stream_http: reqwest::Client,
     base: Url,
     token: String,
     timeouts: Timeouts,
@@ -237,8 +265,16 @@ impl LucinaClient {
             .connect_timeout(timeouts.connect)
             .build()
             .map_err(|e| Error::Config(e.without_url().to_string()))?;
+        let stream_http = reqwest::Client::builder()
+            .user_agent(concat!("secretary-core/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(timeouts.stream_connect)
+            .read_timeout(timeouts.stream_idle)
+            .no_gzip()
+            .build()
+            .map_err(|e| Error::Config(e.without_url().to_string()))?;
         Ok(Self {
             http,
+            stream_http,
             base,
             token,
             timeouts,
@@ -349,6 +385,55 @@ impl LucinaClient {
     pub async fn shopping(&self) -> Result<Vec<ShoppingItem>> {
         self.call(&Call::shopping()).await
     }
+
+    pub async fn timeline(&self, q: &TimelineQuery) -> Result<TimelinePage> {
+        self.call(&Call::timeline(q)?).await
+    }
+
+    /// Open `GET /timeline/stream` (Server-Sent Events) and return the live
+    /// response once Lucina answered 2xx with `text/event-stream`; read it
+    /// with `bytes_stream()`. `last_event_id` (an id) is sent as
+    /// `Last-Event-ID` so Lucina replays what was missed.
+    ///
+    /// Non-2xx answers are classified like [`Self::call`]; a body read that
+    /// stalls longer than [`Timeouts::stream_idle`] fails with a timeout.
+    pub async fn timeline_stream(&self, last_event_id: Option<&str>) -> Result<reqwest::Response> {
+        validate::opt_id("lastEventId", last_event_id)?;
+        let call = Call::new(Method::GET, &["timeline", "stream"]);
+        let mut req = self
+            .stream_http
+            .get(self.url(&call))
+            .bearer_auth(&self.token)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache");
+        if let Some(id) = last_event_id {
+            req = req.header("last-event-id", id);
+        }
+        let resp = req.send().await.map_err(Error::from_reqwest)?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let bytes = resp.bytes().await.map_err(Error::from_reqwest)?;
+            // Non-2xx always decodes to an error.
+            return Err(decode_response::<Value>(status, &bytes)
+                .err()
+                .unwrap_or(Error::Api {
+                    status,
+                    code: format!("http_{status}"),
+                    message: None,
+                }));
+        }
+        let is_sse = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim_start().starts_with("text/event-stream"));
+        if !is_sse {
+            return Err(Error::Decode(
+                "timeline stream is not text/event-stream".into(),
+            ));
+        }
+        Ok(resp)
+    }
 }
 
 /// Envelope handling, separate from I/O so it can be unit-tested.
@@ -407,6 +492,14 @@ mod tests {
             c.url(&Call::reminders(&q).unwrap()).as_str(),
             "http://h:1/prefix/api/secretary/reminders?scope=today&includeSent=1"
         );
+        let q = TimelineQuery {
+            before: Some("tl_9".into()),
+            limit: Some("050".into()),
+        };
+        assert_eq!(
+            c.url(&Call::timeline(&q).unwrap()).as_str(),
+            "http://h:1/prefix/api/secretary/timeline?before=tl_9&limit=50"
+        );
     }
 
     #[test]
@@ -415,7 +508,8 @@ mod tests {
         assert!(Call::chat(&ChatRequest {
             message: " ".into(),
             session_id: None,
-            client_message_id: None
+            client_message_id: None,
+            channel: None
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -429,12 +523,30 @@ mod tests {
         })
         .is_err());
         assert!(Call::shopping_add(json!("milk")).is_err());
+        let chat = |channel: &str| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                session_id: None,
+                client_message_id: None,
+                channel: Some(channel.into()),
+            })
+        };
+        assert!(chat("ios").is_ok());
+        assert!(chat("telegram").is_err());
+        let tq = |before: Option<&str>, limit: Option<&str>| TimelineQuery {
+            before: before.map(str::to_owned),
+            limit: limit.map(str::to_owned),
+        };
+        assert!(Call::timeline(&tq(Some("a/b"), None)).is_err());
+        assert!(Call::timeline(&tq(None, Some("0"))).is_err());
+        assert!(Call::timeline(&tq(None, Some("201"))).is_err());
         assert!(Call::shopping_add(json!({"rawName": "latte"})).is_ok());
         assert_eq!(
             Call::chat(&ChatRequest {
                 message: "hi".into(),
                 session_id: None,
-                client_message_id: None
+                client_message_id: None,
+                channel: None
             })
             .unwrap()
             .timeout_class(),

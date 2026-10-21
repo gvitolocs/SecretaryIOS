@@ -19,6 +19,7 @@ pub mod ratelimit;
 pub mod routes;
 pub mod service;
 pub mod sessions;
+pub mod timeline;
 pub mod tts;
 pub mod upstream;
 pub mod web;
@@ -69,6 +70,10 @@ pub struct Inner {
     pub owner: owner::OwnerStore,
     pub private_assets_dir: PathBuf,
     pub tts: tts::Tts,
+    /// Open `/v1/timeline/stream` responses.
+    pub streams: timeline::StreamSlots,
+    /// Flipped to `true` on shutdown; open streams end when it is.
+    pub shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Clone)]
@@ -106,7 +111,16 @@ impl AppState {
             owner: owner::OwnerStore::new(&cfg.data_dir),
             private_assets_dir: cfg.private_assets_dir.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
+            streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
+            shutdown: tokio::sync::watch::Sender::new(false),
         })))
+    }
+
+    /// End every open timeline stream (and refuse none: new ones end at
+    /// once). Called when the shutdown signal arrives, so graceful shutdown
+    /// does not wait on long-lived responses.
+    pub fn begin_shutdown(&self) {
+        self.shutdown.send_replace(true);
     }
 
     pub fn lucina(&self) -> Result<&LucinaClient, ApiError> {
@@ -165,7 +179,8 @@ pub fn app(state: AppState) -> Router {
         .merge(engines::routes())
         .merge(auth::account_routes())
         .merge(assets::routes())
-        .merge(tts::routes());
+        .merge(tts::routes())
+        .merge(timeline::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -265,6 +280,11 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         trust_proxy = cfg.trust_proxy,
         "secretary-server listening"
     );
-    serve_on(listener, app(state), shutdown_signal()).await?;
+    let st = state.clone();
+    let shutdown = async move {
+        shutdown_signal().await;
+        st.begin_shutdown();
+    };
+    serve_on(listener, app(state), shutdown).await?;
     Ok(())
 }
