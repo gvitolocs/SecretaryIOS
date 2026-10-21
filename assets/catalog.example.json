@@ -1,0 +1,26 @@
+{
+  "entries": [
+    { "name": "Milk", "section": "Cooling" },
+    { "name": "Butter", "section": "Cooling" },
+    { "name": "Yogurt", "section": "Cooling" },
+    { "name": "Cheese", "section": "Cooling" },
+    { "name": "Eggs", "section": "Cooling" },
+    { "name": "Bread", "section": "Bakery" },
+    { "name": "Rolls", "section": "Bakery" },
+    { "name": "Apples", "section": "Produce" },
+    { "name": "Bananas", "section": "Produce" },
+    { "name": "Tomatoes", "section": "Produce" },
+    { "name": "Potatoes", "section": "Produce" },
+    { "name": "Onions", "section": "Produce" },
+    { "name": "Pasta", "section": "Pantry" },
+    { "name": "Rice", "section": "Pantry" },
+    { "name": "Olive oil", "section": "Pantry" },
+    { "name": "Flour", "section": "Pantry" },
+    { "name": "Sugar", "section": "Pantry" },
+    { "name": "Coffee beans", "section": "Pantry" },
+    { "name": "Toothpaste", "section": "Household" },
+    { "name": "Dish soap", "section": "Household" },
+    { "name": "Paper towels", "section": "Household" },
+    { "name": "Trash bags", "section": "Household" }
+  ]
+}

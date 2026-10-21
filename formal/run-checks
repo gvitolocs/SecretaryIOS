@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# TLC checks for the lucina-bring sync models.
+#
+# Conventions (same as the orchestra-tlc / dsh-remote runners):
+#   - pinned toolchain only (tla2tools.jar + bundled JRE 17)
+#   - safety and liveness in separate cfgs; terminal states are by design,
+#     so deadlock checking is disabled
+#   - witness cfgs MUST FAIL with rc 12 (invariant violated = reachability
+#     proof); if a witness passes, the model is too weak and the run fails
+set -u
+
+cd "$(dirname "$0")"
+
+TC=/home/nez/deepseek-harness-local/formal/orchestra-tlc/toolchain
+JAVA="$TC/jre/usr/lib/jvm/java-17-openjdk-amd64/bin/java"
+JAR="$TC/tla2tools.jar"
+TIMEOUT=120
+
+run() { # run <Spec> <cfg> <expect: ok|witness>
+    local spec="$1" cfg="$2" expect="$3" rc
+    rm -rf "states/$cfg"
+    timeout "$TIMEOUT" "$JAVA" -XX:+UseParallelGC -cp "$JAR" tlc2.TLC \
+        -config "$cfg.cfg" -metadir "states/$cfg" -workers auto -deadlock \
+        "$spec.tla" > "states-$cfg.log" 2>&1
+    rc=$?
+    local verdict
+    if [ "$expect" = ok ]; then
+        if [ "$rc" -eq 0 ]; then verdict="PASS"; else verdict="FAIL (rc=$rc, see states-$cfg.log)"; fi
+    else
+        if [ "$rc" -eq 12 ]; then verdict="PASS (witness violated as required)"; else verdict="FAIL (rc=$rc — witness did not violate; model too weak?)"; fi
+    fi
+    printf '%-28s %-9s rc=%-3s %s\n' "$cfg" "$expect" "$rc" "$verdict"
+    case "$verdict" in PASS*) true;; *) false;; esac
+}
+
+fail=0
+# Re-translate in case the PlusCal source changed (translation is committed in-file).
+JAVA="$JAVA" JAR="$JAR" bash -c '
+    "$JAVA" -cp "$JAR" pcal.trans OriginalSync.tla > /dev/null 2>&1
+    "$JAVA" -cp "$JAR" pcal.trans MigratedSync.tla  > /dev/null 2>&1
+'
+# keep handwritten cfgs (pcal.trans writes skeleton cfgs only when absent)
+run OriginalSync        OriginalSync          ok       || fail=1
+run OriginalSync        OriginalSync_witness  witness  || fail=1
+run MigratedSync        MigratedSync          ok       || fail=1
+run MigratedSync        MigratedSync_witness  witness  || fail=1
+
+echo
+[ "$fail" -eq 0 ] && echo "ALL CHECKS GREEN" || echo "CHECKS FAILED"
+exit "$fail"

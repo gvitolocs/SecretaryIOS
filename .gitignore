@@ -1,0 +1,18 @@
+# rust
+target/
+
+# logs
+*.log
+
+# formal verification artifacts (TLC traces, state dirs, pcal.trans backups,
+# generated Quint witness and ITF traces)
+formal/states/
+formal/*_TTrace_*
+formal/*.bin
+formal/*.old
+formal/quint/migratedSyncWitness.qnt
+formal/quint/*.itf.json
+
+# local config / secrets
+*.env
+!deploy/*.env.example

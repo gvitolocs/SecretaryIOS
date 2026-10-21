@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Quint (Rust-backed simulator) checks for the lucina-bring sync models.
+# This is the primary gate; formal/run-checks (TLC, pinned toolchain) is the
+# exhaustive-bounded reference.
+set -u
+cd "$(dirname "$0")/quint"
+Q=~/.bun/bin/quint
+fail=0
+
+run() { # run <file> <invariant> <expect: ok|witness> <label>
+    local file="$1" inv="$2" expect="$3" label="$4" out rc
+    out=$("$Q" run "--invariants=$inv" --max-steps 25 --max-samples 50000 "$file" 2>&1)
+    rc=$?
+    if [ "$expect" = ok ]; then
+        if echo "$out" | grep -q "\[ok\]"; then
+            printf '%-34s %-8s PASS (%s)\n' "$label" "$expect" "$(echo "$out" | grep -oE '[0-9]+ traces/second' | head -1)"
+        else
+            echo "$out" | grep -E "violation|error" | head -2
+            printf '%-34s %-8s FAIL\n' "$label" "$expect"; fail=1
+        fi
+    else
+        if echo "$out" | grep -q "\[violation\]"; then
+            printf '%-34s %-8s PASS (witness violated as required)\n' "$label" "$expect"
+        else
+            printf '%-34s %-8s FAIL (witness did not violate; model too weak?)\n' "$label" "$expect"; fail=1
+        fi
+    fi
+}
+
+run originalSync.qnt serverIsSomePushed ok      "original/serverIsSomePushed"
+run originalSync.qnt committedSurvive witness   "original/committedSurvive"
+run migratedSync.qnt deletedStaysDeleted ok     "migrated/deletedStaysDeleted"
+
+# witness: same model with the dedup gate switched off
+sed 's/val DEDUP = true/val DEDUP = false/; s/module migratedSync/module migratedSyncWitness/' \
+    migratedSync.qnt > migratedSyncWitness.qnt
+run migratedSyncWitness.qnt deletedStaysDeleted witness "migrated/dedup-off witness"
+
+echo
+[ "$fail" -eq 0 ] && echo "QUINT CHECKS GREEN" || echo "QUINT CHECKS FAILED"
+exit "$fail"
