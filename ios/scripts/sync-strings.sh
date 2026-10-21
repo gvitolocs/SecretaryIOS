@@ -6,7 +6,7 @@ set -euo pipefail
 ios="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ios"
 xcodebuild -project Secretary.xcodeproj -scheme Secretary -configuration Debug \
-    -destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build -quiet
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath build ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build -quiet
 files=()
 while IFS= read -r f; do files+=("$f"); done < <(find build -name "*.stringsdata" -path "*Secretary.build*" | grep -v Tests)
 xcrun xcstringstool sync Secretary/Resources/Localizable.xcstrings --stringsdata "${files[@]}"

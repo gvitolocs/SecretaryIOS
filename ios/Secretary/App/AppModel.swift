@@ -7,6 +7,9 @@ import UIKit
 @Observable
 @MainActor
 final class AppModel {
+    /// One app model per process: views, App Intents and the Focus filter share it.
+    static let shared = AppModel()
+
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
     enum Tab: String, Hashable, CaseIterable { case chat, shopping, gym, weight, settings }
@@ -35,6 +38,7 @@ final class AppModel {
     let weight: WeightStore
     let health: HealthStore
     let lucina: LucinaStageController
+    let device: DeviceHub
 
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
@@ -45,6 +49,7 @@ final class AppModel {
             try? FileManager.default.removeItem(at: ChatStore.defaultFileURL)
             try? FileManager.default.removeItem(at: FFIGymEngine.defaultFileURL)
             try? FileManager.default.removeItem(at: ShoppingV2Store.defaultFileURL)
+            try? FileManager.default.removeItem(at: DeviceBridge.defaultFileURL)
             defaults.removeObject(forKey: GymLocation.key)
             defaults.removeObject(forKey: ChatStore.sessionIdKey)
         }
@@ -58,10 +63,10 @@ final class AppModel {
         shoppingV2 = ShoppingV2Store(api: { ShoppingV2Client(client: client) })
         let location = GymLocation(rawValue: defaults.string(forKey: GymLocation.key) ?? "") ?? .device
         let engine = Result { try FFIGymEngine(fileURL: FFIGymEngine.defaultFileURL) }
-        let device = try? engine.get()
-        deviceEngine = device
-        if location == .device, let device {
-            gym = GymStore(transport: FFIGymTransport(engine: device), clockInterval: .seconds(1))
+        let gymEngine = try? engine.get()
+        deviceEngine = gymEngine
+        if location == .device, let gymEngine {
+            gym = GymStore(transport: FFIGymTransport(engine: gymEngine), clockInterval: .seconds(1))
             gymLocation = .device
             gymEngineError = nil
         } else {
@@ -72,12 +77,17 @@ final class AppModel {
         weight = WeightStore(client: { BodyClient(client: client) })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         lucina = LucinaStageController(client: client, chat: chat)
+        device = DeviceHub(client: client, weight: weight)
         if let tab = launch.initialTab { selectedTab = tab }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
         chat.onTransportError = onError
         chat.onTransportSuccess = onSuccess
+        let device = device
+        chat.onItems = { items in device.bridge.consider(items) }
+        weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
+        gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -156,6 +166,7 @@ final class AppModel {
         client.accessKey = nil
         deviceName = nil
         lucina.stopEverything()
+        device.bridge.reset()
         lucina.expanded = false
         chat.clear()
         shopping.reset()
@@ -195,6 +206,7 @@ final class AppModel {
             store = GymStore(transport: HTTPGymTransport(client: client))
         }
         store.onTransportError = transportErrorHandler
+        store.onFinished = gym.onFinished
         return store
     }
 

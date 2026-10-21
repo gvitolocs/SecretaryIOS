@@ -57,6 +57,8 @@ final class ChatStore {
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     @ObservationIgnored var onTransportSuccess: (() -> Void)?
+    /// Every batch of timeline items that arrives (the device bridge looks for commands).
+    @ObservationIgnored var onItems: (([TimelineItem]) -> Void)?
 
     init(api: @escaping () -> SecretaryAPI, fileURL: URL = ChatStore.defaultFileURL, defaults: UserDefaults = .standard,
          pollInterval: Duration = ChatStore.pollInterval) {
@@ -150,6 +152,7 @@ final class ChatStore {
     /// Merges server items in (dedupe by id, reconcile optimistic bubbles).
     func apply(_ incoming: [TimelineItem], persistAfter: Bool = true) {
         guard !incoming.isEmpty else { return }
+        onItems?(incoming)
         let result = TimelineMerge.merge(items, incoming)
         items = result.items
         for (old, new) in result.replaced {

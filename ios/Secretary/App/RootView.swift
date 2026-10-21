@@ -43,8 +43,12 @@ struct MainTabs: View {
                 }
             }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { app.lucina.stopEverything() }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
+        }
+        // Lucina asks before deleting something or changing the calendar.
+        .sheet(item: Binding(get: { app.device.bridge.pendingConfirmations.first }, set: { _ in })) { command in
+            CommandConfirmation(command: command)
         }
     }
 

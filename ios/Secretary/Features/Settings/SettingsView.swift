@@ -76,6 +76,17 @@ struct SettingsView: View {
             }
 
             Section {
+                NavigationLink {
+                    AccessView()
+                } label: {
+                    Label("Lucina's access", systemImage: "hand.raised")
+                }
+                .accessibilityIdentifier("lucinaAccess")
+            } footer: {
+                Text("Alarms, reminders, calendar, Health, places, Focus, Safari and Screen Time: choose what Lucina may see and do.")
+            }
+
+            Section {
                 Toggle("Show Lucina", isOn: Binding(get: { app.lucina.enabled }, set: { app.lucina.enabled = $0 }))
                     .accessibilityIdentifier("lucinaEnabled")
                 Toggle("Voice replies", isOn: Binding(get: { !app.lucina.muted }, set: { app.lucina.muted = !$0 }))

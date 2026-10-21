@@ -1,7 +1,7 @@
 import Foundation
 
 /// Any JSON value, for loosely typed payloads (shopping items, job results).
-enum JSONValue: Codable, Equatable, Sendable {
+enum JSONValue: Codable, Hashable, Sendable {
     case string(String)
     case number(Double)
     case bool(Bool)

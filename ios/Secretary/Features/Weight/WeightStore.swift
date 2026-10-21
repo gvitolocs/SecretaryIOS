@@ -16,6 +16,8 @@ final class WeightStore {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     @ObservationIgnored var onTransportSuccess: (() -> Void)?
+    /// A weigh-in was logged here (written to Apple Health when that is on).
+    @ObservationIgnored var onLogged: ((Int, Date) -> Void)?
 
     init(client: @escaping () -> BodyClient, makeOpId: @escaping () -> String = { UUID().uuidString.lowercased() }) {
         self.client = client
@@ -113,7 +115,9 @@ final class WeightStore {
 
     func log(_ text: String, at date: Date = Date(), note: String = "") async -> Bool {
         guard let grams = grams(from: text) else { return false }
-        return await run(.logEntry(weightGrams: grams, measuredMs: Int(date.timeIntervalSince1970 * 1000), note: note))
+        let ok = await run(.logEntry(weightGrams: grams, measuredMs: Int(date.timeIntervalSince1970 * 1000), note: note))
+        if ok { onLogged?(grams, date) }
+        return ok
     }
 
     func reset() {

@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct SecretaryApp: App {
-    @State private var app = AppModel()
+    @State private var app = AppModel.shared
 
     var body: some Scene {
         WindowGroup {

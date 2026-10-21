@@ -42,6 +42,15 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
         # Only plain-HTTP to local hosts (the dev mock); everything else must be HTTPS.
+        NSHealthShareUsageDescription: "Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing."
+        NSHealthUpdateUsageDescription: "Your weigh-ins and gym workouts are saved to Apple Health."
+        NSLocationWhenInUseUsageDescription: "Lucina learns which places you visit, so she can remind you of things where they matter."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "To notice when you arrive at or leave a place, even when Secretary is closed."
+        NSCalendarsFullAccessUsageDescription: "Lucina sees your upcoming events and adds or removes them when you ask."
+        NSRemindersFullAccessUsageDescription: "Lucina adds, completes and reads your reminders when you ask."
+        NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
+        NSSupportsLiveActivities: true
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
         NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing."
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         NSAppTransportSecurity:
@@ -55,6 +64,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app
         PRODUCT_NAME: Secretary
+        CODE_SIGN_ENTITLEMENTS: Secretary/Secretary.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"

@@ -28,15 +28,33 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Lucina sets alarms and timers for you when you ask.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Lucina sees your upcoming events and adds or removes them when you ask.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Your weigh-ins and gym workouts are saved to Apple Health.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>To notice when you arrive at or leave a place, even when Secretary is closed.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Lucina adds, completes and reads your reminders when you ask.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Your words are turned into text so Lucina can answer them.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>SecretaryKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)tech.getsecretary.shared</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

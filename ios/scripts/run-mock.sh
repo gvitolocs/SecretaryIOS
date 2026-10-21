@@ -69,6 +69,9 @@ patch() {
     if ! grep -q '"/v1/session/password"' "$src"; then
         insert "$out" "$routes" "$here/mock-overlay-password.js"
     fi
+    if ! grep -q '"/v1/device/events"' "$src"; then
+        insert "$out" "$routes" "$here/mock-overlay-device.js"
+    fi
     if ! grep -q '"/v1/timeline"' "$src"; then
         insert "$out" "$state" "$here/mock-overlay-state-timeline.js" after
         insert "$out" "$routes" "$here/mock-overlay-timeline.js"
@@ -81,13 +84,18 @@ stop() {
         kill "$(cat "$pidfile")" && sleep 0.3
     fi
     rm -f "$pidfile"
+    # Whatever still listens on the port (an earlier run) goes too.
+    local stale
+    stale="$(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "$stale" ]]; then kill $stale 2>/dev/null || true; sleep 0.3; fi
 }
 
 start() {
     stop
     fetch
     patch
-    (cd "$dir" && MOCK_PORT="$port" nohup node "$dir/server.ios.mjs" > "$dir/mock.log" 2>&1 & echo $! > "$pidfile")
+    MOCK_PORT="$port" nohup node "$dir/server.ios.mjs" > "$dir/mock.log" 2>&1 &
+    echo $! > "$pidfile"
     for _ in $(seq 1 50); do
         if curl -sf "http://127.0.0.1:$port/v1/health" >/dev/null; then
             echo "mock running on http://localhost:$port (pid $(cat "$pidfile"))"

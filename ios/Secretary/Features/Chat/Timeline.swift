@@ -44,8 +44,11 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var channelName: String?
     var isDm: Bool?
     var kind: String?
+    /// `{id, type, args}` when `kind == "device_command"`.
+    var command: JSONValue?
 
     var isReminder: Bool { kind == "reminder" }
+    var isDeviceCommand: Bool { kind == "device_command" }
 
     init(chatTitle: String? = nil, guildName: String? = nil, channelName: String? = nil, isDm: Bool? = nil, kind: String? = nil) {
         self.chatTitle = chatTitle
@@ -62,9 +65,10 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         channelName = c.lenientOptional(String.self, .channelName)
         isDm = c.lenientOptional(Bool.self, .isDm)
         kind = c.lenientOptional(String.self, .kind)
+        command = c.lenientOptional(JSONValue.self, .command)
     }
 
-    private enum CodingKeys: String, CodingKey { case chatTitle, guildName, channelName, isDm, kind }
+    private enum CodingKeys: String, CodingKey { case chatTitle, guildName, channelName, isDm, kind, command }
 }
 
 /// One message in the timeline. Server items have server ids; optimistic ones made on

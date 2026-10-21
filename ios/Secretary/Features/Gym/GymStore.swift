@@ -30,6 +30,8 @@ final class GymStore {
     /// Called with transport failures (401 → sign out, offline → banner).
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     @ObservationIgnored var onTransportSuccess: (() -> Void)?
+    /// A workout was finished: (started, finished).
+    @ObservationIgnored var onFinished: ((Date, Date) -> Void)?
 
     init(transport: GymTransport,
          makeOpId: @escaping () -> String = { UUID().uuidString.lowercased() },
@@ -118,6 +120,10 @@ final class GymStore {
             switch outcome {
             case let .success(response):
                 if let view = response.view { apply(view) }
+                if command == .finishWorkout, !response.replayed,
+                   let done = response.view?.state.history.max(by: { ($0.finishedMs ?? 0) < ($1.finishedMs ?? 0) }), let end = done.finishedMs {
+                    onFinished?(Date(timeIntervalSince1970: Double(done.startedMs) / 1000), Date(timeIntervalSince1970: Double(end) / 1000))
+                }
                 if let clock = response.clock { setClock(clock) }
                 return response
             case let .rejected(response):

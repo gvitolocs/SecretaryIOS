@@ -246,6 +246,65 @@ final class SecretaryFlowTests: XCTestCase {
         XCTAssertTrue(bubble.waitForExistence(timeout: 5))
     }
 
+    // MARK: - Device bridge
+
+    private func mock(_ method: String, _ path: String, _ body: [String: Any]? = nil) async throws -> [String: Any] {
+        var request = URLRequest(url: URL(string: "\(Self.baseURL)\(path)")!)
+        request.httpMethod = method
+        request.setValue("1", forHTTPHeaderField: "X-Secretary-CSRF")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    func testLucinaCommandNeedsConfirmationAndIsAcked() async throws {
+        let app = launch()
+        signIn(app)
+        let live = app.descendants(matching: .any)["liveIndicator"]
+        XCTAssertTrue(live.waitForExistence(timeout: 15))
+        expectation(for: NSPredicate(format: "label BEGINSWITH %@", "Live"), evaluatedWith: live)
+        waitForExpectations(timeout: 15)
+
+        let id = "cmd-\(Int.random(in: 10000...99999))"
+        _ = try await mock("POST", "/v1/_mock/timeline", [
+            "channel": "telegram", "role": "lucina", "text": "I'll delete your 7:00 alarm.",
+            "meta": ["kind": "device_command", "command": ["id": id, "type": "alarm.delete", "args": ["id": "x", "label": "Gym"]]],
+        ])
+        let decline = app.buttons["commandDecline"]
+        XCTAssertTrue(decline.waitForExistence(timeout: 10), "deletes ask first")
+        attach(app, "Command confirmation")
+        decline.tap()
+        var acked: [String: Any]?
+        for _ in 0..<30 {
+            let results = try await mock("GET", "/v1/_mock/device")["results"] as? [String: Any]
+            if let result = results?[id] as? [String: Any] { acked = result; break }
+            try await Task.sleep(for: .milliseconds(300))
+        }
+        XCTAssertEqual(acked?["ok"] as? Bool, false)
+        XCTAssertEqual(acked?["error"] as? String, "the owner declined it on the phone")
+        // The command stays in the shared mock timeline. A fresh install ignores commands sent
+        // more than 5 s before it started; let that window pass before the next test installs.
+        try await Task.sleep(for: .seconds(6))
+    }
+
+    func testAccessScreenListsEverySource() {
+        let app = launch(tab: "settings")
+        signIn(app)
+        let access = app.buttons["lucinaAccess"]
+        XCTAssertTrue(access.waitForExistence(timeout: 10))
+        access.tap()
+        for source in ["alarms", "reminders", "calendar", "health", "location", "focus"] {
+            XCTAssertTrue(app.switches["access-\(source)"].waitForExistence(timeout: 5), source)
+        }
+        // Tap the switch itself (the row centre is the label).
+        app.switches["access-reminders"].coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["accessContinue"].waitForExistence(timeout: 5), "explained before iOS asks")
+        attach(app, "Lucina's access")
+    }
+
     // MARK: - Weight
 
     func testWeightLogEntry() {
