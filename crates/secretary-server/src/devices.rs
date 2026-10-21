@@ -1,0 +1,329 @@
+//! Device tokens.
+//!
+//! A token is `sec_` + base64url(32 random bytes). Only its SHA-256 (hex) is
+//! stored, in `$SECRETARY_DATA_DIR/devices.json`:
+//! `[{id, name, hash, createdAt, lastSeenAt, revoked}]`.
+//!
+//! Every mutation (CLI issue/revoke, the server's `lastSeenAt` touch) is a
+//! read-modify-write of the file under an exclusive lock on `devices.lock`,
+//! written to a temp file (0600), fsynced and renamed over the old one. The
+//! server re-reads the file whenever its mtime/size changes, so a CLI revoke
+//! takes effect on the next request without a restart.
+
+use std::collections::HashMap;
+use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
+
+pub const TOKEN_PREFIX: &str = "sec_";
+const DEVICES_FILE: &str = "devices.json";
+const LOCK_FILE: &str = "devices.lock";
+/// Persist `lastSeenAt` at most this often per device.
+const TOUCH_EVERY: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    /// Hex SHA-256 of the full token string.
+    pub hash: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+pub fn now_rfc3339() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+fn random_bytes<const N: usize>() -> io::Result<[u8; N]> {
+    let mut buf = [0u8; N];
+    getrandom::fill(&mut buf).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(buf)
+}
+
+/// A fresh device token: `sec_` + base64url(32 random bytes).
+pub fn generate_token() -> io::Result<String> {
+    Ok(format!(
+        "{TOKEN_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(random_bytes::<32>()?)
+    ))
+}
+
+pub fn hash_token(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+fn validate_name(name: &str) -> io::Result<()> {
+    let n = name.trim();
+    if n.is_empty() || n.chars().count() > 64 || n.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device name must be 1..=64 printable characters",
+        ));
+    }
+    Ok(())
+}
+
+/// The on-disk registry.
+#[derive(Debug, Clone)]
+pub struct DeviceStore {
+    dir: PathBuf,
+}
+
+impl DeviceStore {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub fn path(&self) -> PathBuf {
+        self.dir.join(DEVICES_FILE)
+    }
+
+    fn ensure_dir(&self) -> io::Result<()> {
+        if !self.dir.exists() {
+            DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&self.dir)?;
+        }
+        Ok(())
+    }
+
+    /// Exclusive lock held for the lifetime of the returned file.
+    fn lock(&self) -> io::Result<File> {
+        self.ensure_dir()?;
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(self.dir.join(LOCK_FILE))?;
+        f.lock()?;
+        Ok(f)
+    }
+
+    /// All devices; a missing file is an empty registry.
+    pub fn load(&self) -> io::Result<Vec<Device>> {
+        match fs::read(self.path()) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn save(&self, devices: &[Device]) -> io::Result<()> {
+        self.ensure_dir()?;
+        let tmp = self.dir.join(format!(".{DEVICES_FILE}.tmp"));
+        let mut f = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        let mut json = serde_json::to_vec_pretty(devices).map_err(io::Error::other)?;
+        json.push(b'\n');
+        f.write_all(&json)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, self.path())?;
+        File::open(&self.dir)?.sync_all()
+    }
+
+    /// Register a device; returns it and the plaintext token (shown once).
+    pub fn issue(&self, name: &str) -> io::Result<(Device, String)> {
+        validate_name(name)?;
+        let _lock = self.lock()?;
+        let mut devices = self.load()?;
+        let token = generate_token()?;
+        let device = Device {
+            id: format!("dev_{}", URL_SAFE_NO_PAD.encode(random_bytes::<8>()?)),
+            name: name.trim().to_owned(),
+            hash: hash_token(&token),
+            created_at: now_rfc3339(),
+            last_seen_at: None,
+            revoked: false,
+        };
+        devices.push(device.clone());
+        self.save(&devices)?;
+        Ok((device, token))
+    }
+
+    pub fn list(&self) -> io::Result<Vec<Device>> {
+        self.load()
+    }
+
+    /// Mark `id` revoked. `Ok(None)` if there is no such device.
+    pub fn revoke(&self, id: &str) -> io::Result<Option<Device>> {
+        let _lock = self.lock()?;
+        let mut devices = self.load()?;
+        let Some(d) = devices.iter_mut().find(|d| d.id == id) else {
+            return Ok(None);
+        };
+        d.revoked = true;
+        let out = d.clone();
+        self.save(&devices)?;
+        Ok(Some(out))
+    }
+
+    /// Record `lastSeenAt` for `id`, re-reading the file under the lock so a
+    /// concurrent revoke is never overwritten.
+    pub fn touch(&self, id: &str, at: &str) -> io::Result<()> {
+        let _lock = self.lock()?;
+        let mut devices = self.load()?;
+        if let Some(d) = devices.iter_mut().find(|d| d.id == id) {
+            d.last_seen_at = Some(at.to_owned());
+            self.save(&devices)?;
+        }
+        Ok(())
+    }
+}
+
+/// Result of checking a presented token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthResult {
+    Ok { device_id: String },
+    Unknown,
+    Revoked,
+}
+
+#[derive(Default)]
+struct Cache {
+    stamp: Option<(SystemTime, u64)>,
+    loaded: bool,
+    devices: Vec<Device>,
+    touched: HashMap<String, Instant>,
+}
+
+/// Server-side view of the registry, reloaded when the file changes.
+pub struct DeviceAuth {
+    store: DeviceStore,
+    cache: Mutex<Cache>,
+}
+
+impl DeviceAuth {
+    pub fn new(store: DeviceStore) -> Self {
+        Self {
+            store,
+            cache: Mutex::new(Cache::default()),
+        }
+    }
+
+    fn stamp(&self) -> io::Result<Option<(SystemTime, u64)>> {
+        match fs::metadata(self.store.path()) {
+            Ok(m) => Ok(Some((m.modified()?, m.len()))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Check `token` against every stored hash in constant time per entry
+    /// (no early exit), after reloading the registry if it changed on disk.
+    /// Errors (unreadable/corrupt registry) must be treated as a denial.
+    pub fn authenticate(&self, token: &str) -> io::Result<AuthResult> {
+        let presented = hash_token(token);
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        let stamp = self.stamp()?;
+        if !cache.loaded || cache.stamp != stamp {
+            cache.devices = self.store.load()?;
+            cache.stamp = stamp;
+            cache.loaded = true;
+        }
+        let mut found: Option<&Device> = None;
+        for d in &cache.devices {
+            let eq: bool = d.hash.as_bytes().ct_eq(presented.as_bytes()).into();
+            if eq {
+                found = Some(d);
+            }
+        }
+        let result = match found {
+            None => AuthResult::Unknown,
+            Some(d) if d.revoked => AuthResult::Revoked,
+            Some(d) => AuthResult::Ok {
+                device_id: d.id.clone(),
+            },
+        };
+        if let AuthResult::Ok { device_id } = &result {
+            let due = cache
+                .touched
+                .get(device_id)
+                .is_none_or(|t| t.elapsed() >= TOUCH_EVERY);
+            if due {
+                cache.touched.insert(device_id.clone(), Instant::now());
+                let store = self.store.clone();
+                let id = device_id.clone();
+                // Best effort, off the request path.
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = store.touch(&id, &now_rfc3339()) {
+                        tracing::warn!(error = %e, "could not persist lastSeenAt");
+                    }
+                });
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn token_shape() {
+        let t = generate_token().unwrap();
+        assert!(t.starts_with(TOKEN_PREFIX));
+        // 32 bytes base64url without padding = 43 chars
+        assert_eq!(t.len(), TOKEN_PREFIX.len() + 43);
+        assert_ne!(t, generate_token().unwrap());
+        assert_eq!(hash_token("x").len(), 64);
+    }
+
+    #[test]
+    fn issue_revoke_roundtrip_and_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DeviceStore::new(dir.path().join("data"));
+        let (dev, token) = store.issue("iPhone").unwrap();
+        let mode = fs::metadata(store.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let raw = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            !raw.contains(&token),
+            "plaintext token must never be stored"
+        );
+        assert!(raw.contains(&hash_token(&token)));
+
+        let list = store.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, dev.id);
+        assert!(store.issue("  ").is_err());
+
+        assert!(store.revoke("dev_missing").unwrap().is_none());
+        assert!(store.revoke(&dev.id).unwrap().unwrap().revoked);
+        assert!(store.list().unwrap()[0].revoked);
+    }
+}
