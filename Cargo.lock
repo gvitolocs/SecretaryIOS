@@ -1515,6 +1515,35 @@ dependencies = [
 [[package]]
 name = "lucina-server"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "futures-util",
+ "lucina-grocery",
+ "lucina-llm",
+ "lucina-memory",
+ "lucina-store",
+ "lucina-tools",
+ "regex",
+ "reqwest",
+ "secretary-core",
+ "secretary-server",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
 
 [[package]]
 name = "lucina-store"

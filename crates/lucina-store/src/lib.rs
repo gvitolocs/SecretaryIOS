@@ -13,8 +13,10 @@
 //! Never log item or reminder text: it is the owner's private conversation.
 
 pub mod atomic;
+pub mod device;
 pub mod jobs;
 pub mod parser;
+pub mod recent;
 pub mod reminders;
 pub mod scheduler;
 pub mod timeline;

@@ -344,6 +344,29 @@ pub fn format_list(reminders: &[Reminder], tz: Tz, persona: &str, today_only: bo
     )
 }
 
+/// Node's `buildRecentDeliveredRemindersContext`: reminders delivered to
+/// `chat_id` in the last 48 h, newest first, at most 6.
+pub fn delivered_context(reminders: &[Reminder], chat_id: &str, tz: Tz, now: DateTime<Utc>) -> String {
+    let cutoff = now - chrono::Duration::hours(48);
+    let mut sent: Vec<(&Reminder, DateTime<Utc>)> = reminders
+        .iter()
+        .filter(|r| r.chat_id == chat_id && r.status == "sent")
+        .filter_map(|r| r.sent_at.as_deref().and_then(parse_js_date).map(|d| (r, d)))
+        .filter(|(_, d)| *d >= cutoff)
+        .collect();
+    if sent.is_empty() {
+        return String::new();
+    }
+    sent.sort_by(|a, b| b.1.cmp(&a.1));
+    let lines: Vec<String> = sent
+        .iter()
+        .take(6)
+        .enumerate()
+        .map(|(i, (r, d))| format!("{}. [delivered {}] {}", i + 1, format_it_medium(*d, tz), r.text.trim()))
+        .collect();
+    format!("Recently delivered reminders in this chat:\n{}", lines.join("\n"))
+}
+
 /// `⏰ Reminder\n\n<text>`
 pub fn format_delivery(reminder: &Reminder) -> String {
     format!("⏰ Reminder\n\n{}", reminder.text)
