@@ -4,29 +4,31 @@
 running finishes, but nothing new starts until the Rust Lucina is live.
 
 ## Focus: Lucina in Rust
-- [ ] Inventory of the Node Lucina (every module PORT / DROP / OTHER-BOT) and the port plan → `docs/lucina-rust/`
+- [x] Inventory of the Node Lucina (every module PORT / DROP / OTHER-BOT) and the port plan → `docs/lucina-rust/`
 - [ ] Core crates on branch `lucina-rs`: `lucina-llm` (DeepSeek + tools), `lucina-tools` (plugins, confirmation flow),
       `lucina-memory` (Honcho), `lucina-store` (timeline/reminders, Node-compatible), `lucina-grocery`, `lucina-server`
 - [ ] Phase 1: the Secretary API (app + web) served by the Rust Lucina, side by side with Node, then cut over
 - [ ] Phase 2: reminders and scheduler (single writer)
 - [ ] Phase 3: Telegram
-- [ ] Phase 4: Discord
-- [ ] Phase 5: Alexa
+- [ ] Phase 4: Discord (owner: keep, with Lucina's persona; needs the owner's Discord user id)
+- [ ] Phase 5: Alexa (owner: keep, as a new Rust skill backend)
 - [ ] Phase 6: the remaining PORT modules; Node container retired for Lucina
 - [ ] Lucina plugins as Rust tools: weather, places, web, notes, calculator, reminders, shopping, device,
       gym/body, memory search, translate, plus the useful Hermes upstream tools
+- [ ] Rebuild image generation and spreadsheet graphs as Rust tools (owner, 2026-10-21)
 - [ ] Lucina MCP (`crates/secretary-mcp`, being built): Claude Code, ChatGPT connector (OAuth), Grokbot
 
 ## Waiting
 ### Web
 - [x] Persistent full-body Lucina in the right column on desktop, compact on mobile; `/lucina/` retired (20e811e, live)
-- [ ] Shopping identical to the Bring! layout (icons decision pending)
-- [ ] Gym parity with Lucina Gym, plus the left-clipping fix
+- [x] Shopping identical to the Bring! layout (78c7aab, live 2026-10-21; icons decision pending)
+- [x] Gym parity with Lucina Gym, plus a layout guard for the clipping (b40dec6, live)
 - [x] i18n: it / en / da for shell, chat, login, weight (20e811e); Gym and Shopping still to adopt it
-- [ ] Deploy the new web shell
+- [x] Deploy the new web shell (48d52d3)
+- [ ] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), in progress
 
 ### Avatar
-- [ ] Summer vs Engage Lucina comparison → owner picks → convert → p1 private assets
+- [ ] Owner picked Summer, but in her uniform: variants A/B being built → → owner picks → convert → p1 private assets
 - [ ] Animation library (VMD, Quaternius, CMU, Bandai Namco, text-to-motion) via a bone map
 
 ### iOS
@@ -37,7 +39,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 ### Server and Lucina (Node, until the port replaces it)
 - [ ] Device bridge routes: done in `secretary-server` (53d4ec4), not yet deployed
 - [ ] Lucina device bridge (Node worktree `secretary-shopping-v2`)
-- [ ] Shopping v2 deploy: migration 002 + catalog to Lucina and p1 `SECRETARY_CATALOG_DIR`
+- [x] Shopping v2 deploy: migration 002 + catalog to Lucina and p1 (2026-10-21)
 - [ ] Discord owner user ID for the timeline filter (ask the owner)
 
 ### Roadmap modules (`docs/ROADMAP.md`)
