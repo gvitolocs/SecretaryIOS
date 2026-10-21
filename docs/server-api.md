@@ -412,10 +412,12 @@ file). `error` is a human message (English) that can be shown as is.
 **Offline queue recipe (phone or browser):** for each user action create
 `{op_id: uuid(), expected_revision: <revision shown>, timezone, command}`,
 persist it, send queued requests in order, and resend them verbatim after a
-crash or timeout. `replayed: true` counts as success. On `conflict`, fetch
-the state, rebuild the command against it **with a new op_id**, and ask the
-user if the change no longer makes sense. Never reuse an op_id for a
-different command.
+crash or timeout. `replayed: true` counts as success. On `conflict`
+(recommended, and what the web app does): fetch the state, rebuild the
+command against the new revision **with a new op_id** and retry it once
+automatically; if that also conflicts or the command no longer applies
+(`invalid_command`), drop it from the queue and tell the user. Never reuse
+an op_id for a different command (`op_id_reused`, 422).
 
 ### HTTP routes
 
@@ -568,7 +570,7 @@ View (`view` in every successful response except `clock` and
 |---|---|
 | `state` | `schema_version`, `revision`, `settings {weight_unit, rest_seconds, weekly_goal}`, `exercises[]` (catalog, sorted by name), `routines[]`, `active` (workout or null), `history[]` (newest first), `measurements[]` (newest first), `rest {workout_id, deadline_ms}` or null. Workout: `{id, title, notes, started_ms, finished_ms, exercises: [{id, exercise_id, notes, sets: [{id, kind, weight_grams, reps, seconds, distance_meters, completed}]}]}`. |
 | `summary` | `workouts`, `completed_sets`, `weekly_workouts`, `weekly_goal`, `volume` (label), `active_volume` (label), `active_duration` (label), `active_elapsed_seconds` (int), `active_completed_sets` |
-| `records[]` | per catalog exercise with history: `exercise_id`, `name`, `weight` (label), `reps`, `volume` (label), `seconds`, `distance_meters`, `estimated_1rm` (label or null), `estimated_1rm_grams` (int or null; Epley `w·(1 + reps/30)`, `w` for single reps) |
+| `records[]` | per catalog exercise with history: `exercise_id`, `name`, `weight` (label), `reps`, `volume` (label), `seconds`, `distance_meters`, `estimated_1rm` (label with one decimal, e.g. `"116.7 kg"`, or null), `estimated_1rm_grams` (int or null; Epley `w·(1 + reps/30)`, `w` for single reps) |
 | `chart[]` | last 14 finished workouts, oldest first: `{id, label: "21 Oct", volume: number (display unit), volume_grams: int}` |
 | `exercise_charts` | `{catalog exercise id: ChartPoint[]}`: the same per exercise (its volume in each of its last 14 workouts) |
 | `rest_remaining` | seconds |
