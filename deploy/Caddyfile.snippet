@@ -1,0 +1,32 @@
+# Add to /etc/caddy/Caddyfile on p1. Caddy gets the certificates itself.
+
+www.secratary.app {
+	redir https://secratary.app{uri} permanent
+}
+
+secratary.app {
+	encode zstd gzip
+
+	header {
+		# .app is HSTS-preloaded already; this keeps browsers honest anyway.
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:8800 {
+		# Replace whatever the client sent with the real peer address, so
+		# secretary-server (SECRETARY_TRUST_PROXY=1) rate-limits logins per
+		# client IP using the right-most X-Forwarded-For entry.
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output file /var/log/caddy/secratary.app.log
+		# Never log credentials or session cookies.
+		format filter {
+			request>headers>Authorization delete
+			request>headers>Cookie delete
+			resp_headers>Set-Cookie delete
+		}
+	}
+}
