@@ -10,7 +10,8 @@ or the `{ok, data}` envelope.
 ## Conventions
 
 - **JSON** in and out. Request bodies need `Content-Type: application/json`
-  and are capped at 256 KiB (Lucina itself caps at 64 KiB).
+  and are capped at 256 KiB (Lucina itself caps at 64 KiB). Exception:
+  `POST /v1/device/events` accepts 4.5 MiB.
 - **Success:** the HTTP status is 2xx and the body is the resource itself
   (no envelope). `201` means Lucina created something new.
 - **Failure:** `{"error": {"code": "<code>", "message": "<text>"}}` with a
@@ -65,7 +66,9 @@ Password rules:
   `X-Secretary-CSRF` (a custom header forces a preflight that fails). The
   cookie is also `SameSite=Strict`. Bearer requests are exempt.
 - **Rate limits:** 60 requests/minute per device (token bucket, burst 60),
-  and 5 `POST /v1/session` attempts/minute per client IP. Both answer `429
+  `POST /v1/device/events` in its own bucket of 120/minute per device
+  (`SECRETARY_DEVICE_EVENTS_PER_MINUTE`), and 5 `POST /v1/session`
+  attempts/minute per client IP. Both answer `429
   rate_limited` with `Retry-After: <seconds>`.
 
 Auth errors: `401 unauthorized` (with `WWW-Authenticate: Bearer`). The
@@ -868,6 +871,86 @@ Errors (real):
 `clock` (real): `{"ok":true,"replayed":false,"clock":{"rest_remaining":90,"active_duration":"0m 00s","active_elapsed_seconds":0}}`.
 Tick `active_elapsed_seconds` locally between refreshes.
 
+## Device bridge
+
+The owner's phone and Mac tell Lucina what happens on them, and run the
+commands Lucina sends back (see [`device-bridge.md`](device-bridge.md) for
+what iOS allows). All three routes need auth; cookie callers need
+`X-Secretary-CSRF: 1`. Every body forwarded to Lucina gets
+`"device": {"id", "name"}` of the authenticated device; a `device` the
+client sends is ignored.
+
+### `POST /v1/device/events`
+
+```json
+{ "events": [
+  { "id": "6F1C2A3B-…", "ts": 1761048000000, "type": "web_visit", "source": "safari-ext",
+    "data": { "domain": "example.com", "title": "Example" } }
+] }
+```
+
+| Field | Rules |
+|---|---|
+| `events` | 1–500 events. The whole batch is rejected if one event is invalid. |
+| `id` | `[A-Za-z0-9_.:-]{1,128}`, unique per device (a UUID works). The dedup key. |
+| `ts` | Epoch milliseconds (positive integer) or an RFC 3339 timestamp with offset. |
+| `type` | `web_visit`, `location_visit`, `health_summary`, `workout`, `focus_change`, `screen_threshold`, `calendar_change`, `reminder_change`, `alarm_fired`, `app_open`. |
+| `source` | `ios`, `mac`, `safari-ext`, `chrome-ext`. |
+| `data` | Optional JSON object (default `{}`), at most 8 KiB serialized. Opaque to the server. |
+
+Other fields are dropped. `200`:
+
+```json
+{ "accepted": 12, "duplicates": ["6F1C2A3B-…"], "results": [ { "…": "Lucina's data" } ] }
+```
+
+- **Dedup:** the server remembers the last 8192 event ids it forwarded (in
+  memory, per device; lost on restart, so Lucina should dedupe by id too).
+  Ids seen before, and repeats inside the batch, are dropped and listed in
+  `duplicates`. A batch of only duplicates answers `accepted: 0` without
+  calling Lucina.
+- **Forwarding:** the remaining events go to Lucina's
+  `POST /api/secretary/device/events` in order, in chunks of at most 48 KiB
+  (Lucina caps bodies at 64 KiB); `results` has Lucina's `data` per chunk.
+  An id is remembered only once its chunk was accepted.
+- **Offline queue:** keep a batch until it gets a `200`. On any error (for
+  example `502` in the middle of a large batch) resend the *same* batch: the
+  chunks Lucina already stored come back as `duplicates`.
+- Limits: 4.5 MiB body (`413 payload_too_large`), 120 requests/minute per
+  device in their own bucket (`429 rate_limited`, honour `Retry-After`).
+
+### `POST /v1/device/commands/{id}/result`
+
+Ack a command Lucina sent as a timeline item (`meta.kind: "device_command"`,
+`meta.command: {id, type, args}`):
+
+```json
+{ "ok": true, "deviceObjectId": "B7E1…" }
+{ "ok": false, "error": "AlarmKit is not authorized" }
+```
+
+`ok` required; `error` and `deviceObjectId` optional, 1–500 characters, no
+control characters. `{id}` uses the id charset. Forwarded to
+`POST /api/secretary/device/commands/{id}/result`; Lucina's answer and 4xx
+codes (for example `404` for an unknown or expired command) pass through.
+
+### `POST /v1/device/state`
+
+The device's current alarms, timers, upcoming reminders and calendar
+events, and the Focus mode, so Lucina can resolve "delete my 7:00 alarm":
+
+```json
+{ "alarms": [ { "id": "…", "time": "07:00", "label": "Gym", "repeat": ["mon", "wed"] } ],
+  "timers": [], "reminders": [ { "id": "…", "title": "Latte", "due": "…" } ],
+  "events": [ { "id": "…", "title": "Dentista", "start": "…", "end": "…" } ],
+  "focus": { "mode": "work" }, "ts": 1761048000000 }
+```
+
+Each list is optional (default `[]`), at most 500 JSON objects of at most
+8 KiB each (opaque to the server). `focus` is an object, a string or `null`;
+`ts` is optional (as for events). Other fields are dropped. Forwarded to
+`POST /api/secretary/device/state`; Lucina's answer passes through.
+
 ## Insights for Lucina
 
 ### `GET /v1/insights/summary?timezone=Europe/Rome&workouts=5`
@@ -1007,7 +1090,7 @@ await audio.play();
 | 409 | `already_sent` | Lucina | Cancelling a delivered reminder. |
 | 409 | `revision_conflict` | server (from Lucina 409) | Shopping ops conflict with a newer list revision; refetch and retry. |
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
-| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server) / 64 KiB (Lucina). |
+| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |

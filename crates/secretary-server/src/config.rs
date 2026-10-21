@@ -15,6 +15,7 @@
 //! | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only) |
 //! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` |
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
+//! | `SECRETARY_DEVICE_EVENTS_PER_MINUTE` | `120` | `POST /v1/device/events` requests per device per minute |
 //! | `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices a client may ask for |
 
 use std::net::SocketAddr;
@@ -60,6 +61,8 @@ pub struct Config {
     pub timeouts: Timeouts,
     pub upstream_timeout: Duration,
     pub rate_limit_per_minute: u32,
+    /// `POST /v1/device/events` requests per device per minute (own bucket).
+    pub device_events_per_minute: u32,
     /// `POST /v1/session` attempts per client IP per minute.
     pub login_rate_per_minute: u32,
     pub health_timeout: Duration,
@@ -110,6 +113,7 @@ impl Config {
             timeouts: Timeouts::default(),
             upstream_timeout: Duration::from_secs(15),
             rate_limit_per_minute: 60,
+            device_events_per_minute: 120,
             login_rate_per_minute: 5,
             health_timeout: Duration::from_secs(3),
             health_ttl: Duration::from_secs(10),
@@ -152,6 +156,12 @@ impl Config {
             if cfg.tts_voices.is_empty() {
                 bail!("SECRETARY_TTS_VOICES is empty");
             }
+        }
+        if let Some(v) = get("SECRETARY_DEVICE_EVENTS_PER_MINUTE") {
+            cfg.device_events_per_minute =
+                v.parse().ok().filter(|n| *n > 0).with_context(|| {
+                    format!("SECRETARY_DEVICE_EVENTS_PER_MINUTE={v}: expected a positive integer")
+                })?;
         }
         cfg.trust_proxy = match get("SECRETARY_TRUST_PROXY").as_deref() {
             None | Some("0") | Some("false") => false,

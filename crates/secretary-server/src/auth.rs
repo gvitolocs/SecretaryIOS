@@ -136,14 +136,34 @@ fn csrf_error() -> ApiError {
 /// CSRF for cookie writes, per-device rate limit.
 pub async fn require_device(
     State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorize(&st, &st.limiter, req, next).await
+}
+
+/// [`require_device`] with the device-events bucket
+/// (`SECRETARY_DEVICE_EVENTS_PER_MINUTE`) instead of the general one, so a
+/// phone flushing its offline queue does not starve the app's own requests.
+pub async fn require_device_events(
+    State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorize(&st, &st.device_limiter, req, next).await
+}
+
+async fn authorize(
+    st: &AppState,
+    limiter: &crate::ratelimit::RateLimiter,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let ident = identify(&st, req.headers())?.map_err(ApiError::unauthorized)?;
+    let ident = identify(st, req.headers())?.map_err(ApiError::unauthorized)?;
     if ident.via == Via::Cookie && state_changing(req.method()) && !csrf_ok(req.headers()) {
         return Err(csrf_error());
     }
-    if let Err(wait) = st.limiter.check(&ident.device_id) {
+    if let Err(wait) = limiter.check(&ident.device_id) {
         return Err(ApiError::rate_limited(wait));
     }
     let id = ident.device_id.clone();

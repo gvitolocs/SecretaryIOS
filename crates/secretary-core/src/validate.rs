@@ -202,6 +202,68 @@ pub fn quantity(field: &'static str, n: &serde_json::Number) -> Result<()> {
     }
 }
 
+// -- device bridge --------------------------------------------------------
+
+/// Max events in one `POST /device/events` batch.
+pub const MAX_DEVICE_EVENTS: usize = 500;
+/// Max serialized size of one event's `data`.
+pub const MAX_EVENT_DATA_BYTES: usize = 8 * 1024;
+/// Max items in each `device/state` list.
+pub const MAX_STATE_ITEMS: usize = 500;
+/// Max serialized size of one `device/state` item (and of `focus`).
+pub const MAX_STATE_ITEM_BYTES: usize = 8 * 1024;
+/// Max characters of a command `error` / `deviceObjectId`.
+pub const MAX_COMMAND_TEXT_CHARS: usize = 500;
+pub const DEVICE_EVENT_TYPES: &[&str] = &[
+    "web_visit",
+    "location_visit",
+    "health_summary",
+    "workout",
+    "focus_change",
+    "screen_threshold",
+    "calendar_change",
+    "reminder_change",
+    "alarm_fired",
+    "app_open",
+];
+pub const DEVICE_SOURCES: &[&str] = &["ios", "mac", "safari-ext", "chrome-ext"];
+
+/// One of `allowed`.
+pub fn one_of(field: &'static str, s: &str, allowed: &[&str]) -> Result<()> {
+    if allowed.contains(&s) {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            format!("must be one of {}", allowed.join(", ")),
+        ))
+    }
+}
+
+/// Epoch milliseconds (a positive integer) or an RFC 3339 timestamp.
+pub fn event_ts(field: &'static str, ts: &crate::models::Scalar) -> Result<()> {
+    match ts {
+        crate::models::Scalar::Number(n) if n.as_u64().is_some_and(|v| v > 0) => Ok(()),
+        crate::models::Scalar::Text(s) if timestamp(field, s).is_ok() => Ok(()),
+        _ => Err(invalid(
+            field,
+            "must be epoch milliseconds or an RFC 3339 timestamp",
+        )),
+    }
+}
+
+/// `v` serializes to at most `max` bytes of JSON.
+pub fn json_size(field: &'static str, v: &Value, max: usize) -> Result<()> {
+    let len = serde_json::to_vec(v).map_or(usize::MAX, |b| b.len());
+    if len > max {
+        return Err(invalid(
+            field,
+            format!("must be at most {max} bytes of JSON"),
+        ));
+    }
+    Ok(())
+}
+
 /// A JSON object (shopping bodies are passed through, but must be objects).
 pub fn object(field: &'static str, v: &Value) -> Result<()> {
     match v {

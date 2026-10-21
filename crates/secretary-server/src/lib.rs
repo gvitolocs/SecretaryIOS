@@ -9,6 +9,7 @@ pub mod assets;
 pub mod auth;
 pub mod cli;
 pub mod config;
+pub mod device;
 pub mod devices;
 pub mod engines;
 pub mod error;
@@ -71,6 +72,10 @@ pub struct Inner {
     pub sessions: SessionAuth,
     pub limiter: RateLimiter,
     pub login_limiter: RateLimiter,
+    /// `POST /v1/device/events` (instead of `limiter`).
+    pub device_limiter: RateLimiter,
+    /// Recently forwarded device event ids (dedup).
+    pub event_ids: device::SeenIds,
     pub health: HealthCache,
     pub upstream: Option<upstream::Upstream>,
     pub web_dir: Option<PathBuf>,
@@ -116,6 +121,8 @@ impl AppState {
             sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
             login_limiter: RateLimiter::new(cfg.login_rate_per_minute),
+            device_limiter: RateLimiter::new(cfg.device_events_per_minute),
+            event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
             upstream,
             web_dir: cfg.web_dir.clone(),
@@ -196,7 +203,8 @@ pub fn app(state: AppState) -> Router {
         .merge(assets::routes())
         .merge(tts::routes())
         .merge(timeline::routes())
-        .merge(shopping::routes());
+        .merge(shopping::routes())
+        .merge(device::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -205,8 +213,14 @@ pub fn app(state: AppState) -> Router {
         auth::require_device,
     ));
 
+    let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_device_events,
+    ));
+
     let api = Router::new()
         .merge(routes::public())
+        .merge(device_events)
         .merge(auth::session_routes())
         .merge(protected)
         .merge(insights::routes(state.clone()))
