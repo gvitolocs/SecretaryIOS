@@ -319,3 +319,28 @@ async fn tts_upstream_failures_are_tts_unavailable() {
         "tts_unavailable"
     );
 }
+
+#[tokio::test]
+async fn long_replies_are_synthesized_sentence_by_sentence_into_one_stream() {
+    let h = harness(|_| {}).await;
+    let sentence = "Oggi hai fatto un ottimo allenamento, brava davvero. ";
+    let text = sentence.repeat(15);
+    let r = h.tts(json!({ "text": text })).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["x-tts-voice"], "if_sara");
+    let body = r.bytes().await.unwrap();
+    let seen = h.mock.seen.lock().unwrap().clone();
+    assert!(seen.len() >= 3, "{}", seen.len());
+    assert_eq!(body.len(), MP3.len() * seen.len());
+    let inputs: Vec<String> = seen
+        .iter()
+        .map(|(_, b)| {
+            assert_eq!(b["voice"], "if_sara");
+            b["input"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert!(inputs
+        .iter()
+        .all(|i| i.chars().count() <= 300 && i.ends_with('.')));
+    assert_eq!(inputs.join(" "), text.trim());
+}

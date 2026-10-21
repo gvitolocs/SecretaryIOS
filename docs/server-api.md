@@ -486,24 +486,39 @@ Commands:
 Limits: weight and goal 1 000–650 000 g; `measured_ms` ≤ now + 24 h; note ≤
 1 000 bytes; ≤ 50 000 entries.
 
-View:
+Real response to a `log_entry` (`{"weight": "80,5", "note": "after run"}`)
+after four earlier entries 9, 6, 3 and 1 days before, with a 78 kg goal;
+`entries`, `series` and `labels` are trimmed to two items:
 
 ```json
 {
-  "revision": 3,
-  "settings": { "unit": "kg", "goal_grams": 78000 },
-  "entries": [ { "id": "…", "weight_grams": 80500, "measured_ms": 1792584000000, "note": "", "created_ms": …, "updated_ms": … } ],
-  "stats": {
-    "count": 3,
-    "current_grams": 80500, "current_measured_ms": 1792584000000,
-    "avg7_grams": 80800, "weekly_change_grams": -400,
-    "min_grams": 80500, "max_grams": 81200,
-    "trend30_grams": -700, "trend90_grams": null,
-    "goal_grams": 78000, "goal_distance_grams": 2800, "goal_reached": false
-  },
-  "series": [ { "entry_id": "…", "measured_ms": 1792411200000, "weight_grams": 81200, "avg7_grams": 81200 } ],
-  "labels": { "<entry_id>": "80.5 kg" },
-  "stat_labels": { "current": "80.5 kg", "avg7": "80.8 kg", "weekly_change": "-0.4 kg", "…": "…" }
+  "ok": true,
+  "replayed": false,
+  "view": {
+    "revision": 6,
+    "settings": { "unit": "kg", "goal_grams": 78000 },
+    "entries": [
+      { "id": "773a210b-8db8-41e0-b3b5-d38b9771412e", "weight_grams": 80500, "measured_ms": 1792602906883, "note": "after run", "created_ms": 1792602906883, "updated_ms": 1792602906883 },
+      { "id": "1e69e2f3-3fe8-40b4-9614-559ed4eef206", "weight_grams": 80400, "measured_ms": 1792516506708, "note": "", "created_ms": 1792602906855, "updated_ms": 1792602906855 }
+    ],
+    "stats": {
+      "count": 5,
+      "current_grams": 80500, "current_measured_ms": 1792602906883,
+      "avg7_grams": 80625, "weekly_change_grams": -575,
+      "min_grams": 80400, "max_grams": 81200,
+      "trend30_grams": -575, "trend90_grams": -575,
+      "goal_grams": 78000, "goal_distance_grams": 2625, "goal_reached": false
+    },
+    "series": [
+      { "entry_id": "1a45cf06-8446-4965-a1dd-edaeada33fce", "measured_ms": 1791825306708, "weight_grams": 81200, "avg7_grams": 81200 },
+      { "entry_id": "773a210b-8db8-41e0-b3b5-d38b9771412e", "measured_ms": 1792602906883, "weight_grams": 80500, "avg7_grams": 80625 }
+    ],
+    "labels": { "773a210b-8db8-41e0-b3b5-d38b9771412e": "80.5 kg", "1e69e2f3-3fe8-40b4-9614-559ed4eef206": "80.4 kg" },
+    "stat_labels": {
+      "avg7": "80.6 kg", "current": "80.5 kg", "goal": "78.0 kg", "goal_distance": "+2.6 kg",
+      "max": "81.2 kg", "min": "80.4 kg", "trend30": "-0.6 kg", "trend90": "-0.6 kg", "weekly_change": "-0.6 kg"
+    }
+  }
 }
 ```
 
@@ -579,7 +594,66 @@ View (`view` in every successful response except `clock` and
 | `measurement_labels` | `{measurement id: "18.5%"}` |
 | `workout_labels` | `{workout id: {sets, volume, duration}}` |
 
-`clock`: `{"rest_remaining": 42, "active_duration": "12m 05s", "active_elapsed_seconds": 725}`.
+Real response to `complete_set` in a second workout (the first one: bench
+press 80 kg × 5); `state.exercises` (the 30-exercise catalog),
+`state.routines`, `state.history` and `state.measurements` are elided:
+
+```json
+{
+  "ok": true,
+  "replayed": false,
+  "view": {
+    "state": {
+      "schema_version": 1, "revision": 9,
+      "settings": { "weight_unit": "kg", "rest_seconds": 90, "weekly_goal": 3 },
+      "exercises": "…", "routines": "…", "history": "…", "measurements": [],
+      "active": {
+        "id": "04e54b17-2a5b-45c6-ab75-e03bce9aee0e", "title": "Push", "notes": "",
+        "started_ms": 1792602906497, "finished_ms": null,
+        "exercises": [
+          { "id": "dc24d2a5-edaf-4651-9195-fd9bff73f83e", "exercise_id": "bench-press", "notes": "",
+            "sets": [ { "id": "8ea818e6-5ff6-42c8-8764-9dc104d670b6", "kind": "normal", "weight_grams": 82500, "reps": 5, "seconds": 0, "distance_meters": 0, "completed": true } ] }
+        ]
+      },
+      "rest": { "workout_id": "04e54b17-2a5b-45c6-ab75-e03bce9aee0e", "deadline_ms": 1792602996616 },
+      "receipts": {}
+    },
+    "summary": {
+      "workouts": 1, "completed_sets": 1, "weekly_workouts": 1, "weekly_goal": 3,
+      "volume": "400 kg", "active_volume": "412.5 kg", "active_duration": "0m 00s",
+      "active_elapsed_seconds": 0, "active_completed_sets": 1
+    },
+    "records": [
+      { "exercise_id": "bench-press", "name": "Bench Press", "weight": "80 kg", "reps": 5, "volume": "400 kg",
+        "seconds": 0, "distance_meters": 0, "estimated_1rm": "93.3 kg", "estimated_1rm_grams": 93333 }
+    ],
+    "chart": [ { "id": "e0926a06-33c1-44cc-9bda-6f82ed157b2e", "label": "21 Oct", "volume": 400.0, "volume_grams": 400000 } ],
+    "exercise_charts": {
+      "bench-press": [ { "id": "e0926a06-33c1-44cc-9bda-6f82ed157b2e", "label": "21 Oct", "volume": 400.0, "volume_grams": 400000 } ]
+    },
+    "rest_remaining": 90,
+    "weight_labels": { "8ea818e6-5ff6-42c8-8764-9dc104d670b6": "82.5", "ef3b17ab-6f98-4758-beb7-fbf698d9435f": "80" },
+    "previous_labels": { "dc24d2a5-edaf-4651-9195-fd9bff73f83e": "80 kg × 5" },
+    "measurement_labels": {},
+    "workout_labels": {
+      "04e54b17-2a5b-45c6-ab75-e03bce9aee0e": { "sets": 1, "volume": "412.5 kg", "duration": "0m 00s" },
+      "e0926a06-33c1-44cc-9bda-6f82ed157b2e": { "sets": 1, "volume": "400 kg", "duration": "0m 02s" }
+    }
+  }
+}
+```
+
+`state.receipts` is always `{}` in views. Records count finished workouts
+only. `weight_labels` covers every set in history and the active workout.
+
+Errors (real):
+
+```
+409 {"ok":false,"replayed":false,"error":"State changed. Refresh and retry the edit.","code":"conflict"}
+422 {"ok":false,"replayed":false,"error":"Finish or discard your current workout first","code":"invalid_command"}
+```
+
+`clock` (real): `{"ok":true,"replayed":false,"clock":{"rest_remaining":90,"active_duration":"0m 00s","active_elapsed_seconds":0}}`.
 Tick `active_elapsed_seconds` locally between refreshes.
 
 ## Insights for Lucina
@@ -593,25 +667,47 @@ service-token generate <path>`; the file is written 0600 and the token is
 never printed). Device tokens and cookies get `401` here, and a service
 token gets `401` on every other route. Without `SECRETARY_SERVICE_TOKEN_FILE`
 the route answers `503 service_token_not_configured`. `workouts` is 1–20
-(default 5).
+(default 5; values outside are clamped); `timezone` defaults to `UTC`.
+
+Real response (two workouts today, the second a bench PR; the body data
+from the example above; `weekly_volume` trimmed to the last two of its 8
+weeks):
 
 ```json
 {
-  "generated_ms": 1792600000000,
+  "generated_ms": 1792602906912,
   "timezone": "Europe/Rome",
   "gym": {
     "unit": "kg", "weekly_goal": 3, "workouts_this_week": 2,
     "recent_workouts": [
-      { "id": "…", "title": "Push", "finished_ms": …, "date": "2026-10-20", "duration_min": 58,
-        "completed_sets": 15, "volume_grams": 8240000, "volume_label": "8240 kg",
-        "exercises": ["Bench Press", "Overhead Press"],
-        "prs": [ { "exercise_id": "bench-press", "name": "Bench Press", "weight_grams": 82500, "reps": 5, "label": "82.5 kg × 5" } ] }
+      { "id": "04e54b17-2a5b-45c6-ab75-e03bce9aee0e", "title": "Push", "finished_ms": 1792602906695,
+        "date": "2026-10-21", "duration_min": 0, "completed_sets": 1,
+        "volume_grams": 412500, "volume_label": "412.5 kg", "exercises": ["Bench Press"],
+        "prs": [ { "exercise_id": "bench-press", "name": "Bench Press", "weight_grams": 82500, "reps": 5, "label": "82.5 kg × 5" } ] },
+      { "id": "e0926a06-33c1-44cc-9bda-6f82ed157b2e", "title": "Push", "finished_ms": 1792602906471,
+        "date": "2026-10-21", "duration_min": 0, "completed_sets": 1,
+        "volume_grams": 400000, "volume_label": "400 kg", "exercises": ["Bench Press"], "prs": [] }
     ],
-    "weekly_volume": [ { "week_start": "2026-10-19", "workouts": 2, "volume_grams": 15100000, "volume_label": "15100 kg" } ]
+    "weekly_volume": [
+      { "week_start": "2026-10-12", "workouts": 0, "volume_grams": 0, "volume_label": "0 kg" },
+      { "week_start": "2026-10-19", "workouts": 2, "volume_grams": 812500, "volume_label": "812.5 kg" }
+    ]
   },
-  "body": { "unit": "kg", "stats": { …the body stats… }, "stat_labels": { … } }
+  "body": {
+    "unit": "kg",
+    "stats": { "count": 5, "current_grams": 80500, "current_measured_ms": 1792602906883, "avg7_grams": 80625,
+               "weekly_change_grams": -575, "min_grams": 80400, "max_grams": 81200, "trend30_grams": -575,
+               "trend90_grams": -575, "goal_grams": 78000, "goal_distance_grams": 2625, "goal_reached": false },
+    "stat_labels": { "avg7": "80.6 kg", "current": "80.5 kg", "goal": "78.0 kg", "goal_distance": "+2.6 kg",
+                     "max": "81.2 kg", "min": "80.4 kg", "trend30": "-0.6 kg", "trend90": "-0.6 kg", "weekly_change": "-0.6 kg" }
+  }
 }
 ```
+
+Errors: `401 unauthorized` (no or wrong service token, device token,
+cookie), `400 bad_request` (unknown `timezone`), `503
+service_token_not_configured`, `429 rate_limited` (shared bucket for the
+service token).
 
 - `recent_workouts`: newest first. A PR is a completed non-warmup set of a
   weight × reps exercise heavier than every such set of that exercise in all
@@ -656,10 +752,16 @@ origin, cookie sent automatically). The iOS app sends its Bearer token.
 | `lang` | Optional, `it` or `en` (`it-IT` style accepted): `it` → `if_sara`, `en` → `af_heart`. |
 | `speed` | Optional, 0.5–2.0, default 1.0. |
 
-Without `voice` and `lang`, the server guesses: Italian (`if_sara`) when
-the text has at least two Italian stopwords (`che, non, per, sono, ciao, il,
-la, è, un, una, di, ti, mi, come, oggi`), or one in a text of at most three
-words; otherwise English (`af_heart`).
+Without `voice` and `lang`, the server scores the text: Italian stopwords
+(`che, non, per, sono, ciao, il, la, è, un, una, di, ti, mi, come, oggi, …`)
+plus accented letters against English stopwords (`the, and, you, is, …`). A
+tie or no signal is Italian (`if_sara`); English wins only with a higher
+score (`af_heart`). The chosen voice is always sent to Kokoro.
+
+Texts over 300 characters are split on sentence boundaries (then commas,
+then spaces) and synthesized chunk by chunk into the same MP3 stream, so
+audio starts after the first sentence. The status comes from the first
+chunk; if a later chunk fails, the stream ends early.
 
 `200`: the MP3 bytes, `Content-Type: audio/mpeg`, streamed as Kokoro
 produces them, plus `X-TTS-Voice: <voice used>`. The server proxies to

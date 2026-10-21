@@ -2,9 +2,14 @@
 //! Kokoro's OpenAI-compatible API (`{SECRETARY_TTS_URL}/v1/audio/speech`)
 //! and streamed back without buffering.
 //!
-//! Voice: an explicit `voice` (from the `SECRETARY_TTS_VOICES` whitelist)
-//! wins; else `lang` (`it` → `if_sara`, `en` → `af_heart`); else a small
-//! Italian stopword heuristic picks between the two.
+//! - Voice: an explicit `voice` (from the `SECRETARY_TTS_VOICES` whitelist)
+//!   wins; else `lang` (`it` → `if_sara`, `en` → `af_heart`); else a language
+//!   score (Italian stopwords + accented letters vs English stopwords; a tie
+//!   or no signal is Italian, Lucina mostly speaks Italian). The voice is
+//!   always sent: Kokoro would otherwise pick its own default.
+//! - Texts over [`CHUNK_CHARS`] are split on sentence boundaries and
+//!   synthesized one chunk after the other into the same MP3 stream (MP3
+//!   frames concatenate), so playback starts after the first sentence.
 
 use std::time::Duration;
 
@@ -14,6 +19,7 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Extension, Router};
+use futures_util::stream::{self, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -26,27 +32,41 @@ pub const DEFAULT_VOICES: &str = "if_sara,af_heart,af_bella,bf_emma";
 pub const ITALIAN_VOICE: &str = "if_sara";
 pub const ENGLISH_VOICE: &str = "af_heart";
 pub const MAX_CHARS: usize = 1200;
+/// Longer texts are synthesized sentence by sentence in chunks of at most this.
+pub const CHUNK_CHARS: usize = 300;
 pub const PER_MINUTE: u32 = 30;
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
 const ITALIAN_STOPWORDS: &[&str] = &[
     "che", "non", "per", "sono", "ciao", "il", "la", "è", "un", "una", "di", "ti", "mi", "come",
-    "oggi",
+    "oggi", "e", "del", "della", "con", "sei", "ho", "hai", "grazie", "anche", "questo", "lo",
+    "gli", "le", "ma", "se", "cosa", "allora", "bene",
+];
+const ENGLISH_STOPWORDS: &[&str] = &[
+    "the", "and", "you", "is", "are", "to", "of", "what", "how", "this", "that", "with", "have",
+    "i", "my", "your", "be", "it's", "i'm", "today", "hello", "hi", "good", "morning", "thanks",
+    "it", "in", "on", "for", "do", "was", "will", "not", "can",
 ];
 
-/// Does `text` look Italian? At least two stopword hits, or one in a text
-/// of at most three words.
+/// Italian unless English clearly scores higher. Score: Italian stopwords +
+/// accented letters vs English stopwords; a tie or no signal is Italian.
 pub fn looks_italian(text: &str) -> bool {
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower
-        .split(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
         .filter(|w| !w.is_empty())
         .collect();
-    let hits = words
+    let accents = lower.chars().filter(|c| "àèéìíòóùú".contains(*c)).count();
+    let it = words
         .iter()
         .filter(|w| ITALIAN_STOPWORDS.contains(w))
+        .count()
+        + accents;
+    let en = words
+        .iter()
+        .filter(|w| ENGLISH_STOPWORDS.contains(w))
         .count();
-    hits >= 2 || (hits == 1 && words.len() <= 3)
+    it >= en
 }
 
 /// The voice for a request, or a `bad_request` message.
@@ -70,6 +90,58 @@ pub fn pick_voice(
         None if looks_italian(text) => Ok(ITALIAN_VOICE.into()),
         None => Ok(ENGLISH_VOICE.into()),
     }
+}
+
+/// Split `text` into chunks of at most `max` characters, preferring sentence
+/// ends (`.`, `!`, `?`, `…`, newline), then commas/semicolons, then spaces.
+pub fn chunks(text: &str, max: usize) -> Vec<String> {
+    fn pieces(text: &str, ends: &[char]) -> Vec<String> {
+        let mut out = vec![];
+        let mut cur = String::new();
+        for c in text.chars() {
+            cur.push(c);
+            if ends.contains(&c) {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+    fn split(text: &str, max: usize, levels: &[&[char]]) -> Vec<String> {
+        if text.chars().count() <= max {
+            return vec![text.to_owned()];
+        }
+        let Some((ends, rest)) = levels.split_first() else {
+            // no boundary at all: hard cut
+            let chars: Vec<char> = text.chars().collect();
+            return chars.chunks(max).map(|c| c.iter().collect()).collect();
+        };
+        let mut out: Vec<String> = vec![];
+        let mut cur = String::new();
+        for piece in pieces(text, ends) {
+            for part in split(&piece, max, rest) {
+                if cur.chars().count() + part.chars().count() > max && !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                cur.push_str(&part);
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+    split(
+        text,
+        max,
+        &[&['.', '!', '?', '…', '\n'], &[',', ';', ':'], &[' ']],
+    )
+    .into_iter()
+    .map(|c| c.trim().to_owned())
+    .filter(|c| !c.is_empty())
+    .collect()
 }
 
 #[derive(Deserialize)]
@@ -110,6 +182,28 @@ impl Tts {
     }
 }
 
+#[derive(Clone)]
+struct Upstream {
+    client: reqwest::Client,
+    url: String,
+    voice: String,
+    speed: f64,
+}
+
+impl Upstream {
+    async fn speech(self, input: String) -> reqwest::Result<reqwest::Response> {
+        self.client
+            .post(format!("{}/v1/audio/speech", self.url))
+            .json(
+                &json!({"model": "kokoro", "input": input, "voice": self.voice,
+                          "response_format": "mp3", "speed": self.speed}),
+            )
+            .send()
+            .await?
+            .error_for_status()
+    }
+}
+
 async fn speak(
     State(st): State<AppState>,
     Extension(ident): Extension<Identity>,
@@ -129,28 +223,35 @@ async fn speak(
     if let Err(wait) = tts.limiter.check(&ident.device_id) {
         return Err(ApiError::rate_limited(wait));
     }
-    let upstream = tts
-        .client
-        .post(format!("{}/v1/audio/speech", tts.url))
-        .json(&json!({"model": "kokoro", "input": text, "voice": voice,
-                      "response_format": "mp3", "speed": speed}))
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                unavailable(StatusCode::GATEWAY_TIMEOUT, "the speech service timed out")
-            } else {
-                unavailable(StatusCode::BAD_GATEWAY, "the speech service is unreachable")
+    let upstream = Upstream {
+        client: tts.client.clone(),
+        url: tts.url.clone(),
+        voice: voice.clone(),
+        speed,
+    };
+    let mut parts = chunks(text, CHUNK_CHARS).into_iter();
+    let first_text = parts.next().unwrap_or_else(|| text.to_owned());
+    // The first chunk decides the status; later chunk failures end the stream.
+    let first = upstream.clone().speech(first_text).await.map_err(|e| {
+        if e.is_timeout() {
+            unavailable(StatusCode::GATEWAY_TIMEOUT, "the speech service timed out")
+        } else {
+            if let Some(status) = e.status() {
+                tracing::warn!(status = status.as_u16(), "tts upstream error");
             }
-        })?;
-    if !upstream.status().is_success() {
-        tracing::warn!(status = upstream.status().as_u16(), "tts upstream error");
-        return Err(unavailable(
-            StatusCode::BAD_GATEWAY,
-            "the speech service failed",
-        ));
-    }
-    let mut resp = Body::from_stream(upstream.bytes_stream()).into_response();
+            unavailable(StatusCode::BAD_GATEWAY, "the speech service failed")
+        }
+    })?;
+    let rest = stream::iter(parts.collect::<Vec<_>>())
+        .then(move |chunk| upstream.clone().speech(chunk))
+        .flat_map(|r| match r {
+            Ok(resp) => resp.bytes_stream().boxed(),
+            Err(e) => {
+                tracing::warn!(error = %e, "tts upstream failed mid-stream");
+                stream::once(async move { Err(e) }).boxed()
+            }
+        });
+    let mut resp = Body::from_stream(first.bytes_stream().chain(rest)).into_response();
     resp.headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/mpeg"));
     if let Ok(v) = HeaderValue::from_str(&voice) {
@@ -173,14 +274,16 @@ mod tests {
     }
 
     #[test]
-    fn italian_heuristic() {
+    fn language_score_ties_go_to_italian() {
         assert!(looks_italian("Ciao Giuseppe, come stai oggi?"));
         assert!(looks_italian("Non è vero"));
-        assert!(looks_italian("Ciao!"));
+        assert!(looks_italian("Perché?"));
         assert!(looks_italian("Ho comprato il latte e la frutta"));
+        assert!(looks_italian("Giuseppe"));
+        assert!(looks_italian(""));
         assert!(!looks_italian("Hello, how are you today?"));
         assert!(!looks_italian("Come here and see the new workout plan"));
-        assert!(!looks_italian(""));
+        assert!(!looks_italian("I'm fine, thanks"));
     }
 
     #[test]
@@ -208,5 +311,25 @@ mod tests {
             pick_voice(&v, None, None, "Good morning").unwrap(),
             "af_heart"
         );
+        assert_eq!(pick_voice(&v, None, None, "Va bene").unwrap(), "if_sara");
+    }
+
+    #[test]
+    fn long_texts_split_on_sentences() {
+        assert_eq!(chunks("Ciao. Come stai?", 300), vec!["Ciao. Come stai?"]);
+        let s = "Questa è una frase di prova abbastanza lunga. ".repeat(12);
+        let parts = chunks(&s, 300);
+        assert!(parts.len() >= 2);
+        assert!(parts
+            .iter()
+            .all(|p| p.chars().count() <= 300 && p.ends_with('.')));
+        assert_eq!(parts.join(" "), s.trim());
+        // a single very long sentence falls back to commas, then spaces
+        let long = format!("{}.", "parola ".repeat(100).trim());
+        let parts = chunks(&long, 300);
+        assert!(parts.len() >= 3 && parts.iter().all(|p| p.chars().count() <= 300));
+        assert_eq!(parts.join(" "), long);
+        let blob = "x".repeat(700);
+        assert_eq!(chunks(&blob, 300).concat(), blob);
     }
 }
