@@ -16,3 +16,6 @@ formal/quint/*.itf.json
 # local config / secrets
 *.env
 !deploy/*.env.example
+
+# iOS build output
+ios/Frameworks/
