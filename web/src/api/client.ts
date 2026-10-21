@@ -127,18 +127,24 @@ export async function request<T>(method: Method, path: string, opts: RequestOpti
 
   let code = `http_${res.status}`;
   let message = statusMessage(res.status);
-  if (data && typeof data === "object" && "error" in data) {
-    const env = (data as { error?: unknown }).error;
+  if (data && typeof data === "object") {
+    const body = data as { error?: unknown; code?: unknown };
+    const env = body.error;
     if (env && typeof env === "object") {
       const c = (env as { code?: unknown }).code;
       const m = (env as { message?: unknown }).message;
       if (typeof c === "string" && c) code = c;
       if (typeof m === "string" && m) message = m;
+    } else if (typeof env === "string" && env) {
+      // Engine-shaped body: {ok:false, code:"…", error:"…"}.
+      message = env;
     }
+    if (typeof body.code === "string" && body.code) code = body.code;
   }
   const err = new ApiError(res.status, code, message, parseRetryAfter(res.headers.get("Retry-After")));
 
-  if (res.status === 401 && path !== "/v1/session") onUnauthorized?.();
+  // /v1/session* answers 401 for wrong credentials; that is not a lost session.
+  if (res.status === 401 && !path.startsWith("/v1/session")) onUnauthorized?.();
   if (err.lucinaOffline) onLucinaOffline?.(err);
   throw err;
 }

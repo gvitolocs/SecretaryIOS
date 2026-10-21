@@ -1,54 +1,84 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { session, setSessionForTests } from "../state/session";
 import { stubFetch } from "../test/fetch";
 import Login from "./Login";
 
-function submitKey(value: string) {
-  const input = screen.getByLabelText("Access key") as HTMLInputElement;
-  fireEvent.input(input, { target: { value } });
+function fill(email: string, password: string) {
+  fireEvent.input(screen.getByLabelText("Email"), { target: { value: email } });
+  fireEvent.input(screen.getByLabelText("Password"), { target: { value: password } });
   fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 }
 
 describe("Login", () => {
   beforeEach(() => setSessionForTests({ status: "anon" }));
+  afterEach(() => vi.useRealTimers());
 
-  it("renders a password field with autocomplete off", () => {
+  it("uses password-manager friendly fields and a show-password toggle", () => {
     render(() => <Login />);
-    const input = screen.getByLabelText("Access key");
-    expect(input).toHaveAttribute("type", "password");
-    expect(input).toHaveAttribute("autocomplete", "off");
+    const email = screen.getByLabelText("Email");
+    const password = screen.getByLabelText("Password");
+    expect(email).toHaveAttribute("type", "email");
+    expect(email).toHaveAttribute("autocomplete", "username");
+    expect(password).toHaveAttribute("type", "password");
+    expect(password).toHaveAttribute("autocomplete", "current-password");
+    expect(screen.queryByLabelText(/access key/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show" }));
+    expect(password).toHaveAttribute("type", "text");
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(password).toHaveAttribute("type", "password");
   });
 
-  it("explains a rejected key (401)", async () => {
-    stubFetch(() => ({ status: 401, body: { error: { code: "invalid_token", message: "Invalid" } } }));
+  it("signs in with email and password and re-reads the session", async () => {
+    const calls = stubFetch((c) =>
+      c.method === "POST" ? { body: { authenticated: true } } : { body: { authenticated: true, deviceName: "Browser" } },
+    );
     render(() => <Login />);
-    submitKey("nope");
-    expect(await screen.findByRole("alert")).toHaveTextContent("That access key wasn't accepted");
+    fill("owner@example.test", "dev-password-123");
+    await waitFor(() => expect(session()).toEqual({ status: "authed", deviceName: "Browser" }));
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["POST /v1/session", "GET /v1/session"]);
+    expect(calls[0]!.body).toEqual({ email: "owner@example.test", password: "dev-password-123" });
+  });
+
+  it("shows one generic message for wrong credentials (401)", async () => {
+    stubFetch(() => ({ status: 401, body: { error: { code: "invalid_credentials", message: "no such user" } } }));
+    render(() => <Login />);
+    fill("owner@example.test", "wrong-password");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Email or password is incorrect");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("no such user");
     expect(session().status).toBe("anon");
   });
 
-  it("explains rate limiting (429) with the wait time", async () => {
+  it("counts down an account lock and re-enables sign-in", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const calls = stubFetch(() => ({
+      status: 429,
+      body: { error: { code: "account_locked", message: "Locked" } },
+      headers: { "Retry-After": "3" },
+    }));
+    render(() => <Login />);
+    fill("owner@example.test", "wrong-password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Sign-in is locked after too many attempts. Try again in 0:03.");
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeDisabled();
+
+    vi.advanceTimersByTime(1_000);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Try again in 0:02."));
+    vi.advanceTimersByTime(2_000);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("says rate limited for rate_limited", async () => {
     stubFetch(() => ({
       status: 429,
       body: { error: { code: "rate_limited", message: "Too many" } },
-      headers: { "Retry-After": "30" },
+      headers: { "Retry-After": "75" },
     }));
     render(() => <Login />);
-    submitKey("again");
-    expect(await screen.findByRole("alert")).toHaveTextContent("Too many attempts. Please wait 30 seconds");
-  });
-
-  it("signs in and re-reads the session", async () => {
-    const calls = stubFetch((c) =>
-      c.method === "POST" ? { body: { authenticated: true } } : { body: { authenticated: true, deviceName: "iPhone" } },
-    );
-    render(() => <Login />);
-    submitKey("dev");
-    await screen.findByRole("button", { name: "Sign in" });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual(["POST /v1/session", "GET /v1/session"]);
-    expect(calls[0]!.body).toEqual({ token: "dev" });
-    expect(session()).toEqual({ status: "authed", deviceName: "iPhone" });
+    fill("owner@example.test", "x");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Too many attempts. Try again in 1:15.");
   });
 });

@@ -18,6 +18,32 @@ export function ListIcon() {
   );
 }
 
+export function DumbbellIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 10v4M6 8v8M18 8v8M20.5 10v4M6 12h12" />
+    </svg>
+  );
+}
+
+export function ScaleIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 20h16M6.5 20V9.5a5.5 5.5 0 0 1 11 0V20" />
+      <path d="M12 9.5v4M12 9.5l-2 2" />
+    </svg>
+  );
+}
+
+export function UserIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="8.5" r="3.5" />
+      <path d="M5 19.5c1.2-3.2 3.8-4.8 7-4.8s5.8 1.6 7 4.8" />
+    </svg>
+  );
+}
+
 export function LogoutIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">

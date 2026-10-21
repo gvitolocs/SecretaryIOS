@@ -42,7 +42,9 @@ export const CHAT_MAX_CHARS = 4000;
 
 export const api = {
   getSession: () => request<SessionInfo>("GET", "/v1/session"),
-  login: (token: string) => request<unknown>("POST", "/v1/session", { body: { token } }),
+  login: (email: string, password: string) => request<unknown>("POST", "/v1/session", { body: { email, password } }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<unknown>("POST", "/v1/session/password", { body: { currentPassword, newPassword } }),
   logout: () => request<unknown>("DELETE", "/v1/session"),
 
   getHealth: () => request<HealthInfo>("GET", "/v1/health", { timeoutMs: 10_000 }),

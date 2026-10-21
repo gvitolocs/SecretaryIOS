@@ -25,6 +25,19 @@ describe("request", () => {
     expect(err).toMatchObject({ status: 429, code: "rate_limited", message: "Slow down", retryAfterSeconds: 12 });
   });
 
+  it("parses an engine-shaped error body", async () => {
+    stubFetch(() => ({
+      status: 422,
+      body: { ok: false, code: "invalid_command", error: "Finish or discard your current workout first." },
+    }));
+    const err = (await request("POST", "/v1/gym/command", { body: {} }).catch((e: unknown) => e)) as ApiError;
+    expect(err).toMatchObject({
+      status: 422,
+      code: "invalid_command",
+      message: "Finish or discard your current workout first.",
+    });
+  });
+
   it("flags Lucina outages", async () => {
     stubFetch(() => ({ status: 502, body: { error: { code: "lucina_unreachable", message: "down" } } }));
     const err = (await request("POST", "/v1/chat", { body: {} }).catch((e: unknown) => e)) as ApiError;
