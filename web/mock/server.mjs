@@ -40,15 +40,25 @@
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
 //                            The model is private: never copy it into the repo.
 //   POST /v1/tts {text, lang} -> a short silent audio/mpeg clip
+// Wardrobe (docs/server-api.md, "Avatar wardrobe"): outfits, hairstyles, hair colours.
+//   GET/PUT /v1/avatar, GET /v1/avatar/wardrobe. The wardrobe is MOCK_WARDROBE_DIR/wardrobe.json
+//   (default ~/scratch/lucina-wardrobe) or the placeholder mock/wardrobe.json; outfit models
+//   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
+//   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
+//   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
+//   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
 
 import http from "node:http";
+import { addNotification, handleNotifications } from "./notifications.mjs";
 import { randomUUID } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8791);
 const HOST = process.env.MOCK_HOST ?? "127.0.0.1";
@@ -1350,6 +1360,10 @@ function addItem(fields, ts = Date.now()) {
   const item = { id: String(++timelineSeq), ts: new Date(ts).toISOString(), ...fields };
   timeline.push(item);
   for (const client of streamClients) sseWrite(client, item);
+  // Live Lucina items also land in the notification inbox (not the seeded history).
+  if (item.role === "lucina" && ts >= Date.now() - 60_000) {
+    addNotification({ category: item.meta?.kind === "reminder" ? "reminder" : "lucina_message", body: String(item.text).slice(0, 240), channel: item.channel, timelineId: item.id });
+  }
   return item;
 }
 
@@ -1454,18 +1468,125 @@ const ASSET_TYPES = {
   ".ktx2": "image/ktx2",
 };
 
-function handleAsset(res, rel) {
-  const file = resolve(ASSETS_DIR, `.${sep}${rel}`);
-  const type = ASSET_TYPES[extname(file).toLowerCase()];
-  let st = null;
+// The wardrobe (outfit GLBs, thumbnails, wardrobe.json) is looked up here first, then in
+// ASSETS_DIR. Without a wardrobe.json there, mock/wardrobe.json is the placeholder, and a
+// missing outfit model (`lucina-<outfit>.glb`) is served as lucina.glb so swaps still run.
+const WARDROBE_DIR = resolve(process.env.MOCK_WARDROBE_DIR ?? join(homedir(), "scratch/lucina-wardrobe"));
+const WARDROBE_PLACEHOLDER = fileURLToPath(new URL("./wardrobe.json", import.meta.url));
+
+function statFile(file) {
   try {
-    st = statSync(file);
+    const st = statSync(file);
+    return st.isFile() ? st : null;
   } catch {
-    st = null;
+    return null;
   }
-  if (!type || !file.startsWith(ASSETS_DIR + sep) || !st?.isFile()) return fail(res, 404, "not_found", "No such asset.");
-  res.writeHead(200, { "Content-Type": type, "Content-Length": String(st.size), "Cache-Control": "private, no-store" });
-  createReadStream(file).pipe(res);
+}
+
+function findAsset(rel) {
+  for (const dir of [WARDROBE_DIR, ASSETS_DIR]) {
+    const file = resolve(dir, `.${sep}${rel}`);
+    if (!file.startsWith(dir + sep)) return null;
+    const st = statFile(file);
+    if (st) return { file, st };
+  }
+  if (/^lucina-[a-z0-9_-]+\.glb$/.test(rel)) return findAsset("lucina.glb");
+  return null;
+}
+
+function handleAsset(res, rel) {
+  const type = ASSET_TYPES[extname(rel).toLowerCase()];
+  const found = type ? findAsset(rel) : null;
+  if (!found) return fail(res, 404, "not_found", "No such asset.");
+  res.writeHead(200, { "Content-Type": type, "Content-Length": String(found.st.size), "Cache-Control": "private, no-store" });
+  createReadStream(found.file).pipe(res);
+}
+
+// ---------- Avatar wardrobe (GET/PUT /v1/avatar, GET /v1/avatar/wardrobe) ----------
+
+const OUTFIT_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+const SECTION_KEYS = ["gym", "shopping", "default"];
+const DEFAULT_RULES = {
+  gym: { outfit: "gym", hair: "ponytail" },
+  shopping: { outfit: "chef", hair: "natural" },
+  default: { outfit: "uniform", hair: "natural" },
+};
+let avatar = { outfit: null, hair: null, hairColor: null, auto: true, rules: DEFAULT_RULES, updatedMs: 0, updatedBy: "" };
+
+/** `{outfits, hairstyles, colors}` (a bare array is the outfits), from the wardrobe dir or the placeholder. */
+function wardrobeFile() {
+  const real = join(WARDROBE_DIR, "wardrobe.json");
+  for (const file of [real, WARDROBE_PLACEHOLDER]) {
+    try {
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      const o = Array.isArray(raw) ? { outfits: raw } : raw;
+      const list = (v, glb) => (Array.isArray(v) ? v.filter((e) => e && OUTFIT_ID.test(e.id) && (!glb || e.id === "natural" || typeof e.glb === "string")) : []);
+      return {
+        outfits: list(o.outfits, true),
+        hairstyles: list(o.hairstyles, true),
+        colors: list(o.colors).filter((c) => /^#[0-9a-f]{6}$/i.test(c.hex ?? "")),
+      };
+    } catch {
+      // next
+    }
+  }
+  return { outfits: [], hairstyles: [], colors: [] };
+}
+
+const bad = (message) => ({ status: 400, code: "bad_request", message });
+
+/** PUT /v1/avatar: merge a patch like the real server (400 shape errors, 422 unknown_*). */
+function patchAvatar(body, by) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return bad("expected an object");
+  for (const k of Object.keys(body)) if (!["outfit", "hair", "hairColor", "auto", "rules"].includes(k)) return bad(`unknown field ${k}`);
+  const rules = body.rules ?? {};
+  if (typeof rules !== "object" || Array.isArray(rules)) return bad("rules: expected an object");
+  if (body.auto !== undefined && typeof body.auto !== "boolean") return bad("auto: expected a boolean");
+  const nextRules = { ...avatar.rules };
+  for (const [k, v] of Object.entries(rules)) {
+    if (!SECTION_KEYS.includes(k)) return bad(`rules: unknown field ${k}`);
+    const p = typeof v === "string" ? { outfit: v } : v;
+    if (!p || typeof p !== "object" || Object.keys(p).some((f) => f !== "outfit" && f !== "hair")) return bad(`rules.${k}: expected {outfit?, hair?}`);
+    nextRules[k] = { ...nextRules[k], ...p };
+  }
+  const next = { ...avatar, rules: nextRules };
+  for (const f of ["outfit", "hair", "hairColor"]) if (f in body) next[f] = body[f];
+  if (body.auto !== undefined) next.auto = body.auto;
+  const outfits = [next.outfit, ...SECTION_KEYS.map((k) => next.rules[k].outfit)].filter((v) => v !== null);
+  const hairs = [next.hair, ...SECTION_KEYS.map((k) => next.rules[k].hair)].filter((v) => v !== null);
+  const colors = [next.hairColor].filter((v) => v !== null);
+  if ([...outfits, ...hairs, ...colors].some((v) => typeof v !== "string" || !OUTFIT_ID.test(v))) return bad("ids must match [a-z0-9][a-z0-9_-]*");
+  const w = wardrobeFile();
+  const check = (ids, list, code, what, extra = []) => {
+    const known = [...extra, ...list.map((e) => e.id)];
+    const miss = list.length ? ids.find((v) => !known.includes(v)) : undefined;
+    return miss ? { status: 422, code, message: `no ${what} "${miss}" in the wardrobe; known: ${known.join(", ")}` } : null;
+  };
+  const err =
+    check(outfits, w.outfits, "unknown_outfit", "outfit") ??
+    check(hairs, w.hairstyles, "unknown_hairstyle", "hairstyle", ["natural"]) ??
+    check(colors, w.colors, "unknown_hair_color", "hair colour");
+  if (err) return err;
+  avatar = { ...next, updatedMs: Date.now(), updatedBy: by };
+  return null;
+}
+
+/**
+ * "mettiti il vestito da cameriera", "put on your gym clothes", "fatti la coda", "put your hair in
+ * a bun", "torna automatica": Lucina changes her look. Returns a patch, null (back to automatic)
+ * or undefined (not a request).
+ */
+function lookIntent(text) {
+  const m = text.toLowerCase();
+  if (/\b(torna|go back|switch back|skift).*\b(automatic|automatico|automatica|automatisk)\b/.test(m)) return null;
+  const hairWords = { ponytail: /\bcoda\b|ponytail|hestehale/, bun: /chignon|\bbun\b|knold/, natural: /capelli sciolti|hair down|løst hår/ };
+  if (/\b(fatti|raccogli|pettina|put your hair|wear your hair|do your hair|sæt dit hår|sæt håret)\b/.test(m)) {
+    for (const [id, re] of Object.entries(hairWords)) if (re.test(m)) return { hair: id };
+  }
+  if (!/\b(mettiti|indossa|cambia(ti)? (vestito|abito)|put on|change into|tag .* på|skift til)\b/.test(m)) return undefined;
+  const words = { gym: /palestra|gym|tuta|træning|sport/, chef: /chef|cuoc|kok/, maid: /cameriera|maid|stuepige/, casual: /casual|hverdag/, uniform: /divisa|uniform/ };
+  for (const [id, re] of Object.entries(words)) if (re.test(m)) return { outfit: id };
+  return undefined;
 }
 
 /** ~0.5 s of silence: MPEG-1 Layer III frames (32 kbps, 44.1 kHz, mono) with empty side info. */
@@ -1524,8 +1645,14 @@ async function handleChat(req, res) {
   if (/\bfail\b/.test(m)) return fail(res, 500, "internal", "Something broke (mock).");
 
   let reply;
+  let meta;
   const ids = { sessionId: `secretary_${sessionId}`, clientMessageId };
-  if (/(job|order|book|image)/.test(m)) {
+  const look = lookIntent(message);
+  if (look !== undefined) {
+    patchAvatar(look === null ? { outfit: null, hair: null, auto: true } : look, "lucina");
+    meta = { kind: "avatar_outfit", ...(look ?? {}) };
+    reply = { reply: look === null ? "Va bene, torno a cambiarmi da sola." : "Un attimo… eccomi!", action: "avatar_outfit", job: null, ...ids };
+  } else if (/(job|order|book|image)/.test(m)) {
     const id = randomUUID();
     const action = m.includes("image") ? "generate_image" : m.includes("order") ? "spreadsheet_update_task" : "cursor_task";
     jobs.set(id, {
@@ -1555,6 +1682,7 @@ async function handleChat(req, res) {
     text: reply.reply,
     replyTo: userItemId,
     ...(clientMessageId ? { clientMessageId } : {}),
+    ...(meta ? { meta } : {}),
   });
   reply = { ...reply, userItemId, lucinaItemId: lucinaItem.id };
   if (reply.reminder) {
@@ -1718,6 +1846,9 @@ async function route(req, res) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
@@ -1744,6 +1875,14 @@ async function route(req, res) {
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
+  if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeFile());
+  if (path === "/v1/avatar" && method === "GET") return send(res, 200, avatar);
+  if (path === "/v1/avatar" && method === "PUT") {
+    const body = await readJson(req);
+    const client = req.headers["x-secretary-client"];
+    const err = patchAvatar(body, client === "web" || client === "ios" ? client : "device");
+    return err ? fail(res, err.status, err.code, err.message) : send(res, 200, avatar);
+  }
   const assetMatch = path.match(/^\/v1\/assets\/(.+)$/);
   if (assetMatch && method === "GET") {
     let rel;

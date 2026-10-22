@@ -1,6 +1,9 @@
 import { createEffect, createSignal, on, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
+import { openWardrobe } from "../state/wardrobe";
+import { HangerIcon } from "./Icons";
+import { NotificationSettings } from "./NotificationSettings";
 import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
 import {
   QUALITIES,
@@ -28,7 +31,7 @@ const QUALITY_LABELS: Record<StageQualitySetting, MessageKey> = {
 export const MIN_PASSWORD_LENGTH = 8;
 
 /** Account panel opened from the header: language, and the single user's password. */
-export function AccountDialog(props: { open: boolean; onClose: () => void }) {
+export function AccountDialog(props: { open: boolean; onClose: () => void; section?: "notifications" | null }) {
   const [current, setCurrent] = createSignal("");
   const [next, setNext] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
@@ -48,7 +51,15 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
         setConfirm("");
         setError(null);
         setDone(false);
-        queueMicrotask(() => firstInput?.focus());
+        queueMicrotask(() => {
+          if (props.section === "notifications") {
+            const el = document.getElementById("notif-settings-title");
+            el?.scrollIntoView?.({ block: "start" });
+            (el?.parentElement?.querySelector("button, input") as HTMLElement | null)?.focus();
+          } else {
+            firstInput?.focus();
+          }
+        });
       },
     ),
   );
@@ -166,7 +177,27 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
             <p id="appearance-quality-hint" class="muted small">
               {t("shell.stageQualityHint")}
             </p>
+            <button
+              type="button"
+              class="settings-link"
+              onClick={() => {
+                props.onClose();
+                openWardrobe();
+              }}
+            >
+              <span class="settings-link-icon" aria-hidden="true">
+                <HangerIcon />
+              </span>
+              <span class="settings-link-text">
+                <span class="settings-link-title">{t("wardrobe.open")}</span>
+                <span class="muted small">{t("wardrobe.openHint")}</span>
+              </span>
+              <span class="settings-link-chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
           </div>
+          <NotificationSettings />
           <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>
             <h3 class="field-label">{t("shell.changePassword")}</h3>
             <label class="field-label" for="pw-current">

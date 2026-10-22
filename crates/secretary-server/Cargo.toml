@@ -16,10 +16,12 @@ path = "src/main.rs"
 secretary-core = { path = "../secretary-core" }
 secretary-gym = { path = "../secretary-gym" }
 secretary-body = { path = "../secretary-body" }
+secretary-calendar = { path = "../secretary-calendar" }
+ring = "0.17"
 chrono-tz = { workspace = true }
 axum = "0.8"
 tokio = { workspace = true }
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["stream", "http2"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
@@ -36,6 +38,10 @@ futures-util = "0.3"
 base64 = "0.22"
 getrandom = "0.3"
 anyhow = "1"
+web-push-native = { version = "=0.5.0", default-features = false }
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+url = "2"

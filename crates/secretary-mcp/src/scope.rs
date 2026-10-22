@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 
 /// What a token may do.
 ///
-/// - `read`: timeline, shopping list, reminders, gym/body summaries, status,
-///   resources and prompts.
+/// - `read`: timeline, shopping list, reminders, gym/body summaries, notes,
+///   status, resources and prompts.
 /// - `chat`: `ask_lucina` (a full Lucina turn; Lucina may act on it through
 ///   her own confirmation flow).
-/// - `write`: add to / tick off the shopping list, create / cancel reminders.
+/// - `write`: add to / tick off the shopping list, create / cancel reminders,
+///   save and append to notes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
@@ -41,9 +42,11 @@ impl Scope {
 
     pub fn describe(self) -> &'static str {
         match self {
-            Scope::Read => "Read your timeline, shopping list, reminders and gym/body summaries",
+            Scope::Read => {
+                "Read your timeline, shopping list, reminders, calendar, notes and gym/body summaries"
+            }
             Scope::Chat => "Talk to Lucina (she may act through her own confirmation flow)",
-            Scope::Write => "Add to / tick off the shopping list, create and cancel reminders",
+            Scope::Write => "Add to / tick off the shopping list, create and cancel reminders, propose calendar events (you confirm them in the app), save notes",
         }
     }
 }

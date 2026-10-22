@@ -1,4 +1,4 @@
-import type { Framing, LucinaStage, Voice } from "@secretary/lucina-stage";
+import type { Framing, Voice, WardrobeStage } from "@secretary/lucina-stage";
 import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { speechLang, t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
@@ -6,7 +6,20 @@ import { loadStage, type StageModule } from "../lib/stageLoader";
 import { effectiveTheme, stageQuality } from "../state/appearance";
 import { onLucinaReply } from "../state/chat";
 import { lucinaActivity, setLucinaActivity, type LucinaActivity } from "../state/stage";
-import { CloseIcon, CollapseIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { ASSET_BASE } from "../lib/wardrobe";
+import {
+  avatarReady,
+  currentHair,
+  currentHairColor,
+  currentOutfit,
+  openWardrobe,
+  outfitChanging,
+  setOutfitChanging,
+  wardrobeColors,
+  wardrobeHairstyles,
+  wardrobeOutfits,
+} from "../state/wardrobe";
+import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
 export const MUTE_KEY = "lucina-stage:muted";
@@ -63,7 +76,7 @@ export function LucinaPanel(props: {
   const [hint, setHint] = createSignal(false);
   let canvas: HTMLCanvasElement | undefined;
   let mod: StageModule | null = null;
-  let stage: LucinaStage | null = null;
+  let stage: WardrobeStage | null = null;
   let voice: Voice | null = null;
   let listenCtrl: AbortController | null = null;
   let ttsCtrl: AbortController | null = null;
@@ -79,12 +92,21 @@ export function LucinaPanel(props: {
 
   onMount(async () => {
     try {
-      mod = await loadStage();
+      // Start in the right outfit when the wardrobe answers quickly (or is cached).
+      const [m] = await Promise.all([loadStage(), avatarReady(1500)]);
+      mod = m;
       if (disposed) return;
       voice = mod.createVoice({ ttsUrl: TTS_URL, fetchInit: AUTH, lang: speechLang() });
       if (!canvas) throw new Error("canvas missing");
-      const s = await mod.createLucinaStage(canvas, {
+      const s = await mod.createWardrobeStage(canvas, {
         modelUrl: MODEL_URL,
+        wardrobe: wardrobeOutfits(),
+        outfit: currentOutfit()?.id ?? null,
+        hairstyles: wardrobeHairstyles(),
+        hairColors: wardrobeColors(),
+        hair: currentHair(),
+        hairColor: currentHairColor(),
+        assetBase: ASSET_BASE,
         manifestUrl: MANIFEST_URL,
         clipsUrl: CLIPS_URL,
         clipsMetaUrl: CLIPS_META_URL,
@@ -102,12 +124,15 @@ export function LucinaPanel(props: {
       stage = s;
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));
+      s.onChanging(setOutfitChanging);
       s.onTap((e) => {
         s.react(e.point);
         void talk();
       });
       if (props.thinking) s.setState("thinking");
       if (import.meta.env.DEV) (window as unknown as { __lucina?: unknown }).__lucina = { stage: s, mod };
+      // The wardrobe may have answered while the stage was loading.
+      dress(s);
       setMode("ready");
     } catch {
       // No WebGL (or the stage failed to start): show her portrait instead.
@@ -125,7 +150,29 @@ export function LucinaPanel(props: {
     stage?.dispose();
     stage = null;
     setLucinaActivity("idle");
+    setOutfitChanging(false);
   });
+
+  /**
+   * Her look follows the wardrobe (section rules, pins, Lucina's own changes). A failed load
+   * keeps what she has on; the next change tries again.
+   */
+  function dress(s: WardrobeStage): void {
+    s.setWardrobe(wardrobeOutfits());
+    s.setHairstyles(wardrobeHairstyles(), wardrobeColors());
+    const warn = (what: string) => (e: unknown) => console.warn(`[wardrobe] ${what} not loaded:`, e);
+    const outfit = currentOutfit()?.id;
+    if (outfit && s.outfit !== outfit) s.setOutfit(outfit).catch(warn("outfit"));
+    if (s.hair !== currentHair()) s.setHair(currentHair()).catch(warn("hairstyle"));
+    if (s.hairColor !== currentHairColor()) s.setHairColor(currentHairColor()).catch(warn("hair colour"));
+  }
+
+  createEffect(
+    on(
+      () => [currentOutfit()?.id, currentHair(), currentHairColor(), wardrobeOutfits(), wardrobeHairstyles(), wardrobeColors()] as const,
+      () => stage && dress(stage),
+    ),
+  );
 
   createEffect(on(effectiveTheme, (theme) => stage?.setTheme(theme), { defer: true }));
   createEffect(on(stageQuality, (q) => stage?.setQuality(q), { defer: true }));
@@ -252,7 +299,7 @@ export function LucinaPanel(props: {
         <span class="stage-hud-dot" />
         <span class="stage-hud-name">{t("shell.lucina")}</span>
         <span class="stage-hud-sep" />
-        <span>{t(STATE_LABELS[activity()])}</span>
+        <span>{outfitChanging() ? t("wardrobe.changing") : t(STATE_LABELS[activity()])}</span>
       </div>
       <div class="stage-controls">
         <button
@@ -277,6 +324,16 @@ export function LucinaPanel(props: {
           <Show when={muted()} fallback={<VolumeIcon />}>
             <VolumeOffIcon />
           </Show>
+        </button>
+        <button
+          type="button"
+          class="icon-btn stage-btn stage-btn--wardrobe"
+          classList={{ "stage-btn--busy": outfitChanging() }}
+          onClick={openWardrobe}
+          aria-label={t("wardrobe.open")}
+          title={t("wardrobe.open")}
+        >
+          <HangerIcon />
         </button>
         <Show when={props.onMinimize}>
           {(minimize) => (

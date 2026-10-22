@@ -45,9 +45,40 @@ export class FakeStage {
   readonly setFraming = vi.fn();
   readonly unlockAudio = vi.fn(async () => {});
   readonly dispose = vi.fn();
+  // Wardrobe (createWardrobeStage).
+  outfit: string | null = null;
+  wardrobe: unknown[] = [];
+  private changingListeners: ((c: boolean) => void)[] = [];
+  readonly setWardrobe = vi.fn((list: unknown[]) => {
+    this.wardrobe = list;
+  });
+  readonly setOutfit = vi.fn(async (id: string) => {
+    for (const cb of this.changingListeners) cb(true);
+    this.outfit = id;
+    for (const cb of this.changingListeners) cb(false);
+  });
+  hair = "natural";
+  hairColor: string | null = null;
+  readonly setHairstyles = vi.fn();
+  readonly setHair = vi.fn(async (id: string | null) => {
+    this.hair = id ?? "natural";
+  });
+  readonly setHairColor = vi.fn(async (id: string | null) => {
+    this.hairColor = id;
+  });
+  readonly onChanging = vi.fn((cb: (c: boolean) => void) => {
+    this.changingListeners.push(cb);
+    return () => {};
+  });
 
-  constructor(readonly canvas: HTMLCanvasElement, readonly options: LucinaStageOptions) {
+  constructor(
+    readonly canvas: HTMLCanvasElement,
+    readonly options: LucinaStageOptions & { outfit?: string | null; hair?: string | null; hairColor?: string | null },
+  ) {
     this.muted = options.muted ?? false;
+    this.outfit = options.outfit ?? null;
+    this.hair = options.hair ?? "natural";
+    this.hairColor = options.hairColor ?? null;
   }
 
   /** Simulates a tap on Lucina. */
@@ -76,13 +107,16 @@ export function resetFakeStage(): void {
   loadStage.mockClear();
 }
 
+const createStage = async (canvas: HTMLCanvasElement, options: LucinaStageOptions = {}) => {
+  if (fake.failStage) throw new Error("WebGL is not available");
+  const s = new FakeStage(canvas, options);
+  fake.stages.push(s);
+  return s;
+};
+
 const module = {
-  createLucinaStage: async (canvas: HTMLCanvasElement, options: LucinaStageOptions = {}) => {
-    if (fake.failStage) throw new Error("WebGL is not available");
-    const s = new FakeStage(canvas, options);
-    fake.stages.push(s);
-    return s;
-  },
+  createLucinaStage: createStage,
+  createWardrobeStage: createStage,
   createVoice: (opts: unknown) => {
     fake.voiceOptions.push(opts);
     return {

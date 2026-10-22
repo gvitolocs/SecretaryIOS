@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 11] = [
+const ALL_TOOLS: [&str; 17] = [
     "ask_lucina",
     "lucina_timeline",
     "shopping_list",
@@ -14,8 +14,14 @@ const ALL_TOOLS: [&str; 11] = [
     "reminders_list",
     "reminder_create",
     "reminder_cancel",
+    "calendar_list",
+    "calendar_create",
     "gym_summary",
     "body_summary",
+    "note_save",
+    "note_append",
+    "note_get",
+    "notes_search",
     "lucina_status",
 ];
 
@@ -608,4 +614,273 @@ async fn origins() {
             .unwrap();
         assert_eq!(resp.status() == 200, ok, "{origin}: {}", resp.status());
     }
+}
+
+#[tokio::test]
+async fn calendar_tools_never_write_directly() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,write");
+    let (err, text) = h
+        .call(&t, "calendar_list", json!({"from": "2026-10-22"}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("- 2026-10-22 09:30–10:00 Dentist (Google) @ Via Roma 1 [id google:abc]"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- 2026-10-23 (all day) Birthday (Casa) [id iphone:EK1]"),
+        "{text}"
+    );
+    assert!(text.contains("needs reconnecting"), "{text}");
+    assert_eq!(
+        h.mock.requests("/v1/calendar/events")[0].query,
+        "from=2026-10-22&days=7"
+    );
+    let (err, _) = h.call(&t, "calendar_list", json!({"from": "x&y=1"})).await;
+    assert!(err);
+    let (err, text) = h
+        .call(
+            &t,
+            "calendar_create",
+            json!({"title": "Padel", "start": "2026-10-24T10:00:00+02:00", "location": "Club"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("needs owner confirmation in the app") && text.contains("prop_1"),
+        "{text}"
+    );
+    let p = &h.mock.requests("/v1/calendar/proposals")[0];
+    assert_eq!(
+        p.body,
+        json!({"title": "Padel", "start": "2026-10-24T10:00:00+02:00", "location": "Club", "from": "mcp:claude-code"})
+    );
+    let (err, text) = h
+        .call(&t, "calendar_create", json!({"title": "x", "start": "bad"}))
+        .await;
+    assert!(err && text.contains("refused"), "{text}");
+    // read-only tokens do not see calendar_create
+    let ro = h.issue("grok", "read");
+    let names = h.tool_names(&ro).await;
+    assert!(
+        names.contains(&"calendar_list".to_string())
+            && !names.contains(&"calendar_create".to_string())
+    );
+}
+
+#[tokio::test]
+async fn internal_status_lists_clients_without_secrets() {
+    let off = start().await;
+    let r = off
+        .http
+        .get(format!("{}/internal/status", off.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404);
+    let h = common::start_with(|cfg, _| cfg.status_token = Some("st-123".into())).await;
+    let tok = h.issue("claude-code", "read,chat");
+    let rec = secretary_mcp::tokens::TokenStore::new(h.data_dir())
+        .list()
+        .unwrap();
+    let r = h
+        .http
+        .get(format!("{}/internal/status", h.base))
+        .bearer_auth("nope")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 401);
+    let r = h
+        .http
+        .get(format!("{}/internal/status", h.base))
+        .bearer_auth("st-123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["clients"][0]["caller"], "claude-code");
+    assert_eq!(v["clients"][0]["via"], "token");
+    assert_eq!(v["clients"][0]["active"], true);
+    assert_eq!(v["clients"][0]["scopes"], json!(["read", "chat"]));
+    let text = v.to_string();
+    assert!(!text.contains(&tok) && !text.contains(&rec[0].hash) && !text.contains(&rec[0].id));
+}
+
+#[tokio::test]
+async fn notes_save_append_get_search() {
+    let h = start().await;
+    let t = h.issue("chatgpt", "read,chat,write");
+    let briefing = "# CRAFT-IT4SD\n\nMarianne (Aarhus University) offers paid hours.";
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "CRAFT-IT4SD — meeting with Marianne & Jonas", "slug": "craftit-meeting",
+                   "content": briefing, "tags": ["work"]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("Saved note \"craftit-meeting\""), "{text}");
+    assert!(text.contains("Secretary app under Notes"), "{text}");
+    let reqs = h.mock.requests("/v1/notes");
+    let post = reqs.iter().find(|r| r.method == "POST").unwrap();
+    assert_eq!(post.body["source"], "chatgpt", "the caller is the source");
+    assert_eq!(post.body["slug"], "craftit-meeting");
+    assert_eq!(post.body["tags"], json!(["work"]));
+    assert_eq!(
+        post.headers["authorization"],
+        format!("Bearer {DEVICE_TOKEN}")
+    );
+
+    // Part 2 of a long document, as a new paragraph; then a chunk glued on.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_append",
+            json!({"slug": "craftit-meeting", "content": "## Part 2\nQuestions"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("Appended to note \"craftit-meeting\""),
+        "{text}"
+    );
+    let (err, _) = h
+        .call(
+            &t,
+            "note_append",
+            json!({"slug": "craftit-meeting", "content": " for Jonas.", "continuation": true}),
+        )
+        .await;
+    assert!(!err);
+    let appends = h.mock.requests("/v1/notes/craftit-meeting/append");
+    assert_eq!(appends[0].body["separator"], "\n\n");
+    assert!(appends[1].body.get("separator").is_none());
+
+    let (err, text) = h
+        .call(&t, "note_get", json!({"slug": "craftit-meeting"}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("\"CRAFT-IT4SD — meeting with Marianne & Jonas\" (slug craftit-meeting"),
+        "{text}"
+    );
+    assert!(text.contains("by chatgpt"), "{text}");
+    assert!(text.ends_with("## Part 2\nQuestions for Jonas."), "{text}");
+
+    // Paging through a long note.
+    let (_, text) = h
+        .call(
+            &t,
+            "note_get",
+            json!({"slug": "craftit-meeting", "max_chars": 1000, "offset": 10}),
+        )
+        .await;
+    assert!(text.contains("Showing characters 10-"), "{text}");
+
+    let (err, text) = h.call(&t, "notes_search", json!({"q": "aarhus"})).await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("1 note(s) matching \"aarhus\""), "{text}");
+    assert!(text.contains("craftit-meeting"), "{text}");
+    let (_, text) = h
+        .call(&t, "notes_search", json!({"q": "nothing like this"}))
+        .await;
+    assert_eq!(text, "No notes matching \"nothing like this\".");
+
+    // Saving over an existing slug needs replace=true.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "Other", "slug": "craftit-meeting", "content": "x"}),
+        )
+        .await;
+    assert!(err);
+    assert!(
+        text.contains("already exists") && text.contains("replace=true"),
+        "{text}"
+    );
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "Other", "slug": "craftit-meeting", "content": "new", "replace": true}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("Replaced note \"craftit-meeting\""),
+        "{text}"
+    );
+    let patch = h
+        .mock
+        .requests("/v1/notes/craftit-meeting")
+        .into_iter()
+        .find(|r| r.method == "PATCH")
+        .unwrap();
+    assert_eq!(patch.body["content"], "new");
+
+    // Errors the model can act on.
+    let (err, text) = h.call(&t, "note_get", json!({"slug": "missing"})).await;
+    assert!(err && text.contains("No note \"missing\""), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_append",
+            json!({"slug": "missing", "content": "x"}),
+        )
+        .await;
+    assert!(err && text.contains("note_save first"), "{text}");
+    let (err, text) = h.call(&t, "note_get", json!({})).await;
+    assert!(err && text.contains("slug"), "{text}");
+    let (err, text) = h.call(&t, "note_get", json!({"slug": "../etc"})).await;
+    assert!(err && text.contains("lower-case"), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "big", "content": "x".repeat(256 * 1024 + 1)}),
+        )
+        .await;
+    assert!(err && text.contains("note_append"), "{text}");
+}
+
+#[tokio::test]
+async fn notes_need_the_right_scopes() {
+    let h = start().await;
+    let reader = h.issue("grok", "read");
+    let names = h.tool_names(&reader).await;
+    assert!(names.contains(&"note_get".to_owned()) && names.contains(&"notes_search".to_owned()));
+    assert!(!names.contains(&"note_save".to_owned()) && !names.contains(&"note_append".to_owned()));
+    let (err, text) = h
+        .call(&reader, "note_save", json!({"title": "x", "content": "y"}))
+        .await;
+    assert!(err && text.contains("lacks the `write` scope"), "{text}");
+    assert!(h.mock.requests("/v1/notes").is_empty());
+}
+
+#[tokio::test]
+async fn ask_lucina_takes_12000_characters_and_points_to_notes() {
+    let h = start().await;
+    let t = h.issue("chatgpt", "read,chat");
+    let (err, text) = h
+        .call(&t, "ask_lucina", json!({"message": "x".repeat(12_000)}))
+        .await;
+    assert!(!err, "{text}");
+    let (err, text) = h
+        .call(&t, "ask_lucina", json!({"message": "x".repeat(12_001)}))
+        .await;
+    assert!(err && text.contains("12000"), "{text}");
+    let r = h.rpc(&t, "tools/list", json!({})).await;
+    let ask = r["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "ask_lucina")
+        .unwrap()
+        .clone();
+    assert!(ask["description"].as_str().unwrap().contains("note_save"));
 }

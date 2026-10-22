@@ -17,7 +17,12 @@ export interface ItemMeta {
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder";
+  kind?: "reminder" | "avatar_outfit" | "note" | "notes";
+  /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
+  outfit?: string;
+  hair?: string;
+  /** With kind "note": the note Lucina saved or read. */
+  slug?: string;
 }
 
 export interface TimelineItem {
@@ -72,6 +77,16 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (channelName) out.channelName = channelName;
   if (typeof m.isDm === "boolean") out.isDm = m.isDm;
   if (m.kind === "reminder") out.kind = "reminder";
+  if (m.kind === "avatar_outfit") {
+    out.kind = "avatar_outfit";
+    if (typeof m.outfit === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.outfit)) out.outfit = m.outfit;
+    if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
+  }
+  if (m.kind === "notes") out.kind = "notes";
+  if (m.kind === "note") {
+    out.kind = "note";
+    if (typeof m.slug === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.slug)) out.slug = m.slug;
+  }
   return Object.keys(out).length ? out : undefined;
 }
 

@@ -1,0 +1,969 @@
+/*
+ * Lucina's wardrobe. Layout after Custom Cast's costume screen: she stays on stage (the live
+ * preview) while a panel holds round category tabs, a grid of outfit tiles with a name ribbon
+ * and a frame on the one she wears, and switch/select rows for the settings. Phones: the stage
+ * takes the top of the screen and the panel slides up from the bottom. Desktop: the panel floats
+ * next to her side column. Everything is Nebula/Pearl tokens; no assets from that app.
+ */
+
+:root {
+  --wardrobe-sheet-h: min(60dvh, 640px);
+  --wardrobe-side-w: clamp(400px, 36vw, 600px);
+}
+
+/* ---------- The room ---------- */
+
+.wardrobe {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.wardrobe-scrim {
+  position: absolute;
+  inset: 0;
+  display: none;
+  pointer-events: auto;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: scrim-in var(--dur-2) var(--ease-out) both;
+}
+
+.wardrobe-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--wardrobe-sheet-h);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  pointer-events: auto;
+  padding: 8px var(--pad-right) calc(var(--safe-bottom) + 20px) var(--pad-left);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: color-mix(in srgb, var(--surface-solid) 93%, transparent);
+  -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
+  backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
+  box-shadow: var(--shadow-lg), 0 -12px 60px color-mix(in srgb, var(--violet) 20%, transparent);
+  animation: sheet-up var(--dur-3) var(--ease-out) both;
+}
+
+.wardrobe-panel > * {
+  flex: none;
+}
+
+/* Holographic hairline, like the other sheets. */
+.wardrobe-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--grad-border);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+.wardrobe-grab {
+  align-self: center;
+  width: 44px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+/* Phones and tablets: her stage across the top, the panel overlapping its lower edge. */
+.dock.dock--wardrobe {
+  position: fixed;
+  z-index: 49;
+  inset: 0 0 auto;
+  width: auto;
+  height: calc(100dvh - var(--wardrobe-sheet-h) + 34px);
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  -webkit-mask-image: none;
+  mask-image: none;
+  box-shadow: none;
+  transform: none;
+  animation: fade-in var(--dur-3) var(--ease-out) both;
+}
+
+.dock.dock--wardrobe .dock-stage {
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.dock--wardrobe .dock-stage::before,
+.dock--wardrobe .stage-controls,
+.dock--wardrobe .stage-pill,
+.dock--wardrobe .stage-wave {
+  display: none;
+}
+
+.dock--wardrobe .stage-hud {
+  top: calc(var(--safe-top) + 12px);
+}
+
+@media (min-width: 1024px) {
+  /* Desktop: she keeps her column on the right; the panel floats beside her. */
+  .dock.dock--wardrobe {
+    position: relative;
+    inset: auto;
+    z-index: auto;
+    width: var(--wardrobe-side-w);
+    height: auto;
+    padding: 12px max(12px, var(--safe-right)) 12px 0;
+    animation: none;
+  }
+
+  .dock.dock--wardrobe .dock-stage {
+    border-radius: 30px;
+    box-shadow: var(--shadow-lg), 0 0 80px color-mix(in srgb, var(--violet) 30%, transparent);
+  }
+
+  .dock--wardrobe .dock-stage::before {
+    display: block;
+  }
+
+  .dock--wardrobe .stage-hud {
+    top: 14px;
+  }
+
+  .wardrobe-scrim {
+    display: block;
+    right: var(--wardrobe-side-w);
+  }
+
+  .wardrobe-panel {
+    left: auto;
+    top: 12px;
+    bottom: 12px;
+    right: calc(var(--wardrobe-side-w) + 6px);
+    width: min(500px, calc(100vw - var(--wardrobe-side-w) - 40px));
+    height: auto;
+    padding: 20px 22px 22px;
+    border-radius: 30px;
+    animation: wardrobe-in var(--dur-3) var(--ease-out) both;
+  }
+
+  .wardrobe-grab {
+    display: none;
+  }
+}
+
+@keyframes wardrobe-in {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+    filter: blur(6px);
+  }
+}
+
+/* ---------- Header ---------- */
+
+.wardrobe-head {
+  position: sticky;
+  top: -8px;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -8px calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
+  padding: 8px var(--pad-right) 8px var(--pad-left);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--surface-solid) 97%, transparent) 80%, transparent);
+}
+
+@media (min-width: 1024px) {
+  .wardrobe-head {
+    top: -20px;
+    margin: -20px -22px 0;
+    padding: 20px 22px 10px;
+    border-radius: 30px 30px 0 0;
+  }
+}
+
+.wardrobe-eyebrow {
+  margin: 0 0 2px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  text-shadow: var(--glow-text);
+}
+
+.wardrobe-title {
+  margin: 0;
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  line-height: 1.1;
+  background: linear-gradient(180deg, var(--text), color-mix(in srgb, var(--text) 55%, var(--violet)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.wardrobe-close {
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+/* ---------- What she wears ---------- */
+
+.wardrobe-now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--grad-holo-soft);
+}
+
+.wardrobe-now-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.wardrobe-now-label {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--tracking-hud);
+  text-transform: uppercase;
+}
+
+.wardrobe-now--changing .wardrobe-now-label {
+  color: var(--accent);
+  animation: blink-dot 1.2s var(--ease-in-out) infinite;
+}
+
+.wardrobe-now-name {
+  overflow: hidden;
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.wardrobe-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 10px 0 9px;
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-1), box-shadow var(--dur-2);
+}
+
+.wardrobe-pin .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--amber);
+}
+
+.wardrobe-pin:hover {
+  background: color-mix(in srgb, var(--amber) 24%, transparent);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--amber) 30%, transparent);
+}
+
+.wardrobe-pin-x {
+  margin-left: 2px;
+  color: var(--text-muted);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+/* ---------- Auto switch (a "switch" row) ---------- */
+
+.wardrobe-switch {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 2px 0;
+}
+
+.wardrobe-switch-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.wardrobe-switch-label {
+  font-weight: 650;
+}
+
+.wswitch {
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-3);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease-out), box-shadow var(--dur-2);
+}
+
+.wswitch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
+  transition: transform var(--dur-2) var(--ease-spring), background var(--dur-2);
+}
+
+.wswitch--on {
+  border-color: transparent;
+  background: var(--grad-primary);
+  box-shadow: var(--glow-accent);
+}
+
+.wswitch--on .wswitch-knob {
+  transform: translateX(24px);
+  background: #fff;
+}
+
+.wswitch:focus-visible,
+.wcat:focus-visible,
+.wtile:focus-visible,
+.wpick:focus-visible,
+.settings-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* ---------- Category tabs: round buttons, icon over label ---------- */
+
+.wardrobe-cats {
+  display: flex;
+  gap: 12px;
+  margin: 0 calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
+  padding: 4px var(--pad-right) 6px var(--pad-left);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+}
+
+.wardrobe-cats::-webkit-scrollbar {
+  display: none;
+}
+
+.wcat {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 64px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+  scroll-snap-align: start;
+}
+
+.wcat-ring {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-2);
+  box-shadow: inset 0 1px 0 var(--glass-hi);
+  transition: transform var(--dur-2) var(--ease-spring), background var(--dur-2), box-shadow var(--dur-2), color var(--dur-2);
+}
+
+.wcat-ring .icon {
+  width: 24px;
+  height: 24px;
+}
+
+.wcat:hover .wcat-ring {
+  transform: translateY(-2px);
+  color: var(--text);
+}
+
+.wcat-label {
+  max-width: 100%;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wcat--on {
+  color: var(--text);
+}
+
+.wcat--on .wcat-ring {
+  border-color: transparent;
+  background: var(--grad-primary);
+  color: #fff;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent), 0 6px 22px color-mix(in srgb, var(--violet) 45%, transparent);
+}
+
+.wcat--on .wcat-label {
+  color: var(--accent);
+}
+
+/* ---------- Outfit tiles ---------- */
+
+.wardrobe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 12px;
+}
+
+.wtile {
+  position: relative;
+  display: block;
+  aspect-ratio: 3 / 4;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  animation: rise-in var(--dur-3) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 35ms);
+  transition: transform var(--dur-2) var(--ease-spring), box-shadow var(--dur-2), border-color var(--dur-2);
+}
+
+.wtile:hover {
+  transform: translateY(-3px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow), 0 10px 26px color-mix(in srgb, var(--violet) 22%, transparent);
+}
+
+.wtile:active {
+  transform: scale(0.97);
+}
+
+/* The frame on the outfit she wears: a holo border and glow. */
+.wtile--on {
+  border-color: transparent;
+  box-shadow: 0 0 0 2px var(--accent), 0 0 26px color-mix(in srgb, var(--accent) 40%, transparent), 0 0 46px color-mix(in srgb, var(--violet) 30%, transparent);
+}
+
+.wtile--on::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background: var(--grad-holo);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+
+.wtile-art {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: inherit;
+  --cat: var(--violet);
+  background:
+    radial-gradient(80% 60% at 50% 30%, color-mix(in srgb, var(--cat) 34%, transparent), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, var(--cat) 14%, var(--surface-solid)), var(--surface-solid));
+}
+
+.wtile-art[data-cat="casual"] {
+  --cat: var(--neon-teal);
+}
+
+.wtile-art[data-cat="sport"] {
+  --cat: var(--lime);
+}
+
+.wtile-art[data-cat="work"] {
+  --cat: var(--amber);
+}
+
+.wtile-art[data-cat="formal"] {
+  --cat: var(--magenta);
+}
+
+.wtile-art[data-cat="fantasy"] {
+  --cat: var(--cyan);
+}
+
+.wtile-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 15%;
+}
+
+.wtile-glyph {
+  display: grid;
+  place-items: center;
+  width: 46%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  color: color-mix(in srgb, var(--cat) 80%, var(--text));
+  background: color-mix(in srgb, var(--cat) 12%, transparent);
+  box-shadow: 0 0 30px color-mix(in srgb, var(--cat) 30%, transparent);
+}
+
+.wtile-glyph .icon {
+  width: 56%;
+  height: 56%;
+  stroke-width: 1.5;
+}
+
+.wtile-art--sm {
+  position: relative;
+  inset: auto;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+}
+
+.wtile-art--sm .wtile-glyph {
+  width: 74%;
+}
+
+/* The name ribbon across the top of the tile. */
+.wtile-ribbon {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  right: 7px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-solid) 78%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wtile--on .wtile-ribbon {
+  background: var(--grad-primary);
+  color: #fff;
+}
+
+.wtile-badges {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  display: flex;
+  gap: 4px;
+}
+
+.wtile-badge,
+.wtile-check,
+.wtile-pin {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface-solid) 80%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.wtile-badge .icon,
+.wtile-check .icon,
+.wtile-pin .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.wtile-check {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: var(--grad-primary);
+  color: #fff;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 50%, transparent);
+  animation: pop-in var(--dur-3) var(--ease-spring) both;
+}
+
+.wtile-check .icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.6;
+}
+
+.wtile-pin {
+  position: absolute;
+  right: 7px;
+  top: 38px;
+  border-color: color-mix(in srgb, var(--amber) 60%, transparent);
+  color: var(--amber);
+}
+
+/* ---------- Per-section rules (a "select" row each) ---------- */
+
+.wardrobe-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-hud);
+  text-transform: uppercase;
+}
+
+.wardrobe-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wrule {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  transition: opacity var(--dur-2);
+}
+
+.wrule--off {
+  opacity: 0.55;
+}
+
+.wrule-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.wrule-icon .icon {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+}
+
+.wrule--here .wrule-label::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+}
+
+.wrule-picks {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 3px 2px 4px;
+  scrollbar-width: none;
+}
+
+.wrule-picks::-webkit-scrollbar {
+  display: none;
+}
+
+.wpick {
+  position: relative;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: none;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--dur-2), transform var(--dur-2) var(--ease-spring);
+}
+
+.wpick:hover {
+  opacity: 1;
+  transform: translateY(-2px);
+}
+
+.wpick--on {
+  opacity: 1;
+}
+
+.wpick--on .wtile-art {
+  box-shadow: 0 0 0 2px var(--accent), 0 0 16px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ---------- Empty, hint ---------- */
+
+.wardrobe-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.wardrobe-empty p {
+  margin: 0;
+}
+
+.wardrobe-empty-icon .icon {
+  width: 44px;
+  height: 44px;
+  color: var(--violet);
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--violet) 50%, transparent));
+}
+
+.wardrobe-hint {
+  margin: 0;
+  text-align: center;
+}
+
+/* ---------- Entry points ---------- */
+
+.stage-btn--busy::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--cyan);
+  border-right-color: var(--magenta);
+  animation: spin 0.9s linear infinite;
+}
+
+/* The wardrobe row in the account panel. */
+.settings-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--grad-holo-soft);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-2), box-shadow var(--dur-2), transform var(--dur-2) var(--ease-spring);
+}
+
+.settings-link:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--glow-violet);
+  transform: translateY(-1px);
+}
+
+.settings-link-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--grad-primary);
+  color: #fff;
+}
+
+.settings-link-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-link-title {
+  font-weight: 650;
+}
+
+.settings-link-chevron {
+  color: var(--text-muted);
+  font-size: 1.4rem;
+}
+
+/* ---------- Hair and colour ---------- */
+
+.wtile-art[data-cat="hair"] {
+  --cat: var(--violet);
+}
+
+.wtile-art[data-cat="natural"] {
+  --cat: var(--cyan);
+}
+
+.wardrobe-now-hair {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.wswatch-dot {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-left: 0.4em;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: 0 0 0 2px var(--surface-solid), 0 0 0 3px var(--border-strong);
+  vertical-align: 0.05em;
+}
+
+/* Outfit categories, under the Outfit tab: a row of small pills. */
+.wchips {
+  display: flex;
+  gap: 8px;
+  margin: 0 calc(-1 * var(--pad-right)) 12px calc(-1 * var(--pad-left));
+  padding: 2px var(--pad-right) 4px var(--pad-left);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.wchips::-webkit-scrollbar {
+  display: none;
+}
+
+.wchip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-2), color var(--dur-2), border-color var(--dur-2);
+}
+
+.wchip .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.wchip--on {
+  border-color: transparent;
+  background: var(--grad-holo-soft);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Hair colours: round swatches with a name. */
+.wswatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 14px 10px;
+}
+
+.wswatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wswatch-chip {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.55), transparent 42%),
+    linear-gradient(160deg, color-mix(in srgb, var(--swatch, #4a5cc9) 100%, white 0%), color-mix(in srgb, var(--swatch, #4a5cc9) 70%, black));
+  box-shadow: 0 0 0 1px var(--border), 0 6px 16px color-mix(in srgb, var(--swatch, #4a5cc9) 35%, transparent);
+  transition: transform var(--dur-2) var(--ease-spring), box-shadow var(--dur-2);
+}
+
+/* Natural: her own blue, with a hint that it is the original. */
+.wswatch--natural .wswatch-chip {
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.5), transparent 42%),
+    conic-gradient(from 210deg, #2f3f9f, #5a72d6, #2f3f9f);
+}
+
+.wswatch:hover .wswatch-chip {
+  transform: translateY(-2px) scale(1.04);
+}
+
+.wswatch--on {
+  color: var(--text);
+}
+
+.wswatch--on .wswatch-chip {
+  box-shadow: 0 0 0 3px var(--surface-solid), 0 0 0 5px var(--accent), 0 0 22px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.wswatch:focus-visible,
+.wchip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.wrule-picks--hair {
+  padding-top: 0;
+}
+
+.wpick--hair .wtile-art--sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}

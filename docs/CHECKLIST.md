@@ -17,8 +17,9 @@ running finishes, but nothing new starts until the Rust Lucina is live.
       gym/body, memory search, translate, plus the useful Hermes upstream tools
 - [ ] Rebuild image generation and spreadsheet graphs as Rust tools (owner, 2026-10-21)
 - [x] Lucina MCP live at https://getsecretary.tech/mcp (8bc9cc9, p1 `secretary-mcp`), Claude Code connected
-- [ ] Lucina guard for MCP turns (allowlist of actions) + strip the MCP prefix before intents
-- [ ] Connect ChatGPT (OAuth custom connector) and Grok (xAI remote MCP or Grok Bot app) after the guard
+- [x] Lucina guard for MCP turns (allowlist of actions) + strip the MCP prefix before intents (c37de51, live)
+- [x] ChatGPT (custom plugin, OAuth) and Grok Bot (custom MCP server, OAuth) connected
+- [ ] Grok Bot caller shows as "www": map the cursor.com redirect host to "grok"
 
 ## Waiting
 ### Web
@@ -27,11 +28,14 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Gym parity with Lucina Gym, plus a layout guard for the clipping (b40dec6, live)
 - [x] i18n: it / en / da for shell, chat, login, weight (20e811e); Gym and Shopping still to adopt it
 - [x] Deploy the new web shell (48d52d3)
-- [ ] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), in progress
+- [x] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), live edb6405
 
 ### Avatar
-- [ ] Owner picked Summer, but in her uniform: variants A/B being built → → owner picks → convert → p1 private assets
-- [ ] Animation library (VMD, Quaternius, CMU, Bandai Namco, text-to-motion) via a bone map
+- [ ] Base = variant B (Summer face + tiara on the Engage body), owner pick 2026-10-22: deploy B + its clips to p1; game toon shading only as an optional material
+- [x] Wardrobe UI LIVE (outfit/hair/colour tabs, rules per tab, remembered); LUCINA_AVATAR_OUTFIT not yet on
+- [ ] Outfit + hairstyle GLBs (Custom Cast first, then free assets) on the FIXED B
+- [x] Owner picked B (flower removed, tiara restored)
+- [x] Animation library: 22 clips per model (f432912 stage API; MMD clips live on p1)
 
 ### iOS
 - [ ] Milestones on the iPhone: timeline chat, persistent 3D Lucina, i18n, Bring-identical shopping, gym on FFI
@@ -42,7 +46,15 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [ ] Device bridge routes: done in `secretary-server` (53d4ec4), not yet deployed
 - [ ] Lucina device bridge (Node worktree `secretary-shopping-v2`)
 - [x] Shopping v2 deploy: migration 002 + catalog to Lucina and p1 (2026-10-21)
-- [ ] Discord owner user ID for the timeline filter (ask the owner)
+- [x] Discord owner user ID: 649020113026023475 (vitologic), set in Lucina 2026-10-22
+
+### Links, calendar, notifications (owner, 2026-10-22)
+- [x] Links tab LIVE 2026-10-22 (main 64c747a): Google Calendar (waits on owner's Google Cloud Console steps), ICS, iPhone calendar, channels, AI clients, custom links
+- [x] Lucina calendar bridge LIVE (LUCINA_CALENDAR=true); MCP calendar_list/calendar_create (proposals only)
+- [x] Notifications LIVE 2026-10-22 (merged into main 64c747a). iOS native part on branch ios-notifications (not installed). APNs needs a paid team
+
+### Notes (owner, 2026-10-22)
+- [x] Notes LIVE (main 326fbf2): server /v1/notes, MCP note_save/append/get/search, Lucina LUCINA_NOTES, web + iOS (ios-app 0986f57); craftit-meeting briefing restored; ask_lucina limit 12000
 
 ### Roadmap modules (`docs/ROADMAP.md`)
 - [ ] Calendar · Languages · Memory exercises · Purchases (always confirmed)

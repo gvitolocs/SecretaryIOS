@@ -77,7 +77,7 @@ describe("chat jobs", () => {
 
   it("does not send over-long messages", async () => {
     const calls = stubFetch(() => ({ body: { reply: "x", job: null } }));
-    expect(await sendMessage("x".repeat(4001))).toBe(false);
+    expect(await sendMessage("x".repeat(12001))).toBe(false);
     expect(calls).toHaveLength(0);
   });
 

@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary`; see [Insights](#insights-for-lucina). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` (see [Notifications](#notifications)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -219,7 +219,7 @@ answered with an error).
 
 | Field | Rules |
 |---|---|
-| `message` | Required, 1–4000 characters, not blank, no control characters except newline/tab. |
+| `message` | Required, 1–12000 characters (12100 with a Lucina MCP prefix), not blank, no control characters except newline/tab. For longer documents, save a [note](#notes). |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
 | `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
@@ -960,7 +960,7 @@ service token: `Authorization: Bearer svc_…`, the token stored in
 `SECRETARY_SERVICE_TOKEN_FILE` (create one with `secretary-server
 service-token generate <path>`; the file is written 0600 and the token is
 never printed). Device tokens and cookies get `401` here, and a service
-token gets `401` on every other route. Without `SECRETARY_SERVICE_TOKEN_FILE`
+token gets `401` on every other route except `/v1/avatar*`. Without `SECRETARY_SERVICE_TOKEN_FILE`
 the route answers `503 service_token_not_configured`. `workouts` is 1–20
 (default 5; values outside are clamped); `timezone` defaults to `UTC`.
 
@@ -1076,6 +1076,391 @@ const audio = new Audio(URL.createObjectURL(await r.blob()));
 await audio.play();
 ```
 
+## Avatar wardrobe
+
+Lucina's 3D avatar has outfits, hairstyles and hair colours. The owner picks
+them in the app (the Wardrobe), lets the look follow the app section, or asks
+Lucina in chat ("mettiti il vestito da cameriera", "fatti la coda"). The
+choice lives on the server, so every client and Lucina see the same one.
+
+Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
+the `PUT`) **or** Lucina's service token (`Authorization: Bearer svc_…`).
+`X-Secretary-Client: web|ios` on a device write is recorded as `updatedBy`.
+
+### `GET /v1/avatar`
+
+```json
+{
+  "outfit": null,
+  "hair": null,
+  "hairColor": null,
+  "auto": true,
+  "rules": {
+    "gym": { "outfit": "gym", "hair": "ponytail" },
+    "shopping": { "outfit": "chef", "hair": "natural" },
+    "default": { "outfit": "uniform", "hair": "natural" }
+  },
+  "updatedMs": 1792602906912,
+  "updatedBy": "web"
+}
+```
+
+- `outfit` / `hair`: **pinned** (worn everywhere until unpinned); `null` =
+  follow the rules. The hairstyle `natural` is her own hair and is always
+  valid.
+- `hairColor`: a colour id from the wardrobe; `null` = natural colour. It
+  applies to whatever hair shows.
+- `auto`: with nothing pinned, the look follows the app section: `rules.gym`
+  on the Gym tab, `rules.shopping` on Shopping, `rules.default` anywhere
+  else. With `auto: false` she wears `rules.default`.
+- `updatedMs` / `updatedBy` (`web` | `ios` | `device` | `lucina`): the last
+  change; `0` / `""` until the first one. The values above are the defaults.
+
+Clients resolve the look themselves: `rule = auto ? rules[section] :
+rules.default`, then `outfit ?? rule.outfit` and `hair ?? rule.hair`.
+
+### `PUT /v1/avatar`
+
+A patch: any of `outfit`, `hair`, `hairColor` (an id, or `null`), `auto`
+(bool), `rules` (any of `gym`, `shopping`, `default`, each `{outfit?,
+hair?}`; a bare string is an outfit, the older form). Absent fields keep
+their value. Answers the full new settings (`200`).
+
+```json
+{ "outfit": "maid" }
+{ "hair": "bun", "hairColor": "pink" }
+{ "outfit": null, "hair": null, "auto": true }
+{ "rules": { "shopping": { "outfit": "maid" }, "gym": { "hair": "bun" } } }
+```
+
+- Ids: `[a-z0-9][a-z0-9_-]*`, at most 40 characters. Unknown fields and
+  wrong types are refused (`400 bad_request`).
+- When the wardrobe lists outfits / hairstyles / colours, the ids must be
+  among them: `422 unknown_outfit` / `unknown_hairstyle` /
+  `unknown_hair_color` (the message lists the known ids). A kind the
+  wardrobe does not list accepts any well-formed id.
+- Stored in `$SECRETARY_DATA_DIR/avatar.json` (atomic write, mode 0600). A
+  refused write changes nothing. A file from before hairstyles (rules as
+  outfit strings) still loads.
+
+### `GET /v1/avatar/wardrobe`
+
+From `{SECRETARY_PRIVATE_ASSETS_DIR}/wardrobe.json`, which is
+`{outfits, hairstyles, colors?}` (a bare array is read as the outfits). Only
+valid entries are served (file order, first of each id, at most 200 per
+list); every list is empty when the file is missing.
+
+```json
+{
+  "outfits": [
+    { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" },
+      "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] }
+  ],
+  "hairstyles": [
+    { "id": "natural", "name": { "it": "Naturali", "en": "Natural", "da": "Naturligt" } },
+    { "id": "ponytail", "name": { "it": "Coda", "en": "Ponytail", "da": "Hestehale" },
+      "glb": "lucina-hair-ponytail.glb", "thumbnail": "hair-ponytail.webp", "hideTiara": true }
+  ],
+  "colors": [
+    { "id": "pink", "name": { "it": "Rosa", "en": "Pink", "da": "Lyserød" }, "hex": "#ff8ac8" }
+  ]
+}
+```
+
+- Outfits: `id`; `glb` (asset name ending in `.glb`, loaded from
+  `/v1/assets/{glb}`); `thumbnail` (optional `.png`/`.webp`); `name`
+  (`{it?, en?, da?}` or one string, at most 80 characters each); `tags`
+  (optional, at most 16). The Wardrobe groups outfits by the first known
+  tag: `uniform`, `casual`, `sport`, `work`, `formal`, `fantasy`.
+- Hairstyles: the same fields (`natural` needs no `glb` or `name`), plus
+  `hideTiara` (bool: hide the tiara while it is on) and `hideMaterials`
+  (base-model materials to hide instead of the hair). A part is a separate
+  GLB attached to the `head` bone; the base hair is hidden while it is on.
+- Colours: `id`, `hex` (`#rrggbb`), optional `name`.
+- Other fields pass through unchanged.
+
+### Live changes
+
+When Lucina changes her look she also writes a timeline item with
+`meta: {kind: "avatar_outfit", outfit?, hair?}` (`outfit` / `hair` name what
+she put on; neither when she went back to automatic). Clients that see one
+on the timeline stream refetch `GET /v1/avatar` and apply it with the change
+effect. Clients also refetch when they come back to the foreground.
+
+## Notifications
+
+Architecture, iPhone options and privacy: [`notifications.md`](notifications.md).
+Device routes take Bearer or the cookie (+ `X-Secretary-CSRF: 1` for writes).
+
+Notification:
+
+```json
+{ "id": "n_1792654200000a1b2c3d4", "ts": 1792654200000, "category": "reminder",
+  "title": "optional custom title", "body": "Call the dentist", "route": "/",
+  "channel": "telegram", "timelineId": "01JA…", "dedupKey": "reminder:42",
+  "data": {}, "read": false, "readAt": null }
+```
+
+`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
+`shopping`, `presence`, `system`. Without `title`, clients title it by category.
+`route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
+
+| Route | |
+|---|---|
+| `GET /v1/notifications?limit=1..200&before=<id>&unread=0\|1` | `{items, unread, nextBefore}`, newest first (500 kept). |
+| `POST /v1/notifications/read {ids: […]}` or `{all: true}` | `{updated, unread}`. |
+| `GET /v1/notifications/settings` | `{settings, categories, subscriptions, currentDevice, webPush: {enabled, publicKey}, apns: {enabled, environment}, present}`. |
+| `PUT /v1/notifications/settings` | The whole `settings` object (below); `400 bad_request` names the bad field. Answers like `GET`. |
+| `POST /v1/notifications/presence {active}` | The app is (not) in front; counts 90 s. Lucina's messages are not notified while any device is present. |
+| `GET /v1/push/key` | `{publicKey}`: the VAPID `applicationServerKey` (base64url). |
+| `POST /v1/push/subscribe` | `PushSubscription.toJSON()` + `label`, `lang` → `201` subscription view (no secrets). Upserts by endpoint; the endpoint must be HTTPS on a known push service. |
+| `DELETE /v1/push/subscribe {endpoint}` | `{removed}`. |
+| `DELETE /v1/push/subscriptions/{id}` | `{removed}`; `404 subscription_not_found`. |
+| `POST /v1/push/test {id?}` | A test push to that subscription (default: the caller's); waits: `{results: [{id, ok, delivery: {result: sent\|gone\|failed, status?, error?}}]}`. |
+| `POST /v1/push/apns {token, lang?}` | Native app device token → `201`; `503 apns_disabled` until APNs is configured. |
+
+Settings:
+
+```json
+{ "categories": {"lucina_message": true, "reminder": true, "calendar": true, "device_confirm": true,
+                 "shopping": true, "presence": false, "system": false},
+  "quietHours": {"enabled": false, "start": "22:30", "end": "07:30"},
+  "timeZone": "Europe/Rome", "dndUntil": null, "calendarLeadMinutes": 10,
+  "remindersBypassQuiet": true, "digest": true, "previews": true, "language": "en",
+  "devices": {"ps_…": {"enabled": true, "categories": {"calendar": false}}} }
+```
+
+### `POST /v1/notify` (service token)
+
+Lucina posts a notification:
+`{category, body (1–2000), title? (≤120), route?, dedupKey? (≤200), timelineId?, channel?, data? (≤4 KiB)}`
+(unknown fields → `400`). `201 {status: "created", notification, pushed, deferred}`,
+or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
+`disabled` (category off) or `present` (a Lucina message while the owner is in
+the app). Device tokens and cookies get `401`.
+
+## Links
+
+The connections hub behind the Links tab (web and iOS). The server computes
+every status; clients render cards and send the connect/disconnect requests.
+State: `$SECRETARY_DATA_DIR/links.json` (atomic, 0600). Secrets in it (the
+Google refresh token, ICS addresses, remote MCP addresses) are sealed with
+ChaCha20-Poly1305 under `links.key` (32 random bytes, 0600, created on first
+use) and are **never returned**: clients only see a host. Device auth (Bearer
+or cookie + CSRF); the service token gets `401` here.
+
+### `GET /v1/links`
+
+```json
+{ "timeZone": "Europe/Rome",
+  "google": { "configured": true, "status": "connected", "account": "owner@gmail.com", "services": ["calendar"] },
+  "groups": [
+    { "id": "calendars", "cards": [
+      { "id": "google-calendar", "kind": "google", "service": "calendar", "name": "Google Calendar",
+        "status": "connected", "account": "owner@gmail.com", "scopes": ["calendar.events", "calendar.readonly"],
+        "lastSyncAt": "2026-10-22T09:00:00.000Z", "count": 57, "detail": "57 items synced", "actions": ["sync", "disconnect"] },
+      { "id": "iphone-calendar", "kind": "iphone", "status": "connected", "account": "Giuseppe's iPhone", "count": 24, "…": "…" },
+      { "id": "ics:ics_Ab3…", "kind": "ics", "name": "Serie A", "status": "connected", "account": "calendar.google.com",
+        "count": 38, "scopes": ["read-only"], "actions": ["sync", "remove"] } ] },
+    { "id": "channels", "cards": [ "telegram, discord: connected; alexa: planned; lastSyncAt = latest timeline activity" ] },
+    { "id": "ai", "cards": [ "ai:claude-code, ai:chatgpt, ai:grok (+ other MCP callers), from secretary-mcp" ] },
+    { "id": "google", "cards": [ "google-gmail, google-drive: available | connected" ] },
+    { "id": "custom", "cards": [ { "id": "custom:lnk_…", "kind": "bookmark", "url": "https://…", "icon": "🏦", "tags": ["money"] },
+                                 { "id": "custom:lnk_…", "kind": "mcp", "status": "saved", "account": "mcp.example.com" } ] } ],
+  "proposals": [ <Proposal> ] }
+```
+
+Card `status`: `connected`, `disconnected`, `reconnect` (Google refused the
+refresh token: show **Reconnect**), `error` (an ICS feed failed; `error` says
+why), `planned`, `available`, `unavailable` (Google not configured on the
+server), `unknown` (secretary-mcp status not reachable), `saved` (MCP URL).
+`actions` ⊂ `connect`, `reconnect`, `sync`, `disconnect`, `remove`, `edit`.
+AI client status comes from secretary-mcp's `GET /internal/status`
+(`SECRETARY_MCP_STATUS_URL`, bearer `SECRETARY_MCP_STATUS_TOKEN_FILE`).
+
+### Google: `POST /v1/links/google/connect`, `GET /v1/links/google/callback`, `DELETE /v1/links/google`
+
+- `POST /v1/links/google/connect {"services": ["calendar"|"gmail"|"drive"], "client": "web"|"ios"}`
+  → `{"authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth?…"}`. The
+  app navigates there (iOS: `ASWebAuthenticationSession`, callback scheme
+  `secretary`). Authorization code + PKCE S256, `access_type=offline`,
+  `prompt=consent`, `include_granted_scopes=true`. Scopes: calendar →
+  `calendar.events` + `calendar.readonly`; gmail → `gmail.readonly`; drive →
+  `drive.readonly` (already granted services are kept). `state` and the PKCE
+  verifier live in memory only, single use, 10 minutes. `503
+  google_not_configured` without the client files.
+- `GET /v1/links/google/callback?code&state` (no auth: the `SameSite=Strict`
+  cookie is not sent on Google's cross-site redirect; the unguessable state
+  is the binding) exchanges the code, reads the primary calendar id (the
+  account email), stores the sealed refresh token, starts a sync and answers
+  `303` to `/links?google=connected` (iOS: `secretary://links?google=connected`)
+  or `?google=error&reason=<code>`.
+- `DELETE /v1/links/google` revokes the grant at Google (best effort), drops
+  the token and the Google cache: `{"disconnected": true, "revokedAtGoogle": true}`.
+
+### ICS subscriptions: `POST /v1/links/ics`, `DELETE /v1/links/ics/{id}`
+
+`{"label": "Serie A", "url": "webcal://…"}` (any provider's secret iCal
+address; `webcal(s)://` becomes `https://`; plain `http`, `localhost` and
+private/Tailscale IP literals are refused). The feed is fetched once (`422
+ics_unavailable` when it cannot be read or is not iCalendar, at most 10 MB),
+then on every sync with `If-None-Match` / `If-Modified-Since`. `201 {id,
+label, host, eventCount, feedName}`. Read-only.
+
+### Custom links: `POST /v1/links/custom`, `PATCH|DELETE /v1/links/custom/{id}`
+
+`{"kind": "bookmark"|"mcp", "label": "Bank", "url": "https://…", "icon": "🏦", "tags": ["money"]}`.
+Label 1–80, URL http(s) (MCP: https only) ≤ 2048, icon ≤ 16 characters, ≤ 10
+tags of ≤ 24 (lowercased, deduplicated), ≤ 200 links. MCP server URLs are
+sealed and never called (stored for Lucina's later use); bookmarks return
+their `url`.
+
+## Calendar
+
+All sources merged: Google Calendar (synced into `calendar.json` every
+`SECRETARY_CALENDAR_SYNC_SECS`, default 300, with sync tokens; a `410 Gone`
+triggers a full resync from 365 days back; recurring events are expanded by
+`secretary-calendar`, DST-correct, with EXDATEs and per-instance
+exceptions), ICS subscriptions, and the iPhone's EventKit events from the
+latest `POST /v1/device/state` snapshot (`events: [{id, title, start, end,
+allDay?, location?, calendar?, notes?}]`, start/end RFC 3339, epoch ms or
+`YYYY-MM-DD`). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
+service token** (`svc_…`).
+
+Event:
+
+```json
+{ "id": "google:abc_20261022T070000Z", "source": "google", "sourceId": "abc", "calendar": "Google",
+  "title": "Gym", "start": "2026-10-22T07:00:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false,
+  "startMs": 1792652400000, "endMs": 1792656000000, "location": "…", "url": "https://calendar.google.com/…",
+  "recurring": true, "editable": true }
+```
+
+All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
+`allDay: true`. Ids: `google:<event or instance id>`, `ics:<sub>:<hash>`,
+`iphone:<EventKit id>`.
+
+| Route | |
+|---|---|
+| `GET /v1/calendar/events?from&to&days&sources` | `from`/`to`: `YYYY-MM-DD` (owner's zone, `to` inclusive) or RFC 3339; default today + 7 days; `days` 1–400; `sources=google,ics,iphone`. `{from, to, timeZone, events, sources}` (`sources` has each source's status). Range ≤ 400 days. |
+| `GET /v1/calendar/free?from&to&minutes=60&dayStart=9&dayEnd=19&limit=5` | Gaps between timed events inside working hours: `{slots: [{start, end}]}`. All-day events do not block. |
+| `POST /v1/calendar/sync` | Sync now: `{google: {ok, changed?, error?}, ics: [{id, ok, changed?, error?}]}`. `error: "reconnect_needed"` when Google revoked access. |
+| `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, timeZone?}` → Google primary calendar. `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
+| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration. Google events only (`422 read_only_source` for ICS/iPhone). |
+| `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only. |
+| `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP): body as for create plus `from`; validated, kept 7 days, ≤ 50. |
+| `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event) or dismisses it **in the app**; the service token gets `403 owner_only`. |
+
+Errors: `409 google_not_connected`, `409 google_reconnect_needed` (show
+Reconnect in Links), `404 event_not_found`, `400 google_rejected`, `502
+google_unreachable` / `google_error`, `400 bad_request`.
+
+`GET /v1/agenda` also carries `events`: the merged events of that date.
+
+## Notes
+
+Briefings, notes and documents the owner reads in the app (Notes view on
+web and iOS) and that Lucina recalls by name. ChatGPT, Grok and Claude Code
+save them through Lucina MCP (`note_save`, `note_append`), Lucina through
+her service token, the owner in the app.
+
+Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
+writes) **or** Lucina's service token. Every write is logged (id, slug,
+size, source, caller; never the content). Bodies on these routes may be up
+to 768 KiB (a note holds at most 256 KiB of text; JSON escaping can double
+it).
+
+A note:
+
+```json
+{
+  "id": "n_3f9c0a7b12de45a8c901",
+  "slug": "craftit-meeting",
+  "title": "CRAFT-IT4SD — meeting with Marianne & Jonas",
+  "content": "# Briefing\n\n…markdown…",
+  "tags": ["work", "aarhus"],
+  "source": "chatgpt",
+  "pinned": true,
+  "createdAt": "2026-10-22T11:30:00.123Z",
+  "updatedAt": "2026-10-22T11:30:00.123Z"
+}
+```
+
+- `slug`: unique among live notes, `[a-z0-9]` then `[a-z0-9-]` (no `--`, no
+  trailing `-`), at most 64; not `trash`, `new` or `search`. Wherever a route
+  takes `{key}`, it is the id or the slug (case-insensitive), so
+  `/v1/notes/craftit-meeting` works.
+- `content`: markdown, at most 256 KiB (UTF-8), no control characters other
+  than newline and tab; `\r\n` becomes `\n`. Clients render it without raw
+  HTML and only follow `http(s)`/`mailto` links.
+- `tags`: at most 16, each at most 32 letters, digits, spaces, `-` or `_`;
+  stored lower-case, a leading `#` dropped, duplicates removed.
+- `source`: who wrote it, `[a-z0-9][a-z0-9-]*` (`owner`, `lucina`, `chatgpt`,
+  `grok`, `claude-code`, …). Default: `lucina` for the service token,
+  `owner` otherwise.
+- `updatedAt` has millisecond precision and doubles as the version for
+  `baseUpdatedAt`.
+
+### `GET /v1/notes?q=&tag=&limit=200`
+
+`{"notes": [NoteSummary]}`: pinned first, then the most recently updated. A
+summary is the note without `content`, plus `size` (bytes) and `excerpt`
+(the start of the content, or the text around the first match of `q`).
+`q` (at most 200 characters) looks in the title, slug, tags and content,
+case- and accent-insensitive; `tag` keeps notes with that tag. `limit`:
+1-500.
+
+### `POST /v1/notes`
+
+`{title, content?, slug?, tags?, source?, pinned?}` → `201` and the note.
+Without `slug`, one is made from the title (`-2`, `-3`, … when taken). An
+explicit slug that is taken answers `409 slug_taken` (update or append to
+that note instead). At most 2000 live notes (`409 notes_full`).
+
+### `GET /v1/notes/{key}`
+
+The note, or `404 note_not_found`.
+
+### `PATCH /v1/notes/{key}`
+
+Any of `{title, content, slug, tags, pinned}`; absent fields keep their
+value. Optional `baseUpdatedAt`: the `updatedAt` the client edited; when
+the note changed since, `409 conflict` and nothing is saved. Optional
+`source` names who edited (logged only). Unknown fields are refused.
+
+### `POST /v1/notes/{key}/append`
+
+`{content, separator?}`: adds `content` at the end exactly as given (for
+documents sent in chunks); `separator` (at most 8 characters, e.g.
+`"\n\n"`) goes between the old text and the new one when the note is not
+empty. Over 256 KiB in total: `413 note_too_large`.
+
+### `DELETE /v1/notes/{key}`
+
+Moves the note to the trash: `{deleted: true, id, slug, deletedAt,
+purgeAfter}`. The slug is free again at once.
+
+### `GET /v1/notes/trash`
+
+`{"notes": [NoteSummary + deletedAt, purgeAfter], "days": 30}`, newest
+deletion first. Notes deleted more than 30 days ago are purged here and on
+every delete.
+
+### `POST /v1/notes/trash/{id}/restore`
+
+Brings the note back (by id) and answers it. If a live note took its slug
+meanwhile, the restored one gets `-2` (or the next free number).
+
+### Seed notes
+
+`secretary-server notes import <file|dir>… [--replace]` (as the service
+user, with `SECRETARY_DATA_DIR`) imports `.md` files with a front matter
+block (`slug`, `title`, `tags: a, b`, `source`, `pinned`) or `.json` files
+(`{slug, title, content, tags?, source?, pinned?}`). A slug that exists is
+kept unless `--replace`. `secretary-server notes list` prints id, slug,
+size, source and title. The running server picks imported notes up on its
+next request.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -1087,12 +1472,17 @@ await audio.play();
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
+| 404 | `note_not_found` | server | No note with that id or slug. |
 | 409 | `already_sent` | Lucina | Cancelling a delivered reminder. |
 | 409 | `revision_conflict` | server (from Lucina 409) | Shopping ops conflict with a newer list revision; refetch and retry. |
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
-| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 409 | `conflict` | server | `PATCH /v1/notes/{key}` with a stale `baseUpdatedAt`. |
+| 409 | `slug_taken`, `notes_full` | server | Notes: the slug is used by another note; 2000 live notes. |
+| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 413 | `note_too_large` | server | A note would hold more than 256 KiB of text. |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
+| 422 | `unknown_outfit`, `unknown_hairstyle`, `unknown_hair_color` | server | `PUT /v1/avatar` names an outfit, hairstyle or colour the wardrobe does not have. |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |
 | 429 | `too_many_streams` | server | Over 4 open timeline streams for this device or 20 in total; honour `Retry-After`. |
 | 500 | `internal` | server | Unexpected server failure. |
@@ -1102,7 +1492,9 @@ await audio.play();
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
-| 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
+| 503 | `service_token_not_configured` | server | `/v1/insights/summary` or `/v1/notify` without `SECRETARY_SERVICE_TOKEN_FILE`. |
+| 503 | `apns_disabled` | server | `POST /v1/push/apns` without APNs configured. |
+| 404 | `subscription_not_found` | server | `DELETE /v1/push/subscriptions/{id}`, `POST /v1/push/test`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
 | 504 | `tts_unavailable` | server | Kokoro did not answer within 30 s. |

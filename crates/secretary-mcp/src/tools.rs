@@ -5,7 +5,9 @@
 //! `reminder_cancel` only moves a pending reminder to `cancelled` (Lucina
 //! keeps the record). Everything else that could act in the world goes
 //! through `ask_lucina`, i.e. through Lucina's own pipeline and its own
-//! confirmation flow.
+//! confirmation flow. Notes are the owner's own local data: `note_save` and
+//! `note_append` write without a confirmation step, and every write is
+//! logged with the caller.
 
 use std::sync::Arc;
 
@@ -24,7 +26,7 @@ use crate::App;
 /// Arguments of `ask_lucina`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AskArgs {
-    /// What to say to Lucina, in any language (she answers in the language you write in). Up to 3800 characters.
+    /// What to say to Lucina, in any language (she answers in the language you write in). Up to 12000 characters. To hand over a long document or briefing, save it with note_save instead and tell Lucina its slug.
     pub message: String,
     /// Optional conversation name (letters, digits, '-' and '_', up to 32) to keep separate threads, e.g. "travel". Default: one conversation per client.
     #[serde(default)]
@@ -156,6 +158,38 @@ pub struct ReminderCancelArgs {
     pub id: String,
 }
 
+/// Arguments of `calendar_list`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct CalendarListArgs {
+    /// First day, YYYY-MM-DD in the owner's time zone (default: today), or an RFC 3339 time.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Last day (inclusive), YYYY-MM-DD, or an RFC 3339 time. Default: `from` + `days`.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// How many days from `from` when `to` is not given (1-62, default 7).
+    #[serde(default)]
+    pub days: Option<u32>,
+}
+
+/// Arguments of `calendar_create`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CalendarCreateArgs {
+    /// Event title, 1-300 characters.
+    pub title: String,
+    /// Start: an RFC 3339 time with offset ("2026-10-23T09:30:00+02:00"), or YYYY-MM-DD for an all-day event.
+    pub start: String,
+    /// End (optional): same format as start; all-day ends are exclusive dates. Default: one hour / one day.
+    #[serde(default)]
+    pub end: Option<String>,
+    /// Where (optional).
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Notes (optional).
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Arguments of `gym_summary`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GymArgs {
@@ -167,6 +201,74 @@ pub struct GymArgs {
 /// No arguments.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct NoArgs {}
+
+/// Arguments of `note_save`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteSaveArgs {
+    /// Title shown in the app, 1-200 characters, e.g. "CRAFT-IT4SD — meeting with Marianne & Jonas".
+    pub title: String,
+    /// The note in Markdown (headings, lists, links). Up to 256 KB in total; for very long documents send the first part here and the rest with note_append.
+    pub content: String,
+    /// Short name to find it again, e.g. "craftit-meeting": lower-case letters, digits and '-', up to 64. Default: made from the title. Lucina and note_get find the note by this name.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Up to 16 tags, e.g. ["work", "aarhus"].
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// Pin it to the top of the owner's notes (default false).
+    #[serde(default)]
+    pub pinned: Option<bool>,
+    /// When a note with this slug exists: true replaces its title, content (and tags/pin if given); false (default) refuses so nothing is overwritten by accident.
+    #[serde(default)]
+    pub replace: Option<bool>,
+}
+
+/// Arguments of `note_append`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteAppendArgs {
+    /// The note's slug, e.g. "craftit-meeting" (or give `id`).
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// The note's id ("n_…"), instead of `slug`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Markdown to add at the end.
+    pub content: String,
+    /// true: glue the text on exactly (continuing a chunk that was cut mid-sentence); false (default): start it as a new paragraph.
+    #[serde(default)]
+    pub continuation: Option<bool>,
+}
+
+/// Arguments of `note_get`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NoteGetArgs {
+    /// The note's slug, e.g. "craftit-meeting" (or give `id`).
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// The note's id ("n_…"), instead of `slug`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Start at this character (for long notes; default 0).
+    #[serde(default)]
+    pub offset: Option<usize>,
+    /// Return at most this many characters (1000-100000, default 40000).
+    #[serde(default)]
+    pub max_chars: Option<usize>,
+}
+
+/// Arguments of `notes_search`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct NotesSearchArgs {
+    /// Words to look for in titles, slugs, tags and content. Empty: list the latest notes.
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Only notes with this tag.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// How many to return (1-50, default 20).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
 
 // -- definitions ------------------------------------------------------------------
 
@@ -213,7 +315,7 @@ macro_rules! spec {
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec!("ask_lucina", "Ask Lucina", Scope::Chat, ro = false, destructive = false, idempotent = false, AskArgs,
-            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list and recent conversations on every channel, and can act through her own tools (reminders, shopping, research jobs, images). Use it for anything that needs Lucina's judgement or memory. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
+            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and can act through her own tools (reminders, shopping, research jobs, images). Use it for anything that needs Lucina's judgement or memory. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
             "Recent messages between the owner and Lucina on all channels (Telegram, Discord, web app, iOS app, Alexa, MCP), newest first, with time, channel and who spoke. Paginate with `before`."),
         spec!("shopping_list", "Shopping list", Scope::Read, ro = true, destructive = false, idempotent = true, ShoppingListArgs,
@@ -228,10 +330,22 @@ pub fn specs() -> Vec<ToolSpec> {
             "Create a reminder that Lucina delivers to the owner on Telegram at the given time. An identical pending reminder is not duplicated."),
         spec!("reminder_cancel", "Cancel reminder", Scope::Write, ro = false, destructive = true, idempotent = true, ReminderCancelArgs,
             "Cancel a pending reminder so it is not delivered. The reminder is kept (status 'cancelled'), not deleted. Confirm with the owner before cancelling."),
+        spec!("calendar_list", "Calendar", Scope::Read, ro = true, destructive = false, idempotent = true, CalendarListArgs,
+            "The owner's calendar: events from Google Calendar, the iPhone calendar and subscribed ICS calendars, merged, with times in the owner's time zone and event ids. Default: the next 7 days from today."),
+        spec!("calendar_create", "Propose calendar event", Scope::Write, ro = false, destructive = false, idempotent = false, CalendarCreateArgs,
+            "Propose a new event for the owner's Google Calendar. It is NOT created directly: it waits for the owner's confirmation in the Secretary app (Links), and the owner can accept or dismiss it. Tell the owner to confirm it there."),
         spec!("gym_summary", "Gym summary", Scope::Read, ro = true, destructive = false, idempotent = true, GymArgs,
             "The owner's training: workouts this week vs. the weekly goal, recent workouts with volume, exercises and personal records, and weekly volume."),
         spec!("body_summary", "Body weight summary", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "The owner's body weight: current weight, 7-day average, weekly change, 30/90-day trend, goal distance, and the latest entries."),
+        spec!("note_save", "Save note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteSaveArgs,
+            "Save a note, briefing or document for the owner: it appears in the Secretary app (Notes, with your name as the source) and Lucina can recall it by its slug, e.g. \"craftit-meeting\". Use this, not ask_lucina, for anything long or worth keeping. Markdown content, up to 256 KB per note; for a document too long for one call, save the first part here and send the rest in order with note_append. An existing slug is only overwritten with replace=true. Answers the slug to use later."),
+        spec!("note_append", "Append to note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteAppendArgs,
+            "Add text at the end of an existing note (by slug or id): the next part of a long document, an update to a briefing, meeting minutes. With continuation=true the text is glued on exactly (for a chunk cut mid-sentence); otherwise it starts a new paragraph."),
+        spec!("note_get", "Read note", Scope::Read, ro = true, destructive = false, idempotent = true, NoteGetArgs,
+            "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, tags, who wrote it, when, and the Markdown content. Long notes come in pages: call again with the offset it gives you."),
+        spec!("notes_search", "Search notes", Scope::Read, ro = true, destructive = false, idempotent = true, NotesSearchArgs,
+            "Find the owner's notes, briefings and documents by words (title, slug, tags, content) or tag; pinned first, newest first. Each hit shows its slug, title, source and an excerpt. Without `q` it lists the latest notes."),
         spec!("lucina_status", "Lucina status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has."),
     ]
@@ -297,7 +411,66 @@ fn id_ok(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
 }
 
-const MAX_ASK_CHARS: usize = 3800;
+/// Lucina accepts 12000 characters after the MCP prefix.
+pub const MAX_ASK_CHARS: usize = 12_000;
+/// What one `note_save` / `note_append` call may carry (= the note limit).
+pub const MAX_NOTE_BYTES: usize = 256 * 1024;
+
+/// A slug (`[a-z0-9-]`, at most 64) or a note id (`n_` + 20 hex).
+fn note_key(slug: Option<&str>, id: Option<&str>) -> Result<String, ToolError> {
+    fn pick(v: Option<&str>) -> Option<&str> {
+        v.map(str::trim).filter(|v| !v.is_empty())
+    }
+    let key = match (pick(slug), pick(id)) {
+        (_, Some(id)) => id.to_owned(),
+        (Some(slug), None) => slug.to_lowercase(),
+        (None, None) => {
+            return Err(bad(
+                "Give the note's `slug` (e.g. \"craftit-meeting\") or its `id`.",
+            ))
+        }
+    };
+    let ok = key.len() <= 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    if !ok {
+        return Err(bad(
+            "`slug` must be lower-case letters, digits and '-' (or pass the note `id`)",
+        ));
+    }
+    Ok(key)
+}
+
+fn note_content(field: &str, s: &str) -> Result<String, ToolError> {
+    if s.trim().is_empty() {
+        return Err(bad(format!("`{field}` must not be empty")));
+    }
+    if s.len() > MAX_NOTE_BYTES {
+        return Err(bad(format!(
+            "`{field}` is over 256 KB; send it in parts: note_save with the first part, then note_append for the rest"
+        )));
+    }
+    if s.chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(bad(format!("`{field}` contains control characters")));
+    }
+    Ok(s.to_owned())
+}
+
+fn note_tags(tags: Option<&[String]>) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(tags) = tags else { return Ok(None) };
+    if tags.len() > 16 {
+        return Err(bad("`tags`: at most 16"));
+    }
+    Ok(Some(
+        tags.iter()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect(),
+    ))
+}
 
 /// The prefix Lucina sees on MCP messages, naming the client.
 pub fn ask_prefix(caller: &str) -> String {
@@ -655,6 +828,75 @@ impl Tools<'_> {
         })
     }
 
+    pub async fn calendar_list(&self, args: &JsonObject) -> ToolResult {
+        let a: CalendarListArgs = parse(args)?;
+        let mut q: Vec<(&str, String)> = Vec::new();
+        for (k, v) in [("from", a.from.as_deref()), ("to", a.to.as_deref())] {
+            if let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) {
+                if v.len() > 40
+                    || !v.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'-' | b':' | b'+' | b'.')
+                    })
+                {
+                    return Err(bad(format!("`{k}` must be YYYY-MM-DD or an RFC 3339 time")));
+                }
+                q.push((k, v.to_owned()));
+            }
+        }
+        if a.to.is_none() {
+            let days = a.days.unwrap_or(7);
+            if !(1..=62).contains(&days) {
+                return Err(bad("`days` must be 1-62"));
+            }
+            q.push(("days", days.to_string()));
+        }
+        let r = self.app.backend.get("/v1/calendar/events", &q).await?;
+        Ok(format::calendar(&r, self.app.cfg.timezone))
+    }
+
+    /// Never writes: files a proposal the owner accepts in the app.
+    pub async fn calendar_create(&self, args: &JsonObject) -> ToolResult {
+        let a: CalendarCreateArgs = parse(args)?;
+        let mut body = json!({
+            "title": check_text("title", &a.title, 300)?,
+            "start": check_text("start", &a.start, 40)?,
+            "from": format!("mcp:{}", self.caller.name),
+        });
+        if let Some(e) = a.end.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            body["end"] = json!(check_text("end", e, 40)?);
+        }
+        if let Some(l) = a
+            .location
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
+            body["location"] = json!(check_text("location", l, 500)?);
+        }
+        if let Some(d) = a
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            body["description"] = json!(check_text("description", d, 4000)?);
+        }
+        match self.app.backend.post("/v1/calendar/proposals", &body).await {
+            Ok(p) => Ok(format!(
+                "Proposed \"{}\" ({}). It needs owner confirmation in the app: the owner accepts or dismisses it in Secretary → Links before anything is added to the calendar. Proposal id {}.",
+                body["title"].as_str().unwrap_or(""),
+                format::local_time(body.get("start"), self.app.cfg.timezone),
+                p.get("id").and_then(Value::as_str).unwrap_or("?")
+            )),
+            Err(e) if e.code == "bad_request" => Err(bad(format!(
+                "Secretary refused the event ({}). Use RFC 3339 times with offset or YYYY-MM-DD dates. {}",
+                e.message,
+                format::now_line(self.app.cfg.timezone)
+            ))),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub async fn gym(&self, args: &JsonObject) -> ToolResult {
         let a: GymArgs = parse(args)?;
         let n = a.workouts.unwrap_or(5).clamp(1, 20);
@@ -683,6 +925,149 @@ impl Tools<'_> {
             .get("/v1/body/state", &[("timezone", tz.to_owned())])
             .await?;
         Ok(format::body_state(&st, self.app.cfg.timezone))
+    }
+
+    fn note_saved(&self, verb: &str, n: &Value) -> String {
+        let slug = n.get("slug").and_then(Value::as_str).unwrap_or("?");
+        let title = n.get("title").and_then(Value::as_str).unwrap_or("");
+        let chars = n
+            .get("content")
+            .and_then(Value::as_str)
+            .map_or(0, |c| c.chars().count());
+        let id = n.get("id").and_then(Value::as_str).unwrap_or("");
+        tracing::info!(
+            target: "secretary_mcp::audit",
+            event = "note_write",
+            verb,
+            slug,
+            id,
+            chars,
+            caller = %self.caller.name,
+        );
+        format!(
+            "{verb} note \"{slug}\" ({title}), {chars} characters in total. The owner sees it in the Secretary app under Notes; Lucina and note_get find it by the slug \"{slug}\"."
+        )
+    }
+
+    pub async fn note_save(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteSaveArgs = parse(args)?;
+        let title = check_text("title", &a.title, 200)?;
+        let content = note_content("content", &a.content)?;
+        let tags = note_tags(a.tags.as_deref())?;
+        let slug = match a.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => Some(note_key(Some(s), None)?),
+            None => None,
+        };
+        let mut body = json!({"title": title, "content": content, "source": self.caller.name});
+        if let Some(s) = &slug {
+            body["slug"] = json!(s);
+        }
+        if let Some(t) = &tags {
+            body["tags"] = json!(t);
+        }
+        if let Some(p) = a.pinned {
+            body["pinned"] = json!(p);
+        }
+        match self.app.backend.post("/v1/notes", &body).await {
+            Ok(n) => Ok(self.note_saved("Saved", &n)),
+            Err(e) if e.code == "slug_taken" => {
+                let slug = slug.unwrap_or_default();
+                if !a.replace.unwrap_or(false) {
+                    let existing = self
+                        .app
+                        .backend
+                        .get(&format!("/v1/notes/{}", seg(&slug)), &[])
+                        .await
+                        .ok();
+                    let what = existing
+                        .as_ref()
+                        .and_then(|n| n.get("title").and_then(Value::as_str))
+                        .map(|t| format!(" (\"{t}\")"))
+                        .unwrap_or_default();
+                    return Err(bad(format!(
+                        "A note named \"{slug}\"{what} already exists. Call note_save again with replace=true to overwrite it, use note_append to add to it, or pick another slug."
+                    )));
+                }
+                let mut patch = json!({"title": body["title"], "content": body["content"], "source": self.caller.name});
+                if let Some(t) = tags {
+                    patch["tags"] = json!(t);
+                }
+                if let Some(p) = a.pinned {
+                    patch["pinned"] = json!(p);
+                }
+                let n = self
+                    .app
+                    .backend
+                    .patch(&format!("/v1/notes/{}", seg(&slug)), &patch)
+                    .await?;
+                Ok(self.note_saved("Replaced", &n))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn note_append(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteAppendArgs = parse(args)?;
+        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
+        let content = note_content("content", &a.content)?;
+        let mut body = json!({"content": content, "source": self.caller.name});
+        if !a.continuation.unwrap_or(false) {
+            body["separator"] = json!("\n\n");
+        }
+        match self
+            .app
+            .backend
+            .post(&format!("/v1/notes/{}/append", seg(&key)), &body)
+            .await
+        {
+            Ok(n) => Ok(self.note_saved("Appended to", &n)),
+            Err(e) if e.code == "note_not_found" => Err(bad(format!(
+                "No note \"{key}\". Create it with note_save first (notes_search lists the existing ones)."
+            ))),
+            Err(e) if e.code == "note_too_large" => Err(bad(
+                "That would make the note larger than 256 KB; start a second note (e.g. slug \"<name>-2\") for the rest.",
+            )),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn note_get(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteGetArgs = parse(args)?;
+        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
+        let max = a.max_chars.unwrap_or(40_000).clamp(1000, 100_000);
+        match self
+            .app
+            .backend
+            .get(&format!("/v1/notes/{}", seg(&key)), &[])
+            .await
+        {
+            Ok(n) => Ok(format::note(
+                &n,
+                a.offset.unwrap_or(0),
+                max,
+                self.app.cfg.timezone,
+            )),
+            Err(e) if e.code == "note_not_found" => Err(bad(format!(
+                "No note \"{key}\". notes_search finds notes by words or lists the latest ones."
+            ))),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn notes_search(&self, args: &JsonObject) -> ToolResult {
+        let a: NotesSearchArgs = parse(args)?;
+        let limit = a.limit.unwrap_or(20).clamp(1, 50);
+        let mut q = vec![("limit", limit.to_string())];
+        let words = a.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(w) = words {
+            q.push(("q", check_text("q", w, 200)?));
+        }
+        let tag = a.tag.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if let Some(t) = tag {
+            q.push(("tag", check_text("tag", t.trim_start_matches('#'), 32)?));
+        }
+        let v = self.app.backend.get("/v1/notes", &q).await?;
+        Ok(format::notes_list(&v, words, tag, self.app.cfg.timezone))
     }
 
     pub async fn status(&self) -> ToolResult {

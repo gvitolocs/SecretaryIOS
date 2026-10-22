@@ -653,6 +653,161 @@ pub fn status(
     out
 }
 
+// -- calendar ----------------------------------------------------------------------
+
+/// `GET /v1/calendar/events` → one line per event, in `tz`.
+pub fn calendar(r: &Value, tz: Tz) -> String {
+    let events = r
+        .get("events")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let day = |v: Option<&Value>| -> String {
+        let t = v
+            .and_then(Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok());
+        t.map(|t| t.with_timezone(&tz).format("%Y-%m-%d").to_string())
+            .unwrap_or_default()
+    };
+    let mut out = format!(
+        "Calendar {} to {} ({}):",
+        day(r.get("from")),
+        r.get("to")
+            .and_then(Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| (t.with_timezone(&tz) - chrono::Duration::seconds(1))
+                .format("%Y-%m-%d")
+                .to_string())
+            .unwrap_or_default(),
+        tz.name()
+    );
+    if events.is_empty() {
+        out.push_str("\nNo events.");
+    }
+    for e in events.iter().take(200) {
+        let title = s(e, "title").unwrap_or("(no title)");
+        let when = if e.get("allDay").and_then(Value::as_bool) == Some(true) {
+            format!("{} (all day)", s(e, "start").unwrap_or(""))
+        } else {
+            let start = local_time(e.get("start"), tz);
+            let end = local_time(e.get("end"), tz);
+            let end_short = if end.get(..10) == start.get(..10) {
+                end.get(11..).unwrap_or(&end).to_owned()
+            } else {
+                end
+            };
+            format!("{start}–{end_short}")
+        };
+        let mut line = format!("\n- {when} {title}");
+        if let Some(c) = s(e, "calendar") {
+            line.push_str(&format!(" ({c})"));
+        }
+        if let Some(l) = s(e, "location") {
+            line.push_str(&format!(" @ {l}"));
+        }
+        line.push_str(&format!(" [id {}]", s(e, "id").unwrap_or("?")));
+        out.push_str(&line);
+    }
+    if events.len() > 200 {
+        out.push_str(&format!("\n… and {} more.", events.len() - 200));
+    }
+    if let Some(g) = r.pointer("/sources/google").filter(|g| g.is_object()) {
+        if s(g, "status") == Some("reconnect") {
+            out.push_str("\nNote: Google Calendar needs reconnecting in the Secretary app (Links); Google events may be out of date.");
+        }
+    }
+    out
+}
+
+// -- notes -------------------------------------------------------------------------
+
+fn note_head(n: &Value, tz: Tz) -> String {
+    let tags = n
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|t| {
+            t.iter()
+                .filter_map(Value::as_str)
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let mut line = format!(
+        "\"{}\" (slug {}, id {})",
+        s(n, "title").unwrap_or("untitled"),
+        s(n, "slug").unwrap_or("?"),
+        s(n, "id").unwrap_or("?"),
+    );
+    if n.get("pinned").and_then(Value::as_bool) == Some(true) {
+        line.push_str(" [pinned]");
+    }
+    line.push_str(&format!(
+        " · by {} · updated {}",
+        s(n, "source").unwrap_or("owner"),
+        local_time(n.get("updatedAt"), tz)
+    ));
+    if !tags.is_empty() {
+        line.push_str(&format!(" · {tags}"));
+    }
+    line
+}
+
+/// One note with its content from `offset` (characters), at most `max`.
+pub fn note(n: &Value, offset: usize, max: usize, tz: Tz) -> String {
+    let content = s(n, "content").unwrap_or("");
+    let total = content.chars().count();
+    let part: String = content.chars().skip(offset).take(max).collect();
+    let mut out = format!("Note {}\n{total} characters.", note_head(n, tz));
+    if offset > 0 || offset + max < total {
+        let end = (offset + max).min(total);
+        out.push_str(&format!(" Showing characters {offset}-{end}."));
+    }
+    out.push_str("\n\n");
+    if total == 0 {
+        out.push_str("(empty)");
+    } else if part.is_empty() {
+        out.push_str(&format!("(nothing at offset {offset})"));
+    } else {
+        out.push_str(&part);
+    }
+    if offset + max < total {
+        out.push_str(&format!(
+            "\n\n[…truncated: call note_get again with offset={} for the rest]",
+            offset + max
+        ));
+    }
+    out
+}
+
+/// `GET /v1/notes` answer as a list.
+pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> String {
+    let notes = v
+        .get("notes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let what = match (q, tag) {
+        (Some(q), Some(t)) => format!(" matching {q:?} tagged #{t}"),
+        (Some(q), None) => format!(" matching {q:?}"),
+        (None, Some(t)) => format!(" tagged #{t}"),
+        (None, None) => String::new(),
+    };
+    if notes.is_empty() {
+        return format!("No notes{what}.");
+    }
+    let mut out = format!("{} note(s){what}:\n", notes.len());
+    for n in &notes {
+        let size = n.get("size").and_then(Value::as_u64).unwrap_or(0);
+        out.push_str(&format!("- {} · {size} bytes\n", note_head(n, tz)));
+        if let Some(e) = s(n, "excerpt") {
+            out.push_str(&format!("  {}\n", clip(e, 240)));
+        }
+    }
+    out.push_str("Read one with note_get (slug or id).");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

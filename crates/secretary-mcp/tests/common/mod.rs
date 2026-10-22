@@ -34,6 +34,7 @@ pub struct MockState {
     pub items: Vec<Value>,
     pub legacy: Vec<Value>,
     pub revision: u64,
+    pub notes: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -217,6 +218,22 @@ async fn handle(
             "reminders": [{"id": "r1", "text": "Call the dentist", "dueAt": "2026-10-22T07:30:00.000Z", "status": "pending"}],
             "briefing": "Tomorrow starts at 9:30 with the dentist call.", "briefingCached": false}))
         .into_response(),
+        ("GET", ["v1", "calendar", "events"]) => Json(json!({"from": "2026-10-21T22:00:00.000Z", "to": "2026-10-28T23:00:00.000Z",
+            "timeZone": "Europe/Rome", "events": [
+                {"id": "google:abc", "source": "google", "sourceId": "abc", "calendar": "Google", "title": "Dentist",
+                 "start": "2026-10-22T07:30:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false, "location": "Via Roma 1",
+                 "startMs": 1, "endMs": 2, "recurring": false, "editable": true},
+                {"id": "iphone:EK1", "source": "iphone", "sourceId": "EK1", "calendar": "Casa", "title": "Birthday",
+                 "start": "2026-10-23", "end": "2026-10-24", "allDay": true, "startMs": 3, "endMs": 4, "recurring": false, "editable": false}],
+            "sources": {"google": {"status": "reconnect"}}}))
+        .into_response(),
+        ("POST", ["v1", "calendar", "proposals"]) => {
+            if body["start"] == "bad" {
+                return err(StatusCode::BAD_REQUEST, "bad_request");
+            }
+            (StatusCode::CREATED, Json(json!({"id": "prop_1", "event": body, "from": body["from"]}))).into_response()
+        }
+        ("POST", ["v1", "calendar", "events"]) => panic!("the MCP must never create events directly"),
         ("GET", ["v1", "gym", "state"]) => Json(json!({"ok": true, "replayed": false, "view": {"summary": {
             "workouts": 10, "completed_sets": 200, "weekly_workouts": 1, "weekly_goal": 3, "volume": "40,000 kg"},
             "records": [{"name": "Squat", "weight": "100 kg", "reps": 5, "estimated_1rm": "116.7 kg"}], "state": {"active": null}}}))
@@ -227,6 +244,73 @@ async fn handle(
             "entries": [{"id": "e1", "weight_grams": 80500, "measured_ms": 1_792_602_906_883_i64, "note": "after run"}],
             "labels": {"e1": "80.5 kg"}}}))
         .into_response(),
+        ("GET", ["v1", "notes"]) => {
+            let q = query.to_lowercase();
+            let hits: Vec<Value> = st
+                .notes
+                .iter()
+                .filter(|n| {
+                    q.split('&').filter_map(|kv| kv.strip_prefix("q=")).all(|w| {
+                        let w = w.replace('+', " ").replace("%20", " ");
+                        n["title"].as_str().unwrap_or("").to_lowercase().contains(&w)
+                            || n["content"].as_str().unwrap_or("").to_lowercase().contains(&w)
+                            || n["slug"].as_str().unwrap_or("").contains(&w)
+                    })
+                })
+                .map(|n| {
+                    let mut s = n.clone();
+                    let c = s["content"].as_str().unwrap_or("").to_owned();
+                    s.as_object_mut().unwrap().remove("content");
+                    s["size"] = json!(c.len());
+                    s["excerpt"] = json!(c.chars().take(220).collect::<String>());
+                    s
+                })
+                .collect();
+            Json(json!({"notes": hits})).into_response()
+        }
+        ("POST", ["v1", "notes"]) => {
+            let slug = body["slug"].as_str().map(str::to_owned).unwrap_or_else(|| {
+                body["title"].as_str().unwrap_or("note").to_lowercase().replace(' ', "-")
+            });
+            if st.notes.iter().any(|n| n["slug"] == slug.as_str()) {
+                return err(StatusCode::CONFLICT, "slug_taken");
+            }
+            let n = st.notes.len();
+            let note = json!({"id": format!("n_{n:020}"), "slug": slug, "title": body["title"],
+                "content": body["content"], "tags": body.get("tags").cloned().unwrap_or(json!([])),
+                "source": body.get("source").cloned().unwrap_or(json!("owner")),
+                "pinned": body.get("pinned").cloned().unwrap_or(json!(false)),
+                "createdAt": "2026-10-22T11:30:00.000Z", "updatedAt": "2026-10-22T11:30:00.000Z"});
+            st.notes.push(note.clone());
+            (StatusCode::CREATED, Json(note)).into_response()
+        }
+        ("GET", ["v1", "notes", key]) => match st.notes.iter().find(|n| n["slug"] == *key || n["id"] == *key) {
+            Some(n) => Json(n.clone()).into_response(),
+            None => err(StatusCode::NOT_FOUND, "note_not_found"),
+        },
+        ("PATCH", ["v1", "notes", key]) => match st.notes.iter_mut().find(|n| n["slug"] == *key || n["id"] == *key) {
+            Some(n) => {
+                for f in ["title", "content", "tags", "pinned"] {
+                    if let Some(v) = body.get(f) {
+                        n[f] = v.clone();
+                    }
+                }
+                Json(n.clone()).into_response()
+            }
+            None => err(StatusCode::NOT_FOUND, "note_not_found"),
+        },
+        ("POST", ["v1", "notes", key, "append"]) => match st.notes.iter_mut().find(|n| n["slug"] == *key || n["id"] == *key) {
+            Some(n) => {
+                let sep = body["separator"].as_str().unwrap_or("");
+                let c = format!("{}{sep}{}", n["content"].as_str().unwrap_or(""), body["content"].as_str().unwrap_or(""));
+                if c.len() > 256 * 1024 {
+                    return err(StatusCode::PAYLOAD_TOO_LARGE, "note_too_large");
+                }
+                n["content"] = json!(c);
+                Json(n.clone()).into_response()
+            }
+            None => err(StatusCode::NOT_FOUND, "note_not_found"),
+        },
         _ => err(StatusCode::NOT_FOUND, "not_found"),
     }
 }

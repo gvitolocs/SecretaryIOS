@@ -1,0 +1,210 @@
+//! Google Calendar API v3 events → [`Item`]s, and the incremental-sync
+//! merge.
+//!
+//! The server lists events with `singleEvents=false`, so recurring events
+//! arrive as masters (`recurrence: ["RRULE:…", "EXDATE…"]`) plus exceptions
+//! (`recurringEventId` + `originalStartTime`; `status: "cancelled"` for a
+//! removed instance), and expands them itself (same code as ICS feeds).
+
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, NaiveDate, Utc};
+use serde_json::Value;
+
+use crate::model::{Item, Moment};
+
+/// A Google `EventDateTime` (`{date}` or `{dateTime, timeZone?}`).
+pub fn moment(v: &Value, calendar_tz: &str) -> Option<Moment> {
+    if let Some(d) = v.get("date").and_then(Value::as_str) {
+        return NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .ok()
+            .map(Moment::Date);
+    }
+    let dt = v.get("dateTime").and_then(Value::as_str)?;
+    let t = DateTime::parse_from_rfc3339(dt).ok()?.with_timezone(&Utc);
+    let zone = v
+        .get("timeZone")
+        .and_then(Value::as_str)
+        .and_then(crate::parse_tz)
+        .or_else(|| crate::parse_tz(calendar_tz));
+    Some(match zone {
+        Some(z) => Moment::Local {
+            at: t.with_timezone(&z).naive_local(),
+            tz: z.name().to_owned(),
+        },
+        None => Moment::Utc(t),
+    })
+}
+
+fn text(v: &Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// One Google event → an item (`None` without an id).
+pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
+    let uid = text(ev, "id")?;
+    let mut item = Item {
+        uid,
+        cancelled: ev.get("status").and_then(Value::as_str) == Some("cancelled"),
+        title: text(ev, "summary").unwrap_or_default(),
+        location: text(ev, "location"),
+        description: text(ev, "description"),
+        url: text(ev, "htmlLink"),
+        start: ev.get("start").and_then(|s| moment(s, calendar_tz)),
+        end: ev.get("end").and_then(|s| moment(s, calendar_tz)),
+        instance_of: text(ev, "recurringEventId"),
+        original: ev
+            .get("originalStartTime")
+            .and_then(|s| moment(s, calendar_tz)),
+        ..Item::default()
+    };
+    for line in ev
+        .get("recurrence")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let upper = line.to_ascii_uppercase();
+        if upper.starts_with("RRULE:") {
+            item.rrule = Some(line[6..].to_owned());
+        } else if upper.starts_with("EXDATE") {
+            // EXDATE;TZID=Europe/Rome:20261022T090000,20261029T090000 / EXDATE;VALUE=DATE:20261022
+            let Some((head, values)) = line.split_once(':') else {
+                continue;
+            };
+            let tzid = head
+                .split(';')
+                .find_map(|p| p.strip_prefix("TZID="))
+                .map(str::to_owned);
+            let tz = tzid.as_deref().unwrap_or(calendar_tz);
+            for v in values.split(',') {
+                let v = v.trim();
+                let m = if v.len() == 8 {
+                    NaiveDate::parse_from_str(v, "%Y%m%d")
+                        .ok()
+                        .map(Moment::Date)
+                } else if let Some(u) = v.strip_suffix('Z') {
+                    chrono::NaiveDateTime::parse_from_str(u, "%Y%m%dT%H%M%S")
+                        .ok()
+                        .map(|t| Moment::Utc(t.and_utc()))
+                } else {
+                    chrono::NaiveDateTime::parse_from_str(v, "%Y%m%dT%H%M%S")
+                        .ok()
+                        .map(|at| Moment::Local {
+                            at,
+                            tz: crate::parse_tz(tz)
+                                .map_or_else(|| tz.to_owned(), |z| z.name().to_owned()),
+                        })
+                };
+                item.exdates.extend(m);
+            }
+        }
+    }
+    Some(item)
+}
+
+/// Merge one page of `events.list` results into the stored items.
+///
+/// - a cancelled master (no `recurringEventId`) removes the event and its
+///   stored exceptions;
+/// - a cancelled exception is kept (it hides that instance);
+/// - anything else is inserted or replaced.
+///
+/// Returns how many entries changed.
+pub fn apply_page(
+    store: &mut BTreeMap<String, Item>,
+    events: &[Value],
+    calendar_tz: &str,
+) -> usize {
+    let mut changed = 0;
+    for ev in events {
+        let Some(item) = to_item(ev, calendar_tz) else {
+            continue;
+        };
+        changed += 1;
+        if item.cancelled && item.instance_of.is_none() {
+            let id = item.uid.clone();
+            store.remove(&id);
+            store.retain(|_, v| v.instance_of.as_deref() != Some(id.as_str()));
+            continue;
+        }
+        store.insert(item.uid.clone(), item);
+    }
+    changed
+}
+
+/// The id Google gives instance `start` of recurring event `master`
+/// (`<id>_20261022T070000Z`, `<id>_20261022` for all-day events).
+pub fn instance_id(master: &str, start: &Moment, default: chrono_tz::Tz) -> String {
+    match start {
+        Moment::Date(d) => format!("{master}_{}", d.format("%Y%m%d")),
+        other => format!(
+            "{master}_{}",
+            other.instant(default).format("%Y%m%dT%H%M%SZ")
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn maps_masters_exceptions_and_cancellations() {
+        let master = json!({
+            "id": "abc", "status": "confirmed", "summary": "Gym", "htmlLink": "https://cal/x",
+            "start": {"dateTime": "2026-10-19T18:00:00+02:00", "timeZone": "Europe/Rome"},
+            "end": {"dateTime": "2026-10-19T19:00:00+02:00", "timeZone": "Europe/Rome"},
+            "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO", "EXDATE;TZID=Europe/Rome:20261026T180000"]
+        });
+        let it = to_item(&master, "UTC").unwrap();
+        assert_eq!(it.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=MO"));
+        assert_eq!(it.exdates.len(), 1);
+        assert!(matches!(&it.start, Some(Moment::Local{tz, ..}) if tz == "Europe/Rome"));
+
+        let mut store = BTreeMap::new();
+        let moved = json!({"id": "abc_20261102T170000Z", "recurringEventId": "abc", "status": "confirmed",
+            "summary": "Gym (late)", "originalStartTime": {"dateTime": "2026-11-02T18:00:00+01:00", "timeZone": "Europe/Rome"},
+            "start": {"dateTime": "2026-11-02T20:00:00+01:00"}, "end": {"dateTime": "2026-11-02T21:00:00+01:00"}});
+        let gone = json!({"id": "abc_20261109T170000Z", "recurringEventId": "abc", "status": "cancelled",
+            "originalStartTime": {"dateTime": "2026-11-09T18:00:00+01:00", "timeZone": "Europe/Rome"}});
+        let single = json!({"id": "one", "summary": "Dentist", "start": {"date": "2026-10-23"}, "end": {"date": "2026-10-24"}});
+        assert_eq!(
+            apply_page(&mut store, &[master, moved, gone, single], "Europe/Rome"),
+            4
+        );
+        assert_eq!(store.len(), 4);
+        assert!(store["abc_20261109T170000Z"].cancelled);
+
+        // the master is deleted: its exceptions go too
+        apply_page(
+            &mut store,
+            &[json!({"id": "abc", "status": "cancelled"})],
+            "UTC",
+        );
+        assert_eq!(store.keys().collect::<Vec<_>>(), vec!["one"]);
+    }
+
+    #[test]
+    fn instance_ids() {
+        let m = Moment::Local {
+            at: chrono::NaiveDate::from_ymd_opt(2026, 10, 22)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+            tz: "Europe/Rome".into(),
+        };
+        assert_eq!(
+            instance_id("abc", &m, chrono_tz::UTC),
+            "abc_20261022T070000Z"
+        );
+        let d = Moment::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap());
+        assert_eq!(instance_id("abc", &d, chrono_tz::UTC), "abc_20261022");
+    }
+}

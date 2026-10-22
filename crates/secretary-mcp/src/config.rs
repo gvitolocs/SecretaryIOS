@@ -16,6 +16,7 @@
 //! | `SECRETARY_MCP_ALLOWED_ORIGINS` | public origin, `https://chatgpt.com`, `https://claude.ai` | `Origin` check of `/mcp` (requests without `Origin` pass) |
 //! | `SECRETARY_MCP_ACCESS_TTL_SECS` | `3600` | OAuth access token lifetime |
 //! | `SECRETARY_MCP_REFRESH_TTL_SECS` | `2592000` (30 d) | OAuth refresh token lifetime |
+//! | `SECRETARY_MCP_STATUS_TOKEN_FILE` | unset | enables `GET /internal/status` (AI clients for the app's Links tab); same content as secretary-server's `SECRETARY_MCP_STATUS_TOKEN_FILE` |
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -54,6 +55,8 @@ pub struct Config {
     pub allowed_origins: Vec<String>,
     pub access_ttl: Duration,
     pub refresh_ttl: Duration,
+    /// Bearer for `GET /internal/status`; `None`: the route answers 404.
+    pub status_token: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -109,6 +112,7 @@ impl Config {
             allowed_hosts: vec![host, "localhost".into(), "127.0.0.1".into(), "::1".into()],
             access_ttl: Duration::from_secs(3600),
             refresh_ttl: Duration::from_secs(30 * 24 * 3600),
+            status_token: None,
         })
     }
 
@@ -129,6 +133,9 @@ impl Config {
         }
         if let Some(p) = get("SECRETARY_MCP_SERVICE_TOKEN_FILE") {
             cfg.service_token = Some(read_secret(&p, "SECRETARY_MCP_SERVICE_TOKEN_FILE")?);
+        }
+        if let Some(p) = get("SECRETARY_MCP_STATUS_TOKEN_FILE") {
+            cfg.status_token = Some(read_secret(&p, "SECRETARY_MCP_STATUS_TOKEN_FILE")?);
         }
         if let Some(tz) = get("SECRETARY_MCP_TIMEZONE") {
             cfg.timezone = tz

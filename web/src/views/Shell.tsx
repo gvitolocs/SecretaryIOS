@@ -1,15 +1,21 @@
-import { A, useLocation } from "@solidjs/router";
-import { createEffect, createSignal, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
+import { A, useLocation, useNavigate } from "@solidjs/router";
+import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
-import { AvatarIcon, ChatIcon, DumbbellIcon, ListIcon, LogoutIcon, ScaleIcon, UserIcon } from "../components/Icons";
+import { AvatarIcon, ChatIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
+import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
 import { t } from "../i18n";
-import { resumeJobPolling } from "../state/chat";
+import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
+import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
+import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
+
+// The Wardrobe panel is only fetched the first time it opens.
+const Wardrobe = lazy(() => import("../components/Wardrobe"));
 
 function NavLinks(props: { class: string }) {
   return (
@@ -30,6 +36,14 @@ function NavLinks(props: { class: string }) {
         <ScaleIcon />
         <span>{t("shell.navWeight")}</span>
       </A>
+      <A href="/links" class="tab" activeClass="tab--active">
+        <LinkIcon />
+        <span>{t("shell.navLinks")}</span>
+      </A>
+      <A href="/notes" class="tab" activeClass="tab--active">
+        <NoteIcon />
+        <span>{t("shell.navNotes")}</span>
+      </A>
     </nav>
   );
 }
@@ -42,12 +56,13 @@ function reducedMotion(): boolean {
   }
 }
 
-/** The page fades up into place when the section changes (not on first paint). */
+/** The page fades up into place when the section changes (not on first paint).
+ * Moving between notes stays inside one page, so it does not count. */
 function useRouteTransition(target: () => HTMLElement | undefined) {
   const location = useLocation();
   createEffect(
     on(
-      () => location.pathname,
+      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname),
       () => {
         const el = target();
         if (!el || reducedMotion() || typeof el.animate !== "function") return;
@@ -67,13 +82,24 @@ function useRouteTransition(target: () => HTMLElement | undefined) {
 export default function Shell(props: { children?: JSX.Element }) {
   const [loggingOut, setLoggingOut] = createSignal(false);
   const [accountOpen, setAccountOpen] = createSignal(false);
+  const [accountSection, setAccountSection] = createSignal<"notifications" | null>(null);
   let accountButton: HTMLButtonElement | undefined;
   let main: HTMLElement | undefined;
   useRouteTransition(() => main);
+  const location = useLocation();
+  // Her outfit follows the section (Gym, Shopping, elsewhere).
+  createEffect(() => setAvatarPath(location.pathname));
+  const [wardrobeLoaded, setWardrobeLoaded] = createSignal(false);
+  createEffect(() => wardrobeOpen() && setWardrobeLoaded(true));
+  const navigate = useNavigate();
 
   onMount(() => {
+    onCleanup(startNotifications((route) => navigate(route)));
     void checkHealth();
     resumeJobPolling();
+    // The timeline stream stays open on every page, so Lucina's outfit changes arrive live.
+    onCleanup(connectTimeline());
+    onCleanup(startAvatarSync());
     const timer = setInterval(() => void checkHealth(), HEALTH_POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") void checkHealth();
@@ -121,11 +147,20 @@ export default function Shell(props: { children?: JSX.Element }) {
               <AvatarIcon />
             </button>
           </Show>
+          <NotificationBell
+            onSettings={() => {
+              setAccountSection("notifications");
+              setAccountOpen(true);
+            }}
+          />
           <button
             type="button"
             class="icon-btn"
             ref={accountButton}
-            onClick={() => setAccountOpen(true)}
+            onClick={() => {
+              setAccountSection(null);
+              setAccountOpen(true);
+            }}
             aria-label={t("shell.account")}
             title={t("shell.account")}
           >
@@ -169,8 +204,14 @@ export default function Shell(props: { children?: JSX.Element }) {
         <LucinaDock />
       </div>
       <NavLinks class="tabbar" />
+      <Show when={wardrobeLoaded()}>
+        <Suspense>
+          <Wardrobe />
+        </Suspense>
+      </Show>
       <AccountDialog
         open={accountOpen()}
+        section={accountSection()}
         onClose={() => {
           setAccountOpen(false);
           accountButton?.focus();

@@ -1,6 +1,9 @@
 /* Secretary web styles. Design tokens: styles/tokens.css; base, shell, stage and chat: styles/base.css. */
 @import "./styles/tokens.css";
 @import "./styles/base.css";
+@import "./styles/wardrobe.css";
+@import "./styles/notifications.css";
+@import "./styles/notes.css";
 
 /* ---------- Shopping ---------- */
 
@@ -1221,7 +1224,8 @@ section + .settings-block {
   height: 100%;
   overflow-y: auto;
   padding: calc(var(--safe-top) + 12px) var(--pad-right) calc(var(--safe-bottom) + 16px) var(--pad-left);
-  background: var(--glass-strong);
+  /* Nearly opaque: long forms read better without the page showing through. */
+  background: color-mix(in srgb, var(--surface-solid) 95%, transparent);
   -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
   backdrop-filter: blur(var(--blur-strong)) saturate(1.5);
   box-shadow: var(--shadow-lg);

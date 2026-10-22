@@ -33,13 +33,28 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | `reminders_list {scope?, include_sent?}` | `read` | `GET /v1/reminders`, times in the owner's zone. |
 | `reminder_create {text, when}` | `write` | `when` as RFC 3339 sends `{text, dueAt}`. Anything else sends `{naturalText: "<when> — <text>"}` to Lucina's parser. |
 | `reminder_cancel {id}` | `write` | `DELETE /v1/reminders/{id}`: status becomes `cancelled`. The record is kept. Annotated `destructiveHint`. |
+| `calendar_list {from?, to?, days?}` | `read` | `GET /v1/calendar/events`: Google, iPhone and ICS events merged, times in the owner's zone, with ids. Default: 7 days from today. |
+| `calendar_create {title, start, end?, location?, description?}` | `write` | **Never writes.** Files a proposal (`POST /v1/calendar/proposals`, `from: mcp:<caller>`) and answers that it needs owner confirmation in the app (Links → Waiting for your OK). |
 | `gym_summary {workouts?}` | `read` | `GET /v1/insights/summary` (service token). Without it, `GET /v1/gym/state`. |
 | `body_summary` | `read` | `GET /v1/body/state`: current weight, 7-day average, trends, goal, latest entries. |
+| `note_save {title, content, slug?, tags?, pinned?, replace?}` | `write` | `POST /v1/notes` with `source: <caller>`. An existing slug is refused unless `replace: true` (then `PATCH`). Up to 256 KB of Markdown. |
+| `note_append {slug \| id, content, continuation?}` | `write` | `POST /v1/notes/{key}/append`: a new paragraph (`separator: "\n\n"`), or glued on exactly with `continuation: true` (chunked uploads). |
+| `note_get {slug \| id, offset?, max_chars?}` | `read` | `GET /v1/notes/{key}`: title, tags, source, update time and the content, paged (40 000 characters by default). |
+| `notes_search {q?, tag?, limit?}` | `read` | `GET /v1/notes?q=&tag=`: slug, title, source and an excerpt per hit; without `q`, the latest notes. |
 | `lucina_status` | `read` | Server and Lucina health, whether the backend token is accepted, owner time zone and local time, this caller's scopes. |
 
 **`ask_lucina` details.** The message reaches Lucina prefixed `[via Lucina MCP, from <caller>] `, so
 she knows who is asking. Each caller gets its own session `mcp-<caller>[-<conversation>]`. Progress
-notifications go out every 10 s while she thinks.
+notifications go out every 10 s while she thinks. Messages are limited to 12 000 characters (Lucina
+accepts 12 000 after the prefix; secretary-server 12 100 with it).
+
+**Notes.** Long documents, briefings and anything worth keeping go to notes, not to `ask_lucina`
+(the tool descriptions and the server instructions say so). A note shows up in the Secretary app
+(Notes, web and iOS) with the caller as its source, and Lucina recalls it by slug ("cosa c'è nella nota
+craftit-meeting"). For a document too long for one call, `note_save` the first part and
+`note_append` the rest in order. Notes are the owner's own local data, so `note_save` and
+`note_append` need only the `write` scope and no confirmation; each write is also logged on
+`secretary_mcp::audit` (`event = "note_write"`, slug, id, size, caller).
 
 **Resources** (`read`):
 
@@ -51,10 +66,13 @@ agenda is unavailable, it falls back to today's reminders.
 
 `tools/list`, `resources/list` and `prompts/list` show only what the caller's scopes allow.
 
+**AI client status.** With `SECRETARY_MCP_STATUS_TOKEN_FILE` set, `GET /internal/status` (Bearer that token; 404 otherwise; not routed by Caddy) lists callers, how they connect, scopes, created/last-used times and whether they are active, never ids or hashes. secretary-server reads it for the Links tab.
+
 **Safety.**
 
 - No tool buys anything, messages third parties, or deletes data. There are no shopping `remove`, list
-  delete, gym/body delete or post tools.
+  delete, note delete, gym/body delete or post tools. `note_save` only overwrites a note with an explicit
+  `replace: true`.
 - Anything with consequences goes through `ask_lucina`, so it is handled by Lucina's own pipeline and
   her own confirmation flow.
 - Every call is logged on target `secretary_mcp::audit` with tool, caller, auth kind, token or grant
