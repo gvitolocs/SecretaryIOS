@@ -1,3 +1,15 @@
+/**
+ * Inverse of the two ACES matrices in three r186's `tonemapping_pars_fragment` (row-major).
+ * The bloom pipeline's OutputPass tone-maps the whole frame, including `toneMapped = false`
+ * toon pixels, so those pixels ship the inverse and OutputPass maps them back to Standard.
+ */
+export const ACES_INVERSE_IN = [1.764740972, -0.6757776782, -0.0889632938, -0.147027852, 1.1602515117, -0.0132236597, -0.0363368301, -0.1624364369, 1.198773267];
+export const ACES_INVERSE_OUT = [0.6430382486, 0.3111867518, 0.0457754574, 0.0592686904, 0.9314364869, 0.0092949157, 0.0059619013, 0.0639290157, 0.9301183842];
+
+/** GLSL column-major mat3 from a row-major array. */
+const mat3 = (m: number[]): string =>
+  `mat3(vec3(${m[0]}, ${m[3]}, ${m[6]}), vec3(${m[1]}, ${m[4]}, ${m[7]}), vec3(${m[2]}, ${m[5]}, ${m[8]}))`;
+
 export const toonVertex = /* glsl */ `
 #include <common>
 #include <morphtarget_pars_vertex>
@@ -9,6 +21,9 @@ uniform float outlineWidth;
 uniform float outlineMax;
 #ifdef OUTLINE_COLOR
 attribute vec3 color;
+#endif
+#ifdef OUTLINE_WEIGHT
+attribute float outlineWeight;
 #endif
 void main() {
   tUv = uv;
@@ -26,11 +41,19 @@ void main() {
   #ifdef OUTLINE_COLOR
   k = clamp(color.r / outlineMax, 0.0, 1.0);
   #endif
+  // "shell" weight: CPU-classified per-vertex extrusion, with 0 meaning no hull at all.
+  #ifdef OUTLINE_WEIGHT
+  k = outlineWeight;
+  #endif
   // Extrude in world space, then return to local space (including nonuniform scale).
   vec3 wn = inverseTransformDirection(normalize(normalMatrix * objectNormal), viewMatrix);
   mat3 m = mat3(modelMatrix);
   vec3 localPush = vec3(dot(cross(m[1], m[2]), wn), dot(cross(m[2], m[0]), wn), dot(cross(m[0], m[1]), wn)) / dot(m[0], cross(m[1], m[2]));
+  #ifdef OUTLINE_WEIGHT
+  transformed += localPush * outlineWidth * k;
+  #else
   transformed += localPush * outlineWidth * (0.15 + 0.85 * k);
+  #endif
   #include <project_vertex>
   tView = -mvPosition.xyz;
 }
@@ -66,7 +89,24 @@ uniform float rim;
 uniform float opacity;
 uniform float alphaTest;
 uniform float albedoMix;
+uniform float inverseTone;
+uniform float toneExposure;
 float lum(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+// Inverse of three r186 ACESFilmicToneMapping (forward: c *= exposure / 0.6, ACESInputMat,
+// RRTAndODTFit per channel, ACESOutputMat, saturate). Only ACES is inverted here; AgX/Neutral
+// keep inverseTone = 0 because their forward transform has no closed-form inverse in the shader.
+vec3 acesInverse(vec3 c) {
+  const mat3 invOut = ${mat3(ACES_INVERSE_OUT)};
+  const mat3 invIn = ${mat3(ACES_INVERSE_IN)};
+  vec3 w = clamp(invOut * clamp(c, 0.0, 1.0), 0.0, 0.999);
+  vec3 a = vec3(1.0) - 0.983729 * w;
+  vec3 b = vec3(0.0245786) - 0.4329510 * w;
+  vec3 k = -(vec3(0.000090537) + 0.238081 * w);
+  vec3 v = (-b + sqrt(max(b * b - 4.0 * a * k, vec3(0.0)))) / (2.0 * a);
+  return max(invIn * v * (0.6 / max(toneExposure, 0.0001)), vec3(0.0));
+}
+
 void main() {
   vec2 uv = (mapTransform * vec3(tUv, 1.0)).xy;
   vec4 texel = vec4(1.0);
@@ -142,6 +182,7 @@ void main() {
   float f = 1.0 - pow(abs(dot(N,V)), 0.6);
   col += rimColor * smoothstep(0.45,0.85,f) * rim;
   #endif
+  if (inverseTone > 0.5) col = acesInverse(col);
   gl_FragColor = vec4(col, alpha);
   #include <colorspace_fragment>
   #include <premultiplied_alpha_fragment>

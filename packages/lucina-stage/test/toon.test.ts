@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ACESFilmicToneMapping,
+  AgXToneMapping,
   Bone,
   Color,
   ShaderMaterial,
   Texture,
   BoxGeometry,
+  BufferGeometry,
   Float32BufferAttribute,
   Group,
   MeshStandardMaterial,
@@ -12,7 +15,15 @@ import {
   SkinnedMesh,
   Uint16BufferAttribute,
 } from 'three';
-import { applyManifestToon, applyToon, applyToonHairPart, normalizeToon } from '../src/toon';
+import {
+  acesSceneThreshold,
+  applyManifestToon,
+  applyToon,
+  applyToonHairPart,
+  computeOutlineWeights,
+  normalizeToon,
+} from '../src/toon';
+import { ACES_INVERSE_IN, ACES_INVERSE_OUT, toonFragment } from '../src/toon-shaders';
 import { HairRig, tintMaterial } from '../src/hair';
 import { normalizeManifest } from '../src/manifest';
 
@@ -228,6 +239,173 @@ describe('albedo saturation', () => {
     expect(mat.uniforms.saturation?.value).toBe(0.35);
     expect(mat.fragmentShader).toContain('albedo = mix(vec3(lum(albedo)), albedo, saturation)');
     expect(mat.fragmentShader.indexOf('albedo = mix')).toBeLessThan(mat.fragmentShader.indexOf('col = albedo * ramp'));
+    handle!.dispose();
+  });
+});
+
+const ACES_IN = [0.59719, 0.35458, 0.04823, 0.076, 0.90834, 0.01566, 0.0284, 0.13383, 0.83777];
+const ACES_OUT = [1.60475, -0.53108, -0.07367, -0.10208, 1.10813, -0.00605, -0.00327, -0.07276, 1.07602];
+const mul3 = (m: number[], v: number[]): number[] => [
+  m[0]! * v[0]! + m[1]! * v[1]! + m[2]! * v[2]!,
+  m[3]! * v[0]! + m[4]! * v[1]! + m[5]! * v[2]!,
+  m[6]! * v[0]! + m[7]! * v[1]! + m[8]! * v[2]!,
+];
+const rrt = (v: number): number => (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.432951) + 0.238081);
+const forwardACES = (c: number[], exposure: number): number[] =>
+  mul3(ACES_OUT, mul3(ACES_IN, c.map((x) => (x * exposure) / 0.6)).map(rrt)).map((x) => Math.min(1, Math.max(0, x)));
+const inverseACES = (c: number[], exposure: number): number[] => {
+  const w = mul3(ACES_INVERSE_OUT, c.map((x) => Math.min(1, Math.max(0, x)))).map((x) => Math.min(0.999, Math.max(0, x)));
+  const v = w.map((wi) => {
+    const a = 1 - 0.983729 * wi,
+      b = 0.0245786 - 0.432951 * wi,
+      k = -(0.000090537 + 0.238081 * wi);
+    return (-b + Math.sqrt(Math.max(b * b - 4 * a * k, 0))) / (2 * a);
+  });
+  return mul3(ACES_INVERSE_IN, v).map((x) => Math.max(0, (x * 0.6) / exposure));
+};
+
+describe('bloom threshold in scene space', () => {
+  it('bisects the display-space 0.72 threshold through ACES', () => {
+    for (const [exposure, expected] of [
+      [0.9, 0.936],
+      [1, 0.842],
+    ] as const) {
+      const scene = acesSceneThreshold(0.72, exposure);
+      expect(Math.abs(scene - expected)).toBeLessThan(0.005);
+      expect(Math.abs(forwardACES([scene, scene, scene], exposure)[0]! - 0.72)).toBeLessThan(1e-6);
+    }
+  });
+
+  it('converts the light-theme 0.97 threshold the same way', () => {
+    const scene = acesSceneThreshold(0.97, 0.92);
+    expect(Math.abs(scene - 5.9905)).toBeLessThan(0.005);
+    expect(Math.abs(forwardACES([scene, scene, scene], 0.92)[0]! - 0.97)).toBeLessThan(1e-6);
+  });
+});
+
+describe('ACES inverse for bloom', () => {
+  it('round-trips linear toon colours that stay in gamut', () => {
+    let checked = 0;
+    for (const exposure of [0.9, 1, 1.2]) {
+      for (let r = 0; r <= 10; r++) {
+        for (let g = 0; g <= 10; g++) {
+          for (let b = 0; b <= 10; b++) {
+            const c = [r / 10, g / 10, b / 10];
+            // Only colours the forward transform actually maps inside (0,1)^3 have an inverse.
+            const raw = mul3(ACES_OUT, mul3(ACES_IN, c.map((x) => (x * exposure) / 0.6)).map(rrt));
+            if (raw.some((x) => x <= 1e-4 || x >= 1 - 1e-4)) continue;
+            const display = forwardACES(c, exposure);
+            const back = inverseACES(display, exposure);
+            expect(Math.max(...back.map((x, i) => Math.abs(x - c[i]!)))).toBeLessThan(1e-3);
+            const again = forwardACES(back, exposure);
+            expect(Math.max(...again.map((x, i) => Math.abs(x - display[i]!)))).toBeLessThan(1e-3);
+            checked++;
+          }
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(1000);
+  });
+
+  it('embeds the precomputed inverse matrices in the toon fragment', () => {
+    for (const value of [...ACES_INVERSE_IN, ...ACES_INVERSE_OUT]) expect(toonFragment).toContain(String(value));
+    expect(toonFragment).toContain('if (inverseTone > 0.5) col = acesInverse(col);');
+  });
+});
+
+/** Grid patch (n x n vertices, z = 0) plus a separate island triangle. */
+function patch(n: number): { geometry: BufferGeometry; island: number[] } {
+  const geometry = new BufferGeometry();
+  const position: number[] = [];
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) position.push(x, y, 0);
+  const index: number[] = [];
+  for (let y = 0; y < n - 1; y++) {
+    for (let x = 0; x < n - 1; x++) {
+      const a = y * n + x,
+        b = a + 1,
+        c = a + n,
+        d = c + 1;
+      index.push(a, c, b, b, c, d);
+    }
+  }
+  const island = [position.length / 3, position.length / 3 + 1, position.length / 3 + 2];
+  position.push(-10, -10, 0, -9, -10, 0, -9.5, -9, 0);
+  index.push(island[0]!, island[1]!, island[2]!);
+  geometry.setAttribute('position', new Float32BufferAttribute(position, 3));
+  geometry.setIndex(index);
+  return { geometry, island };
+}
+
+describe('shell outline weights', () => {
+  it('keeps the largest island, drops other pieces and fades the open border', () => {
+    const n = 5;
+    const { geometry, island } = patch(n);
+    const k = computeOutlineWeights(geometry);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = y * n + x;
+        const border = x === 0 || y === 0 || x === n - 1 || y === n - 1;
+        const ring = !border && (x === 1 || y === 1 || x === n - 2 || y === n - 2);
+        expect(k[i]).toBe(border ? 0 : ring ? 0.5 : 1);
+      }
+    }
+    for (const i of island) expect(k[i]).toBe(0);
+  });
+
+  it('welds UV seams before finding islands', () => {
+    const geometry = new BufferGeometry();
+    // Closed tetrahedron with every face's vertices duplicated (as a UV atlas would split them).
+    const a = [0, 0, 0],
+      b = [1, 0, 0],
+      c = [0, 1, 0],
+      d = [0, 0, 1];
+    geometry.setAttribute(
+      'position',
+      new Float32BufferAttribute([...a, ...b, ...c, ...a, ...b, ...d, ...a, ...c, ...d, ...b, ...c, ...d], 3),
+    );
+    const k = computeOutlineWeights(geometry);
+    // Welded, the four faces are one closed island with no boundary: full hull everywhere.
+    for (const value of k) expect(value).toBe(1);
+  });
+
+  it('adds the shared attribute once and drives the hull shader', async () => {
+    const { root, mesh } = model();
+    const raw = { materials: { Skin: { outline: { color: [0.6, 0.5, 0.8], scale: 2.6, weight: 'shell' } } } };
+    const first = await applyToon(root, raw);
+    const attribute = mesh.geometry.getAttribute('outlineWeight');
+    expect(attribute.count).toBe(mesh.geometry.getAttribute('position').count);
+    const hull = root.children[1] as SkinnedMesh;
+    expect(hull.geometry).toBe(mesh.geometry);
+    expect((hull.material as ShaderMaterial).defines).toHaveProperty('OUTLINE_WEIGHT');
+    first!.dispose();
+    const second = await applyToon(root, raw);
+    expect(mesh.geometry.getAttribute('outlineWeight')).toBe(attribute);
+    expect(normalizeToon(raw).materials.Skin!.outline!.weight).toBe('shell');
+    second!.dispose();
+  });
+});
+
+describe('bloom inverse tone uniforms', () => {
+  it('inverts only for ACES when the bloom pipeline asks for it', async () => {
+    const { root, mesh } = model();
+    const handle = await applyToon(root, { materials: { Skin: { preset: 'lit' } } });
+    const material = mesh.material as unknown as ShaderMaterial;
+    const render = (toneMapping: number, exposure: number, inverse: boolean): void => {
+      (mesh.onBeforeRender as unknown as (r: unknown, s: unknown) => void)(
+        { toneMapping, toneMappingExposure: exposure },
+        { userData: { toonInverseTone: inverse } },
+      );
+    };
+    render(ACESFilmicToneMapping, 0.9, true);
+    handle!.update();
+    expect(material.uniforms.inverseTone!.value).toBe(1);
+    expect(material.uniforms.toneExposure!.value).toBe(0.9);
+    render(ACESFilmicToneMapping, 0.9, false);
+    handle!.update();
+    expect(material.uniforms.inverseTone!.value).toBe(0);
+    render(AgXToneMapping, 0.9, true);
+    handle!.update();
+    expect(material.uniforms.inverseTone!.value).toBe(0);
     handle!.dispose();
   });
 });
