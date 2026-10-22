@@ -5,6 +5,7 @@
 // drops anything malformed instead of throwing.
 
 import { parseRich, type RichMessage } from "../lib/rich";
+import { type Model3dBlock, parseModel3dBlocks } from "../lib/model3d";
 
 export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"] as const;
 export type Channel = (typeof CHANNELS)[number];
@@ -29,6 +30,8 @@ export interface ItemMeta {
   rich?: RichMessage;
   /** With kind "proactive": Lucina reached out on her own. */
   proactive?: ProactiveMeta;
+  /** Message format v1 `model3d` blocks (3D models from the gallery). */
+  blocks?: Model3dBlock[];
 }
 
 export type ProactivePriority = "low" | "normal" | "high";
@@ -163,6 +166,10 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (m.kind === "note") {
     out.kind = "note";
     if (typeof m.slug === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.slug)) out.slug = m.slug;
+  }
+  if (m.format === "v1") {
+    const blocks = parseModel3dBlocks(m.blocks);
+    if (blocks.length) out.blocks = blocks;
   }
   return Object.keys(out).length ? out : undefined;
 }

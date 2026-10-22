@@ -21,7 +21,12 @@ export interface LoadOptions {
 
 export async function fetchOk(url: string, init: RequestInit | undefined, signal?: AbortSignal): Promise<Response> {
   const res = await fetch(url, { ...init, ...(signal ? { signal } : {}) });
-  if (!res.ok) throw new Error(`GET ${url} failed: HTTP ${res.status}`);
+  if (!res.ok) {
+    // Release the connection: an unread error body keeps an HTTP/1.1 socket busy, and a few
+    // missing assets would then use up the browser's 6 connections per host.
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`GET ${url} failed: HTTP ${res.status}`);
+  }
   return res;
 }
 

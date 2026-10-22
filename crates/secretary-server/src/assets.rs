@@ -47,7 +47,7 @@ pub fn content_type(name: &str) -> Option<&'static str> {
     }
 }
 
-fn etag(path: &Path) -> Option<String> {
+pub(crate) fn etag(path: &Path) -> Option<String> {
     let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
     let mtime = meta
         .modified()

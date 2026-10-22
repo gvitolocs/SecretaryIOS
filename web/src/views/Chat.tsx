@@ -25,6 +25,7 @@ import {
 import { LinkifiedText } from "../components/LinkifiedText";
 import { Markdown } from "../components/Markdown";
 import { RichReply } from "../components/RichReply";
+import Model3dViewer from "../components/Model3dViewer";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
 import { actionText } from "../lib/rich";
@@ -444,6 +445,7 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
           </Show>
         </div>
       </Show>
+      <For each={props.message.meta?.blocks ?? []}>{(b) => <Model3dViewer block={b} />}</For>
       <Show when={props.message.job}>{(job) => <JobCard job={job()} />}</Show>
       <div class="msg-info">
         <SourceBadge message={props.message} />
