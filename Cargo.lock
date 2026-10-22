@@ -1764,6 +1764,7 @@ dependencies = [
 name = "lucina-memory"
 version = "0.1.0"
 dependencies = [
+ "lucina-secrets",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -1774,12 +1775,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-secrets"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "getrandom 0.3.4",
+ "regex",
+ "reqwest 0.12.28",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
+ "zeroize",
+]
+
+[[package]]
 name = "lucina-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "clap",
@@ -1789,6 +1815,7 @@ dependencies = [
  "lucina-intent",
  "lucina-llm",
  "lucina-memory",
+ "lucina-secrets",
  "lucina-store",
  "lucina-tools",
  "regex",
@@ -1816,6 +1843,7 @@ dependencies = [
  "chrono-tz",
  "fancy-regex",
  "getrandom 0.3.4",
+ "lucina-secrets",
  "serde",
  "serde_json",
  "tempfile",
@@ -1836,6 +1864,7 @@ dependencies = [
  "lucina-discord",
  "lucina-grocery",
  "lucina-llm",
+ "lucina-secrets",
  "lucina-store",
  "reqwest 0.12.28",
  "schemars",
@@ -2798,6 +2827,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
 name = "secretary-body"
 version = "0.1.0"
 dependencies = [
@@ -3001,6 +3039,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
 ]
 
 [[package]]
@@ -3627,6 +3674,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "1.1.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3655,6 +3717,12 @@ checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tower"

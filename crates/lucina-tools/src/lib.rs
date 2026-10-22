@@ -13,7 +13,13 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `calendar`, `shopping`, `presence`, `avatar_outfit`, `notify`.
+//!   `notes`, `reminders`, `calendar`, `shopping`, `presence`, `avatar_outfit`, `notify`,
+//!   and the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]:
+//!   never offered on Lucina MCP turns).
+//! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
+//!   (`weather.api_key` -> `secret://lucina/prod/lucina#OPEN_METEO_API_KEY`),
+//!   uses the value for its own outbound call only, and every tool result is
+//!   redacted before anything else sees it ([`agent::execute`]).
 
 pub mod agent;
 pub mod pending;
@@ -186,6 +192,8 @@ pub struct ToolEnv {
     pub secretary_url: Option<String>,
     /// File holding the secretary-server service token (`svc_…`, read per call).
     pub secretary_service_token_file: Option<PathBuf>,
+    /// Infisical (`LUCINA_SECRETS_CONFIG`): secrets by reference, for tools.
+    pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
 }
 
 impl ToolEnv {
@@ -227,6 +235,7 @@ impl ToolEnv {
             nominatim_email: None,
             secretary_url: None,
             secretary_service_token_file: None,
+            secrets: None,
         }
     }
 }
@@ -257,6 +266,22 @@ impl Ctx {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(e);
+    }
+
+    /// The secret behind a tool setting (`weather.api_key`), for this tool's
+    /// outbound call only. `Ok(None)`: no secret is configured for it.
+    pub async fn secret(
+        &self,
+        setting: &str,
+        tool: &str,
+    ) -> Result<Option<lucina_secrets::SecretValue>, ToolError> {
+        let Some(store) = &self.env.secrets else {
+            return Ok(None);
+        };
+        store
+            .resolve_setting(setting, tool)
+            .await
+            .map_err(|e| ToolError::new(format!("secret for {setting} unavailable: {e}")))
     }
 
     pub fn effects(&self) -> Vec<Effect> {
@@ -327,6 +352,9 @@ pub fn is_denied_name(name: &str) -> bool {
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|t| DENY_TERMS.contains(&t))
 }
+
+/// Tools for the owner only: never registered on Lucina MCP turns.
+pub const OWNER_ONLY_TOOLS: &[&str] = &["secrets_status", "secrets_audit"];
 
 /// Which tools are enabled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +438,17 @@ impl Registry {
         r
     }
 
+    /// The same registry without `names` (MCP turns: [`OWNER_ONLY_TOOLS`]).
+    pub fn without(&self, names: &[&str]) -> Self {
+        let mut r = Self::new();
+        for t in &self.tools {
+            if !names.contains(&t.name()) {
+                r.register(t.clone()).expect("tool registered before");
+            }
+        }
+        r
+    }
+
     pub fn names(&self) -> Vec<&'static str> {
         self.tools.iter().map(|t| t.name()).collect()
     }
@@ -485,7 +524,10 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 12);
+        assert_eq!(all.names().len(), 14);
+        let mcp = all.without(OWNER_ONLY_TOOLS);
+        assert_eq!(mcp.names().len(), 12);
+        assert!(mcp.get("secrets_status").is_none() && mcp.get("secrets_audit").is_none());
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));
         assert_eq!(some.names(), vec!["time", "calculator"]);
         assert!(Registry::builtin(&ToolSelection::parse("none")).is_empty());

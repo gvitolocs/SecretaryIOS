@@ -20,6 +20,7 @@ pub mod jobs;
 pub mod parity;
 pub mod planner;
 pub mod prompts;
+pub mod secrets;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -60,6 +61,10 @@ pub struct Inner {
     pub grocery: Option<Arc<GroceryRepo>>,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
+    /// The registry for Lucina MCP turns: no owner-only tools (secrets).
+    pub mcp_registry: Arc<Registry>,
+    /// Infisical secrets (`LUCINA_SECRETS_CONFIG`), for tools only.
+    pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
     pub pending: Arc<PendingStore>,
     pub recent: Arc<RecentChat>,
     pub planner: planner::Planner,
@@ -95,6 +100,14 @@ impl AppState {
                     (ds, Some(usage), Box::new(move || probe.has_key()))
                 }
             };
+        // The model is a sink: every prompt and reply goes through the redactor.
+        let model: Arc<dyn ChatModel> = Arc::new(secrets::RedactingModel(model));
+        let known = secrets::register_bootstrap(&cfg);
+        tracing::info!(
+            known,
+            "redactor: bootstrap credentials registered (digests only)"
+        );
+        let secret_store = secrets::open_store(&cfg);
         let timeline = Arc::new(TimelineStore::new(
             &cfg.timeline_path,
             cfg.timeline_max_bytes,
@@ -137,8 +150,10 @@ impl AppState {
         env.presence_max_age = cfg.presence_max_age;
         env.secretary_url = cfg.secretary_url.clone();
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
+        env.secrets = secret_store.clone();
         let env_http = env.http.clone();
         let registry = Arc::new(Registry::builtin(&cfg.tools));
+        let mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {
             timeline,
@@ -162,6 +177,8 @@ impl AppState {
             grocery,
             tool_env: Arc::new(env),
             registry,
+            mcp_registry,
+            secrets: secret_store,
             pending: Arc::new(PendingStore::file(
                 cfg.data_dir.join("lucina-rs/pending-actions.json"),
                 DEFAULT_TTL,
@@ -193,6 +210,21 @@ impl AppState {
 
     /// Background tasks: the reminder scheduler only when `LUCINA_SCHEDULER=true`.
     pub fn spawn_background(&self) {
+        // Learn every value in Lucina's Infisical folder, so the redactor
+        // masks a secret even before a tool first uses it.
+        if let Some(store) = self.secrets.clone() {
+            if store.config().redaction.preload {
+                tokio::spawn(async move {
+                    match store.preload_redaction().await {
+                        Ok(n) => tracing::info!(
+                            secrets = n,
+                            "redactor: Infisical folder preloaded (digests only)"
+                        ),
+                        Err(e) => tracing::warn!(error = %e, "redactor: Infisical preload failed"),
+                    }
+                });
+            }
+        }
         if self.cfg.telegram_requested || self.cfg.discord_requested {
             tracing::warn!("LUCINA_TELEGRAM_ENABLED/LUCINA_DISCORD_ENABLED: channels are not part of this build; they stay off");
         }

@@ -349,7 +349,10 @@ async fn route(
         (Some("chat"), None) => {
             only(&["POST"])?;
             let body = read_json(body, MAX_BODY_BYTES).await?;
-            Ok(ok(crate::chat::handle_chat(st.clone(), body).await?))
+            let mut out = crate::chat::handle_chat(st.clone(), body).await?;
+            // The reply sink (app, web and Lucina MCP all read it here).
+            lucina_secrets::redactor().redact_json(&mut out);
+            Ok(ok(out))
         }
         (Some("timeline"), None) => {
             only(&["GET"])?;

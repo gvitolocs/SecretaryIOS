@@ -250,7 +250,7 @@ async fn run_turn(
     mcp_turn: Option<McpTurn>,
 ) -> Result<Value, ApiError> {
     if st.cfg.planner == PlannerMode::Tools {
-        return tools_turn(st, message, session, cmid, channel).await;
+        return tools_turn(st, message, session, cmid, channel, mcp_turn.is_some()).await;
     }
     let (user_label, extra_system) = match &mcp_turn {
         Some(m) => (
@@ -276,11 +276,27 @@ async fn run_turn(
         user_label,
         extra_system,
     };
-    let prepared =
-        crate::context::prepare(&st, &t.session, &t.message, &t.user_label, PLANNER_PLATFORM).await;
-    st.recent.append(&t.session, "user", &t.message, Utc::now());
-
-    let finish = json_turn(&t, &prepared, cmid.as_deref()).await;
+    // Secrets first, without the model: a fixed refusal for reveal requests
+    // (MCP included), status and audit for the owner.
+    let (finish, prepared) = match secrets_finish(&st, &t.message, t.mcp.is_some()).await {
+        Some(f) => {
+            st.recent.append(&t.session, "user", &t.message, Utc::now());
+            (f, None)
+        }
+        None => {
+            let prepared = crate::context::prepare(
+                &st,
+                &t.session,
+                &t.message,
+                &t.user_label,
+                PLANNER_PLATFORM,
+            )
+            .await;
+            st.recent.append(&t.session, "user", &t.message, Utc::now());
+            let finish = json_turn(&t, &prepared, cmid.as_deref()).await;
+            (finish, Some(prepared))
+        }
+    };
 
     // Finish: recent turns, Honcho, the Lucina item.
     let reply = finish.reply.trim().to_owned();
@@ -302,7 +318,10 @@ async fn run_turn(
             job.clone(),
             plan.clone(),
             t.message.clone(),
-            prepared.memory_context.clone(),
+            prepared
+                .as_ref()
+                .map(|p| p.memory_context.clone())
+                .unwrap_or_default(),
             t.session.clone(),
             timeline.user_item_id(),
             t.channel.clone(),
@@ -321,6 +340,17 @@ async fn run_turn(
         out[k] = v;
     }
     Ok(out)
+}
+
+/// The secrets turn as a [`Finish`] (see [`crate::secrets::secrets_turn`]).
+async fn secrets_finish(st: &AppState, text: &str, mcp: bool) -> Option<Finish> {
+    let (reply, action) = crate::secrets::secrets_turn(st.secrets.as_deref(), text, mcp).await?;
+    let mut f = Finish::reply(reply, action);
+    if action == "secrets_refused" {
+        f.extra.insert("blockedAction".into(), json!("secrets"));
+    }
+    f.action_result = format!("[{action}]");
+    Some(f)
 }
 
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
@@ -930,16 +960,27 @@ async fn tools_turn(
     session: String,
     cmid: Option<String>,
     channel: String,
+    mcp: bool,
 ) -> Result<Value, ApiError> {
     let now = Utc::now();
     let tz = st.cfg.time_zone;
     let persona = st.cfg.persona.clone();
     let turn = TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone());
     let user_item = turn.record_user(&message, Vec::new());
-    let prepared =
+    // MCP callers never get the owner-only tools (secrets).
+    let registry = if mcp {
+        st.mcp_registry.clone()
+    } else {
+        st.registry.clone()
+    };
+    let secrets = secrets_finish(&st, &message, mcp).await;
+    let memory_context = if secrets.is_some() {
+        String::new()
+    } else {
         crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true)
-            .await;
-    let memory_context = prepared.memory_context;
+            .await
+            .memory_context
+    };
     st.recent.append(&session, "user", &message, now);
     let ctx = Ctx::new(st.tool_env.clone(), &channel, &session);
     let on_tool = |r: &ToolRecord| {
@@ -965,12 +1006,17 @@ async fn tools_turn(
     };
     let mut pending_note = String::new();
     let mut settled: Option<String> = None;
-    if let Some(p) = st.pending.current(&session, now) {
+    let pending_now = if secrets.is_some() {
+        None
+    } else {
+        st.pending.current(&session, now)
+    };
+    if let Some(p) = pending_now {
         match classify_reply(&message) {
             Reply::Yes => {
                 if let Some(action) = st.pending.take(&p.id) {
                     let (ok, output, summary) = agent::execute(
-                        &st.registry,
+                        &registry,
                         &action.tool,
                         action.args.clone(),
                         &ctx,
@@ -1002,7 +1048,9 @@ async fn tools_turn(
     let fallback = || {
         format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")
     };
-    let finish = if let Some(result) = settled {
+    let finish = if let Some(f) = secrets {
+        f
+    } else if let Some(result) = settled {
         let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
     } else {
@@ -1021,7 +1069,7 @@ async fn tools_turn(
         ];
         match agent::run(
             st.model.as_ref(),
-            &st.registry,
+            &registry,
             msgs,
             &ctx,
             &st.pending,

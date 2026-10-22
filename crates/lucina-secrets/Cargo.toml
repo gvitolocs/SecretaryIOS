@@ -1,0 +1,51 @@
+[package]
+name = "lucina-secrets"
+description = "Lucina's secrets skill: Infisical secret refs resolved inside tools only, never shown to the model, and one redactor in front of every output sink."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["client"]
+# The Infisical client, the store (cache, policy, audit), the TOML config and
+# the tracing writer. Without it the crate is the redactor and the reveal
+# refusal only (what the storage crates need).
+client = [
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:toml",
+    "dep:chrono",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:bytes",
+]
+
+[dependencies]
+regex = "1.13.1"
+sha2 = { workspace = true }
+base64 = "=0.22.1"
+getrandom = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+secrecy = "=0.10.3"
+zeroize = "=1.9.1"
+thiserror = { workspace = true }
+
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+toml = { version = "=1.1.6", optional = true }
+chrono = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"], optional = true }
+bytes = { version = "1", optional = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+[[test]]
+name = "infisical"
+required-features = ["client"]

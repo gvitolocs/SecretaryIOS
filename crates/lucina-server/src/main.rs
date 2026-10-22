@@ -291,10 +291,14 @@ fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Logs are a sink: every formatted line goes through the redactor.
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_writer(lucina_secrets::log::RedactingMakeWriter::new(
+            std::io::stdout,
+        ))
         .init();
     match Cli::parse().cmd.unwrap_or(Cmd::Serve) {
         Cmd::PresenceWatch { data, token_file } => presence_watch(data, token_file),

@@ -13,6 +13,7 @@ name = "lucina"
 path = "src/main.rs"
 
 [dependencies]
+lucina-secrets = { path = "../lucina-secrets" }
 lucina-llm = { path = "../lucina-llm" }
 lucina-store = { path = "../lucina-store" }
 lucina-memory = { path = "../lucina-memory" }
@@ -45,3 +46,4 @@ secretary-server = { path = "../secretary-server" }
 reqwest = { workspace = true, features = ["stream"] }
 tempfile = "3"
 wiremock = "0.6"
+base64 = "=0.22.1"

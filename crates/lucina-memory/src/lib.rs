@@ -257,7 +257,10 @@ impl HonchoClient {
         serde_json::from_str(&text).map_err(|e| MemoryError::Decode(e.to_string()))
     }
 
-    async fn post(&self, url: String, body: Value) -> Result<Value, MemoryError> {
+    async fn post(&self, url: String, mut body: Value) -> Result<Value, MemoryError> {
+        // Honcho is a sink (and an external service): every write and query
+        // goes through the redactor.
+        lucina_secrets::redactor().redact_json(&mut body);
         self.send(self.http.post(url).json(&body)).await
     }
 
@@ -341,7 +344,14 @@ impl HonchoClient {
             query.push(("peer_perspective", p.clone()));
         }
         if let Some(s) = q.search_query.as_ref().filter(|s| !s.trim().is_empty()) {
-            query.push(("search_query", s.chars().take(1000).collect()));
+            query.push((
+                "search_query",
+                lucina_secrets::redactor()
+                    .redact(s)
+                    .chars()
+                    .take(1000)
+                    .collect(),
+            ));
         }
         if let Some(k) = q.search_top_k {
             query.push(("search_top_k", k.to_string()));

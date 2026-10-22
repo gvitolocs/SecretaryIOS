@@ -111,11 +111,16 @@ pub async fn execute(
     if let Err(e) = registry.validate(name, &args) {
         return (false, json!({"error": e}), summary);
     }
-    match tokio::time::timeout(timeout.min(PER_TOOL_TIMEOUT), tool.call(args, ctx)).await {
-        Ok(Ok(v)) => (true, v, summary),
-        Ok(Err(e)) => (false, json!({"error": e.0}), summary),
-        Err(_) => (false, json!({"error": "tool timed out"}), summary),
-    }
+    let (ok, mut output) =
+        match tokio::time::timeout(timeout.min(PER_TOOL_TIMEOUT), tool.call(args, ctx)).await {
+            Ok(Ok(v)) => (true, v),
+            Ok(Err(e)) => (false, json!({"error": e.0})),
+            Err(_) => (false, json!({"error": "tool timed out"})),
+        };
+    // A tool result goes to the model, the timeline and Honcho: whatever a
+    // tool or an upstream echoed back, no secret value leaves this point.
+    lucina_secrets::redactor().redact_json(&mut output);
+    (ok, output, summary)
 }
 
 async fn handle_call(
