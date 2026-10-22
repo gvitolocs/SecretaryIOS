@@ -32,7 +32,8 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 
 ### Avatar
 - [ ] Base = variant B (Summer face + tiara on the Engage body), owner pick 2026-10-22: deploy B + its clips to p1; game toon shading only as an optional material
-- [ ] Wardrobe: outfits (gym+ponytail, maid, chef, c584, c591) + Wardrobe UI (Custom Cast style), remembered, auto per tab, Lucina can change it
+- [x] Wardrobe UI LIVE (outfit/hair/colour tabs, rules per tab, remembered); LUCINA_AVATAR_OUTFIT not yet on
+- [ ] Outfit + hairstyle GLBs (Custom Cast first, then free assets) on the FIXED B
 - [x] Owner picked B (flower removed, tiara restored)
 - [x] Animation library: 22 clips per model (f432912 stage API; MMD clips live on p1)
 
@@ -48,9 +49,9 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Discord owner user ID: 649020113026023475 (vitologic), set in Lucina 2026-10-22
 
 ### Links, calendar, notifications (owner, 2026-10-22)
-- [ ] Links tab: connections hub (Google Calendar OAuth, ICS, iPhone calendar, channels, AI clients, custom links) — branch links-calendar
-- [ ] Lucina + Hermes read/write the calendar (with confirmation), agenda/briefing
-- [x] Notifications LIVE 2026-10-22 (branch notifications 6314a87 deployed; merge into main pending the hair agent). iOS native part on branch ios-notifications (not installed). APNs needs a paid team
+- [x] Links tab LIVE 2026-10-22 (main 64c747a): Google Calendar (waits on owner's Google Cloud Console steps), ICS, iPhone calendar, channels, AI clients, custom links
+- [x] Lucina calendar bridge LIVE (LUCINA_CALENDAR=true); MCP calendar_list/calendar_create (proposals only)
+- [x] Notifications LIVE 2026-10-22 (merged into main 64c747a). iOS native part on branch ios-notifications (not installed). APNs needs a paid team
 
 ### Roadmap modules (`docs/ROADMAP.md`)
 - [ ] Calendar · Languages · Memory exercises · Purchases (always confirmed)
