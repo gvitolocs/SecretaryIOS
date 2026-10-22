@@ -279,6 +279,8 @@ final class DeviceExecutors: DeviceCommandExecuting {
                     "start": .string(iso.string(from: event.startDate)),
                     "end": .string(iso.string(from: event.endDate)),
                     "allDay": .bool(event.isAllDay),
+                    "calendar": .string(event.calendar?.title ?? ""),
+                    "location": .string(event.location ?? ""),
                 ])
             }
         }
