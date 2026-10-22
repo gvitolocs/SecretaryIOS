@@ -493,7 +493,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   if (options.armPose !== false) relaxArms(rig, options.armPose ?? {}, manifest);
   let player: ClipPlayer | null = null;
   if (clipLib && !placeholder) {
-    player = new ClipPlayer(model, clipLib, { stateClips: options.stateClips });
+    player = new ClipPlayer(model, clipLib, { stateClips: { ...manifest.stateClips, ...options.stateClips } });
     if (!player.ready) {
       console.warn('[lucina-stage] no clip in the clip file matches this model; using the procedural idle');
       player.dispose();
