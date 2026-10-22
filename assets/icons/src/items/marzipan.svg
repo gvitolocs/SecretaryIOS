@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g transform="translate(30 28) rotate(-28)">
+    <path d="M-20-9.5h34v19h-34a4.5 9.5 0 0 1 0-19Z" fill="#ffe896"/>
+    <path d="M-24.4 3h38.4v6.5h-34c-2.2 0-3.7-2.6-4.4-6.5Z" fill="#3d2b2b" opacity=".12"/>
+    <path d="M-6-9.5h8v19h-8Z" fill="#e0352b"/>
+    <path d="M-17-5.5h9M5-5.5h6" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".7"/>
+    <ellipse cx="14" rx="4.6" ry="9.5" fill="#f0c27b"/>
+    <ellipse cx="14.3" rx="3.6" ry="8.2" fill="#fff6e0"/>
+  </g>
+  <g transform="translate(47 47) rotate(-28)">
+    <ellipse cx="2" cy="1" rx="5.5" ry="10" fill="#f0c27b"/>
+    <ellipse rx="5.5" ry="10" fill="#fff6e0"/>
+    <ellipse cx="-1.6" cy="-3" rx="1.2" ry="3" fill="#fff"/>
+  </g>
+  <g transform="translate(16 49) rotate(-60)">
+    <path d="M0-9c3.5 2.5 6 7 6 11.5 0 3.6-2.6 6.5-6 6.5S-6 6.1-6 2.5C-6-2-3.5-6.5 0-9Z" fill="#c97d36"/>
+    <path d="M-2-3.5c-1 2.5-1 6 0 9M2-3.5c.8 2.5.8 6 0 9" fill="none" stroke="#8b5530" stroke-width="1"/>
+  </g>
+  <g transform="translate(29 54) rotate(-100)">
+    <path d="M0-8c3 2.2 5.3 6.2 5.3 10.2 0 3.2-2.3 5.8-5.3 5.8s-5.3-2.6-5.3-5.8C-5.3-1.8-3-5.8 0-8Z" fill="#c97d36"/>
+    <path d="M-1.8-3c-.9 2.2-.9 5.2 0 8M1.8-3c.7 2.2.7 5.2 0 8" fill="none" stroke="#8b5530" stroke-width="1"/>
+  </g>
+</svg>

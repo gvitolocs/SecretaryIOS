@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M45 30h3a7 7 0 0 1 0 14h-4v-5h4a2 2 0 0 0 0-4h-3Z" fill="#3a86d6"/>
+  <path d="M11 25h35v27c0 4.4-3.6 8-8 8H19c-4.4 0-8-3.6-8-8Z" fill="#3a86d6"/>
+  <path d="M46 25v27c0 4.4-3.6 8-8 8h-6c4.4 0 8-3.6 8-8V25Z" fill="#3d2b2b" opacity=".18"/>
+  <path d="M8.5 28c-2.5-4 0-8.5 4.5-8.5 0-5 5-8 10-6.5 2-4.5 10-5 13 0 5-1 9.5 2.5 8 7.5 3.5.5 4.5 5 2.5 7.5Z" fill="#fff"/>
+  <path d="M13 27v6.5a2.3 2.3 0 0 0 4.6 0V27Z" fill="#fff"/>
+  <path d="M15 21.5c6 2 14 2 22-1M20.5 15.5c4 1.5 9 1.5 13-1" fill="none" stroke="#e6dccb" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M13 24.5c3-2 5 1.5 8-.5s5 1.5 8-.5 5 1.5 8-.5 4.5 1 7 .2" fill="none" stroke="#5a3520" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="#8b5530"><circle cx="19" cy="18.5" r="1"/><circle cx="26" cy="12" r=".9"/><circle cx="31" cy="18" r="1"/><circle cx="38" cy="17" r=".9"/><circle cx="24" cy="21" r=".8"/></g>
+  <rect x="35" y="9.5" width="7" height="6" rx="1.6" fill="#f9a8b3" transform="rotate(18 38.5 12.5)"/>
+  <rect x="40" y="16" width="6" height="5.5" rx="1.5" fill="#f9a8b3" transform="rotate(-12 43 18.7)"/>
+  <path d="M15.5 36v14" stroke="#fff" stroke-width="2.6" stroke-linecap="round" opacity=".5"/>
+</svg>
