@@ -94,6 +94,10 @@ pub struct Config {
     pub presence_context: bool,
     pub presence_max_age: Duration,
     pub presence_retention_days: i64,
+    /// secretary-server base URL for the `avatar_outfit` tool (`LUCINA_SECRETARY_SERVER_URL`).
+    pub secretary_url: Option<String>,
+    /// Its service token file (`LUCINA_SECRETARY_SERVICE_TOKEN_FILE`, read per call).
+    pub secretary_service_token_file: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -274,6 +278,9 @@ impl Config {
             ),
             presence_retention_days: num("LUCINA_PRESENCE_RETENTION_DAYS", 90).clamp(1, 3650)
                 as i64,
+            secretary_url: get("LUCINA_SECRETARY_SERVER_URL").filter(|s| !s.trim().is_empty()),
+            secretary_service_token_file: get("LUCINA_SECRETARY_SERVICE_TOKEN_FILE")
+                .map(PathBuf::from),
             data_dir,
         })
     }

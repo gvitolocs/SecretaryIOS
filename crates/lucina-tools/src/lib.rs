@@ -13,7 +13,7 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `shopping`, `presence`.
+//!   `notes`, `reminders`, `shopping`, `presence`, `avatar_outfit`.
 
 pub mod agent;
 pub mod pending;
@@ -71,11 +71,24 @@ pub type ToolResult = Result<Value, ToolError>;
 /// Something a tool did that the caller reports (chat `action`, timeline meta).
 #[derive(Debug, Clone)]
 pub enum Effect {
-    ReminderCreated { reminder: Reminder, created: bool },
+    ReminderCreated {
+        reminder: Reminder,
+        created: bool,
+    },
     RemindersListed,
-    ReminderCancelled { reminder: Reminder },
-    Shopping { list_id: String },
-    Note { title: String },
+    ReminderCancelled {
+        reminder: Reminder,
+    },
+    Shopping {
+        list_id: String,
+    },
+    Note {
+        title: String,
+    },
+    /// Lucina changed her 3D outfit (`None` = back to automatic).
+    AvatarOutfit {
+        outfit: Option<String>,
+    },
 }
 
 /// External endpoints (overridable for tests).
@@ -167,6 +180,10 @@ pub struct ToolEnv {
     pub presence_dir: PathBuf,
     /// Older presence files mean the watcher is down.
     pub presence_max_age: Duration,
+    /// secretary-server base URL for `avatar_outfit` (`PUT /v1/avatar`).
+    pub secretary_url: Option<String>,
+    /// File holding the secretary-server service token (`svc_…`, read per call).
+    pub secretary_service_token_file: Option<PathBuf>,
 }
 
 impl ToolEnv {
@@ -206,6 +223,8 @@ impl ToolEnv {
             nominatim_gate: RateGate::new(Duration::from_millis(1000)),
             user_agent,
             nominatim_email: None,
+            secretary_url: None,
+            secretary_service_token_file: None,
         }
     }
 }
@@ -464,7 +483,7 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 9);
+        assert_eq!(all.names().len(), 10);
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));
         assert_eq!(some.names(), vec!["time", "calculator"]);
         assert!(Registry::builtin(&ToolSelection::parse("none")).is_empty());

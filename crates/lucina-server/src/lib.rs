@@ -126,6 +126,8 @@ impl AppState {
         env.nominatim_email = cfg.nominatim_email.clone();
         env.presence_dir = cfg.presence_dir.clone();
         env.presence_max_age = cfg.presence_max_age;
+        env.secretary_url = cfg.secretary_url.clone();
+        env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         let registry = Arc::new(Registry::builtin(&cfg.tools));
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {

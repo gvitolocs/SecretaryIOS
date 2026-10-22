@@ -1,5 +1,6 @@
 //! Built-in tools.
 
+pub mod avatar;
 pub mod calculator;
 pub mod notes;
 pub mod places;
@@ -26,6 +27,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(reminders::RemindersTool),
         Arc::new(shopping::ShoppingTool),
         Arc::new(presence::PresenceTool),
+        Arc::new(avatar::AvatarOutfitTool),
     ]
 }
 
