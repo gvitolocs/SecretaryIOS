@@ -217,6 +217,22 @@ async fn handle(
             "reminders": [{"id": "r1", "text": "Call the dentist", "dueAt": "2026-10-22T07:30:00.000Z", "status": "pending"}],
             "briefing": "Tomorrow starts at 9:30 with the dentist call.", "briefingCached": false}))
         .into_response(),
+        ("GET", ["v1", "calendar", "events"]) => Json(json!({"from": "2026-10-21T22:00:00.000Z", "to": "2026-10-28T23:00:00.000Z",
+            "timeZone": "Europe/Rome", "events": [
+                {"id": "google:abc", "source": "google", "sourceId": "abc", "calendar": "Google", "title": "Dentist",
+                 "start": "2026-10-22T07:30:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false, "location": "Via Roma 1",
+                 "startMs": 1, "endMs": 2, "recurring": false, "editable": true},
+                {"id": "iphone:EK1", "source": "iphone", "sourceId": "EK1", "calendar": "Casa", "title": "Birthday",
+                 "start": "2026-10-23", "end": "2026-10-24", "allDay": true, "startMs": 3, "endMs": 4, "recurring": false, "editable": false}],
+            "sources": {"google": {"status": "reconnect"}}}))
+        .into_response(),
+        ("POST", ["v1", "calendar", "proposals"]) => {
+            if body["start"] == "bad" {
+                return err(StatusCode::BAD_REQUEST, "bad_request");
+            }
+            (StatusCode::CREATED, Json(json!({"id": "prop_1", "event": body, "from": body["from"]}))).into_response()
+        }
+        ("POST", ["v1", "calendar", "events"]) => panic!("the MCP must never create events directly"),
         ("GET", ["v1", "gym", "state"]) => Json(json!({"ok": true, "replayed": false, "view": {"summary": {
             "workouts": 10, "completed_sets": 200, "weekly_workouts": 1, "weekly_goal": 3, "volume": "40,000 kg"},
             "records": [{"name": "Squat", "weight": "100 kg", "reps": 5, "estimated_1rm": "116.7 kg"}], "state": {"active": null}}}))

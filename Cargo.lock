@@ -2042,6 +2042,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-calendar"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "secretary-core"
 version = "0.1.0"
 dependencies = [
@@ -2119,7 +2129,9 @@ dependencies = [
  "mime",
  "p256",
  "reqwest 0.12.28",
+ "ring",
  "secretary-body",
+ "secretary-calendar",
  "secretary-core",
  "secretary-gym",
  "serde",
@@ -2133,6 +2145,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "web-push-native",
 ]
 

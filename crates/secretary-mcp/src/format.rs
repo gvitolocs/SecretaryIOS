@@ -653,6 +653,72 @@ pub fn status(
     out
 }
 
+// -- calendar ----------------------------------------------------------------------
+
+/// `GET /v1/calendar/events` → one line per event, in `tz`.
+pub fn calendar(r: &Value, tz: Tz) -> String {
+    let events = r
+        .get("events")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let day = |v: Option<&Value>| -> String {
+        let t = v
+            .and_then(Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok());
+        t.map(|t| t.with_timezone(&tz).format("%Y-%m-%d").to_string())
+            .unwrap_or_default()
+    };
+    let mut out = format!(
+        "Calendar {} to {} ({}):",
+        day(r.get("from")),
+        r.get("to")
+            .and_then(Value::as_str)
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| (t.with_timezone(&tz) - chrono::Duration::seconds(1))
+                .format("%Y-%m-%d")
+                .to_string())
+            .unwrap_or_default(),
+        tz.name()
+    );
+    if events.is_empty() {
+        out.push_str("\nNo events.");
+    }
+    for e in events.iter().take(200) {
+        let title = s(e, "title").unwrap_or("(no title)");
+        let when = if e.get("allDay").and_then(Value::as_bool) == Some(true) {
+            format!("{} (all day)", s(e, "start").unwrap_or(""))
+        } else {
+            let start = local_time(e.get("start"), tz);
+            let end = local_time(e.get("end"), tz);
+            let end_short = if end.get(..10) == start.get(..10) {
+                end.get(11..).unwrap_or(&end).to_owned()
+            } else {
+                end
+            };
+            format!("{start}–{end_short}")
+        };
+        let mut line = format!("\n- {when} {title}");
+        if let Some(c) = s(e, "calendar") {
+            line.push_str(&format!(" ({c})"));
+        }
+        if let Some(l) = s(e, "location") {
+            line.push_str(&format!(" @ {l}"));
+        }
+        line.push_str(&format!(" [id {}]", s(e, "id").unwrap_or("?")));
+        out.push_str(&line);
+    }
+    if events.len() > 200 {
+        out.push_str(&format!("\n… and {} more.", events.len() - 200));
+    }
+    if let Some(g) = r.pointer("/sources/google").filter(|g| g.is_object()) {
+        if s(g, "status") == Some("reconnect") {
+            out.push_str("\nNote: Google Calendar needs reconnecting in the Secretary app (Links); Google events may be out of date.");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

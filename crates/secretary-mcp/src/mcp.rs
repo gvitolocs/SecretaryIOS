@@ -140,6 +140,8 @@ impl LucinaMcp {
             "reminders_list" => t.reminders(args).await,
             "reminder_create" => t.reminder_create(args).await,
             "reminder_cancel" => t.reminder_cancel(args).await,
+            "calendar_list" => t.calendar_list(args).await,
+            "calendar_create" => t.calendar_create(args).await,
             "gym_summary" => t.gym(args).await,
             "body_summary" => t.body().await,
             "lucina_status" => t.status().await,

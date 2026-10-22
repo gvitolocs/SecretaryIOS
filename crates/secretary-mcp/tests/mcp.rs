@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 11] = [
+const ALL_TOOLS: [&str; 13] = [
     "ask_lucina",
     "lucina_timeline",
     "shopping_list",
@@ -14,6 +14,8 @@ const ALL_TOOLS: [&str; 11] = [
     "reminders_list",
     "reminder_create",
     "reminder_cancel",
+    "calendar_list",
+    "calendar_create",
     "gym_summary",
     "body_summary",
     "lucina_status",
@@ -608,4 +610,97 @@ async fn origins() {
             .unwrap();
         assert_eq!(resp.status() == 200, ok, "{origin}: {}", resp.status());
     }
+}
+
+#[tokio::test]
+async fn calendar_tools_never_write_directly() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,write");
+    let (err, text) = h
+        .call(&t, "calendar_list", json!({"from": "2026-10-22"}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("- 2026-10-22 09:30–10:00 Dentist (Google) @ Via Roma 1 [id google:abc]"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- 2026-10-23 (all day) Birthday (Casa) [id iphone:EK1]"),
+        "{text}"
+    );
+    assert!(text.contains("needs reconnecting"), "{text}");
+    assert_eq!(
+        h.mock.requests("/v1/calendar/events")[0].query,
+        "from=2026-10-22&days=7"
+    );
+    let (err, _) = h.call(&t, "calendar_list", json!({"from": "x&y=1"})).await;
+    assert!(err);
+    let (err, text) = h
+        .call(
+            &t,
+            "calendar_create",
+            json!({"title": "Padel", "start": "2026-10-24T10:00:00+02:00", "location": "Club"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("needs owner confirmation in the app") && text.contains("prop_1"),
+        "{text}"
+    );
+    let p = &h.mock.requests("/v1/calendar/proposals")[0];
+    assert_eq!(
+        p.body,
+        json!({"title": "Padel", "start": "2026-10-24T10:00:00+02:00", "location": "Club", "from": "mcp:claude-code"})
+    );
+    let (err, text) = h
+        .call(&t, "calendar_create", json!({"title": "x", "start": "bad"}))
+        .await;
+    assert!(err && text.contains("refused"), "{text}");
+    // read-only tokens do not see calendar_create
+    let ro = h.issue("grok", "read");
+    let names = h.tool_names(&ro).await;
+    assert!(
+        names.contains(&"calendar_list".to_string())
+            && !names.contains(&"calendar_create".to_string())
+    );
+}
+
+#[tokio::test]
+async fn internal_status_lists_clients_without_secrets() {
+    let off = start().await;
+    let r = off
+        .http
+        .get(format!("{}/internal/status", off.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404);
+    let h = common::start_with(|cfg, _| cfg.status_token = Some("st-123".into())).await;
+    let tok = h.issue("claude-code", "read,chat");
+    let rec = secretary_mcp::tokens::TokenStore::new(h.data_dir())
+        .list()
+        .unwrap();
+    let r = h
+        .http
+        .get(format!("{}/internal/status", h.base))
+        .bearer_auth("nope")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 401);
+    let r = h
+        .http
+        .get(format!("{}/internal/status", h.base))
+        .bearer_auth("st-123")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["clients"][0]["caller"], "claude-code");
+    assert_eq!(v["clients"][0]["via"], "token");
+    assert_eq!(v["clients"][0]["active"], true);
+    assert_eq!(v["clients"][0]["scopes"], json!(["read", "chat"]));
+    let text = v.to_string();
+    assert!(!text.contains(&tok) && !text.contains(&rec[0].hash) && !text.contains(&rec[0].id));
 }

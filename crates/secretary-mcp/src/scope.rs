@@ -41,9 +41,9 @@ impl Scope {
 
     pub fn describe(self) -> &'static str {
         match self {
-            Scope::Read => "Read your timeline, shopping list, reminders and gym/body summaries",
+            Scope::Read => "Read your timeline, shopping list, reminders, calendar and gym/body summaries",
             Scope::Chat => "Talk to Lucina (she may act through her own confirmation flow)",
-            Scope::Write => "Add to / tick off the shopping list, create and cancel reminders",
+            Scope::Write => "Add to / tick off the shopping list, create and cancel reminders, propose calendar events (you confirm them in the app)",
         }
     }
 }

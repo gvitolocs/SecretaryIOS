@@ -23,6 +23,7 @@ pub mod mcp;
 pub mod oauth;
 pub mod ratelimit;
 pub mod scope;
+pub mod status;
 pub mod store;
 pub mod tokens;
 pub mod tools;
@@ -112,6 +113,7 @@ pub fn router(app: AppState, ct: CancellationToken) -> Router {
         .route("/oauth/token", post(oauth::token))
         .route("/oauth/revoke", post(oauth::revoke))
         .route("/healthz", get(|| async { "ok" }))
+        .route("/internal/status", get(status::internal_status))
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(app)
         .merge(mcp_routes)

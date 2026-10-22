@@ -8,18 +8,22 @@
 pub mod assets;
 pub mod auth;
 pub mod avatar;
+pub mod calendar;
 pub mod cli;
 pub mod config;
 pub mod device;
 pub mod devices;
 pub mod engines;
 pub mod error;
+pub mod google;
 pub mod health;
 pub mod insights;
+pub mod links;
 pub mod notify;
 pub mod owner;
 pub mod ratelimit;
 pub mod routes;
+pub mod secrets;
 pub mod service;
 pub mod sessions;
 pub mod shopping;
@@ -102,6 +106,8 @@ pub struct Inner {
     pub shutdown: tokio::sync::watch::Sender<bool>,
     /// Inbox, settings, Web Push / APNs and the timeline ingester.
     pub notify: Arc<notify::Notifier>,
+    /// Links and calendar (`links.json`, `calendar.json`).
+    pub links: links::Hub,
 }
 
 #[derive(Clone)]
@@ -146,6 +152,7 @@ impl AppState {
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
+            links: links::Hub::open(cfg)?,
         })))
     }
 
@@ -216,13 +223,19 @@ pub fn app(state: AppState) -> Router {
         .merge(timeline::routes())
         .merge(shopping::routes())
         .merge(device::routes())
-        .merge(notify::routes::routes());
+        .merge(notify::routes::routes())
+        .merge(links::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
     let protected = protected.route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device,
+    ));
+
+    let calendar = calendar::routes().route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth::require_device_or_service,
     ));
 
     let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
@@ -232,6 +245,8 @@ pub fn app(state: AppState) -> Router {
 
     let api = Router::new()
         .merge(routes::public())
+        .merge(links::public_routes())
+        .merge(calendar)
         .merge(device_events)
         .merge(auth::session_routes())
         .merge(protected)
@@ -326,6 +341,9 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         "secretary-server listening"
     );
     notify::spawn_workers(&state);
+    if !cfg.calendar_sync_every.is_zero() {
+        calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
+    }
     let st = state.clone();
     let shutdown = async move {
         shutdown_signal().await;

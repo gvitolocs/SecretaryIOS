@@ -156,6 +156,38 @@ pub struct ReminderCancelArgs {
     pub id: String,
 }
 
+/// Arguments of `calendar_list`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct CalendarListArgs {
+    /// First day, YYYY-MM-DD in the owner's time zone (default: today), or an RFC 3339 time.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Last day (inclusive), YYYY-MM-DD, or an RFC 3339 time. Default: `from` + `days`.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// How many days from `from` when `to` is not given (1-62, default 7).
+    #[serde(default)]
+    pub days: Option<u32>,
+}
+
+/// Arguments of `calendar_create`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CalendarCreateArgs {
+    /// Event title, 1-300 characters.
+    pub title: String,
+    /// Start: an RFC 3339 time with offset ("2026-10-23T09:30:00+02:00"), or YYYY-MM-DD for an all-day event.
+    pub start: String,
+    /// End (optional): same format as start; all-day ends are exclusive dates. Default: one hour / one day.
+    #[serde(default)]
+    pub end: Option<String>,
+    /// Where (optional).
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Notes (optional).
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// Arguments of `gym_summary`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GymArgs {
@@ -228,6 +260,10 @@ pub fn specs() -> Vec<ToolSpec> {
             "Create a reminder that Lucina delivers to the owner on Telegram at the given time. An identical pending reminder is not duplicated."),
         spec!("reminder_cancel", "Cancel reminder", Scope::Write, ro = false, destructive = true, idempotent = true, ReminderCancelArgs,
             "Cancel a pending reminder so it is not delivered. The reminder is kept (status 'cancelled'), not deleted. Confirm with the owner before cancelling."),
+        spec!("calendar_list", "Calendar", Scope::Read, ro = true, destructive = false, idempotent = true, CalendarListArgs,
+            "The owner's calendar: events from Google Calendar, the iPhone calendar and subscribed ICS calendars, merged, with times in the owner's time zone and event ids. Default: the next 7 days from today."),
+        spec!("calendar_create", "Propose calendar event", Scope::Write, ro = false, destructive = false, idempotent = false, CalendarCreateArgs,
+            "Propose a new event for the owner's Google Calendar. It is NOT created directly: it waits for the owner's confirmation in the Secretary app (Links), and the owner can accept or dismiss it. Tell the owner to confirm it there."),
         spec!("gym_summary", "Gym summary", Scope::Read, ro = true, destructive = false, idempotent = true, GymArgs,
             "The owner's training: workouts this week vs. the weekly goal, recent workouts with volume, exercises and personal records, and weekly volume."),
         spec!("body_summary", "Body weight summary", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
@@ -653,6 +689,75 @@ impl Tools<'_> {
         } else {
             format!("The reminder \"{text}\" (id {id}) was already cancelled.")
         })
+    }
+
+    pub async fn calendar_list(&self, args: &JsonObject) -> ToolResult {
+        let a: CalendarListArgs = parse(args)?;
+        let mut q: Vec<(&str, String)> = Vec::new();
+        for (k, v) in [("from", a.from.as_deref()), ("to", a.to.as_deref())] {
+            if let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) {
+                if v.len() > 40
+                    || !v.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'-' | b':' | b'+' | b'.')
+                    })
+                {
+                    return Err(bad(format!("`{k}` must be YYYY-MM-DD or an RFC 3339 time")));
+                }
+                q.push((k, v.to_owned()));
+            }
+        }
+        if a.to.is_none() {
+            let days = a.days.unwrap_or(7);
+            if !(1..=62).contains(&days) {
+                return Err(bad("`days` must be 1-62"));
+            }
+            q.push(("days", days.to_string()));
+        }
+        let r = self.app.backend.get("/v1/calendar/events", &q).await?;
+        Ok(format::calendar(&r, self.app.cfg.timezone))
+    }
+
+    /// Never writes: files a proposal the owner accepts in the app.
+    pub async fn calendar_create(&self, args: &JsonObject) -> ToolResult {
+        let a: CalendarCreateArgs = parse(args)?;
+        let mut body = json!({
+            "title": check_text("title", &a.title, 300)?,
+            "start": check_text("start", &a.start, 40)?,
+            "from": format!("mcp:{}", self.caller.name),
+        });
+        if let Some(e) = a.end.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
+            body["end"] = json!(check_text("end", e, 40)?);
+        }
+        if let Some(l) = a
+            .location
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
+            body["location"] = json!(check_text("location", l, 500)?);
+        }
+        if let Some(d) = a
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            body["description"] = json!(check_text("description", d, 4000)?);
+        }
+        match self.app.backend.post("/v1/calendar/proposals", &body).await {
+            Ok(p) => Ok(format!(
+                "Proposed \"{}\" ({}). It needs owner confirmation in the app: the owner accepts or dismisses it in Secretary → Links before anything is added to the calendar. Proposal id {}.",
+                body["title"].as_str().unwrap_or(""),
+                format::local_time(body.get("start"), self.app.cfg.timezone),
+                p.get("id").and_then(Value::as_str).unwrap_or("?")
+            )),
+            Err(e) if e.code == "bad_request" => Err(bad(format!(
+                "Secretary refused the event ({}). Use RFC 3339 times with offset or YYYY-MM-DD dates. {}",
+                e.message,
+                format::now_line(self.app.cfg.timezone)
+            ))),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub async fn gym(&self, args: &JsonObject) -> ToolResult {

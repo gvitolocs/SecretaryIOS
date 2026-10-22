@@ -95,8 +95,20 @@ async fn cancel_reminder(State(st): State<AppState>, Path(id): Path<String>) -> 
     forward(&st, Call::cancel_reminder(&id)?).await
 }
 
+/// Lucina's agenda plus the calendar events of that date (all sources).
 async fn agenda(State(st): State<AppState>, QueryArgs(q): QueryArgs<AgendaQuery>) -> ApiResult {
-    forward(&st, Call::agenda(&q)?).await
+    let (status, Json(mut data)) = forward(&st, Call::agenda(&q)?).await?;
+    let date = data
+        .get("date")
+        .and_then(Value::as_str)
+        .or(q.date.as_deref())
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .unwrap_or_else(|| chrono::Utc::now().with_timezone(&st.links.tz).date_naive());
+    if let Some(obj) = data.as_object_mut() {
+        let events = crate::calendar::events_on(&st.links, date).await;
+        obj.insert("events".into(), json!(events));
+    }
+    Ok((status, Json(data)))
 }
 
 async fn shopping(State(st): State<AppState>) -> ApiResult {

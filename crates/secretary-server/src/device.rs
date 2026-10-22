@@ -219,6 +219,9 @@ async fn state(
         Ok(Err(e)) => tracing::warn!(error = %e, "could not keep calendar events"),
         Err(_) => tracing::warn!("calendar events task failed"),
     }
+    // The calendar keeps the phone's events (Links, /v1/calendar/events),
+    // whether or not Lucina is reachable.
+    crate::calendar::ingest_device_events(&st, &ident.device_name, &snapshot.events).await;
     forward(&st, &call).await
 }
 

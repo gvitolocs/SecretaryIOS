@@ -22,6 +22,13 @@
 //! | `SECRETARY_PUSH_HOSTS` | FCM, Mozilla, Apple, WNS | comma-separated push-service host suffixes allowed as endpoints |
 //! | `SECRETARY_PUSH_ALLOW_HTTP` | `0` | `1`: accept `http://` push endpoints (local mock push services only) |
 //! | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | — | APNs for the native app; all three of file/key/team or none (see `notify::apns`) |
+//! | `SECRETARY_TIMEZONE` | `Europe/Copenhagen` | the owner's zone (calendar days, all-day events) |
+//! | `SECRETARY_GOOGLE_CLIENT_ID_FILE` | — | Google OAuth client id (one line); with the secret file, enables Google in Links |
+//! | `SECRETARY_GOOGLE_CLIENT_SECRET_FILE` | — | Google OAuth client secret (one line, 0600) |
+//! | `SECRETARY_GOOGLE_REDIRECT_URI` | `https://getsecretary.tech/v1/links/google/callback` | must be registered on the OAuth client |
+//! | `SECRETARY_CALENDAR_SYNC_SECS` | `300` | background sync of Google and ICS calendars; `0` turns it off |
+//! | `SECRETARY_MCP_STATUS_URL` | `http://127.0.0.1:8810/internal/status` | secretary-mcp's client list (AI clients in Links) |
+//! | `SECRETARY_MCP_STATUS_TOKEN_FILE` | — | the shared status token (same file content as secretary-mcp's) |
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -73,6 +80,14 @@ pub struct Config {
     pub health_timeout: Duration,
     pub health_ttl: Duration,
     pub notify: crate::notify::NotifyConfig,
+    /// The owner's time zone.
+    pub timezone: chrono_tz::Tz,
+    /// `None` without both Google client files: Google shows as unavailable.
+    pub google: Option<crate::google::GoogleConfig>,
+    pub calendar_sync_every: Duration,
+    pub mcp_status: Option<crate::links::McpStatusConfig>,
+    /// Tests only: allow `http://` and local ICS URLs.
+    pub ics_allow_local: bool,
 }
 
 impl std::fmt::Debug for Config {
@@ -124,6 +139,11 @@ impl Config {
             health_timeout: Duration::from_secs(3),
             health_ttl: Duration::from_secs(10),
             notify: crate::notify::NotifyConfig::default(),
+            timezone: chrono_tz::Europe::Copenhagen,
+            google: None,
+            calendar_sync_every: Duration::from_secs(300),
+            mcp_status: None,
+            ics_allow_local: false,
         }
     }
 
@@ -205,6 +225,44 @@ impl Config {
             Some(v) => bail!("SECRETARY_PUSH_ALLOW_HTTP={v}: expected 0 or 1"),
         };
         cfg.notify.push.apns = crate::notify::apns::ApnsConfig::from_lookup(&get)?;
+        if let Some(tz) = get("SECRETARY_TIMEZONE") {
+            cfg.timezone = tz
+                .parse()
+                .map_err(|_| anyhow::anyhow!("SECRETARY_TIMEZONE={tz}: unknown IANA time zone"))?;
+        }
+        match (
+            get("SECRETARY_GOOGLE_CLIENT_ID_FILE"),
+            get("SECRETARY_GOOGLE_CLIENT_SECRET_FILE"),
+        ) {
+            (Some(id), Some(secret)) => {
+                let mut g = crate::google::GoogleConfig::new(
+                    read_secret_file(&id, "SECRETARY_GOOGLE_CLIENT_ID_FILE")?,
+                    read_secret_file(&secret, "SECRETARY_GOOGLE_CLIENT_SECRET_FILE")?,
+                );
+                if let Some(r) = get("SECRETARY_GOOGLE_REDIRECT_URI") {
+                    g.redirect_uri = r;
+                }
+                cfg.google = Some(g);
+            }
+            (None, None) => {}
+            _ => bail!("set both SECRETARY_GOOGLE_CLIENT_ID_FILE and SECRETARY_GOOGLE_CLIENT_SECRET_FILE, or neither"),
+        }
+        if let Some(v) = get("SECRETARY_CALENDAR_SYNC_SECS") {
+            let n: u64 = v
+                .parse()
+                .with_context(|| format!("SECRETARY_CALENDAR_SYNC_SECS={v}: expected seconds"))?;
+            if n != 0 && n < 60 {
+                bail!("SECRETARY_CALENDAR_SYNC_SECS={v}: 0 (off) or at least 60");
+            }
+            cfg.calendar_sync_every = Duration::from_secs(n);
+        }
+        if let Some(path) = get("SECRETARY_MCP_STATUS_TOKEN_FILE") {
+            cfg.mcp_status = Some(crate::links::McpStatusConfig {
+                url: get("SECRETARY_MCP_STATUS_URL")
+                    .unwrap_or_else(|| "http://127.0.0.1:8810/internal/status".into()),
+                token: read_secret_file(&path, "SECRETARY_MCP_STATUS_TOKEN_FILE")?,
+            });
+        }
         let upstream = UpstreamConfig {
             legacy: get("SECRETARY_UPSTREAM_LEGACY"),
             services: get("SECRETARY_UPSTREAM_SERVICES"),
@@ -215,6 +273,25 @@ impl Config {
         }
         Ok(cfg)
     }
+}
+
+/// Read a one-line secret file (trimmed). Never includes the content in
+/// errors; warns when group/others can read it.
+pub fn read_secret_file(path: &str, var: &str) -> anyhow::Result<String> {
+    let meta = std::fs::metadata(path).with_context(|| format!("{var} {path}"))?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        tracing::warn!(
+            path,
+            var,
+            "secret file is readable by group/others; chmod 600 it"
+        );
+    }
+    let raw = std::fs::read_to_string(path).with_context(|| format!("reading {var} {path}"))?;
+    let v = raw.trim().to_owned();
+    if v.is_empty() || v.contains(char::is_whitespace) {
+        bail!("{var} {path} must hold exactly one value");
+    }
+    Ok(v)
 }
 
 /// Read and trim the token file. Never includes the content in errors.
