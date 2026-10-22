@@ -5,7 +5,7 @@
 //! | item | category |
 //! |---|---|
 //! | `role: lucina`, `meta.kind: "reminder"` | `reminder` |
-//! | `role: lucina`, `meta.kind: "device_command"` that needs a tap | `device_confirm` |
+//! | `role: lucina`, `meta.kind: "device_command"` that needs a tap (`meta.command.requiresConfirmation`, else by type) | `device_confirm` |
 //! | `role: lucina`, `meta.kind: "shopping"` (Lucina changed a list) | `shopping` |
 //! | any other `role: lucina` item | `lucina_message` |
 //!
@@ -167,7 +167,11 @@ pub fn classify(item: &TimelineItem, now_ms: i64, stale_ms: i64) -> Option<NewNo
         "device_command" => {
             let command = &meta["command"];
             let ctype = command["type"].as_str().unwrap_or("");
-            if !ctype.is_empty() && !command_needs_tap(ctype) {
+            // Lucina says so (`requiresConfirmation`); else the app's rule by type.
+            let needs_tap = command["requiresConfirmation"]
+                .as_bool()
+                .unwrap_or(ctype.is_empty() || command_needs_tap(ctype));
+            if !needs_tap {
                 return None;
             }
             (
@@ -341,6 +345,15 @@ mod tests {
             classify(&item(v), now, 3_600_000).is_none(),
             "runs without a tap"
         );
+        let mut v = base.clone();
+        v["meta"] = json!({"kind": "device_command", "command": {"id": "c3", "type": "alarm.set", "requiresConfirmation": true}});
+        assert!(
+            classify(&item(v), now, 3_600_000).is_some(),
+            "Lucina's flag wins"
+        );
+        let mut v = base.clone();
+        v["meta"] = json!({"kind": "device_command", "command": {"id": "c4", "type": "calendar.create", "requiresConfirmation": false}});
+        assert!(classify(&item(v), now, 3_600_000).is_none());
 
         let mut v = base.clone();
         v["role"] = json!("user");
