@@ -182,7 +182,7 @@ pub struct ToolEnv {
     pub presence_dir: PathBuf,
     /// Older presence files mean the watcher is down.
     pub presence_max_age: Duration,
-    /// secretary-server base URL for `avatar_outfit` (`PUT /v1/avatar`).
+    /// secretary-server base URL (`avatar_outfit`, `calendar`, `notify`, `notes`).
     pub secretary_url: Option<String>,
     /// File holding the secretary-server service token (`svc_…`, read per call).
     pub secretary_service_token_file: Option<PathBuf>,
