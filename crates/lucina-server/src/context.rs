@@ -39,6 +39,25 @@ fn clip_recent(recent: &str, budget: usize) -> String {
     format!("{header}\u{2026}{tail}\n[recent turns clipped to budget]")
 }
 
+/// The shopping list for a compound question that asks about it ("" otherwise
+/// or when the grocery database is off or failing).
+pub async fn shopping_block(st: &AppState, prompt: &str, now: chrono::DateTime<Utc>) -> String {
+    let Some(repo) = st.grocery.as_deref() else {
+        return String::new();
+    };
+    let domains = lucina_intent::domains::read_domains(prompt, now, st.cfg.time_zone, false);
+    if domains.len() < 2 || !domains.contains(&lucina_intent::domains::SHOPPING) {
+        return String::new();
+    }
+    match repo.legacy_list(&st.cfg.grocery_user_id).await {
+        Ok(items) => lucina_intent::domains::shopping_list_block(&items),
+        Err(e) => {
+            tracing::warn!(error = %e, "compound shopping context failed");
+            String::new()
+        }
+    }
+}
+
 /// The Discord presence block for an owner turn ("" when off or unknown).
 pub fn presence_block(st: &AppState, prompt: &str) -> String {
     if !st.cfg.presence_context {
@@ -148,6 +167,10 @@ pub async fn prepare_with(
     } else {
         String::new()
     };
+    // A compound question ("cosa c'è sulla lista della spesa e cosa ho nella
+    // nota X?"): no grocery shortcut answers it, so the shopping list comes
+    // here (calendar and named notes are above).
+    let shopping = shopping_block(st, user_text, now).await;
     let recent = if policy == Policy::PersonaOnly || recent_context.is_empty() {
         String::new()
     } else {
@@ -187,7 +210,7 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, calendar, notes, recent, reminders, honcho,
+        metadata, presence, calendar, notes, shopping, recent, reminders, honcho,
     ]
     .into_iter()
     .filter(|s| !s.is_empty())

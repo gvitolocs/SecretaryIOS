@@ -4,7 +4,7 @@
 use chrono::{DateTime, Duration, Utc};
 use lucina_grocery::products::{resolve_canonical_product, Product};
 
-use crate::heuristics::{explicit_recall, looks_like_reminder_request};
+use crate::heuristics::{explicit_recall, looks_like_reminder_request, looks_like_travel_info};
 use crate::jsre::{group, Re};
 use crate::re;
 
@@ -132,6 +132,152 @@ fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
 }
 
+/// "Cosa ho comprato ieri?", "what did we finish?": a question about the
+/// past, never a purchase or pantry event.
+fn asks_about_past(value: &str) -> bool {
+    re!(r"^\s*(?:lucina[,!]?\s+)?(?:cosa|cos['’]|che|quando|dove|perch[eé]|quanto|quanti|quante|chi|what|when|where|why|how|did|which|hvad|hvornår|hvor|hvorfor|hvilke|hvem)(?![\p{L}\p{N}_])", "iu").test(value)
+}
+
+const NOT_GROCERY_WORDS: &[&str] = &[
+    "treno",
+    "aereo",
+    "volo",
+    "bus",
+    "autobus",
+    "taxi",
+    "metro",
+    "traghetto",
+    "tram",
+    "train",
+    "plane",
+    "flight",
+    "ferry",
+    "cab",
+    "uber",
+    "toget",
+    "tog",
+    "flyet",
+    "fly",
+    "bussen",
+    "freddo",
+    "raffreddore",
+    "influenza",
+    "febbre",
+    "covid",
+    "cold",
+    "flu",
+    "fever",
+    "forkølelse",
+    "decisione",
+    "decision",
+    "beslutning",
+    "appuntamento",
+    "appointment",
+    "job",
+    "lavoro",
+    "work",
+    "arbejde",
+    "voto",
+    "grade",
+    "multa",
+    "fine",
+    "chiamata",
+    "call",
+    "chance",
+    "occasione",
+    "time",
+    "tempo",
+    "tid",
+    "sole",
+    "sun",
+    "pausa",
+    "break",
+    "vacanz[ae]",
+    "vacation",
+    "holiday",
+    "ferie",
+    "casa",
+    "house",
+    "home",
+    "hus",
+    "appartamento",
+    "apartment",
+    "lejlighed",
+    "parole",
+    "words",
+    "film",
+    "movie",
+    "serie",
+    "series",
+    "project",
+    "progetto",
+    "projekt",
+    "compiti",
+    "homework",
+    "esame",
+    "exam",
+    "eksamen",
+    "partita",
+    "game",
+    "libro",
+    "book",
+    "bog",
+    "episodio",
+    "episode",
+    "corso",
+    "course",
+    "riunione",
+    "meeting",
+    "patente",
+    "license",
+    "laurea",
+    "degree",
+    "premio",
+    "prize",
+    "lezione",
+    "lesson",
+    "coraggio",
+    "courage",
+    "paura",
+    "fear",
+    "sonno",
+    "sleep",
+    "idea",
+    "consiglio",
+    "advice",
+    "aiuto",
+    "help",
+    "posto",
+    "place",
+    "seat",
+    "bici",
+    "bike",
+    "cykel",
+    r"too\s+much",
+    r"a\s+lot",
+    "troppo",
+    "niente",
+    "nulla",
+    "nothing",
+    r"di\s+\p{L}+",
+];
+
+/// `notGroceryObject`: the object of "ho preso", "I got", "siamo senza",
+/// "ci serve" is plainly not a grocery ("il treno", "a new job", "parole").
+pub fn not_grocery_object(raw_product: &str) -> bool {
+    re!(
+        &format!(
+            r"^(?:(?:new|nuov[oaie]|another|altr[oaie]|un['’]altra|big|good|bad|real|first|prim[oa])\s+)?(?:{})(?![\p{{L}}\p{{N}}_])",
+            NOT_GROCERY_WORDS.join("|")
+        ),
+        "iu"
+    )
+    .test(raw_product.trim())
+}
+
+/// "Lista dei film", "lista dei promemoria": not the shopping list.
+const OTHER_LIST: &str = r"(?!\s+(?:dei|del|della|delle|degli|dell['’]|di)\s+(?!spesa\b))";
+
 /// `parseGroceryIntent`.
 pub fn parse_grocery_intent(text: &str) -> Option<GroceryParse> {
     parse_grocery_intent_at(text, Utc::now())
@@ -165,19 +311,25 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
         g
     };
 
-    if re!(r"\b(i (?:bought|purchased|got|picked up)|jeg købte|ho comprato|abbiamo comprato|ho preso|abbiamo preso)\b", "i").test(value) {
+    let past_question = asks_about_past(value);
+    if !past_question && re!(r"\b(i (?:bought|purchased|got|picked up)|jeg købte|ho comprato|abbiamo comprato|ho preso|abbiamo preso)\b", "i").test(value) {
         let raw = product_after(value, re!(r"(?:i\s+(?:bought|purchased|got|picked up)|jeg\s+købte|ho\s+comprato|abbiamo\s+comprato|ho\s+preso|abbiamo\s+preso)\s+(.+)", "i"));
-        return Some(with_product("grocery.purchase", raw, true));
+        if !not_grocery_object(&raw) {
+            return Some(with_product("grocery.purchase", raw, true));
+        }
     }
-    if re!(r"\b(we finished|we'?re out of|we are out of|finished the|brugte det sidste|løb tør for|(?:ho|abbiamo|è|e')\s+(?:quasi\s+)?finit[oaie]|siamo senza|sono senza|è finito|e' finito|finito(?:\s+il|\s+la)?)\b", "i").test(value) {
+    if !past_question && re!(r"\b(we finished|we'?re out of|we are out of|finished the|brugte det sidste|løb tør for|(?:ho|abbiamo|è|e')\s+(?:quasi\s+)?finit[oaie]|siamo senza|sono senza|è finito|e' finito|finito(?:\s+il|\s+la)?)\b", "i").test(value) {
         let raw = product_after(value, re!(r"(?:we\s+(?:finished|are\s+out\s+of)|we(?:['’])?re\s+out\s+of|finished\s+the|brugte\s+det\s+sidste|løb\s+tør\s+for|(?:ho|abbiamo|è|e')\s+(?:quasi\s+)?finit[oaie]|siamo\s+senza|sono\s+senza|è\s+finito|e'\s+finito|finito)\s+(?:il\s+|la\s+|lo\s+|i\s+|gli\s+|le\s+)?(.+)", "i"));
-        return Some(with_product("grocery.finished", raw, true));
+        if !not_grocery_object(&raw) {
+            return Some(with_product("grocery.finished", raw, true));
+        }
     }
-    if re!(
-        r"\b(we (?:used|ate|consumed)|i (?:used|ate|consumed)|spiste|brugte)\b",
-        "i"
-    )
-    .test(value)
+    if !past_question
+        && re!(
+            r"\b(we (?:used|ate|consumed)|i (?:used|ate|consumed)|spiste|brugte)\b",
+            "i"
+        )
+        .test(value)
     {
         let raw = product_after(
             value,
@@ -186,19 +338,25 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
                 "i"
             ),
         );
-        return Some(with_product("grocery.consume", raw, true));
+        if !not_grocery_object(&raw) {
+            return Some(with_product("grocery.consume", raw, true));
+        }
     }
     if re!(r"^(?:(?:show|read|check|open|see|what's on|whats on|what is on)\s+)?(?:my\s+|the\s+)?(?:shopping|grocery)\s+list\b", "i").test(value)
         || re!(r"\b(?:show|read|check|what's on|whats on|what is on)\b.*\b(?:shopping|grocery)\s+list\b", "i").test(value)
         || re!(r"\bhvad står på (?:min )?indkøbsliste\b", "i").test(value)
         || re!(r"^indkøbsliste\s*[?.!]*$", "i").test(value)
         || re!(r"^(?:(?:mostra|dimmi|leggi|controlla|cosa c'è|cosa c\'è|che c'è|che c\'è)\s+(?:su\s+|nella\s+|sulla\s+)?)?(?:la\s+|mia\s+)?lista(?:\s+della\s+spesa)?\s*[?.!]*$", "i").test(value)
-        || re!(r"(?:\b(?:mostra|dimmi)\b|\b(?:cosa|che)\s+c(?:['’]\s*|\s+)(?:è|e['’]))(?![a-zà-ÿ]).*\blista(?:\s+della\s+spesa)?\b", "i").test(value)
+        || re!(&format!(r"(?:\b(?:mostra|dimmi)\b|\b(?:cosa|che)\s+c(?:['’]\s*|\s+)(?:è|e['’]))(?![a-zà-ÿ]).*\blista{OTHER_LIST}(?:\s+della\s+spesa)?\b"), "i").test(value)
+        // "cosa ho in lista?", "what's on my list", "hvad står på listen".
+        || re!(&format!(r"(?:^|[^\p{{L}}])(?:cosa|cos['’]|che)\s*(?:ho|abbiamo)\s+(?:in|nella|sulla|su)\s+(?:mia\s+|la\s+)?lista{OTHER_LIST}(?:\s+della\s+spesa)?(?![\p{{L}}])"), "iu").test(value)
+        || re!(r"\bwhat(?:['’]s|\s+is|\s+do\s+(?:i|we)\s+(?:have|need))\s+on\s+(?:my|the|our)\s+(?:shopping\s+|grocery\s+)?list\b", "i").test(value)
+        || re!(r"(?:^|[^\p{L}])hvad\s+(?:står|har\s+(?:jeg|vi)|er\s+der)\s+på\s+(?:min\s+|vores\s+)?(?:indkøbsliste(?:n)?|listen)(?![\p{L}])", "iu").test(value)
     {
         return Some(base("grocery.shopping_list.query"));
     }
     if re!(r"\b(add|put)\b.*\b(shopping list|grocery list)\b", "i").test(value)
-        || re!(r"\btilføj\b.*\b(indkøbsliste|listen)\b", "i").test(value)
+        || re!(r"\btilføj\b.*\b(indkøbslisten?|listen)\b", "i").test(value)
         || re!(
             r"\b(add|put)\s+.+(?:\s+on(?:to)?\s+(?:the\s+|my\s+)?list)\b",
             "i"
@@ -213,7 +371,7 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
         let raw = product_after(
             value,
             re!(
-                r"(?:add|put|tilføj|aggiungi|metti)\s+(.+?)(?:\s+(?:to|on|onto|på|alla|nella|in|su)\s+(?:my\s+|the\s+|la\s+|mia\s+)?(?:shopping|grocery|indkøbs)?\s*lista?(?:\s+della\s+spesa)?)?$",
+                r"(?:add|put|tilføj|aggiungi|metti)\s+(.+?)(?:\s+(?:to|on|onto|på|til|alla|nella|in|su)\s+(?:my\s+|the\s+|la\s+|mia\s+|min\s+)?(?:(?:shopping|grocery)\s*list|indkøbslisten?|listen|lista(?:\s+della\s+spesa)?|list))?$",
                 "i"
             ),
         );
@@ -247,7 +405,7 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
         && !re!(r"\b(help|advice|you|sleep|break|vacation|holiday|aiuto|consiglio)\b", "i").test(value)
     {
         let raw = product_after(value, re!(r"(?:(?:i|we)\s+need(?:\s+to\s+buy)?|need\s+to\s+buy|(?:i|we)\s+should\s+buy|remember\s+to\s+buy|don'?t\s+forget\s+to\s+buy|we\s+are\s+out\s+of|we'?re\s+missing|vi\s+mangler|jeg\s+skal\s+bruge|skal\s+købe|mi\s+serve|ci\s+serve|mi\s+servono|ci\s+servono|devo\s+comprare|dobbiamo\s+comprare|bisogna\s+comprare|ricordati\s+di\s+comprare|compra|prendi)\s+(.+)", "i"));
-        if !raw.is_empty() && word_count(&raw) <= 8 {
+        if !raw.is_empty() && word_count(&raw) <= 8 && !not_grocery_object(&raw) {
             return Some(with_product("grocery.shopping_list.add", raw, false));
         }
     }
@@ -279,21 +437,26 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
     {
         return Some(base("grocery.expense.query"));
     }
+    // "What do I have tomorrow?" is a calendar question: the pantry needs a place.
     if re!(
-        r"\b(pantry|pantries|inventory|what do (?:i|we) have)\b",
+        r"\b(pantry|pantries|inventory|what do (?:i|we) have (?:at home|in (?:the |my |our )?(?:pantry|fridge|freezer|kitchen|cupboard)))\b",
         "i"
     )
     .test(value)
+        || re!(r"(?:^|[^\p{L}])(?:cosa|cos['’]|che)\s*(?:c['’]?\s*è|c\s+è|ho|abbiamo)\s+in\s+(?:frigo(?:rifero)?|dispensa|freezer|congelatore)(?![\p{L}])", "iu").test(value)
+        || re!(r"(?:^|[^\p{L}])hvad\s+(?:har\s+(?:vi|jeg)|er\s+der)\s+i\s+(?:køleskabet|fryseren|skabet)(?![\p{L}])", "iu").test(value)
     {
         return Some(base("grocery.pantries.query"));
     }
-    if re!(
-        r"\b(price|cost|costs|prices|prisen|koster|prezzo|costa|costano)\b",
-        "i"
-    )
-    .test(value)
-        || re!(r"\bhow\s+much\s+(?:is|are|for)\b", "i").test(value)
-    {
+    // "Costa" is also a coast: only "quanto costa", "costa il …".
+    let price_words = re!(r"\b(price|cost|costs|prices|prisen|koster|prezzo)\b", "i").test(value)
+        || re!(
+            r"\b(?:quanto|che)\s+cost(?:a|ano)\b|\bcost(?:a|ano)\s+(?:il|la|lo|i|gli|le|un|una|uno)\b",
+            "i"
+        )
+        .test(value)
+        || re!(r"\bhow\s+much\s+(?:is|are|for)\b", "i").test(value);
+    if price_words && !looks_like_travel_info(value) {
         let extracted = [
             re!(r"(?:price|cost|costs)\s+(?:of|for)\s+(.+)", "i"),
             re!(
@@ -316,9 +479,16 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
             .unwrap_or_else(|| value.to_owned())
             .trim()
             .to_owned();
-        return Some(with_product("grocery.price.query", raw, false));
+        // A percentage or a sum is not a grocery price.
+        if !re!(r"\d\s*%|^[\d\s.,+\-*/×x()=?]+$").test(&raw) {
+            return Some(with_product("grocery.price.query", raw, false));
+        }
     }
-    if re!(r"\b(average|analytics|most|savings|increased)\b", "i").test(&lower) {
+    // Analytics questions need a grocery word ("the most beautiful city" is chat).
+    if re!(r"\b(average|analytics|most|savings|increased)\b", "i").test(&lower)
+        && (re!(r"(?<![\p{L}\p{N}_])(?:grocer(?:y|ies)|shopping|supermarkets?|spesa|supermercat[oi]|dagligvarer|indkøb\p{L}*|food|cibo|buy|bought|purchases?|compr\p{L}*|købt|køber|spend|spent|items?|products?|prodott[oi]|varer)(?![\p{L}\p{N}_])", "iu").test(value)
+            || store_from_text(value).is_some())
+    {
         return Some(base("grocery.analytics.query"));
     }
     None
@@ -437,8 +607,13 @@ mod tests {
                 .raw_product,
             "eggs"
         );
-        // V8: `\b` never matches inside "indkøbslisten", so only "listen" works.
-        assert_eq!(intent("tilføj mælk til indkøbslisten"), None);
+        // Node 15d9629: "indkøbslisten" and "til" parse too.
+        assert_eq!(
+            parse_grocery_intent("tilføj mælk til indkøbslisten")
+                .unwrap()
+                .raw_product,
+            "mælk"
+        );
         assert_eq!(
             intent("tilføj mælk til listen"),
             Some("grocery.shopping_list.add")

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use futures_util::FutureExt;
 use lucina_intent::mcp::{self, McpTurn};
-use lucina_intent::{grocery as gi, notes as nt, outfit};
+use lucina_intent::{domains as dm, grocery as gi, notes as nt, outfit};
 use lucina_llm::Message;
 use lucina_memory::{secretary_session_id, MemoryMode};
 use lucina_store::jobs::Job;
@@ -366,6 +366,131 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
     });
 }
 
+fn compound_label(domain: &str) -> &'static str {
+    match domain {
+        dm::SHOPPING => "the shopping list",
+        dm::NOTES => "a saved note",
+        dm::CALENDAR => "the calendar",
+        _ => "the reminders",
+    }
+}
+
+/// The domains of a compound question this host can read (features on).
+fn readable_domains(st: &AppState, session: &str, message: &str) -> Vec<&'static str> {
+    let pending = st.cfg.notes_enabled && !st.bridge_state.pending_part(session).is_empty();
+    dm::read_domains(message, Utc::now(), st.cfg.time_zone, pending)
+        .into_iter()
+        .filter(|d| match *d {
+            dm::SHOPPING => st.grocery.is_some(),
+            dm::NOTES => st.cfg.notes_enabled,
+            dm::CALENDAR => st.cfg.calendar_enabled,
+            _ => st.cfg.reminders_enabled,
+        })
+        .collect()
+}
+
+/// One context block per domain of a compound question; blocks already in
+/// the turn context (calendar, named notes, shopping list) are not repeated.
+/// A source that fails says so, so the reply does not guess.
+async fn compound_blocks(t: &Turn<'_>, domains: &[&'static str], memory: &str) -> Vec<String> {
+    let st = t.st;
+    let tz = st.cfg.time_zone;
+    let mut blocks: Vec<String> = Vec::new();
+    let mut add = |block: String| {
+        let b = block.trim().to_owned();
+        if !b.is_empty() && !memory.contains(&b) {
+            blocks.push(b);
+        }
+    };
+    for domain in domains {
+        match *domain {
+            dm::SHOPPING => {
+                if memory.contains("Shopping list (Secretary app), to buy:") {
+                    continue;
+                }
+                let Some(repo) = st.grocery.as_deref() else {
+                    continue;
+                };
+                match repo.legacy_list(&st.cfg.grocery_user_id).await {
+                    Ok(items) => add(dm::shopping_list_block(&items)),
+                    Err(e) => {
+                        tracing::warn!(domain, error = %e, "secretary compound context failed");
+                        add(format!(
+                            "{}: unavailable right now; do not guess.",
+                            compound_label(domain)
+                        ));
+                    }
+                }
+            }
+            dm::NOTES => {
+                match nt::parse_notes_intent(&t.message, false) {
+                    Some(nt::NotesIntent::Read { name, .. }) => {
+                        let r = crate::bridges::find_note(&st.secretary, &name).await;
+                        if r.ok {
+                            add(format!(
+                                "Owner notes named in this message (Secretary app, Notes):\n{}",
+                                nt::render_note_context(&r.data, nt::MAX_CONTEXT_CHARS)
+                            ));
+                        } else if r.status == 404 {
+                            add(format!("Note \"{name}\": no note with that name; do not guess its content."));
+                        } else {
+                            add(format!(
+                            "Note \"{name}\": unreadable right now ({}); do not guess its content.",
+                            r.code
+                        ));
+                        }
+                    }
+                    _ => {
+                        let r = st
+                            .secretary
+                            .call(reqwest::Method::GET, "/v1/notes?limit=30", None)
+                            .await;
+                        if r.ok {
+                            let notes = r.data["notes"].as_array().cloned().unwrap_or_default();
+                            let list = notes
+                                .iter()
+                                .map(|n| {
+                                    format!(
+                                        "{} ({})",
+                                        n["title"].as_str().unwrap_or(""),
+                                        n["slug"].as_str().unwrap_or("")
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            add(format!(
+                                "Owner notes (Secretary app): {}.",
+                                if list.is_empty() { "none" } else { &list }
+                            ));
+                        } else {
+                            add("Notes: unreadable right now.".into());
+                        }
+                    }
+                }
+            }
+            dm::CALENDAR => {
+                add(
+                    crate::bridges::calendar_context(&st.secretary, &t.message, Utc::now(), tz)
+                        .await,
+                )
+            }
+            _ => {
+                let pending: Vec<_> = owner_reminders(st)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| r.status == "pending")
+                    .collect();
+                let scope = lucina_intent::heuristics::reminder_list_scope(&t.message);
+                add(format!(
+                    "Pending reminders:\n{}",
+                    format_list(&pending, tz, t.persona(), scope == "today", Utc::now())
+                ));
+            }
+        }
+    }
+    blocks
+}
+
 async fn json_turn(
     t: &Turn<'_>,
     prepared: &crate::context::Prepared,
@@ -381,6 +506,47 @@ async fn json_turn(
             let o = crate::bridges::change_look(&st.secretary, &look).await;
             return Finish::reply(o.reply, "avatar_outfit").with(o.action_result, o.meta);
         }
+    }
+
+    // A question about two or more of the owner's data ("cosa c'è sulla lista
+    // della spesa e cosa ho nella nota X?"): no single bridge may answer it.
+    // Gather each part's data and let the model answer every part.
+    let domains = readable_domains(st, &t.session, &t.message);
+    if domains.len() >= 2 {
+        let blocks = compound_blocks(t, &domains, memory).await;
+        let context = blocks
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(memory))
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let labels: Vec<&str> = domains.iter().map(|d| compound_label(d)).collect();
+        let extra = [
+            t.extra_system.clone(),
+            format!("The owner asked about several things in one message: {}. The real data for each is in the context above.", labels.join(", ")),
+            "Answer every part, in the order asked, each briefly (keep to any length the owner asks for, such as one line). If a part has no data, say so in a few words.".into(),
+            "Use only that data: never invent items, events, reminders or note content.".into(),
+        ]
+        .join(" ");
+        let reply = st
+            .planner
+            .generate_reply(&t.input(&context, PLATFORM_LABEL), &extra, "", "reply")
+            .await
+            .unwrap_or_default();
+        let reply = match reply.trim() {
+            "" => {
+                let raw: String = blocks.join("\n\n").chars().take(1500).collect();
+                if raw.is_empty() {
+                    "I could not read that right now.".to_owned()
+                } else {
+                    raw
+                }
+            }
+            r => r.to_owned(),
+        };
+        return Finish::reply(reply, "reply")
+            .with(format!("[compound: {}]", domains.join("+")), None);
     }
 
     // Notes (LUCINA_NOTES=true): save, append, read, list; MCP callers may too.

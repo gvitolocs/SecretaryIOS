@@ -16,11 +16,8 @@ pub fn is_presence_question(text: &str) -> bool {
         || re!(r"\b(?:che|quale)\s+canzone\b", "i").test(text)
         || re!(r"\bspotify\b", "i").test(text)
         || re!(r"\bwhat\s+am\s+i\s+(?:listening|playing)\b", "i").test(text)
-        || re!(
-            r"\b(?:sono|am\s+i|is\s+giuseppe)\s+(?:online|connesso|on)\b",
-            "i"
-        )
-        .test(text)
+        // "Am I online?"; not "am I on the list?" or "sono on fire".
+        || re!(r"\b(?:sono|am\s+i|is\s+giuseppe)\s+(?:online|connesso)\b", "i").test(text)
 }
 
 pub const UNKNOWN_LINE: &str = "Discord: presence unknown (the presence watcher is not running or its data is older than 10 minutes).";
@@ -46,6 +43,8 @@ mod tests {
         assert!(is_presence_question("cosa sto ascoltando?"));
         assert!(is_presence_question("What am I listening to"));
         assert!(!is_presence_question("cosa c'è da mangiare"));
+        assert!(!is_presence_question("am I on the list?"));
+        assert!(!is_presence_question("sono on fire oggi"));
         assert_eq!(
             online_today_line(135).split('.').next().unwrap(),
             "Online on Discord today: 2 h 15 min"

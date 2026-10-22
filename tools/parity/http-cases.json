@@ -620,6 +620,56 @@
       }
     },
     {
+      "name": "chat it: compound shopping list + note (2026-10-22 fix)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "Cosa c è sulla lista della spesa e cosa ho nella nota parity-test (una riga)?",
+        "sessionId": "parity-notes",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: cosa ho nella nota (notes, not calendar)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa ho nella nota parity-test?",
+        "sessionId": "parity-notes",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: cosa ho in lista (shopping, not calendar)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa ho in lista?",
+        "sessionId": "parity-notes",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: compound calendar + reminders",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa ho in calendario domani e quali promemoria ho?",
+        "sessionId": "parity-cal",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: cosa ho domani (calendar)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa ho domani?",
+        "sessionId": "parity-cal",
+        "channel": "ios"
+      }
+    },
+    {
       "name": "chat it: list notes",
       "method": "POST",
       "path": "/chat",

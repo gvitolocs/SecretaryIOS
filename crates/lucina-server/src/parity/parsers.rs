@@ -82,6 +82,7 @@ pub fn rust_case(text: &str, session: &str, now: DateTime<Utc>, s: &Settings) ->
         "selfDesc": crate::capabilities::looks_like_self_description(text),
         "lang": hints::detect_language(text),
         "hints": hints::append_capability_hints("Ok, ci penso io.", text, true),
+        "domains": lucina_intent::domains::read_domains(text, now, TZ, false),
     })
 }
 

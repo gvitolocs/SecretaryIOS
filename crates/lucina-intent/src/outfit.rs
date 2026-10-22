@@ -42,7 +42,8 @@ fn p() -> &'static P {
             ("gym", words(r"palestra|tuta|sportiv[oa]|gym|workout|training|sports?(?:\s*(?:clothes|wear))?|træning(?:støj(?:et)?)?|sportstøj(?:et)?")),
             ("chef", words(r"chef|cuoc[ao]|da\s+cucina|kok(?:ke)?(?:tøj(?:et)?)?")),
             ("maid", words(r"cameriera|maid|stuepige(?:tøj(?:et)?)?|tjenestepige(?:tøj(?:et)?)?")),
-            ("casual", words(r"casual|comod[oa]|hverdag(?:støj(?:et)?)?|afslappet")),
+            // "Mettiti comoda" alone is "make yourself comfortable".
+            ("casual", words(r"casual|qualcosa\s+di\s+comodo|(?:vestit[oaie]|abit[oi]|tuta)\s+comod[oaie]|in\s+comodo|hverdag(?:støj(?:et)?)?|afslappet")),
             ("uniform", words(r"divisa|uniforme?n?|solit[oa]|usual|normale?|default|predefinit[oa]|sædvanlige?")),
         ],
         hair_verbs: vec![

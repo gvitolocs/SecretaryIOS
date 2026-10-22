@@ -204,9 +204,24 @@ fn time_of(text: &str) -> Option<(u32, u32, Remover)> {
     None
 }
 
-const CAL_WORDS: &str = r"calendario|agenda|impegni|appuntamenti|calendar|schedule|appointments|meetings|kalender(?:en)?|aftaler|program(?:met)?";
+/// A calendar read needs a calendar word, or a pure time question ([`ask_day`]).
+const CAL_WORDS: &str = r"calendario|agenda|impegni|appuntamenti|eventi|riunioni|calendar|schedule|appointments|meetings|kalender(?:en)?|aftaler|møder|program(?:met)?";
+/// "Train schedule", "workout schedule": someone else's timetable.
+const NOT_CAL_SCHEDULE: &str =
+    r"(?:train|bus|flight|ferry|tv|workout|training|gym|class|school|garbage|bin)\s+schedules?";
 const QUESTION_CUES: &str = r"cosa|che|quali|quanti|ho|c'è|ci sono|what|what's|whats|do i have|am i|anything|is there|hvad|har jeg|skal jeg|er der|hvilke|show|mostra|dimmi|tell me|vis";
-const ASK_DAY: &str = r"cosa\s+(?:ho|faccio)|che\s+(?:impegni|cosa)\s+ho|what\s+do\s+i\s+have|what(?:'s|\s+is)\s+(?:on\s+)?(?:for\s+)?(?:today|tomorrow)|hvad\s+(?:har|skal)\s+jeg";
+const DAY_REF: &str = r"(?:(?:il|on|per|for|di|på)\s+)?(?:oggi|domani|dopodomani|stamattina|stasera|stanotte|today|tonight|tomorrow|this\s+(?:morning|afternoon|evening|week|weekend)|next\s+week|questa\s+settimana|in\s+settimana|(?:questo|nel)\s+weekend|i\s+dag|idag|i\s+morgen|imorgen|i\s+overmorgen|overmorgen|i\s+aften|i\s+weekenden|denne\s+uge|luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mandag|tirsdag|onsdag|torsdag|fredag|lørdag|søndag)";
+const ASK_PHRASE: &str = r"(?:cosa|cos['’]|che)\s*(?:ho|faccio)(?:\s+(?:in\s+programma|da\s+fare))?|what\s+(?:do\s+i\s+have|am\s+i\s+doing|have\s+i\s+got)(?:\s+(?:on|planned|going\s+on))?|what(?:['’]s|\s+is)\s+(?:on|planned|happening)|hvad\s+(?:har|skal)\s+jeg(?:\s+(?:lave|på\s+programmet))?";
+
+/// "Cosa ho domani?", "domani cosa ho?", "hvad skal jeg i dag": the day follows the
+/// question directly ("cosa ho nella nota X", "cosa ho in lista" are not calendar questions).
+fn ask_day(t: &str) -> bool {
+    w(&format!(r"(?:{ASK_PHRASE})\s+{DAY_REF}")).test(t)
+        || w(&format!(
+            r"{DAY_REF}\s*,?\s*(?:{ASK_PHRASE})(?=\s*[?.!]*$|\s*[?.!]|\s+(?:e|and|og)\s)"
+        ))
+        .test(t)
+}
 const WEEK_WORDS: &str = r"settimana|questa settimana|prossimi giorni|this week|the week|next few days|denne uge|ugen|i denne uge";
 const CREATE: [&str; 3] = [
     r"(?:aggiungi|aggiungere|metti|mettere|segna|segnami|inserisci|crea|fissa)(?:mi)?\b.*?\b(?:in|al|nel|sul|nell')\s*(?:mio\s+)?(?:calendario|agenda)",
@@ -249,8 +264,9 @@ pub fn parse_question(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<Question
     if t.is_empty() || lucina_store::timeutil::utf16_len(t) > 300 || is_create(t) {
         return None;
     }
-    let asks = (w(CAL_WORDS).test(t) && (w(QUESTION_CUES).test(t) || t.ends_with('?')))
-        || w(ASK_DAY).test(t);
+    let cal_text = w(NOT_CAL_SCHEDULE).replace_all(t, " ");
+    let asks = (w(CAL_WORDS).test(&cal_text) && (w(QUESTION_CUES).test(t) || t.ends_with('?')))
+        || ask_day(t);
     if !asks {
         return None;
     }

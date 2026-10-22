@@ -12,13 +12,14 @@
 #
 # Usage (on nezopt): tools/parity/run-harness.sh            # build release, run, clean up
 #                    KEEP=1 tools/parity/run-harness.sh     # keep the work dir for inspection
+#                    DS_RUST=8785 tools/parity/run-harness.sh  # any port can be moved (NODE_PORT, RUST_PORT, FWD_PORT, DS_NODE, DS_RUST, SEC_PORT, PG_PORT)
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 LUCINA=${LUCINA:-/home/nez/Projects/Lucina}
 BIN=${BIN:-$REPO/target/release/lucina}
 WORK=${WORK:-$(mktemp -d /tmp/lucina-parity.XXXXXX)}
-NODE_PORT=8791 RUST_PORT=8792 FWD_PORT=8793 DS_NODE=8799 DS_RUST=8797 SEC_PORT=8798 PG_PORT=55791
+NODE_PORT=${NODE_PORT:-8791} RUST_PORT=${RUST_PORT:-8792} FWD_PORT=${FWD_PORT:-8793} DS_NODE=${DS_NODE:-8799} DS_RUST=${DS_RUST:-8797} SEC_PORT=${SEC_PORT:-8798} PG_PORT=${PG_PORT:-55791}
 NODE_CT=lucina-parity-node PG_CT=lucina-parity-pg
 mkdir -p "$WORK"; chmod 700 "$WORK"
 PIDS=()

@@ -25,9 +25,13 @@ fn words(src: &str) -> Re {
 const QUOTE_OPEN: &str = "['\"“‘«]";
 const QUOTE_CLOSE: &str = "['\"”’»]";
 const NOUN: &str = r"(?:nota|note|noten|notat(?:et)?|appunt[oi]|briefing|contesto|context|kontekst(?:en)?|documento|document|dokument(?:et)?|memo)";
+/// Words that are never a note name ("read the document I sent you").
 const NAME_STOP: &[&str] = &[
     "per", "di", "del", "della", "e", "che", "con", "for", "and", "the", "of", "to", "og", "til",
-    "med", "questo", "questa", "this", "it", "dette", "denne", "qui", "here", "her",
+    "med", "questo", "questa", "this", "it", "dette", "denne", "qui", "here", "her", "i", "you",
+    "me", "we", "he", "she", "they", "that", "which", "what", "my", "your", "a", "an", "cui", "io",
+    "tu", "noi", "lui", "lei", "mi", "ti", "ci", "mia", "mio", "tua", "tuo", "jeg", "du", "vi",
+    "han", "hun", "de", "det", "som", "min", "mit", "din", "dit",
 ];
 const SAVE_VERBS: [(&str, &str); 3] = [
     (
@@ -74,14 +78,14 @@ fn p() -> &'static Patterns {
                 })
                 .collect(),
             read: vec![
-                ("it", words(&format!(r"(?:cosa\s+c['’]?\s*è|cosa\s+dice|che\s+cosa\s+c['’]?\s*è|leggi(?:mi)?|mostrami|fammi\s+vedere|apri|riassumi(?:mi)?|ricordati|ricordi|cosa\s+sai)\s+(?:di\s+|del(?:la|lo)?\s+|nel(?:la|lo)?\s+|l['’]\s*|la\s+|il\s+|lo\s+|in\s+|sul(?:la)?\s+)?(?:mia\s+|mio\s+)?(?:{NOUN})\s+{name}"))),
-                ("en", words(&format!(r"(?:what(?:['’]s|\s+is)\s+in|what\s+does|read|show(?:\s+me)?|open|summari[sz]e|remember|recall|what\s+do\s+you\s+know\s+about)\s+(?:the\s+|my\s+)?(?:{NOUN})\s+{name}"))),
-                ("da", words(&format!(r"(?:hvad\s+står\s+der\s+i|vis(?:\s+mig)?|læs|åbn|husk|opsummer)\s+(?:min\s+|mit\s+)?(?:{NOUN})\s+{name}"))),
+                ("it", words(&format!(r"(?:cosa\s+c['’]?\s*è|(?:cosa|cos['’])\s*ho(?:\s+(?:scritto|salvato|messo|annotato))?|cosa\s+dice|che\s+cosa\s+c['’]?\s*è|leggi(?:mi)?|mostrami|fammi\s+vedere|apri|riassumi(?:mi)?|ricordati|ricordi|cosa\s+sai)\s+(?:di\s+|del(?:la|lo)?\s+|nel(?:la|lo)?\s+|l['’]\s*|la\s+|il\s+|lo\s+|in\s+|sul(?:la)?\s+)?(?:mia\s+|mio\s+)?(?:{NOUN})\s+{name}"))),
+                ("en", words(&format!(r"(?:what(?:['’]s|\s+is)\s+in|what\s+(?:do\s+i\s+have|did\s+i\s+(?:write|save|put))\s+in|what\s+does|read|show(?:\s+me)?|open|summari[sz]e|remember|recall|what\s+do\s+you\s+know\s+about)\s+(?:the\s+|my\s+)?(?:{NOUN})\s+{name}"))),
+                ("da", words(&format!(r"(?:hvad\s+står\s+der\s+i|hvad\s+har\s+jeg(?:\s+(?:skrevet|gemt))?\s+i|vis(?:\s+mig)?|læs|åbn|husk|opsummer)\s+(?:min\s+|mit\s+)?(?:{NOUN})\s+{name}"))),
             ],
             list: vec![
-                ("it", words(r"(?:mostrami|elenca(?:mi)?|fammi\s+vedere|quali\s+sono)\s+(?:tutte\s+)?(?:le\s+)?(?:mie\s+)?note|(?:che|quali)\s+note\s+(?:ho|abbiamo|hai)|lista\s+(?:delle\s+)?note|le\s+mie\s+note")),
-                ("en", words(r"(?:show|list)(?:\s+me)?\s+(?:all\s+)?(?:my\s+|the\s+)?notes|what\s+notes\s+(?:do\s+i\s+have|are\s+there)|my\s+notes")),
-                ("da", words(r"(?:vis|list)(?:\s+mig)?\s+(?:alle\s+)?(?:mine\s+)?noter|hvilke\s+noter\s+har\s+jeg|mine\s+noter")),
+                ("it", words(r"(?:mostrami|elenca(?:mi)?|fammi\s+vedere|quali\s+sono)\s+(?:tutte\s+)?(?:le\s+)?(?:mie\s+)?note|(?:che|quali)\s+note\s+(?:ho|abbiamo|hai)|lista\s+(?:delle\s+)?note|^\s*le\s+mie\s+note\s*[?.!]*$")),
+                ("en", words(r"(?:show|list)(?:\s+me)?\s+(?:all\s+)?(?:my\s+|the\s+)?notes|what\s+notes\s+(?:do\s+i\s+have|are\s+there)|^\s*my\s+notes\s*[?.!]*$")),
+                ("da", words(r"(?:vis|list)(?:\s+mig)?\s+(?:alle\s+)?(?:mine\s+)?noter|hvilke\s+noter\s+har\s+jeg|^\s*mine\s+noter\s*[?.!]*$")),
             ],
             noun: words(NOUN),
             first_part: words(r"parte\s+1\s+di\s+\d|prima\s+parte|part\s+1\s+of\s+\d|first\s+part|del\s+1\s+af\s+\d|første\s+del"),

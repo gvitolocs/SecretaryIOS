@@ -179,6 +179,37 @@ impl BridgeState {
 // ---------------------------------------------------------------- notes
 
 /// `handleNotesTurn`. Never fails: errors become replies.
+/// `findNote`: a note by slug, else the best search hit for a title or words.
+pub async fn find_note(s: &Secretary, name: &str) -> Answer {
+    let key = Some(nt::slugify(name))
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(|| name.to_owned());
+    let r = s
+        .call(Method::GET, &format!("/v1/notes/{}", seg(&key)), None)
+        .await;
+    if r.ok || r.status != 404 {
+        return r;
+    }
+    let found = s
+        .call(
+            Method::GET,
+            &format!("/v1/notes?limit=1&q={}", enc(name)),
+            None,
+        )
+        .await;
+    match found
+        .ok
+        .then(|| found.data["notes"][0]["slug"].as_str().map(str::to_owned))
+        .flatten()
+    {
+        Some(slug) => {
+            s.call(Method::GET, &format!("/v1/notes/{}", seg(&slug)), None)
+                .await
+        }
+        None => r,
+    }
+}
+
 pub async fn notes_turn(
     s: &Secretary,
     st: &BridgeState,
@@ -230,30 +261,7 @@ pub async fn notes_turn(
             }
         }
         NotesIntent::Read { name, .. } => {
-            let key = Some(nt::slugify(name))
-                .filter(|k| !k.is_empty())
-                .unwrap_or_else(|| name.clone());
-            let mut r = s
-                .call(Method::GET, &format!("/v1/notes/{}", seg(&key)), None)
-                .await;
-            if !r.ok && r.status == 404 {
-                let found = s
-                    .call(
-                        Method::GET,
-                        &format!("/v1/notes?limit=1&q={}", enc(name)),
-                        None,
-                    )
-                    .await;
-                if let Some(slug) = found
-                    .ok
-                    .then(|| found.data["notes"][0]["slug"].as_str().map(str::to_owned))
-                    .flatten()
-                {
-                    r = s
-                        .call(Method::GET, &format!("/v1/notes/{}", seg(&slug)), None)
-                        .await;
-                }
-            }
+            let r = find_note(s, name).await;
             if !r.ok {
                 if r.status == 404 {
                     let all = s.call(Method::GET, "/v1/notes?limit=10", None).await;

@@ -540,25 +540,25 @@ pub fn looks_like_reminder_list(text: &str) -> bool {
     {
         return false;
     }
+    // "Cancella i promemoria di oggi", "the reminder you sent was wrong": not a list request.
+    if re!(r"(?<![\p{L}\p{N}_])(?:cancel|delete|remove|clear|edit|change|move|snooze|postpone|wrong|cancella|elimina|rimuovi|sposta|modifica|rimanda|sbagliat[oaie]|slet|fjern|ændr|ændre|flyt|udsæt|forkert)(?![\p{L}\p{N}_])", "iu").test(&text) {
+        return false;
+    }
     if re!(r"(plans?\s+for\s+(the\s+)?day|what(?:'s| is)\s+on\s+(today|oggi)|anything\s+scheduled|cosa\s+ho\s+(in\s+)?programma\s+(oggi|today|stasera)|agenda\s+(di\s+)?oggi|promemoria\s+(per\s+)?oggi|reminders?\s+(for\s+)?today|scheduled\s+(for\s+)?today|have\s+i\s+got\s+anything)", "i").test(&text) {
         return true;
     }
     let at_time = re!(r"(alle|at)\s+\d{1,2}[:.]\d{2}", "i");
     if re!(r"\b(list|show|see|display|get)\b.{0,24}\breminders?\b", "i").test(&text)
-        || re!(r"\b(my|the)\s+reminders?\b", "i").test(&text)
+        || re!(r"\b(my|the)\s+reminders\b", "i").test(&text)
         || re!(r"\breminders?\s*\??\s*$", "i").test(text.trim())
     {
         return !at_time.test(&text);
     }
-    if !re!(r"(promemoria|reminder|ricordami|avvisami|schedule)", "i").test(&text) {
+    // A reminder noun: "ricordami oggi di …" or "my workout schedule" never list.
+    if !re!(r"(promemoria|reminder|påmindelse)", "i").test(&text) {
         return false;
     }
-    if re!(r"(programma|agenda)", "i").test(&text)
-        && !re!(r"(promemoria|reminder|ricordami)", "i").test(&text)
-    {
-        return false;
-    }
-    re!(r"(ci sono|quali|lista|elenco|mostra|vedi|hai|oggi|today|futuro|future|futuri|programmati|pending|scheduled|upcoming|quanti|for the day|list|show)", "i").test(&text)
+    re!(r"(ci sono|quali|lista|elenco|mostra|vedi|hai|oggi|today|futuro|future|futuri|programmati|pending|scheduled|upcoming|quanti|for the day|list|show|hvilke|vis|har jeg|i dag)", "i").test(&text)
         && !at_time.test(&text)
         && !re!(r"^(?:\d{4}-\d{2}-\d{2}|\d{1,2}\s+[a-z]+\s+\d{4})\s*[—–-]", "i").test(text.trim())
 }
