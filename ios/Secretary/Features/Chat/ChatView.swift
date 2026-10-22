@@ -111,6 +111,7 @@ struct ChatTranscript: View {
                 if atBottom || store.items.last?.isLocal == true { scrollToEnd(proxy) }
             }
             .onChange(of: store.isSending) { _, sending in if sending { scrollToEnd(proxy) } }
+            .onChange(of: store.items.last?.rich) { _, rich in if rich != nil, atBottom { scrollToEnd(proxy) } }
             .onAppear { scrollToEnd(proxy, animated: false) }
         }
     }
@@ -255,9 +256,26 @@ private struct MessageRow: View {
             ReminderCard(item: item)
         } else if item.role == .lucina, let meta = item.meta, meta.isProactive {
             ProactiveCard(item: item, meta: meta)
+        } else if item.role == .lucina, let rich = item.rich {
+            richRow(rich)
         } else {
             bubbleRow
         }
+    }
+
+    /// Lucina message format v1: bubbles, widgets and buttons (LucinaRich.swift).
+    private func richRow(_ rich: RichMessage) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                RichReplyView(item: item, rich: rich, inferredChoice: store.inferredChoice(after: item))
+                if let job { JobCard(job: job) }
+                SourceBadge(item: item).padding(.horizontal, 4)
+            }
+            Spacer(minLength: 24)
+        }
+        // `.contain` keeps the buttons' own identifiers (a bare identifier would override them).
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("lucinaRichMessage")
     }
 
     private var bubbleRow: some View {
@@ -266,7 +284,8 @@ private struct MessageRow: View {
             if isUser { Spacer(minLength: 48) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
                 if !item.text.isEmpty {
-                    Text(LinkText.attributed(item.text))
+                    // Her plain replies are markdown too (the Notes renderer): no literal "**".
+                    Text(isUser ? LinkText.attributed(item.text) : ChatMarkdown.inline(item.text))
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
@@ -449,6 +468,12 @@ struct ChatComposer: View {
                 .padding(.vertical, 10)
                 .background(Theme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .accessibilityIdentifier("chatComposer")
+                .onChange(of: store.prefill) { _, request in
+                    // A button asked for text in the composer: the owner finishes and sends it.
+                    guard let request else { return }
+                    draft = request.text.isEmpty || request.text.hasSuffix(" ") ? request.text : request.text + " "
+                    focused = true
+                }
                 .onChange(of: draft) { _, value in
                     // A multi-line field inserts a newline on return instead of submitting:
                     // treat a typed trailing newline as "send".
