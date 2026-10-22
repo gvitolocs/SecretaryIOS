@@ -233,7 +233,13 @@ export async function createWardrobeStage(
   for (const k of ['wardrobe', 'assetBase', 'outfit', 'changeEffect', 'maxSpeakWait', 'hairstyles', 'hairColors', 'hair', 'hairColor', 'hairLoader'] as const) delete (base as Record<string, unknown>)[k];
   const startUrls = startEntry ? outfitUrls(startEntry, assetBase, options.manifestUrl) : null;
 
-  let cur = await factory(canvas, startUrls ? { ...base, ...startUrls } : base);
+  const physicsOpts = typeof options.physics === 'object' ? options.physics : {};
+  /** Physics options for a stage wearing `outfitId` (false stays false). */
+  const physicsFor = (outfitId: string | null | undefined): LucinaStageOptions['physics'] =>
+    options.physics === false ? false : { ...physicsOpts, outfit: outfitId ?? null, hair: hair ?? null, ...(quality ? { quality } : {}) };
+  let hair: string = NATURAL_HAIR;
+  let quality: StageQualitySetting | undefined = (typeof options.environment === 'object' ? options.environment.quality : undefined) ?? physicsOpts.quality;
+  let cur = await factory(canvas, { ...(startUrls ? { ...base, ...startUrls } : base), physics: physicsFor(startEntry?.id) });
   base.toonFallback = toonFallbackFor(cur.three.model, options.manifestUrl) ?? base.toonFallback;
   let curCanvas = canvas;
   let outfit: string | null = startEntry && !cur.info.placeholder ? startEntry.id : null;
@@ -243,7 +249,6 @@ export async function createWardrobeStage(
   let framing: Framing = options.framing ?? 'bust';
   let reducedOverride: boolean | null = options.reducedMotion ?? null;
   const envOpts = typeof options.environment === 'object' ? options.environment : {};
-  let quality: StageQualitySetting | undefined = envOpts.quality;
   let theme: StageTheme | undefined = envOpts.theme;
   let look = false;
   let expression: { e: Expression | null; w: number } | null = null;
@@ -280,7 +285,6 @@ export async function createWardrobeStage(
   // ---- Hair ----
   let hairstyles: HairEntry[] = parseHairstyles(options.hairstyles ?? []);
   let hairColors: HairColor[] = parseHairColors(options.hairColors ?? []);
-  let hair: string = NATURAL_HAIR;
   let hairColor: string | null = null;
   const hairCbs = new Set<(h: string, c: string | null) => void>();
   const loadHair = options.hairLoader ?? ((url: string) => loadHairPart(url, options.fetchInit ? { fetchInit: options.fetchInit } : {}));
@@ -313,6 +317,7 @@ export async function createWardrobeStage(
     try {
       const { entry, part } = await partFor(hair, s.three.model);
       rigFor(s).attach(part, entry);
+      s.physics?.setVariant({ hair });
     } catch (e) {
       console.warn('[lucina-stage] hairstyle not loaded:', e);
     }
@@ -417,6 +422,7 @@ export async function createWardrobeStage(
         stateClips: stateClips ?? undefined,
         interactive,
         view: cur.view,
+        physics: physicsFor(o.outfit),
       });
     } catch (e) {
       if (next) dropCanvas(next);
@@ -527,6 +533,7 @@ export async function createWardrobeStage(
         await underEffect(() => {
           rigFor(s).attach(part, entry);
           rigFor(s).setTint(hexOf(hairColor));
+          s.physics?.setVariant({ hair: want });
         }, o.effect);
         hair = want;
         hairCbs.forEach((cb) => cb(hair, hairColor));
@@ -652,6 +659,9 @@ export async function createWardrobeStage(
     },
     get three() {
       return cur.three;
+    },
+    get physics() {
+      return cur.physics ?? null;
     },
     onTouch(cb) {
       touchCbs.add(cb);

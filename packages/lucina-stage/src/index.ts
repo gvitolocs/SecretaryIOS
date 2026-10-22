@@ -32,3 +32,5 @@ export { EFFECT_DURATION_MS, effectPhases, playOutfitEffect } from './outfitEffe
 export type { OutfitEffect, OutfitEffectOptions, SubjectRect } from './outfitEffect';
 
 export { applyToon, normalizeToon, type ToonConfig, type ToonMaterialConfig, type ToonHandle, type ToonBloom, type ToonOptions, type ToonSource } from './toon';
+
+export * from './physics';

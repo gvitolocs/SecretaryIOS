@@ -30,6 +30,8 @@ export interface NormalizedManifest {
   idle: { rotations: Record<string, { axis: Vec3; angleDeg: number }>; morphs: Record<string, number> };
   /** Direction the character faces in the model's space. Auto-detected when absent. */
   facing?: '+z' | '-z';
+  /** The raw `physics` block (secondary motion; validated by physics/config.ts). */
+  physics?: unknown;
 }
 
 /** Fallback names, tried after anything the manifest lists. */
@@ -165,6 +167,7 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
   const m = raw as Record<string, unknown>;
   if (typeof m.material === 'string') out.material = m.material;
   if (m.toon !== undefined) out.toon = m.toon;
+  if (m.physics !== undefined) out.physics = m.physics;
 
   const morphSrc = (m.morphs ?? m.morph_map ?? m.morphMap ?? m.morphTargets ?? m.blendshapes ?? m.expressions) as unknown;
   if (morphSrc && typeof morphSrc === 'object' && !Array.isArray(morphSrc)) {
