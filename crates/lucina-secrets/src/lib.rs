@@ -77,6 +77,8 @@ pub enum SecretError {
     NotFound(String),
     #[error("secret {0} is too short to be redacted safely (minimum {1} characters)")]
     TooShort(String, usize),
+    #[error("secret {0} cannot be redacted safely ({1}); rotate it to a value without [ or ]")]
+    Unredactable(String, String),
     #[error("no secret is configured for {0}")]
     NotConfigured(String),
     #[error("Infisical refused the machine identity ({0})")]
@@ -98,6 +100,7 @@ impl SecretError {
             SecretError::Denied(..) => "denied",
             SecretError::NotFound(_) => "not_found",
             SecretError::TooShort(..) => "too_short",
+            SecretError::Unredactable(..) => "unredactable",
             SecretError::NotConfigured(_) => "not_configured",
             SecretError::Unauthorized(_) => "unauthorized",
             SecretError::Http(..) => "http",

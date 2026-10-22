@@ -48,6 +48,41 @@ struct Inner {
     /// length -> rolling hash -> entries
     by_len: BTreeMap<usize, HashMap<u64, Vec<Known>>>,
     names: Vec<String>,
+    /// (name, reason) of values that were not registered whole.
+    rejected: Vec<(String, String)>,
+}
+
+/// The labels the detector pass writes as `[secret:<label>]`.
+pub const DETECTOR_LABELS: &[&str] = &["pem", "jwt", "token", "credential"];
+
+/// Why a value (or name) would break the redactor's well-formedness.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Rejected {
+    #[error("the value of {0} contains '[' or ']', which placeholders are made of")]
+    Bracket(String),
+    #[error("the value of {0} occurs inside the placeholder {1}")]
+    InsidePlaceholder(String, String),
+    #[error("the placeholder of {0} contains a registered secret")]
+    NameContainsSecret(String),
+}
+
+/// `needle` occurs in `hay`.
+fn occurs(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && needle.len() <= hay.len()
+        && hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// One pattern of the Verus proof's `wf` (verification/verus/
+/// secrets_redactor.rs, exec twin `admissible` proved there): non-empty, no
+/// `[` or `]`, and inside none of the placeholders. When every registered
+/// pattern is admissible against every placeholder the redactor can write,
+/// no secret survives a pass and a second pass changes nothing.
+pub fn admissible(pattern: &[u8], placeholders: &[Vec<u8>]) -> bool {
+    !pattern.is_empty()
+        && !pattern.contains(&b'[')
+        && !pattern.contains(&b']')
+        && placeholders.iter().all(|p| !occurs(p, pattern))
 }
 
 /// The process-wide redactor (see [`redactor`]); `Redactor::new()` for an
@@ -315,6 +350,7 @@ impl Redactor {
                 base: u64::from_le_bytes(random_bytes::<8>()) | 1,
                 by_len: BTreeMap::new(),
                 names: Vec::new(),
+                rejected: Vec::new(),
             }),
         }
     }
@@ -323,17 +359,110 @@ impl Redactor {
         self.inner.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Learn a secret value under `name` (all its encodings). Returns how
-    /// many patterns were added. The value itself is not kept.
+    /// Learn a secret value under `name` (all its encodings), only if the
+    /// redactor stays well formed (the Verus proof's `wf`, see
+    /// [`admissible`]): otherwise nothing is registered and the reason is
+    /// returned. Returns how many patterns were added. The value itself is
+    /// not kept.
+    ///
+    /// Without `wf` the redactor broke its two guarantees (docs/
+    /// verification.md, "Secrets redactor overlap"): a value inside a
+    /// placeholder (`secret`, or part of a name) survived and a second pass
+    /// rewrote the placeholder; a value starting with the end of a
+    /// placeholder (`X]bbbbbb` after a secret `X`) was re-created by it.
+    pub fn try_register(&self, name: &str, value: &str) -> Result<usize, Rejected> {
+        let value = value.trim_matches(|c: char| c == '\n' || c == '\r');
+        if value.len() < MIN_PATTERN_LEN {
+            return Ok(0);
+        }
+        let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let encs = Self::admit(&inner, name, value)?;
+        Ok(Self::insert_patterns(&mut inner, name, encs))
+    }
+
+    /// [`Self::try_register`], best effort: a value that is not admissible
+    /// keeps only its admissible encodings (URL-encoded and base64 never
+    /// contain brackets), and the name is listed in [`Self::rejected`].
+    /// For bootstrap credentials; resolved secrets use `try_register` and
+    /// are refused instead (fail closed).
     pub fn register(&self, name: &str, value: &str) -> usize {
         let value = value.trim_matches(|c: char| c == '\n' || c == '\r');
         if value.len() < MIN_PATTERN_LEN {
             return 0;
         }
         let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        match Self::admit(&inner, name, value) {
+            Ok(encs) => Self::insert_patterns(&mut inner, name, encs),
+            Err(why) => {
+                let reason = why.to_string();
+                if !inner
+                    .rejected
+                    .iter()
+                    .any(|(n, r)| n == name && *r == reason)
+                {
+                    inner.rejected.push((name.to_owned(), reason));
+                }
+                if matches!(why, Rejected::NameContainsSecret(_)) {
+                    return 0;
+                }
+                let phs = Self::placeholders(&inner, name);
+                let safe: Vec<String> = encodings(value)
+                    .into_iter()
+                    .filter(|e| e.len() >= MIN_PATTERN_LEN && admissible(e.as_bytes(), &phs))
+                    .collect();
+                Self::insert_patterns(&mut inner, name, safe)
+            }
+        }
+    }
+
+    /// Names whose value (or name) could not be registered whole, with the
+    /// reason. No values.
+    pub fn rejected(&self) -> Vec<(String, String)> {
+        self.read().rejected.clone()
+    }
+
+    /// Every placeholder the redactor can write once `name` is known.
+    fn placeholders(inner: &Inner, name: &str) -> Vec<Vec<u8>> {
+        inner
+            .names
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(name))
+            .chain(DETECTOR_LABELS.iter().copied())
+            .map(|n| placeholder(n).into_bytes())
+            .collect()
+    }
+
+    /// The encodings to register, if all of them keep `wf`.
+    fn admit(inner: &Inner, name: &str, value: &str) -> Result<Vec<String>, Rejected> {
+        let ph = placeholder(name);
+        if !inner.names.iter().any(|n| n == name) && !Self::scan(inner, &ph).is_empty() {
+            return Err(Rejected::NameContainsSecret(name.to_owned()));
+        }
+        let phs = Self::placeholders(inner, name);
+        let encs: Vec<String> = encodings(value)
+            .into_iter()
+            .filter(|e| e.len() >= MIN_PATTERN_LEN)
+            .collect();
+        for e in &encs {
+            let b = e.as_bytes();
+            if b.contains(&b'[') || b.contains(&b']') {
+                return Err(Rejected::Bracket(name.to_owned()));
+            }
+            if let Some(p) = phs.iter().find(|p| occurs(p, b)) {
+                return Err(Rejected::InsidePlaceholder(
+                    name.to_owned(),
+                    String::from_utf8_lossy(p).into_owned(),
+                ));
+            }
+        }
+        Ok(encs)
+    }
+
+    fn insert_patterns(inner: &mut Inner, name: &str, encs: Vec<String>) -> usize {
         let (salt, base) = (inner.salt, inner.base);
         let mut added = 0;
-        for enc in encodings(value) {
+        for enc in encs {
             let bytes = enc.as_bytes();
             if bytes.len() < MIN_PATTERN_LEN {
                 continue;
@@ -369,7 +498,10 @@ impl Redactor {
     /// `(start, end, name)` of known values in `text`, non-overlapping,
     /// longest first at each position.
     fn find_known(&self, text: &str) -> Vec<(usize, usize, String)> {
-        let inner = self.read();
+        Self::scan(&self.read(), text)
+    }
+
+    fn scan(inner: &Inner, text: &str) -> Vec<(usize, usize, String)> {
         if inner.by_len.is_empty() {
             return Vec::new();
         }
@@ -590,5 +722,105 @@ mod tests {
         assert!(r.redact_json(&mut v));
         assert_eq!(v["a"][0], "x[secret:TODOIST_TOKEN]x");
         assert_eq!(v["b"]["c"], "[secret:TODOIST_TOKEN]");
+    }
+}
+
+/// The redactor overlap finding (docs/verification.md): the Verus proof of
+/// "no secret survives" and "a second pass changes nothing" needs `wf`; these
+/// are its two counterexamples on the code without the admission check.
+#[cfg(test)]
+mod overlap_tests {
+    use super::*;
+
+    fn assert_wf_guarantees(r: &Redactor, values: &[&str], input: &str) {
+        let once = r.redact_known(input).into_owned();
+        assert_eq!(r.redact_known(&once), once, "second pass rewrote: {once}");
+        for v in values {
+            assert!(!once.contains(v), "{v} survives in {once}");
+        }
+    }
+
+    #[test]
+    fn a_value_inside_a_placeholder_is_rejected() {
+        let r = Redactor::new();
+        assert!(r.try_register("WORD", "Zp9qL2vX8rT5").is_ok());
+        assert_eq!(
+            r.try_register("PASS", "secret"),
+            Err(Rejected::InsidePlaceholder(
+                "PASS".into(),
+                "[secret:WORD]".into()
+            ))
+        );
+        assert_eq!(
+            r.try_register("PASS", "ecret:"),
+            r.try_register("PASS", "ecret:")
+        );
+        assert!(r.try_register("PASS", "ecret:").is_err());
+        // Best effort keeps only admissible encodings; the guarantees hold.
+        r.register("PASS", "secret");
+        assert_eq!(r.rejected().len(), 1);
+        assert_wf_guarantees(&r, &["Zp9qL2vX8rT5"], "Zp9qL2vX8rT5 and secret");
+        // Before: "secret" was a pattern, "[secret:WORD]" was rewritten again.
+    }
+
+    #[test]
+    fn a_value_ending_in_a_placeholder_is_rejected() {
+        let r = Redactor::new();
+        r.try_register("X", "aaaaaa").unwrap();
+        // "aaaaaabbbbbb" -> "[secret:X]bbbbbb", which is Y's value.
+        assert_eq!(
+            r.try_register("Y", "X]bbbbbb"),
+            Err(Rejected::Bracket("Y".into()))
+        );
+        assert_wf_guarantees(&r, &["aaaaaa"], "aaaaaabbbbbb");
+        r.register("Y", "X]bbbbbb");
+        let out = r.redact_known("aaaaaabbbbbb").into_owned();
+        assert_eq!(out, "[secret:X]bbbbbb");
+        assert_eq!(r.redact_known(&out), out);
+        // Its URL-encoded form has no brackets and is still caught.
+        assert_eq!(r.redact_known("q=X%5Dbbbbbb"), "q=[secret:Y]");
+    }
+
+    #[test]
+    fn a_name_whose_placeholder_contains_a_secret_is_rejected() {
+        let r = Redactor::new();
+        r.try_register("A", "GITHUB").unwrap();
+        assert_eq!(
+            r.try_register("GITHUB_TOKEN", "Zp9qL2vX8rT5wY1u"),
+            Err(Rejected::NameContainsSecret("GITHUB_TOKEN".into()))
+        );
+        let r = Redactor::new();
+        r.try_register("GITHUB_TOKEN", "Zp9qL2vX8rT5wY1u").unwrap();
+        assert!(matches!(
+            r.try_register("A", "GITHUB"),
+            Err(Rejected::InsidePlaceholder(..))
+        ));
+        // Detector placeholders count too: "credential" is in [secret:credential].
+        assert!(Redactor::new().try_register("C", "credential").is_err());
+    }
+
+    #[test]
+    fn admissible_values_keep_both_guarantees() {
+        let r = Redactor::new();
+        let values = [
+            "Zp9qL2vX8rT5wY1u",
+            "hunter2hunter2",
+            "pa:ss-word_99",
+            "ab(cd)ef{}",
+        ];
+        for (i, v) in values.iter().enumerate() {
+            assert!(r.try_register(&format!("K{i}"), v).unwrap() > 0, "{v}");
+        }
+        for input in [
+            "Zp9qL2vX8rT5wY1uhunter2hunter2",
+            "x hunter2hunter2hunter2 [secret:K0] pa:ss-word_99ab(cd)ef{}",
+            "\"Zp9qL2vX8rT5wY1u\" %22pa%3Ass-word_99%22",
+        ] {
+            assert_wf_guarantees(&r, &values, input);
+        }
+        assert!(admissible(b"abcdef", &[b"[secret:K]".to_vec()]));
+        assert!(!admissible(b"ecret", &[b"[secret:K]".to_vec()]));
+        assert!(!admissible(b"ab]cd", &[]));
+        assert!(!admissible(b"", &[]));
     }
 }

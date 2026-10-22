@@ -182,7 +182,12 @@ impl SecretStore {
             .get_secret(&self.project_id, &r.environment, &r.path, &r.key)
             .await?;
         // Learn it before anything else can echo it.
-        redactor().register(&r.key, fetched.value.expose_secret());
+        // Fail closed: a value the redactor cannot handle safely is never used.
+        if let Err(why) = redactor().try_register(&r.key, fetched.value.expose_secret()) {
+            // Still learn its bracket-free encodings, in case it is echoed.
+            redactor().register(&r.key, fetched.value.expose_secret());
+            return Err(SecretError::Unredactable(r.to_string(), why.to_string()));
+        }
         if fetched.value.len() < self.policy.min_value_len {
             return Err(SecretError::TooShort(
                 r.to_string(),
