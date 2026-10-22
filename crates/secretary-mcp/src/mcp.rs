@@ -34,6 +34,7 @@ Use the direct tools for quick reads (lucina_timeline, shopping_list, reminders_
 and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_cancel). \
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \
 instead of pasting it into ask_lucina; the owner sees notes in the Secretary app and Lucina recalls them by slug (note_get, notes_search). \
+The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -151,6 +152,9 @@ impl LucinaMcp {
             "note_append" => t.note_append(args).await,
             "note_get" => t.note_get(args).await,
             "notes_search" => t.notes_search(args).await,
+            "tasks_list" => t.tasks_list(args).await,
+            "task_add" => t.task_add(args).await,
+            "task_complete" => t.task_complete(args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }
     }

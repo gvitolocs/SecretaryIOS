@@ -35,6 +35,8 @@ pub struct MockState {
     pub legacy: Vec<Value>,
     pub revision: u64,
     pub notes: Vec<Value>,
+    /// Open tasks (task views as `/v1/tasks/state` returns them).
+    pub tasks: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -311,8 +313,78 @@ async fn handle(
             }
             None => err(StatusCode::NOT_FOUND, "note_not_found"),
         },
+        ("GET", ["v1", "tasks", "state"]) => {
+            if st.tasks.is_empty() {
+                st.tasks = seed_tasks();
+            }
+            let q = query.to_lowercase().replace('+', " ").replace("%20", " ");
+            let search = q.split('&').find_map(|kv| kv.strip_prefix("query=")).map(str::to_owned);
+            Json(tasks_view(&st.tasks, search.as_deref())).into_response()
+        }
+        ("POST", ["v1", "tasks", "command"]) => {
+            if st.tasks.is_empty() {
+                st.tasks = seed_tasks();
+            }
+            let c = &body["command"];
+            match c["type"].as_str() {
+                Some("quick_add") => {
+                    let text = c["text"].as_str().unwrap_or("");
+                    let t = json!({"id": "tmp-1", "content": text, "project_name": "Inbox", "priority": 4, "labels": [], "pending": true});
+                    st.tasks.push(t);
+                    let mut v = tasks_view(&st.tasks, None);
+                    v["task_id"] = json!("tmp-1");
+                    v["queued"] = json!(true);
+                    v["parsed"] = json!({"content": text, "due_string": "domani", "due_date": "2026-10-23", "is_recurring": false, "lang": "it", "labels": [], "spans": []});
+                    Json(v).into_response()
+                }
+                Some("complete") => {
+                    let id = c["task_id"].as_str().unwrap_or("");
+                    let Some(pos) = st.tasks.iter().position(|t| t["id"] == id) else {
+                        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "replayed": false, "code": "invalid_command", "error": "Task not found"}))).into_response();
+                    };
+                    let t = st.tasks.remove(pos);
+                    if t["due"]["is_recurring"] == true {
+                        let mut t = t;
+                        t["due"]["rel_days"] = json!(1);
+                        t["due"]["date"] = json!("2026-10-23");
+                        st.tasks.push(t);
+                    }
+                    Json(tasks_view(&st.tasks, None)).into_response()
+                }
+                _ => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "code": "invalid_command", "error": "unknown"}))).into_response(),
+            }
+        }
         _ => err(StatusCode::NOT_FOUND, "not_found"),
     }
+}
+
+fn seed_tasks() -> Vec<Value> {
+    let due = |rel: i64, string: &str, rec: bool| json!({"date": format!("2026-10-{}", 22 + rel), "string": string, "is_recurring": rec, "rel_days": rel, "overdue": rel < 0});
+    vec![
+        json!({"id": "a2", "content": "10 min anki/memrise", "project_name": "Inbox", "priority": 4, "labels": ["lingue"], "due": due(-2, "every day", true), "pending": false}),
+        json!({"id": "a1", "content": "15 min shadowing", "project_name": "Inbox", "priority": 4, "labels": [], "due": due(0, "every day", true), "pending": false}),
+        json!({"id": "a5", "content": "20min speaking", "project_name": "Lingue", "priority": 1, "labels": [], "due": due(0, "today", false), "pending": false}),
+        json!({"id": "a6", "content": "speaking club", "project_name": "Lingue", "priority": 4, "labels": [], "pending": false}),
+    ]
+}
+
+fn tasks_view(tasks: &[Value], search: Option<&str>) -> Value {
+    let pick = |f: &dyn Fn(&Value) -> bool| -> Vec<Value> {
+        tasks.iter().filter(|t| f(t)).cloned().collect()
+    };
+    let groups = match search {
+        Some(q) => vec![
+            json!({"key": "none", "kind": "none", "title": "", "tasks": pick(&|t| t["content"].as_str().unwrap_or("").to_lowercase().contains(q))}),
+        ],
+        None => vec![
+            json!({"key": "overdue", "kind": "overdue", "title": "Overdue", "tasks": pick(&|t| t["due"]["rel_days"].as_i64().is_some_and(|r| r < 0))}),
+            json!({"key": "2026-10-22", "kind": "date", "title": "", "date": "2026-10-22", "rel_days": 0, "tasks": pick(&|t| t["due"]["rel_days"] == 0 || t["id"] == "tmp-1")}),
+        ],
+    };
+    json!({"ok": true, "replayed": false, "view": {"revision": 3, "today": "2026-10-22", "timezone": "Europe/Copenhagen",
+        "goal": {"daily_goal": 5, "completed_today": 1, "reached": false},
+        "sync": {"status": "ok", "connected": true, "pending": 0},
+        "list": {"kind": if search.is_some() { "search" } else { "today" }, "title": if search.is_some() { "Search" } else { "Today" }, "groups": groups, "count": 0}}})
 }
 
 /// CIMD document served by the mock (for the CIMD test).

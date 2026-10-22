@@ -270,6 +270,41 @@ pub struct NotesSearchArgs {
     pub limit: Option<u32>,
 }
 
+/// Arguments of `tasks_list`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TasksListArgs {
+    /// Which list: "today" (default: overdue + today, like Todoist's Today), "upcoming" (next 7 days), "inbox", "completed" (last 7 days), or "search" (with `query`).
+    #[serde(default)]
+    pub view: Option<String>,
+    /// Only this Todoist project, by name (e.g. "Lingue").
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Words to search for (view "search"), or a Todoist filter such as "p1 & overdue" or "@lingue".
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+/// Arguments of `task_add`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskAddArgs {
+    /// The task in Todoist quick add style, any of Italian, English or Danish: "15 min shadowing every day", "chiamare Marco domani alle 9 #Lavoro p1", "ring til tandlægen i morgen @home". Dates, recurrence, #Project, @label and p1-p4 are understood.
+    pub text: String,
+    /// Due date when the text has none, e.g. "today" (default: no date).
+    #[serde(default)]
+    pub due: Option<String>,
+}
+
+/// Arguments of `task_complete`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TaskCompleteArgs {
+    /// The task id from tasks_list.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Or words of the title, e.g. "shadowing": must match exactly one open task due today or overdue (or any open task when nothing due matches).
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
 // -- definitions ------------------------------------------------------------------
 
 pub struct ToolSpec {
@@ -346,6 +381,12 @@ pub fn specs() -> Vec<ToolSpec> {
             "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, tags, who wrote it, when, and the Markdown content. Long notes come in pages: call again with the offset it gives you."),
         spec!("notes_search", "Search notes", Scope::Read, ro = true, destructive = false, idempotent = true, NotesSearchArgs,
             "Find the owner's notes, briefings and documents by words (title, slug, tags, content) or tag; pinned first, newest first. Each hit shows its slug, title, source and an excerpt. Without `q` it lists the latest notes."),
+        spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
+            "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
+        spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,
+            "Add a task to the owner's Todoist through Secretary, written like Todoist's quick add: dates and recurrence in Italian, English or Danish (\"domani alle 9\", \"every day\", \"hver mandag\"), #Project, @label, p1-p4. It shows up at once and syncs to Todoist within a minute."),
+        spec!("task_complete", "Complete task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskCompleteArgs,
+            "Mark one of the owner's tasks done (by id from tasks_list, or by words of its title). A recurring task moves to its next date in Todoist. Deleting tasks is not possible here; ask the owner."),
         spec!("lucina_status", "Lucina status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has."),
     ]
@@ -895,6 +936,144 @@ impl Tools<'_> {
             ))),
             Err(e) => Err(e.into()),
         }
+    }
+
+    pub async fn tasks_list(&self, args: &JsonObject) -> ToolResult {
+        let a: TasksListArgs = parse(args)?;
+        let view = a
+            .view
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("today")
+            .to_lowercase();
+        let mut q: Vec<(&str, String)> = Vec::new();
+        let query = match a.query.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+            Some(x) => Some(check_text("query", x, 300)?),
+            None => None,
+        };
+        match (
+            view.as_str(),
+            a.project
+                .as_deref()
+                .map(str::trim)
+                .filter(|x| !x.is_empty()),
+        ) {
+            (_, Some(p)) => {
+                let p = check_text("project", p, 120)?;
+                q.push(("view", "filter".into()));
+                q.push(("query", format!("#{p}")));
+            }
+            ("search", _) => {
+                q.push(("view", "search".into()));
+                q.push((
+                    "query",
+                    query
+                        .clone()
+                        .ok_or_else(|| bad("view \"search\" needs `query`"))?,
+                ));
+            }
+            ("today" | "upcoming" | "inbox" | "completed", _) if query.is_none() => {
+                q.push(("view", view.clone()));
+            }
+            (_, _) if query.is_some() => {
+                q.push(("view", "filter".into()));
+                q.push(("query", query.clone().unwrap_or_default()));
+            }
+            _ => {
+                return Err(bad(
+                    "`view` must be today, upcoming, inbox, completed or search",
+                ))
+            }
+        }
+        let r = self.app.backend.get("/v1/tasks/state", &q).await?;
+        Ok(format::tasks(&r))
+    }
+
+    async fn task_command(&self, command: Value) -> Result<Value, ToolError> {
+        let body = json!({"op_id": format!("mcp-{}", uuid::Uuid::new_v4()), "command": command});
+        match self.app.backend.post("/v1/tasks/command", &body).await {
+            Ok(v) => Ok(v),
+            Err(e) if e.code == "invalid_command" => {
+                Err(bad(format!("Secretary refused it: {}", e.message)))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn task_add(&self, args: &JsonObject) -> ToolResult {
+        let a: TaskAddArgs = parse(args)?;
+        let text = check_text("text", &a.text, 800)?;
+        let mut cmd = json!({"type": "quick_add", "text": text});
+        if let Some(d) = a.due.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            cmd["default_due"] = json!(check_text("due", d, 100)?);
+        }
+        let r = self.task_command(cmd).await?;
+        tracing::info!(target: "secretary_mcp::audit", event = "task_add", caller = %self.caller.name);
+        Ok(format::task_added(&r))
+    }
+
+    pub async fn task_complete(&self, args: &JsonObject) -> ToolResult {
+        let a: TaskCompleteArgs = parse(args)?;
+        let id = match (
+            a.id.as_deref().map(str::trim).filter(|x| !x.is_empty()),
+            a.title.as_deref().map(str::trim).filter(|x| !x.is_empty()),
+        ) {
+            (Some(id), _) => {
+                if !id_ok(id) {
+                    return Err(bad("`id` is not a task id"));
+                }
+                id.to_owned()
+            }
+            (None, Some(words)) => {
+                let words = check_text("title", words, 200)?;
+                let today = self
+                    .app
+                    .backend
+                    .get("/v1/tasks/state", &[("view", "today".into())])
+                    .await?;
+                let mut hits = format::task_matches(&today, &words);
+                if hits.is_empty() {
+                    let all = self
+                        .app
+                        .backend
+                        .get(
+                            "/v1/tasks/state",
+                            &[("view", "search".into()), ("query", words.clone())],
+                        )
+                        .await?;
+                    hits = format::task_matches(&all, &words);
+                }
+                match hits.len() {
+                    0 => {
+                        return Err(bad(format!(
+                            "No open task matches \"{words}\". tasks_list shows them with ids."
+                        )))
+                    }
+                    1 => hits.remove(0).0,
+                    _ => {
+                        let list: Vec<String> = hits
+                            .iter()
+                            .take(8)
+                            .map(|(id, c)| format!("\"{c}\" [id {id}]"))
+                            .collect();
+                        return Err(bad(format!(
+                            "Several tasks match \"{words}\": {}. Call again with the id.",
+                            list.join(", ")
+                        )));
+                    }
+                }
+            }
+            (None, None) => {
+                return Err(bad(
+                    "Give the task `id` (from tasks_list) or words of its `title`.",
+                ))
+            }
+        };
+        let r = self
+            .task_command(json!({"type": "complete", "task_id": id}))
+            .await?;
+        tracing::info!(target: "secretary_mcp::audit", event = "task_complete", id = %id, caller = %self.caller.name);
+        Ok(format::task_completed(&r, &id))
     }
 
     pub async fn gym(&self, args: &JsonObject) -> ToolResult {
