@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary`; see [Insights](#insights-for-lucina). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)) and `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -960,7 +960,7 @@ service token: `Authorization: Bearer svc_…`, the token stored in
 `SECRETARY_SERVICE_TOKEN_FILE` (create one with `secretary-server
 service-token generate <path>`; the file is written 0600 and the token is
 never printed). Device tokens and cookies get `401` here, and a service
-token gets `401` on every other route. Without `SECRETARY_SERVICE_TOKEN_FILE`
+token gets `401` on every other route except `/v1/avatar*`. Without `SECRETARY_SERVICE_TOKEN_FILE`
 the route answers `503 service_token_not_configured`. `workouts` is 1–20
 (default 5; values outside are clamped); `timezone` defaults to `UTC`.
 
@@ -1076,6 +1076,93 @@ const audio = new Audio(URL.createObjectURL(await r.blob()));
 await audio.play();
 ```
 
+## Avatar wardrobe
+
+Lucina's 3D avatar has outfits. The owner picks one in the app (the
+Wardrobe), lets it follow the app section, or asks Lucina in chat ("mettiti
+il vestito da cameriera"). The choice lives on the server, so every client
+and Lucina see the same one.
+
+Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
+the `PUT`) **or** Lucina's service token (`Authorization: Bearer svc_…`).
+`X-Secretary-Client: web|ios` on a device write is recorded as `updatedBy`.
+
+### `GET /v1/avatar`
+
+```json
+{
+  "outfit": null,
+  "auto": true,
+  "rules": { "gym": "gym", "shopping": "chef", "default": "uniform" },
+  "updatedMs": 1792602906912,
+  "updatedBy": "web"
+}
+```
+
+- `outfit`: the **pinned** outfit, worn everywhere until unpinned; `null` =
+  none pinned.
+- `auto`: with no pin, the outfit follows the app section: `rules.gym` on
+  the Gym tab, `rules.shopping` on Shopping, `rules.default` anywhere else.
+  With `auto: false` (and no pin) she wears `rules.default`.
+- `updatedMs` / `updatedBy` (`web` | `ios` | `device` | `lucina`): the last
+  change; `0` / `""` until the first one. The values above (`null`, `true`,
+  `gym` / `chef` / `uniform`) are the defaults.
+
+Clients resolve the outfit themselves:
+`outfit ?? (auto ? rules[section] : rules.default)`.
+
+### `PUT /v1/avatar`
+
+A patch: any of `outfit` (an id, or `null` to unpin), `auto` (bool),
+`rules` (any of `gym`, `shopping`, `default`). Absent fields keep their
+value. Answers the full new settings (`200`).
+
+```json
+{ "outfit": "maid" }
+{ "outfit": null, "auto": true }
+{ "rules": { "shopping": "maid" } }
+```
+
+- Ids: `[a-z0-9][a-z0-9_-]*`, at most 40 characters. Unknown fields and
+  wrong types are refused (`400 bad_request`).
+- When the wardrobe is installed, every id must be one of its outfits:
+  `422 unknown_outfit` (the message lists the known ids). Without a
+  wardrobe any well-formed id is accepted.
+- Stored in `$SECRETARY_DATA_DIR/avatar.json` (atomic write, mode 0600). A
+  refused write changes nothing.
+
+### `GET /v1/avatar/wardrobe`
+
+The outfits, from `{SECRETARY_PRIVATE_ASSETS_DIR}/wardrobe.json`. Only valid
+entries are served (file order, first of each id, at most 200); `[]` when
+the file is missing or not a JSON array.
+
+```json
+[
+  { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" },
+    "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] },
+  { "id": "gym", "name": { "it": "Palestra", "en": "Gym", "da": "Træning" },
+    "glb": "lucina-gym.glb", "thumbnail": "outfit-gym.webp", "tags": ["sport"] }
+]
+```
+
+- `id`: as above. `glb`: an asset name ending in `.glb`, loaded from
+  `/v1/assets/{glb}`. `thumbnail` (optional): a `.png`/`.webp` asset name.
+- `name`: `{it?, en?, da?}` (or one string), at most 80 characters each.
+- `tags` (optional): at most 16 strings. The Wardrobe groups outfits by the
+  first known one: `uniform`, `casual`, `sport`, `work`, `formal`,
+  `fantasy`; anything else lands under "Other".
+- Other fields (e.g. `manifest`, a per-outfit manifest asset) pass through
+  unchanged.
+
+### Live changes
+
+When Lucina changes her outfit she also writes a timeline item with
+`meta: {kind: "avatar_outfit", outfit: "<id>"}` (no `outfit` when she went
+back to automatic). Clients that see one on the timeline stream refetch
+`GET /v1/avatar` and apply it with the change effect. Clients also refetch
+when they come back to the foreground.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -1093,6 +1180,7 @@ await audio.play();
 | 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
+| 422 | `unknown_outfit` | server | `PUT /v1/avatar` names an outfit the wardrobe does not have. |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |
 | 429 | `too_many_streams` | server | Over 4 open timeline streams for this device or 20 in total; honour `Retry-After`. |
 | 500 | `internal` | server | Unexpected server failure. |

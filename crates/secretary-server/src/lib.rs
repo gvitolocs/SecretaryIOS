@@ -7,6 +7,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod avatar;
 pub mod cli;
 pub mod config;
 pub mod device;
@@ -87,6 +88,8 @@ pub struct Inner {
     /// The single owner account (`owner.json`).
     pub owner: owner::OwnerStore,
     pub private_assets_dir: PathBuf,
+    /// Lucina's outfit settings (avatar.json in the data dir).
+    pub avatar: Arc<avatar::AvatarStore>,
     pub catalog_dir: PathBuf,
     pub tts: tts::Tts,
     /// Open `/v1/timeline/stream` responses.
@@ -131,6 +134,7 @@ impl AppState {
             service_token: cfg.service_token.clone(),
             owner: owner::OwnerStore::new(&cfg.data_dir),
             private_assets_dir: cfg.private_assets_dir.clone(),
+            avatar: Arc::new(avatar::AvatarStore::new(&cfg.data_dir)),
             catalog_dir: cfg.catalog_dir.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
@@ -224,6 +228,7 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::session_routes())
         .merge(protected)
         .merge(insights::routes(state.clone()))
+        .merge(avatar::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
