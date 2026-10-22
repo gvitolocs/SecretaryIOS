@@ -23,7 +23,8 @@ use crate::policy::{self, Refusal};
 use crate::sandbox::{self, Workspace};
 use crate::state::{PauseNotice, StateStore};
 use crate::types::{
-    clip, guess_lang, now_iso, AgentId, Decision, JobRecord, JobStatus, Judgement, Kind, Request,
+    clip, clip_sentences, guess_lang, now_iso, AgentId, Decision, JobRecord, JobStatus, Judgement,
+    Kind, Request,
 };
 
 const KEEP_JOBS: usize = 100;
@@ -687,12 +688,21 @@ impl Delegator {
                 Message::user(text.chars().take(12_000).collect::<String>()),
             ],
             temperature: Some(0.2),
-            max_tokens: Some(300),
+            max_tokens: Some(1500),
             purpose: "delegate-summary",
             ..ChatRequest::default()
         };
         match tokio::time::timeout(Duration::from_secs(25), model.complete(req)).await {
-            Ok(Ok(r)) => Some(r.message.text().trim().to_owned()).filter(|s| !s.is_empty()),
+            // A summary cut by the token limit ends with its last full sentence.
+            Ok(Ok(r)) => {
+                let s = r.message.text().trim().to_owned();
+                let s = if s.ends_with(['.', '!', '?', ')', '»', '"']) {
+                    s
+                } else {
+                    clip_sentences(&s, s.chars().count().saturating_sub(1).max(1))
+                };
+                Some(s).filter(|s| !s.is_empty())
+            }
             _ => None,
         }
     }

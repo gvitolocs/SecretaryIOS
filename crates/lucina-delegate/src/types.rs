@@ -330,6 +330,25 @@ pub fn guess_lang(text: &str) -> &'static str {
     }
 }
 
+/// At most `max` characters, cut after the last full sentence when one
+/// ends in the second half (a preview, not a chopped word).
+pub fn clip_sentences(text: &str, max: usize) -> String {
+    let t = text.trim();
+    if t.chars().count() <= max {
+        return t.to_owned();
+    }
+    let head: String = t.chars().take(max).collect();
+    let cut = [". ", "! ", "? ", ".\n", "\n"]
+        .iter()
+        .filter_map(|p| head.rfind(p).map(|i| i + 1))
+        .max()
+        .filter(|&i| head[..i].chars().count() >= max / 2);
+    match cut {
+        Some(i) => format!("{} …", head[..i].trim_end()),
+        None => clip(t, max),
+    }
+}
+
 /// At most `max` characters, with an ellipsis.
 pub fn clip(text: &str, max: usize) -> String {
     let t = text.trim();
@@ -360,5 +379,10 @@ mod tests {
         assert_eq!(guess_lang("ask Grok about the latest news on Rust"), "en");
         assert_eq!(guess_lang("spørg Grok om nyheder på dansk"), "da");
         assert_eq!(clip("abcdef", 4), "abc…");
+        assert_eq!(
+            clip_sentences("Prima frase intera. Seconda frase che non entra tutta", 30),
+            "Prima frase intera. …"
+        );
+        assert_eq!(clip_sentences("corta", 30), "corta");
     }
 }

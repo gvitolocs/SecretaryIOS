@@ -194,6 +194,8 @@ fn home() -> PathBuf {
 pub fn bwrap_args(workdir: &Path, writable: &Path, mounts: &Mounts) -> Vec<String> {
     let h = home();
     let s = |p: &Path| p.to_string_lossy().into_owned();
+    // Mount targets must not go through a symlink: use the real paths.
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
     let mut a: Vec<String> = [
         "--die-with-parent",
         "--new-session",
@@ -214,10 +216,16 @@ pub fn bwrap_args(workdir: &Path, writable: &Path, mounts: &Mounts) -> Vec<Strin
     .iter()
     .map(|x| x.to_string())
     .collect();
-    for sock in ["/run/docker.sock", "/var/run/docker.sock"] {
-        if Path::new(sock).exists() {
-            a.extend(["--ro-bind".into(), "/dev/null".into(), sock.into()]);
-        }
+    // The real socket path (`/var/run` is usually a symlink to `/run`, and
+    // bwrap cannot mount over a path that goes through a symlink).
+    let mut sockets: Vec<PathBuf> = ["/run/docker.sock", "/var/run/docker.sock"]
+        .iter()
+        .filter_map(|s| std::fs::canonicalize(s).ok())
+        .collect();
+    sockets.sort();
+    sockets.dedup();
+    for sock in sockets {
+        a.extend(["--ro-bind".into(), "/dev/null".into(), s(&sock)]);
     }
     for hidden in [
         "Projects",
@@ -234,34 +242,29 @@ pub fn bwrap_args(workdir: &Path, writable: &Path, mounts: &Mounts) -> Vec<Strin
         ".aws",
         "mnt",
     ] {
-        let p = h.join(hidden);
-        if p.is_dir() {
+        if let Some(p) = real(&h.join(hidden)).filter(|p| p.is_dir()) {
             a.extend(["--tmpfs".into(), s(&p)]);
         }
     }
     for f in [".git-credentials", ".netrc", ".npmrc", ".pypirc"] {
-        let p = h.join(f);
-        if p.is_file() {
+        if let Some(p) = real(&h.join(f)).filter(|p| p.is_file()) {
             a.extend(["--ro-bind".into(), "/dev/null".into(), s(&p)]);
         }
     }
-    a.extend(["--bind".into(), s(writable), s(writable)]);
-    for p in &mounts.rw {
-        if p.exists() {
-            a.extend(["--bind".into(), s(p), s(p)]);
-        }
+    let w = real(writable).unwrap_or_else(|| writable.to_path_buf());
+    a.extend(["--bind".into(), s(&w), s(&w)]);
+    for p in mounts.rw.iter().filter_map(|p| real(p)) {
+        a.extend(["--bind".into(), s(&p), s(&p)]);
     }
-    for p in &mounts.ro {
-        if p.exists() {
-            a.extend(["--ro-bind".into(), s(p), s(p)]);
-        }
+    for p in mounts.ro.iter().filter_map(|p| real(p)) {
+        a.extend(["--ro-bind".into(), s(&p), s(&p)]);
     }
     a.extend([
         "--setenv".into(),
         "LUCINA_DELEGATION_DEPTH".into(),
         "1".into(),
         "--chdir".into(),
-        s(workdir),
+        s(&real(workdir).unwrap_or_else(|| workdir.to_path_buf())),
     ]);
     a
 }
@@ -495,6 +498,49 @@ mod tests {
         .await
         .unwrap();
         assert!(out.timed_out);
+    }
+
+    /// The real fence (skipped where bubblewrap is not installed).
+    #[tokio::test]
+    async fn bwrap_runs_fenced_in() {
+        if std::process::Command::new("bwrap")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("bwrap not installed: skipped");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let script = "ls \"$HOME/Projects\" 2>/dev/null | wc -l; ls \"$HOME/.ssh\" 2>/dev/null | wc -l; \
+                      echo hi > out.txt; (touch \"$HOME/lucina-bwrap-probe\" 2>/dev/null && echo leaked) || echo ro; \
+                      (systemctl --user status >/dev/null 2>&1 && echo bus) || echo nobus; echo depth=$LUCINA_DELEGATION_DEPTH";
+        let out = run(
+            Isolation::Bwrap,
+            Path::new("/bin/sh"),
+            &["-c".into(), script.into()],
+            t.path(),
+            t.path(),
+            &Mounts::default(),
+            &[],
+            "",
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.status, Some(0), "{}", out.stderr);
+        let lines: Vec<&str> = out.stdout.lines().collect();
+        assert_eq!(
+            lines,
+            ["0", "0", "ro", "nobus", "depth=1"],
+            "{}",
+            out.stderr
+        );
+        assert_eq!(
+            std::fs::read_to_string(t.path().join("out.txt")).unwrap(),
+            "hi\n"
+        );
+        assert!(!home().join("lucina-bwrap-probe").exists());
     }
 
     #[test]

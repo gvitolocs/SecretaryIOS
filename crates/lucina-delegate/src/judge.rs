@@ -132,7 +132,7 @@ pub async fn judge(
             temperature: Some(0.0),
             purpose: "delegate-judge",
             json_object: true,
-            max_tokens: Some(400),
+            max_tokens: Some(1200),
             ..ChatRequest::default()
         };
         let content = match tokio::time::timeout(timeout, model.complete(request)).await {

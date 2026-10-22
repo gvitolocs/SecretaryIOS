@@ -6,7 +6,7 @@
 use lucina_store::rich::{self, RichMessage};
 use serde_json::{json, Value};
 
-use crate::types::{clip, JobRecord, JobStatus, Risk};
+use crate::types::{clip, clip_sentences, JobRecord, JobStatus, Risk};
 
 /// Formats a duration the owner reads.
 pub fn duration(ms: u64) -> String {
@@ -127,7 +127,7 @@ pub fn render(job: &JobRecord) -> (String, Option<RichMessage>) {
             .summary
             .clone()
             .or_else(|| job.result.clone())
-            .map(|b| clip(&b, 560)),
+            .map(|b| clip_sentences(&b, 600)),
         _ => None,
     };
     let undo = job.undo.as_ref().map(|u| {

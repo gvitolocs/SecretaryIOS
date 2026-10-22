@@ -220,11 +220,15 @@ pub async fn run(d: &Arc<Delegator>, req: Request) -> Ran {
 
 /// The answer a finished job gives the reply writer.
 pub fn answer_text(job: &JobRecord) -> String {
-    let mut s = job
-        .summary
-        .clone()
-        .or_else(|| job.result.clone().map(|r| clip(&r, 6000)))
-        .unwrap_or_default();
+    // With a note the summary is enough; without one, the whole answer.
+    let mut s = match (&job.note_slug, &job.summary) {
+        (Some(_), Some(summary)) => summary.clone(),
+        _ => job
+            .result
+            .clone()
+            .map(|r| clip(&r, 6000))
+            .unwrap_or_default(),
+    };
     if let Some(slug) = &job.note_slug {
         s.push_str(&format!(
             "\n\n(The full answer is saved in the Secretary app under Notes: {slug}.)"
