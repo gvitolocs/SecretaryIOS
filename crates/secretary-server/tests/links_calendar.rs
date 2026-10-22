@@ -816,6 +816,8 @@ async fn ics_iphone_custom_links() {
         .post("/v1/device/state", json!({"events": [
             {"id": "EK1", "title": "Padel", "start": "2026-11-05T17:00:00Z", "end": "2026-11-05T18:00:00Z", "calendar": "Casa"},
             {"id": "EK2", "title": "Birthday", "start": "2026-11-05", "allDay": true},
+            // the next occurrence of a recurring EventKit event: same identifier
+            {"id": "EK1", "title": "Padel", "start": "2026-11-12T17:00:00Z", "end": "2026-11-12T18:00:00Z"},
         ]}))
         .await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
@@ -831,6 +833,10 @@ async fn ics_iphone_custom_links() {
         .collect();
     assert_eq!(sources, ["iphone", "iphone", "ics"]);
     assert_eq!(ev["events"][2]["calendar"], "Serie A");
+    let (_, wk) = t
+        .get("/v1/calendar/events?from=2026-11-05&to=2026-11-12&sources=iphone")
+        .await;
+    assert_eq!(T::titles(&wk), ["Birthday", "Padel", "Padel"]);
     let (_, only) = t
         .get("/v1/calendar/events?from=2026-11-05&to=2026-11-05&sources=ics")
         .await;
@@ -843,7 +849,7 @@ async fn ics_iphone_custom_links() {
             ip["account"].as_str(),
             ip["count"].as_u64()
         ),
-        (Some("connected"), Some("test iPhone"), Some(2))
+        (Some("connected"), Some("test iPhone"), Some(3))
     );
     let ics = T::card(&links, &format!("ics:{id}"));
     assert_eq!(

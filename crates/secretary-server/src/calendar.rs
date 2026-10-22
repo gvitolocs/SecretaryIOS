@@ -380,13 +380,17 @@ pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value])
                 .chars()
                 .take(300)
                 .collect::<String>();
-            let id = e
+            // EventKit gives every occurrence of a recurring event the same
+            // identifier: the start makes each one unique.
+            let start_ms = start.instant(tz).timestamp_millis();
+            let id = match e
                 .get("id")
                 .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    secretary_calendar::model::short_hash(&format!("{title}|{start:?}"))
-                });
+                .filter(|x| !x.is_empty())
+            {
+                Some(x) => format!("{x}@{start_ms}"),
+                None => secretary_calendar::model::short_hash(&format!("{title}|{start_ms}")),
+            };
             let s = |k: &str| {
                 e.get(k)
                     .and_then(Value::as_str)
