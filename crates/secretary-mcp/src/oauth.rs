@@ -452,6 +452,75 @@ impl OAuth {
         })
     }
 
+    /// Redeem a validated authorization code: mark it redeemed and write the
+    /// grant and its tokens in ONE critical section under the `codes` lock.
+    /// A replay can then never see a redeemed code whose grant is not in
+    /// `oauth.json` yet (its `revoke_grant` used to be a no-op in that
+    /// window), and a request that loses the race to a concurrent
+    /// redemption is a replay too: the grant is revoked.
+    /// (verification/models/src/oauth.rs, formal/oauth/OAuth.tla, bug O1.)
+    fn redeem_code(
+        &self,
+        cfg: &Config,
+        code_hash: &str,
+        grant: Grant,
+        scopes: &Scopes,
+    ) -> Result<TokenPair, Redeem> {
+        let mut codes = self.codes.lock().unwrap_or_else(|p| p.into_inner());
+        match codes.get_mut(code_hash) {
+            Some(c) if c.redeemed.is_none() => {
+                let grant_id = grant.id.clone();
+                let pair = self
+                    .issue_tokens(cfg, Some(grant), &grant_id, scopes)
+                    .map_err(Redeem::Io)?;
+                c.redeemed = Some(grant_id);
+                Ok(pair)
+            }
+            Some(c) => {
+                let replayed = c.redeemed.clone().unwrap_or_default();
+                drop(codes);
+                self.revoke_grant(&replayed);
+                Err(Redeem::Replay(replayed))
+            }
+            None => Err(Redeem::Gone),
+        }
+    }
+
+    /// Rotate a refresh token: mark it used if it still is unused, then issue
+    /// the new pair. Losing that race to a concurrent use of the same token is
+    /// a reuse like any other: the grant is revoked (it used to answer
+    /// "already used" and keep the grant). (Bug O2.)
+    fn rotate_refresh(
+        &self,
+        cfg: &Config,
+        refresh_hash: &str,
+        grant_id: &str,
+        scopes: &Scopes,
+    ) -> Result<TokenPair, Redeem> {
+        let rotated = self
+            .file
+            .update(|d| {
+                match d
+                    .tokens
+                    .iter_mut()
+                    .find(|x| x.hash == refresh_hash && !x.used)
+                {
+                    Some(x) => {
+                        x.used = true;
+                        (true, true)
+                    }
+                    None => (false, false),
+                }
+            })
+            .map_err(Redeem::Io)?;
+        if !rotated {
+            self.revoke_grant(grant_id);
+            return Err(Redeem::Replay(grant_id.to_owned()));
+        }
+        self.issue_tokens(cfg, None, grant_id, scopes)
+            .map_err(Redeem::Io)
+    }
+
     fn revoke_grant(&self, grant_id: &str) {
         let _ = self.file.update(|d| {
             for g in d.grants.iter_mut().filter(|g| g.id == grant_id) {
@@ -461,6 +530,16 @@ impl OAuth {
             (true, ())
         });
     }
+}
+
+/// Why a code redemption or a refresh rotation did not issue tokens.
+#[derive(Debug)]
+enum Redeem {
+    /// Already redeemed / rotated: the grant (named) has been revoked.
+    Replay(String),
+    /// The code is no longer in memory (burned by a failed verifier, expired).
+    Gone,
+    Io(std::io::Error),
 }
 
 struct TokenPair {
@@ -1277,17 +1356,17 @@ pub async fn token(
                 revoked: false,
             };
             let grant_id = grant.id.clone();
-            {
-                let mut codes = st.oauth.codes.lock().unwrap_or_else(|p| p.into_inner());
-                match codes.get_mut(&hash) {
-                    Some(c) if c.redeemed.is_none() => c.redeemed = Some(grant_id.clone()),
-                    _ => return Err(OAuthError::bad("invalid_grant", "code already used")),
+            let pair = match st.oauth.redeem_code(&st.cfg, &hash, grant, &rec.scopes) {
+                Ok(p) => p,
+                Err(Redeem::Io(e)) => return Err(internal(e)),
+                Err(Redeem::Replay(g)) => {
+                    tracing::warn!(target: "secretary_mcp::audit", event = "oauth_code_replay", grant = %g, "grant revoked (concurrent redemption)");
+                    return Err(OAuthError::bad("invalid_grant", "code already used"));
                 }
-            }
-            let pair = st
-                .oauth
-                .issue_tokens(&st.cfg, Some(grant), &grant_id, &rec.scopes)
-                .map_err(internal)?;
+                Err(Redeem::Gone) => {
+                    return Err(OAuthError::bad("invalid_grant", "code already used"))
+                }
+            };
             tracing::info!(target: "secretary_mcp::audit", event = "oauth_token", grant = %grant_id, caller = %rec.caller, "authorization_code");
             Ok(pair.into_response())
         }
@@ -1369,29 +1448,17 @@ pub async fn token(
                 None => t.scopes.clone(),
             };
             // Rotate: mark the presented token used (kept for replay detection).
-            let rotated = st
-                .oauth
-                .file
-                .update(
-                    |d| match d.tokens.iter_mut().find(|x| x.hash == hash && !x.used) {
-                        Some(x) => {
-                            x.used = true;
-                            (true, true)
-                        }
-                        None => (false, false),
-                    },
-                )
-                .map_err(internal)?;
-            if !rotated {
-                return Err(OAuthError::bad(
-                    "invalid_grant",
-                    "refresh token already used",
-                ));
-            }
-            let pair = st
-                .oauth
-                .issue_tokens(&st.cfg, None, &g.id, &scopes)
-                .map_err(internal)?;
+            let pair = match st.oauth.rotate_refresh(&st.cfg, &hash, &g.id, &scopes) {
+                Ok(p) => p,
+                Err(Redeem::Io(e)) => return Err(internal(e)),
+                Err(_) => {
+                    tracing::warn!(target: "secretary_mcp::audit", event = "oauth_refresh_replay", grant = %g.id, "grant revoked (concurrent refresh)");
+                    return Err(OAuthError::bad(
+                        "invalid_grant",
+                        "refresh token already used; the grant is revoked",
+                    ));
+                }
+            };
             tracing::info!(target: "secretary_mcp::audit", event = "oauth_token", grant = %g.id, caller = %g.caller, "refresh_token");
             Ok(pair.into_response())
         }
@@ -1476,6 +1543,122 @@ mod tests {
         assert_eq!(caller_for_host("chatgpt.com"), "chatgpt");
         assert_eq!(caller_for_host("platform.openai.com"), "chatgpt");
         assert_eq!(caller_for_host("example.org"), "example");
+    }
+
+    // -- token endpoint races (docs/verification.md, bugs O1 and O2) ---------
+
+    fn oauth_in(dir: &std::path::Path) -> (Config, OAuth) {
+        let cfg = Config::new("https://getsecretary.tech", dir).unwrap();
+        let o = OAuth::new(&cfg);
+        (cfg, o)
+    }
+
+    fn grant(id: &str) -> Grant {
+        Grant {
+            id: id.into(),
+            client_id: "client".into(),
+            client_name: "Client".into(),
+            caller: "client".into(),
+            scopes: Scopes::all(),
+            resource: "res".into(),
+            created_at: 0,
+            revoked: false,
+        }
+    }
+
+    fn pending_code(o: &OAuth, hash: &str) {
+        o.codes.lock().unwrap().insert(
+            hash.into(),
+            CodeRec {
+                client_id: "client".into(),
+                client_name: "Client".into(),
+                caller: "client".into(),
+                redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect".into(),
+                code_challenge: "x".into(),
+                scopes: Scopes::all(),
+                resource: "res".into(),
+                created: Instant::now(),
+                redeemed: None,
+            },
+        );
+    }
+
+    /// Two token requests with the same code both pass the first lookup; the
+    /// one that commits second is a replay and must revoke the grant. Before
+    /// the fix it answered "code already used" and the grant stayed live, and
+    /// a replay landing between "redeemed" and `issue_tokens` revoked nothing
+    /// (the grant was not in oauth.json yet). Model: formal/oauth/OAuth.tla.
+    #[test]
+    fn concurrent_code_redemption_revokes_the_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, o) = oauth_in(dir.path());
+        pending_code(&o, "code-hash");
+        let first = o
+            .redeem_code(&cfg, "code-hash", grant("grant_a"), &Scopes::all())
+            .expect("first redemption issues tokens");
+        assert!(o.authenticate(&first.access, "res").unwrap().is_some());
+        let second = o.redeem_code(&cfg, "code-hash", grant("grant_b"), &Scopes::all());
+        match second {
+            Err(Redeem::Replay(g)) => assert_eq!(g, "grant_a"),
+            Err(e) => panic!("expected a replay, got {e:?}"),
+            Ok(_) => panic!("a second redemption of one code issued tokens"),
+        }
+        let d = o.data().unwrap();
+        assert!(d.grants.iter().any(|g| g.id == "grant_a" && g.revoked));
+        assert!(d.grants.iter().all(|g| g.id != "grant_b"));
+        assert!(o.authenticate(&first.access, "res").unwrap().is_none());
+    }
+
+    /// The redeemed mark and the grant are written together: whenever a code
+    /// is marked redeemed, its grant is already in oauth.json.
+    #[test]
+    fn a_redeemed_code_always_has_its_grant_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, o) = oauth_in(dir.path());
+        pending_code(&o, "code-hash");
+        o.redeem_code(&cfg, "code-hash", grant("grant_a"), &Scopes::all())
+            .unwrap();
+        let redeemed = o.codes.lock().unwrap()["code-hash"]
+            .redeemed
+            .clone()
+            .unwrap();
+        assert!(o.data().unwrap().grants.iter().any(|g| g.id == redeemed));
+        // A burned (forgotten) code is not a replay of anything.
+        assert!(matches!(
+            o.redeem_code(&cfg, "other", grant("grant_c"), &Scopes::all()),
+            Err(Redeem::Gone)
+        ));
+    }
+
+    /// Two refreshes with the same refresh token both read it as unused; the
+    /// one that loses the rotation is a reuse: the grant is revoked (it used
+    /// to answer "already used" and keep the grant live).
+    #[test]
+    fn concurrent_refresh_with_one_token_revokes_the_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cfg, o) = oauth_in(dir.path());
+        pending_code(&o, "code-hash");
+        let pair = o
+            .redeem_code(&cfg, "code-hash", grant("grant_a"), &Scopes::all())
+            .unwrap();
+        let rt = sha256_hex(&pair.refresh);
+        let rotated = o
+            .rotate_refresh(&cfg, &rt, "grant_a", &Scopes::all())
+            .expect("the first rotation wins");
+        assert!(o.authenticate(&rotated.access, "res").unwrap().is_some());
+        let lost = o.rotate_refresh(&cfg, &rt, "grant_a", &Scopes::all());
+        match lost {
+            Err(Redeem::Replay(g)) => assert_eq!(g, "grant_a"),
+            Err(e) => panic!("expected a reuse, got {e:?}"),
+            Ok(_) => panic!("one refresh token rotated twice"),
+        }
+        assert!(o
+            .data()
+            .unwrap()
+            .grants
+            .iter()
+            .any(|g| g.id == "grant_a" && g.revoked));
+        assert!(o.authenticate(&rotated.access, "res").unwrap().is_none());
     }
 
     #[test]
