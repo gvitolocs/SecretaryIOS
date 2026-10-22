@@ -39,7 +39,7 @@ fn outfits(ctx: &Ctx) -> Vec<Option<String>> {
     ctx.effects()
         .into_iter()
         .filter_map(|e| match e {
-            Effect::AvatarOutfit { outfit } => Some(outfit),
+            Effect::AvatarOutfit { outfit, .. } => Some(outfit),
             _ => None,
         })
         .collect()
@@ -60,7 +60,9 @@ async fn puts_an_outfit_on_with_the_service_token() {
         .await;
     Mock::given(method("PUT"))
         .and(path("/v1/avatar"))
-        .and(body_json(json!({"outfit": null, "auto": true})))
+        .and(body_json(
+            json!({"outfit": null, "hair": null, "auto": true}),
+        ))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"outfit": null, "auto": true})),
         )
@@ -142,4 +144,81 @@ async fn says_so_when_not_configured() {
         out.to_string().contains("LUCINA_SECRETARY_SERVER_URL"),
         "{out}"
     );
+}
+
+#[tokio::test]
+async fn styles_her_hair_and_lists_hairstyles() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/avatar"))
+        .and(body_json(json!({"hair": "ponytail"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hair": "ponytail"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/avatar"))
+        .and(body_json(json!({"outfit": "gym", "hair": "bun"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/avatar"))
+        .and(body_json(
+            json!({"outfit": null, "hair": null, "auto": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/avatar/wardrobe"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "outfits": [{"id": "uniform", "glb": "lucina.glb"}],
+            "hairstyles": [{"id": "natural"}, {"id": "ponytail", "glb": "lucina-hair-ponytail.glb", "hideTiara": true}],
+            "colors": [{"id": "pink", "hex": "#ff8ac8"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/avatar"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"hair": null})))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let c = ctx(dir.path(), Some(&server));
+    let (ok, out) = call(&c, json!({"hair": "Ponytail"})).await;
+    assert!(ok, "{out}");
+    assert_eq!(
+        (out["hair"].as_str(), out["outfit"].clone()),
+        (Some("ponytail"), Value::Null)
+    );
+    let (ok, out) = call(&c, json!({"outfit": "gym", "hair": "bun"})).await;
+    assert!(ok, "{out}");
+    let (ok, out) = call(&c, json!({"outfit": "auto"})).await;
+    assert!(ok, "{out}");
+    let looks: Vec<_> = c
+        .effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::AvatarOutfit { outfit, hair } => Some((outfit, hair)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        looks,
+        vec![
+            (None, Some("ponytail".to_owned())),
+            (Some("gym".to_owned()), Some("bun".to_owned())),
+            (None, None)
+        ]
+    );
+    let (ok, out) = call(&c, json!({"hair": "auto"})).await;
+    assert!(!ok, "auto is for the outfit only: {out}");
+    let (ok, out) = call(&c, json!({})).await;
+    assert!(ok, "{out}");
+    assert_eq!(out["hairstyles"][1]["id"], "ponytail");
+    assert_eq!(out["colors"][0]["hex"], "#ff8ac8");
+    assert_eq!(out["outfits"][0]["id"], "uniform");
 }

@@ -1,4 +1,4 @@
-//! `avatar_outfit`: Lucina changes her own 3D outfit in the Secretary apps.
+//! `avatar_outfit`: Lucina changes her own 3D outfit and hairstyle in the Secretary apps.
 //!
 //! The choice is saved on secretary-server (`PUT /v1/avatar` with the service
 //! token, see SecretaryIOS `docs/server-api.md`, "Avatar wardrobe"); the chat
@@ -26,9 +26,11 @@ pub const AUTO: &str = "auto";
 
 #[derive(Deserialize, JsonSchema)]
 struct Args {
-    /// Wardrobe id to put on (e.g. "uniform", "gym", "chef", "maid", "casual"),
-    /// or "auto" to change by app section again. Omit to list the wardrobe.
+    /// Wardrobe outfit to put on (e.g. "uniform", "gym", "chef", "maid", "casual"),
+    /// or "auto" to change outfit and hair by app section again.
     outfit: Option<String>,
+    /// Hairstyle (e.g. "ponytail", "bun", "twintails", "braid"), or "natural" for her own hair.
+    hair: Option<String>,
 }
 
 pub struct AvatarOutfitTool;
@@ -91,9 +93,11 @@ impl Tool for AvatarOutfitTool {
     fn description(&self) -> &'static str {
         "Change Lucina's own 3D outfit in the Secretary apps (web and iPhone). Use it when Giuseppe asks her to \
          put on or change clothes ('mettiti il vestito da cameriera', 'put on your gym clothes', 'tag træningstøjet på') \
-         or when she decides to dress for the moment. outfit: a wardrobe id (uniform, gym, chef, maid, casual, ...), or \
-         'auto' to change by app section again (gym clothes in the Gym, ...). Without outfit it lists the wardrobe and \
-         what she wears. A chosen outfit stays on until changed or set back to auto."
+         or when she decides to dress for the moment. Also her hair ('fatti la coda', 'put your hair in a bun'): \
+         hair = a hairstyle id, or 'natural' for her own hair. outfit: a wardrobe id (uniform, gym, chef, maid, casual, ...), \
+         or 'auto' to change outfit and hair by app section again (gym clothes and a ponytail in the Gym, ...). Without \
+         outfit and hair it lists the wardrobe (outfits, hairstyles, colours) and what she wears. A choice stays until \
+         changed or set back to auto."
     }
     fn parameters(&self) -> Value {
         schema_for::<Args>()
@@ -102,35 +106,66 @@ impl Tool for AvatarOutfitTool {
         SideEffect::Local
     }
     fn summarize(&self, args: &Value) -> String {
-        match args["outfit"].as_str() {
-            Some(o) => format!("avatar_outfit {o}"),
-            None => "avatar_outfit (list)".into(),
+        match (args["outfit"].as_str(), args["hair"].as_str()) {
+            (Some(o), Some(h)) => format!("avatar_outfit {o}, hair {h}"),
+            (Some(o), None) => format!("avatar_outfit {o}"),
+            (None, Some(h)) => format!("avatar_outfit hair {h}"),
+            (None, None) => "avatar_outfit (list)".into(),
         }
     }
     async fn call(&self, args: Value, ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
         let (base, token) = server(ctx)?;
-        let Some(outfit) = a.outfit.map(|o| o.trim().to_ascii_lowercase()) else {
+        let norm = |v: Option<String>| {
+            v.map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+        };
+        let (outfit, hair) = (norm(a.outfit), norm(a.hair));
+        if outfit.is_none() && hair.is_none() {
             let wardrobe = get_json(ctx, &format!("{base}/v1/avatar/wardrobe"), &token).await?;
             let settings = get_json(ctx, &format!("{base}/v1/avatar"), &token).await?;
-            let outfits: Vec<Value> = wardrobe
-                .as_array()
-                .map(|l| {
-                    l.iter()
-                        .map(|e| json!({"id": e["id"], "name": e["name"], "tags": e["tags"]}))
-                        .collect()
-                })
-                .unwrap_or_default();
-            return Ok(json!({"outfits": outfits, "current": settings}));
-        };
-        let body = if outfit == AUTO {
-            json!({"outfit": null, "auto": true})
-        } else if valid_outfit_id(&outfit) {
-            json!({"outfit": outfit})
+            // `{outfits, hairstyles, colors}`, or the older bare array of outfits.
+            let list = |key: &str| -> Vec<Value> {
+                let items = if key == "outfits" && wardrobe.is_array() {
+                    &wardrobe
+                } else {
+                    &wardrobe[key]
+                };
+                items
+                    .as_array()
+                    .map(|l| {
+                        l.iter()
+                            .map(|e| json!({"id": e["id"], "name": e["name"], "tags": e["tags"], "hex": e["hex"]}))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            return Ok(json!({
+                "outfits": list("outfits"),
+                "hairstyles": list("hairstyles"),
+                "colors": list("colors"),
+                "current": settings,
+            }));
+        }
+        let auto = outfit.as_deref() == Some(AUTO);
+        for id in [&outfit, &hair].into_iter().flatten() {
+            if !(valid_outfit_id(id) || (auto && id == AUTO)) {
+                return Err(ToolError::new(
+                    "outfit and hair must be wardrobe ids ([a-z0-9][a-z0-9_-]*); outfit may be \"auto\"",
+                ));
+            }
+        }
+        let body = if auto {
+            json!({"outfit": null, "hair": null, "auto": true})
         } else {
-            return Err(ToolError::new(
-                "outfit must be a wardrobe id ([a-z0-9][a-z0-9_-]*) or \"auto\"",
-            ));
+            let mut b = serde_json::Map::new();
+            if let Some(o) = &outfit {
+                b.insert("outfit".into(), json!(o));
+            }
+            if let Some(h) = &hair {
+                b.insert("hair".into(), json!(h));
+            }
+            Value::Object(b)
         };
         let resp = ctx
             .env
@@ -145,11 +180,12 @@ impl Tool for AvatarOutfitTool {
             return Err(server_error(resp).await);
         }
         let settings: Value = resp.json().await.unwrap_or(Value::Null);
-        let worn = (outfit != AUTO).then_some(outfit);
+        let (outfit, hair) = if auto { (None, None) } else { (outfit, hair) };
         ctx.push_effect(Effect::AvatarOutfit {
-            outfit: worn.clone(),
+            outfit: outfit.clone(),
+            hair: hair.clone(),
         });
-        Ok(json!({"ok": true, "outfit": worn, "auto": worn.is_none(), "settings": settings}))
+        Ok(json!({"ok": true, "outfit": outfit, "hair": hair, "auto": auto, "settings": settings}))
     }
 }
 

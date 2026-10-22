@@ -85,9 +85,11 @@ pub enum Effect {
     Note {
         title: String,
     },
-    /// Lucina changed her 3D outfit (`None` = back to automatic).
+    /// Lucina changed her look: the outfit and/or hairstyle she put on
+    /// (both `None` = back to automatic).
     AvatarOutfit {
         outfit: Option<String>,
+        hair: Option<String>,
     },
 }
 

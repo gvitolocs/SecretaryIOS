@@ -226,17 +226,29 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     }
     // Her outfit changed: the apps apply it from this item's meta (unless another
     // effect already owns the meta, e.g. a shopping list).
-    if let Some(outfit) = effects.iter().rev().find_map(|e| match e {
-        Effect::AvatarOutfit { outfit } => Some(outfit.clone()),
+    if let Some((outfit, hair)) = effects.iter().rev().find_map(|e| match e {
+        Effect::AvatarOutfit { outfit, hair } => Some((outfit.clone(), hair.clone())),
         _ => None,
     }) {
         if f.action == "reply" {
             f.action = "avatar_outfit".into();
-            f.action_result = format!("[outfit {}]", outfit.as_deref().unwrap_or("auto"));
+            f.action_result = match (&outfit, &hair) {
+                (None, None) => "[look auto]".into(),
+                (o, h) => format!(
+                    "[look{}{}]",
+                    o.as_deref()
+                        .map(|o| format!(" outfit {o}"))
+                        .unwrap_or_default(),
+                    h.as_deref()
+                        .map(|h| format!(" hair {h}"))
+                        .unwrap_or_default()
+                ),
+            };
         }
         if f.meta.is_none() {
             f.meta = Some(Meta {
                 outfit,
+                hair,
                 ..Meta::kind("avatar_outfit")
             });
         }
@@ -708,6 +720,7 @@ mod tests {
         let f = effects_to_finish(
             &[Effect::AvatarOutfit {
                 outfit: Some("maid".into()),
+                hair: None,
             }],
             "Eccomi!".into(),
         );
@@ -715,7 +728,13 @@ mod tests {
         let meta = serde_json::to_value(f.meta.unwrap()).unwrap();
         assert_eq!(meta, json!({"kind": "avatar_outfit", "outfit": "maid"}));
 
-        let auto = effects_to_finish(&[Effect::AvatarOutfit { outfit: None }], "Ok".into());
+        let auto = effects_to_finish(
+            &[Effect::AvatarOutfit {
+                outfit: None,
+                hair: None,
+            }],
+            "Ok".into(),
+        );
         let meta = serde_json::to_value(auto.meta.unwrap()).unwrap();
         assert_eq!(meta, json!({"kind": "avatar_outfit"}));
 
@@ -727,11 +746,23 @@ mod tests {
                 },
                 Effect::AvatarOutfit {
                     outfit: Some("chef".into()),
+                    hair: None,
                 },
             ],
             "Ok".into(),
         );
         assert_eq!(both.action, "grocery");
         assert_eq!(both.meta.unwrap().kind.as_deref(), Some("shopping"));
+
+        let hair = effects_to_finish(
+            &[Effect::AvatarOutfit {
+                outfit: None,
+                hair: Some("ponytail".into()),
+            }],
+            "Fatto".into(),
+        );
+        assert_eq!(hair.action_result, "[look hair ponytail]");
+        let meta = serde_json::to_value(hair.meta.unwrap()).unwrap();
+        assert_eq!(meta, json!({"kind": "avatar_outfit", "hair": "ponytail"}));
     }
 }

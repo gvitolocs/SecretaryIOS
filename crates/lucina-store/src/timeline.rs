@@ -72,6 +72,9 @@ pub struct Meta {
     /// With `kind: "avatar_outfit"`: the outfit Lucina put on (none = back to automatic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outfit: Option<String>,
+    /// With `kind: "avatar_outfit"`: the hairstyle Lucina put on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hair: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_dm: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,6 +102,7 @@ impl Meta {
             && self.list_id.is_none()
             && self.command_id.is_none()
             && self.outfit.is_none()
+            && self.hair.is_none()
             && self.is_dm.is_none()
             && self.ok.is_none()
             && self.command.is_none()
@@ -119,6 +123,7 @@ impl Meta {
             list_id,
             command_id,
             outfit,
+            hair,
             is_dm,
             ok,
             command,
@@ -232,6 +237,7 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         list_id: s(m.list_id),
         command_id: s(m.command_id),
         outfit: s(m.outfit),
+        hair: s(m.hair),
         is_dm: m.is_dm,
         ok: m.ok,
         command: m.command.as_deref().and_then(normalize_command),
