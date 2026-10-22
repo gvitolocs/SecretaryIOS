@@ -9,6 +9,7 @@ pub mod places;
 pub mod presence;
 pub mod reminders;
 pub mod shopping;
+pub mod tasks;
 pub mod time;
 pub mod units;
 pub mod weather;
@@ -28,6 +29,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(notes::NotesTool),
         Arc::new(reminders::RemindersTool),
         Arc::new(calendar::CalendarTool),
+        Arc::new(tasks::TasksTool),
         Arc::new(shopping::ShoppingTool),
         Arc::new(presence::PresenceTool),
         Arc::new(avatar::AvatarOutfitTool),
