@@ -142,8 +142,21 @@ final class ShoppingV2Store {
         (current?.items ?? []).filter { $0.status == .recent }.sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
     }
 
+    /// The catalog item behind a row: its catalog id, else its name resolved like the server does.
+    func catalogItem(for item: ShopItem) -> CatalogItem? {
+        if let id = item.catalogId { return catalog.item(id) }
+        // Reading `catalog` keeps views observing it; `search` is rebuilt whenever it changes.
+        guard !catalog.items.isEmpty else { return nil }
+        return search.resolve(item.name)?.item
+    }
+
+    /// The row's icon; the generic cart only for free text the catalog doesn't know.
     func icon(for item: ShopItem) -> String {
-        item.icon ?? catalog.item(item.catalogId)?.icon ?? ShoppingCatalog.defaultIcon
+        item.icon ?? catalogItem(for: item)?.icon ?? ShoppingCatalog.defaultIcon
+    }
+
+    func section(for item: ShopItem) -> String? {
+        item.section ?? catalogItem(for: item)?.section
     }
 
     private func context(_ listId: String) -> ShopOps.Context {

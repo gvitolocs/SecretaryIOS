@@ -573,7 +573,7 @@ private struct ItemDetail: View {
                         .disabled(quantity == 0)
                     }
                     Section {
-                        Picker("Section", selection: Binding(get: { item.section ?? ShoppingCatalog.otherSection },
+                        Picker("Section", selection: Binding(get: { store.section(for: item) ?? ShoppingCatalog.otherSection },
                                                              set: { store.setSection(item, $0 == ShoppingCatalog.otherSection ? nil : $0) })) {
                             ForEach(store.catalog.sections) { Text("\($0.icon) \($0.name)").tag($0.id) }
                             Text("🛒 Other").tag(ShoppingCatalog.otherSection)

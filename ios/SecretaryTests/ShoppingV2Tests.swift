@@ -25,6 +25,8 @@ final class ShoppingCatalogTests: XCTestCase {
         XCTAssertEqual(TextFold.fold("Mælk"), "maelk")
         XCTAssertEqual(TextFold.fold("Latte d'avena"), "latte d avena")
         XCTAssertEqual(TextFold.fold("Straße 50%"), "strasse 50%")
+        XCTAssertEqual(TextFold.fold("Rugbrød"), "rugbroed", "docs/catalog.md: ø -> oe")
+        XCTAssertEqual(TextFold.fold("Blåbær"), "blaabaer", "docs/catalog.md: å -> aa")
         XCTAssertEqual(TextFold.itemKey(catalogId: "milk", name: "x"), "c:milk")
         XCTAssertEqual(TextFold.itemKey(catalogId: nil, name: "Caffè"), "n:caffe")
     }
@@ -43,6 +45,21 @@ final class ShoppingCatalogTests: XCTestCase {
         XCTAssertEqual(search.exactMatch("banana")?.id, "banana")
         XCTAssertNil(search.exactMatch("ban"))
         XCTAssertEqual(CatalogSearch(catalog: catalog, lang: "da").search("maelk").first?.id, "milk")
+    }
+
+    func testResolveRowsWithoutCatalogId() {
+        let search = CatalogSearch(catalog: catalog, lang: "it")
+        let hit = { (name: String) in search.resolve(name).map { [$0.item.id, $0.exact ? "name" : "alias"] } }
+        XCTAssertEqual(hit("latte"), ["milk", "name"])
+        XCTAssertEqual(hit("Milk"), ["milk", "name"], "names in every language")
+        XCTAssertEqual(hit("MÆLK"), ["milk", "name"])
+        XCTAssertEqual(hit("Bananas"), ["banana", "name"])
+        XCTAssertEqual(hit("espresso"), ["cafe", "alias"])
+        XCTAssertEqual(hit("latte vegetale"), ["oat-milk", "alias"])
+        XCTAssertNil(hit("latt"), "no prefixes")
+        XCTAssertNil(hit("milks"), "no plurals")
+        XCTAssertNil(hit("the milk"))
+        XCTAssertNil(hit(""))
     }
 }
 
@@ -271,5 +288,32 @@ final class ShoppingV2StoreTests: XCTestCase {
         store.applyUndo()
         XCTAssertTrue(store.needed.isEmpty)
         XCTAssertNil(store.undo)
+    }
+
+    func testRowsWithoutCatalogIdGetTheirIconAndSectionByName() async {
+        StubURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/v1/shopping/catalog":
+                return .init(body: #"{"version":1,"lang":"it","sections":[{"id":"dairy-eggs","name":"Latticini","icon":"🧀","order":3}],"items":[{"id":"milk","name":"Latte","names":{"it":"Latte","en":"Milk","da":"Mælk"},"aliases":["latte intero"],"section":"dairy-eggs","icon":"🥛"},{"id":"yogurt","name":"Yogurt","names":{"en":"Yogurt","da":"Yoghurt"},"aliases":[],"section":"dairy-eggs","icon":"🥛"}]}"#)
+            case "/v1/shopping/lists": return .init(body: #"[{"id":"default","name":"Casa","theme":"home"}]"#)
+            case "/v1/shopping/lists/default":
+                // Rows from before the catalog, as an old Lucina serves them: no catalogId, section or icon.
+                return .init(body: #"{"list":{"id":"default","name":"Casa","theme":"home"},"revision":1,"items":[{"id":"a","name":"milk","status":"needed","position":1},{"id":"b","name":"latte intero","status":"needed","position":2},{"id":"c","name":"yogurt","status":"needed","position":3},{"id":"d","name":"Candele","status":"needed","position":4},{"id":"e","name":"latte","status":"needed","position":5,"icon":"🍼","section":"other-shelf"}]}"#)
+            default: return .init(error: URLError(.notConnectedToInternet))
+            }
+        }
+        let store = makeStore()
+        await store.load(lang: "it")
+        let byId = Dictionary(uniqueKeysWithValues: store.needed.map { ($0.id, $0) })
+        XCTAssertEqual(byId.count, 5)
+        XCTAssertEqual(store.icon(for: byId["a"]!), "🥛")
+        XCTAssertEqual(store.section(for: byId["a"]!), "dairy-eggs")
+        XCTAssertEqual(store.icon(for: byId["b"]!), "🥛", "aliases resolve too")
+        XCTAssertEqual(store.icon(for: byId["c"]!), "🥛")
+        XCTAssertEqual(store.icon(for: byId["d"]!), ShoppingCatalog.defaultIcon, "the cart only for unknown free text")
+        XCTAssertNil(store.section(for: byId["d"]!))
+        XCTAssertEqual(store.icon(for: byId["e"]!), "🍼", "stored values win")
+        XCTAssertEqual(store.section(for: byId["e"]!), "other-shelf")
+        XCTAssertNil(byId["a"]!.catalogId, "the row itself is not rewritten")
     }
 }

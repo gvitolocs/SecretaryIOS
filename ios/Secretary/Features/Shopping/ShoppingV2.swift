@@ -73,17 +73,23 @@ struct ShoppingCatalog: Codable, Equatable, Sendable {
 }
 
 enum TextFold {
-    /// Letters that Unicode decomposition does not fold (Danish, German, ligatures).
-    private static let special: [Character: String] = ["æ": "ae", "ø": "o", "ß": "ss", "œ": "oe", "đ": "d", "ł": "l", "ı": "i"]
+    /// Special letters folded before diacritics are stripped (docs/catalog.md, "Search normalisation"),
+    /// so "Rugbrød" is "rugbroed" and "Blåbær" is "blaabaer", as on the server and the web.
+    private static let special: [Character: String] = [
+        "æ": "ae", "ø": "oe", "å": "aa", "œ": "oe", "ß": "ss", "ð": "d", "þ": "th", "ł": "l", "đ": "d", "ı": "i",
+    ]
 
-    /// Lowercase, strip diacritics, fold special letters, collapse punctuation and spaces.
+    /// Lowercase, fold special letters, strip diacritics, collapse punctuation and spaces.
     static func fold(_ text: String) -> String {
-        let lowered = text.lowercased().folding(options: [.diacriticInsensitive], locale: nil)
+        var mapped = ""
+        for character in text.lowercased() {
+            if let replacement = special[character] { mapped += replacement } else { mapped.append(character) }
+        }
+        let lowered = mapped.folding(options: [.diacriticInsensitive], locale: nil)
         var out = ""
         var pendingSpace = false
         for character in lowered {
-            let replacement = special[character].map { String($0) } ?? String(character)
-            for scalarCharacter in replacement {
+            for scalarCharacter in String(character) {
                 if scalarCharacter.isLetter || scalarCharacter.isNumber || scalarCharacter == "%" {
                     if pendingSpace && !out.isEmpty { out.append(" ") }
                     pendingSpace = false
@@ -114,10 +120,29 @@ struct CatalogSearch: Sendable {
     }
 
     private let entries: [Entry]
+    /// Folded names in every language, then folded aliases -> item (first item wins).
+    private let byName: [String: CatalogItem]
+    private let byAlias: [String: CatalogItem]
     let lang: String
 
     init(catalog: ShoppingCatalog, lang: String) {
         self.lang = lang
+        var byName: [String: CatalogItem] = [:]
+        var byAlias: [String: CatalogItem] = [:]
+        for item in catalog.items {
+            for name in [item.name] + Array(item.names.values) {
+                let key = TextFold.fold(name)
+                if !key.isEmpty, byName[key] == nil { byName[key] = item }
+            }
+        }
+        for item in catalog.items {
+            for alias in item.aliases {
+                let key = TextFold.fold(alias)
+                if !key.isEmpty, byAlias[key] == nil { byAlias[key] = item }
+            }
+        }
+        self.byName = byName
+        self.byAlias = byAlias
         entries = catalog.items.map { item in
             let primary = TextFold.fold(item.displayName(lang))
             var aliases = item.aliases.map(TextFold.fold)
@@ -171,6 +196,17 @@ struct CatalogSearch: Sendable {
         let query = TextFold.fold(text)
         guard !query.isEmpty else { return nil }
         return entries.first { $0.name == query }?.item ?? entries.first { $0.aliases.contains(query) }?.item
+    }
+
+    /// The catalog item for a row with no catalog id (added before the catalog, or served by an
+    /// old Lucina): a name in any language (`exact`), else an alias, after folding. No plural or
+    /// prefix guessing; the same rule as Lucina's read path and the web client.
+    func resolve(_ name: String) -> (item: CatalogItem, exact: Bool)? {
+        let query = TextFold.fold(name)
+        guard !query.isEmpty else { return nil }
+        if let item = byName[query] { return (item, true) }
+        if let item = byAlias[query] { return (item, false) }
+        return nil
     }
 }
 
