@@ -790,3 +790,87 @@ fn chrono_now_iso() -> String {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap()
 }
+
+#[tokio::test]
+async fn proactive_feedback_and_service_settings() {
+    let h = harness(false).await;
+    let id = "po_01K85Z3Q4X5Y6Z7A8B9C0D1E2F";
+    let path = format!("/v1/proactive/outreach/{id}/feedback");
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, &path)
+                .json(&json!({"action": "stop"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["feedback"]["action"], "stop");
+    assert_eq!(b["feedback"]["outreachId"], id);
+    let first = b["feedback"]["id"].as_str().unwrap().to_owned();
+    // The same tap again: the stored one.
+    let (s, b) = h
+        .send(
+            h.req(reqwest::Method::POST, &path)
+                .json(&json!({"action": "stop"})),
+        )
+        .await;
+    assert_eq!(
+        (s, b["feedback"]["id"].as_str().unwrap()),
+        (200, first.as_str())
+    );
+    for (p, body) in [
+        (path.as_str(), json!({"action": "delete_everything"})),
+        (
+            "/v1/proactive/outreach/nope/feedback",
+            json!({"action": "useful"}),
+        ),
+        (path.as_str(), json!({"action": "useful", "extra": 1})),
+    ] {
+        let (s, _) = h.send(h.req(reqwest::Method::POST, p).json(&body)).await;
+        assert_eq!(s, 400, "{p} {body}");
+    }
+    // The service token is not a device token, and the other way round.
+    let r = h
+        .http
+        .post(format!("{}{path}", h.base))
+        .bearer_auth(&h.svc)
+        .json(&json!({"action": "useful"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    let (s, _) = h
+        .send(h.req(reqwest::Method::GET, "/v1/proactive/feedback"))
+        .await;
+    assert_eq!(s, 401);
+
+    // The engine pulls with the service token.
+    let pull = |after: Option<&str>| {
+        let url = match after {
+            Some(a) => format!("{}/v1/proactive/feedback?after={a}", h.base),
+            None => format!("{}/v1/proactive/feedback", h.base),
+        };
+        h.http.get(url).bearer_auth(&h.svc)
+    };
+    let (s, b) = h.send(pull(None)).await;
+    assert_eq!(s, 200);
+    assert_eq!(b["items"].as_array().unwrap().len(), 1);
+    assert_eq!(b["cursor"], first.as_str());
+    let (_, b) = h.send(pull(Some(&first))).await;
+    assert!(b["items"].as_array().unwrap().is_empty());
+    assert_eq!(b["cursor"], first.as_str(), "the cursor stays");
+
+    let (s, b) = h
+        .send(
+            h.http
+                .get(format!("{}/v1/notify/settings", h.base))
+                .bearer_auth(&h.svc),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(b["settings"]["quietHours"]["start"], "22:30");
+    assert_eq!(b["present"], false);
+    assert!(
+        b.get("subscriptions").is_none(),
+        "no device list for the service"
+    );
+}

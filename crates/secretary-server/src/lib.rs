@@ -22,6 +22,7 @@ pub mod links;
 pub mod notes;
 pub mod notify;
 pub mod owner;
+pub mod proactive;
 pub mod ratelimit;
 pub mod routes;
 pub mod secrets;
@@ -111,6 +112,8 @@ pub struct Inner {
     pub notify: Arc<notify::Notifier>,
     /// Links and calendar (`links.json`, `calendar.json`).
     pub links: links::Hub,
+    /// Feedback taps on Lucina's proactive outreach.
+    pub proactive: Arc<proactive::FeedbackStore>,
 }
 
 #[derive(Clone)]
@@ -157,6 +160,7 @@ impl AppState {
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
             links: links::Hub::open(cfg)?,
+            proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
         })))
     }
 
@@ -228,6 +232,7 @@ pub fn app(state: AppState) -> Router {
         .merge(shopping::routes())
         .merge(device::routes())
         .merge(notify::routes::routes())
+        .merge(proactive::routes())
         .merge(links::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
@@ -257,6 +262,7 @@ pub fn app(state: AppState) -> Router {
         .merge(insights::routes(state.clone()))
         .merge(avatar::routes(state.clone()))
         .merge(notify::routes::service_routes(state.clone()))
+        .merge(proactive::service_routes(state.clone()))
         .merge(notes::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
