@@ -251,7 +251,9 @@ final class LucinaStageController {
     @ObservationIgnored private var wardrobeJSON = "{}"
     @ObservationIgnored private var lookJSON = "{}"
     @ObservationIgnored private let voice = VoiceInput()
-    @ObservationIgnored private let client: APIClient
+    @ObservationIgnored let client: APIClient
+    /// While set (the AR view is open), her speech goes here instead of the web stage.
+    @ObservationIgnored var speechSink: ((Data) -> Void)?
     @ObservationIgnored private let chat: ChatStore
 
     init(client: APIClient, chat: ChatStore) {
@@ -467,13 +469,19 @@ final class LucinaStageController {
 
     /// Speaks through the stage, only when the sound is on.
     func say(_ text: String) async {
-        guard !muted, phase == .ready, let schemeHandler else {
+        guard !muted, speechSink != nil || (phase == .ready && schemeHandler != nil) else {
             run("lucina.setState('idle')")
             return
         }
         do {
             let audio = try await SecretaryAPI(client: client).tts(text)
             guard !muted else { return }
+            if let speechSink {
+                run("lucina.setState('idle')")
+                speechSink(audio)
+                return
+            }
+            guard let schemeHandler else { return }
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
             try? AVAudioSession.sharedInstance().setActive(true)
             let url = schemeHandler.stash(audio)
@@ -539,6 +547,10 @@ struct LucinaControls: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            LucinaFaceBadge(tracker: LucinaFaceTracker.shared)
+            if let message = LucinaFaceTracker.shared.message, LucinaFaceTracker.shared.state == .off {
+                Text(message).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
             if let message = controller.message {
                 Text(message).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             } else if controller.listening {
@@ -614,6 +626,10 @@ struct LucinaOverlay: View {
                 }
             }
             .animation(.spring(duration: 0.3), value: controller.expanded)
+        }
+        // Face tracking only runs while her full view is open.
+        .onChange(of: controller.expanded) { _, expanded in
+            if !expanded { LucinaFaceTracker.shared.stop() }
         }
     }
 
@@ -702,5 +718,6 @@ struct LucinaColumn: View {
         }
         .padding(.top, 8)
         .background(Theme.page)
+        .onDisappear { LucinaFaceTracker.shared.stop() }
     }
 }

@@ -41,6 +41,8 @@
 	</dict>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Lucina sees your upcoming events and adds or removes them when you ask.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Only when you turn it on: Lucina mirrors your face or appears in your room. The camera image stays on this iPhone.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing.</string>
 	<key>NSHealthUpdateUsageDescription</key>
