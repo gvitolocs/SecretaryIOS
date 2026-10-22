@@ -1,13 +1,15 @@
-import { A, useLocation } from "@solidjs/router";
+import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
 import { AvatarIcon, ChatIcon, DumbbellIcon, ListIcon, LogoutIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
+import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
 import { t } from "../i18n";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
+import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
 import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
@@ -71,6 +73,7 @@ function useRouteTransition(target: () => HTMLElement | undefined) {
 export default function Shell(props: { children?: JSX.Element }) {
   const [loggingOut, setLoggingOut] = createSignal(false);
   const [accountOpen, setAccountOpen] = createSignal(false);
+  const [accountSection, setAccountSection] = createSignal<"notifications" | null>(null);
   let accountButton: HTMLButtonElement | undefined;
   let main: HTMLElement | undefined;
   useRouteTransition(() => main);
@@ -79,8 +82,10 @@ export default function Shell(props: { children?: JSX.Element }) {
   createEffect(() => setAvatarPath(location.pathname));
   const [wardrobeLoaded, setWardrobeLoaded] = createSignal(false);
   createEffect(() => wardrobeOpen() && setWardrobeLoaded(true));
+  const navigate = useNavigate();
 
   onMount(() => {
+    onCleanup(startNotifications((route) => navigate(route)));
     void checkHealth();
     resumeJobPolling();
     // The timeline stream stays open on every page, so Lucina's outfit changes arrive live.
@@ -133,11 +138,20 @@ export default function Shell(props: { children?: JSX.Element }) {
               <AvatarIcon />
             </button>
           </Show>
+          <NotificationBell
+            onSettings={() => {
+              setAccountSection("notifications");
+              setAccountOpen(true);
+            }}
+          />
           <button
             type="button"
             class="icon-btn"
             ref={accountButton}
-            onClick={() => setAccountOpen(true)}
+            onClick={() => {
+              setAccountSection(null);
+              setAccountOpen(true);
+            }}
             aria-label={t("shell.account")}
             title={t("shell.account")}
           >
@@ -188,6 +202,7 @@ export default function Shell(props: { children?: JSX.Element }) {
       </Show>
       <AccountDialog
         open={accountOpen()}
+        section={accountSection()}
         onClose={() => {
           setAccountOpen(false);
           accountButton?.focus();

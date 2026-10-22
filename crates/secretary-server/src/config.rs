@@ -17,6 +17,11 @@
 //! | `SECRETARY_CATALOG_DIR` | `/var/lib/secretary/catalog` | `catalog.{it,en,da}.json` for `GET /v1/shopping/catalog` |
 //! | `SECRETARY_DEVICE_EVENTS_PER_MINUTE` | `120` | `POST /v1/device/events` requests per device per minute |
 //! | `SECRETARY_TTS_VOICES` | `if_sara,af_heart,af_bella,bf_emma` | voices a client may ask for |
+//! | `SECRETARY_NOTIFY_INGEST` | `1` | `0`: no notifications from Lucina's timeline stream |
+//! | `SECRETARY_VAPID_SUBJECT` | `https://getsecretary.tech` | VAPID contact (`mailto:` or `https:`) |
+//! | `SECRETARY_PUSH_HOSTS` | FCM, Mozilla, Apple, WNS | comma-separated push-service host suffixes allowed as endpoints |
+//! | `SECRETARY_PUSH_ALLOW_HTTP` | `0` | `1`: accept `http://` push endpoints (local mock push services only) |
+//! | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | — | APNs for the native app; all three of file/key/team or none (see `notify::apns`) |
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -67,6 +72,7 @@ pub struct Config {
     pub login_rate_per_minute: u32,
     pub health_timeout: Duration,
     pub health_ttl: Duration,
+    pub notify: crate::notify::NotifyConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -117,6 +123,7 @@ impl Config {
             login_rate_per_minute: 5,
             health_timeout: Duration::from_secs(3),
             health_ttl: Duration::from_secs(10),
+            notify: crate::notify::NotifyConfig::default(),
         }
     }
 
@@ -174,6 +181,30 @@ impl Config {
         if let Some(path) = get("SECRETARY_SERVICE_TOKEN_FILE") {
             cfg.service_token = Some(crate::service::ServiceToken::read_file(&path)?);
         }
+        cfg.notify.ingest = match get("SECRETARY_NOTIFY_INGEST").as_deref() {
+            None | Some("1") | Some("true") => true,
+            Some("0") | Some("false") => false,
+            Some(v) => bail!("SECRETARY_NOTIFY_INGEST={v}: expected 0 or 1"),
+        };
+        if let Some(s) = get("SECRETARY_VAPID_SUBJECT") {
+            if !(s.starts_with("mailto:") || s.starts_with("https://")) {
+                bail!("SECRETARY_VAPID_SUBJECT must start with mailto: or https://");
+            }
+            cfg.notify.push.subject = s;
+        }
+        if let Some(h) = get("SECRETARY_PUSH_HOSTS") {
+            cfg.notify.push.hosts = h
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        cfg.notify.push.allow_http = match get("SECRETARY_PUSH_ALLOW_HTTP").as_deref() {
+            None | Some("0") | Some("false") => false,
+            Some("1") | Some("true") => true,
+            Some(v) => bail!("SECRETARY_PUSH_ALLOW_HTTP={v}: expected 0 or 1"),
+        };
+        cfg.notify.push.apns = crate::notify::apns::ApnsConfig::from_lookup(&get)?;
         let upstream = UpstreamConfig {
             legacy: get("SECRETARY_UPSTREAM_LEGACY"),
             services: get("SECRETARY_UPSTREAM_SERVICES"),
