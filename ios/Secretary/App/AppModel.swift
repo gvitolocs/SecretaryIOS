@@ -39,6 +39,10 @@ final class AppModel {
     let health: HealthStore
     let lucina: LucinaStageController
     let device: DeviceHub
+    /// Inbox, settings and local notifications.
+    let notifications: NotificationCenterStore
+    /// The scene is active (set by `MainTabs`): Lucina's messages alert only when the chat is not in view.
+    @ObservationIgnored var isForeground = false
 
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
@@ -78,6 +82,7 @@ final class AppModel {
         health = HealthStore(api: { SecretaryAPI(client: client) })
         lucina = LucinaStageController(client: client, chat: chat)
         device = DeviceHub(client: client, weight: weight)
+        notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
         if let tab = launch.initialTab { selectedTab = tab }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
@@ -85,7 +90,13 @@ final class AppModel {
         chat.onTransportError = onError
         chat.onTransportSuccess = onSuccess
         let device = device
-        chat.onItems = { items in device.bridge.consider(items) }
+        let notifications = notifications
+        notifications.calendarEvents = { await device.calendarAlerts() }
+        chat.onItems = { [weak self] items in
+            device.bridge.consider(items)
+            let chatVisible = self.map { $0.isForeground && $0.selectedTab == .chat } ?? false
+            Task { await notifications.consider(timeline: items, chatVisible: chatVisible) }
+        }
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         shopping.onTransportError = onError
@@ -174,6 +185,7 @@ final class AppModel {
         shoppingV2.reset()
         gym.reset()
         weight.reset()
+        notifications.reset()
         lucinaNotice = nil
         signedOutReason = reason
         selectedTab = .chat

@@ -74,12 +74,18 @@ struct MainTabs: View {
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
             app.chat.setForeground(phase == .active)
+            app.isForeground = phase == .active
+            if phase == .background {
+                BackgroundRefresh.schedule()
+                Task { await app.notifications.reschedule() }
+            }
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { await app.health.poll() }
                 group.addTask { await app.watchPrimary() }
+                group.addTask { await app.notifications.foregroundLoop() }
             }
         }
     }

@@ -32,6 +32,7 @@ extension View {
     func lucinaStatusToolbar() -> some View {
         toolbar {
             ToolbarItem(placement: .topBarLeading) { StatusDot() }
+            ToolbarItem(placement: .topBarTrailing) { NotificationBell() }
         }
     }
 }

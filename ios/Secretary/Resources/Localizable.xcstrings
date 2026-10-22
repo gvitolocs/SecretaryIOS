@@ -91,13 +91,13 @@
     },
     "%lld" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld"
@@ -159,6 +159,22 @@
         }
       }
     },
+    "%lld min" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min"
+          }
+        }
+      }
+    },
     "%lld seconds" : {
       "localizations" : {
         "da" : {
@@ -213,6 +229,22 @@
         }
       }
     },
+    "1 hour" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 ora"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 time"
+          }
+        }
+      }
+    },
     "1 item to buy" : {
       "localizations" : {
         "da" : {
@@ -245,6 +277,9 @@
         }
       }
     },
+    "99+" : {
+      "shouldTranslate" : false
+    },
     "A device key from `secretary-server token issue`. It is stored in this iPhone's Keychain only." : {
       "localizations" : {
         "da" : {
@@ -263,16 +298,16 @@
     },
     "A limit for Lucina" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Un limite per Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "En grænse for Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un limite per Lucina"
           }
         }
       }
@@ -711,16 +746,16 @@
     },
     "Apps and websites" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "App e siti web"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Apps og websteder"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App e siti web"
           }
         }
       }
@@ -785,6 +820,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Torna a %@"
+          }
+        }
+      }
+    },
+    "Before an event on your calendar starts." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prima che inizi un evento del calendario."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Før en begivenhed i kalenderen starter."
           }
         }
       }
@@ -913,6 +964,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Calendario"
+          }
+        }
+      }
+    },
+    "Calendar: notify before an event" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendario: avvisa prima di un evento"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender: giv besked før en begivenhed"
           }
         }
       }
@@ -1137,6 +1204,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Chiusa"
+          }
+        }
+      }
+    },
+    "Coming up" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tra poco"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Snart"
           }
         }
       }
@@ -1880,6 +1963,22 @@
         }
       }
     },
+    "Do not disturb" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non disturbare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forstyr ikke"
+          }
+        }
+      }
+    },
     "Don't allow" : {
       "localizations" : {
         "da" : {
@@ -2056,6 +2155,22 @@
         }
       }
     },
+    "Earlier" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prima"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tidligere"
+          }
+        }
+      }
+    },
     "Edit" : {
       "localizations" : {
         "da" : {
@@ -2132,6 +2247,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Email"
+          }
+        }
+      }
+    },
+    "Enable notifications" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attiva le notifiche"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slå notifikationer til"
           }
         }
       }
@@ -2443,6 +2574,22 @@
         }
       }
     },
+    "From" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dalle"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fra"
+          }
+        }
+      }
+    },
     "From %@, %@" : {
       "localizations" : {
         "da" : {
@@ -2689,6 +2836,22 @@
         }
       }
     },
+    "Hold notifications during quiet hours" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trattieni le notifiche nelle ore di silenzio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold notifikationer tilbage i de stille timer"
+          }
+        }
+      }
+    },
     "Holiday" : {
       "localizations" : {
         "da" : {
@@ -2886,16 +3049,16 @@
     },
     "Limit: %lld min a day" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Limite: %lld min al giorno"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Grænse: %lld min om dagen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limite: %lld min al giorno"
           }
         }
       }
@@ -3376,18 +3539,34 @@
         }
       }
     },
-    "Lucina no longer gets Screen Time notes." : {
+    "Lucina needs your OK" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Lucina non riceve più avvisi da Tempo di utilizzo."
+            "value" : "Lucina aspetta una conferma"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Lucina venter på din bekræftelse"
+          }
+        }
+      }
+    },
+    "Lucina no longer gets Screen Time notes." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Lucina får ikke længere Skærmtid-beskeder."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non riceve più avvisi da Tempo di utilizzo."
           }
         }
       }
@@ -3536,6 +3715,38 @@
         }
       }
     },
+    "Lucina's messages, reminders and upcoming events will show up here." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Qui trovi i messaggi di Lucina, i promemoria e gli impegni in arrivo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas beskeder, påmindelser og kommende begivenheder vises her."
+          }
+        }
+      }
+    },
+    "Lucina's status" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stato di Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas status"
+          }
+        }
+      }
+    },
     "Lucina's voice" : {
       "localizations" : {
         "da" : {
@@ -3596,6 +3807,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lascia il primo segno"
+          }
+        }
+      }
+    },
+    "Mark all read" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segna tutte come lette"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Markér alle som læst"
+          }
+        }
+      }
+    },
+    "Mark read" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segna come letta"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Markér som læst"
           }
         }
       }
@@ -3762,16 +4005,16 @@
     },
     "Name for Lucina" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nome per Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Navn til Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nome per Lucina"
           }
         }
       }
@@ -3804,6 +4047,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Richiede iOS 26."
+          }
+        }
+      }
+    },
+    "Never miss Lucina" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non perderti Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gå aldrig glip af Lucina"
           }
         }
       }
@@ -4032,6 +4291,22 @@
         }
       }
     },
+    "Nothing new" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niente di nuovo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet nyt"
+          }
+        }
+      }
+    },
     "Nothing to buy" : {
       "localizations" : {
         "da" : {
@@ -4044,6 +4319,86 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niente da comprare"
+          }
+        }
+      }
+    },
+    "Notifications" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifiche"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifikationer"
+          }
+        }
+      }
+    },
+    "Notifications are off for Secretary in iOS Settings." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le notifiche di Secretary sono disattivate nelle Impostazioni di iOS."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifikationer for Secretary er slået fra i iOS-indstillinger."
+          }
+        }
+      }
+    },
+    "Notifications are on for this iPhone." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le notifiche sono attive su questo iPhone."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifikationer er slået til på denne iPhone."
+          }
+        }
+      }
+    },
+    "Notifications, %lld unread" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifiche, %lld da leggere"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifikationer, %lld ulæste"
+          }
+        }
+      }
+    },
+    "Notify this iPhone" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notifica questo iPhone"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giv besked på denne iPhone"
           }
         }
       }
@@ -4064,6 +4419,22 @@
         }
       }
     },
+    "Off" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fra"
+          }
+        }
+      }
+    },
     "Offline" : {
       "localizations" : {
         "da" : {
@@ -4076,6 +4447,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Offline"
+          }
+        }
+      }
+    },
+    "On" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sì"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Til"
           }
         }
       }
@@ -4160,6 +4547,22 @@
         }
       }
     },
+    "Open Secretary to read it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary per leggerlo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary for at læse den."
+          }
+        }
+      }
+    },
     "Open Settings" : {
       "localizations" : {
         "da" : {
@@ -4172,6 +4575,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Apri Impostazioni"
+          }
+        }
+      }
+    },
+    "Open iOS Settings" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Impostazioni di iOS"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn iOS-indstillinger"
           }
         }
       }
@@ -4352,6 +4771,22 @@
         }
       }
     },
+    "Quiet hours" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ore di silenzio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stille timer"
+          }
+        }
+      }
+    },
     "Recent commands from Lucina" : {
       "localizations" : {
         "da" : {
@@ -4400,6 +4835,38 @@
         }
       }
     },
+    "Reminders and calendar events are scheduled on the iPhone, so they arrive even when Secretary is closed. Other notifications arrive when the app is open or refreshes in the background." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Promemoria ed eventi del calendario sono programmati sull'iPhone, quindi arrivano anche con Secretary chiusa. Le altre notifiche arrivano quando l'app è aperta o si aggiorna in background."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Påmindelser og kalenderbegivenheder planlægges på iPhonen, så de kommer, også når Secretary er lukket. Andre notifikationer kommer, når appen er åben eller opdaterer i baggrunden."
+          }
+        }
+      }
+    },
+    "Reminders still come through" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I promemoria arrivano comunque"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Påmindelser kommer stadig igennem"
+          }
+        }
+      }
+    },
     "Reminders, the shopping list, errands. Messages from the web, Telegram, Discord and Alexa show up here too." : {
       "localizations" : {
         "da" : {
@@ -4412,6 +4879,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Promemoria, lista della spesa, commissioni. Qui compaiono anche i messaggi dal web, Telegram, Discord e Alexa."
+          }
+        }
+      }
+    },
+    "Remote push (APNs)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Push remote (APNs)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern-push (APNs)"
+          }
+        }
+      }
+    },
+    "Remote push needs a paid Apple Developer account. Until then: add the Secretary website to the Home Screen and enable notifications there to get pushes when this app is closed." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il push remoto richiede un account Apple Developer a pagamento. Nel frattempo: aggiungi il sito di Secretary alla schermata Home e attiva lì le notifiche per riceverle anche con l'app chiusa."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern-push kræver en betalt Apple Developer-konto. Indtil da: føj Secretary-webstedet til hjemmeskærmen, og slå notifikationer til der for at få push, når appen er lukket."
           }
         }
       }
@@ -4528,18 +5027,34 @@
         }
       }
     },
-    "Report and limits" : {
+    "Replies and messages from Lucina on any channel, while you're not in the app." : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Report e limiti"
+            "value" : "Risposte e messaggi di Lucina su qualsiasi canale, quando non sei nell'app."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Svar og beskeder fra Lucina på alle kanaler, mens du ikke er i appen."
+          }
+        }
+      }
+    },
+    "Report and limits" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Rapport og grænser"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Report e limiti"
           }
         }
       }
@@ -4851,6 +5366,22 @@
         }
       }
     },
+    "Security notices, like a new device signing in." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvisi di sicurezza, come l'accesso di un nuovo dispositivo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sikkerhedsbeskeder, fx når en ny enhed logger ind."
+          }
+        }
+      }
+    },
     "Send" : {
       "localizations" : {
         "da" : {
@@ -4863,6 +5394,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Invia"
+          }
+        }
+      }
+    },
+    "Send a summary when quiet hours end" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Invia un riepilogo alla fine delle ore di silenzio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send et resumé, når de stille timer slutter"
           }
         }
       }
@@ -5129,6 +5676,22 @@
         }
       }
     },
+    "Shopping list" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lista della spesa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indkøbsliste"
+          }
+        }
+      }
+    },
     "Show Lucina" : {
       "localizations" : {
         "da" : {
@@ -5141,6 +5704,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mostra Lucina"
+          }
+        }
+      }
+    },
+    "Show message text in notifications" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mostra il testo dei messaggi nelle notifiche"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vis beskedtekst i notifikationer"
           }
         }
       }
@@ -5355,16 +5934,16 @@
     },
     "Start watching" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inizia a osservare"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Begynd at holde øje"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inizia a osservare"
           }
         }
       }
@@ -5451,16 +6030,16 @@
     },
     "Stop watching" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smetti di osservare"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stop med at holde øje"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smetti di osservare"
           }
         }
       }
@@ -5929,6 +6508,22 @@
         }
       }
     },
+    "This iPhone" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo iPhone"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne iPhone"
+          }
+        }
+      }
+    },
     "This item is no longer on the list." : {
       "localizations" : {
         "da" : {
@@ -6041,6 +6636,22 @@
         }
       }
     },
+    "To" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Til"
+          }
+        }
+      }
+    },
     "To buy" : {
       "localizations" : {
         "da" : {
@@ -6075,16 +6686,16 @@
     },
     "Today" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oggi"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "I dag"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oggi"
           }
         }
       }
@@ -6345,6 +6956,22 @@
         }
       }
     },
+    "Turn on notifications for reminders, upcoming events and Lucina's messages." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attiva le notifiche per promemoria, impegni in arrivo e messaggi di Lucina."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slå notifikationer til for påmindelser, kommende begivenheder og Lucinas beskeder."
+          }
+        }
+      }
+    },
     "Turned off in iOS Settings." : {
       "localizations" : {
         "da" : {
@@ -6421,6 +7048,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Unità"
+          }
+        }
+      }
+    },
+    "Unread" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Da leggere"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ulæst"
+          }
+        }
+      }
+    },
+    "Until" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fino a"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indtil"
+          }
+        }
+      }
+    },
+    "Until tomorrow 8:00" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fino a domani alle 8:00"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Til i morgen kl. 8:00"
           }
         }
       }
@@ -6683,16 +7358,16 @@
     },
     "Watching. Lucina hears “%@” when it happens." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In osservazione. Lucina riceve “%@” quando succede."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Holder øje. Lucina hører “%@”, når det sker."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In osservazione. Lucina riceve “%@” quando succede."
           }
         }
       }
@@ -6841,6 +7516,22 @@
         }
       }
     },
+    "What to notify" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cosa notificare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvad der skal give besked"
+          }
+        }
+      }
+    },
     "What would you like to buy?" : {
       "localizations" : {
         "da" : {
@@ -6857,18 +7548,82 @@
         }
       }
     },
-    "When the chosen apps pass the limit today, Lucina gets a note with the name above. iOS never shares which apps or how long." : {
+    "When Lucina goes offline or comes back." : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Quando le app scelte superano il limite oggi, Lucina riceve un avviso con il nome sopra. iOS non rivela mai quali app né per quanto."
+            "value" : "Quando Lucina va offline o torna online."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Når Lucina går offline eller kommer tilbage."
+          }
+        }
+      }
+    },
+    "When Lucina or someone else changes a shopping list." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando Lucina o qualcun altro modifica una lista della spesa."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Når Lucina eller en anden ændrer en indkøbsliste."
+          }
+        }
+      }
+    },
+    "When Lucina wants to do something on your iPhone that needs a tap." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando Lucina vuole fare qualcosa sull'iPhone che richiede un tocco."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Når Lucina vil gøre noget på din iPhone, der kræver et tryk."
+          }
+        }
+      }
+    },
+    "When one of your reminders is due." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando scade un tuo promemoria."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Når en af dine påmindelser forfalder."
+          }
+        }
+      }
+    },
+    "When the chosen apps pass the limit today, Lucina gets a note with the name above. iOS never shares which apps or how long." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Når de valgte apps passerer grænsen i dag, får Lucina en besked med navnet ovenfor. iOS deler aldrig hvilke apps eller hvor længe."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando le app scelte superano il limite oggi, Lucina riceve un avviso con il nome sopra. iOS non rivela mai quali app né per quanto."
           }
         }
       }
@@ -7172,6 +7927,22 @@
     },
     "·" : {
       "shouldTranslate" : false
+    },
+    "· via %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· da %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "· via %@"
+          }
+        }
+      }
     },
     "🛒 Other" : {
       "localizations" : {

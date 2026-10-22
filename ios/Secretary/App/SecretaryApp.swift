@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct SecretaryApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var app = AppModel.shared
 
     var body: some Scene {
@@ -14,11 +15,16 @@ struct SecretaryApp: App {
                 .environment(app.gym)
                 .environment(app.weight)
                 .environment(app.health)
+                .environment(app.notifications)
                 .task {
                     // Hosted unit tests load the app; keep it off the network.
                     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
                     await app.start()
                 }
+        }
+        // Inbox sync and local schedules while the app is closed (no APNs on a free team).
+        .backgroundTask(.appRefresh(BackgroundRefresh.identifier)) {
+            await BackgroundRefresh.run()
         }
     }
 }

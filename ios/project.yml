@@ -55,6 +55,12 @@ targets:
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # Notifications (docs/notifications.md): background refresh syncs the inbox and the
+        # local schedules. APNs stays off on the free Personal Team; with a paid team set
+        # SecretaryAPNsEnabled to true and add aps-environment to Secretary.entitlements.
+        UIBackgroundModes: [fetch]
+        BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh]
+        SecretaryAPNsEnabled: false
     dependencies:
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
       - framework: Frameworks/SecretaryCore.xcframework
