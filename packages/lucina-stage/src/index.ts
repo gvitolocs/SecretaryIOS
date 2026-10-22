@@ -1,5 +1,6 @@
 export { createLucinaStage } from './stage';
-export type { LucinaStage, LucinaStageOptions, SpeakOptions, StageInfo, TapEvent } from './stage';
+export type { LucinaStage, LucinaStageOptions, SpeakOptions, StageInfo, TapEvent, TouchEvent } from './stage';
+export * from './interact';
 export {
   createVoice,
   getSpeechRecognition,
