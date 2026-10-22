@@ -12,8 +12,11 @@ import {
   SpeakerIcon,
 } from "../components/Icons";
 import { LinkifiedText } from "../components/LinkifiedText";
+import { Markdown } from "../components/Markdown";
+import { RichReply } from "../components/RichReply";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
+import { actionText } from "../lib/rich";
 import {
   channelLabel,
   contextCaption,
@@ -35,7 +38,10 @@ import {
   loadOlder,
   loadState,
   olderState,
+  prefill,
   retryMessage,
+  revealTick,
+  richOf,
   sending,
   sendMessage,
   streamStatus,
@@ -200,11 +206,13 @@ function Attachments(props: { items: Attachment[] }) {
   );
 }
 
-function MessageItem(props: { message: ChatMessage }) {
+function MessageItem(props: { message: ChatMessage; inferredChoice?: string }) {
   const [showTime, setShowTime] = createSignal(false);
   const isUser = () => props.message.role === "user";
   const isReminder = () => props.message.meta?.kind === "reminder";
-  const hasBody = () => !!props.message.text || !!props.message.attachments?.length;
+  // Lucina message format v1: bubbles, widgets and buttons (not for reminders).
+  const rich = () => (!isUser() && !isReminder() ? richOf(props.message) : undefined);
+  const hasBody = () => !rich() && (!!props.message.text || !!props.message.attachments?.length);
 
   function toggleTime(e: MouseEvent) {
     // Taps on links open the link; everything else reveals the time.
@@ -225,7 +233,17 @@ function MessageItem(props: { message: ChatMessage }) {
       data-key={props.message.key}
     >
       <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
-      <Show when={hasBody() || isReminder()}>
+      <Show when={rich()}>
+        {(r) => <RichReply message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
+      </Show>
+      <Show when={rich() && props.message.attachments?.length ? props.message.attachments : null}>
+        {(a) => (
+          <div class="bubble">
+            <Attachments items={a()} />
+          </div>
+        )}
+      </Show>
+      <Show when={hasBody() || (isReminder() && !rich())}>
         <div
           class="bubble"
           classList={{
@@ -241,7 +259,10 @@ function MessageItem(props: { message: ChatMessage }) {
             </span>
           </Show>
           <Show when={props.message.text}>
-            <LinkifiedText text={props.message.text} />
+            {/* Her plain replies are markdown too (safe renderer from Notes): no more literal "**". */}
+            <Show when={isUser()} fallback={<Markdown text={props.message.text} class="md--chat" />}>
+              <LinkifiedText text={props.message.text} />
+            </Show>
           </Show>
           <Show when={props.message.attachments?.length ? props.message.attachments : null}>
             {(a) => <Attachments items={a()} />}
@@ -309,6 +330,26 @@ export default function ChatView() {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
     return key ? t(key) : "";
   };
+  /**
+   * Buttons the owner answered by typing: a Lucina message whose next owner
+   * message equals one of its buttons' text counts as that choice (survives
+   * reloads and other devices).
+   */
+  const inferredChoices = createMemo(() => {
+    const out = new Map<string, string>();
+    const items = chat.messages;
+    for (let i = 0; i < items.length; i++) {
+      const m = items[i]!;
+      const rich = m.role === "lucina" ? richOf(m) : undefined;
+      if (!rich?.actions.length) continue;
+      const next = items.slice(i + 1).find((x) => x.role === "user");
+      const said = next?.text.trim().toLowerCase();
+      if (!said) continue;
+      const hit = rich.actions.find((a) => actionText(a)?.trim().toLowerCase() === said);
+      if (hit) out.set(m.key, hit.id);
+    }
+    return out;
+  });
   let list: HTMLDivElement | undefined;
   let input: HTMLTextAreaElement | undefined;
   let atBottom = true;
@@ -362,6 +403,35 @@ export default function ChatView() {
       (_now, prev) => {
         const firstFill = !prev?.[0];
         if (atBottom) requestAnimationFrame(() => scrollToEnd(!firstFill));
+      },
+      { defer: true },
+    ),
+  );
+
+  // A revealing reply grows bubble by bubble: stay pinned to the end.
+  createEffect(
+    on(
+      revealTick,
+      () => {
+        if (atBottom) requestAnimationFrame(() => scrollToEnd(true));
+      },
+      { defer: true },
+    ),
+  );
+
+  // A button asked for text in the composer ("Ricordami alle 21:30 di …", "Modifica").
+  createEffect(
+    on(
+      prefill,
+      (p) => {
+        if (!p) return;
+        const text = p.text && !/\s$/.test(p.text) ? `${p.text} ` : p.text;
+        setDraft(text);
+        queueMicrotask(() => {
+          autosize();
+          input?.focus();
+          input?.setSelectionRange(text.length, text.length);
+        });
       },
       { defer: true },
     ),
@@ -487,7 +557,7 @@ export default function ChatView() {
                   </div>
                 )}
               </Show>
-              <MessageItem message={m} />
+              <MessageItem message={m} inferredChoice={inferredChoices().get(m.key)} />
             </>
           )}
         </For>

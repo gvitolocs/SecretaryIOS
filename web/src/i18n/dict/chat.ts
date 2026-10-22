@@ -64,6 +64,14 @@ const en = {
   errSignedOut: "You were signed out.",
   errTooMany: "Too many messages; wait a moment.",
   errReloaded: "Not sent: the page was reloaded.",
+  richShowMore: "Show {count} more",
+  richShowLess: "Show less",
+  richActions: "Quick replies",
+  richChosen: "{label} (chosen)",
+  richTyping: "Lucina is typing…",
+  richLink: "Open link: {title}",
+  richDone: "done",
+  richTodo: "to do",
 };
 
 export const chat: FeatureDictionary<typeof en> = {
@@ -132,6 +140,14 @@ export const chat: FeatureDictionary<typeof en> = {
     errSignedOut: "Sei stato disconnesso.",
     errTooMany: "Troppi messaggi; attendi un momento.",
     errReloaded: "Non inviato: la pagina è stata ricaricata.",
+    richShowMore: "Mostra altri {count}",
+    richShowLess: "Mostra meno",
+    richActions: "Risposte rapide",
+    richChosen: "{label} (scelto)",
+    richTyping: "Lucina sta scrivendo…",
+    richLink: "Apri il link: {title}",
+    richDone: "fatto",
+    richTodo: "da fare",
   },
   da: {
     conversation: "Samtale med Lucina",
@@ -197,5 +213,13 @@ export const chat: FeatureDictionary<typeof en> = {
     errSignedOut: "Du blev logget ud.",
     errTooMany: "For mange beskeder; vent et øjeblik.",
     errReloaded: "Ikke sendt: siden blev genindlæst.",
+    richShowMore: "Vis {count} mere",
+    richShowLess: "Vis mindre",
+    richActions: "Hurtige svar",
+    richChosen: "{label} (valgt)",
+    richTyping: "Lucina skriver…",
+    richLink: "Åbn linket: {title}",
+    richDone: "klaret",
+    richTodo: "mangler",
   },
 };

@@ -1,0 +1,96 @@
+{
+  "question": "Mi serve SOLO un inventario fattuale e breve di ciò che la tua app/backend supporta ORA. Distingui presente da ipotesi.",
+  "before": "**Inventario fattuale — cosa supporto ORA**\n\n**Canali**\n- Telegram (chat + foto con vision) e Discord (chat + admin). Ora Discord risulta offline dalle 12:08 — fatto, non ipotesi.\n- Nessun altro canale push confermato (no email: Gmail rimosso il 20/09/2026; no SMS/app push).\n\n**Trigger e background jobs**\n- Reminder programmati (`schedule_reminder`, `list_reminders`): l'unico trigger temporale che so essere attivo end-to-end.\n- Il resto parte su richiesta: `graph_task`, `spreadsheet_update_task`, `generate_image`, `cursor_task` (DeepSeek Harness), azioni Poko su peer1, `oracle_monitor_task` (disabilitato su nezopt).\n- Non ho conferma di un loop autonomo che mi faccia scrivere per iniziativa mia (morning brief, check periodici): allo stato è **ipotesi**, non capacità presente. Non ho visibilità diretta sul crontab/scheduler del host oltre ai reminder.\n\n**Memoria**\n- Honcho, workspace `hermes-peer1`, con ricerca vettoriale. Persistente tra sessioni. È l'unica memoria che uso; non assumo fatti fuori da lì o da un tool result live.\n\n**Modelli/runtime**\n- Gemma su CPU come default chat; Qwen 3.6 35B locale su GPU quando serve lavoro pesante/Harness. Non tengo Qwen residente.\n\n**Approvazioni**\n- Non esiste un gate di approvazione formale che io possa confermare: eseguo un'azione quando la richiesta arriva, e per le azioni distruttive mi fermo a chiedere. Un flusso \"propongo → tu approvi → eseguo\" con stato persistente è **da costruire**, non presente.\n\n**Attività persistenti**\n- Sessioni Harness e reminder sì; non ho code di task durevoli con retry/stato supervisionato lato mio.\n\n**Limiti**\n- Nessuna email. Monitor Oracle spento. Discord offline ora. Nessuna capacità di push fuori da Telegram/Discord. Niente autonomia di iniziativa confermata.\n\nSe vuoi, il prossimo passo concreto è decidere *quale* di questi buchi colmare per primo — il loop proattivo o il gate di approvazione — e progettarlo sul serio.\n\n—\n💡 Posso anche:\n• Promemoria Telegram — es. «avvisami alle 21:30 di …»",
+  "after": {
+    "reply": "Ecco l'inventario di ciò che è live ora, senza aver avviato nulla ✅\n\nIn sintesi: trigger, canali, memoria e tool ci sono; approvazioni strutturate, morning brief e trigger event-driven no ⚠️\n\n**Live adesso**\n✅ Reminder temporizzati persistiti (creazione e lista), su Telegram e come notifica in app\n✅ Check-in proattivi miei tra le 8:00 e le 22:00, di norma max una volta al giorno\n✅ Background job: DeepSeek Harness su nezopt (codice, log, check, restart), task su fogli Google Drive, Poko su peer1\n✅ Notifiche: Telegram, Discord, Alexa, Secretary (push PWA, app iOS, inbox in-app)\n✅ Memoria: Honcho (workspace hermes-peer1) con ricerca vettoriale e memoria lunga tra sessioni, più i turni recenti; note in app\n✅ Tool: Calendar (leggo l'agenda, aggiungo eventi solo col tuo sì esplicito), spesa v2 con prezzi/offerte/pantry, note, ricerca web pubblica, immagini, vision su foto Telegram, admin/presenza Discord, avatar/wardrobe solo visibile\n✅ Guard MCP: a ChatGPT/Grok/Claude Code solo domande, reminder, note e spesa; il resto aspetta un tuo sì in app o su Telegram\n\n**Da costruire (ipotesi, non presenti)**\n⬜ Morning brief automatico\n⬜ Prioritizzazione delle decisioni\n⬜ Trigger event-driven (calendario, email, presenza)\n⬜ Flusso di approvazione a step per le azioni interne — oggi l'approvazione è semplicemente chiedere a te\n\n⚠️ **Limiti certi** — Cosa non c'è\nNiente email/Gmail (rimossa il 20/09/2026), niente cambio outfit da chat, ragiono solo via API DeepSeek. Il monitor Oracle CPU/RAM è spento.\n\n↪︎ rispondi: «Ricordami alle 21:30 di …» · «Da dove partiamo per colmare i gap?»",
+    "format": "v1",
+    "bubbles": [
+      "Ecco l'inventario di ciò che è live ora, senza aver avviato nulla ✅",
+      "In sintesi: trigger, canali, memoria e tool ci sono; approvazioni strutturate, morning brief e trigger event-driven no ⚠️"
+    ],
+    "lang": "it",
+    "blocks": [
+      {
+        "type": "checklist",
+        "items": [
+          {
+            "text": "Reminder temporizzati persistiti (creazione e lista), su Telegram e come notifica in app",
+            "done": true
+          },
+          {
+            "text": "Check-in proattivi miei tra le 8:00 e le 22:00, di norma max una volta al giorno",
+            "done": true
+          },
+          {
+            "text": "Background job: DeepSeek Harness su nezopt (codice, log, check, restart), task su fogli Google Drive, Poko su peer1",
+            "done": true
+          },
+          {
+            "text": "Notifiche: Telegram, Discord, Alexa, Secretary (push PWA, app iOS, inbox in-app)",
+            "done": true
+          },
+          {
+            "text": "Memoria: Honcho (workspace hermes-peer1) con ricerca vettoriale e memoria lunga tra sessioni, più i turni recenti; note in app",
+            "done": true
+          },
+          {
+            "text": "Tool: Calendar (leggo l'agenda, aggiungo eventi solo col tuo sì esplicito), spesa v2 con prezzi/offerte/pantry, note, ricerca web pubblica, immagini, vision su foto Telegram, admin/presenza Discord, avatar/wardrobe solo visibile",
+            "done": true
+          },
+          {
+            "text": "Guard MCP: a ChatGPT/Grok/Claude Code solo domande, reminder, note e spesa; il resto aspetta un tuo sì in app o su Telegram",
+            "done": true
+          }
+        ],
+        "title": "Live adesso"
+      },
+      {
+        "type": "checklist",
+        "items": [
+          {
+            "text": "Morning brief automatico"
+          },
+          {
+            "text": "Prioritizzazione delle decisioni"
+          },
+          {
+            "text": "Trigger event-driven (calendario, email, presenza)"
+          },
+          {
+            "text": "Flusso di approvazione a step per le azioni interne — oggi l'approvazione è semplicemente chiedere a te"
+          }
+        ],
+        "title": "Da costruire (ipotesi, non presenti)"
+      },
+      {
+        "type": "card",
+        "title": "Limiti certi",
+        "tone": "warning",
+        "emoji": "⚠️",
+        "subtitle": "Cosa non c'è",
+        "body": "Niente email/Gmail (rimossa il 20/09/2026), niente cambio outfit da chat, ragiono solo via API DeepSeek. Il monitor Oracle CPU/RAM è spento."
+      }
+    ],
+    "actions": [
+      {
+        "id": "hint-reminder",
+        "label": "Promemoria",
+        "emoji": "⏰",
+        "kind": "reply",
+        "payload": {
+          "text": "Ricordami alle 21:30 di ",
+          "prefill": true
+        }
+      },
+      {
+        "id": "next",
+        "label": "Da dove partiamo?",
+        "kind": "reply",
+        "payload": {
+          "text": "Da dove partiamo per colmare i gap?"
+        },
+        "emoji": "💡"
+      }
+    ]
+  }
+}

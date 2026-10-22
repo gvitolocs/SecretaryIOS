@@ -15,6 +15,8 @@
 //   "job" / "order" / "book" / "image" -> reply with a job (queued -> running -> done)
 //   "remind"   -> schedule_reminder reply with a reminder object (no job)
 //   "jobfail"  -> a job that ends in error
+//   "inventario" / "calendario" / "widget" -> Lucina message format v1 replies (mock/rich.mjs)
+//   MOCK_RICH_BEFORE=1 seeds the owner's original "inventario" text wall (before the format)
 // Shopping: items whose name contains "stubborn" refuse PATCH (500), to test rollback.
 // Jobs: "image" in the message makes a generate_image job with an imageUrl.
 // POST /v1/_mock/lucina {"online": false} toggles Lucina's health (CSRF header needed).
@@ -54,6 +56,7 @@
 
 import http from "node:http";
 import { addNotification, handleNotifications } from "./notifications.mjs";
+import { INVENTARIO_BEFORE, INVENTARIO_QUESTION, richMeta, richReply } from "./rich.mjs";
 import { randomUUID } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1398,6 +1401,11 @@ function seedTimeline() {
     [H - 30_000, { channel: "web", role: "lucina", text: "All quiet. Details: https://example.com/status" }],
   ];
   for (const [ago, fields] of recent) rows.push([now - ago, fields]);
+  if (process.env.MOCK_RICH_BEFORE === "1") {
+    // The owner's original 2026-10-22 reply: a markdown wall with a "Posso anche" footer.
+    rows.push([now - 20 * 60_000, { channel: "web", role: "user", text: INVENTARIO_QUESTION, meta: { via: "mcp", caller: "chatgpt" } }]);
+    rows.push([now - 20 * 60_000 + 9_000, { channel: "web", role: "lucina", text: INVENTARIO_BEFORE, meta: { via: "mcp", caller: "chatgpt" } }]);
+  }
   rows.sort((a, b) => a[0] - b[0]);
   for (const [at, fields] of rows) {
     const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
@@ -1673,6 +1681,11 @@ async function handleChat(req, res) {
       ...ids,
       reminder: { id: randomUUID(), text: message, dueAt, timeZone: "Europe/Rome", status: "pending", source: "secretary" },
     };
+  } else if (richReply(message)) {
+    // Lucina message format v1 (mock/rich.mjs): `reply` is the plain fallback.
+    const rich = richReply(message);
+    meta = richMeta(rich);
+    reply = { ...rich, action: /calendari|dentista/i.test(message) ? "calendar_confirm" : "reply", job: null, ...ids };
   } else {
     reply = { reply: lucinaReply(message), action: "reply", job: null, ...ids };
   }

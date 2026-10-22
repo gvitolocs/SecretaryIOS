@@ -1,6 +1,6 @@
 import { createMemo, For, Match, Show, Switch, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
-import { inlineText, parseMarkdown, type Block, type Inline } from "../lib/markdown";
+import { inlineText, parseInline, parseMarkdown, type Block, type Inline } from "../lib/markdown";
 
 // Renders lib/markdown's tree as elements with text children only: no
 // innerHTML anywhere, links open in a new tab without a referrer.
@@ -139,6 +139,12 @@ function Blocks(props: { blocks: Block[] }): JSX.Element {
       )}
     </For>
   );
+}
+
+/** One line of inline markdown (bold, italic, code, links) as safe elements, no block wrapper. */
+export function InlineMarkdown(props: { text: string }) {
+  const nodes = createMemo(() => parseInline(props.text));
+  return <Inlines nodes={nodes()} />;
 }
 
 /**

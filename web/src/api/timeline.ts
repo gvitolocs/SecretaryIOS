@@ -4,6 +4,8 @@
 // Items from the network are untrusted: `parseItem` validates each one and
 // drops anything malformed instead of throwing.
 
+import { parseRich, type RichMessage } from "../lib/rich";
+
 export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"] as const;
 export type Channel = (typeof CHANNELS)[number];
 
@@ -23,6 +25,8 @@ export interface ItemMeta {
   hair?: string;
   /** With kind "note": the note Lucina saved or read. */
   slug?: string;
+  /** Lucina message format v1 (meta.format "v1"): bubbles, widgets, buttons. */
+  rich?: RichMessage;
 }
 
 export interface TimelineItem {
@@ -83,6 +87,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
   }
   if (m.kind === "notes") out.kind = "notes";
+  const rich = parseRich(m);
+  if (rich) out.rich = rich;
   if (m.kind === "note") {
     out.kind = "note";
     if (typeof m.slug === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.slug)) out.slug = m.slug;
