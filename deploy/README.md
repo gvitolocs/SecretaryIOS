@@ -167,6 +167,25 @@ keeps `links.json`, `links.key` and `calendar.json` in `/var/lib/secretary`
 (0600); back up `links.key` with the rest of the data dir (without it the
 stored tokens and ICS addresses cannot be read and must be added again).
 
+## 3e. Seed notes
+
+Notes live in `$SECRETARY_DATA_DIR/notes/` (docs/server-api.md, "Notes"). Import the seed notes in
+`deploy/seed/notes/` (e.g. the CRAFT-IT4SD briefing `craftit-meeting`, recovered from Lucina's
+timeline) once; existing slugs are kept unless `--replace`. The running server picks them up on its
+next request, no restart needed.
+
+```bash
+# from nezopt
+scp -r deploy/seed/notes p1:/tmp/secretary-seed-notes
+# on p1
+sudo install -d -o secretary -g secretary -m 700 /tmp/secretary-seed
+sudo install -o secretary -g secretary -m 600 /tmp/secretary-seed-notes/*.md /tmp/secretary-seed/
+sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary \
+  /usr/local/bin/secretary-server notes import /tmp/secretary-seed
+sudo -u secretary env SECRETARY_DATA_DIR=/var/lib/secretary /usr/local/bin/secretary-server notes list
+sudo rm -rf /tmp/secretary-seed /tmp/secretary-seed-notes
+```
+
 ## 4. Web app
 
 Copy the SolidJS build output (`web/dist/`) to `/var/lib/secretary/web` (it

@@ -14,8 +14,10 @@ use crate::error::{Error, Result};
 // Limits mirror Lucina's (docs/secretary-api.md in Lucina), so the app gets
 // a 400 from us instead of a round trip.
 
-/// Max characters of a chat message.
-pub const MAX_MESSAGE_CHARS: usize = 4_000;
+/// Max characters of a chat message: Lucina's 12 000 plus room for the
+/// `[via Lucina MCP, from <caller>] ` prefix Lucina MCP puts in front (Lucina
+/// counts the text after it).
+pub const MAX_MESSAGE_CHARS: usize = 12_100;
 /// Max characters of reminder text / natural-language reminder input.
 pub const MAX_TEXT_CHARS: usize = 500;
 /// Max characters of a shopping `rawName` / `product`.

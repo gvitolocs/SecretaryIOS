@@ -1,5 +1,5 @@
 //! Command line: `serve` (default), `token issue|list|revoke` and
-//! `user set|show` and `service-token generate`.
+//! `user set|show`, `service-token generate` and `notes import|list`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -45,6 +45,100 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceTokenAction,
     },
+    /// Notes in $SECRETARY_DATA_DIR/notes (import seed files, list).
+    Notes {
+        /// Overrides SECRETARY_DATA_DIR.
+        #[arg(long, global = true)]
+        data_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        action: NotesAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NotesAction {
+    /// Import seed notes: `.md` files with a front matter block (slug,
+    /// title, tags, source, pinned) or `.json` files, or directories of
+    /// them. A note whose slug exists is kept unless --replace.
+    Import {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Replace the title, content, tags and pin of existing notes.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// List notes (slug, size, source, title); never prints content.
+    List,
+}
+
+fn seed_files(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for p in paths {
+        if p.is_dir() {
+            let mut v: Vec<PathBuf> = std::fs::read_dir(p)?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|f| matches!(f.extension().and_then(|x| x.to_str()), Some("md" | "json")))
+                .collect();
+            v.sort();
+            out.extend(v);
+        } else {
+            out.push(p.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// Run a `notes` action, writing human output to `out`.
+pub fn run_notes(
+    data_dir_flag: Option<PathBuf>,
+    action: NotesAction,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let store = crate::notes::NoteStore::new(&data_dir(data_dir_flag));
+    match action {
+        NotesAction::Import { paths, replace } => {
+            for f in seed_files(&paths)? {
+                let text = std::fs::read_to_string(&f)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", f.display()))?;
+                let md = f.extension().and_then(|x| x.to_str()) == Some("md");
+                let seed = crate::notes::parse_seed(&text, md)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", f.display()))?;
+                let slug = seed.slug.clone();
+                match store
+                    .import(seed, replace)
+                    .map_err(|e| anyhow::anyhow!("{}: {} ({})", f.display(), e.message, e.code))?
+                {
+                    Some((n, true)) => {
+                        writeln!(out, "created {} ({} bytes)", n.slug, n.content.len())?
+                    }
+                    Some((n, false)) => {
+                        writeln!(out, "replaced {} ({} bytes)", n.slug, n.content.len())?
+                    }
+                    None => writeln!(out, "kept {slug} (exists; --replace to overwrite)")?,
+                }
+            }
+        }
+        NotesAction::List => {
+            let notes = store.list(None, None, crate::notes::MAX_NOTES);
+            if notes.is_empty() {
+                writeln!(out, "no notes in {}", store.dir().display())?;
+            }
+            for n in notes {
+                writeln!(
+                    out,
+                    "{}\t{}\t{} B\t{}\t{}{}",
+                    n.id,
+                    n.slug,
+                    n.size,
+                    n.source,
+                    if n.pinned { "[pinned] " } else { "" },
+                    n.title
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -231,6 +325,9 @@ pub fn main_with(cli: Cli) -> anyhow::Result<()> {
         ),
         Command::ServiceToken { action } => {
             run_service_token(action, &mut std::io::stdout().lock())
+        }
+        Command::Notes { data_dir, action } => {
+            run_notes(data_dir, action, &mut std::io::stdout().lock())
         }
     }
 }

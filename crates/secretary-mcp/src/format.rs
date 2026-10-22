@@ -719,6 +719,95 @@ pub fn calendar(r: &Value, tz: Tz) -> String {
     out
 }
 
+// -- notes -------------------------------------------------------------------------
+
+fn note_head(n: &Value, tz: Tz) -> String {
+    let tags = n
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|t| {
+            t.iter()
+                .filter_map(Value::as_str)
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let mut line = format!(
+        "\"{}\" (slug {}, id {})",
+        s(n, "title").unwrap_or("untitled"),
+        s(n, "slug").unwrap_or("?"),
+        s(n, "id").unwrap_or("?"),
+    );
+    if n.get("pinned").and_then(Value::as_bool) == Some(true) {
+        line.push_str(" [pinned]");
+    }
+    line.push_str(&format!(
+        " · by {} · updated {}",
+        s(n, "source").unwrap_or("owner"),
+        local_time(n.get("updatedAt"), tz)
+    ));
+    if !tags.is_empty() {
+        line.push_str(&format!(" · {tags}"));
+    }
+    line
+}
+
+/// One note with its content from `offset` (characters), at most `max`.
+pub fn note(n: &Value, offset: usize, max: usize, tz: Tz) -> String {
+    let content = s(n, "content").unwrap_or("");
+    let total = content.chars().count();
+    let part: String = content.chars().skip(offset).take(max).collect();
+    let mut out = format!("Note {}\n{total} characters.", note_head(n, tz));
+    if offset > 0 || offset + max < total {
+        let end = (offset + max).min(total);
+        out.push_str(&format!(" Showing characters {offset}-{end}."));
+    }
+    out.push_str("\n\n");
+    if total == 0 {
+        out.push_str("(empty)");
+    } else if part.is_empty() {
+        out.push_str(&format!("(nothing at offset {offset})"));
+    } else {
+        out.push_str(&part);
+    }
+    if offset + max < total {
+        out.push_str(&format!(
+            "\n\n[…truncated: call note_get again with offset={} for the rest]",
+            offset + max
+        ));
+    }
+    out
+}
+
+/// `GET /v1/notes` answer as a list.
+pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> String {
+    let notes = v
+        .get("notes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let what = match (q, tag) {
+        (Some(q), Some(t)) => format!(" matching {q:?} tagged #{t}"),
+        (Some(q), None) => format!(" matching {q:?}"),
+        (None, Some(t)) => format!(" tagged #{t}"),
+        (None, None) => String::new(),
+    };
+    if notes.is_empty() {
+        return format!("No notes{what}.");
+    }
+    let mut out = format!("{} note(s){what}:\n", notes.len());
+    for n in &notes {
+        let size = n.get("size").and_then(Value::as_u64).unwrap_or(0);
+        out.push_str(&format!("- {} · {size} bytes\n", note_head(n, tz)));
+        if let Some(e) = s(n, "excerpt") {
+            out.push_str(&format!("  {}\n", clip(e, 240)));
+        }
+    }
+    out.push_str("Read one with note_get (slug or id).");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

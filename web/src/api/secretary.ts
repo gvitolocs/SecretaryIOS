@@ -42,7 +42,7 @@ export interface HealthInfo {
 /** Lucina can take up to 120 s; leave headroom for the server's own timeout. */
 export const CHAT_TIMEOUT_MS = 130_000;
 /** Server limit for a chat message (docs/server-api.md). */
-export const CHAT_MAX_CHARS = 4000;
+export const CHAT_MAX_CHARS = 12000;
 /** Page size for GET /v1/timeline. */
 export const TIMELINE_PAGE = 50;
 

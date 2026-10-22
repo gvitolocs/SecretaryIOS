@@ -448,7 +448,7 @@ async function deliver(key: string): Promise<void> {
 }
 
 /**
- * The server accepts 1-4000 characters with no control characters other than
+ * The server accepts 1-12000 characters with no control characters other than
  * newline and tab.
  */
 export function cleanMessage(text: string): string {

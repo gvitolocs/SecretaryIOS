@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` (see [Notifications](#notifications)) and the `/v1/calendar/*` routes (see [Calendar](#calendar)). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` (see [Notifications](#notifications)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -219,7 +219,7 @@ answered with an error).
 
 | Field | Rules |
 |---|---|
-| `message` | Required, 1–4000 characters, not blank, no control characters except newline/tab. |
+| `message` | Required, 1–12000 characters (12100 with a Lucina MCP prefix), not blank, no control characters except newline/tab. For longer documents, save a [note](#notes). |
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
 | `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
@@ -1357,6 +1357,110 @@ google_unreachable` / `google_error`, `400 bad_request`.
 
 `GET /v1/agenda` also carries `events`: the merged events of that date.
 
+## Notes
+
+Briefings, notes and documents the owner reads in the app (Notes view on
+web and iOS) and that Lucina recalls by name. ChatGPT, Grok and Claude Code
+save them through Lucina MCP (`note_save`, `note_append`), Lucina through
+her service token, the owner in the app.
+
+Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
+writes) **or** Lucina's service token. Every write is logged (id, slug,
+size, source, caller; never the content). Bodies on these routes may be up
+to 768 KiB (a note holds at most 256 KiB of text; JSON escaping can double
+it).
+
+A note:
+
+```json
+{
+  "id": "n_3f9c0a7b12de45a8c901",
+  "slug": "craftit-meeting",
+  "title": "CRAFT-IT4SD — meeting with Marianne & Jonas",
+  "content": "# Briefing\n\n…markdown…",
+  "tags": ["work", "aarhus"],
+  "source": "chatgpt",
+  "pinned": true,
+  "createdAt": "2026-10-22T11:30:00.123Z",
+  "updatedAt": "2026-10-22T11:30:00.123Z"
+}
+```
+
+- `slug`: unique among live notes, `[a-z0-9]` then `[a-z0-9-]` (no `--`, no
+  trailing `-`), at most 64; not `trash`, `new` or `search`. Wherever a route
+  takes `{key}`, it is the id or the slug (case-insensitive), so
+  `/v1/notes/craftit-meeting` works.
+- `content`: markdown, at most 256 KiB (UTF-8), no control characters other
+  than newline and tab; `\r\n` becomes `\n`. Clients render it without raw
+  HTML and only follow `http(s)`/`mailto` links.
+- `tags`: at most 16, each at most 32 letters, digits, spaces, `-` or `_`;
+  stored lower-case, a leading `#` dropped, duplicates removed.
+- `source`: who wrote it, `[a-z0-9][a-z0-9-]*` (`owner`, `lucina`, `chatgpt`,
+  `grok`, `claude-code`, …). Default: `lucina` for the service token,
+  `owner` otherwise.
+- `updatedAt` has millisecond precision and doubles as the version for
+  `baseUpdatedAt`.
+
+### `GET /v1/notes?q=&tag=&limit=200`
+
+`{"notes": [NoteSummary]}`: pinned first, then the most recently updated. A
+summary is the note without `content`, plus `size` (bytes) and `excerpt`
+(the start of the content, or the text around the first match of `q`).
+`q` (at most 200 characters) looks in the title, slug, tags and content,
+case- and accent-insensitive; `tag` keeps notes with that tag. `limit`:
+1-500.
+
+### `POST /v1/notes`
+
+`{title, content?, slug?, tags?, source?, pinned?}` → `201` and the note.
+Without `slug`, one is made from the title (`-2`, `-3`, … when taken). An
+explicit slug that is taken answers `409 slug_taken` (update or append to
+that note instead). At most 2000 live notes (`409 notes_full`).
+
+### `GET /v1/notes/{key}`
+
+The note, or `404 note_not_found`.
+
+### `PATCH /v1/notes/{key}`
+
+Any of `{title, content, slug, tags, pinned}`; absent fields keep their
+value. Optional `baseUpdatedAt`: the `updatedAt` the client edited; when
+the note changed since, `409 conflict` and nothing is saved. Optional
+`source` names who edited (logged only). Unknown fields are refused.
+
+### `POST /v1/notes/{key}/append`
+
+`{content, separator?}`: adds `content` at the end exactly as given (for
+documents sent in chunks); `separator` (at most 8 characters, e.g.
+`"\n\n"`) goes between the old text and the new one when the note is not
+empty. Over 256 KiB in total: `413 note_too_large`.
+
+### `DELETE /v1/notes/{key}`
+
+Moves the note to the trash: `{deleted: true, id, slug, deletedAt,
+purgeAfter}`. The slug is free again at once.
+
+### `GET /v1/notes/trash`
+
+`{"notes": [NoteSummary + deletedAt, purgeAfter], "days": 30}`, newest
+deletion first. Notes deleted more than 30 days ago are purged here and on
+every delete.
+
+### `POST /v1/notes/trash/{id}/restore`
+
+Brings the note back (by id) and answers it. If a live note took its slug
+meanwhile, the restored one gets `-2` (or the next free number).
+
+### Seed notes
+
+`secretary-server notes import <file|dir>… [--replace]` (as the service
+user, with `SECRETARY_DATA_DIR`) imports `.md` files with a front matter
+block (`slug`, `title`, `tags: a, b`, `source`, `pinned`) or `.json` files
+(`{slug, title, content, tags?, source?, pinned?}`). A slug that exists is
+kept unless `--replace`. `secretary-server notes list` prints id, slug,
+size, source and title. The running server picks imported notes up on its
+next request.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -1368,10 +1472,14 @@ google_unreachable` / `google_error`, `400 bad_request`.
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
+| 404 | `note_not_found` | server | No note with that id or slug. |
 | 409 | `already_sent` | Lucina | Cancelling a delivered reminder. |
 | 409 | `revision_conflict` | server (from Lucina 409) | Shopping ops conflict with a newer list revision; refetch and retry. |
 | 409 | `conflict` | gym/body engine | Stale `expected_revision` (engine body `{ok:false, code, error}`). |
-| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 409 | `conflict` | server | `PATCH /v1/notes/{key}` with a stale `baseUpdatedAt`. |
+| 409 | `slug_taken`, `notes_full` | server | Notes: the slug is used by another note; 2000 live notes. |
+| 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 768 KiB on `/v1/notes*`, 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
+| 413 | `note_too_large` | server | A note would hold more than 256 KiB of text. |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
 | 422 | `unknown_outfit`, `unknown_hairstyle`, `unknown_hair_color` | server | `PUT /v1/avatar` names an outfit, hairstyle or colour the wardrobe does not have. |

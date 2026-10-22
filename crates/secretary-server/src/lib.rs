@@ -19,6 +19,7 @@ pub mod google;
 pub mod health;
 pub mod insights;
 pub mod links;
+pub mod notes;
 pub mod notify;
 pub mod owner;
 pub mod ratelimit;
@@ -98,6 +99,8 @@ pub struct Inner {
     pub private_assets_dir: PathBuf,
     /// Lucina's outfit settings (avatar.json in the data dir).
     pub avatar: Arc<avatar::AvatarStore>,
+    /// Notes and documents (notes/ in the data dir).
+    pub notes: Arc<notes::NoteStore>,
     pub catalog_dir: PathBuf,
     pub tts: tts::Tts,
     /// Open `/v1/timeline/stream` responses.
@@ -147,6 +150,7 @@ impl AppState {
             owner: owner::OwnerStore::new(&cfg.data_dir),
             private_assets_dir: cfg.private_assets_dir.clone(),
             avatar: Arc::new(avatar::AvatarStore::new(&cfg.data_dir)),
+            notes: notes::store(&cfg.data_dir),
             catalog_dir: cfg.catalog_dir.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
@@ -253,6 +257,7 @@ pub fn app(state: AppState) -> Router {
         .merge(insights::routes(state.clone()))
         .merge(avatar::routes(state.clone()))
         .merge(notify::routes::service_routes(state.clone()))
+        .merge(notes::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
