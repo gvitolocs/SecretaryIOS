@@ -25,6 +25,44 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
+#[derive(clap::Args)]
+struct ParityArgs {
+    #[arg(long)]
+    cases: PathBuf,
+    #[arg(long)]
+    node_url: String,
+    #[arg(long)]
+    rust_url: String,
+    /// SECRETARY_API_TOKEN of the two instances (files).
+    #[arg(long)]
+    node_token_file: PathBuf,
+    #[arg(long)]
+    rust_token_file: PathBuf,
+    /// The two fake DeepSeek record files.
+    #[arg(long)]
+    node_deepseek_record: PathBuf,
+    #[arg(long)]
+    rust_deepseek_record: PathBuf,
+    /// The fake secretary-server record and each side's service token file.
+    #[arg(long)]
+    secretary_record: PathBuf,
+    #[arg(long)]
+    node_service_token_file: PathBuf,
+    #[arg(long)]
+    rust_service_token_file: PathBuf,
+    /// Each side's timeline.jsonl (a copy).
+    #[arg(long)]
+    node_timeline: PathBuf,
+    #[arg(long)]
+    rust_timeline: PathBuf,
+    /// Full JSON report.
+    #[arg(long)]
+    out: PathBuf,
+    /// `name=value` placeholders for both sides (`{name}` in the cases).
+    #[arg(long = "var")]
+    vars: Vec<String>,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Serve /health and /api/secretary/*.
@@ -59,6 +97,45 @@ enum Cmd {
         /// Tier-0 settings as on lucina-nez (`LUCINA_FAST_CHAT_ENABLED=true`).
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         fast_chat: bool,
+    },
+    /// A stand-in secretary-server for parity runs (notes, calendar, avatar, notify).
+    FakeSecretary {
+        #[arg(long, default_value = "127.0.0.1:8798")]
+        bind: SocketAddr,
+        #[arg(long)]
+        record: Option<PathBuf>,
+    },
+    /// Write the live Node Lucina's environment as an env file (values never printed).
+    EnvFromNode {
+        #[arg(long, default_value = "lucina-nez")]
+        container: String,
+        #[arg(long)]
+        out: PathBuf,
+        /// `systemd` (Rust names, host paths) or `docker` (everything, as is).
+        #[arg(long, default_value = "systemd")]
+        format: String,
+        /// Also write the Node SECRETARY_API_TOKEN to this file (0600).
+        #[arg(long)]
+        token_out: Option<PathBuf>,
+    },
+    /// The same /api/secretary requests against a Node reference and a Rust instance.
+    Parity(Box<ParityArgs>),
+    /// Append `count` items to a timeline file as fast as possible (shared-writer test).
+    TimelineAppendTest {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long, default_value_t = 300)]
+        count: usize,
+    },
+    /// Check a timeline file: every line whole JSON with a unique id; count the
+    /// shared-writer test lines (`node line N` / `rust line N`).
+    CheckTimeline {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        expect_node: usize,
+        #[arg(long, default_value_t = 0)]
+        expect_rust: usize,
     },
     /// Watch the owner's Discord presence (separate gateway session).
     PresenceWatch {
@@ -305,6 +382,137 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 n - bad
             );
             if bad > 0 {
+                std::process::exit(1);
+            }
+        }
+        Cmd::FakeSecretary { bind, record } => {
+            println!("fake secretary-server at http://{bind}");
+            lucina_server::parity::fake_secretary::serve(bind, record, chrono_tz::Europe::Rome)
+                .await?;
+        }
+        Cmd::EnvFromNode {
+            container,
+            out,
+            format,
+            token_out,
+        } => {
+            let names = lucina_server::parity::envgen::run(
+                &container,
+                &out,
+                &format,
+                token_out.as_deref(),
+            )?;
+            println!(
+                "{} variables written to {} ({format}): {}",
+                names.len(),
+                out.display(),
+                names.join(" ")
+            );
+        }
+        Cmd::Parity(args) => {
+            let ParityArgs {
+                cases,
+                node_url,
+                rust_url,
+                node_token_file,
+                rust_token_file,
+                node_deepseek_record,
+                rust_deepseek_record,
+                secretary_record,
+                node_service_token_file,
+                rust_service_token_file,
+                node_timeline,
+                rust_timeline,
+                out,
+                vars,
+            } = *args;
+            use lucina_server::parity::{fake_secretary::space_for, http};
+            let initial: std::collections::HashMap<String, String> = vars
+                .iter()
+                .filter_map(|v| v.split_once('='))
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect();
+            let read = |p: &PathBuf| std::fs::read_to_string(p).map(|s| s.trim().to_owned());
+            let cases: serde_json::Value = serde_json::from_slice(&std::fs::read(&cases)?)?;
+            let run = http::Run {
+                node: http::Side {
+                    name: "node",
+                    vars: std::sync::Mutex::new(initial.clone()),
+                    base: node_url,
+                    token: read(&node_token_file)?,
+                    deepseek_record: node_deepseek_record,
+                    secretary_space: space_for(&read(&node_service_token_file)?),
+                    timeline: node_timeline,
+                },
+                rust: http::Side {
+                    name: "rust",
+                    vars: std::sync::Mutex::new(initial.clone()),
+                    base: rust_url,
+                    token: read(&rust_token_file)?,
+                    deepseek_record: rust_deepseek_record,
+                    secretary_space: space_for(&read(&rust_service_token_file)?),
+                    timeline: rust_timeline,
+                },
+                secretary_record,
+            };
+            let (report, ok) = http::run(&cases, &run).await;
+            std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+            println!("{}", http::summary(&report));
+            println!("report: {}", out.display());
+            if !ok {
+                std::process::exit(1);
+            }
+        }
+        Cmd::TimelineAppendTest { path, count } => {
+            let store = lucina_store::TimelineStore::new(&path, u64::MAX / 2, true);
+            for i in 0..count {
+                store.append(lucina_store::timeline::NewItem {
+                    channel: "web".into(),
+                    role: "user".into(),
+                    text: format!("rust line {i}"),
+                    ..Default::default()
+                })?;
+            }
+        }
+        Cmd::CheckTimeline {
+            path,
+            expect_node,
+            expect_rust,
+        } => {
+            let text = std::fs::read_to_string(&path)?;
+            let (mut bad, mut node, mut rust, mut dup, mut out_of_order) = (0, 0, 0, 0, 0);
+            let mut ids = std::collections::HashSet::new();
+            let mut last_rust_id = String::new();
+            for line in text.split('\n').filter(|l| !l.is_empty()) {
+                match serde_json::from_str::<serde_json::Value>(line) {
+                    Ok(v) => {
+                        let id = v["id"].as_str().unwrap_or("").to_owned();
+                        if !ids.insert(id.clone()) {
+                            dup += 1;
+                        }
+                        let t = v["text"].as_str().unwrap_or("");
+                        if t.starts_with("node line ") {
+                            node += 1;
+                        }
+                        if t.starts_with("rust line ") {
+                            rust += 1;
+                            if id <= last_rust_id {
+                                out_of_order += 1;
+                            }
+                            last_rust_id = id;
+                        }
+                    }
+                    Err(_) => bad += 1,
+                }
+            }
+            let ok = bad == 0
+                && dup == 0
+                && node == expect_node
+                && rust == expect_rust
+                && out_of_order == 0
+                && text.ends_with('\n');
+            println!("check-timeline: {} lines, {bad} broken, {dup} duplicate ids, node {node}/{expect_node}, rust {rust}/{expect_rust}, rust ids out of order {out_of_order}: {}", ids.len(), if ok { "ok" } else { "FAILED" });
+            if !ok {
                 std::process::exit(1);
             }
         }

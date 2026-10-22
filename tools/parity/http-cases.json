@@ -1,0 +1,964 @@
+{
+  "note": "Phase-1 parity cases for `lucina parity`: every /api/secretary route secretary-server uses, chat turns in it/en/da, shopping v1/v2, reminders, agenda, timeline + SSE, notes, calendar, outfit, presence, MCP turns (allowed and refused), jobs. Synthetic messages only. `allow` lists response paths whose difference is expected; `why` says why.",
+  "textAllow": [
+    "Offers on your shopping list",
+    "Nothing on your shopping list is on offer",
+    "Your shopping list is empty, so I have nothing to match offers against",
+    "Live grocery catalog lookup is not configured yet.",
+    "graph task failed:"
+  ],
+  "textAllowWhy": "The two expected divergences (no catalog/offer adapters in Rust yet; graph_task stays with Node) also show up in timeline listings, SSE replays and the appended timeline lines.",
+  "timelineAllow": [],
+  "steps": [
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/health",
+      "allow": [
+        "response.body.data.memoryProvider"
+      ],
+      "why": "the Node reference runs with MEMORY_PROVIDER=none (no Honcho in parity runs); Rust reports honcho (live: honcho on both)"
+    },
+    {
+      "name": "health without token",
+      "method": "GET",
+      "path": "/health",
+      "auth": false
+    },
+    {
+      "name": "unknown route",
+      "method": "GET",
+      "path": "/nope"
+    },
+    {
+      "name": "405 with Allow",
+      "method": "POST",
+      "path": "/health"
+    },
+    {
+      "name": "chat: invalid JSON",
+      "method": "POST",
+      "path": "/chat",
+      "raw": "{\"message\": "
+    },
+    {
+      "name": "chat: message required",
+      "method": "POST",
+      "path": "/chat",
+      "body": {}
+    },
+    {
+      "name": "chat: bad channel",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ciao",
+        "channel": "sms"
+      }
+    },
+    {
+      "name": "chat: bad sessionId",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ciao",
+        "sessionId": "a b"
+      }
+    },
+    {
+      "name": "chat: payload too large",
+      "method": "POST",
+      "path": "/chat",
+      "raw": "{\"message\": \"{bigText}\"}"
+    },
+    {
+      "name": "chat it: greeting (tier 0)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ciao Lucina",
+        "sessionId": "parity-it",
+        "channel": "ios",
+        "clientMessageId": "par-it-1"
+      }
+    },
+    {
+      "name": "chat it: clientMessageId replay",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ciao Lucina",
+        "sessionId": "parity-it",
+        "channel": "ios",
+        "clientMessageId": "par-it-1"
+      }
+    },
+    {
+      "name": "chat en: question (fast chat)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "what's the capital of Australia?",
+        "sessionId": "parity-en",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat da: small talk",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "hvad synes du om vejret i dag?",
+        "sessionId": "parity-da",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: explicit recall (Honcho policy)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ti ricordi cosa avevamo deciso sulla palestra?",
+        "sessionId": "parity-it",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: tool the app cannot run",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "riassumi https://example.com/articolo",
+        "sessionId": "parity-it",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: Harness task blocked (Harness off)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "usa harness per controllare il deploy di lucina",
+        "sessionId": "parity-it",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: reminder (tier 0)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ricordami alle 23:59 di spegnere il forno",
+        "sessionId": "parity-rem",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: same reminder again",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ricordami alle 23:59 di spegnere il forno",
+        "sessionId": "parity-rem",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: timer",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "Remind me in 2 hours to stretch",
+        "sessionId": "parity-rem",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: list reminders",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "quali promemoria ho?",
+        "sessionId": "parity-rem",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "reminders: create natural",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "naturalText": "domani alle 9 ricordami di comprare il pane"
+      },
+      "capture": {
+        "remA": "body.data.reminder.id"
+      }
+    },
+    {
+      "name": "reminders: same natural again (existing)",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "naturalText": "domani alle 9 ricordami di comprare il pane"
+      }
+    },
+    {
+      "name": "reminders: create text+dueAt",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "text": "rinnovare il passaporto",
+        "dueAt": "2027-03-01T09:30:00+01:00"
+      },
+      "capture": {
+        "remB": "body.data.reminder.id"
+      }
+    },
+    {
+      "name": "reminders: due in past",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "text": "x",
+        "dueAt": "2020-01-01T09:00:00Z"
+      }
+    },
+    {
+      "name": "reminders: both forms",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "text": "x",
+        "naturalText": "domani"
+      }
+    },
+    {
+      "name": "reminders: unparseable",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "naturalText": "boh"
+      }
+    },
+    {
+      "name": "reminders: bad dueAt",
+      "method": "POST",
+      "path": "/reminders",
+      "body": {
+        "text": "x",
+        "dueAt": "2027-03-01 09:30"
+      }
+    },
+    {
+      "name": "reminders: list upcoming",
+      "method": "GET",
+      "path": "/reminders"
+    },
+    {
+      "name": "reminders: list today",
+      "method": "GET",
+      "path": "/reminders?scope=today"
+    },
+    {
+      "name": "reminders: list all with sent",
+      "method": "GET",
+      "path": "/reminders?scope=all&includeSent=1"
+    },
+    {
+      "name": "reminders: bad scope",
+      "method": "GET",
+      "path": "/reminders?scope=week"
+    },
+    {
+      "name": "reminders: cancel",
+      "method": "DELETE",
+      "path": "/reminders/{remB}"
+    },
+    {
+      "name": "reminders: cancel again",
+      "method": "DELETE",
+      "path": "/reminders/{remB}"
+    },
+    {
+      "name": "reminders: cancel unknown",
+      "method": "DELETE",
+      "path": "/reminders/00000000-0000-4000-8000-000000000000"
+    },
+    {
+      "name": "reminders: cancel a delivered one",
+      "method": "DELETE",
+      "path": "/reminders/{sentReminderId}"
+    },
+    {
+      "name": "reminders: method not allowed",
+      "method": "PUT",
+      "path": "/reminders"
+    },
+    {
+      "name": "agenda today",
+      "method": "GET",
+      "path": "/agenda"
+    },
+    {
+      "name": "agenda today cached",
+      "method": "GET",
+      "path": "/agenda"
+    },
+    {
+      "name": "agenda refresh",
+      "method": "GET",
+      "path": "/agenda?refresh=1"
+    },
+    {
+      "name": "agenda bad date",
+      "method": "GET",
+      "path": "/agenda?date=2026-02-30"
+    },
+    {
+      "name": "shopping v1: list",
+      "method": "GET",
+      "path": "/shopping"
+    },
+    {
+      "name": "shopping v1: add",
+      "method": "POST",
+      "path": "/shopping",
+      "body": {
+        "rawName": "basilico fresco",
+        "channel": "ios"
+      },
+      "capture": {
+        "itemA": "body.data.item.id"
+      }
+    },
+    {
+      "name": "shopping v1: mark purchased",
+      "method": "PATCH",
+      "path": "/shopping/{itemA}",
+      "body": {
+        "status": "purchased",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "shopping v1: bad status",
+      "method": "PATCH",
+      "path": "/shopping/{itemA}",
+      "body": {
+        "status": "gone"
+      }
+    },
+    {
+      "name": "shopping v1: unknown item",
+      "method": "PATCH",
+      "path": "/shopping/00000000-0000-4000-8000-000000000000",
+      "body": {
+        "status": "needed"
+      }
+    },
+    {
+      "name": "shopping v1: rawName required",
+      "method": "POST",
+      "path": "/shopping",
+      "body": {
+        "rawName": "  "
+      }
+    },
+    {
+      "name": "shopping v2: lists",
+      "method": "GET",
+      "path": "/shopping/lists"
+    },
+    {
+      "name": "shopping v2: create list",
+      "method": "POST",
+      "path": "/shopping/lists",
+      "body": {
+        "name": "Weekend",
+        "theme": "holiday"
+      },
+      "capture": {
+        "listW": "body.data.list.id"
+      }
+    },
+    {
+      "name": "shopping v2: bad theme",
+      "method": "POST",
+      "path": "/shopping/lists",
+      "body": {
+        "name": "X",
+        "theme": "space"
+      }
+    },
+    {
+      "name": "shopping v2: ops add",
+      "method": "POST",
+      "path": "/shopping/lists/{listW}/ops",
+      "body": {
+        "ops": [
+          {
+            "opId": "6b1d0f6e-1c1a-4c51-9d2a-2f7f0a000001",
+            "type": "add",
+            "name": "Pane"
+          },
+          {
+            "opId": "6b1d0f6e-1c1a-4c51-9d2a-2f7f0a000002",
+            "type": "add",
+            "name": "Banane",
+            "spec": "6"
+          }
+        ],
+        "channel": "web"
+      },
+      "capture": {
+        "itemP": "body.data.items.0.id",
+        "revW": "body.data.revision"
+      }
+    },
+    {
+      "name": "shopping v2: ops replay (duplicates)",
+      "method": "POST",
+      "path": "/shopping/lists/{listW}/ops",
+      "body": {
+        "ops": [
+          {
+            "opId": "6b1d0f6e-1c1a-4c51-9d2a-2f7f0a000001",
+            "type": "add",
+            "name": "Pane"
+          }
+        ],
+        "channel": "web"
+      }
+    },
+    {
+      "name": "shopping v2: purchase",
+      "method": "POST",
+      "path": "/shopping/lists/{listW}/ops",
+      "body": {
+        "ops": [
+          {
+            "opId": "6b1d0f6e-1c1a-4c51-9d2a-2f7f0a000003",
+            "type": "purchase",
+            "itemId": "{itemP}"
+          }
+        ],
+        "expectedRevision": 1,
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "shopping v2: stale conflicting revision",
+      "method": "POST",
+      "path": "/shopping/lists/{listW}/ops",
+      "body": {
+        "ops": [
+          {
+            "opId": "6b1d0f6e-1c1a-4c51-9d2a-2f7f0a000004",
+            "type": "need",
+            "itemId": "{itemP}"
+          }
+        ],
+        "expectedRevision": 1,
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "shopping v2: list state",
+      "method": "GET",
+      "path": "/shopping/lists/{listW}"
+    },
+    {
+      "name": "shopping v2: rename",
+      "method": "PATCH",
+      "path": "/shopping/lists/{listW}",
+      "body": {
+        "name": "Weekend al mare"
+      }
+    },
+    {
+      "name": "shopping v2: default list",
+      "method": "GET",
+      "path": "/shopping/lists/default",
+      "allow": [
+        "response.body.data.items.*.catalogId",
+        "response.body.data.items.*.icon",
+        "response.body.data.items.*.section"
+      ],
+      "why": "Node ignores the catalog v1 per-language aliases (an object in 389 of 395 items), so a chat/v1 add like \"basilico fresco\" gets no catalogId/icon/section; Rust matches them (Node bug, not copied)"
+    },
+    {
+      "name": "shopping v2: delete default refused",
+      "method": "DELETE",
+      "path": "/shopping/lists/default"
+    },
+    {
+      "name": "shopping v2: delete list",
+      "method": "DELETE",
+      "path": "/shopping/lists/{listW}"
+    },
+    {
+      "name": "shopping v2: unknown list",
+      "method": "GET",
+      "path": "/shopping/lists/00000000-0000-4000-8000-000000000000"
+    },
+    {
+      "name": "chat it: grocery add",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "aggiungi il latte alla lista della spesa",
+        "sessionId": "parity-shop",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: grocery add",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "add eggs to my shopping list",
+        "sessionId": "parity-shop",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat da: grocery add",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "tilføj rugbrød til listen",
+        "sessionId": "parity-shop",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: grocery query",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa c'è nella lista della spesa?",
+        "sessionId": "parity-shop",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: grocery remove",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "remove eggs from my shopping list",
+        "sessionId": "parity-shop",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: finished (pantry + list)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "abbiamo finito il caffè",
+        "sessionId": "parity-shop",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: spend this month",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "quanto ho speso questo mese?",
+        "sessionId": "parity-shop",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: pantry",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "what do we have in the pantry?",
+        "sessionId": "parity-shop",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: purchase needs a store",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "ho comprato il latte",
+        "sessionId": "parity-buy",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: offers",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "qualche offerta interessante?",
+        "sessionId": "parity-shop",
+        "channel": "ios"
+      },
+      "allow": [
+        "response.body.data.reply"
+      ],
+      "why": "Node asks the live chain catalogs (eTilbudsavis etc.); the Rust Lucina has no catalog adapters yet (port plan phase 6) and says so"
+    },
+    {
+      "name": "chat it: save note",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "salva questo come nota parity-test: riunione alle 10 con Anna",
+        "sessionId": "parity-notes",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: read note",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa c'è nella nota parity-test?",
+        "sessionId": "parity-notes",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: list notes",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "mostrami le note",
+        "sessionId": "parity-notes",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: unnamed note",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "save this note: buy a new kettle",
+        "sessionId": "parity-notes",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: note part 1",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "Memorizza il briefing nel contesto 'parity-doc' (parte 1 di 2)\nPrima parte del documento.",
+        "sessionId": "parity-notes",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: note part 2",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "Seconda parte del briefing: seconda parte del documento.",
+        "sessionId": "parity-notes",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat da: missing note",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "hvad står der i noten ferie",
+        "sessionId": "parity-notes",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: calendar tomorrow",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "cosa ho in calendario domani?",
+        "sessionId": "parity-cal",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: calendar week",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "what's on my calendar this week?",
+        "sessionId": "parity-cal",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat da: calendar today",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "hvad har jeg i kalenderen i dag",
+        "sessionId": "parity-cal",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: calendar create asks",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "aggiungi in calendario palestra domani alle 18",
+        "sessionId": "parity-cal",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: calendar create confirmed",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "sì",
+        "sessionId": "parity-cal",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: calendar create declined",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "add dentist to my calendar on 30/12 at 10:00",
+        "sessionId": "parity-cal2",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat en: decline",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "no",
+        "sessionId": "parity-cal2",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: outfit",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "Mettiti il vestito da cameriera",
+        "sessionId": "parity-look",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat it: hair",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "fatti la coda",
+        "sessionId": "parity-look",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "chat en: back to automatic",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "go back to automatic",
+        "sessionId": "parity-look",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "chat it: presence question",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "sono online su discord?",
+        "sessionId": "parity-presence",
+        "channel": "ios"
+      }
+    },
+    {
+      "name": "mcp: grocery add allowed",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from chatgpt] aggiungi le uova alla lista",
+        "sessionId": "mcp-chatgpt-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: social post refused",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from chatgpt] pubblica la news sul canale telegram",
+        "sessionId": "mcp-chatgpt-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: list removal refused",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from claude-code] togli il pane dalla lista",
+        "sessionId": "mcp-claude-code-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: calendar create refused",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from grok] aggiungi in calendario cena venerdì alle 20",
+        "sessionId": "mcp-grok-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: note save allowed (source = caller)",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from Claude Code] salva questo come nota mcp-test: appunti dal terminale",
+        "sessionId": "mcp-claude-code-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: reminder allowed",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from chatgpt] ricordami domani alle 10 di chiamare Marco",
+        "sessionId": "mcp-chatgpt-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: session marker only",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "pubblica la news sul canale telegram",
+        "sessionId": "mcp-grok-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "mcp: outfit is never run from MCP",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "[via Lucina MCP, from chatgpt] mettiti la tuta da palestra",
+        "sessionId": "mcp-chatgpt-parity",
+        "channel": "web"
+      }
+    },
+    {
+      "name": "job: graph task starts",
+      "method": "POST",
+      "path": "/chat",
+      "body": {
+        "message": "fammi un grafico del patrimonio",
+        "sessionId": "parity-job",
+        "channel": "ios"
+      },
+      "capture": {
+        "jobG": "body.data.job.id"
+      },
+      "waitMs": 2500
+    },
+    {
+      "name": "job: graph task result",
+      "method": "GET",
+      "path": "/jobs/{jobG}",
+      "allow": [
+        "response.body.data.error"
+      ],
+      "why": "both fail; Node reports its rclone/xlsx error, Rust says graph_task stays with the Node Lucina"
+    },
+    {
+      "name": "job: unknown",
+      "method": "GET",
+      "path": "/jobs/00000000-0000-4000-8000-000000000000"
+    },
+    {
+      "name": "timeline: newest",
+      "method": "GET",
+      "path": "/timeline?limit=5"
+    },
+    {
+      "name": "timeline: page before an old item",
+      "method": "GET",
+      "path": "/timeline?before={oldTimelineId}&limit=3"
+    },
+    {
+      "name": "timeline: bad limit",
+      "method": "GET",
+      "path": "/timeline?limit=0"
+    },
+    {
+      "name": "timeline: bad before",
+      "method": "GET",
+      "path": "/timeline?before=nope"
+    },
+    {
+      "name": "sse: live items of a chat turn",
+      "kind": "sse",
+      "trigger": {
+        "message": "ciao di nuovo",
+        "sessionId": "parity-sse",
+        "channel": "ios"
+      },
+      "seconds": 6
+    },
+    {
+      "name": "sse: replay after Last-Event-ID",
+      "kind": "sse",
+      "lastEventId": "{oldTimelineId}",
+      "seconds": 2
+    },
+    {
+      "name": "device bridge (Rust only)",
+      "method": "POST",
+      "path": "/device/events",
+      "body": {
+        "events": [
+          {
+            "id": "ev-parity-1",
+            "ts": "2026-10-22T10:00:00Z",
+            "type": "app_open",
+            "source": "ios",
+            "data": {}
+          }
+        ]
+      },
+      "allow": [
+        "status",
+        "response"
+      ],
+      "why": "the device bridge ships only in Rust (port plan Q12); Node answers 404"
+    },
+    {
+      "name": "presence route (Rust only)",
+      "method": "GET",
+      "path": "/presence",
+      "allow": [
+        "status",
+        "response"
+      ],
+      "why": "GET /presence exists only in Rust"
+    }
+  ]
+}

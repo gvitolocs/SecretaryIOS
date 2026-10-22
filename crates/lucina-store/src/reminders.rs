@@ -331,7 +331,8 @@ pub fn format_confirmation(reminder: &Reminder, tz: Tz) -> String {
         .due()
         .map(|d| {
             d.with_timezone(&tz)
-                .format("%A %-d %B %Y at %H:%M")
+                // Intl en-GB {dateStyle: "full", timeStyle: "short"}.
+                .format("%A, %-d %B %Y at %H:%M")
                 .to_string()
         })
         .unwrap_or_else(|| reminder.due_at.clone());
@@ -485,7 +486,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             format_confirmation(&r, tz),
-            "Reminder set for Wednesday 21 October 2026 at 18:30 (Europe/Rome): chiamare la mamma"
+            "Reminder set for Wednesday, 21 October 2026 at 18:30 (Europe/Rome): chiamare la mamma"
         );
         assert_eq!(
             format_list(std::slice::from_ref(&r), tz, "Lucina", true, now),
