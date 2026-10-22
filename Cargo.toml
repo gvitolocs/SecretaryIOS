@@ -8,6 +8,7 @@ members = [
     "crates/secretary-ffi",
     "crates/secretary-mcp",
     "crates/secretary-calendar",
+    "verification/models",
 ]
 
 [workspace.package]
@@ -38,4 +39,14 @@ strip = true
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]
+opt-level = 3
+
+# The model checkers explore millions of states: optimise them in test builds too.
+[profile.dev.package.verification-models]
+opt-level = 3
+[profile.dev.package.stateright]
+opt-level = 3
+[profile.dev.package.dashmap]
+opt-level = 3
+[profile.dev.package.ahash]
 opt-level = 3
