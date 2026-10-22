@@ -1,6 +1,7 @@
 export { createLucinaStage } from './stage';
 export type { LucinaStage, LucinaStageOptions, SpeakOptions, StageInfo, TapEvent, TouchEvent } from './stage';
 export * from './interact';
+export * from './facedrive';
 export {
   createVoice,
   getSpeechRecognition,

@@ -696,6 +696,12 @@ export async function createWardrobeStage(
     get gyro() {
       return cur.gyro;
     },
+    setFaceDrive(d) {
+      cur.setFaceDrive(d);
+    },
+    get faceDriven() {
+      return cur.faceDriven;
+    },
     setModel,
     setOutfit(id, o = {}) {
       const entry = wardrobe.find((e) => e.id === id);
