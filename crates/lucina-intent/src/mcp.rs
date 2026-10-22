@@ -6,8 +6,15 @@
 use crate::jsre::group;
 use crate::re;
 
-/// Planner actions an MCP turn may run (`notes` is the notes bridge).
-pub const ALLOWED_ACTIONS: &[&str] = &["reply", "list_reminders", "schedule_reminder", "notes"];
+/// Planner actions an MCP turn may run (`notes` is the notes bridge,
+/// `tasks` the tasks bridge: read, add, complete; never delete).
+pub const ALLOWED_ACTIONS: &[&str] = &[
+    "reply",
+    "list_reminders",
+    "schedule_reminder",
+    "notes",
+    "tasks",
+];
 
 /// Grocery intents an MCP turn may run.
 pub const ALLOWED_GROCERY_INTENTS: &[&str] = &[

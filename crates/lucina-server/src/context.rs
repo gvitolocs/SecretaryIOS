@@ -167,6 +167,12 @@ pub async fn prepare_with(
     } else {
         String::new()
     };
+    // LUCINA_TASKS=true: owner turns about the day or tasks get today's tasks.
+    let tasks = if st.cfg.tasks_enabled {
+        crate::bridges::tasks_context(&st.secretary, user_text, tz).await
+    } else {
+        String::new()
+    };
     // A compound question ("cosa c'è sulla lista della spesa e cosa ho nella
     // nota X?"): no grocery shortcut answers it, so the shopping list comes
     // here (calendar and named notes are above).
@@ -210,7 +216,7 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, calendar, notes, shopping, recent, reminders, honcho,
+        metadata, presence, calendar, notes, tasks, shopping, recent, reminders, honcho,
     ]
     .into_iter()
     .filter(|s| !s.is_empty())

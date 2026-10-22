@@ -1,6 +1,7 @@
 //! The Secretary chat bridges to secretary-server, as the Node Lucina runs
 //! them in front of the planner (`src/notes-bridge.js`,
-//! `src/calendar-bridge.js`, `src/avatar-outfit.js`, `src/app-notify.js`):
+//! `src/calendar-bridge.js`, `src/tasks-bridge.js`, `src/avatar-outfit.js`,
+//! `src/app-notify.js`):
 //! deterministic parsing (crate `lucina-intent`), one HTTP call with the
 //! service token, fixed it/en/da replies.
 //!
@@ -18,6 +19,7 @@ use chrono_tz::Tz;
 use lucina_intent::calendar::{self as cal, Create};
 use lucina_intent::notes::{self as nt, NotesIntent};
 use lucina_intent::outfit::{self, LookIntent};
+use lucina_intent::tasks as tk;
 use reqwest::Method;
 use serde_json::{json, Value};
 
@@ -654,4 +656,208 @@ pub async fn notify(s: &Secretary, body: &Value) -> Answer {
     }
     tracing::warn!(status = last.status, code = %last.code, "app notification failed");
     last
+}
+
+// ---------------------------------------------------------------- tasks
+
+/// `/v1/tasks/state?view=…` (`fetchTasks`).
+async fn fetch_tasks(s: &Secretary, view: &str, query: Option<&str>, tz: Tz) -> Answer {
+    let mut path = format!(
+        "/v1/tasks/state?view={}&timezone={}",
+        enc(view),
+        enc(tz.name())
+    );
+    if let Some(q) = query {
+        path.push_str(&format!("&query={}", enc(q)));
+    }
+    s.call(Method::GET, &path, None).await
+}
+
+/// `POST /v1/tasks/command` (`taskCommand`), with a fresh op id.
+async fn task_command(s: &Secretary, command: Value, tz: Tz) -> Answer {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let mut ms = Utc::now().timestamp_millis().max(0) as u64;
+    let mut b36 = Vec::new();
+    loop {
+        b36.push(char::from_digit((ms % 36) as u32, 36).unwrap_or('0'));
+        ms /= 36;
+        if ms == 0 {
+            break;
+        }
+    }
+    let ts: String = b36.into_iter().rev().collect();
+    let op_id = format!("lucina-rs-{ts}-{}-{n}", std::process::id());
+    let body = json!({"op_id": op_id, "timezone": tz.name(), "command": command});
+    s.call(Method::POST, "/v1/tasks/command", Some(&body)).await
+}
+
+fn tasks_outcome(reply: String, action: &str, action_result: String) -> Outcome {
+    Outcome {
+        reply,
+        action: action.into(),
+        action_result,
+        meta: Some(lucina_store::timeline::Meta::kind("tasks")),
+        ..Outcome::default()
+    }
+}
+
+/// `handleTasksTurn` (`LUCINA_TASKS=true`): what to do today, add, done,
+/// reschedule overdue. `None`: not a tasks turn. `Err(blocked)`: an MCP
+/// caller asked to delete (MCP may read, add and complete). Nothing here
+/// deletes. `calendar`: today's events join the list answer.
+pub async fn tasks_turn(
+    s: &Secretary,
+    message: &str,
+    mcp: bool,
+    tz: Tz,
+    calendar: bool,
+) -> Option<Result<Outcome, &'static str>> {
+    let intent = tk::parse_tasks_intent(message)?;
+    let lang = intent.lang;
+    match intent.kind {
+        tk::Kind::Delete => {
+            if mcp {
+                return Some(Err("tasks.delete"));
+            }
+            return Some(Ok(tasks_outcome(
+                tk::delete_refused(lang),
+                "tasks",
+                "[tasks delete refused: owner deletes in the app]".into(),
+            )));
+        }
+        tk::Kind::Add => {
+            let typed = intent.text.clone().unwrap_or_default();
+            let r = task_command(s, json!({"type": "quick_add", "text": typed}), tz).await;
+            if !r.ok {
+                return Some(Ok(tasks_outcome(
+                    tk::unavailable(lang),
+                    "tasks",
+                    format!("[tasks add failed: {}]", r.code),
+                )));
+            }
+            let parsed = &r.data["parsed"];
+            let content = parsed["content"]
+                .as_str()
+                .filter(|c| !c.is_empty())
+                .unwrap_or(&typed)
+                .to_owned();
+            return Some(Ok(tasks_outcome(
+                tk::added(lang, parsed, &typed),
+                "tasks_add",
+                format!("[task added: {content}]"),
+            )));
+        }
+        tk::Kind::Overdue => {
+            let date = tk::overdue_date(intent.date.as_deref());
+            let r = task_command(s, json!({"type": "reschedule_overdue", "date": date}), tz).await;
+            if !r.ok {
+                return Some(Ok(tasks_outcome(
+                    tk::unavailable(lang),
+                    "tasks",
+                    format!("[tasks reschedule failed: {}]", r.code),
+                )));
+            }
+            return Some(Ok(tasks_outcome(
+                tk::overdue_moved(lang),
+                "tasks",
+                format!("[overdue tasks rescheduled to {date}]"),
+            )));
+        }
+        tk::Kind::List | tk::Kind::Done => {}
+    }
+    let r = fetch_tasks(s, "today", None, tz).await;
+    if !r.ok {
+        // "ho fatto la spesa": not ours to answer.
+        if intent.kind == tk::Kind::Done {
+            return None;
+        }
+        return Some(Ok(tasks_outcome(
+            tk::unavailable(lang),
+            "tasks",
+            format!("[tasks unavailable: {}]", r.code),
+        )));
+    }
+    let view = &r.data["view"];
+    if intent.kind == tk::Kind::List {
+        let events = if calendar {
+            let today = Utc::now().with_timezone(&tz).format("%Y-%m-%d").to_string();
+            Some(cal::event_lines(
+                &events_for_briefing(s, &today).await,
+                tz,
+                "en",
+            ))
+        } else {
+            None
+        };
+        return Some(Ok(tasks_outcome(
+            tk::today_answer(view, lang, events.as_deref()),
+            "tasks",
+            format!("[tasks today: {}]", tk::task_lines(view, lang).len()),
+        )));
+    }
+    // done
+    let what = intent.what.clone().unwrap_or_default();
+    let mut hits: Vec<Value> = tk::match_tasks(view, &what).into_iter().cloned().collect();
+    if hits.is_empty() {
+        let found = fetch_tasks(s, "search", Some(&what), tz).await;
+        if found.ok {
+            hits = tk::match_tasks(&found.data["view"], &what)
+                .into_iter()
+                .cloned()
+                .collect();
+        }
+    }
+    match hits.len() {
+        // Not a task: the normal turn handles it.
+        0 => None,
+        1 => {
+            let task = &hits[0];
+            let c = task_command(s, json!({"type": "complete", "task_id": task["id"]}), tz).await;
+            if !c.ok {
+                return Some(Ok(tasks_outcome(
+                    tk::unavailable(lang),
+                    "tasks",
+                    format!("[task complete failed: {}]", c.code),
+                )));
+            }
+            Some(Ok(tasks_outcome(
+                tk::completed(lang, task, &c.data["view"]["goal"]),
+                "tasks_complete",
+                format!("[task completed: {}]", tk::js(&task["content"])),
+            )))
+        }
+        n => {
+            let refs: Vec<&Value> = hits.iter().collect();
+            Some(Ok(tasks_outcome(
+                tk::which_one(lang, &refs),
+                "tasks",
+                format!("[task complete ambiguous: {n}]"),
+            )))
+        }
+    }
+}
+
+/// `buildTasksContext`: today's tasks as one context line for owner turns
+/// about the day ("" when unavailable).
+pub async fn tasks_context(s: &Secretary, prompt: &str, tz: Tz) -> String {
+    if !tk::is_task_topic(prompt) {
+        return String::new();
+    }
+    let path = format!("/v1/tasks/signals?timezone={}", enc(tz.name()));
+    let r = tokio::time::timeout(Duration::from_secs(3), s.call(Method::GET, &path, None)).await;
+    match r {
+        Ok(a) if a.ok && a.data.is_object() => tk::context_line(&a.data),
+        _ => String::new(),
+    }
+}
+
+/// `tasksForBriefing`: today's open and overdue task lines.
+pub async fn tasks_for_briefing(s: &Secretary, tz: Tz) -> Vec<String> {
+    let r = fetch_tasks(s, "today", None, tz).await;
+    if r.ok {
+        tk::task_lines(&r.data["view"], "en")
+    } else {
+        Vec::new()
+    }
 }

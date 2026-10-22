@@ -21,6 +21,7 @@ const lang = await import('/app/src/reply-language.js');
 const logInspect = await import('/app/src/lucina-log-inspect.js');
 const caps = await import('/app/src/lucina-capabilities.js');
 const domains = await import('/app/src/turn-domains.js');
+const tasks = await import('/app/src/tasks-bridge.js');
 
 // A parser that throws is reported as {"throws": message} (Node would answer 500).
 const safe = (fn) => { try { return fn(); } catch (e) { return { __throws: String(e?.message || e) }; } };
@@ -68,6 +69,7 @@ const out = input.cases.map(({ text, sessionId = '' }) => {
     lang: lang.detectReplyLanguage(text),
     hints: hints.appendCapabilityHints('Ok, ci penso io.', text, { action: 'reply' }),
     domains: domains.readDomains(text, { now, timeZone: tz }),
+    tasks: pick(tasks.parseTasksIntent(text), ['kind', 'lang', 'text', 'what', 'date']),
   };
 });
 // Exit only after the pipe took the whole line (stdout to a pipe is async).

@@ -52,12 +52,10 @@ fn run(dir: &Path, input: &str, extra: &[&str]) -> Run {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A refusal can exit before reading stdin: a broken pipe is fine here.
+    if let Err(e) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
+        assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+    }
     let out = child.wait_with_output().unwrap();
     Run {
         ok: out.status.success(),

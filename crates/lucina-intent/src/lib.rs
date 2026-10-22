@@ -9,6 +9,7 @@
 //! - [`outfit`], [`notes`], [`calendar`]: the parsers of the Secretary chat
 //!   bridges (`src/avatar-outfit.js`, `src/notes-bridge.js`,
 //!   `src/calendar-bridge.js`);
+//! - [`tasks`]: the tasks bridge (`src/tasks-bridge.js`);
 //! - [`mcp`]: Lucina MCP turns (prefix, caller, allowlists).
 //!
 //! Patterns are copied verbatim and run through [`jsre`], which gives them
@@ -26,4 +27,5 @@ pub mod notes;
 pub mod outfit;
 pub mod policy;
 pub mod presence;
+pub mod tasks;
 pub mod tier0;

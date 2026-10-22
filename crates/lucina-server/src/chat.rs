@@ -706,6 +706,29 @@ async fn json_turn(
         }
     }
 
+    // Tasks (LUCINA_TASKS=true): what to do today, add, done, reschedule
+    // overdue. MCP turns may read, add and complete; deleting is refused.
+    // Before the calendar: "cosa devo fare oggi?" answers with the tasks and
+    // today's events.
+    if st.cfg.tasks_enabled {
+        match crate::bridges::tasks_turn(
+            &st.secretary,
+            &t.message,
+            t.mcp.is_some(),
+            st.cfg.time_zone,
+            st.cfg.calendar_enabled,
+        )
+        .await
+        {
+            Some(Err(blocked)) => {
+                tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
+                return Finish::refusal(&persona, blocked);
+            }
+            Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
+            None => {}
+        }
+    }
+
     // Calendar questions and confirmed event creation (LUCINA_CALENDAR=true).
     if st.cfg.calendar_enabled {
         match crate::bridges::calendar_turn(

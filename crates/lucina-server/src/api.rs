@@ -718,6 +718,12 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
     } else {
         None
     };
+    // LUCINA_TASKS=true: today's open and overdue tasks (today only).
+    let tasks = if st.cfg.tasks_enabled && date == ymd_in_tz(Utc::now(), tz) {
+        Some(crate::bridges::tasks_for_briefing(&st.secretary, tz).await)
+    } else {
+        None
+    };
     let fingerprint = reminders
         .iter()
         .map(|r| format!("{}:{}:{}", r.id, r.status, r.due_at))
@@ -729,6 +735,7 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
             };
             format!("{}:{}:{}:{}", s("id"), s("start"), s("end"), s("title"))
         }))
+        .chain(tasks.iter().flatten().cloned())
         .collect::<Vec<_>>()
         .join("|");
     let ttl = st.cfg.briefing_cache;
@@ -798,10 +805,18 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
                 )
             });
         }
+        if let Some(tl) = &tasks {
+            skill_result.push('\n');
+            skill_result.push_str(&if tl.is_empty() {
+                "Tasks for today: none open.".to_owned()
+            } else {
+                format!("Tasks for today (open, overdue first):\n{}", tl.join("\n"))
+            });
+        }
         let persona = &st.cfg.persona;
         let instruction = [
             format!("Write a short daily briefing for {date} in at most {BRIEFING_MAX_SENTENCES} sentences, speaking as {persona}."),
-            "Mention the reminders and calendar events in time order with their times. If there are none, say the day is clear.".into(),
+            "Mention the reminders and calendar events in time order with their times, then the open tasks (overdue first) briefly. If there are none, say the day is clear.".into(),
             "You may add one grounded note from memory if it is relevant to that day. Do not invent appointments.".into(),
             "Plain text: no lists, no markdown, no greetings longer than a few words.".into(),
         ]

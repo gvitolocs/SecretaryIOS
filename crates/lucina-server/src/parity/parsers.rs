@@ -1,12 +1,12 @@
 //! `lucina parity-parsers`: the deterministic layer (tier 0, grocery, notes,
-//! outfit, calendar, MCP, presence, heuristics, capability hints) on a
+//! outfit, calendar, tasks, MCP, presence, heuristics, capability hints) on a
 //! phrase corpus, compared field by field with the live Node parsers'
 //! output (`tools/parity/node-parsers.mjs`, run read-only in the Node
 //! container).
 
 use chrono::{DateTime, Utc};
 use lucina_intent::heuristics::{self as h, Settings};
-use lucina_intent::{calendar as cal, grocery, hints, mcp, notes, outfit, presence, tier0};
+use lucina_intent::{calendar as cal, grocery, hints, mcp, notes, outfit, presence, tasks, tier0};
 use serde_json::{json, Value};
 
 const TZ: chrono_tz::Tz = chrono_tz::Europe::Rome;
@@ -83,6 +83,7 @@ pub fn rust_case(text: &str, session: &str, now: DateTime<Utc>, s: &Settings) ->
         "lang": hints::detect_language(text),
         "hints": hints::append_capability_hints("Ok, ci penso io.", text, true),
         "domains": lucina_intent::domains::read_domains(text, now, TZ, false),
+        "tasks": tasks::parse_tasks_intent(text).map(|i| json!({"kind": i.kind.as_str(), "lang": i.lang, "text": i.text, "what": i.what, "date": i.date})),
     })
 }
 

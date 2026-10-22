@@ -49,6 +49,8 @@ pub struct Config {
     /// `LUCINA_APP_NOTIFY` (all default false, as in Node).
     pub notes_enabled: bool,
     pub calendar_enabled: bool,
+    /// `LUCINA_TASKS`: the tasks bridge (Todoist via secretary-server).
+    pub tasks_enabled: bool,
     pub outfit_enabled: bool,
     pub app_notify: bool,
     /// dsh-remote for app jobs (`DSH_REMOTE_*`; `LUCINA_JOBS=false` turns
@@ -153,6 +155,7 @@ impl std::fmt::Debug for Config {
             .field("fast_chat", &self.intent.fast_chat)
             .field("notes", &self.notes_enabled)
             .field("calendar", &self.calendar_enabled)
+            .field("tasks", &self.tasks_enabled)
             .field("outfit", &self.outfit_enabled)
             .field("jobs", &self.dsh.enabled)
             .field("secrets_config", &self.secrets_config)
@@ -281,6 +284,7 @@ impl Config {
             ),
             notes_enabled: flag("LUCINA_NOTES", false),
             calendar_enabled: flag("LUCINA_CALENDAR", false),
+            tasks_enabled: flag("LUCINA_TASKS", false),
             outfit_enabled: flag("LUCINA_AVATAR_OUTFIT", false),
             app_notify: flag("LUCINA_APP_NOTIFY", false),
             dsh: crate::jobs::DshConfig::from_lookup(&get, jobs_enabled, &host_label),

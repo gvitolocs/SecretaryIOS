@@ -28,6 +28,8 @@ pub struct Capabilities {
     pub proactive_start: u32,
     pub proactive_end: u32,
     pub notes: bool,
+    /// `LUCINA_TASKS`.
+    pub tasks: bool,
     pub calendar: bool,
     pub grocery: bool,
     /// `LUCINA_PRESENCE_CONTEXT=true` exactly (Node's env check).
@@ -64,6 +66,7 @@ impl Capabilities {
             proactive_start: num("LUCINA_PROACTIVE_CHECKIN_DAY_START", 8),
             proactive_end: num("LUCINA_PROACTIVE_CHECKIN_DAY_END", 22),
             notes: is_true("LUCINA_NOTES"),
+            tasks: is_true("LUCINA_TASKS"),
             calendar: is_true("LUCINA_CALENDAR"),
             grocery: get("GROCERY_DATABASE_URL")
                 .or_else(|| get("GROCERY_DATABASE_URL_FILE"))
@@ -87,6 +90,7 @@ impl Capabilities {
                 "list_reminders" => "list reminders".to_owned(),
                 "schedule_reminder" => "create reminders".to_owned(),
                 "notes" => "save and read notes".to_owned(),
+                "tasks" => "read tasks, add them and mark them done (never delete)".to_owned(),
                 other => other.replace('_', " "),
             })
             .collect();
@@ -154,6 +158,7 @@ impl Capabilities {
             Some("Proactive check-ins are off: I only answer."),
         );
         add(self.notes, "Notes in the Secretary app: I save, append to and read notes (\"salva come nota …\", \"cosa c'è nella nota …\").".into(), Some("Notes from chat are off (LUCINA_NOTES)."));
+        add(self.tasks, "Tasks synced with Todoist: I list today's and overdue tasks, add tasks and mark them done (\"cosa devo fare oggi?\", \"aggiungi task …\", \"fatto lo shadowing\"); deleting stays with Giuseppe.".into(), Some("Tasks from chat are off (LUCINA_TASKS)."));
         add(self.calendar, "Google Calendar: I read the agenda and add an event only after Giuseppe's explicit yes.".into(), Some("Calendar from chat is off (LUCINA_CALENDAR)."));
         add(self.grocery, "Shopping lists v2 and grocery accounting: lists, items, purchases, offers, prices, pantry.".into(), None);
         add(self.presence, "I see Giuseppe's Discord presence (online, idle, playing) as context. It describes him, it is not a channel of mine.".into(), None);
@@ -244,8 +249,9 @@ mod tests {
         assert!(b.starts_with("Runtime capabilities (generated from this runtime's flags just now"));
         assert!(b.contains("- Reasoning: My reasoning (planning and every reply) runs only on the DeepSeek API (model deepseek-flash)."));
         assert!(b.contains("- Timed reminders (persisted), delivered on Telegram and as Secretary app notifications."));
-        assert!(b.contains("MCP guard: they may only answer questions; list reminders; create reminders; save and read notes; read, add to and mark bought on the shopping list; look up offers, prices and grocery spending;"));
+        assert!(b.contains("MCP guard: they may only answer questions; list reminders; create reminders; save and read notes; read tasks, add them and mark them done (never delete); read, add to and mark bought on the shopping list; look up offers, prices and grocery spending;"));
         assert!(b.contains("- Calendar from chat is off (LUCINA_CALENDAR)."));
+        assert!(b.contains("- Tasks from chat are off (LUCINA_TASKS)."));
         assert!(looks_like_self_description("cosa sai fare?"));
         assert!(!looks_like_self_description("ciao"));
     }
