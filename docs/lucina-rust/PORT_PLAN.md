@@ -174,13 +174,30 @@ Rust: store under `flock` with write-to-temp, fsync, rename; same JSON layout an
 the `scheduler-lucina.lock` lease; delivers with `sendMessage` using the Lucina bot token (allowed while Node still
 polls: only `getUpdates` is exclusive), writes the `meta.kind: "reminder"` timeline item, records `sent`/`lastError`.
 
-Handover: (1) Rust up with scheduler off; (2) Node restarted with the shim on and its scheduler off; from this
-moment Node no longer touches the file; (3) Rust scheduler on, lease acquired. Due reminders wait at most one poll;
-none are lost (they stay `pending`). Rollback: Rust scheduler off (lease released), Node env reverted, Node restarted.
+Handover (checked by the model `ownership.rs::Scheduler`, `formal/ownership/SchedulerHandover.tla`; the order
+first written here ran two `reminders.json` writers and lost a reminder, docs/verification.md P2a):
+
+1. Rust restarts with **only** `/api/internal/reminders/*` open: its scheduler off and its secretary path still
+   forwarding to Node (`LUCINA_REMINDERS_WRITER=node`). Nothing calls the internal endpoint yet, so Node is still
+   the only writer.
+2. Node restarts with the shim on and its scheduler off, **after its current tick has finished** (drain: Node waits
+   for a running `processDueReminders` on SIGTERM; or restart only while no reminder is due). From here Rust is the
+   only writer.
+3. Rust restarts with `LUCINA_REMINDERS_WRITER=local` and `LUCINA_SCHEDULER=true` (lease acquired).
+
+Due reminders wait at most one poll; none are lost (they stay `pending`). Rollback, in this order: Rust stops
+writing first (scheduler off, secretary path forwarding, internal endpoint closed: Node's shim calls fail visibly for
+a few seconds), then Node takes the file and the scheduler back (env reverted, restart).
+
+Delivery is at most once in both runtimes (P2b, `ReminderStore::process_due`, Node `processDueReminders`): a tick
+claims its due reminders (`status: "sending"`, written atomically) before the first `sendMessage`; a claim found
+by the next tick (the process died mid-send) becomes `failed` with `lastError: "interrupted; not resent"` and shows
+in the reminder list. Writing `sent` once at the end of the tick, as both did before, resent the batch after a
+restart.
 
 Parity: same store copy and injected clock in both runtimes deliver the same ids with the same text
 (`formatReminderDelivery`); dedupe key semantics; `already_sent` / `cancelled: false` rules; parser corpus; restart
-in the middle of a delivery does not double-send (state written before the next poll).
+in the middle of a delivery does not double-send (claim before send, above).
 
 ### Phase 3: Telegram
 
