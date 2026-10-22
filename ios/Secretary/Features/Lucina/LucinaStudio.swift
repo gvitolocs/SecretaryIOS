@@ -169,7 +169,7 @@ struct LucinaViewBar: View {
     }
 }
 
-/// The studio menu: poses, face, background, light, photo, dance, tilt.
+/// The studio menu: poses, face, background, light, photo, dance, tilt, face tracking, AR.
 struct LucinaStudioMenu: View {
     let controller: LucinaStageController
     @State private var refresh = false
@@ -213,6 +213,22 @@ struct LucinaStudioMenu: View {
                 refresh.toggle()
             } label: {
                 Label(controller.tilting ? "Tilt off" : "Tilt", systemImage: "gyroscope")
+            }
+            if LucinaFaceTracker.isSupported {
+                Button {
+                    Task { await LucinaFaceTracker.shared.toggle(controller) }
+                } label: {
+                    Label(LucinaFaceTracker.shared.state == .off ? "Mirror me" : "Stop mirroring", systemImage: "face.smiling")
+                }
+                .accessibilityIdentifier("lucinaFaceTracking")
+            }
+            if LucinaARPresenter.isSupported {
+                Button {
+                    LucinaARPresenter.shared.presented = true
+                } label: {
+                    Label("Place in your room (AR)", systemImage: "arkit")
+                }
+                .accessibilityIdentifier("lucinaAR")
             }
         } label: {
             Image(systemName: "sparkles")

@@ -17,7 +17,7 @@
 // private model under lucina-app://stage/ (the model and manifest are proxied by Swift
 // with the device token, so no token ever reaches this page). Audio plays only when Swift
 // asks: the stage starts muted and nothing here plays on its own.
-import { createWardrobeStage } from './lucina-stage.standalone.js';
+import { createWardrobeStage, FaceSolver } from './lucina-stage.standalone.js';
 
 const post = (type, payload = {}) => {
   try { window.webkit.messageHandlers.lucina.postMessage({ type, ...payload }); } catch (_) { /* not in the app */ }
@@ -25,6 +25,8 @@ const post = (type, payload = {}) => {
 const canvas = document.getElementById('stage');
 let stage = null;
 let starting = null;
+/** Face tracking (ARKit in Swift): calibration and mirroring live in the shared solver. */
+let faceSolver = null;
 
 window.lucina = {
   start(opts) {
@@ -81,6 +83,27 @@ window.lucina = {
   tilt(beta, gamma) {
     try { window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { beta, gamma, alpha: 0 })); } catch (_) { /* old WebKit */ }
   },
+  /** Face tracking started (Swift): a fresh calibration, and her face in view. */
+  faceStart() {
+    faceSolver = new FaceSolver();
+    if (stage) stage.cameraPreset('face');
+  },
+  /**
+   * One ARKit face sample: blend-shape coefficients (web names, e.g. eyeBlinkLeft) and the face's 4×4
+   * transform relative to the camera (column-major). Only these numbers reach the page, never a frame.
+   */
+  faceFrame(shapes, matrix) {
+    if (!stage) return;
+    if (!faceSolver) faceSolver = new FaceSolver();
+    stage.setFaceDrive(faceSolver.solve(shapes || {}, matrix || null));
+  },
+  faceRecenter() { faceSolver && faceSolver.recenter(); },
+  faceStop() {
+    faceSolver = null;
+    stage && stage.setFaceDrive(null);
+  },
+  /** A ready-made drive ({yaw, pitch, roll, jawOpen, blinkL, blinkR, smile, …}), or null to stop. */
+  setFaceDrive(drive) { stage && stage.setFaceDrive(drive || null); },
   /** A PNG of her for the share sheet (posted as a data URL). */
   async snapshot() {
     if (!stage) return;

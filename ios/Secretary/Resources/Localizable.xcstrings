@@ -89,6 +89,7 @@
         }
       }
     },
+    "%@, chosen" : {},
     "%@, via %@: %@" : {
       "localizations" : {
         "da" : {
@@ -376,16 +377,16 @@
     },
     "1 task completed" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "1 attività completata"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "1 opgave fuldført"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 attività completata"
           }
         }
       }
@@ -488,16 +489,48 @@
     },
     "API token" : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API-token"
+          }
+        },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token API"
           }
+        }
+      }
+    },
+    "AR options" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opzioni AR"
+          }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "API-token"
+            "value" : "AR-indstillinger"
+          }
+        }
+      }
+    },
+    "AR stopped: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AR interrotta: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AR stoppede: %@"
           }
         }
       }
@@ -680,16 +713,16 @@
     },
     "Add task — “Call Marco tomorrow 9am #Work p1”" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiungi attività — “Chiamare Marco domani alle 9 #Lavoro p1”"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tilføj opgave — “Ring til Marco i morgen kl 9 #Arbejde p1”"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi attività — “Chiamare Marco domani alle 9 #Lavoro p1”"
           }
         }
       }
@@ -902,6 +935,7 @@
         }
       }
     },
+    "Ah! My face…" : {},
     "Alarm" : {
       "localizations" : {
         "da" : {
@@ -1030,6 +1064,38 @@
         }
       }
     },
+    "Allow the camera for Secretary in Settings to let Lucina mirror your face." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti la fotocamera a Secretary in Impostazioni per farti imitare da Lucina."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giv Secretary adgang til kameraet i Indstillinger, så Lucina kan spejle dit ansigt."
+          }
+        }
+      }
+    },
+    "Allow the camera for Secretary in Settings to place Lucina in your room." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti la fotocamera a Secretary in Impostazioni per mettere Lucina nella tua stanza."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giv Secretary adgang til kameraet i Indstillinger for at stille Lucina ind i dit rum."
+          }
+        }
+      }
+    },
     "Allow the microphone and speech recognition in Settings to talk to Lucina." : {
       "localizations" : {
         "da" : {
@@ -1062,6 +1128,7 @@
         }
       }
     },
+    "Angry" : {},
     "Apps and websites" : {
       "localizations" : {
         "da" : {
@@ -1174,6 +1241,8 @@
         }
       }
     },
+    "Background" : {},
+    "Bedroom" : {},
     "Before an event on your calendar starts." : {
       "localizations" : {
         "da" : {
@@ -1350,6 +1419,8 @@
         }
       }
     },
+    "Bust" : {},
+    "Café" : {},
     "Calendar" : {
       "localizations" : {
         "da" : {
@@ -1426,6 +1497,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Calendari, canali di chat, client AI e i tuoi link"
+          }
+        }
+      }
+    },
+    "Camera on: she mirrors your face. Nothing leaves this phone." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotocamera attiva: ti imita il viso. Nulla lascia questo telefono."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kamera tændt: hun spejler dit ansigt. Intet forlader telefonen."
           }
         }
       }
@@ -1686,6 +1773,22 @@
         }
       }
     },
+    "Close AR" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiudi AR"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Luk AR"
+          }
+        }
+      }
+    },
     "Close Lucina" : {
       "localizations" : {
         "da" : {
@@ -1768,16 +1871,16 @@
     },
     "Complete" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Completa"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fuldfør"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Completa"
           }
         }
       }
@@ -1910,6 +2013,7 @@
         }
       }
     },
+    "Cool" : {},
     "Couldn't add it to the list." : {
       "localizations" : {
         "da" : {
@@ -2185,6 +2289,12 @@
     },
     "Daily goal: %lld of %lld" : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagligt mål: %lld af %lld"
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "new",
@@ -2196,15 +2306,10 @@
             "state" : "translated",
             "value" : "Obiettivo giornaliero: %lld di %lld"
           }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dagligt mål: %lld af %lld"
-          }
         }
       }
     },
+    "Dance" : {},
     "Dansk" : {
       "shouldTranslate" : false
     },
@@ -2240,6 +2345,7 @@
         }
       }
     },
+    "Default" : {},
     "Delete" : {
       "localizations" : {
         "da" : {
@@ -2944,6 +3050,8 @@
         }
       }
     },
+    "Eek! That tickles." : {},
+    "Ehehe…" : {},
     "Email" : {
       "localizations" : {
         "da" : {
@@ -3219,6 +3327,56 @@
         }
       }
     },
+    "Expression" : {},
+    "Face" : {},
+    "Face tracking is on" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tracciamento del viso attivo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ansigtssporing er slået til"
+          }
+        }
+      }
+    },
+    "Face tracking needs the front TrueDepth camera." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il tracciamento del viso richiede la fotocamera frontale TrueDepth."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ansigtssporing kræver det forreste TrueDepth-kamera."
+          }
+        }
+      }
+    },
+    "Face tracking stopped: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tracciamento del viso interrotto: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ansigtssporingen stoppede: %@"
+          }
+        }
+      }
+    },
     "Failure" : {
       "localizations" : {
         "da" : {
@@ -3417,6 +3575,7 @@
         }
       }
     },
+    "Full body" : {},
     "Garden" : {
       "localizations" : {
         "da" : {
@@ -3433,6 +3592,7 @@
         }
       }
     },
+    "Giggle" : {},
     "Give the note a title." : {
       "localizations" : {
         "da" : {
@@ -3754,6 +3914,7 @@
         }
       }
     },
+    "Happy" : {},
     "Hardware" : {
       "localizations" : {
         "da" : {
@@ -3770,6 +3931,7 @@
         }
       }
     },
+    "Head tilt" : {},
     "Health" : {
       "localizations" : {
         "da" : {
@@ -3834,6 +3996,8 @@
         }
       }
     },
+    "Hey! Hands to yourself." : {},
+    "Hi there!" : {},
     "Hide developer options" : {
       "localizations" : {
         "da" : {
@@ -3850,6 +4014,7 @@
         }
       }
     },
+    "Hm? Yes?" : {},
     "Hold notifications during quiet hours" : {
       "localizations" : {
         "da" : {
@@ -3914,6 +4079,7 @@
         }
       }
     },
+    "I love head pats!" : {},
     "IN PROGRESS" : {
       "localizations" : {
         "da" : {
@@ -3930,6 +4096,7 @@
         }
       }
     },
+    "Icon" : {},
     "Icon (emoji)" : {
       "localizations" : {
         "da" : {
@@ -3964,32 +4131,48 @@
     },
     "In Todoist: Settings → Integrations → Developer → copy the API token. It is stored encrypted on the server and never shown again." : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I Todoist: Indstillinger → Integrationer → Udvikler → kopiér API-tokenet. Det gemmes krypteret på serveren og vises aldrig igen."
+          }
+        },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "In Todoist: Impostazioni → Integrazioni → Sviluppatore → copia il token API. Viene salvato cifrato sul server e non viene più mostrato."
           }
+        }
+      }
+    },
+    "In front of me (3-DoF)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Davanti a me (3-DoF)"
+          }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "I Todoist: Indstillinger → Integrationer → Udvikler → kopiér API-tokenet. Det gemmes krypteret på serveren og vises aldrig igen."
+            "value" : "Foran mig (3-DoF)"
           }
         }
       }
     },
     "Inbox" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In arrivo"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Indbakke"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In arrivo"
           }
         }
       }
@@ -4141,6 +4324,7 @@
         }
       }
     },
+    "Light" : {},
     "Limit: %lld min a day" : {
       "localizations" : {
         "da" : {
@@ -4211,6 +4395,22 @@
         }
       }
     },
+    "Listening…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ti ascolto…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lytter…"
+          }
+        }
+      }
+    },
     "Lists" : {
       "localizations" : {
         "da" : {
@@ -4228,6 +4428,7 @@
       }
     },
     "Live" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -4244,6 +4445,7 @@
       }
     },
     "Live: new messages from every channel appear here" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -4255,6 +4457,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Live: i nuovi messaggi da ogni canale appaiono qui"
+          }
+        }
+      }
+    },
+    "Loading Lucina…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carico Lucina…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indlæser Lucina…"
           }
         }
       }
@@ -4537,6 +4755,22 @@
         }
       }
     },
+    "Lucina in your room" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina nella tua stanza"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina i dit rum"
+          }
+        }
+      }
+    },
     "Lucina is busy with another message." : {
       "localizations" : {
         "da" : {
@@ -4649,6 +4883,7 @@
         }
       }
     },
+    "Lucina is typing" : {},
     "Lucina isn't answering" : {
       "localizations" : {
         "da" : {
@@ -4890,6 +5125,22 @@
         }
       }
     },
+    "Lucina's AR model isn't on the server yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il modello AR di Lucina non è ancora sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas AR-model er ikke på serveren endnu."
+          }
+        }
+      }
+    },
     "Lucina's access" : {
       "localizations" : {
         "da" : {
@@ -4954,6 +5205,7 @@
         }
       }
     },
+    "Lucina's studio" : {},
     "Lucina's voice" : {
       "localizations" : {
         "da" : {
@@ -5068,16 +5320,16 @@
     },
     "Mark as not done" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Segna come non completata"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Markér som ikke fuldført"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segna come non completata"
           }
         }
       }
@@ -5178,6 +5430,23 @@
         }
       }
     },
+    "Mirror me" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Imitami"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spejl mig"
+          }
+        }
+      }
+    },
+    "Mm? Need something?" : {},
     "More" : {
       "localizations" : {
         "da" : {
@@ -5238,6 +5507,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sposta in un'altra lista"
+          }
+        }
+      }
+    },
+    "Move your phone slowly to find the floor." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Muovi piano il telefono per trovare il pavimento."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bevæg telefonen langsomt for at finde gulvet."
           }
         }
       }
@@ -5354,6 +5639,8 @@
         }
       }
     },
+    "Names" : {},
+    "Names to check: kept as typed. They apply to this item on every list." : {},
     "Natural" : {
       "localizations" : {
         "da" : {
@@ -5386,6 +5673,7 @@
         }
       }
     },
+    "Neutral" : {},
     "Never miss Lucina" : {
       "localizations" : {
         "da" : {
@@ -5532,20 +5820,21 @@
     },
     "Next week" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Settimana prossima"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Næste uge"
           }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Settimana prossima"
+          }
         }
       }
     },
+    "Night" : {},
     "No answer in time." : {
       "localizations" : {
         "da" : {
@@ -5626,6 +5915,7 @@
         }
       }
     },
+    "Nod" : {},
     "Normal" : {
       "localizations" : {
         "da" : {
@@ -5659,6 +5949,7 @@
       }
     },
     "Not connected to live updates" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -5722,18 +6013,19 @@
         }
       }
     },
+    "Not the skirt!" : {},
     "Not yet in Todoist" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Non ancora in Todoist"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Endnu ikke i Todoist"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non ancora in Todoist"
           }
         }
       }
@@ -5963,6 +6255,7 @@
       }
     },
     "Offline" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -5980,20 +6273,21 @@
     },
     "Offline: %lld changes will be sent when you're back online" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Offline: %lld modifiche verranno inviate quando torni online"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Offline: %lld ændringer sendes, når du er online igen"
           }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offline: %lld modifiche verranno inviate quando torni online"
+          }
         }
       }
     },
+    "Okay, that's enough now." : {},
     "On" : {
       "localizations" : {
         "da" : {
@@ -6006,6 +6300,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sì"
+          }
+        }
+      }
+    },
+    "On the floor (room tracking)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sul pavimento (tracciamento della stanza)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "På gulvet (rumsporing)"
           }
         }
       }
@@ -6170,6 +6480,22 @@
         }
       }
     },
+    "Open in AR Quick Look" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri in AR Quick Look"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn i AR Quick Look"
+          }
+        }
+      }
+    },
     "Opens Lucina full screen" : {
       "localizations" : {
         "da" : {
@@ -6236,20 +6562,21 @@
     },
     "Overdue" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In ritardo"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Forfaldne"
           }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In ritardo"
+          }
         }
       }
     },
+    "Paper" : {},
     "Password" : {
       "localizations" : {
         "da" : {
@@ -6284,16 +6611,16 @@
     },
     "Paste API token" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Incolla token API"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Indsæt API-token"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Incolla token API"
           }
         }
       }
@@ -6330,18 +6657,19 @@
         }
       }
     },
+    "Photo" : {},
     "Pick a date" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Scegli una data"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Vælg en dato"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scegli una data"
           }
         }
       }
@@ -6362,6 +6690,7 @@
         }
       }
     },
+    "Pink" : {},
     "Pinned" : {
       "localizations" : {
         "da" : {
@@ -6374,6 +6703,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fissato"
+          }
+        }
+      }
+    },
+    "Place in your room (AR)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mettila nella tua stanza (AR)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stil hende i dit rum (AR)"
           }
         }
       }
@@ -6410,6 +6755,7 @@
         }
       }
     },
+    "Poses" : {},
     "Pounds" : {
       "localizations" : {
         "da" : {
@@ -6550,6 +6896,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Comandi recenti di Lucina"
+          }
+        }
+      }
+    },
+    "Recenter" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ricentra"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Centrér"
           }
         }
       }
@@ -6940,20 +7302,37 @@
     },
     "Reschedule" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Riprogramma"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Planlæg igen"
           }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprogramma"
+          }
         }
       }
     },
+    "Reset size and turn" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina dimensione e rotazione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nulstil størrelse og drejning"
+          }
+        }
+      }
+    },
+    "Reset view" : {},
     "Rest timer" : {
       "localizations" : {
         "da" : {
@@ -7050,6 +7429,7 @@
         }
       }
     },
+    "Rooftop" : {},
     "Routine" : {
       "localizations" : {
         "da" : {
@@ -7066,6 +7446,7 @@
         }
       }
     },
+    "Sad" : {},
     "Safari websites" : {
       "localizations" : {
         "da" : {
@@ -7619,6 +8000,7 @@
         }
       }
     },
+    "Show %lld more" : {},
     "Show Lucina" : {
       "localizations" : {
         "da" : {
@@ -7635,6 +8017,7 @@
         }
       }
     },
+    "Show less" : {},
     "Show message text in notifications" : {
       "localizations" : {
         "da" : {
@@ -7763,6 +8146,8 @@
         }
       }
     },
+    "Sky" : {},
+    "Smile" : {},
     "Sound on" : {
       "localizations" : {
         "da" : {
@@ -7811,6 +8196,7 @@
         }
       }
     },
+    "Stage" : {},
     "Start %@" : {
       "localizations" : {
         "da" : {
@@ -7907,6 +8293,22 @@
         }
       }
     },
+    "Starting the camera…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvio della fotocamera…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starter kameraet…"
+          }
+        }
+      }
+    },
     "Starts an empty workout in the Gym tab." : {
       "localizations" : {
         "da" : {
@@ -7955,6 +8357,7 @@
         }
       }
     },
+    "Stop dancing" : {},
     "Stop listening" : {
       "localizations" : {
         "da" : {
@@ -7967,6 +8370,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Smetti di ascoltare"
+          }
+        }
+      }
+    },
+    "Stop mirroring" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smetti di imitarmi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop spejling"
           }
         }
       }
@@ -7987,6 +8406,7 @@
         }
       }
     },
+    "Studio" : {},
     "Style her hair: %@" : {
       "localizations" : {
         "da" : {
@@ -8051,6 +8471,8 @@
         }
       }
     },
+    "Sunset" : {},
+    "Surprised" : {},
     "Sync" : {
       "localizations" : {
         "da" : {
@@ -8147,6 +8569,38 @@
         }
       }
     },
+    "Tap her to say hi. Pinch to resize, twist to turn." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toccala per salutarla. Pizzica per ridimensionarla, ruota con due dita per girarla."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk på hende for at sige hej. Knib for at ændre størrelse, drej for at vende hende."
+          }
+        }
+      }
+    },
+    "Tap her to say hi. Pinch, twist or drag her; tap the floor to move her; two fingers reset." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toccala per salutarla. Pizzica, ruota o trascinala; tocca il pavimento per spostarla; due dita per ripristinare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk på hende for at sige hej. Knib, drej eller træk hende; tryk på gulvet for at flytte hende; to fingre nulstiller."
+          }
+        }
+      }
+    },
     "Tap something below, or search to add it." : {
       "localizations" : {
         "da" : {
@@ -8163,34 +8617,50 @@
         }
       }
     },
-    "Task deleted" : {
+    "Tap the floor to place Lucina." : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Attività eliminata"
+            "value" : "Tocca il pavimento per mettere Lucina."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Tryk på gulvet for at stille Lucina."
+          }
+        }
+      }
+    },
+    "Task deleted" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Opgave slettet"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività eliminata"
           }
         }
       }
     },
     "Tasks" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Attività"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opgaver"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività"
           }
         }
       }
@@ -8307,6 +8777,7 @@
         }
       }
     },
+    "That feels nice." : {},
     "That message wasn't delivered; see the chat." : {
       "localizations" : {
         "da" : {
@@ -8691,6 +9162,8 @@
         }
       }
     },
+    "They apply to this item on every list." : {},
+    "Think" : {},
     "This backup exceeds the 8 MB import limit." : {
       "localizations" : {
         "da" : {
@@ -8883,6 +9356,8 @@
         }
       }
     },
+    "Tilt" : {},
+    "Tilt off" : {},
     "Time" : {
       "localizations" : {
         "da" : {
@@ -8979,6 +9454,7 @@
         }
       }
     },
+    "To do" : {},
     "Today" : {
       "localizations" : {
         "da" : {
@@ -9013,13 +9489,13 @@
     },
     "Todoist" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist"
@@ -9029,160 +9505,160 @@
     },
     "Todoist didn't accept that token. Copy it again from Settings → Integrations → Developer." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist non ha accettato quel token. Copialo di nuovo da Impostazioni → Integrazioni → Sviluppatore."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist godtog ikke det token. Kopiér det igen fra Indstillinger → Integrationer → Udvikler."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist non ha accettato quel token. Copialo di nuovo da Impostazioni → Integrazioni → Sviluppatore."
           }
         }
       }
     },
     "Todoist didn't connect." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist non si è collegato."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist blev ikke forbundet."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist non si è collegato."
           }
         }
       }
     },
     "Todoist is connected (%@). Importing your tasks…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist è collegato (%@). Importo le tue attività…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist er forbundet (%@). Henter dine opgaver…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist è collegato (%@). Importo le tue attività…"
           }
         }
       }
     },
     "Todoist is connected. Importing your tasks…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist è collegato. Importo le tue attività…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist er forbundet. Henter dine opgaver…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist è collegato. Importo le tue attività…"
           }
         }
       }
     },
     "Todoist isn't connected. Connect it in Settings → Links." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist non è collegato. Collegalo in Impostazioni → Link."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist er ikke forbundet. Forbind det under Indstillinger → Links."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist non è collegato. Collegalo in Impostazioni → Link."
           }
         }
       }
     },
     "Todoist kept its version" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist ha tenuto la sua versione"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist beholdt sin version"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist ha tenuto la sua versione"
           }
         }
       }
     },
     "Todoist needs reconnecting in Settings → Links." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist va ricollegato in Impostazioni → Link."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist skal forbindes igen under Indstillinger → Links."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist va ricollegato in Impostazioni → Link."
           }
         }
       }
     },
     "Todoist synced." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist sincronizzato."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist synkroniseret."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist sincronizzato."
           }
         }
       }
     },
     "Todoist, synced both ways: what you do here shows up in Todoist and the other way round." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Todoist, sincronizzato nei due sensi: quello che fai qui compare in Todoist e viceversa."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Todoist, synkroniseret begge veje: det du gør her, vises i Todoist og omvendt."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist, sincronizzato nei due sensi: quello che fai qui compare in Todoist e viceversa."
           }
         }
       }
     },
     "Tomorrow" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Domani"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "I morgen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domani"
           }
         }
       }
@@ -9653,16 +10129,16 @@
     },
     "Upcoming" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In programma"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kommende"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In programma"
           }
         }
       }
@@ -9813,16 +10289,16 @@
     },
     "View" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vista"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Visning"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vista"
           }
         }
       }
@@ -9875,6 +10351,7 @@
         }
       }
     },
+    "W-what are you doing?" : {},
     "Waist" : {
       "localizations" : {
         "da" : {
@@ -9955,6 +10432,7 @@
         }
       }
     },
+    "Warm" : {},
     "Warm-up" : {
       "localizations" : {
         "da" : {
@@ -10003,6 +10481,7 @@
         }
       }
     },
+    "Wave" : {},
     "Wearing" : {
       "localizations" : {
         "da" : {
@@ -10422,16 +10901,16 @@
     },
     "Yesterday" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ieri"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "I går"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ieri"
           }
         }
       }
@@ -10502,16 +10981,16 @@
     },
     "You're all done for today" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Per oggi hai finito"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Du er færdig for i dag"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Per oggi hai finito"
           }
         }
       }
@@ -10582,16 +11061,16 @@
     },
     "Your inbox is clear" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La posta in arrivo è vuota"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Din indbakke er tom"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La posta in arrivo è vuota"
           }
         }
       }
@@ -10752,6 +11231,9 @@
         }
       }
     },
+    "— %@" : {
+      "shouldTranslate" : false
+    },
     "“%@” is in the trash." : {
       "localizations" : {
         "da" : {
@@ -10767,6 +11249,9 @@
           }
         }
       }
+    },
+    "🛒" : {
+      "shouldTranslate" : false
     },
     "🛒 Other" : {
       "localizations" : {

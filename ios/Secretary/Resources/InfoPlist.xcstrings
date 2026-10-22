@@ -1,0 +1,30 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSCameraUsageDescription": {
+      "comment": "Camera permission: face tracking and AR for Lucina.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only when you turn it on: Lucina mirrors your face or appears in your room. The camera image stays on this iPhone."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo quando lo attivi tu: Lucina imita il tuo viso o compare nella tua stanza. L'immagine della fotocamera resta su questo iPhone."
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kun når du slår det til: Lucina spejler dit ansigt eller dukker op i dit rum. Kamerabilledet bliver på denne iPhone."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

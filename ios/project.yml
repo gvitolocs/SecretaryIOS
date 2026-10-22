@@ -53,6 +53,9 @@ targets:
         SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
         NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing."
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
+        # Face tracking (Lucina mirrors your face) and AR (Lucina in your room); localized in
+        # Secretary/Resources/InfoPlist.xcstrings.
+        NSCameraUsageDescription: "Only when you turn it on: Lucina mirrors your face or appears in your room. The camera image stays on this iPhone."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
