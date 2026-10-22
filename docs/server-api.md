@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)) and `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)) and `POST /v1/notify` (see [Notifications](#notifications)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -1187,6 +1187,58 @@ she put on; neither when she went back to automatic). Clients that see one
 on the timeline stream refetch `GET /v1/avatar` and apply it with the change
 effect. Clients also refetch when they come back to the foreground.
 
+## Notifications
+
+Architecture, iPhone options and privacy: [`notifications.md`](notifications.md).
+Device routes take Bearer or the cookie (+ `X-Secretary-CSRF: 1` for writes).
+
+Notification:
+
+```json
+{ "id": "n_1792654200000a1b2c3d4", "ts": 1792654200000, "category": "reminder",
+  "title": "optional custom title", "body": "Call the dentist", "route": "/",
+  "channel": "telegram", "timelineId": "01JA…", "dedupKey": "reminder:42",
+  "data": {}, "read": false, "readAt": null }
+```
+
+`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
+`shopping`, `presence`, `system`. Without `title`, clients title it by category.
+`route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
+
+| Route | |
+|---|---|
+| `GET /v1/notifications?limit=1..200&before=<id>&unread=0\|1` | `{items, unread, nextBefore}`, newest first (500 kept). |
+| `POST /v1/notifications/read {ids: […]}` or `{all: true}` | `{updated, unread}`. |
+| `GET /v1/notifications/settings` | `{settings, categories, subscriptions, currentDevice, webPush: {enabled, publicKey}, apns: {enabled, environment}, present}`. |
+| `PUT /v1/notifications/settings` | The whole `settings` object (below); `400 bad_request` names the bad field. Answers like `GET`. |
+| `POST /v1/notifications/presence {active}` | The app is (not) in front; counts 90 s. Lucina's messages are not notified while any device is present. |
+| `GET /v1/push/key` | `{publicKey}`: the VAPID `applicationServerKey` (base64url). |
+| `POST /v1/push/subscribe` | `PushSubscription.toJSON()` + `label`, `lang` → `201` subscription view (no secrets). Upserts by endpoint; the endpoint must be HTTPS on a known push service. |
+| `DELETE /v1/push/subscribe {endpoint}` | `{removed}`. |
+| `DELETE /v1/push/subscriptions/{id}` | `{removed}`; `404 subscription_not_found`. |
+| `POST /v1/push/test {id?}` | A test push to that subscription (default: the caller's); waits: `{results: [{id, ok, delivery: {result: sent\|gone\|failed, status?, error?}}]}`. |
+| `POST /v1/push/apns {token, lang?}` | Native app device token → `201`; `503 apns_disabled` until APNs is configured. |
+
+Settings:
+
+```json
+{ "categories": {"lucina_message": true, "reminder": true, "calendar": true, "device_confirm": true,
+                 "shopping": true, "presence": false, "system": false},
+  "quietHours": {"enabled": false, "start": "22:30", "end": "07:30"},
+  "timeZone": "Europe/Rome", "dndUntil": null, "calendarLeadMinutes": 10,
+  "remindersBypassQuiet": true, "digest": true, "previews": true, "language": "en",
+  "devices": {"ps_…": {"enabled": true, "categories": {"calendar": false}}} }
+```
+
+### `POST /v1/notify` (service token)
+
+Lucina posts a notification:
+`{category, body (1–2000), title? (≤120), route?, dedupKey? (≤200), timelineId?, channel?, data? (≤4 KiB)}`
+(unknown fields → `400`). `201 {status: "created", notification, pushed, deferred}`,
+or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
+`disabled` (category off) or `present` (a Lucina message while the owner is in
+the app). Device tokens and cookies get `401`.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |
@@ -1214,7 +1266,9 @@ effect. Clients also refetch when they come back to the foreground.
 | 502 | `tts_unavailable` | server | Kokoro unreachable or failed (`POST /v1/tts`). |
 | 503 | `lucina_not_configured` | server | The server has no Lucina token configured. |
 | 503 | `catalog_unavailable` | server | `catalog.{lang}.json` missing from `SECRETARY_CATALOG_DIR`. |
-| 503 | `service_token_not_configured` | server | `/v1/insights/summary` without `SECRETARY_SERVICE_TOKEN_FILE`. |
+| 503 | `service_token_not_configured` | server | `/v1/insights/summary` or `/v1/notify` without `SECRETARY_SERVICE_TOKEN_FILE`. |
+| 503 | `apns_disabled` | server | `POST /v1/push/apns` without APNs configured. |
+| 404 | `subscription_not_found` | server | `DELETE /v1/push/subscriptions/{id}`, `POST /v1/push/test`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
 | 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
 | 504 | `tts_unavailable` | server | Kokoro did not answer within 30 s. |
