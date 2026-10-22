@@ -230,3 +230,44 @@ async fn migrations_store_roundtrip() {
         Some(json!({"fails": 2}))
     );
 }
+
+/// G3: the tick lock is one per database, across connections (processes):
+/// the `run` daemon and a `once` run cannot tick at the same time.
+#[tokio::test]
+async fn the_tick_lock_is_exclusive_across_connections() {
+    let _g = LOCK.lock().await;
+    let Some(daemon) = store().await else { return };
+    let url = std::env::var("LUCINA_TEST_DATABASE_URL").unwrap();
+    let once = PgStore::with_pool(
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap(),
+    );
+    let held = daemon
+        .try_tick_lock()
+        .await
+        .unwrap()
+        .expect("free at first");
+    assert!(
+        once.try_tick_lock().await.unwrap().is_none(),
+        "held by the daemon"
+    );
+    assert!(
+        daemon.try_tick_lock().await.unwrap().is_none(),
+        "not re-entrant"
+    );
+    drop(held);
+    // The release reaches the server when the dropped transaction's
+    // connection rolls back.
+    let mut got = None;
+    for _ in 0..50 {
+        got = once.try_tick_lock().await.unwrap();
+        if got.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(got.is_some(), "released after the tick");
+}

@@ -16,8 +16,20 @@ use crate::model::{
     Action, Candidate, Decision, Event, Feedback, FeedbackAction, Kind, Outreach, Priority, Scores,
 };
 
+/// Held for a whole tick; dropping it releases the lock.
+pub struct TickLock(#[allow(dead_code)] Box<dyn std::any::Any + Send>);
+
+/// `pg_try_advisory_xact_lock` key of the tick lock (the migrations use
+/// 7461356).
+pub const TICK_LOCK_KEY: i64 = 7_461_357;
+
 #[async_trait::async_trait]
 pub trait Store: Send + Sync {
+    /// One tick at a time across processes (the `run` daemon and a `once`
+    /// run): `None` when another tick holds the lock. The attention budget
+    /// and cooldown read the ledger and then send, so two ticks at once
+    /// could both pass the gate (docs/verification.md, G3).
+    async fn try_tick_lock(&self) -> Result<Option<TickLock>>;
     /// Insert a new event; `false` when its dedup key was seen before.
     async fn insert_event(&self, e: &Event) -> Result<bool>;
     /// The candidate of the event with this dedup key, if it was decided.
@@ -76,6 +88,7 @@ struct Mem {
 #[derive(Default)]
 pub struct MemStore {
     m: Mutex<Mem>,
+    tick: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 impl MemStore {
@@ -105,6 +118,15 @@ impl MemStore {
 
 #[async_trait::async_trait]
 impl Store for MemStore {
+    async fn try_tick_lock(&self) -> Result<Option<TickLock>> {
+        Ok(self
+            .tick
+            .clone()
+            .try_lock_owned()
+            .ok()
+            .map(|g| TickLock(Box::new(g))))
+    }
+
     async fn insert_event(&self, e: &Event) -> Result<bool> {
         let mut m = self.lock();
         if m.keys.contains_key(&e.dedup_key) {
@@ -405,6 +427,18 @@ impl PgStore {
 
 #[async_trait::async_trait]
 impl Store for PgStore {
+    async fn try_tick_lock(&self) -> Result<Option<TickLock>> {
+        // A transaction-level lock: it lives as long as the transaction,
+        // which the guard holds open; dropping the guard rolls it back and
+        // releases the lock (also when the tick fails or panics).
+        let mut tx = self.pool.begin().await?;
+        let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(TICK_LOCK_KEY)
+            .fetch_one(&mut *tx)
+            .await?;
+        Ok(got.then(|| TickLock(Box::new(tx))))
+    }
+
     async fn insert_event(&self, e: &Event) -> Result<bool> {
         let r = sqlx::query(
             "INSERT INTO lucina_proactive.events \

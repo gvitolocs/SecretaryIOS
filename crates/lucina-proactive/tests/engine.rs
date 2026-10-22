@@ -949,3 +949,36 @@ async fn basta_cosi_on_the_pulse_mutes_the_pulse() {
         .unwrap();
     assert_eq!(r.pulse, "sent");
 }
+
+/// G3 (docs/verification.md): the attention budget and the cooldown are
+/// read per candidate and only hold within one tick; a `once` run next to
+/// the `run` daemon could pass the gate twice. A tick now holds the store's
+/// tick lock for its whole run and does nothing when another tick has it.
+#[tokio::test]
+async fn a_tick_is_skipped_while_another_tick_holds_the_lock() {
+    let w = world(config(false));
+    let now = at(NOON_ISH);
+    w.api.events.lock().unwrap().push(event(
+        "google:abc",
+        "CRAFT-IT4SD meeting with Marianne",
+        now + Duration::minutes(60),
+    ));
+    w.api.notes.lock().unwrap().push(note(
+        "craftit-meeting",
+        "CRAFT-IT4SD — meeting with Marianne & Jonas",
+        true,
+    ));
+    // Another process's tick (the daemon) is running.
+    let other = w.store.try_tick_lock().await.unwrap().expect("free");
+    assert!(w.store.try_tick_lock().await.unwrap().is_none());
+    let r = w.engine.tick(now, false).await.unwrap();
+    assert!(r.skipped);
+    assert!(r.outreach.is_empty() && r.decisions.is_empty());
+    assert!(w.sink.0.lock().unwrap().is_empty(), "nothing sent");
+    drop(other);
+    // Then the next tick runs, and sends once.
+    let r = w.engine.tick(now, false).await.unwrap();
+    assert!(!r.skipped);
+    assert_eq!(r.outreach.len(), 1);
+    assert!(w.store.try_tick_lock().await.unwrap().is_some(), "released");
+}

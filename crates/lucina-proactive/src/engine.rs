@@ -62,6 +62,9 @@ pub struct TickReport {
     /// `sent`, `dry_run`, `suppressed: ...`, `waiting: ...`, or empty.
     pub pulse: String,
     pub errors: Vec<String>,
+    /// Another process was running a tick (G3): this one did nothing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
 }
 
 pub struct Engine {
@@ -268,6 +271,14 @@ impl Engine {
         let mut report = TickReport::default();
         let cfg = self.d.cfg.clone();
         let store = self.d.store.clone();
+        // One tick at a time across processes, for the whole tick: the
+        // budget and cooldown are read per candidate and only hold if no
+        // other tick sends in between (docs/verification.md, G3).
+        let Some(_tick_lock) = store.try_tick_lock().await? else {
+            tracing::info!("another tick is running: skipped");
+            report.skipped = true;
+            return Ok(report);
+        };
 
         if let Err(e) = self.pull_feedback(now).await {
             report.errors.push(format!("feedback: {e}"));
