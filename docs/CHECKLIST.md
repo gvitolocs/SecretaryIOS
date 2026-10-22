@@ -39,7 +39,10 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), live edb6405
 
 ### Avatar
-- [ ] Base = G (game-accurate, owner pick 2026-10-22 18:30): deploy G pack + clips + toon-g stage; refit 12 outfits to G; physics (spring bones) on G chains
+- [x] G LIVE 2026-10-22 20:15 (main dc79130 + G pack + 22 clips; 5 held back); iPhone ios-app 73b38a3
+- [x] Touch + Custom Cast studio LIVE on web (main d1c7384): orbit/pinch/tap reactions, studio, photo, dance, gyro, presets
+- [ ] Refit 12 outfits to G (wardrobe rules temporarily all → uniform)
+- [ ] Physics (spring bones) on G chains
 - [x] Wardrobe UI LIVE (outfit/hair/colour tabs, rules per tab, remembered); LUCINA_AVATAR_OUTFIT not yet on
 - [ ] Outfit + hairstyle GLBs (Custom Cast first, then free assets) on the FIXED B
 - [x] Owner picked B (flower removed, tiara restored)
