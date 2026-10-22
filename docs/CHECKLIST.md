@@ -7,7 +7,8 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Inventory of the Node Lucina (every module PORT / DROP / OTHER-BOT) and the port plan → `docs/lucina-rust/`
 - [ ] Core crates on branch `lucina-rs`: `lucina-llm` (DeepSeek + tools), `lucina-tools` (plugins, confirmation flow),
       `lucina-memory` (Honcho), `lucina-store` (timeline/reminders, Node-compatible), `lucina-grocery`, `lucina-server`
-- [ ] Phase 1: the Secretary API (app + web) served by the Rust Lucina, side by side with Node, then cut over
+- [x] Intent false-positive fix live on Rust (c33f67c); Node f4b61e2 committed, restart of lucina-nez held until the shopping item-objects migration 003 is applied
+- [x] Phase 1: Secretary API on the Rust Lucina — CUT OVER 2026-10-22 16:35 (parity 106/106, parsers 239/239)
 - [ ] Phase 2: reminders and scheduler (single writer)
 - [ ] Phase 3: Telegram
 - [ ] Phase 4: Discord (owner: keep, with Lucina's persona; needs the owner's Discord user id)
@@ -22,7 +23,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [ ] Grok Bot caller shows as "www": map the cursor.com redirect host to "grok"
 
 ## Proactive Lucina (owner, 2026-10-22: "she reaches out before you ask")
-- [ ] MVP1 Lucina First + MVP2 Attention Engine + Daily Pulse (Rust crate lucina-proactive, Postgres schema, app + Telegram outreach, feedback) — dry-run first
+- [x] MVP1+2 built; lucina-proactive.service RUNNING IN DRY-RUN since 2026-10-22 15:13 (server/web routes live). Go live: LUCINA_PROACTIVE_DRY_RUN=false in ~/.config/lucina-proactive/env after owner reviews `lucina-proactive report --hours 24`
 - [ ] MVP3 persistent background tasks + Smart Approval (Approve/Edit/Ignore)
 - [ ] MVP4 external sources (email, GitHub, Pokoin servers)
 - [ ] MVP5 learning from feedback + Lucina proposes automations

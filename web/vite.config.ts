@@ -14,7 +14,8 @@ export default defineConfig({
   plugins: [solid()],
   // The Lucina stage package is linked from ../packages; use one copy of three.
   resolve: { dedupe: ["three"] },
-  server: { port: 5173, strictPort: true, proxy },
+  // The shopping illustrations live in ../assets/icons (shared with iOS); let Vite read them.
+  server: { port: 5173, strictPort: true, proxy, fs: { allow: [".."] } },
   preview: { port: 4173, strictPort: true, proxy },
   build: {
     outDir: "dist",

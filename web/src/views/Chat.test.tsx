@@ -1,4 +1,6 @@
+import { createMemoryHistory, MemoryRouter, Route, useNavigate } from "@solidjs/router";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import type { JSX } from "solid-js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { chat, reloadChatFromStorage } from "../state/chat";
 import { installEventSource, MockEventSource } from "../test/eventsource";
@@ -6,6 +8,13 @@ import { deferred, stubFetch, type Call, type Handler } from "../test/fetch";
 import ChatView from "./Chat";
 
 const EMPTY_PAGE = { body: { items: [], nextBefore: null } };
+
+function renderAtWithHistory(path: string, routes: () => JSX.Element) {
+  const history = createMemoryHistory();
+  history.set({ value: path, scroll: false, replace: true });
+  const r = render(() => <MemoryRouter history={history}>{routes()}</MemoryRouter>);
+  return { ...r, history };
+}
 
 function type(text: string) {
   const box = screen.getByLabelText("Message Lucina") as HTMLTextAreaElement;
@@ -240,5 +249,140 @@ describe("Chat", () => {
     fireEvent.click(retry);
     expect(await screen.findByText("Web reply")).toBeInTheDocument();
     expect(screen.queryByText("Couldn't load the conversation.")).toBeNull();
+  });
+
+  describe("Lucina reached out", () => {
+    const ID = "po_01K85Z3Q4X5Y6Z7A8B9C0D1E2F";
+    const PROACTIVE = {
+      id: "20",
+      ts: at(500),
+      channel: "other",
+      role: "lucina",
+      text: "CRAFT-IT4SD starts in an hour. I put a short prep in your notes.",
+      meta: {
+        kind: "proactive",
+        topic: "meeting_prep",
+        priority: "high",
+        outreachId: ID,
+        why: "starts in 60 min; 1 note · score 0.83 ≥ send 0.70",
+        actions: [
+          { id: "open_note", label: "Open the note", route: "/notes/prep-20261022-craft-it4sd" },
+          { id: "useful", label: "Useful", feedback: true },
+          { id: "not_now", label: "Not now", feedback: true },
+          { id: "stop", label: "Stop these", feedback: true },
+        ],
+      },
+    };
+
+    it("renders a card with priority, a content link, feedback and the why", async () => {
+      const calls = serve(
+        (c) => (c.url.startsWith("/v1/proactive/") ? { status: 201, body: { feedback: { id: "fb_1", outreachId: ID, action: "not_now", at: 1 } } } : { status: 404 }),
+        () => ({ body: { items: [PROACTIVE, ...MIXED], nextBefore: null } }),
+      );
+      render(() => <ChatView />);
+      const card = await screen.findByRole("region", { name: "Lucina reached out" });
+      expect(card).toHaveTextContent("Important");
+      expect(card).toHaveTextContent("CRAFT-IT4SD starts in an hour.");
+      expect(screen.getByRole("link", { name: "Open the note" })).toHaveAttribute("href", "/notes/prep-20261022-craft-it4sd");
+      // Not a plain bubble.
+      expect(document.querySelector(".msg--proactive .bubble")).toBeNull();
+
+      expect(screen.queryByText(/score 0.83/)).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Why?" }));
+      expect(screen.getByText(/score 0.83/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+      expect(await screen.findByText("Got it: not now.")).toBeInTheDocument();
+      const post = calls.find((c) => c.url === `/v1/proactive/outreach/${ID}/feedback`)!;
+      expect(post.method).toBe("POST");
+      expect(post.body).toEqual({ action: "not_now" });
+      expect(post.headers["x-secretary-csrf"]).toBe("1");
+      for (const name of ["Useful", "Not now", "Stop these"]) {
+        expect(screen.getByRole("button", { name })).toBeDisabled();
+      }
+    });
+
+    it("shows a failed tap and keeps the buttons", async () => {
+      serve(
+        () => ({ status: 500, body: { error: { code: "internal", message: "x" } } }),
+        () => ({ body: { items: [PROACTIVE], nextBefore: null } }),
+      );
+      render(() => <ChatView />);
+      fireEvent.click(await screen.findByRole("button", { name: "Stop these" }));
+      expect(await screen.findByText("Couldn't send that. Try again.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Stop these" })).not.toBeDisabled();
+    });
+
+    it("the App filter keeps her proactive messages", async () => {
+      serve(() => ({ status: 404 }), () => ({ body: { items: [PROACTIVE, ...MIXED], nextBefore: null } }));
+      render(() => <ChatView />);
+      await screen.findByRole("region", { name: "Lucina reached out" });
+      fireEvent.click(screen.getByRole("button", { name: "App" }));
+      expect(screen.getByRole("region", { name: "Lucina reached out" })).toBeInTheDocument();
+      expect(screen.queryByText("From Telegram")).toBeNull();
+    });
+
+    it("a deep link focuses the message and leaves the address clean", async () => {
+      window.history.pushState({}, "", `/?outreach=${ID}`);
+      serve(() => ({ status: 404 }), () => ({ body: { items: [PROACTIVE, ...MIXED], nextBefore: null } }));
+      render(() => <ChatView />);
+      await screen.findByRole("region", { name: "Lucina reached out" });
+      await waitFor(() => expect(document.querySelector(".msg--focus")).not.toBeNull());
+      expect(window.location.search).toBe("");
+    });
+
+    it("a deep link to a message that is not loaded still takes feedback", async () => {
+      window.history.pushState({}, "", `/?outreach=${ID}`);
+      const calls = serve(
+        () => ({ status: 201, body: { feedback: { id: "fb_2", outreachId: ID, action: "useful", at: 1 } } }),
+        () => ({ body: { items: MIXED, nextBefore: null } }),
+      );
+      render(() => <ChatView />);
+      expect(await screen.findByText(/isn't in the loaded conversation/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Useful" }));
+      expect(await screen.findByText("Thanks, noted.")).toBeInTheDocument();
+      expect(calls.some((c) => c.url === `/v1/proactive/outreach/${ID}/feedback`)).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expect(screen.queryByText(/isn't in the loaded conversation/)).toBeNull();
+      window.history.pushState({}, "", "/");
+    });
+  });
+});
+
+describe("Lucina reached out, inside the router", () => {
+  beforeEach(() => reloadChatFromStorage());
+
+  it("a notification click while the chat is open focuses the message", async () => {
+    const ID = "po_01K85Z3Q4X5Y6Z7A8B9C0D1E2F";
+    const item = {
+      id: "21",
+      ts: new Date().toISOString(),
+      channel: "other",
+      role: "lucina",
+      text: "pokoin.com is back up.",
+      meta: { kind: "proactive", priority: "normal", outreachId: ID, actions: [] },
+    };
+    serve(() => ({ status: 404 }), () => ({ body: { items: [item], nextBefore: null } }));
+    let go: ((to: string) => void) | undefined;
+    function Probe() {
+      go = useNavigate();
+      return null;
+    }
+    const { history } = renderAtWithHistory("/", () => (
+      <Route
+        path="/"
+        component={() => (
+          <>
+            <Probe />
+            <ChatView />
+          </>
+        )}
+      />
+    ));
+    await screen.findByRole("region", { name: "Lucina reached out" });
+    expect(document.querySelector(".msg--focus")).toBeNull();
+    go!(`/?outreach=${ID}`);
+    await waitFor(() => expect(document.querySelector(".msg--focus")).not.toBeNull());
+    await waitFor(() => expect(history.get()).toBe("/"));
   });
 });

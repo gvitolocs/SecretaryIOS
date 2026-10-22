@@ -198,6 +198,7 @@ export default function ShoppingView() {
         flipId={p.item.id}
         kind={p.item.status === "needed" ? "need" : "recent"}
         icon={itemIcon(p.item)}
+        catalogId={p.item.catalogId}
         name={p.item.name}
         spec={specOf(p.item)}
         label={itemLabel(p.item)}
@@ -437,6 +438,7 @@ export default function ShoppingView() {
                               flipId={`catalog:${cat.id}`}
                               kind="catalog"
                               icon={cat.icon}
+                              catalogId={cat.id}
                               name={name()}
                               spec={onList() ? row()?.spec : undefined}
                               selected={onList()}

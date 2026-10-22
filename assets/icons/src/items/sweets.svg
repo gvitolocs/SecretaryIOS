@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g transform="translate(24 20) rotate(-25)">
+    <path d="M-7-3.5-17-8.5c1.6 5.5 1.6 11.5 0 17L-7 3.5ZM7-3.5 17-8.5c-1.6 5.5-1.6 11.5 0 17L7 3.5Z" fill="#e9a91c"/>
+    <path d="M-13.5-6v12M13.5-6v12" stroke="#fff" stroke-width="1.2" stroke-linecap="round" opacity=".45"/>
+    <ellipse rx="10" ry="8" fill="#ffd43b"/>
+    <path d="M-4.5-7.2c3 4 3 10.4 0 14.4M3.5-7.6c3 4 3 11.2 0 15.2" fill="none" stroke="#fff" stroke-width="2.2" opacity=".75"/>
+    <path d="M10 0c0 4.4-4.5 8-10 8 4-1.5 6.5-4.5 6.5-8S4.5-6.5 1.5-7.9C6.5-7.5 10-4 10 0Z" fill="#3d2b2b" opacity=".15"/>
+    <ellipse cx="-5.5" cy="-3.6" rx="1.5" ry="2.5" fill="#fff" opacity=".6" transform="rotate(50 -5.5 -3.6)"/>
+  </g>
+  <g transform="translate(22 48) rotate(-10)">
+    <path d="M-7-3.5-17-8.5c1.6 5.5 1.6 11.5 0 17L-7 3.5ZM7-3.5 17-8.5c-1.6 5.5-1.6 11.5 0 17L7 3.5Z" fill="#a8d84e"/>
+    <path d="M-13.5-6v12M13.5-6v12" stroke="#fff" stroke-width="1.2" stroke-linecap="round" opacity=".45"/>
+    <ellipse rx="10" ry="8" fill="#3e9b3e"/>
+    <path d="M-4.5-7.2c3 4 3 10.4 0 14.4M3.5-7.6c3 4 3 11.2 0 15.2" fill="none" stroke="#fff" stroke-width="2.2" opacity=".75"/>
+    <path d="M10 0c0 4.4-4.5 8-10 8 4-1.5 6.5-4.5 6.5-8S4.5-6.5 1.5-7.9C6.5-7.5 10-4 10 0Z" fill="#3d2b2b" opacity=".15"/>
+    <ellipse cx="-5.5" cy="-3.6" rx="1.5" ry="2.5" fill="#fff" opacity=".6" transform="rotate(50 -5.5 -3.6)"/>
+  </g>
+  <g transform="translate(40 36) rotate(20)">
+    <path d="M-7-3.5-17-8.5c1.6 5.5 1.6 11.5 0 17L-7 3.5ZM7-3.5 17-8.5c-1.6 5.5-1.6 11.5 0 17L7 3.5Z" fill="#24477e"/>
+    <path d="M-13.5-6v12M13.5-6v12" stroke="#fff" stroke-width="1.2" stroke-linecap="round" opacity=".45"/>
+    <ellipse rx="10" ry="8" fill="#3a86d6"/>
+    <path d="M-4.5-7.2c3 4 3 10.4 0 14.4M3.5-7.6c3 4 3 11.2 0 15.2" fill="none" stroke="#fff" stroke-width="2.2" opacity=".75"/>
+    <path d="M10 0c0 4.4-4.5 8-10 8 4-1.5 6.5-4.5 6.5-8S4.5-6.5 1.5-7.9C6.5-7.5 10-4 10 0Z" fill="#3d2b2b" opacity=".15"/>
+    <ellipse cx="-5.5" cy="-3.6" rx="1.5" ry="2.5" fill="#fff" opacity=".6" transform="rotate(50 -5.5 -3.6)"/>
+  </g>
+</svg>

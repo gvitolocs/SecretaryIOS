@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M20 17h24c2.2 0 4 1.8 4 4v35c0 2.2-1.8 4-4 4H20c-2.2 0-4-1.8-4-4V21c0-2.2 1.8-4 4-4Z" fill="#d9661a"/>
+  <path d="M21 22h.01M27 25h.01M35 21h.01M41 24h.01M24 52h.01M32 55h.01M40 51h.01M21 56h.01" stroke="#a91e2c" stroke-width="2.6" stroke-linecap="round"/><path d="M24 26h.01M31 23h.01M38 27h.01M29 51h.01M36 55h.01M43 56h.01" stroke="#ffd43b" stroke-width="1.6" stroke-linecap="round"/>
+  <rect x="17" y="32" width="30" height="15" rx="1" fill="#fff"/>
+  <g transform="translate(32 39.5) scale(.95)"><path d="M-11 4C-6 4 2 1 7-4c2-2 4-2 5-.5 1 1.5.5 3-1.5 4.5C5 4-3 7-9 7c-2 0-3.5-.5-2-3Z" fill="#a91e2c"/><path d="M8.5-4.5c1-2 3-3.5 5.5-3.5" stroke="#3e9b3e" stroke-width="2" stroke-linecap="round" fill="none"/></g>
+  <path d="M48 21v35c0 2.2-1.8 4-4 4h-5c2.2 0 4-1.8 4-4V21c0-2.2-1.8-4-4-4h5c2.2 0 4 1.8 4 4Z" fill="#3d2b2b" opacity=".15"/>
+  <rect x="18" y="4" width="28" height="13" rx="2.5" fill="#a91e2c"/>
+  <path d="M22 7v7M26 7v7M30 7v7M34 7v7M38 7v7M42 7v7" stroke="#7a1734" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M20 22v6M20 52v2" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".6"/>
+</svg>
