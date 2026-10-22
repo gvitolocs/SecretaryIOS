@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M40 32 56 9" stroke="#c97d36" stroke-width="6" stroke-linecap="round"/>
+  <path d="M53 12 55.5 8.5" stroke="#fff" stroke-width="1.6" stroke-linecap="round" opacity=".5"/>
+  <path d="M6 38c0-7 9-12 20-12s20 5 20 12c0 10-9 18-20 18S6 48 6 38Z" fill="#c97d36"/>
+  <ellipse cx="26" cy="38" rx="17" ry="9.5" fill="#8b5530"/>
+  <path d="M10 38c1-8 7.5-14 16-14s15 6 16 14c-4 3.5-10 5-16 5s-12-1.5-16-5Z" fill="#fff6e0"/>
+  <path d="M15 36h.01M19 31h.01M25 28h.01M31 30h.01M36 35h.01M22 37h.01M28 35h.01M33 39h.01M18 40h.01M26 41h.01M40 39h.01" stroke="#f0c27b" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M17 34h.01M23 33h.01M30 26h.01M34 32h.01M21 41h.01M31 41h.01M38 37h.01" stroke="#a91e2c" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M48 52h.01M53 55h.01M51 49h.01" stroke="#f0c27b" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M55 51h.01M47 56h.01" stroke="#a91e2c" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M46 38c0 10-9 18-20 18-6 0-11-2.5-14.5-6.5 3.5 2.3 7.5 3.5 12 3.5 11 0 20-7 20-17 0-1-.1-2-.3-3 1.8 1.3 2.8 3 2.8 5Z" fill="#3d2b2b" opacity=".18"/>
+  <path d="M14.5 32.5c1.5-3 4-5 7-6" stroke="#fff" stroke-width="2.2" stroke-linecap="round" opacity=".8"/>
+</svg>
