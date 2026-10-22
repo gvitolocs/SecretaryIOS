@@ -1389,6 +1389,119 @@ google_unreachable` / `google_error`, `400 bad_request`.
 
 `GET /v1/agenda` also carries `events`: the merged events of that date.
 
+
+## Tasks
+
+The owner's tasks, synced both ways with Todoist (official API v1: `/api/v1/sync`
+with sync tokens, `/api/v1/tasks/completed/by_completion_date`). The engine is
+`crates/secretary-tasks` (`$SECRETARY_DATA_DIR/tasks.json`, atomic 0600, an
+exclusive lock) on the gym/body command protocol; the server runs the Todoist
+sync worker. Callers: the owner's devices (Bearer, or cookie + CSRF for writes)
+or Lucina's service token.
+
+### Connecting Todoist (Links)
+
+- `GET /v1/links` has a `tasks` group with one card: `{id: "todoist", kind:
+  "todoist", status: connected|reconnect|error|disconnected, account,
+  lastSyncAt, count, method: token|oauth, oauth: bool, actions}`. Actions:
+  `token` (paste the personal API token), `connect`/`reconnect` (Todoist's
+  OAuth, only when `oauth` is true), `sync`, `disconnect`.
+- `POST /v1/links/todoist/token {token}` → `{connected, account}`. The token is
+  checked with `GET /api/v1/user` first: 422 `todoist_token_rejected` when
+  Todoist refuses it, 502 `todoist_unavailable` when Todoist is down.
+- `POST /v1/links/todoist/connect {client?: web|ios}` → `{authorizeUrl}` (503
+  `todoist_oauth_not_configured` without `SECRETARY_TODOIST_CLIENT_ID_FILE` and
+  `_SECRET_FILE`); Todoist returns to `GET /v1/links/todoist/callback` (public;
+  single-use `state`), which redirects to `/links?todoist=connected|error`
+  (`secretary://links?…` for iOS).
+- `POST /v1/links/todoist/sync`, `DELETE /v1/links/todoist` (OAuth tokens are
+  revoked at Todoist; the synced data is dropped; local-only tasks stay).
+- Tokens are sealed with `links.key` (purposes `todoist-token`,
+  `todoist-refresh`) and never returned. Owner devices only (not the service
+  token).
+
+### `GET /v1/tasks/state?view=&id=&query=&days=&timezone=`
+
+`view`: `today` (default; an `overdue` group then today's date), `upcoming`
+(`overdue` + one `date` group per day, `days` default 7), `inbox`, `project`
+(`id` = project id; groups per section, sub-tasks nested in `children`),
+`label` (`id` = label name), `filter` (`id` = saved filter, or `query` = a
+Todoist filter: `today`, `overdue`, `no date`, `recurring`, `p1`…`p4`,
+`7 days`, `@label`, `#Project`, `##Project`, `/Section`, `search: x`,
+`due before: <date>`, `&`, `|`, `!`, `( )`, `,`; other words are reported in
+`list.warning`), `search` (`query`), `completed` (`days`, default 7).
+`timezone` defaults to the owner's (`SECRETARY_TIMEZONE`).
+
+Answer: `{ok, replayed, view}` with `view = {revision, today, timezone,
+counts: {inbox, today, overdue, upcoming}, goal: {daily_goal, completed_today,
+reached}, inbox_id, projects: [{id, name, color, parent_id?, inbox, favorite,
+count, sections: [{id, name}]}], labels: [{id, name, color, favorite,
+count}], filters: [{id, name, query, color, favorite, count}], sync: {status:
+disconnected|ok|syncing|error|rate_limited|reconnect, connected, account?,
+last_sync_ms?, pending, error?, retry_after_ms?}, conflicts: [{id, task_id?,
+content, kind, message, at_ms}], undo: [task ids inside the delete undo
+window], list: {kind, id?, title, query?, count, warning?, groups: [{key,
+kind: overdue|date|section|none|completed, title, date?, rel_days?, tasks}]}}`.
+
+A task: `{id, content, description, project_id, project_name, project_color,
+section_id?, section_name?, parent_id?, parent_content?, priority: 1 (urgent)
+… 4, due?: {date, time?, string, is_recurring, rel_days, overdue,
+provisional?}, deadline?, labels, checked, subtasks, subtasks_done, pending,
+duration_minutes?, children?, completed_ms?}`. `id` is Todoist's, or `tmp-…`
+until Todoist confirms a new task. `due.string` is Todoist's recurrence text,
+kept verbatim; `provisional` marks this engine's guess of the next date after
+completing a recurring task (Todoist's answer replaces it at the next sync).
+
+### `POST /v1/tasks/command`
+
+`{op_id, expected_revision?, timezone?, view?, command}`. `expected_revision`
+is optional here (when given it must match: 409 `conflict`); each command
+targets one task, so offline queues and Lucina send none. `view` (`{kind, id?,
+query?, days?}`) picks the list in the answer. Same receipts as gym/body
+(`replayed`, 422 `op_id_reused`), 422 `invalid_command` with `error`.
+
+Commands (`type`): `quick_add {text, lang?, project_id?, section_id?,
+default_due?}` (Todoist quick add: dates and recurrence in it/en/da such as
+"tomorrow 9am", "ogni lunedì", "hver dag", "every 2 weeks"; `#Project`,
+`/Section`, `@label`, `p1`…`p4`, `{deadline}`, ` // description`; answers
+`task_id` and `parsed`), `add {content, description?, project_id?, section_id?,
+parent_id?, due_string? | due_date?, lang?, priority?, labels?}`, `complete
+{task_id}` (a recurring task moves to its next date on Todoist), `uncomplete
+{task_id}`, `update {task_id, content?, description?, priority?, labels?,
+due_string? | due_date? | clear_due?}`, `reschedule {task_id, date}` (YYYY-MM-DD
+or a phrase; keeps the time and the recurrence), `reschedule_overdue {date?}`
+(default today), `delete {task_id}` (soft: hidden at once, sent to Todoist after
+20 s), `undo_delete {task_id}` (also after it reached Todoist: re-created),
+`move {task_id, project_id | section_id | parent_id}`, `set_daily_goal {goal}`,
+`dismiss_conflict {conflict_id}`. Queries: `snapshot {view?}`,
+`parse_quick_add {text, lang?}` (answers `parsed`, no view; no op_id needed).
+
+### Sync
+
+Every edit is applied at once and queued as a Todoist sync command (its `uuid`
+makes Todoist idempotent too). The worker runs every
+`SECRETARY_TODOIST_SYNC_SECS` (90 s), 1.5 s after an edit and when a delete's
+undo window ends: pull (incremental sync token; full the first time or after a
+rejected command) → push the queue (≤ 100 commands) → completed history (every
+10 min). Conflict policy: an edit carries the task's Todoist `updated_at`; if
+Todoist's copy changed since, Todoist wins, the edit is dropped and a
+`changed_remotely` conflict is listed (also `deleted_remotely`,
+`completed_remotely`, `rejected`, `recurrence_lost`). 401/403 → the card shows
+`reconnect` and edits keep queueing; 429 → `rate_limited` until Retry-After;
+other failures back off up to 15 minutes. `POST /v1/tasks/sync` runs a cycle
+now (409 `todoist_not_connected` / `todoist_reconnect`, 429 with Retry-After).
+
+### `GET /v1/tasks/signals?timezone=`
+
+For Lucina and the proactive engine (also `tasks` in `/v1/insights/summary`):
+`{today, timezone, today_open, overdue_open, completed_today, daily_goal,
+goal_reached, load_minutes, unestimated, today_tasks: [TaskRef], overdue:
+[TaskRef] (longest overdue first), routines: [{id, content, recurrence,
+due_date, days_overdue, streak_days, done_last_7, last_completed_ms}],
+sync_status, pending_edits, conflicts}` with `TaskRef = {id, content, project,
+priority, due_date, time?, recurring, days_overdue, minutes?}`. Minutes come
+from Todoist durations or the title ("15 min shadowing").
+
 ## Notes
 
 Briefings, notes and documents the owner reads in the app (Notes view on

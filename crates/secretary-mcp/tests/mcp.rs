@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 17] = [
+const ALL_TOOLS: [&str; 20] = [
     "ask_lucina",
     "lucina_timeline",
     "shopping_list",
@@ -22,6 +22,9 @@ const ALL_TOOLS: [&str; 17] = [
     "note_append",
     "note_get",
     "notes_search",
+    "tasks_list",
+    "task_add",
+    "task_complete",
     "lucina_status",
 ];
 
@@ -883,4 +886,100 @@ async fn ask_lucina_takes_12000_characters_and_points_to_notes() {
         .unwrap()
         .clone();
     assert!(ask["description"].as_str().unwrap().contains("note_save"));
+}
+
+#[tokio::test]
+async fn tasks_list_add_complete() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,chat,write");
+    let (err, text) = h.call(&t, "tasks_list", json!({})).await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("Today (today is 2026-10-22; done today 1/5):"),
+        "{text}"
+    );
+    assert!(text.contains("Overdue:\n- 10 min anki/memrise · Inbox · overdue since 2026-10-20 (2 d) ↻ every day · @lingue [id a2]"), "{text}");
+    assert!(
+        text.contains("- 20min speaking · Lingue · today · p1 [id a5]"),
+        "{text}"
+    );
+    let q = &h.mock.requests("/v1/tasks/state")[0].query;
+    assert_eq!(q, "view=today");
+    // a project is a Todoist filter
+    let _ = h.call(&t, "tasks_list", json!({"project": "Lingue"})).await;
+    assert_eq!(
+        h.mock.requests("/v1/tasks/state")[1].query,
+        "view=filter&query=%23Lingue"
+    );
+    let (err, _) = h.call(&t, "tasks_list", json!({"view": "weird"})).await;
+    assert!(err);
+
+    let (err, text) = h
+        .call(
+            &t,
+            "task_add",
+            json!({"text": "chiamare Marco domani", "due": "today"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("Added \"chiamare Marco domani\", due \"domani\" (2026-10-23)"),
+        "{text}"
+    );
+    let post = h.mock.requests("/v1/tasks/command").pop().unwrap();
+    assert!(post.body["op_id"].as_str().unwrap().starts_with("mcp-"));
+    assert_eq!(
+        post.body["command"],
+        json!({"type": "quick_add", "text": "chiamare Marco domani", "default_due": "today"})
+    );
+    assert!(
+        post.body.get("timezone").is_none(),
+        "the server fills in the owner's zone"
+    );
+
+    // by title: one match among today's tasks
+    let (err, text) = h
+        .call(&t, "task_complete", json!({"title": "shadowing"}))
+        .await;
+    assert!(!err, "{text}");
+    let post = h.mock.requests("/v1/tasks/command").pop().unwrap();
+    assert_eq!(
+        post.body["command"],
+        json!({"type": "complete", "task_id": "a1"})
+    );
+    // several matches: the ids come back
+    let (err, text) = h.call(&t, "task_complete", json!({"title": "min"})).await;
+    assert!(
+        err && text.contains("Several tasks match")
+            && text.contains("[id a5]")
+            && text.contains("[id a2]"),
+        "{text}"
+    );
+    // falls back to a search over all open tasks
+    let (err, text) = h.call(&t, "task_complete", json!({"title": "club"})).await;
+    assert!(!err, "{text}");
+    let (err, text) = h.call(&t, "task_complete", json!({"id": "nope"})).await;
+    assert!(err && text.contains("Task not found"), "{text}");
+    let (err, text) = h
+        .call(&t, "task_complete", json!({"title": "piano lessons"}))
+        .await;
+    assert!(err && text.contains("No open task matches"), "{text}");
+}
+
+#[tokio::test]
+async fn tasks_need_the_right_scopes() {
+    let h = start().await;
+    let reader = h.issue("grok", "read");
+    let names = h.tool_names(&reader).await;
+    assert!(names.contains(&"tasks_list".to_owned()));
+    assert!(
+        !names.contains(&"task_add".to_owned()) && !names.contains(&"task_complete".to_owned())
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("delete")),
+        "no delete tool"
+    );
+    let (err, text) = h.call(&reader, "task_add", json!({"text": "x"})).await;
+    assert!(err && text.contains("lacks the `write` scope"), "{text}");
+    assert!(h.mock.requests("/v1/tasks/command").is_empty());
 }

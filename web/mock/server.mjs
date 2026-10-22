@@ -49,6 +49,8 @@
 //   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
 //   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
 //   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
+//   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
 // Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
 //   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
@@ -1872,6 +1874,7 @@ async function route(req, res) {
   }
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
+  if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
 
@@ -1966,6 +1969,28 @@ async function route(req, res) {
   }
 
   return fail(res, 404, "not_found", "Not found.");
+}
+
+// Tasks (docs/server-api.md, "Tasks"): proxied to a real secretary-server (its engine and
+// Todoist sync) when MOCK_TASKS_URL and MOCK_TASKS_TOKEN (a device token) are set; else 503.
+async function proxyTasks(req, res, url) {
+  const base = process.env.MOCK_TASKS_URL;
+  const token = process.env.MOCK_TASKS_TOKEN;
+  if (!base || !token) return fail(res, 503, "tasks_not_configured", "set MOCK_TASKS_URL and MOCK_TASKS_TOKEN to proxy /v1/tasks to secretary-server");
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  try {
+    const r = await fetch(`${base.replace(/\/+$/, "")}${url.pathname}${url.search}`, {
+      method: req.method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: req.method === "GET" ? undefined : Buffer.concat(chunks),
+    });
+    const text = await r.text();
+    res.writeHead(r.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(text);
+  } catch {
+    fail(res, 502, "tasks_unreachable", "secretary-server is not reachable");
+  }
 }
 
 const server = http.createServer((req, res) => {

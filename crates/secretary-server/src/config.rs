@@ -29,6 +29,12 @@
 //! | `SECRETARY_CALENDAR_SYNC_SECS` | `300` | background sync of Google and ICS calendars; `0` turns it off |
 //! | `SECRETARY_MCP_STATUS_URL` | `http://127.0.0.1:8810/internal/status` | secretary-mcp's client list (AI clients in Links) |
 //! | `SECRETARY_MCP_STATUS_TOKEN_FILE` | — | the shared status token (same file content as secretary-mcp's) |
+//! | `SECRETARY_TODOIST_SYNC_SECS` | `90` | background Todoist sync (plus on demand after edits); `0` turns it off, else at least 30 |
+//! | `SECRETARY_TODOIST_CLIENT_ID_FILE` | — | Todoist OAuth app client id; with the secret file, Links offers "Connect" (else only the personal token) |
+//! | `SECRETARY_TODOIST_CLIENT_SECRET_FILE` | — | Todoist OAuth app client secret (one line, 0600) |
+//! | `SECRETARY_TODOIST_REDIRECT_URI` | `https://getsecretary.tech/v1/links/todoist/callback` | must match the app's OAuth redirect URL |
+//! | `SECRETARY_TODOIST_API_URL` | `https://api.todoist.com` | Todoist API origin (tests point it at a mock) |
+//! | `SECRETARY_TODOIST_AUTH_URL` | `https://app.todoist.com` | Todoist authorize origin |
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -88,6 +94,8 @@ pub struct Config {
     pub mcp_status: Option<crate::links::McpStatusConfig>,
     /// Tests only: allow `http://` and local ICS URLs.
     pub ics_allow_local: bool,
+    /// Todoist (Tasks): API origin, OAuth app, sync interval.
+    pub todoist: crate::todoist::TodoistConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -144,6 +152,7 @@ impl Config {
             calendar_sync_every: Duration::from_secs(300),
             mcp_status: None,
             ics_allow_local: false,
+            todoist: crate::todoist::TodoistConfig::default(),
         }
     }
 
@@ -262,6 +271,36 @@ impl Config {
                     .unwrap_or_else(|| "http://127.0.0.1:8810/internal/status".into()),
                 token: read_secret_file(&path, "SECRETARY_MCP_STATUS_TOKEN_FILE")?,
             });
+        }
+        if let Some(v) = get("SECRETARY_TODOIST_SYNC_SECS") {
+            let n: u64 = v
+                .parse()
+                .with_context(|| format!("SECRETARY_TODOIST_SYNC_SECS={v}: expected seconds"))?;
+            if n != 0 && n < 30 {
+                bail!("SECRETARY_TODOIST_SYNC_SECS={v}: 0 (off) or at least 30");
+            }
+            cfg.todoist.sync_every = Duration::from_secs(n);
+        }
+        if let Some(u) = get("SECRETARY_TODOIST_API_URL") {
+            cfg.todoist.api_base = u.trim_end_matches('/').to_owned();
+        }
+        if let Some(u) = get("SECRETARY_TODOIST_AUTH_URL") {
+            cfg.todoist.auth_base = u.trim_end_matches('/').to_owned();
+        }
+        match (
+            get("SECRETARY_TODOIST_CLIENT_ID_FILE"),
+            get("SECRETARY_TODOIST_CLIENT_SECRET_FILE"),
+        ) {
+            (Some(id), Some(secret)) => {
+                cfg.todoist.oauth = Some(crate::todoist::TodoistOAuth {
+                    client_id: read_secret_file(&id, "SECRETARY_TODOIST_CLIENT_ID_FILE")?,
+                    client_secret: read_secret_file(&secret, "SECRETARY_TODOIST_CLIENT_SECRET_FILE")?,
+                    redirect_uri: get("SECRETARY_TODOIST_REDIRECT_URI")
+                        .unwrap_or_else(|| crate::todoist::DEFAULT_REDIRECT.into()),
+                });
+            }
+            (None, None) => {}
+            _ => bail!("set both SECRETARY_TODOIST_CLIENT_ID_FILE and SECRETARY_TODOIST_CLIENT_SECRET_FILE, or neither"),
         }
         let upstream = UpstreamConfig {
             legacy: get("SECRETARY_UPSTREAM_LEGACY"),

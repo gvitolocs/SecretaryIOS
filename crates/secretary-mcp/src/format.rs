@@ -808,6 +808,247 @@ pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> Stri
     out
 }
 
+// -- tasks -------------------------------------------------------------------------
+
+fn due_label(d: &Value) -> String {
+    let date = s(d, "date").unwrap_or("");
+    let rel = d.get("rel_days").and_then(Value::as_i64).unwrap_or(0);
+    let mut out = match rel {
+        0 => "today".to_owned(),
+        1 => "tomorrow".to_owned(),
+        r if r < 0 => format!("overdue since {date} ({} d)", -r),
+        _ => date.to_owned(),
+    };
+    if let Some(t) = s(d, "time") {
+        out.push_str(&format!(" {t}"));
+    }
+    if d.get("is_recurring").and_then(Value::as_bool) == Some(true) {
+        out.push_str(&format!(" ↻ {}", s(d, "string").unwrap_or("")));
+    }
+    out
+}
+
+fn task_line(t: &Value, depth: usize) -> String {
+    let mut line = format!(
+        "\n{}- {}",
+        "  ".repeat(depth),
+        clip(s(t, "content").unwrap_or("(untitled)"), 300)
+    );
+    if t.get("checked").and_then(Value::as_bool) == Some(true) {
+        line.push_str(" ✓");
+    }
+    if let Some(p) = s(t, "project_name") {
+        line.push_str(&format!(" · {p}"));
+    }
+    if let Some(d) = t.get("due").filter(|d| d.is_object()) {
+        line.push_str(&format!(" · {}", due_label(d)));
+    }
+    if let Some(p @ 1..=3) = t.get("priority").and_then(Value::as_u64) {
+        line.push_str(&format!(" · p{p}"));
+    }
+    if let Some(ls) = t
+        .get("labels")
+        .and_then(Value::as_array)
+        .filter(|l| !l.is_empty())
+    {
+        let names: Vec<String> = ls
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|l| format!("@{l}"))
+            .collect();
+        line.push_str(&format!(" · {}", names.join(" ")));
+    }
+    if t.get("pending").and_then(Value::as_bool) == Some(true) {
+        line.push_str(" (not yet in Todoist)");
+    }
+    line.push_str(&format!(" [id {}]", scalar(t.get("id"))));
+    for c in t
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        line.push_str(&task_line(c, depth + 1));
+    }
+    line
+}
+
+/// `GET /v1/tasks/state` → the list, grouped like the app.
+pub fn tasks(r: &Value) -> String {
+    let v = r.get("view").unwrap_or(&Value::Null);
+    let list = v.get("list").unwrap_or(&Value::Null);
+    let title = s(list, "title").unwrap_or("Tasks");
+    let mut out = format!("{title} (today is {}", s(v, "today").unwrap_or("?"));
+    if let Some(g) = v.get("goal") {
+        out.push_str(&format!(
+            "; done today {}/{}",
+            g.get("completed_today")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            g.get("daily_goal").and_then(Value::as_u64).unwrap_or(0)
+        ));
+    }
+    out.push_str("):");
+    let mut n = 0;
+    for g in list
+        .get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let tasks = g
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if tasks.is_empty() {
+            continue;
+        }
+        let head = match s(g, "kind") {
+            Some("overdue") => "Overdue".to_owned(),
+            Some("date") | Some("completed") => {
+                let date = s(g, "date").unwrap_or("");
+                match g.get("rel_days").and_then(Value::as_i64) {
+                    Some(0) => format!("Today {date}"),
+                    Some(1) => format!("Tomorrow {date}"),
+                    Some(-1) => format!("Yesterday {date}"),
+                    _ => date.to_owned(),
+                }
+            }
+            Some("section") => s(g, "title").unwrap_or("Section").to_owned(),
+            _ => String::new(),
+        };
+        if !head.is_empty() {
+            out.push_str(&format!("\n{head}:"));
+        }
+        for t in tasks.iter().take(200) {
+            out.push_str(&task_line(t, 0));
+            n += 1;
+        }
+    }
+    if n == 0 {
+        out.push_str("\nNothing here.");
+    }
+    if let Some(w) = s(list, "warning") {
+        out.push_str(&format!("\nNote: {w}"));
+    }
+    if let Some(sy) = v.get("sync") {
+        match s(sy, "status") {
+            Some("disconnected") => out.push_str("\nTodoist is not connected (the owner connects it in Secretary → Links); these are local tasks only."),
+            Some("reconnect") => out.push_str("\nTodoist needs reconnecting in Secretary → Links; changes wait until then."),
+            Some("error") | Some("rate_limited") => out.push_str(&format!(
+                "\nTodoist sync is retrying: {}",
+                s(sy, "error").unwrap_or("temporary error")
+            )),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `(id, content)` of open tasks in a state answer whose title contains
+/// every word of `words` (accent- and case-insensitive).
+pub fn task_matches(r: &Value, words: &str) -> Vec<(String, String)> {
+    fn walk(t: &Value, out: &mut Vec<(String, String)>) {
+        out.push((
+            scalar(t.get("id")),
+            s(t, "content").unwrap_or("").to_owned(),
+        ));
+        for c in t
+            .get("children")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk(c, out);
+        }
+    }
+    let mut all = Vec::new();
+    for g in r
+        .pointer("/view/list/groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for t in g
+            .get("tasks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            walk(t, &mut all);
+        }
+    }
+    let want: Vec<String> = fold(words).split_whitespace().map(str::to_owned).collect();
+    let mut hits: Vec<(String, String)> = all
+        .into_iter()
+        .filter(|(_, c)| {
+            let f = fold(c);
+            want.iter().all(|w| f.contains(w.as_str()))
+        })
+        .collect();
+    hits.dedup_by(|a, b| a.0 == b.0);
+    hits
+}
+
+fn find_task<'a>(r: &'a Value, id: &str) -> Option<&'a Value> {
+    fn walk<'a>(t: &'a Value, id: &str) -> Option<&'a Value> {
+        if scalar(t.get("id")) == id {
+            return Some(t);
+        }
+        t.get("children")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find_map(|c| walk(c, id))
+    }
+    r.pointer("/view/list/groups")?
+        .as_array()?
+        .iter()
+        .flat_map(|g| {
+            g.get("tasks")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .find_map(|t| walk(t, id))
+}
+
+pub fn task_added(r: &Value) -> String {
+    let p = r.get("parsed").unwrap_or(&Value::Null);
+    let mut out = format!("Added \"{}\"", s(p, "content").unwrap_or("?"));
+    if let Some(d) = s(p, "due_string") {
+        out.push_str(&format!(", due \"{d}\""));
+        if let Some(date) = s(p, "due_date") {
+            out.push_str(&format!(" ({})", date.replace('T', " ")));
+        }
+        if p.get("is_recurring").and_then(Value::as_bool) == Some(true) {
+            out.push_str(", recurring");
+        }
+    }
+    if let Some(pr) = s(p, "project") {
+        out.push_str(&format!(", project {pr}"));
+    }
+    if let Some(n) = p.get("priority").and_then(Value::as_u64) {
+        out.push_str(&format!(", p{n}"));
+    }
+    out.push_str(&format!(
+        ". Task id {} (temporary until Todoist confirms it); it syncs to Todoist within a minute.",
+        scalar(r.get("task_id"))
+    ));
+    out
+}
+
+pub fn task_completed(r: &Value, id: &str) -> String {
+    match find_task(r, id).and_then(|t| t.get("due")).filter(|d| d.get("is_recurring").and_then(Value::as_bool) == Some(true)) {
+        Some(d) => format!(
+            "Done. It is a recurring task: next time {} (Todoist confirms the date at the next sync).",
+            due_label(d)
+        ),
+        None => format!("Marked task {id} done; Todoist gets it within a minute. The owner can undo it in the app."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

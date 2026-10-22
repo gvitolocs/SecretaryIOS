@@ -2134,6 +2134,7 @@ dependencies = [
  "secretary-calendar",
  "secretary-core",
  "secretary-gym",
+ "secretary-tasks",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2147,6 +2148,19 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-push-native",
+]
+
+[[package]]
+name = "secretary-tasks"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
 ]
 
 [[package]]
