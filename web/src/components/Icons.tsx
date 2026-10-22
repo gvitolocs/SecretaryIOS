@@ -354,3 +354,43 @@ export function GearIcon() {
     </svg>
   );
 }
+
+// Links tab.
+
+export function LinkIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2" />
+      <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2" />
+    </svg>
+  );
+}
+
+
+export function MailIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.5" />
+      <path d="m4.5 7 7.5 6 7.5-6" />
+    </svg>
+  );
+}
+
+export function DriveIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 4h6l6 10.5-3 5.5H6l-3-5.5z" />
+      <path d="M9 4l6 10.5H3M15 4 9 14.5l-3 5.5" />
+    </svg>
+  );
+}
+
+
+export function PlugIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 3.5v4M15 3.5v4M7 7.5h10v3a5 5 0 0 1-10 0z" />
+      <path d="M12 15.5v5" />
+    </svg>
+  );
+}

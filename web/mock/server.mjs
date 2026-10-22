@@ -1845,6 +1845,7 @@ async function route(req, res) {
   }
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
