@@ -31,6 +31,8 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), live edb6405
 
 ### Avatar
+- [ ] Base = game-accurate Engage Lucina with toon shading (separate session "Engage toon shading for the three.js Lucina avatar")
+- [ ] Wardrobe: outfits (gym+ponytail, maid, chef, c584, c591) + Wardrobe UI (Custom Cast style), remembered, auto per tab, Lucina can change it
 - [ ] Owner picked Summer, but in her uniform: variants A/B being built → → owner picks → convert → p1 private assets
 - [x] Animation library: 22 clips per model (f432912 stage API; MMD clips live on p1)
 
@@ -44,6 +46,11 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [ ] Lucina device bridge (Node worktree `secretary-shopping-v2`)
 - [x] Shopping v2 deploy: migration 002 + catalog to Lucina and p1 (2026-10-21)
 - [x] Discord owner user ID: 649020113026023475 (vitologic), set in Lucina 2026-10-22
+
+### Links, calendar, notifications (owner, 2026-10-22)
+- [ ] Links tab: connections hub (Google Calendar OAuth, ICS, iPhone calendar, channels, AI clients, custom links) — branch links-calendar
+- [ ] Lucina + Hermes read/write the calendar (with confirmation), agenda/briefing
+- [ ] Notifications: server inbox + Web Push (PWA, works on iPhone home screen) + iOS local notifications; APNs when paid team — branch notifications
 
 ### Roadmap modules (`docs/ROADMAP.md`)
 - [ ] Calendar · Languages · Memory exercises · Purchases (always confirmed)
