@@ -42,6 +42,21 @@ export function storedMuted(): boolean {
 type Mode = "loading" | "ready" | "fallback";
 
 const WAVE_BARS = 14;
+/** Voice-line keys of touch reactions (packages/lucina-stage/src/interact/reactions.ts). */
+const TOUCH_LINES: Record<string, Parameters<typeof t>[0]> = {
+  head: "shell.touchHead",
+  face: "shell.touchFace",
+  chest: "shell.touchChest",
+  hips: "shell.touchHips",
+  skirt: "shell.touchSkirt",
+  arm: "shell.touchArm",
+  hand: "shell.touchHand",
+  leg: "shell.touchLeg",
+  pat: "shell.touchPat",
+  pat_more: "shell.touchPatMore",
+  pat_love: "shell.touchPatLove",
+  enough: "shell.touchEnough",
+};
 const STATE_LABELS: Record<LucinaActivity, Parameters<typeof t>[0]> = {
   idle: "shell.stateIdle",
   listening: "shell.stateListening",
@@ -116,6 +131,8 @@ export function LucinaPanel(props: {
         muted: true,
         // Sky, holo floor, particles, rim light, bloom on "high" (packages/lucina-stage/src/scene).
         environment: { quality: stageQuality(), theme: effectiveTheme() },
+        // Drag turns her, pinch/wheel zooms, double-tap resets, taps on her body react.
+        interactive: true,
       });
       if (disposed) {
         s.dispose();
@@ -125,9 +142,9 @@ export function LucinaPanel(props: {
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));
       s.onChanging(setOutfitChanging);
-      s.onTap((e) => {
-        s.react(e.point);
-        void talk();
+      s.onTouch((e) => {
+        setHint(false);
+        void sayLine(e.line);
       });
       if (props.thinking) s.setState("thinking");
       if (import.meta.env.DEV) (window as unknown as { __lucina?: unknown }).__lucina = { stage: s, mod };
@@ -216,6 +233,25 @@ export function LucinaPanel(props: {
   }
 
   onMount(() => onCleanup(onLucinaReply((text) => void say(text))));
+
+  /** Her short line for a touch: only when unmuted, never over a reply, cached after the first TTS. */
+  const lineAudio = new Map<string, Blob>();
+  async function sayLine(key: string) {
+    const s = stage;
+    const text = TOUCH_LINES[key] ? t(TOUCH_LINES[key]) : null;
+    if (!s || !voice || !text || muted() || s.speaking || ttsCtrl || listening()) return;
+    try {
+      let audio = lineAudio.get(text);
+      if (!audio) {
+        audio = await voice.speak(text, { lang: speechLang() });
+        lineAudio.set(text, audio);
+      }
+      if (stage !== s || muted() || s.speaking) return;
+      await s.speak(audio);
+    } catch {
+      // No voice for this one: the reaction is enough.
+    }
+  }
 
   function toggleMute() {
     const next = !muted();

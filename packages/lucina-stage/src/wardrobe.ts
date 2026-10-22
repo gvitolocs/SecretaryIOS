@@ -24,7 +24,7 @@ import { HairRig, loadHairPart, NATURAL_HAIR, parseHairColors, parseHairstyles, 
 import { applyToonHairPart, toonFallbackFor } from './toon';
 import { playOutfitEffect, type SubjectRect } from './outfitEffect';
 import type { StageQualitySetting, StageTheme } from './scene/quality';
-import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent } from './stage';
+import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent, type TouchEvent } from './stage';
 import type { Expression, Framing, StageState } from './types';
 
 /** One outfit, as listed by `GET /v1/avatar/wardrobe`. */
@@ -251,6 +251,8 @@ export async function createWardrobeStage(
 
   const stateCbs = new Set<(next: StageState, prev: StageState) => void>();
   const tapCbs = new Set<(e: TapEvent) => void>();
+  const touchCbs = new Set<(e: TouchEvent) => void>();
+  let interactive = options.interactive ?? false;
   const changingCbs = new Set<(c: boolean) => void>();
   const outfitCbs = new Set<(o: string | null) => void>();
   const owned = new Set<HTMLCanvasElement>();
@@ -263,9 +265,11 @@ export async function createWardrobeStage(
   function bind(s: LucinaStage): () => void {
     const a = s.onStateChange((n, p) => stateCbs.forEach((cb) => cb(n, p)));
     const b = s.onTap((e) => tapCbs.forEach((cb) => cb(e)));
+    const c = (s.onTouch?.bind(s) ?? (() => () => {}))((e) => touchCbs.forEach((cb) => cb(e)));
     return () => {
       a();
       b();
+      c();
     };
   }
   let unbind = bind(cur);
@@ -408,6 +412,8 @@ export async function createWardrobeStage(
         muted: cur.isMuted(),
         environment: options.environment ? { ...envOpts, ...(quality ? { quality } : {}), ...(theme ? { theme } : {}) } : options.environment,
         stateClips: stateClips ?? undefined,
+        interactive,
+        view: cur.view,
       });
     } catch (e) {
       if (next) dropCanvas(next);
@@ -436,6 +442,7 @@ export async function createWardrobeStage(
     const incoming = ns;
     const incomingCanvas = next;
     const swap = (): void => {
+      if (old.view) incoming.setView?.(old.view, false);
       unbind();
       cur = incoming;
       curCanvas = incomingCanvas;
@@ -605,6 +612,7 @@ export async function createWardrobeStage(
       ro?.disconnect();
       stateCbs.clear();
       tapCbs.clear();
+      touchCbs.clear();
       changingCbs.clear();
       outfitCbs.clear();
       hairCbs.clear();
@@ -637,6 +645,23 @@ export async function createWardrobeStage(
     },
     get three() {
       return cur.three;
+    },
+    onTouch(cb) {
+      touchCbs.add(cb);
+      return () => touchCbs.delete(cb);
+    },
+    get view() {
+      return cur.view;
+    },
+    setView: (v, animate) => cur.setView(v, animate),
+    resetView: (animate) => cur.resetView(animate),
+    cameraPreset: (p, animate) => cur.cameraPreset(p, animate),
+    setInteractive(on) {
+      interactive = !!on;
+      cur.setInteractive(on);
+    },
+    get interactive() {
+      return cur.interactive;
     },
     setModel,
     setOutfit(id, o = {}) {

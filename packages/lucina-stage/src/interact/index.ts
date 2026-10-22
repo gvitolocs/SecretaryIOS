@@ -1,0 +1,11 @@
+export { Orbit, gazeFollowWeight, composeCamera, shotAt, zoomSpan, clampPan, pitchRange, wrapAngle, PRESET_ZOOM, DEFAULT_LIMITS, FEEL } from './orbit';
+export type { Shot, ViewPreset, ViewState, OrbitLimits, SubjectBounds, V3 } from './orbit';
+export { GestureTracker, DoubleTap, TAP_SLOP, DRAG_SLOP, TAP_MAX_MS, PARALLEL_DOT } from './gestures';
+export type { GestureHandlers, PointerSample } from './gestures';
+export { regionOfBone, regionOfPoint, regionOfHit, dominantBone, sideOf, REGIONS } from './regions';
+export type { Region, RegionHit, Side, BodyMetrics } from './regions';
+export { ReactionPlanner, REACTIONS, PATS, ENOUGH, LINE_KEYS, BLOCKED_CLIPS, PAT_WINDOW } from './reactions';
+export type { Reaction, LineKey } from './reactions';
+export { createInteraction, GAZE_RELEASE_MS } from './controller';
+export type { InteractionController, InteractionDeps } from './controller';
+export { registerTouchClips } from './touchClips';

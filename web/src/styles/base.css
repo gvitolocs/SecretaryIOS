@@ -1245,8 +1245,12 @@ select.text-input option {
   display: block;
   width: 100%;
   height: 100%;
-  touch-action: manipulation;
-  cursor: pointer;
+  /* The stage takes every touch on itself (orbit, pinch, taps); the page scrolls elsewhere. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
   animation: fade-in var(--dur-4) var(--ease-out) both;
 }
 

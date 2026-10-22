@@ -16,6 +16,15 @@ export class FakeStage {
   muted: boolean;
   states: StageState[] = [];
   private taps: ((e: { point: { x: number; y: number; z: number } }) => void)[] = [];
+  private touches: ((e: { line: string; region: string }) => void)[] = [];
+  speaking = false;
+  readonly onTouch = vi.fn((cb: (e: { line: string; region: string }) => void) => {
+    this.touches.push(cb);
+    return () => {};
+  });
+  readonly cameraPreset = vi.fn();
+  readonly resetView = vi.fn();
+  readonly setView = vi.fn();
   private stateListeners: ((next: StageState, prev: StageState) => void)[] = [];
   readonly setState = vi.fn((s: StageState) => {
     const prev = this.state;
@@ -79,6 +88,11 @@ export class FakeStage {
     this.outfit = options.outfit ?? null;
     this.hair = options.hair ?? "natural";
     this.hairColor = options.hairColor ?? null;
+  }
+
+  /** Simulates a touch on her body (the stage already reacted; the host may speak `line`). */
+  touch(region = "head", line = region): void {
+    for (const cb of this.touches) cb({ region, line });
   }
 
   /** Simulates a tap on Lucina. */

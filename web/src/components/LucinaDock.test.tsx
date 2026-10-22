@@ -152,7 +152,7 @@ describe("Lucina in the shell", () => {
     const calls = serve(() => ({ body: { reply: "Latte aggiunto.", job: null } }));
     fake.listen.mockImplementation(async () => "aggiungi il latte");
     const stage = await mounted("/shopping");
-    stage.tap();
+    fireEvent.click(screen.getByRole("button", { name: "Talk to Lucina" }));
     expect(await screen.findByText("Latte aggiunto.")).toBeInTheDocument();
     expect((posts(calls)[0]!.body as { message: string }).message).toBe("aggiungi il latte");
     expect(chat.messages.map((m) => [m.role, m.text])).toEqual([
@@ -191,7 +191,7 @@ describe("Lucina in the shell", () => {
     expect(stage.setMuted).toHaveBeenLastCalledWith(true);
     expect(fake.voiceOptions[0]).toMatchObject({ ttsUrl: "/v1/tts", lang: "en-US" });
     expect(screen.getByRole("button", { name: "Unmute Lucina" })).toHaveAttribute("aria-pressed", "true");
-    expect(await screen.findByText("Tap Lucina to talk")).toBeInTheDocument();
+    expect(await screen.findByText("Drag to turn her, pinch to zoom, tap her. The mic button talks.")).toBeInTheDocument();
     expect(localStorage.getItem("secretary.stage.hintSeen")).toBe("1");
   });
 
@@ -230,7 +230,7 @@ describe("Lucina in the shell", () => {
     expect(localStorage.getItem("lucina-stage:muted")).toBe("1");
   });
 
-  it("listens when tapped and shows that it is listening", async () => {
+  it("listens from the mic button and shows that it is listening", async () => {
     viewport(true);
     const heard = deferred<void>();
     fake.listen.mockImplementation(async () => {
@@ -239,12 +239,32 @@ describe("Lucina in the shell", () => {
     });
     const calls = serve(() => ({ body: { reply: "Fatto.", job: null } }));
     const stage = await mounted();
-    stage.tap();
+    fireEvent.click(screen.getByRole("button", { name: "Talk to Lucina" }));
     expect(await screen.findByText("Listening…")).toBeInTheDocument();
     expect(stage.state).toBe("listening");
     heard.resolve();
     await screen.findByText("Fatto.");
     expect((posts(calls)[0]!.body as { message: string }).message).toBe("aggiungi il latte");
+  });
+
+  it("is interactive; a touch speaks her short line only when her voice is on", async () => {
+    viewport(true);
+    serve();
+    const stage = await mounted();
+    expect(stage.options.interactive).toBe(true);
+    // Muted (the first-visit default): the reaction plays, no TTS request, no sound.
+    stage.touch("head", "pat");
+    await Promise.resolve();
+    expect(fake.speak).not.toHaveBeenCalled();
+    expect(fake.listen).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Unmute Lucina" }));
+    stage.touch("head", "pat");
+    await waitFor(() => expect(stage.speak).toHaveBeenCalledTimes(1));
+    expect(fake.speak).toHaveBeenCalledWith("Ehehe…", expect.anything());
+    // The same line again comes from the cache.
+    stage.touch("head", "pat");
+    await waitFor(() => expect(stage.speak).toHaveBeenCalledTimes(2));
+    expect(fake.speak).toHaveBeenCalledTimes(1);
   });
 
   it("without voice input, takes you to the Chat composer", async () => {
@@ -316,10 +336,10 @@ describe("Lucina speaks the app's language", () => {
     viewport(true);
     serve(() => ({ body: { reply: "Fatto.", job: null } }));
     setLocale("it");
-    const stage = await mounted();
+    await mounted();
     expect(fake.voiceOptions[0]).toMatchObject({ lang: "it-IT" });
     expect(screen.getByRole("button", { name: "Riattiva l'audio di Lucina" })).toBeInTheDocument();
-    stage.tap();
+    fireEvent.click(screen.getByRole("button", { name: "Parla con Lucina" }));
     await waitFor(() => expect(fake.listen).toHaveBeenCalledWith(expect.objectContaining({ lang: "it-IT" })));
 
     setLocale("da");

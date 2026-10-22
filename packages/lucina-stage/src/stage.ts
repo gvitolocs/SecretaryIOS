@@ -46,6 +46,11 @@ import { MotionLayer, clipNames } from './scene/motion';
 import type { StageQuality, StageQualitySetting, StageTheme } from './scene/quality';
 import { FrameStats } from './stats';
 import { clamp, type Expression, type Framing, type StageState } from './types';
+import { registerTouchClips } from './interact/touchClips';
+import { createInteraction, type InteractionController } from './interact/controller';
+import { Orbit, PRESET_ZOOM, composeCamera, gazeFollowWeight, type Shot, type ViewPreset, type ViewState } from './interact/orbit';
+import { regionOfHit, type BodyMetrics, type Region, type Side } from './interact/regions';
+import { BLOCKED_CLIPS, ReactionPlanner, type Reaction } from './interact/reactions';
 
 export interface LucinaStageOptions {
   /** GLB URL. Production: `/v1/assets/lucina.glb`. Omit to use the procedural placeholder. */
@@ -104,6 +109,31 @@ export interface LucinaStageOptions {
   clipsMetaUrl?: string;
   /** Clip pools per state (defaults: idle_breathe/idle_shift, listen_lean, think_chin, talk_gesture_*). */
   stateClips?: Partial<Record<StageState, string[]>>;
+  /**
+   * Touch and mouse interaction (src/interact/): one-finger drag orbits her, pinch/wheel zooms
+   * (full → bust → face), two-finger or right-drag pans, double-tap off her resets, taps on her
+   * body react (`onTouch`), her eyes follow the finger. Off by default: the canvas stays passive.
+   */
+  interactive?: boolean;
+  /** Initial view (e.g. carried over by the wardrobe on an outfit swap). */
+  view?: Partial<ViewState>;
+}
+
+/** A tap on her body and what she did about it. */
+export interface TouchEvent {
+  region: Region;
+  side: Side;
+  /** Reaction id, e.g. `head_tilt`, `pat_2`. */
+  reaction: string;
+  /** Voice-line key (`head`, `pat`, `enough`…): the host may speak it, only when unmuted. */
+  line: string;
+  /** Head-pat level 1..3, else 0. */
+  pat: number;
+  /** What played: a clip name, a gesture name, or '' (reduced motion: expression only). */
+  played: string;
+  point: { x: number; y: number; z: number };
+  clientX: number;
+  clientY: number;
 }
 
 export const DEFAULT_HIDE_MATERIALS = ['ExpIcons', 'Falchion'];
@@ -184,6 +214,19 @@ export interface LucinaStage {
   readonly quality: StageQuality | null;
   /** Environment palette; no-op without the environment. */
   setTheme(theme: StageTheme): void;
+  /** Taps on her body (interactive stages). Returns an unsubscribe function. */
+  onTouch(cb: (e: TouchEvent) => void): () => void;
+  /** The user's view (yaw/pitch/zoom/pan; interactive stages, else the home view). */
+  readonly view: ViewState;
+  /** Move the view (animated by default). */
+  setView(view: Partial<ViewState>, animate?: boolean): void;
+  /** Back to the framing's home view (what a double-tap does). */
+  resetView(animate?: boolean): void;
+  /** Full body, bust or face close-up, keeping the orbit angle. */
+  cameraPreset(preset: ViewPreset, animate?: boolean): void;
+  /** Turn touch/mouse control on or off (e.g. while a slider is dragged). */
+  setInteractive(on: boolean): void;
+  readonly interactive: boolean;
   /** Escape hatches for debugging. */
   readonly three: { renderer: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; model: Object3D };
 }
@@ -278,6 +321,7 @@ const TONE: Record<NonNullable<LucinaStageOptions['toneMapping']>, ToneMapping> 
 };
 
 export async function createLucinaStage(canvas: HTMLCanvasElement, options: LucinaStageOptions = {}): Promise<LucinaStage> {
+  registerTouchClips();
   // ---------- Renderer / scene ----------
   const renderer = new WebGLRenderer({
     canvas,
@@ -453,6 +497,10 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   let framing: Framing = options.framing ?? 'bust';
   const camGoal = { pos: new Vector3(), target: new Vector3(), fov: 30 };
   const camNow = { pos: new Vector3(), target: new Vector3(), fov: 30, init: false };
+  // ---------- Interaction (src/interact/) ----------
+  const bodyBounds = { min: { x: bbox.min.x, y: bbox.min.y, z: bbox.min.z }, max: { x: bbox.max.x, y: bbox.max.y, z: bbox.max.z }, height };
+  let orbit: Orbit | null = null;
+  let interaction: InteractionController | null = null;
 
   function manifestFraming(f: Framing): CameraFraming | undefined {
     const c = manifest.camera[f];
@@ -469,32 +517,38 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   }
   let warnedFraming = false;
 
-  function computeFraming(): void {
+  /** Camera position/target/FOV for one framing at the current aspect. */
+  function shotFor(kind: Framing, out: { pos: Vector3; target: Vector3; fov: number }): void {
     const aspect = camera.aspect || 1;
-    const mf = placeholder ? undefined : manifestFraming(framing);
+    const mf = placeholder || kind === 'face' ? undefined : manifestFraming(kind);
     if (mf?.position && mf.target) {
       model.updateMatrixWorld(true);
-      camGoal.pos.fromArray(mf.position).applyMatrix4(model.matrixWorld);
-      camGoal.target.fromArray(mf.target).applyMatrix4(model.matrixWorld);
-      camGoal.fov = mf.fov ?? 30;
+      out.pos.fromArray(mf.position).applyMatrix4(model.matrixWorld);
+      out.target.fromArray(mf.target).applyMatrix4(model.matrixWorld);
+      out.fov = mf.fov ?? 30;
       // Keep the manifest's framing; only very narrow canvases back off a little.
       if (aspect < 0.6) {
-        const dir = camGoal.pos.clone().sub(camGoal.target);
-        camGoal.pos.copy(camGoal.target).add(dir.multiplyScalar(Math.min(0.6 / aspect, 1.3)));
+        const dir = out.pos.clone().sub(out.target);
+        out.pos.copy(out.target).add(dir.multiplyScalar(Math.min(0.6 / aspect, 1.3)));
       }
       return;
     }
-    const fov = framing === 'bust' ? 28 : 30;
+    const fov = kind === 'full' ? 30 : kind === 'bust' ? 28 : 26;
     const t = Math.tan(((fov / 2) * Math.PI) / 180);
     const headTop = Math.min(bbox.max.y, headPos.y + height * 0.16);
     let top: number;
     let bottom: number;
     let halfW: number;
-    if (framing === 'bust') {
+    if (kind === 'bust') {
       // Head and shoulders: crown to upper chest; on narrow canvases the shoulders may crop a little.
       top = headTop + height * 0.045;
       bottom = headPos.y - height * 0.17;
       halfW = height * 0.105;
+    } else if (kind === 'face') {
+      // Crown to chin, a little air around.
+      top = headTop + height * 0.02;
+      bottom = eyePos.y - height * 0.085;
+      halfW = height * 0.07;
     } else {
       top = bbox.max.y + height * 0.03;
       bottom = bbox.min.y - height * 0.02;
@@ -505,15 +559,42 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     // Pin the top of the frame to the crown: spare vertical room goes below (more chest), so the
     // face stays in the upper third whatever the aspect ratio.
     const visibleHalfV = dist * t;
-    const cy = framing === 'bust' ? top - visibleHalfV : (top + bottom) / 2;
-    const camY = framing === 'bust' ? eyePos.y : cy + height * 0.03;
-    camGoal.target.set(headPos.x, cy, faceCenter.z);
-    camGoal.pos.set(headPos.x, camY, faceCenter.z + Math.sqrt(Math.max(dist * dist - (camY - cy) ** 2, dist * dist * 0.5)));
-    camGoal.fov = fov;
+    const cy = kind === 'full' ? (top + bottom) / 2 : top - visibleHalfV;
+    const camY = kind === 'full' ? cy + height * 0.03 : eyePos.y;
+    out.target.set(headPos.x, cy, faceCenter.z);
+    out.pos.set(headPos.x, camY, faceCenter.z + Math.sqrt(Math.max(dist * dist - (camY - cy) ** 2, dist * dist * 0.5)));
+    out.fov = fov;
+  }
+
+  const toShot = (s: { pos: Vector3; target: Vector3; fov: number }): Shot => ({
+    pos: { x: s.pos.x, y: s.pos.y, z: s.pos.z },
+    target: { x: s.target.x, y: s.target.y, z: s.target.z },
+    fov: s.fov,
+  });
+  function allShots(): Record<ViewPreset, Shot> {
+    const tmp = { pos: new Vector3(), target: new Vector3(), fov: 30 };
+    const out = {} as Record<ViewPreset, Shot>;
+    for (const k of ['full', 'bust', 'face'] as const) {
+      shotFor(k, tmp);
+      out[k] = toShot(tmp);
+    }
+    return out;
+  }
+
+  function computeFraming(): void {
+    shotFor(framing, camGoal);
+    if (orbit) orbit.setShots(allShots(), bodyBounds);
   }
 
   function applyCamera(dt: number, snap: boolean): void {
-    if (snap || !camNow.init || reducedMotion) {
+    if (orbit) {
+      // The orbit does its own easing (Custom Cast's damping); follow it exactly.
+      const c = composeCamera(orbit.shots, orbit.view, orbit.limits);
+      camNow.pos.set(c.pos.x, c.pos.y, c.pos.z);
+      camNow.target.set(c.target.x, c.target.y, c.target.z);
+      camNow.fov = c.fov;
+      camNow.init = true;
+    } else if (snap || !camNow.init || reducedMotion) {
       camNow.pos.copy(camGoal.pos);
       camNow.target.copy(camGoal.target);
       camNow.fov = camGoal.fov;
@@ -561,6 +642,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     if (reducedOverride === null) {
       reducedMotion = mql?.matches ?? false;
       animator.reducedMotion = reducedMotion;
+      if (orbit) orbit.reduced = reducedMotion;
       env?.setReducedMotion(reducedMotion);
     }
   };
@@ -719,7 +801,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   const onUp = (e: PointerEvent): void => {
     const d = down;
     down = null;
-    if (!d || d.id !== e.pointerId || !tapListeners.size) return;
+    // Interactive stages recognise taps in the gesture tracker (touch() below).
+    if (interaction || !d || d.id !== e.pointerId || !tapListeners.size) return;
     if (performance.now() - d.t > 700 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12) return;
     raycaster.setFromCamera(toNdc(e.clientX, e.clientY), camera);
     const hit = raycaster.intersectObject(model, true).find((h) => h.object.visible && (h.object as Mesh).isMesh);
@@ -738,6 +821,71 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   canvas.addEventListener('pointerdown', onDown);
   canvas.addEventListener('pointerup', onUp);
 
+  // ---------- Touch reactions ----------
+  const touchListeners = new Set<(e: TouchEvent) => void>();
+  const planner = new ReactionPlanner();
+  const leftArmX = rig.bonePosition('upper_arm_l');
+  const facingX = leftArmX ? Math.sign(leftArmX.x - headPos.x) || 1 : 1;
+  const metrics: BodyMetrics = {
+    floorY: bbox.min.y,
+    height,
+    headY: headPos.y,
+    eyeY: eyePos.y,
+    centerX: (bbox.min.x + bbox.max.x) / 2,
+    centerZ: (bbox.min.z + bbox.max.z) / 2,
+    headZ: headPos.z,
+    shoulderHalf: leftArmX ? Math.abs(leftArmX.x - headPos.x) : height * 0.1,
+  };
+  /** The host's expression; a reaction's expression is held for a moment, then this comes back. */
+  let baseExpression: { e: Expression | null; w: number } = { e: null, w: 1 };
+  let heldUntil = 0;
+
+  function perform(r: Reaction): string {
+    let played = '';
+    if (!reducedMotion) {
+      const clip = player ? r.clips.find((c) => !BLOCKED_CLIPS.has(c) && player!.has(c)) : undefined;
+      if (clip && player) {
+        void player.play(clip, { loop: false }).catch(() => {});
+        played = clip;
+      } else if (motion.play(r.gesture)) played = r.gesture;
+      if (r.name !== 'pat_1' && r.name !== 'pat_2') animator.blink();
+    }
+    if (r.expression) {
+      animator.setExpression(r.expression, r.weight);
+      heldUntil = performance.now() + r.hold * 1000;
+    }
+    return played;
+  }
+
+  /** A tap at client (x, y): raycast her, react, tell the listeners. True when it hit her. */
+  function touch(clientX: number, clientY: number): boolean {
+    raycaster.setFromCamera(toNdc(clientX, clientY), camera);
+    const hit = raycaster.intersectObject(model, true).find((h) => h.object.visible && (h.object as Mesh).isMesh);
+    if (!hit) return false;
+    const where = regionOfHit(hit, metrics, facingX);
+    const r = planner.plan(where, performance.now() / 1000);
+    const played = perform(r);
+    env?.pulse(hit.point);
+    kick();
+    const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+    const tap: TapEvent = { object: hit.object.name, point, clientX, clientY };
+    for (const cb of tapListeners) cb(tap);
+    const ev: TouchEvent = { region: r.region, side: r.side, reaction: r.name, line: r.line, pat: r.pat, played, point, clientX, clientY };
+    for (const cb of touchListeners) cb(ev);
+    return true;
+  }
+
+  function enableInteraction(): void {
+    if (interaction || disposed) return;
+    if (!orbit) {
+      orbit = new Orbit(allShots(), { zoom: PRESET_ZOOM[framing] });
+      orbit.bounds = bodyBounds;
+      orbit.reduced = reducedMotion;
+      if (options.view) orbit.flyTo(options.view, false);
+    }
+    interaction = createInteraction({ canvas, orbit, touch, kick });
+  }
+
   const _p = new Vector3();
   const _c = new Vector3();
   /** Converts the pointer (or the camera) into gaze angles relative to her eyes. */
@@ -746,23 +894,41 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     const eyes = _p.copy(eyePos);
     // Direction to the camera, so "looking at the user" means looking into the lens.
     const toCam = _c.copy(camera.position).sub(eyes);
-    const camYaw = Math.atan2(toCam.x, toCam.z);
-    const camPitch = -Math.atan2(toCam.y, Math.hypot(toCam.x, toCam.z));
+    let camYaw = Math.atan2(toCam.x, toCam.z);
+    let camPitch = -Math.atan2(toCam.y, Math.hypot(toCam.x, toCam.z));
+    // Camera far to her side or behind her: ease back to straight ahead instead of snapping
+    // from one shoulder to the other (Custom Cast's eye-to-camera threshold).
+    const w = gazeFollowWeight(camYaw);
+    camYaw *= w;
+    camPitch *= w;
     if (pointerReleaseAt && performance.now() > pointerReleaseAt) {
       pointerNdc = null;
       pointerReleaseAt = 0;
     }
-    if (!lookEnabled || !pointerNdc) {
+    // A finger (or pressed mouse) on an interactive stage wins over hover-following.
+    const g = interaction?.gaze;
+    const ndc = g ? toNdc(g.x, g.y, _gaze) : lookEnabled ? pointerNdc : null;
+    if (!ndc || w < 0.2) {
       animator.setPointer({ yaw: camYaw, pitch: camPitch });
+      return;
+    }
+    if (g) {
+      // Look at a point on the finger's ray, a little in front of her: right for any orbit angle.
+      raycaster.setFromCamera(ndc, camera);
+      const camDist = camera.position.distanceTo(eyes);
+      const p = raycaster.ray.at(camDist * 0.55, _look).sub(eyes);
+      animator.setPointer({ yaw: Math.atan2(p.x, p.z), pitch: -Math.atan2(p.y, Math.hypot(p.x, p.z)) });
       return;
     }
     const faceNdc = eyes.clone().project(camera);
     const k = 0.55;
     animator.setPointer({
-      yaw: camYaw + (pointerNdc.x - faceNdc.x) * k * Math.max(camera.aspect, 0.6),
-      pitch: camPitch - (pointerNdc.y - faceNdc.y) * k,
+      yaw: camYaw + (ndc.x - faceNdc.x) * k * Math.max(camera.aspect, 0.6),
+      pitch: camPitch - (ndc.y - faceNdc.y) * k,
     });
   }
+  const _gaze = new Vector2();
+  const _look = new Vector3();
 
   // ---------- Size / visibility / loop ----------
   function resize(): void {
@@ -790,6 +956,11 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   }
 
   function step(dt: number): void {
+    interaction?.update(dt);
+    if (heldUntil && performance.now() > heldUntil) {
+      heldUntil = 0;
+      animator.setExpression(baseExpression.e, baseExpression.w);
+    }
     if (current && audio) lip = audio.lipsync.sample(dt);
     else lip = silentLip.silence(dt);
     updateLook();
@@ -855,6 +1026,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     ro.observe(canvas);
   }
 
+  if (options.interactive) enableInteraction();
   resize();
   step(0);
   kick();
@@ -875,6 +1047,9 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     window.removeEventListener('pointerup', onPointerLeave);
     canvas.removeEventListener('pointerdown', onDown);
     canvas.removeEventListener('pointerup', onUp);
+    interaction?.dispose();
+    interaction = null;
+    touchListeners.clear();
     removeGestureUnlock();
     tapListeners.clear();
     stats.clear();
@@ -918,6 +1093,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     setMuted,
     isMuted: () => muted,
     setExpression(e, w = 1) {
+      baseExpression = { e, w };
+      heldUntil = 0;
       animator.setExpression(e, w);
     },
     onTap(cb) {
@@ -932,14 +1109,22 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       animator.nod(strength);
     },
     setFraming(f) {
-      if (f !== 'bust' && f !== 'full') throw new TypeError(`Unknown framing: ${String(f)}`);
+      if (f !== 'bust' && f !== 'full' && f !== 'face') throw new TypeError(`Unknown framing: ${String(f)}`);
+      const changed = f !== framing;
       framing = f;
       computeFraming();
+      if (orbit && changed) {
+        // A layout change (side column ↔ strip, wardrobe): back to that framing, facing her.
+        orbit.home = { ...orbit.home, zoom: PRESET_ZOOM[f] };
+        orbit.reset(camNow.init);
+        kick();
+      }
     },
     setReducedMotion(r) {
       reducedOverride = r;
       reducedMotion = r ?? mql?.matches ?? false;
       animator.reducedMotion = reducedMotion;
+      if (orbit) orbit.reduced = reducedMotion;
       env?.setReducedMotion(reducedMotion);
     },
     gesture(name) {
@@ -990,6 +1175,40 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     stats,
     info: { placeholder, clips: player?.list() ?? [], extensions, rig: rig.report, hidden },
     three: { renderer, scene, camera, model },
+    onTouch(cb) {
+      touchListeners.add(cb);
+      return () => touchListeners.delete(cb);
+    },
+    get view() {
+      return orbit ? { ...orbit.view } : { yaw: 0, pitch: 0, zoom: PRESET_ZOOM[framing], panX: 0, panY: 0 };
+    },
+    setView(v, animate = true) {
+      if (!orbit) return;
+      orbit.flyTo(v, animate);
+      kick();
+    },
+    resetView(animate = true) {
+      orbit?.reset(animate);
+      kick();
+    },
+    cameraPreset(p, animate = true) {
+      if (!(p in PRESET_ZOOM)) throw new TypeError(`Unknown camera preset: ${String(p)}`);
+      if (!orbit) {
+        stage.setFraming(p);
+        return;
+      }
+      orbit.preset(p, animate);
+      kick();
+    },
+    setInteractive(on) {
+      if (on) {
+        enableInteraction();
+        if (interaction) interaction.enabled = true;
+      } else if (interaction) interaction.enabled = false;
+    },
+    get interactive() {
+      return !!interaction?.enabled;
+    },
   };
   return stage;
 }
