@@ -59,6 +59,11 @@ export interface ToonMaterialConfig {
   angelRing?: RGB;
   alpha: 'map' | 'none';
   outline?: { color: RGB; albedoMix: number; scale: number; weight?: 'shell' };
+  /**
+   * Engage eyes (_UvCameraFollowRateX/Y): the texture slides toward the camera by this much UV per unit of the
+   * view direction in the eye bone's frame (x = her left, y = up), so she keeps looking at the viewer.
+   */
+  eyeFollow?: { x: number; y: number };
 }
 export interface ToonConfig {
   ramps?: string;
@@ -100,7 +105,8 @@ export function normalizeToon(raw: unknown): ToonConfig {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
     const m = object(value),
       ol = object(m.outline),
-      oc = rgb(ol.color);
+      oc = rgb(ol.color),
+      ef = object(m.eyeFollow);
     const entry: ToonMaterialConfig = {
       preset: m.preset === 'flat' || m.preset === 'hide' ? m.preset : 'lit',
       ramp: ramp(m.ramp),
@@ -126,6 +132,10 @@ export function normalizeToon(raw: unknown): ToonConfig {
             ...(ol.weight === 'shell' ? { weight: 'shell' as const } : {}),
           }
         : undefined,
+      eyeFollow:
+        m.eyeFollow !== undefined && (number(ef.x, 0, -1, 1) || number(ef.y, 0, -1, 1))
+          ? { x: number(ef.x, 0, -1, 1), y: number(ef.y, 0, -1, 1) }
+          : undefined,
     };
     for (const key of Object.keys(entry)) {
       if (entry[key as keyof ToonMaterialConfig] === undefined) delete (entry as unknown as Record<string, unknown>)[key];
@@ -397,6 +407,7 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
       if (cfg.solidColor) defines.SOLID_COLOR = '';
       if (cfg.angelRing) defines.ANGEL_RING = '';
       if (outline) defines.OUTLINE = '';
+      if (cfg.eyeFollow && !outline) defines.EYE_FOLLOW = '';
       const attr = mesh.geometry.getAttribute('color');
       let max = 0;
       if (outline && attr) {
@@ -445,6 +456,7 @@ export async function applyToon(model: Object3D, raw: unknown, opts: ToonOptions
           outlineMax: { value: max || 1 },
           inverseTone: { value: 0 },
           toneExposure: { value: 1 },
+          eyeFollow: { value: new Vector2(cfg.eyeFollow?.x ?? 0, cfg.eyeFollow?.y ?? 0) },
         },
         side: outline ? BackSide : src.side,
         transparent: src.transparent,

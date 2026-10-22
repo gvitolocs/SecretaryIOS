@@ -53,6 +53,8 @@ export class Rig {
   private readonly offsets: Partial<Record<LogicalBone, Quaternion>> = {};
   /** Morphs held at a fixed weight (e.g. "sword off"), keyed by model morph name. */
   private readonly fixed: { ref: MorphTargetRef; weight: number }[] = [];
+  /** Last clip-mixer pose of the clip-driven logical bones (see captureClipPose). */
+  private readonly clipPose = new Map<Object3D, Quaternion>();
 
   constructor(
     /** The object whose space is "character space" (contains the model). */
@@ -144,7 +146,21 @@ export class Rig {
    * play underneath, so bones a clip does not animate do not accumulate procedural deltas.
    */
   restoreBones(): void {
-    for (const b of Object.values(this.bones)) b?.node.quaternion.copy(b.rest);
+    for (const b of Object.values(this.bones)) if (b) b.node.quaternion.copy(this.clipPose.get(b.node) ?? b.rest);
+  }
+
+  /**
+   * Call right after the clip mixer update. three's PropertyMixer only writes a value that changed since its last
+   * write, so a constant track (a held forearm, two equal keys) is written once; restoreBones() then puts the bone
+   * back to this pose instead of the rest pose, or the held bone would fall back to rest from the second frame on.
+   */
+  captureClipPose(driven: ReadonlySet<string>): void {
+    for (const b of Object.values(this.bones)) {
+      if (!b || !driven.has(b.node.name)) continue;
+      let q = this.clipPose.get(b.node);
+      if (!q) this.clipPose.set(b.node, (q = new Quaternion()));
+      q.copy(b.node.quaternion);
+    }
   }
 
   /**
@@ -193,6 +209,7 @@ export class Rig {
 
   /** Restores the rest pose. */
   reset(): void {
+    this.clipPose.clear();
     for (const b of Object.values(this.bones)) b?.node.quaternion.copy(b.rest);
     for (const t of this.allTargets) t.influences[t.index] = 0;
   }

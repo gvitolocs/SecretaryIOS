@@ -450,6 +450,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   if (player) {
     rig.restoreBones();
     player.update(0);
+    rig.captureClipPose(player.drivenNodes);
     rig.apply(frame0, { driven: player.drivenNodes });
   } else rig.apply(frame0);
   if (rig.report.missingBones.length || rig.report.missingMorphs.length) {
@@ -969,6 +970,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       // clips underneath (frozen in reduced motion: a still idle pose, never the rest pose)
       rig.restoreBones();
       player.update(reducedMotion ? 0 : dt);
+      rig.captureClipPose(player.drivenNodes);
       rig.apply(f, { driven: player.drivenNodes });
     } else rig.apply(f);
     applyCamera(dt, false);
