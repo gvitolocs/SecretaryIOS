@@ -340,6 +340,8 @@ impl MeshyService {
             finished_at: None,
             updated_at: now,
             timeline_item_id: None,
+            owner: None,
+            boot_id: None,
             extra,
         };
         let job = self.jobs.insert(job).map_err(|e| {
