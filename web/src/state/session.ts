@@ -5,6 +5,7 @@ import { t } from "../i18n";
 import { resetBody } from "./body";
 import { clearChat } from "./chat";
 import { resetGym } from "./gym";
+import { resetNotifications } from "./notifications";
 import { resetShopping } from "./shopping";
 
 export type SessionState =
@@ -21,6 +22,7 @@ function forgetLocalData(): void {
   resetShopping();
   resetGym();
   resetBody();
+  resetNotifications();
 }
 
 export async function checkSession(): Promise<void> {

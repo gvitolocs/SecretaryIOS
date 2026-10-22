@@ -2,6 +2,7 @@ import { Navigate, Route, Router } from "@solidjs/router";
 import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
+import { registerServiceWorker } from "./lib/push";
 import "@fontsource-variable/sora";
 import "@fontsource-variable/jetbrains-mono";
 import "./state/appearance";
@@ -16,6 +17,9 @@ const HistoryDetailView = lazy(() => import("./views/gym/HistoryDetail"));
 const ProgressView = lazy(() => import("./views/gym/Progress"));
 const ProgressDetailView = lazy(() => import("./views/gym/ProgressDetail"));
 const WeightView = lazy(() => import("./views/Weight"));
+
+// The service worker (Web Push, static asset cache). It never caches /v1.
+void registerServiceWorker();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root missing");

@@ -50,6 +50,7 @@
 // that the UI degrades gracefully.
 
 import http from "node:http";
+import { addNotification, handleNotifications } from "./notifications.mjs";
 import { randomUUID } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1356,6 +1357,10 @@ function addItem(fields, ts = Date.now()) {
   const item = { id: String(++timelineSeq), ts: new Date(ts).toISOString(), ...fields };
   timeline.push(item);
   for (const client of streamClients) sseWrite(client, item);
+  // Live Lucina items also land in the notification inbox (not the seeded history).
+  if (item.role === "lucina" && ts >= Date.now() - 60_000) {
+    addNotification({ category: item.meta?.kind === "reminder" ? "reminder" : "lucina_message", body: String(item.text).slice(0, 240), channel: item.channel, timelineId: item.id });
+  }
   return item;
 }
 
@@ -1802,6 +1807,7 @@ async function route(req, res) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
