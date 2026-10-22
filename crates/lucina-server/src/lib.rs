@@ -124,6 +124,8 @@ impl AppState {
         env.endpoints = cfg.endpoints.clone();
         env.default_location = cfg.default_location.clone();
         env.nominatim_email = cfg.nominatim_email.clone();
+        env.presence_dir = cfg.presence_dir.clone();
+        env.presence_max_age = cfg.presence_max_age;
         let registry = Arc::new(Registry::builtin(&cfg.tools));
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {

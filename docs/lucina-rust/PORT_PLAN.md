@@ -214,6 +214,16 @@ second Rust instance cannot connect. Rollback: the same in reverse.
 Parity: golden replies on the 52 historical Discord messages; admin operations replayed against a private test guild
 in dry-run mode that records REST calls, compared with Node's calls for the same plans.
 
+Already live (2026-10-22): the owner **presence watcher**, crate `lucina-discord` (twilight-gateway 0.17.1),
+`lucina presence-watch`, systemd user unit `lucina-presence.service` on nezopt (`deploy/lucina-presence.service`).
+It is a second gateway session on the Lucina token with intents `GUILDS | GUILD_PRESENCES` only (no message events,
+so it never replies) and is not part of the `discord-<appid>.lock` singleton above. It keeps only
+`LUCINA_OWNER_DISCORD_USER_ID`'s presence (merged across guilds, freshest wins) in `data/presence/discord.json`
+(current, 0600) and `data/presence/discord.jsonl` (transitions, `LUCINA_PRESENCE_RETENTION_DAYS`, 90). Readers:
+`GET /api/secretary/presence`, the `presence` tool, the chat context line (`LUCINA_PRESENCE_CONTEXT`, default on in
+Rust) and, until the cutover, the Node hook `src/discord-presence-context.js` (`LUCINA_PRESENCE_CONTEXT=true`).
+The phase-4 port reuses the crate for the message session.
+
 ### Phase 5: Alexa
 
 Prerequisite: Q2 (find the skill backend that translates Alexa Skills Kit requests into `POST /api/alexa/lucina`).

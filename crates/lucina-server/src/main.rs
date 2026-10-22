@@ -3,6 +3,13 @@
 //! - `lucina serve` (default): the HTTP server (127.0.0.1:8790 by default).
 //! - `lucina fake-deepseek --bind 127.0.0.1:8799 --script s.json [--record r.jsonl]`.
 //! - `lucina check-data --data <dir>`: byte-compat round trip of the stores.
+//! - `lucina presence-watch`: the owner's Discord presence watcher (its own
+//!   gateway session, intents GUILDS | GUILD_PRESENCES only), writing
+//!   `<data>/presence/discord.json{,l}`. Token from `--token-file`,
+//!   `LUCINA_DISCORD_TOKEN_FILE` or `DISCORD_BOT_TOKEN_LUCINA`; owner from
+//!   `LUCINA_OWNER_DISCORD_USER_ID`. Exit code 78 on a fatal gateway close
+//!   (bad token, disallowed intents): systemd must not restart into an
+//!   identify loop.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -37,6 +44,92 @@ enum Cmd {
         #[arg(long)]
         data: PathBuf,
     },
+    /// Watch the owner's Discord presence (separate gateway session).
+    PresenceWatch {
+        /// Data dir (default LUCINA_DATA_DIR or ./data); files go to <data>/presence.
+        #[arg(long)]
+        data: Option<PathBuf>,
+        /// File holding the bot token (mode 0600).
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
+}
+
+/// Exit code for a fatal gateway close (`RestartPreventExitStatus=78`).
+const EXIT_FATAL: i32 = 78;
+
+fn presence_watch(data: Option<PathBuf>, token_file: Option<PathBuf>) -> anyhow::Result<()> {
+    let mut cfg = Config::from_env()?;
+    if let Some(d) = data {
+        cfg.presence_dir = d.join("presence");
+    }
+    let owner: u64 = cfg
+        .owner_discord_user_id
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("LUCINA_OWNER_DISCORD_USER_ID is not set"))?;
+    let token_path = token_file.or_else(|| {
+        std::env::var_os("LUCINA_DISCORD_TOKEN_FILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    });
+    let token = match token_path {
+        Some(p) => std::fs::read_to_string(&p)
+            .map_err(|e| anyhow::anyhow!("token file {}: {}", p.display(), e.kind()))?
+            .trim()
+            .to_owned(),
+        None => std::env::var("DISCORD_BOT_TOKEN_LUCINA")
+            .unwrap_or_default()
+            .trim()
+            .to_owned(),
+    };
+    if token.is_empty() {
+        anyhow::bail!("no Discord bot token (--token-file, LUCINA_DISCORD_TOKEN_FILE or DISCORD_BOT_TOKEN_LUCINA)");
+    }
+    let wc = lucina_discord::watcher::WatchConfig {
+        token,
+        owner_id: owner,
+        presence_dir: cfg.presence_dir.clone(),
+        retention_days: cfg.presence_retention_days,
+        refresh: std::time::Duration::from_secs(60),
+        first_observation_timeout: std::time::Duration::from_secs(60),
+    };
+    tracing::info!(config = ?wc, "presence watcher starting");
+    // One thread is plenty for one shard; it also keeps RSS small.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let result = rt.block_on(lucina_discord::watcher::run(wc, shutdown_signal()));
+    match result {
+        Ok(()) => Ok(()),
+        Err(lucina_discord::watcher::WatchError::Fatal(code)) => {
+            tracing::error!(?code, "presence watcher: fatal gateway close, not retrying");
+            std::process::exit(EXIT_FATAL);
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
@@ -73,14 +166,24 @@ fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
     Ok(all_ok)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
     match Cli::parse().cmd.unwrap_or(Cmd::Serve) {
+        Cmd::PresenceWatch { data, token_file } => presence_watch(data, token_file),
+        cmd => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(run(cmd)),
+    }
+}
+
+async fn run(cmd: Cmd) -> anyhow::Result<()> {
+    match cmd {
+        Cmd::PresenceWatch { .. } => unreachable!("handled in main"),
         Cmd::Serve => {
             let cfg = Config::from_env()?;
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");

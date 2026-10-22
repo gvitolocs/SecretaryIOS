@@ -88,6 +88,12 @@ pub struct Config {
     // channels (not implemented in this build; always off)
     pub telegram_requested: bool,
     pub discord_requested: bool,
+    // discord presence (watcher: `lucina presence-watch`)
+    pub owner_discord_user_id: Option<String>,
+    pub presence_dir: PathBuf,
+    pub presence_context: bool,
+    pub presence_max_age: Duration,
+    pub presence_retention_days: i64,
 }
 
 impl std::fmt::Debug for Config {
@@ -257,6 +263,17 @@ impl Config {
             device_reachable_minutes: num("LUCINA_DEVICE_REACHABLE_MINUTES", 360) as i64,
             telegram_requested: flag("LUCINA_TELEGRAM_ENABLED", false),
             discord_requested: flag("LUCINA_DISCORD_ENABLED", false),
+            owner_discord_user_id: get("LUCINA_OWNER_DISCORD_USER_ID")
+                .or_else(|| get("LUCINA_OWNER_DISCORD_ID"))
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())),
+            presence_dir: path_or("LUCINA_PRESENCE_DIR", "presence"),
+            presence_context: flag("LUCINA_PRESENCE_CONTEXT", true),
+            presence_max_age: Duration::from_millis(
+                num("LUCINA_PRESENCE_MAX_AGE_MS", 600_000).max(60_000),
+            ),
+            presence_retention_days: num("LUCINA_PRESENCE_RETENTION_DAYS", 90).clamp(1, 3650)
+                as i64,
             data_dir,
         })
     }
@@ -288,6 +305,10 @@ mod tests {
         assert!(!c.scheduler);
         assert_eq!(c.default_session, "secretary_app");
         assert_eq!(c.time_zone.name(), "Europe/Rome");
+        assert_eq!(c.presence_dir, PathBuf::from("/tmp/x/presence"));
+        assert!(c.presence_context);
+        assert_eq!(c.presence_retention_days, 90);
+        assert_eq!(c.owner_discord_user_id, None);
         assert!(!format!("{c:?}").contains("\"t\""));
     }
 }

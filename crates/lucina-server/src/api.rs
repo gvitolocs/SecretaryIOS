@@ -243,6 +243,7 @@ async fn health(State(st): State<AppState>) -> Response {
             "reminders": {"enabled": c.reminders_enabled, "writer": st.writer.kind(), "scheduler": c.scheduler && c.reminders_writer == crate::WriterKind::Local},
             "channels": {"telegram": false, "discord": false},
             "grocery": st.grocery.is_some(),
+            "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
             "timelineStreams": st.streams.load(Ordering::Relaxed),
         }),
@@ -377,6 +378,10 @@ async fn route(
             only(&["GET"])?;
             agenda(st, uri).await
         }
+        (Some("presence"), None) => {
+            only(&["GET"])?;
+            Ok(ok(presence_report(st, Utc::now())))
+        }
         (Some("shopping"), id) => {
             let allowed: &[&str] = if id.is_some() {
                 &["PATCH"]
@@ -388,6 +393,23 @@ async fn route(
         }
         _ => Err(ApiError::not_found()),
     }
+}
+
+// ---------------------------------------------------------------- presence
+
+/// The owner's Discord presence (from the presence watcher's files) plus
+/// today's online minutes. `available: false` when no watcher ever ran,
+/// `fresh: false` when it is down.
+pub fn presence_report(st: &AppState, now: chrono::DateTime<Utc>) -> Value {
+    let r = lucina_discord::PresenceReport::build(
+        &st.cfg.presence_dir,
+        st.cfg.time_zone,
+        now,
+        st.cfg.presence_max_age,
+    );
+    let mut v = serde_json::to_value(r).unwrap_or_else(|_| json!({}));
+    v["timeZone"] = json!(st.cfg.time_zone.name());
+    v
 }
 
 // ---------------------------------------------------------------- reminders

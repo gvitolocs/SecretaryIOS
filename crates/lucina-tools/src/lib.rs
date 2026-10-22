@@ -13,7 +13,7 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `shopping`.
+//!   `notes`, `reminders`, `shopping`, `presence`.
 
 pub mod agent;
 pub mod pending;
@@ -163,6 +163,10 @@ pub struct ToolEnv {
     pub nominatim_gate: RateGate,
     pub user_agent: String,
     pub nominatim_email: Option<String>,
+    /// `<data>/presence` (the Discord presence watcher's files).
+    pub presence_dir: PathBuf,
+    /// Older presence files mean the watcher is down.
+    pub presence_max_age: Duration,
 }
 
 impl ToolEnv {
@@ -174,6 +178,7 @@ impl ToolEnv {
             " (private personal assistant)"
         )
         .to_owned();
+        let data_dir: PathBuf = data_dir.into();
         Self {
             http: reqwest::Client::builder()
                 .user_agent(user_agent.clone())
@@ -182,7 +187,9 @@ impl ToolEnv {
                 .build()
                 .expect("http client"),
             time_zone,
-            data_dir: data_dir.into(),
+            presence_dir: data_dir.join("presence"),
+            presence_max_age: lucina_discord::store::DEFAULT_MAX_AGE,
+            data_dir,
             reminders: None,
             reminder_writer: None,
             reminders_enabled: true,
@@ -457,7 +464,7 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 8);
+        assert_eq!(all.names().len(), 9);
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));
         assert_eq!(some.names(), vec!["time", "calculator"]);
         assert!(Registry::builtin(&ToolSelection::parse("none")).is_empty());

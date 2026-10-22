@@ -9,6 +9,7 @@ description = "Lucina's tool plugins, registry, agent loop and confirmation flow
 lucina-llm = { path = "../lucina-llm" }
 lucina-store = { path = "../lucina-store" }
 lucina-grocery = { path = "../lucina-grocery" }
+lucina-discord = { path = "../lucina-discord" }
 async-trait = { workspace = true }
 schemars = "1"
 jsonschema = { version = "0.59", default-features = false }

@@ -259,8 +259,15 @@ async fn run_turn(
     )
     .await
     .unwrap_or_default();
+    let presence = if st.cfg.presence_context {
+        lucina_discord::store::context_line(&st.cfg.presence_dir, tz, now, st.cfg.presence_max_age)
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let memory_context = [
         st.recent.metadata_block(&session, tz, now),
+        presence,
         st.recent.render(&session, tz),
         delivered,
         honcho,
