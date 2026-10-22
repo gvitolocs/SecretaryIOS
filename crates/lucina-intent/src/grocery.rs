@@ -609,10 +609,20 @@ mod tests {
         );
         // Node 15d9629: "indkøbslisten" and "til" parse too.
         assert_eq!(
+            intent("tilføj mælk til indkøbslisten"),
+            Some("grocery.shopping_list.add")
+        );
+        assert_eq!(
             parse_grocery_intent("tilføj mælk til indkøbslisten")
                 .unwrap()
                 .raw_product,
             "mælk"
+        );
+        assert_eq!(
+            parse_grocery_intent("add milk to my shopping list")
+                .unwrap()
+                .raw_product,
+            "milk"
         );
         assert_eq!(
             intent("tilføj mælk til listen"),

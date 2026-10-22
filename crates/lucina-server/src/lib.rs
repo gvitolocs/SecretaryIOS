@@ -115,7 +115,30 @@ impl AppState {
                     cfg.shopping_catalog_path.clone(),
                     &cfg.data_dir,
                 ));
-                Some(Arc::new(GroceryRepo::connect_lazy(url, catalog)?))
+                // New custom shopping items are named in it/en/da by one model call
+                // (DeepSeek; LUCINA_SHOPPING_TRANSLATE=off turns it off).
+                let namer_model = model.clone();
+                let namer: lucina_grocery::Namer = Arc::new(move |system: String, user: String| {
+                    let m = namer_model.clone();
+                    Box::pin(async move {
+                        m.complete(lucina_llm::ChatRequest {
+                            messages: vec![
+                                lucina_llm::Message::system(system),
+                                lucina_llm::Message::user(user),
+                            ],
+                            temperature: Some(0.1),
+                            purpose: "shopping-item-names",
+                            ..lucina_llm::ChatRequest::default()
+                        })
+                        .await
+                        .map_err(|e| tracing::warn!(error = %e, "shopping item naming failed"))
+                        .ok()
+                        .map(|r| r.message.text().to_owned())
+                    })
+                });
+                Some(Arc::new(
+                    GroceryRepo::connect_lazy(url, catalog)?.with_namer(namer),
+                ))
             }
             None => None,
         };

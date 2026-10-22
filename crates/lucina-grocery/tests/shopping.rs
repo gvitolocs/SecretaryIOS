@@ -1,4 +1,4 @@
-//! Shopping v2 against a throwaway Postgres with migrations 001 and 002.
+//! Shopping v2 against a throwaway Postgres with migrations 001, 002 and 003.
 //!
 //! Needs `LUCINA_TEST_DATABASE_URL` (e.g. a `postgres:17` container on
 //! 127.0.0.1:55432); without it every test is skipped. The schema is
@@ -35,6 +35,10 @@ async fn repo() -> Option<GroceryRepo> {
                 .await
                 .unwrap();
             sqlx::raw_sql(include_str!("../migrations/002_shopping_v2.sql"))
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::raw_sql(include_str!("../migrations/003_shopping_items.sql"))
                 .execute(&pool)
                 .await
                 .unwrap();
@@ -228,7 +232,7 @@ async fn ops_semantics() {
         )
         .await
         .unwrap();
-    let bread_id = out.items.iter().find(|i| i["name"] == "pane").unwrap()["id"]
+    let bread_id = out.items.iter().find(|i| i["typedName"] == "pane").unwrap()["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -243,10 +247,32 @@ async fn ops_semantics() {
         .await
         .unwrap();
     assert_eq!(
-        out.applied.len(),
-        1,
-        "rename to a catalog item's display name is allowed: keys differ"
+        out.rejected[0]["error"], "duplicate_item",
+        "renaming onto another object's name (any language) that is already listed"
     );
+    // a custom row: rename edits its object's name in the request language
+    let out = r
+        .apply_ops_in(
+            &u,
+            "default",
+            &json!([op(
+                "rename",
+                json!({"itemId": bread_id, "name": "Pagnotta"})
+            )]),
+            None,
+            "web",
+            Some("it"),
+        )
+        .await
+        .unwrap();
+    let bread = out
+        .items
+        .iter()
+        .find(|i| i["id"] == json!(bread_id))
+        .unwrap();
+    assert_eq!(bread["name"], "Pagnotta");
+    assert_eq!(bread["item"]["kind"], "custom");
+    assert_eq!(bread["item"]["names"]["en"], "pane");
     let dup = r
         .apply_ops(
             &u,
@@ -257,7 +283,11 @@ async fn ops_semantics() {
         )
         .await
         .unwrap();
-    let water_id = dup.items.iter().find(|i| i["name"] == "acqua").unwrap()["id"]
+    let water_id = dup
+        .items
+        .iter()
+        .find(|i| i["typedName"] == "acqua")
+        .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -543,14 +573,20 @@ async fn legacy_routes() {
         .add_item(&u, &resolve_canonical_product("milk"), "latte", "ios")
         .await
         .unwrap();
-    assert_eq!(item["product"], "milk");
+    assert_eq!(
+        item["product"], "Latte",
+        "the object's name in the owner language"
+    );
+    assert_eq!(item["itemId"], "milk");
     assert_eq!(item["rawName"], "latte");
+    assert_eq!(item["merged"], false);
     assert_eq!(item["status"], "needed");
     let again = r
         .add_item(&u, &resolve_canonical_product("latte"), "latte", "web")
         .await
         .unwrap();
     assert_eq!(again["id"], item["id"]);
+    assert_eq!(again["merged"], true);
     let id = item["id"].as_str().unwrap();
     let patched = r
         .legacy_set_status(&u, id, "purchased", "web")
@@ -558,11 +594,15 @@ async fn legacy_routes() {
         .unwrap();
     assert_eq!(
         patched,
-        json!({"id": id, "product": "latte", "status": "purchased"})
+        json!({"id": id, "product": "Latte", "name": "Latte", "itemId": "milk", "status": "purchased"})
     );
     let list = r.legacy_list(&u).await.unwrap();
     assert_eq!(list[0]["status"], "purchased");
-    assert_eq!(list[0]["product"], "milk");
+    assert_eq!(list[0]["product"], "Latte");
+    assert_eq!(
+        r.legacy_list_in(&u, Some("en")).await.unwrap()[0]["product"],
+        "Milk"
+    );
     assert_eq!(
         code(
             r.legacy_set_status(&u, &Uuid::new_v4().to_string(), "needed", "web")
@@ -590,4 +630,207 @@ async fn legacy_routes() {
     let (removed, _) = r.remove_items_named(&u, "Latte", "telegram").await.unwrap();
     assert_eq!(removed, 1);
     assert!(r.legacy_list(&u).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn item_objects() {
+    let Some(r) = repo().await else { return };
+    let u = user();
+    // any language finds the same object; names follow the requested language
+    let out = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([op("add", json!({"text": "milk"}))]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    let milk = out.items[0].clone();
+    assert_eq!(
+        (
+            milk["itemId"].clone(),
+            milk["item"]["kind"].clone(),
+            milk["name"].clone(),
+            milk["typedName"].clone()
+        ),
+        (
+            json!("milk"),
+            json!("catalog"),
+            json!("Latte"),
+            json!("milk")
+        )
+    );
+    let again = r
+        .apply_ops_in(
+            &u,
+            "default",
+            &json!([
+                op("add", json!({"text": "LATTE"})),
+                op("add", json!({"text": "the milk"})),
+                op("add", json!({"itemId": "milk"}))
+            ]),
+            None,
+            "web",
+            Some("en"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.items.len(), 1);
+    assert_eq!(again.merged.len(), 3);
+    assert_eq!(again.items[0]["name"], "Milk");
+    assert_eq!(again.lang, "en");
+    // an old web outbox: its own row UUID in itemId next to catalogId
+    let legacy = r
+        .apply_ops(&u, "default", &json!([op("add", json!({"itemId": Uuid::new_v4().to_string(), "catalogId": "banana", "name": "Banane"}))]), None, "web")
+        .await
+        .unwrap();
+    assert!(legacy.rejected.is_empty());
+    let unknown = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([op("add", json!({"itemId": "no-such-thing"}))]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    assert_eq!(unknown.rejected[0]["error"], "unknown_item");
+
+    // new text: a custom object, typed text everywhere without a model
+    let out = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([
+                op("add", json!({"text": "Detersivo piatti"})),
+                op("add", json!({"text": "detersivo  PIATTI"}))
+            ]),
+            None,
+            "telegram",
+        )
+        .await
+        .unwrap();
+    let soap = out
+        .items
+        .iter()
+        .find(|i| i["typedName"] == "Detersivo piatti")
+        .unwrap()
+        .clone();
+    assert_eq!(out.merged.len(), 1);
+    let soap_id = soap["itemId"].as_str().unwrap().to_owned();
+    assert!(
+        lucina_grocery::items::is_custom_item_id(&soap_id),
+        "{soap_id}"
+    );
+    assert_eq!(soap["item"]["names"]["da"], "Detersivo piatti");
+    assert_eq!(soap["item"]["needsTranslation"], true);
+    assert_eq!(soap["section"], "other");
+    let customs = r.custom_items(&u).await.unwrap();
+    assert_eq!(customs.len(), 1);
+    assert_eq!(customs[0]["aliases"], json!(["Detersivo piatti"]));
+
+    // edit_item: names, icon; catalog objects and taken names are refused
+    let out = r
+        .apply_ops_in(
+            &u,
+            "default",
+            &json!([
+                op("edit_item", json!({"itemId": soap_id, "names": {"en": "Dish soap", "da": "Opvaskemiddel"}, "icon": "🧴"})),
+                op("edit_item", json!({"itemId": "milk", "names": {"en": "x"}})),
+                op("edit_item", json!({"itemId": soap_id, "names": {"en": "Milk"}})),
+                op("edit_item", json!({"itemId": soap_id, "icon": "soap"})),
+            ]),
+            None,
+            "web",
+            Some("en"),
+        )
+        .await
+        .unwrap();
+    let errors: Vec<&str> = out
+        .rejected
+        .iter()
+        .filter_map(|x| x["error"].as_str())
+        .collect();
+    assert_eq!(errors, vec!["not_custom", "name_taken", "invalid_icon"]);
+    let soap = out
+        .items
+        .iter()
+        .find(|i| i["itemId"] == json!(soap_id))
+        .unwrap();
+    assert_eq!(
+        (soap["name"].clone(), soap["icon"].clone()),
+        (json!("Dish soap"), json!("🧴"))
+    );
+    assert_eq!(soap["item"]["needsTranslation"], false);
+    // the other languages now find it
+    let out = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([op("add", json!({"text": "opvaskemiddel"}))]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.merged.len(), 1);
+    // remove by a name in another language
+    let (n, _, names) = r
+        .remove_items_named_in(&u, "dish soap", "telegram", Some("it"))
+        .await
+        .unwrap();
+    assert_eq!((n, names), (1, vec!["Detersivo piatti".to_owned()]));
+}
+
+#[tokio::test]
+async fn new_items_are_named_by_one_model_call() {
+    let Some(r) = repo().await else { return };
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let r = r.with_namer(std::sync::Arc::new(move |_system: String, user: String| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(user.contains("spugne"), "{user}");
+        Box::pin(async {
+            Some("```json\n{\"names\":{\"it\":\"Spugne\",\"en\":\"Sponges\",\"da\":\"Svampe\"},\"section\":\"produce\",\"icon\":\"🧽\"}\n```".to_owned())
+        })
+    }));
+    std::env::remove_var("LUCINA_SHOPPING_TRANSLATE");
+    let u = user();
+    let out = r
+        .apply_ops_in(
+            &u,
+            "default",
+            &json!([
+                op("add", json!({"text": "spugne"})),
+                op("add", json!({"text": "Spugne"}))
+            ]),
+            None,
+            "web",
+            Some("da"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.items.len(), 1);
+    assert_eq!(out.items[0]["name"], "Svampe");
+    assert_eq!(out.items[0]["icon"], "🧽");
+    assert_eq!(out.items[0]["item"]["needsTranslation"], false);
+    let again = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([op("add", json!({"text": "sponges"}))]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.merged.len(), 1);
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one call; known names never call again"
+    );
 }

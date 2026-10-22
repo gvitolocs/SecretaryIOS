@@ -1,5 +1,6 @@
 //! The deterministic grocery path of a chat turn (`src/grocery/index.js`
-//! `process`): runs before the planner; English replies as in Node.
+//! `process`): runs before the planner. Shopping-list replies name the item
+//! object in the message's language (it/en/da), the rest is English, as in Node.
 //!
 //! Not ported yet (port plan phase 6): the live catalog/offer adapters
 //! (ShelfAtlas, Salling, chain JSON, eTilbudsavis, RapidAPI) and receipt
@@ -36,6 +37,37 @@ fn store(r: &StoreRow) -> Store {
         id: r.id.clone(),
         chain_slug: r.chain_slug.clone(),
         display_name: r.display_name.clone(),
+    }
+}
+
+/// Shopping-list replies in the language of the owner's message (Node `SHOPPING_REPLIES`).
+fn shopping_reply(lang: &str, kind: &str, name: &str) -> String {
+    match (lang, kind) {
+        ("it", "added") => format!("Ho aggiunto {name} alla lista della spesa."),
+        ("it", "already") => format!("{name} è già nella lista della spesa."),
+        ("it", "removed") => format!("Ho tolto {name} dalla lista della spesa."),
+        ("it", "not_found") => format!("{name} non è nella lista della spesa."),
+        ("it", "list") => format!("Lista della spesa: {name}."),
+        ("it", "empty") => "La lista della spesa è vuota.".into(),
+        ("it", "finished") => {
+            format!("Ho segnato {name} come finito e l'ho aggiunto alla lista della spesa.")
+        }
+        ("da", "added") => format!("Jeg har tilføjet {name} til indkøbslisten."),
+        ("da", "already") => format!("{name} står allerede på indkøbslisten."),
+        ("da", "removed") => format!("Jeg har fjernet {name} fra indkøbslisten."),
+        ("da", "not_found") => format!("{name} står ikke på indkøbslisten."),
+        ("da", "list") => format!("Indkøbsliste: {name}."),
+        ("da", "empty") => "Indkøbslisten er tom.".into(),
+        ("da", "finished") => {
+            format!("{name} er sluppet op, så jeg har sat det på indkøbslisten.")
+        }
+        (_, "added") => format!("Added {name} to your shopping list."),
+        (_, "already") => format!("{name} is already on your shopping list."),
+        (_, "removed") => format!("Removed {name} from your shopping list."),
+        (_, "not_found") => format!("{name} is not on your shopping list."),
+        (_, "list") => format!("Shopping list: {name}."),
+        (_, "empty") => "Your shopping list is empty.".into(),
+        (_, _) => format!("Marked {name} as finished and added it to your shopping list."),
     }
 }
 
@@ -161,15 +193,20 @@ pub async fn process(
             )
             .await?;
             if finished {
+                let lang = lucina_grocery::message_language(text, None);
                 let added = repo
-                    .add_item(user_id, &product, &parsed.raw_product, modified_by)
+                    .add_item_in(
+                        user_id,
+                        &product,
+                        &parsed.raw_product,
+                        modified_by,
+                        Some(lang),
+                    )
                     .await?;
+                let name = added["name"].as_str().unwrap_or(&product.name).to_owned();
                 return Ok(Some(Handled {
                     intent: intent.into(),
-                    reply: format!(
-                        "Marked {} as finished and added it to your shopping-list candidates.",
-                        product.name
-                    ),
+                    reply: shopping_reply(lang, "finished", &name),
                     list_id: added["listId"].as_str().map(str::to_owned),
                 }));
             }
@@ -180,12 +217,25 @@ pub async fn process(
         }
         "grocery.shopping_list.add" => {
             let product = product.expect("add has a product");
+            let lang = lucina_grocery::message_language(text, None);
             let added = repo
-                .add_item(user_id, &product, &parsed.raw_product, modified_by)
+                .add_item_in(
+                    user_id,
+                    &product,
+                    &parsed.raw_product,
+                    modified_by,
+                    Some(lang),
+                )
                 .await?;
+            let name = added["name"].as_str().unwrap_or(&product.name).to_owned();
+            let kind = if added["merged"] == json!(true) {
+                "already"
+            } else {
+                "added"
+            };
             Ok(Some(Handled {
                 intent: intent.into(),
-                reply: format!("Added {} to your shopping list.", product.name),
+                reply: shopping_reply(lang, kind, &name),
                 list_id: added["listId"].as_str().map(str::to_owned),
             }))
         }
@@ -196,26 +246,47 @@ pub async fn process(
             } else {
                 parsed.raw_product.clone()
             };
-            let (removed, list_id) = repo.remove_items_named(user_id, &name, modified_by).await?;
+            let lang = lucina_grocery::message_language(text, None);
+            let (removed, list_id, names) = repo
+                .remove_items_named_in(user_id, &name, modified_by, Some(lang))
+                .await?;
+            let reply = if removed > 0 {
+                let shown = if names.is_empty() {
+                    product.name.clone()
+                } else {
+                    names.join(", ")
+                };
+                shopping_reply(lang, "removed", &shown)
+            } else {
+                shopping_reply(lang, "not_found", &name)
+            };
             Ok(Some(Handled {
                 intent: intent.into(),
-                reply: format!("Removed {} from your shopping list.", product.name),
+                reply,
                 list_id: (removed > 0).then_some(list_id),
             }))
         }
         "grocery.shopping_list.query" => {
-            let items = repo.legacy_list(user_id).await?;
-            let names: Vec<&str> = items
+            let lang = lucina_grocery::message_language(text, None);
+            let items = repo.legacy_list_in(user_id, Some(lang)).await?;
+            let names: Vec<String> = items
                 .iter()
+                .filter(|i| i["status"] == json!("needed"))
                 .take(20)
-                .filter_map(|i| i["product"].as_str())
+                .filter_map(|i| {
+                    let name = i["name"].as_str()?;
+                    Some(match i["spec"].as_str().filter(|s| !s.is_empty()) {
+                        Some(spec) => format!("{name} ({spec})"),
+                        None => name.to_owned(),
+                    })
+                })
                 .collect();
             Ok(handled(
                 intent,
-                if items.is_empty() {
-                    "Your shopping list is empty.".to_owned()
+                if names.is_empty() {
+                    shopping_reply(lang, "empty", "")
                 } else {
-                    format!("Shopping list: {}.", names.join(", "))
+                    shopping_reply(lang, "list", &names.join(", "))
                 },
             ))
         }

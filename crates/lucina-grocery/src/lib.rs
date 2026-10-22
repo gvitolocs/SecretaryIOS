@@ -8,9 +8,14 @@
 //! - the list revision goes up by one per batch that applied anything;
 //! - a stale `expectedRevision` is a 409 `revision_conflict` only when an op
 //!   touches an item changed after it (then nothing is applied);
-//! - deleted stays deleted; one active row per (list, catalogId-or-name).
+//! - deleted stays deleted; one active row per (list, item object).
+//!
+//! Item objects (`migrations/003_shopping_items.sql`, [`items`]): every row
+//! points to a catalog id or a custom object (`u_<ULID>`) with names in
+//! it/en/da; reads take a `lang` for each row's `name`.
 
 pub mod catalog;
+pub mod items;
 pub mod ledger;
 pub mod products;
 
@@ -24,6 +29,8 @@ use sqlx::{Connection, Row};
 use uuid::Uuid;
 
 pub use catalog::{Catalog, CatalogIndex};
+pub use items::{message_language, ItemObject, Namer};
+use items::{ItemEdit, ItemError, ItemNamer, Translation};
 pub use ledger::{Price, StoreRow, Summary};
 pub use products::{resolve_canonical_product, Product};
 
@@ -31,7 +38,7 @@ pub const THEMES: [&str; 8] = [
     "home", "grocery", "work", "holiday", "garden", "hardware", "baby", "other",
 ];
 pub const MODIFIERS: [&str; 6] = ["telegram", "discord", "web", "ios", "alexa", "lucina"];
-pub const OP_TYPES: [&str; 11] = [
+pub const OP_TYPES: [&str; 12] = [
     "add",
     "need",
     "purchase",
@@ -43,6 +50,7 @@ pub const OP_TYPES: [&str; 11] = [
     "move",
     "clear_recent",
     "reorder",
+    "edit_item",
 ];
 pub const MAX_OPS_PER_BATCH: usize = 200;
 pub const DEFAULT_LIST_NAME: &str = "Casa";
@@ -53,7 +61,7 @@ const MAX_UNIT: usize = 20;
 const MAX_SECTION: usize = 50;
 const MAX_CATALOG_ID: usize = 100;
 
-const ITEM_COLUMNS: &str = "i.id, i.list_id, i.raw_name, i.status, i.catalog_item_id, i.specification, \
+const ITEM_COLUMNS: &str = "i.id, i.list_id, i.raw_name, i.status, i.item_id, i.catalog_item_id, i.specification, \
     i.quantity::float8 AS quantity, i.unit, i.section_override, i.icon_key, i.position, i.purchased_at, \
     i.modified_by, i.rev, i.created_at, i.updated_at";
 
@@ -139,6 +147,15 @@ impl From<sqlx::Error> for OpError {
     }
 }
 
+impl From<ItemError> for OpError {
+    fn from(e: ItemError) -> Self {
+        match e {
+            ItemError::Code(c) => OpError::Rejected(c),
+            ItemError::Db(e) => OpError::Db(e),
+        }
+    }
+}
+
 type OpResult<T> = std::result::Result<T, OpError>;
 
 // ---------------------------------------------------------------- rows
@@ -146,6 +163,7 @@ type OpResult<T> = std::result::Result<T, OpError>;
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct ListRow {
     id: Uuid,
+    user_id: String,
     name: String,
     theme: String,
     position: i32,
@@ -164,6 +182,7 @@ struct ItemRow {
     list_id: Uuid,
     raw_name: String,
     status: String,
+    item_id: Option<String>,
     catalog_item_id: Option<String>,
     specification: Option<String>,
     quantity: Option<f64>,
@@ -281,6 +300,9 @@ pub struct OpsOutcome {
     pub list: Value,
     pub items: Vec<Value>,
     pub item_ids: HashMap<String, String>,
+    /// Add ops that found the object already on the list.
+    pub merged: Vec<String>,
+    pub lang: &'static str,
 }
 
 impl OpsOutcome {
@@ -290,7 +312,9 @@ impl OpsOutcome {
             "applied": self.applied,
             "duplicates": self.duplicates,
             "rejected": self.rejected,
+            "merged": self.merged,
             "list": self.list,
+            "lang": self.lang,
             "items": self.items,
         })
     }
@@ -306,13 +330,19 @@ struct Ctx<'a> {
     user_id: &'a str,
     modified_by: &'a str,
     rev: i64,
+    lang: &'static str,
     targets: HashMap<Uuid, Target>,
+    /// Names for new texts, fetched before the transaction (folded text → names).
+    translations: HashMap<String, Translation>,
+    merged: bool,
+    edited: HashSet<String>,
 }
 
 pub struct GroceryRepo {
     pool: PgPool,
     catalog: Catalog,
     seeded: tokio::sync::OnceCell<()>,
+    namer: ItemNamer,
 }
 
 impl std::fmt::Debug for GroceryRepo {
@@ -339,7 +369,15 @@ impl GroceryRepo {
             pool,
             catalog,
             seeded: tokio::sync::OnceCell::new(),
+            namer: ItemNamer::default(),
         }
+    }
+
+    /// The model call that names new custom items in it/en/da (DeepSeek in
+    /// lucina-server). Without one, new items keep the typed text everywhere.
+    pub fn with_namer(mut self, namer: Namer) -> Self {
+        self.namer = ItemNamer::new(Some(namer));
+        self
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -374,10 +412,40 @@ impl GroceryRepo {
         Ok(())
     }
 
-    /// `itemCatalogFields`: `(catalogId, section, icon)`. A row without a
-    /// catalog id (free text, or added before the catalog existed) is
-    /// resolved by its name on read: a catalog name in any language fills
-    /// all three, an alias only section and icon; unknown text stays null.
+    /// The item object of a row: `item_id` (catalog or custom id) wins; a
+    /// row from before item objects is resolved on read through the catalog
+    /// (names and aliases in any language); unknown text gets a stand-in.
+    fn row_object(
+        &self,
+        item_id: Option<&str>,
+        catalog_item_id: Option<&str>,
+        raw_name: &str,
+        customs: &HashMap<String, items::CustomRow>,
+    ) -> ItemObject {
+        let idx = self.catalog.index();
+        let id = item_id
+            .filter(|s| !s.is_empty())
+            .or(catalog_item_id.filter(|s| !s.is_empty()));
+        match id {
+            Some(id) if items::is_custom_item_id(id) => match customs.get(id) {
+                Some(c) => ItemObject::custom(c),
+                None => {
+                    let mut o = ItemObject::catalog(id, None, raw_name);
+                    o.kind = "custom";
+                    o.section = Some("other".into());
+                    o.needs_translation = true;
+                    o
+                }
+            },
+            Some(id) => ItemObject::catalog(id, idx.item(id), raw_name),
+            None => items::resolve_catalog_text(&idx, raw_name)
+                .map(|(o, _)| o)
+                .unwrap_or_else(|| ItemObject::stand_in(raw_name)),
+        }
+    }
+
+    /// `itemCatalogFields`: `(catalogId, section, icon)` of a row (legacy
+    /// shape); a row with no ids is resolved on read like [`Self::row_object`].
     pub fn catalog_fields(
         &self,
         catalog_item_id: &Option<String>,
@@ -385,46 +453,45 @@ impl GroceryRepo {
         section_override: &Option<String>,
         icon_key: &Option<String>,
     ) -> (Option<String>, Option<String>, Option<String>) {
-        let idx = self.catalog.index();
-        let id = catalog_item_id.clone().filter(|s| !s.is_empty());
-        let (catalog_id, entry) = match &id {
-            Some(id) => (Some(id.clone()), idx.item(id).cloned()),
-            None => match idx.resolve(raw_name) {
-                Some((item, true)) => (Some(item.id.clone()), Some(item.clone())),
-                Some((item, false)) => (None, Some(item.clone())),
-                None => (None, None),
-            },
-        };
+        let o = self.row_object(None, catalog_item_id.as_deref(), raw_name, &HashMap::new());
         let pick = |own: &Option<String>, from: Option<String>| {
             own.clone().filter(|s| !s.is_empty()).or(from)
         };
         (
-            catalog_id,
-            pick(
-                section_override,
-                entry.as_ref().and_then(|e| e.section.clone()),
-            ),
-            pick(icon_key, entry.as_ref().and_then(|e| e.icon.clone())),
+            (o.kind == "catalog").then(|| o.id.clone()).flatten(),
+            pick(section_override, o.section.clone()),
+            pick(icon_key, o.icon.clone()),
         )
     }
 
-    fn public_item(&self, row: &ItemRow) -> Value {
-        let (catalog_id, section, icon) = self.catalog_fields(
-            &row.catalog_item_id,
+    fn public_item(
+        &self,
+        row: &ItemRow,
+        lang: &str,
+        customs: &HashMap<String, items::CustomRow>,
+    ) -> Value {
+        let o = self.row_object(
+            row.item_id.as_deref(),
+            row.catalog_item_id.as_deref(),
             &row.raw_name,
-            &row.section_override,
-            &row.icon_key,
+            customs,
         );
+        let pick = |own: &Option<String>, from: &Option<String>| {
+            own.clone().filter(|s| !s.is_empty()).or(from.clone())
+        };
         json!({
             "id": row.id.to_string(),
             "listId": row.list_id.to_string(),
-            "catalogId": catalog_id,
-            "name": row.raw_name,
+            "itemId": o.id,
+            "catalogId": if o.kind == "catalog" { o.id.clone() } else { None },
+            "item": o.to_json(),
+            "name": items::local_name(&o.names, items::clean_lang(Some(lang))).unwrap_or_else(|| row.raw_name.clone()),
+            "typedName": row.raw_name,
             "spec": opt_str(&row.specification),
             "quantity": row.quantity.map(js_number).unwrap_or(Value::Null),
             "unit": opt_str(&row.unit),
-            "section": section,
-            "icon": icon,
+            "section": pick(&row.section_override, &o.section),
+            "icon": pick(&row.icon_key, &o.icon),
             "status": row.status,
             "position": row.position,
             "purchasedAt": row.purchased_at.map(iso),
@@ -432,6 +499,22 @@ impl GroceryRepo {
             "updatedAt": iso(row.updated_at),
             "updatedBy": opt_str(&row.modified_by),
         })
+    }
+
+    /// Public items for rows of one user, custom objects loaded in one query.
+    async fn public_items(
+        &self,
+        conn: &mut PgConnection,
+        user_id: &str,
+        rows: &[ItemRow],
+        lang: &str,
+    ) -> Result<Vec<Value>> {
+        let ids: Vec<String> = rows.iter().filter_map(|r| r.item_id.clone()).collect();
+        let customs = items::load_custom_items(conn, user_id, &ids).await?;
+        Ok(rows
+            .iter()
+            .map(|r| self.public_item(r, lang, &customs))
+            .collect())
     }
 
     fn public_list(row: &ListRow) -> Value {
@@ -663,6 +746,7 @@ impl GroceryRepo {
         conn: &mut PgConnection,
         list: &ListRow,
         revision: i64,
+        lang: &str,
     ) -> Result<(Value, i64, Vec<Value>)> {
         let rows = sqlx::query_as::<_, ItemRow>(&format!(
             "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status IN ('needed', 'recent') \
@@ -671,20 +755,119 @@ impl GroceryRepo {
         .bind(list.id)
         .fetch_all(&mut *conn)
         .await?;
-        Ok((
-            Self::short_list(list),
-            revision,
-            rows.iter().map(|r| self.public_item(r)).collect(),
-        ))
+        let items = self.public_items(conn, &list.user_id, &rows, lang).await?;
+        Ok((Self::short_list(list), revision, items))
     }
 
-    /// `{list, revision, items}`: needed items first (by position), then recent.
+    /// Give active rows from before item objects (no `item_id`) their
+    /// object: a catalog hit, an existing custom object, or a new custom
+    /// object (typed text everywhere, `needsTranslation`; no model call). A
+    /// catalog id another active row already has is left alone. In a
+    /// transaction each update runs under a savepoint.
+    async fn upgrade_legacy_rows(
+        &self,
+        conn: &mut PgConnection,
+        user_id: &str,
+        list_id: Uuid,
+        in_tx: bool,
+    ) -> Result<()> {
+        let rows = sqlx::query(
+            "SELECT i.id, i.raw_name, i.catalog_item_id FROM grocery.shopping_list_items i \
+             WHERE i.list_id = $1 AND i.status <> 'removed' AND i.item_id IS NULL",
+        )
+        .bind(list_id)
+        .fetch_all(&mut *conn)
+        .await?;
+        let idx = self.catalog.index();
+        for r in rows {
+            let id: Uuid = r.get("id");
+            let raw: String = r.get("raw_name");
+            let catalog_id: Option<String> = r.get("catalog_item_id");
+            if in_tx {
+                sqlx::query("SAVEPOINT shopping_upgrade")
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            let step: std::result::Result<(), sqlx::Error> = async {
+                let (object_id, is_catalog) = match catalog_id.clone() {
+                    Some(c) => (c, true),
+                    None => match items::resolve_item_text(conn, &idx, user_id, &raw).await? {
+                        Some((o, _)) => (o.id.clone().unwrap_or_default(), o.kind == "catalog"),
+                        None => {
+                            let o = items::create_custom_item(conn, &idx, user_id, &raw, None, Some("lucina")).await?;
+                            (o.id.clone().unwrap_or_default(), false)
+                        }
+                    },
+                };
+                sqlx::query(
+                    "UPDATE grocery.shopping_list_items SET item_id = $2, catalog_item_id = COALESCE(catalog_item_id, $3) \
+                     WHERE id = $1 AND item_id IS NULL",
+                )
+                .bind(id)
+                .bind(&object_id)
+                .bind(is_catalog.then_some(&object_id))
+                .execute(&mut *conn)
+                .await?;
+                Ok(())
+            }
+            .await;
+            match step {
+                Ok(()) => {
+                    if in_tx {
+                        sqlx::query("RELEASE SAVEPOINT shopping_upgrade")
+                            .execute(&mut *conn)
+                            .await?;
+                    }
+                }
+                Err(e) => {
+                    if in_tx {
+                        sqlx::query("ROLLBACK TO SAVEPOINT shopping_upgrade")
+                            .execute(&mut *conn)
+                            .await?;
+                    }
+                    let dup = matches!(&e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"));
+                    if !dup {
+                        tracing::warn!(error = %e, "shopping row upgrade failed");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `{list, revision, lang, items}`: needed items first (by position), then recent; names in the owner's language.
     pub async fn list_state(&self, user_id: &str, list_id: &str) -> Result<Value> {
+        self.list_state_in(user_id, list_id, None).await
+    }
+
+    /// [`Self::list_state`] with item names in `lang` (it|en|da; default the owner's).
+    pub async fn list_state_in(
+        &self,
+        user_id: &str,
+        list_id: &str,
+        lang: Option<&str>,
+    ) -> Result<Value> {
         self.ready().await?;
+        let lang = items::clean_lang(lang);
         let mut conn = self.pool.acquire().await?;
         let list = Self::require_list(&mut conn, user_id, list_id, false).await?;
-        let (l, revision, items) = self.state_for(&mut conn, &list, list.revision).await?;
-        Ok(json!({"list": l, "revision": revision, "items": items}))
+        if let Err(e) = self
+            .upgrade_legacy_rows(&mut conn, user_id, list.id, false)
+            .await
+        {
+            tracing::warn!(error = %e, "shopping row upgrade skipped");
+        }
+        let (l, revision, items) = self
+            .state_for(&mut conn, &list, list.revision, lang)
+            .await?;
+        Ok(json!({"list": l, "revision": revision, "lang": lang, "items": items}))
+    }
+
+    /// The user's custom item objects (search shows them next to the catalog).
+    pub async fn custom_items(&self, user_id: &str) -> Result<Vec<Value>> {
+        self.ready().await?;
+        let mut conn = self.pool.acquire().await?;
+        Ok(items::list_custom_items(&mut conn, user_id).await?)
     }
 
     // ------------------------------------------------------------ ops
@@ -725,46 +908,156 @@ impl GroceryRepo {
         Ok(arr)
     }
 
-    /// `(catalogId, displayName)` an add op would match.
-    fn add_target(&self, op: &Value) -> OpResult<(Option<String>, String)> {
-        let name = op_text(op.get("name"), MAX_NAME, false)?;
-        let explicit = op_text(op.get("catalogId"), MAX_CATALOG_ID, false)?;
-        if name.is_none() && explicit.is_none() {
+    /// Typed text of an add or rename op (`text`, or the legacy `name`).
+    fn op_typed(op: &Value) -> OpResult<Option<String>> {
+        match op_text(op.get("text"), MAX_NAME, false)? {
+            Some(t) => Ok(Some(t)),
+            None => op_text(op.get("name"), MAX_NAME, false),
+        }
+    }
+
+    /// The object id an add op names (`itemId`, or the legacy `catalogId`);
+    /// a UUID in `itemId` is a client's own row id and is ignored.
+    fn op_object_id(op: &Value) -> OpResult<Option<String>> {
+        let item_id = op_text(op.get("itemId"), MAX_CATALOG_ID, false)?.filter(|s| !is_uuid(s));
+        match item_id {
+            Some(i) => Ok(Some(i)),
+            None => op_text(op.get("catalogId"), MAX_CATALOG_ID, false),
+        }
+    }
+
+    /// The object an add op means, without creating anything; `None` for
+    /// typed text that matches nothing yet.
+    async fn find_add_object(
+        &self,
+        conn: &mut PgConnection,
+        user_id: &str,
+        op: &Value,
+    ) -> OpResult<Option<(ItemObject, Option<String>)>> {
+        let typed = Self::op_typed(op)?;
+        let explicit = Self::op_object_id(op)?;
+        if typed.is_none() && explicit.is_none() {
             return Err(OpError::Rejected("missing_field"));
         }
         let idx = self.catalog.index();
-        let entry = match &explicit {
-            Some(id) => idx.item(id),
-            None => idx.find(name.as_deref().unwrap_or("")),
-        };
-        let catalog_id = explicit.clone().or_else(|| entry.map(|e| e.id.clone()));
-        let display = name
-            .or_else(|| entry.and_then(|e| e.display_name()))
-            .or(explicit)
-            .unwrap_or_default();
-        Ok((catalog_id, display))
+        if let Some(id) = &explicit {
+            if let Some(o) = items::object_by_id(conn, &idx, user_id, id).await? {
+                return Ok(Some((o, typed)));
+            }
+            // A catalog id this server does not know: use the text.
+            if typed.is_none() {
+                return Err(OpError::Rejected("unknown_item"));
+            }
+        }
+        let text = typed.clone().unwrap_or_default();
+        Ok(items::resolve_item_text(conn, &idx, user_id, &text)
+            .await?
+            .map(|(o, _)| (o, typed)))
     }
 
-    async fn find_active_by_key(
+    /// The active row of a list for an object (item id, or a legacy row by name).
+    async fn find_active_by_object(
         conn: &mut PgConnection,
         list_id: Uuid,
-        catalog_id: Option<&str>,
-        display: &str,
+        object: &ItemObject,
+        typed: &str,
         for_update: bool,
     ) -> std::result::Result<Option<ItemRow>, sqlx::Error> {
+        let mut keys: Vec<String> = Vec::new();
+        for k in std::iter::once(typed.to_owned())
+            .chain(object.id.clone())
+            .chain(object.names.values().cloned())
+            .map(|s| items::name_key(&s))
+        {
+            if !k.is_empty() && !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status <> 'removed' \
-               AND (COALESCE(i.catalog_item_id, i.name_key) = COALESCE($2, {k}) OR (i.catalog_item_id IS NULL AND i.name_key = {k})) \
-             ORDER BY (i.catalog_item_id IS NOT NULL) DESC LIMIT 1{lock}",
-            k = name_key_sql("$3"),
+               AND (COALESCE(i.item_id, i.catalog_item_id) = $2 \
+                    OR (i.item_id IS NULL AND i.catalog_item_id IS NULL AND i.name_key = ANY($3::text[]))) \
+             ORDER BY (i.item_id IS NOT NULL) DESC LIMIT 1{lock}",
             lock = if for_update { " FOR UPDATE" } else { "" }
         );
         sqlx::query_as::<_, ItemRow>(&sql)
             .bind(list_id)
-            .bind(catalog_id)
-            .bind(display)
+            .bind(&object.id)
+            .bind(&keys)
             .fetch_optional(&mut *conn)
             .await
+    }
+
+    /// Names for add/rename texts that match no object yet: one model call
+    /// per new text, in parallel, BEFORE the transaction.
+    async fn prepare_translations(
+        &self,
+        user_id: &str,
+        ops: &[Value],
+    ) -> Result<HashMap<String, Translation>> {
+        let idx = self.catalog.index();
+        let mut texts: Vec<(String, String)> = Vec::new();
+        let mut conn = self.pool.acquire().await?;
+        for op in ops {
+            let kind = str_field(op, "type").unwrap_or("");
+            let typed = match kind {
+                "add" => Self::op_typed(op).ok().flatten(),
+                "rename" => op_text(op.get("name").or(op.get("text")), MAX_NAME, false)
+                    .ok()
+                    .flatten(),
+                _ => None,
+            };
+            let Some(typed) = typed else { continue };
+            let key = catalog::fold(&typed);
+            if key.is_empty() || texts.iter().any(|(k, _)| *k == key) {
+                continue;
+            }
+            if kind == "add" {
+                if let Ok(Some(id)) = Self::op_object_id(op) {
+                    if idx.item(&id).is_some() {
+                        continue;
+                    }
+                }
+            }
+            if kind == "rename" {
+                if let Some(row_id) = str_field(op, "itemId")
+                    .filter(|s| is_uuid(s))
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                {
+                    let current: Option<Option<String>> = sqlx::query_scalar(
+                        "SELECT item_id FROM grocery.shopping_list_items WHERE id = $1",
+                    )
+                    .bind(row_id)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+                    if current
+                        .flatten()
+                        .is_some_and(|i| items::is_custom_item_id(&i))
+                    {
+                        continue;
+                    }
+                }
+            }
+            if items::resolve_item_text(&mut conn, &idx, user_id, &typed)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+            texts.push((key, typed));
+        }
+        drop(conn);
+        let mut out = HashMap::new();
+        let futures = texts.iter().map(|(key, typed)| {
+            let idx = idx.clone();
+            async move { (key.clone(), self.namer.translate(&idx, typed).await) }
+        });
+        for (key, t) in futures_join(futures).await {
+            if let Some(t) = t {
+                out.insert(key, t);
+            }
+        }
+        Ok(out)
     }
 
     async fn item_in_list(
@@ -810,7 +1103,7 @@ impl GroceryRepo {
         let mut conflicts = Vec::new();
         for op in ops {
             let kind = str_field(op, "type").unwrap_or("");
-            if kind == "clear_recent" {
+            if kind == "clear_recent" || kind == "edit_item" {
                 continue;
             }
             let rev = if kind == "add" {
@@ -820,12 +1113,19 @@ impl GroceryRepo {
                 if !overwrites {
                     continue;
                 }
-                let Ok((cid, display)) = self.add_target(op) else {
+                let Ok(Some((object, typed))) = self.find_add_object(conn, &list.user_id, op).await
+                else {
                     continue;
                 };
-                Self::find_active_by_key(conn, list.id, cid.as_deref(), &display, false)
-                    .await?
-                    .map(|r| r.rev)
+                Self::find_active_by_object(
+                    conn,
+                    list.id,
+                    &object,
+                    typed.as_deref().unwrap_or(""),
+                    false,
+                )
+                .await?
+                .map(|r| r.rev)
             } else if let Some(id) = str_field(op, "itemId")
                 .filter(|s| is_uuid(s))
                 .and_then(|s| Uuid::parse_str(s).ok())
@@ -904,25 +1204,54 @@ impl GroceryRepo {
         let kind = str_field(op, "type").unwrap_or("");
         match kind {
             "add" => {
-                let (catalog_id, display) = self.add_target(op)?;
                 let spec = op_text(op.get("spec"), MAX_SPEC, false)?;
                 let quantity = op_quantity(op.get("quantity"))?;
                 let unit = op_text(op.get("unit"), MAX_UNIT, false)?;
                 let section = op_text(op.get("section"), MAX_SECTION, false)?;
-                if let Some(existing) =
-                    Self::find_active_by_key(conn, list_id, catalog_id.as_deref(), &display, true)
-                        .await?
+                let idx = self.catalog.index();
+                let (object, typed_text) = match self.find_add_object(conn, ctx.user_id, op).await?
                 {
-                    // Re-adding moves a recent item back to needed; one active row per key.
+                    Some(found) => found,
+                    None => {
+                        let typed = Self::op_typed(op)?.unwrap_or_default();
+                        let translation = ctx.translations.get(&catalog::fold(&typed));
+                        let (o, _) = items::resolve_or_create_item(
+                            conn,
+                            &idx,
+                            ctx.user_id,
+                            &typed,
+                            translation,
+                            ctx.modified_by,
+                        )
+                        .await?;
+                        (o, Some(typed))
+                    }
+                };
+                let object_id = object.id.clone().unwrap_or_default();
+                let typed = typed_text
+                    .clone()
+                    .or_else(|| items::local_name(&object.names, ctx.lang))
+                    .unwrap_or_else(|| object_id.clone());
+                let catalog_id = (object.kind == "catalog").then(|| object_id.clone());
+                let existing =
+                    Self::find_active_by_object(conn, list_id, &object, &typed, true).await?;
+                if let Some(t) = &typed_text {
+                    items::remember_alias(conn, &idx, ctx.user_id, &object, t).await?;
+                }
+                if let Some(existing) = existing {
+                    // Re-adding moves a recent item back to needed; one active row per object.
+                    ctx.merged = true;
                     sqlx::query(
                         "UPDATE grocery.shopping_list_items SET status = 'needed', purchased_at = NULL, \
-                         catalog_item_id = COALESCE(catalog_item_id, $4), specification = COALESCE($5, specification), \
-                         quantity = COALESCE($6::numeric, quantity), unit = COALESCE($7, unit), \
-                         section_override = COALESCE($8, section_override), rev = $2, modified_by = $3, updated_at = now() WHERE id = $1",
+                         item_id = COALESCE(item_id, $4), catalog_item_id = COALESCE(catalog_item_id, $5), \
+                         specification = COALESCE($6, specification), quantity = COALESCE($7::numeric, quantity), \
+                         unit = COALESCE($8, unit), section_override = COALESCE($9, section_override), \
+                         rev = $2, modified_by = $3, updated_at = now() WHERE id = $1",
                     )
                     .bind(existing.id)
                     .bind(ctx.rev)
                     .bind(ctx.modified_by)
+                    .bind(&object_id)
                     .bind(&catalog_id)
                     .bind(&spec)
                     .bind(quantity)
@@ -932,26 +1261,27 @@ impl GroceryRepo {
                     .await?;
                     return Ok(Some(existing.id));
                 }
-                let product = resolve_canonical_product(&display);
+                let product = resolve_canonical_product(&typed);
                 sqlx::query(
                     "INSERT INTO grocery.canonical_products (id, display_name, category, aliases) VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (id) DO NOTHING",
                 )
                 .bind(&product.id)
-                .bind(if product.name.is_empty() { &display } else { &product.name })
+                .bind(if product.name.is_empty() { &typed } else { &product.name })
                 .bind(&product.category)
                 .bind(serde_json::to_string(&product.aliases).unwrap_or_else(|_| "[]".into()))
                 .execute(&mut *conn)
                 .await?;
                 let position = Self::next_position(conn, list_id).await?;
                 let row = sqlx::query(
-                    "INSERT INTO grocery.shopping_list_items (user_id, list_id, product_id, raw_name, status, catalog_item_id, specification, \
-                     quantity, unit, section_override, position, rev, modified_by) \
-                     VALUES ($1, $2, $3, $4, 'needed', $5, $6, $7::numeric, $8, $9, $10, $11, $12) RETURNING id",
+                    "INSERT INTO grocery.shopping_list_items (user_id, list_id, product_id, raw_name, status, item_id, catalog_item_id, \
+                     specification, quantity, unit, section_override, position, rev, modified_by) \
+                     VALUES ($1, $2, $3, $4, 'needed', $5, $6, $7, $8::numeric, $9, $10, $11, $12, $13) RETURNING id",
                 )
                 .bind(ctx.user_id)
                 .bind(list_id)
                 .bind(&product.id)
-                .bind(&display)
+                .bind(&typed)
+                .bind(&object_id)
                 .bind(&catalog_id)
                 .bind(&spec)
                 .bind(quantity)
@@ -963,6 +1293,116 @@ impl GroceryRepo {
                 .fetch_one(&mut *conn)
                 .await?;
                 Ok(Some(row.get::<Uuid, _>("id")))
+            }
+            "edit_item" => {
+                // itemId: the object id (item.id); a row id of this list works too.
+                let reference =
+                    op_text(op.get("itemId"), MAX_CATALOG_ID, true)?.unwrap_or_default();
+                let object_id = if is_uuid(&reference) {
+                    Self::item_in_list(conn, list_id, Some(&reference))
+                        .await?
+                        .item_id
+                        .unwrap_or_default()
+                } else {
+                    reference
+                };
+                if !items::is_custom_item_id(&object_id) {
+                    let known = self.catalog.index().item(&object_id).is_some();
+                    return Err(OpError::Rejected(if known {
+                        "not_custom"
+                    } else {
+                        "item_not_found"
+                    }));
+                }
+                let edit = ItemEdit {
+                    names: op.get("names"),
+                    section: op.get("section"),
+                    icon: op.get("icon"),
+                };
+                items::edit_custom_item(conn, &self.catalog.index(), ctx.user_id, &object_id, edit)
+                    .await?;
+                ctx.edited.insert(object_id.clone());
+                let row = sqlx::query(
+                    "UPDATE grocery.shopping_list_items SET rev = $3, updated_at = now() \
+                     WHERE list_id = $1 AND item_id = $2 AND status <> 'removed' RETURNING id",
+                )
+                .bind(list_id)
+                .bind(&object_id)
+                .bind(ctx.rev)
+                .fetch_optional(&mut *conn)
+                .await?;
+                Ok(row.map(|r| r.get::<Uuid, _>("id")))
+            }
+            "rename" => {
+                let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
+                if item.status == "removed" {
+                    return Ok(Some(item.id));
+                }
+                let typed =
+                    op_text(op.get("name").or(op.get("text")), MAX_NAME, true)?.unwrap_or_default();
+                let current = item.item_id.clone().or(item.catalog_item_id.clone());
+                let idx = self.catalog.index();
+                let hit = items::resolve_item_text(conn, &idx, ctx.user_id, &typed).await?;
+                let names_edit = json!({ ctx.lang: typed });
+                let same = hit.as_ref().is_some_and(|(o, _)| o.id == current);
+                let current_custom = current.as_deref().is_some_and(items::is_custom_item_id);
+                if same || (hit.is_none() && current_custom) {
+                    // rename = an edit of a custom object's name in the current language.
+                    if current_custom {
+                        let id = current.clone().unwrap_or_default();
+                        items::edit_custom_item(
+                            conn,
+                            &idx,
+                            ctx.user_id,
+                            &id,
+                            ItemEdit {
+                                names: Some(&names_edit),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                        ctx.edited.insert(id);
+                    }
+                    Self::touch(conn, ctx, item.id, "", None).await?;
+                    return Ok(Some(item.id));
+                }
+                // Another object's name, or a catalog row renamed to new text: point the row there.
+                let object = match hit {
+                    Some((o, _)) => o,
+                    None => {
+                        let translation = ctx.translations.get(&catalog::fold(&typed));
+                        items::resolve_or_create_item(
+                            conn,
+                            &idx,
+                            ctx.user_id,
+                            &typed,
+                            translation,
+                            ctx.modified_by,
+                        )
+                        .await?
+                        .0
+                    }
+                };
+                if let Some(clash) =
+                    Self::find_active_by_object(conn, list_id, &object, &typed, false).await?
+                {
+                    if clash.id != item.id {
+                        return Err(OpError::Rejected("duplicate_item"));
+                    }
+                }
+                sqlx::query(
+                    "UPDATE grocery.shopping_list_items SET item_id = $4, catalog_item_id = $5, raw_name = $6, \
+                     rev = $2, modified_by = $3, updated_at = now() WHERE id = $1",
+                )
+                .bind(item.id)
+                .bind(ctx.rev)
+                .bind(ctx.modified_by)
+                .bind(&object.id)
+                .bind((object.kind == "catalog").then(|| object.id.clone()).flatten())
+                .bind(&typed)
+                .execute(&mut *conn)
+                .await?;
+                Ok(Some(item.id))
             }
             "need" | "purchase" | "remove" => {
                 let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
@@ -978,7 +1418,7 @@ impl GroceryRepo {
                 Self::touch(conn, ctx, item.id, sets, None).await?;
                 Ok(Some(item.id))
             }
-            "set_spec" | "set_quantity" | "set_section" | "rename" => {
+            "set_spec" | "set_quantity" | "set_section" => {
                 let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
                 if item.status == "removed" {
                     return Ok(Some(item.id));
@@ -1016,18 +1456,7 @@ impl GroceryRepo {
                         .execute(&mut *conn)
                         .await?;
                     }
-                    _ => {
-                        let name = op_text(op.get("name"), MAX_NAME, true)?;
-                        sqlx::query(&format!(
-                            "UPDATE grocery.shopping_list_items SET raw_name = $4, {base}"
-                        ))
-                        .bind(item.id)
-                        .bind(ctx.rev)
-                        .bind(ctx.modified_by)
-                        .bind(name)
-                        .execute(&mut *conn)
-                        .await?;
-                    }
+                    _ => {}
                 }
                 Ok(Some(item.id))
             }
@@ -1072,14 +1501,14 @@ impl GroceryRepo {
                     return Err(OpError::Rejected("same_list"));
                 }
                 let (target_id, target_rev) = Self::target_list(conn, ctx, to).await?;
-                if let Some(clash) = Self::find_active_by_key(
-                    conn,
-                    target_id,
-                    item.catalog_item_id.as_deref(),
-                    &item.raw_name,
-                    true,
-                )
-                .await?
+                let object = ItemObject {
+                    id: item.item_id.clone().or(item.catalog_item_id.clone()),
+                    names: Default::default(),
+                    ..ItemObject::stand_in(&item.raw_name)
+                };
+                if let Some(clash) =
+                    Self::find_active_by_object(conn, target_id, &object, &item.raw_name, true)
+                        .await?
                 {
                     // Already on the target list: merge into that row.
                     if item.status == "needed" {
@@ -1117,7 +1546,8 @@ impl GroceryRepo {
         }
     }
 
-    /// Apply an op batch to one list in one transaction (see module docs).
+    /// Apply an op batch to one list in one transaction (see module docs);
+    /// item names in the owner's language.
     pub async fn apply_ops(
         &self,
         user_id: &str,
@@ -1126,13 +1556,30 @@ impl GroceryRepo {
         expected_revision: Option<i64>,
         modified_by: &str,
     ) -> Result<OpsOutcome> {
+        self.apply_ops_in(user_id, list_id, ops, expected_revision, modified_by, None)
+            .await
+    }
+
+    /// [`Self::apply_ops`] with item names (and `rename`) in `lang`.
+    pub async fn apply_ops_in(
+        &self,
+        user_id: &str,
+        list_id: &str,
+        ops: &Value,
+        expected_revision: Option<i64>,
+        modified_by: &str,
+        lang: Option<&str>,
+    ) -> Result<OpsOutcome> {
         let ops = Self::validate_ops(ops)?;
         let modifier = if MODIFIERS.contains(&modified_by) {
             modified_by
         } else {
             "lucina"
         };
+        let lang = items::clean_lang(lang);
         self.ready().await?;
+        // Model calls for new item names happen here, outside the transaction.
+        let translations = self.prepare_translations(user_id, ops).await?;
         let mut tx = self.pool.begin().await?;
         let list = Self::require_list(&mut tx, user_id, list_id, true).await?;
         let ids: Vec<Uuid> = ops
@@ -1161,6 +1608,17 @@ impl GroceryRepo {
             }
         }
         let revision = list.revision;
+        let mut ctx = Ctx {
+            list: &list,
+            user_id,
+            modified_by: modifier,
+            rev: revision + 1,
+            lang,
+            targets: HashMap::new(),
+            translations,
+            merged: false,
+            edited: HashSet::new(),
+        };
         if let Some(expected) = expected_revision.filter(|e| *e < revision) {
             let conflicts = self
                 .find_conflicts(&mut tx, &list, &fresh, expected)
@@ -1174,14 +1632,10 @@ impl GroceryRepo {
                 });
             }
         }
-        let mut ctx = Ctx {
-            list: &list,
-            user_id,
-            modified_by: modifier,
-            rev: revision + 1,
-            targets: HashMap::new(),
-        };
+        self.upgrade_legacy_rows(&mut tx, user_id, list.id, true)
+            .await?;
         let mut applied = Vec::new();
+        let mut merged = Vec::new();
         let mut rejected: Vec<(String, &'static str)> = Vec::new();
         let mut item_ids = HashMap::new();
         for op in &fresh {
@@ -1189,6 +1643,7 @@ impl GroceryRepo {
             sqlx::query("SAVEPOINT shopping_op")
                 .execute(&mut *tx)
                 .await?;
+            ctx.merged = false;
             match self.apply_one(&mut tx, &mut ctx, op).await {
                 Ok(item) => {
                     sqlx::query("RELEASE SAVEPOINT shopping_op")
@@ -1196,6 +1651,9 @@ impl GroceryRepo {
                         .await?;
                     if let Some(id) = item {
                         item_ids.insert(op_id.clone(), id.to_string());
+                    }
+                    if ctx.merged {
+                        merged.push(op_id.clone());
                     }
                     applied.push(op_id);
                 }
@@ -1238,6 +1696,28 @@ impl GroceryRepo {
             .execute(&mut *tx)
             .await?;
         }
+        if !ctx.edited.is_empty() {
+            // An object edit shows on every list that has it: bump those lists too.
+            let skip: Vec<Uuid> = std::iter::once(list.id)
+                .chain(ctx.targets.keys().copied())
+                .collect();
+            let edited: Vec<String> = ctx.edited.iter().cloned().collect();
+            sqlx::query(
+                "WITH bumped AS ( \
+                   UPDATE grocery.shopping_lists l SET revision = l.revision + 1, updated_at = now() \
+                    WHERE l.user_id = $1 AND l.deleted_at IS NULL AND NOT (l.id = ANY($2::uuid[])) \
+                      AND EXISTS (SELECT 1 FROM grocery.shopping_list_items i \
+                                   WHERE i.list_id = l.id AND i.status <> 'removed' AND i.item_id = ANY($3::text[])) \
+                   RETURNING l.id, l.revision) \
+                 UPDATE grocery.shopping_list_items i SET rev = b.revision, updated_at = now() \
+                   FROM bumped b WHERE i.list_id = b.id AND i.status <> 'removed' AND i.item_id = ANY($3::text[])",
+            )
+            .bind(user_id)
+            .bind(&skip)
+            .bind(&edited)
+            .execute(&mut *tx)
+            .await?;
+        }
         let type_of: HashMap<&str, &str> = fresh
             .iter()
             .map(|o| {
@@ -1271,7 +1751,7 @@ impl GroceryRepo {
             .execute(&mut *tx)
             .await?;
         }
-        let (list_json, _, items) = self.state_for(&mut tx, &list, new_revision).await?;
+        let (list_json, _, items) = self.state_for(&mut tx, &list, new_revision, lang).await?;
         tx.commit().await?;
         Ok(OpsOutcome {
             revision: new_revision,
@@ -1284,18 +1764,35 @@ impl GroceryRepo {
             list: list_json,
             items,
             item_ids,
+            merged,
+            lang,
         })
     }
 
     // ------------------------------------------------------------ legacy (v1) + chat helpers
 
-    /// Legacy add (`POST /shopping`, chat intents): an `add` op on the default list.
+    /// Legacy add (`POST /shopping`, chat intents): an `add` op on the
+    /// default list; `product`/`name` are the item object's name in the
+    /// owner's language.
     pub async fn add_item(
         &self,
         user_id: &str,
         product: &Product,
         raw_name: &str,
         modified_by: &str,
+    ) -> Result<Value> {
+        self.add_item_in(user_id, product, raw_name, modified_by, None)
+            .await
+    }
+
+    /// [`Self::add_item`] with names in `lang`; `merged` says the object was already listed.
+    pub async fn add_item_in(
+        &self,
+        user_id: &str,
+        product: &Product,
+        raw_name: &str,
+        modified_by: &str,
+        lang: Option<&str>,
     ) -> Result<Value> {
         let op_id = Uuid::new_v4().to_string();
         let name = if raw_name.trim().is_empty() {
@@ -1304,12 +1801,13 @@ impl GroceryRepo {
             raw_name.to_owned()
         };
         let out = self
-            .apply_ops(
+            .apply_ops_in(
                 user_id,
                 "default",
-                &json!([{"opId": op_id, "type": "add", "name": name}]),
+                &json!([{"opId": op_id, "type": "add", "text": name}]),
                 None,
                 modified_by,
+                lang,
             )
             .await?;
         if let Some(r) = out.rejected.first() {
@@ -1332,97 +1830,146 @@ impl GroceryRepo {
             })?;
         Ok(json!({
             "id": item["id"],
-            "product": product.name,
-            "rawName": item["name"],
+            "product": item["name"],
+            "name": item["name"],
+            "rawName": item["typedName"],
+            "itemId": item["itemId"],
+            "item": item["item"],
             "category": product.category,
             "status": legacy_status(item["status"].as_str().unwrap_or("")),
             "createdAt": item["createdAt"],
             "updatedAt": item["updatedAt"],
             "listId": out.list["id"],
+            "merged": out.merged.contains(&op_id),
         }))
     }
 
-    /// Legacy remove (chat): `remove` ops for matching items on the default list.
+    /// Legacy remove (chat): `remove` ops for the default list's rows of
+    /// the object `raw_name` names (any language), same name or product.
     pub async fn remove_items_named(
         &self,
         user_id: &str,
         raw_name: &str,
         modified_by: &str,
     ) -> Result<(usize, String)> {
+        let (n, list, _) = self
+            .remove_items_named_in(user_id, raw_name, modified_by, None)
+            .await?;
+        Ok((n, list))
+    }
+
+    /// [`Self::remove_items_named`] plus the removed items' names in `lang`.
+    pub async fn remove_items_named_in(
+        &self,
+        user_id: &str,
+        raw_name: &str,
+        modified_by: &str,
+        lang: Option<&str>,
+    ) -> Result<(usize, String, Vec<String>)> {
         self.ready().await?;
         let mut conn = self.pool.acquire().await?;
         let list = Self::ensure_default_list(&mut conn, user_id).await?;
         let idx = self.catalog.index();
-        let entry_id = idx.find(raw_name).map(|e| e.id.clone());
+        let object_id = items::resolve_item_text(&mut conn, &idx, user_id, raw_name)
+            .await?
+            .and_then(|(o, _)| o.id);
         let product_id = resolve_canonical_product(raw_name).id;
-        let rows = sqlx::query(&format!(
-            "SELECT i.id FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status <> 'removed' \
-               AND (i.name_key = {k} OR ($3::text IS NOT NULL AND i.catalog_item_id = $3) OR ($4::text IS NOT NULL AND i.product_id = $4))",
+        let rows = sqlx::query_as::<_, ItemRow>(&format!(
+            "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.list_id = $1 AND i.status <> 'removed' \
+               AND (i.name_key = {k} OR ($3::text IS NOT NULL AND COALESCE(i.item_id, i.catalog_item_id) = $3) \
+                    OR ($4::text IS NOT NULL AND i.product_id = $4))",
             k = name_key_sql("$2")
         ))
         .bind(list.id)
         .bind(raw_name)
-        .bind(entry_id)
+        .bind(object_id)
         .bind(product_id)
         .fetch_all(&mut *conn)
         .await?;
+        let lang_code = items::clean_lang(lang);
+        let mut names: Vec<String> = Vec::new();
+        for item in self
+            .public_items(&mut conn, user_id, &rows, lang_code)
+            .await?
+        {
+            if let Some(n) = item["name"].as_str() {
+                if !names.iter().any(|x| x == n) {
+                    names.push(n.to_owned());
+                }
+            }
+        }
         drop(conn);
         if rows.is_empty() {
-            return Ok((0, list.id.to_string()));
+            return Ok((0, list.id.to_string(), Vec::new()));
         }
         let ops: Vec<Value> = rows
             .iter()
-            .map(|r| json!({"opId": Uuid::new_v4().to_string(), "type": "remove", "itemId": r.get::<Uuid, _>("id").to_string()}))
+            .map(|r| json!({"opId": Uuid::new_v4().to_string(), "type": "remove", "itemId": r.id.to_string()}))
             .collect();
         let out = self
-            .apply_ops(
+            .apply_ops_in(
                 user_id,
                 &list.id.to_string(),
                 &Value::Array(ops),
                 None,
                 modified_by,
+                lang,
             )
             .await?;
-        Ok((out.applied.len(), list.id.to_string()))
+        Ok((out.applied.len(), list.id.to_string(), names))
     }
 
-    /// Legacy view of the default list: needed first, then recent ("purchased").
+    /// Legacy view of the default list: needed first, then recent
+    /// ("purchased"); `product`/`name` in the owner's language.
     pub async fn legacy_list(&self, user_id: &str) -> Result<Vec<Value>> {
+        self.legacy_list_in(user_id, None).await
+    }
+
+    /// [`Self::legacy_list`] with names in `lang`.
+    pub async fn legacy_list_in(&self, user_id: &str, lang: Option<&str>) -> Result<Vec<Value>> {
+        let state = self.list_state_in(user_id, "default", lang).await?;
         let mut conn = self.pool.acquire().await?;
         let list = Self::ensure_default_list(&mut conn, user_id).await?;
         let rows = sqlx::query(
-            "SELECT i.id, i.raw_name, i.status, i.created_at, i.updated_at, i.catalog_item_id, i.section_override, i.icon_key, \
-                    p.display_name AS product, p.category \
-               FROM grocery.shopping_list_items i LEFT JOIN grocery.canonical_products p ON p.id = i.product_id \
-              WHERE i.list_id = $1 AND i.status IN ('needed', 'recent') \
-              ORDER BY CASE WHEN i.status = 'needed' THEN 0 ELSE 1 END, i.position NULLS LAST, i.created_at ASC",
+            "SELECT i.id, p.category FROM grocery.shopping_list_items i LEFT JOIN grocery.canonical_products p ON p.id = i.product_id \
+              WHERE i.list_id = $1 AND i.status IN ('needed', 'recent')",
         )
         .bind(list.id)
         .fetch_all(&mut *conn)
         .await?;
-        Ok(rows
+        let categories: HashMap<String, String> = rows
             .iter()
             .map(|r| {
-                let raw: String = r.get("raw_name");
-                let product: Option<String> = r.get("product");
-                let category: Option<String> = r.get("category");
-                let (catalog_id, section, icon) = self.catalog_fields(
-                    &r.get("catalog_item_id"),
-                    &raw,
-                    &r.get("section_override"),
-                    &r.get("icon_key"),
-                );
+                let c: Option<String> = r.get("category");
+                (
+                    r.get::<Uuid, _>("id").to_string(),
+                    c.filter(|c| !c.is_empty())
+                        .unwrap_or_else(|| "other".into()),
+                )
+            })
+            .collect();
+        Ok(state["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| {
+                let id = i["id"].as_str().unwrap_or("").to_owned();
                 json!({
-                    "id": r.get::<Uuid, _>("id").to_string(),
-                    "product": product.filter(|p| !p.is_empty()).unwrap_or_else(|| raw.clone()),
-                    "rawName": raw,
-                    "category": category.filter(|c| !c.is_empty()).unwrap_or_else(|| "other".into()),
-                    "catalogId": catalog_id,
-                    "section": section,
-                    "icon": icon,
-                    "status": legacy_status(&r.get::<String, _>("status")),
-                    "createdAt": iso(r.get("created_at")),
-                    "updatedAt": iso(r.get("updated_at")),
+                    "id": i["id"],
+                    "product": i["name"],
+                    "name": i["name"],
+                    "rawName": i["typedName"],
+                    "itemId": i["itemId"],
+                    "item": i["item"],
+                    "category": categories.get(&id).cloned().unwrap_or_else(|| "other".into()),
+                    "catalogId": i["catalogId"],
+                    "section": i["section"],
+                    "icon": i["icon"],
+                    "spec": i["spec"],
+                    "status": legacy_status(i["status"].as_str().unwrap_or("")),
+                    "createdAt": i["createdAt"],
+                    "updatedAt": i["updatedAt"],
                 })
             })
             .collect())
@@ -1466,7 +2013,7 @@ impl GroceryRepo {
             .find(|i| i["id"] == json!(item_id.to_lowercase()))
             .ok_or_else(not_found)?;
         Ok(
-            json!({"id": item["id"], "product": item["name"], "status": legacy_status(item["status"].as_str().unwrap_or(""))}),
+            json!({"id": item["id"], "product": item["name"], "name": item["name"], "itemId": item["itemId"], "status": legacy_status(item["status"].as_str().unwrap_or(""))}),
         )
     }
 
@@ -1485,4 +2032,32 @@ pub fn legacy_status(status: &str) -> &str {
     } else {
         status
     }
+}
+
+/// Await futures concurrently (no extra dependency).
+async fn futures_join<F, T>(futures: impl IntoIterator<Item = F>) -> Vec<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let mut pinned: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
+    let mut out: Vec<Option<T>> = (0..pinned.len()).map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (i, f) in pinned.iter_mut().enumerate() {
+            if out[i].is_some() {
+                continue;
+            }
+            match f.as_mut().poll(cx) {
+                std::task::Poll::Ready(v) => out[i] = Some(v),
+                std::task::Poll::Pending => pending = true,
+            }
+        }
+        if pending {
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    out.into_iter().flatten().collect()
 }
