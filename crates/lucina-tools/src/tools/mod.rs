@@ -3,6 +3,7 @@
 pub mod avatar;
 pub mod calculator;
 pub mod notes;
+pub mod notify;
 pub mod places;
 pub mod presence;
 pub mod reminders;
@@ -28,6 +29,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(shopping::ShoppingTool),
         Arc::new(presence::PresenceTool),
         Arc::new(avatar::AvatarOutfitTool),
+        Arc::new(notify::NotifyTool),
     ]
 }
 
