@@ -50,7 +50,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 ### Links, calendar, notifications (owner, 2026-10-22)
 - [ ] Links tab: connections hub (Google Calendar OAuth, ICS, iPhone calendar, channels, AI clients, custom links) — branch links-calendar
 - [ ] Lucina + Hermes read/write the calendar (with confirmation), agenda/briefing
-- [ ] Notifications: server inbox + Web Push (PWA, works on iPhone home screen) + iOS local notifications; APNs when paid team — branch notifications
+- [x] Notifications LIVE 2026-10-22 (branch notifications 6314a87 deployed; merge into main pending the hair agent). iOS native part on branch ios-notifications (not installed). APNs needs a paid team
 
 ### Roadmap modules (`docs/ROADMAP.md`)
 - [ ] Calendar · Languages · Memory exercises · Purchases (always confirmed)
