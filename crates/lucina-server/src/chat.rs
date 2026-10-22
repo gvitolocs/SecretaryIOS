@@ -282,9 +282,14 @@ async fn run_turn(
     } else {
         String::new()
     };
+    // Today's events (Google, iPhone, ICS via secretary-server), when configured.
+    let calendar = lucina_tools::tools::calendar::today_context(&st.tool_env, now)
+        .await
+        .unwrap_or_default();
     let memory_context = [
         st.recent.metadata_block(&session, tz, now),
         presence,
+        calendar,
         st.recent.render(&session, tz),
         delivered,
         honcho,

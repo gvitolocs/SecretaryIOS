@@ -13,7 +13,7 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `shopping`, `presence`, `avatar_outfit`, `notify`.
+//!   `notes`, `reminders`, `calendar`, `shopping`, `presence`, `avatar_outfit`, `notify`.
 
 pub mod agent;
 pub mod pending;
@@ -483,7 +483,7 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 11);
+        assert_eq!(all.names().len(), 12);
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));
         assert_eq!(some.names(), vec!["time", "calculator"]);
         assert!(Registry::builtin(&ToolSelection::parse("none")).is_empty());
