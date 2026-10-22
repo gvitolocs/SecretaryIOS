@@ -39,7 +39,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), live edb6405
 
 ### Avatar
-- [ ] Base = variant B (Summer face + tiara on the Engage body), owner pick 2026-10-22: deploy B + its clips to p1; game toon shading only as an optional material
+- [ ] Base = G (game-accurate, owner pick 2026-10-22 18:30): deploy G pack + clips + toon-g stage; refit 12 outfits to G; physics (spring bones) on G chains
 - [x] Wardrobe UI LIVE (outfit/hair/colour tabs, rules per tab, remembered); LUCINA_AVATAR_OUTFIT not yet on
 - [ ] Outfit + hairstyle GLBs (Custom Cast first, then free assets) on the FIXED B
 - [x] Owner picked B (flower removed, tiara restored)
