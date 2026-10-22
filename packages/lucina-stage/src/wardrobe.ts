@@ -14,8 +14,13 @@
  *
  * Latest wins: a newer `setModel` supersedes one that has not started loading. A failed load
  * rejects and leaves the current outfit on stage. Reduced motion: a short crossfade, no effect.
+ *
+ * Hair is independent of the outfit (hair.ts): `setHair(id)` attaches a hairstyle part to the
+ * head bone in place and `setHairColor(id)` tints it, both under the same change effect; an outfit
+ * swap carries the current hair and colour over to the new model before it is revealed.
  */
-import { Box3, Vector3 } from 'three';
+import { Box3, Vector3, type Object3D } from 'three';
+import { HairRig, loadHairPart, NATURAL_HAIR, parseHairColors, parseHairstyles, type HairColor, type HairEntry } from './hair';
 import { playOutfitEffect, type SubjectRect } from './outfitEffect';
 import type { StageQualitySetting, StageTheme } from './scene/quality';
 import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent } from './stage';
@@ -42,8 +47,19 @@ function assetName(v: unknown, exts: string[]): v is string {
   return typeof v === 'string' && ASSET_RE.test(v) && !v.includes('..') && exts.some((e) => v.endsWith(e));
 }
 
-/** Valid entries of an untrusted wardrobe list (unique ids, order kept). */
+/** The whole wardrobe file: `{outfits, hairstyles, colors}` (a bare array is the outfits). */
+export function parseWardrobeFile(raw: unknown): { outfits: WardrobeEntry[]; hairstyles: HairEntry[]; colors: HairColor[] } {
+  const o = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+  return {
+    outfits: parseWardrobe(Array.isArray(raw) ? raw : o.outfits),
+    hairstyles: parseHairstyles(o.hairstyles),
+    colors: parseHairColors(o.colors),
+  };
+}
+
+/** Valid outfits of an untrusted list (unique ids, order kept); also takes the whole file. */
 export function parseWardrobe(raw: unknown): WardrobeEntry[] {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return parseWardrobe((raw as { outfits?: unknown }).outfits);
   if (!Array.isArray(raw)) return [];
   const out: WardrobeEntry[] = [];
   const seen = new Set<string>();
@@ -96,6 +112,15 @@ export interface WardrobeStageOptions extends LucinaStageOptions {
   changeEffect?: boolean;
   /** Longest wait (ms) for her current sentence before a swap (default 20000). */
   maxSpeakWait?: number;
+  /** Hairstyles (`hairstyles` of the wardrobe file). */
+  hairstyles?: HairEntry[];
+  hairColors?: HairColor[];
+  /** Hairstyle to start with (`natural` or null: the model's own hair). */
+  hair?: string | null;
+  /** Hair colour id to start with (null: natural). */
+  hairColor?: string | null;
+  /** Loads a hairstyle part (tests); default: the GLB at the URL, with `fetchInit`. */
+  hairLoader?: (url: string) => Promise<Object3D>;
 }
 
 export interface SetModelOptions {
@@ -124,6 +149,18 @@ export interface WardrobeStage extends LucinaStage {
   onChanging(cb: (changing: boolean) => void): () => void;
   /** Called with the new outfit id after each completed swap. */
   onOutfitChange(cb: (outfit: string | null) => void): () => void;
+  /** Put a hairstyle on (`natural`/null: her own hair), with the change effect. */
+  setHair(id: string | null, opts?: { effect?: boolean }): Promise<void>;
+  /** Tint the hair (a colour id; null: natural), with the change effect. */
+  setHairColor(id: string | null, opts?: { effect?: boolean }): Promise<void>;
+  setHairstyles(hairstyles: HairEntry[], colors?: HairColor[]): void;
+  readonly hairstyles: readonly HairEntry[];
+  readonly hairColors: readonly HairColor[];
+  /** Hairstyle on stage now (`natural` for her own hair). */
+  readonly hair: string;
+  readonly hairColor: string | null;
+  /** Called after each completed hair or colour change. */
+  onHairChange(cb: (hair: string, color: string | null) => void): () => void;
 }
 
 export type StageFactory = (canvas: HTMLCanvasElement, options: LucinaStageOptions) => Promise<LucinaStage>;
@@ -192,7 +229,7 @@ export async function createWardrobeStage(
   let wardrobe: WardrobeEntry[] = parseWardrobe(options.wardrobe ?? []);
   const startEntry = options.outfit ? wardrobe.find((e) => e.id === options.outfit) : undefined;
   const base: LucinaStageOptions = { ...options };
-  for (const k of ['wardrobe', 'assetBase', 'outfit', 'changeEffect', 'maxSpeakWait'] as const) delete (base as Record<string, unknown>)[k];
+  for (const k of ['wardrobe', 'assetBase', 'outfit', 'changeEffect', 'maxSpeakWait', 'hairstyles', 'hairColors', 'hair', 'hairColor', 'hairLoader'] as const) delete (base as Record<string, unknown>)[k];
   const startUrls = startEntry ? outfitUrls(startEntry, assetBase, options.manifestUrl) : null;
 
   let cur = await factory(canvas, startUrls ? { ...base, ...startUrls } : base);
@@ -230,6 +267,53 @@ export async function createWardrobeStage(
     };
   }
   let unbind = bind(cur);
+
+  // ---- Hair ----
+  let hairstyles: HairEntry[] = parseHairstyles(options.hairstyles ?? []);
+  let hairColors: HairColor[] = parseHairColors(options.hairColors ?? []);
+  let hair: string = NATURAL_HAIR;
+  let hairColor: string | null = null;
+  const hairCbs = new Set<(h: string, c: string | null) => void>();
+  const loadHair = options.hairLoader ?? ((url: string) => loadHairPart(url, options.fetchInit ? { fetchInit: options.fetchInit } : {}));
+  const rigs = new WeakMap<LucinaStage, HairRig>();
+  const assetDir = assetBase.endsWith('/') ? assetBase : `${assetBase}/`;
+
+  function rigFor(s: LucinaStage): HairRig {
+    let r = rigs.get(s);
+    if (!r) {
+      r = new HairRig(s.three.model, s.info.rig?.bones?.head);
+      rigs.set(s, r);
+    }
+    return r;
+  }
+
+  const hexOf = (id: string | null): string | null => (id ? (hairColors.find((c) => c.id === id)?.hex ?? null) : null);
+
+  async function partFor(id: string): Promise<{ entry: HairEntry | null; part: Object3D | null }> {
+    if (id === NATURAL_HAIR) return { entry: null, part: null };
+    const entry = hairstyles.find((h) => h.id === id);
+    if (!entry?.glb) throw new Error(`Unknown hairstyle: ${id}`);
+    return { entry, part: await loadHair(assetDir + entry.glb) };
+  }
+
+  /** Put the current hair and colour on `s` (a new model); a failed part leaves her own hair. */
+  async function dressHair(s: LucinaStage): Promise<void> {
+    if (s.info.placeholder) return;
+    try {
+      const { entry, part } = await partFor(hair);
+      rigFor(s).attach(part, entry);
+    } catch (e) {
+      console.warn('[lucina-stage] hairstyle not loaded:', e);
+    }
+    rigFor(s).setTint(hexOf(hairColor));
+  }
+
+  if (options.hair || options.hairColor) {
+    const h = options.hair;
+    hair = h && (h === NATURAL_HAIR || hairstyles.some((e) => e.id === h)) ? h : NATURAL_HAIR;
+    hairColor = options.hairColor && hairColors.some((c) => c.id === options.hairColor) ? options.hairColor : null;
+    await dressHair(cur);
+  }
 
   function setChanging(delta: 1 | -1): void {
     const was = changing > 0;
@@ -334,6 +418,8 @@ export async function createWardrobeStage(
       setChanging(-1);
     };
     if (token !== swapToken || disposed) return abandon();
+    await dressHair(ns);
+    if (token !== swapToken || disposed) return abandon();
     ns.setMuted(cur.isMuted());
     ns.lookAtPointer(look);
     if (expression) ns.setExpression(expression.e, expression.w);
@@ -377,6 +463,7 @@ export async function createWardrobeStage(
       swap();
       await new Promise((r) => setTimeout(r, FADE_MS));
     }
+    rigs.get(old)?.dispose();
     old.dispose();
     dropCanvas(oldCanvas);
     modelUrl = url;
@@ -384,6 +471,67 @@ export async function createWardrobeStage(
     if (effect && !disposed) incoming.gesture('happy');
     setChanging(-1);
     outfitCbs.forEach((cb) => cb(outfit));
+  }
+
+  /** Run `apply` under the change effect (at once in reduced motion or without the effect). */
+  async function underEffect(apply: () => void, effect?: boolean): Promise<void> {
+    if (!((effect ?? options.changeEffect ?? true) && !reduced())) {
+      apply();
+      return;
+    }
+    await playOutfitEffect({
+      host: canvas,
+      after: curCanvas,
+      subject: subjectRect(cur, curCanvas),
+      theme: theme ?? 'dark',
+      reducedMotion: false,
+      onPeak: apply,
+    }).done;
+  }
+
+  function queue(job: () => Promise<void>): Promise<void> {
+    if (disposed) return Promise.reject(new Error('The stage is disposed'));
+    const run = chain.catch(() => {}).then(job);
+    chain = run;
+    return run;
+  }
+
+  function setHair(id: string | null, o: { effect?: boolean } = {}): Promise<void> {
+    const want = id ?? NATURAL_HAIR;
+    if (want !== NATURAL_HAIR && !hairstyles.some((h) => h.id === want)) return Promise.reject(new Error(`Unknown hairstyle: ${want}`));
+    return queue(async () => {
+      if (disposed || want === hair) return;
+      setChanging(1);
+      try {
+        const { entry, part } = await partFor(want);
+        if (disposed) return;
+        const s = cur;
+        await underEffect(() => {
+          rigFor(s).attach(part, entry);
+          rigFor(s).setTint(hexOf(hairColor));
+        }, o.effect);
+        hair = want;
+        hairCbs.forEach((cb) => cb(hair, hairColor));
+      } finally {
+        setChanging(-1);
+      }
+    });
+  }
+
+  function setHairColor(id: string | null, o: { effect?: boolean } = {}): Promise<void> {
+    if (id !== null && !hairColors.some((c) => c.id === id)) return Promise.reject(new Error(`Unknown hair colour: ${id}`));
+    return queue(async () => {
+      if (disposed || id === hairColor) return;
+      setChanging(1);
+      try {
+        const s = cur;
+        await underEffect(() => rigFor(s).setTint(hexOf(id)), o.effect);
+        hairColor = id;
+        hairCbs.forEach((cb) => cb(hair, hairColor));
+      } finally {
+        setChanging(-1);
+      }
+    });
   }
 
   function setModel(url: string, manifest?: string | object | null, o: SetModelOptions = {}): Promise<void> {
@@ -455,6 +603,8 @@ export async function createWardrobeStage(
       tapCbs.clear();
       changingCbs.clear();
       outfitCbs.clear();
+      hairCbs.clear();
+      rigs.get(cur)?.dispose();
       cur.dispose();
       for (const c of [...owned]) dropCanvas(c);
       if (curCanvas !== canvas) Object.assign(canvas.style, { visibility: '', opacity: '', pointerEvents: '', transition: '', animation: '' });
@@ -519,6 +669,28 @@ export async function createWardrobeStage(
     onOutfitChange(cb) {
       outfitCbs.add(cb);
       return () => outfitCbs.delete(cb);
+    },
+    setHair,
+    setHairColor,
+    setHairstyles(list, colors) {
+      hairstyles = parseHairstyles(list);
+      if (colors) hairColors = parseHairColors(colors);
+    },
+    get hairstyles() {
+      return hairstyles;
+    },
+    get hairColors() {
+      return hairColors;
+    },
+    get hair() {
+      return hair;
+    },
+    get hairColor() {
+      return hairColor;
+    },
+    onHairChange(cb) {
+      hairCbs.add(cb);
+      return () => hairCbs.delete(cb);
     },
   };
   return stage;
