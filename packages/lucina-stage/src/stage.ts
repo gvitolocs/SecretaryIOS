@@ -51,6 +51,7 @@ import { createInteraction, type InteractionController } from './interact/contro
 import { Orbit, PRESET_ZOOM, composeCamera, gazeFollowWeight, type Shot, type ViewPreset, type ViewState } from './interact/orbit';
 import { regionOfHit, type BodyMetrics, type Region, type Side } from './interact/regions';
 import { BLOCKED_CLIPS, ReactionPlanner, type Reaction } from './interact/reactions';
+import { PhysicsRig, type PhysicsHandle, type PhysicsVariantSelection } from './physics/rig';
 
 export interface LucinaStageOptions {
   /** GLB URL. Production: `/v1/assets/lucina.glb`. Omit to use the procedural placeholder. */
@@ -117,6 +118,12 @@ export interface LucinaStageOptions {
   interactive?: boolean;
   /** Initial view (e.g. carried over by the wardrobe on an outfit swap). */
   view?: Partial<ViewState>;
+  /**
+   * Secondary motion (hair, cape, belt...) from the manifest's `physics` block (src/physics/).
+   * On by default when the manifest has one; `false` turns it off. `outfit`/`hair` pick the
+   * manifest's per-outfit and per-hairstyle overrides; `quality` is the tier without an environment.
+   */
+  physics?: boolean | (PhysicsVariantSelection & { quality?: StageQualitySetting });
 }
 
 /** A tap on her body and what she did about it. */
@@ -227,6 +234,8 @@ export interface LucinaStage {
   /** Turn touch/mouse control on or off (e.g. while a slider is dragged). */
   setInteractive(on: boolean): void;
   readonly interactive: boolean;
+  /** Spring-bone physics (null without a `physics` block in the manifest, or when turned off). */
+  readonly physics?: PhysicsHandle | null;
   /** Escape hatches for debugging. */
   readonly three: { renderer: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; model: Object3D };
 }
@@ -418,6 +427,22 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     toon = await applyManifestToon(model, manifest, { ...options, baseUrl: options.manifestUrl?.startsWith('blob:') ? options.modelUrl : options.manifestUrl });
     if (toon) {
       scene.userData.toonBloom = toon.config.bloom;
+    }
+  }
+
+  // Physics binds to the bind pose: before any clip or procedural pose touches the skeleton.
+  let physics: PhysicsRig | null = null;
+  if (!placeholder && options.physics !== false && manifest.physics !== undefined) {
+    const po = typeof options.physics === 'object' ? options.physics : {};
+    const envQ = typeof options.environment === 'object' ? options.environment.quality : undefined;
+    try {
+      physics = PhysicsRig.create(model, manifest.physics, {
+        quality: po.quality ?? envQ,
+        reducedMotion: options.reducedMotion ?? prefersReducedMotion()?.matches ?? false,
+        variant: { outfit: po.outfit ?? null, hair: po.hair ?? null },
+      });
+    } catch (e) {
+      console.warn('[lucina-stage] physics not started:', e);
     }
   }
 
@@ -645,6 +670,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       animator.reducedMotion = reducedMotion;
       if (orbit) orbit.reduced = reducedMotion;
       env?.setReducedMotion(reducedMotion);
+      physics?.setReducedMotion(reducedMotion);
     }
   };
   mql?.addEventListener?.('change', onMql);
@@ -867,6 +893,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     const r = planner.plan(where, performance.now() / 1000);
     const played = perform(r);
     env?.pulse(hit.point);
+    // The finger pushes whatever hangs there (hair, cape) away from the camera.
+    physics?.poke(hit.point, raycaster.ray.direction, 0.03);
     kick();
     const point = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
     const tap: TapEvent = { object: hit.object.name, point, clientX, clientY };
@@ -973,6 +1001,18 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       rig.captureClipPose(player.drivenNodes);
       rig.apply(f, { driven: player.drivenNodes });
     } else rig.apply(f);
+    if (physics) {
+      // A camera orbit (last frame's) swings her hair a little, as if she had turned (orbitInertia).
+      const az = Math.atan2(camNow.pos.x - metrics.centerX, camNow.pos.z - metrics.centerZ);
+      if (lastAzimuth !== null && camNow.init) {
+        let d = az - lastAzimuth;
+        if (d > Math.PI) d -= 2 * Math.PI;
+        else if (d < -Math.PI) d += 2 * Math.PI;
+        physics.orbit(d, { x: metrics.centerX, y: headPos.y, z: metrics.centerZ });
+      }
+      if (camNow.init) lastAzimuth = az;
+      physics.update(dt);
+    }
     applyCamera(dt, false);
     toon?.update();
     if (env) {
@@ -1000,9 +1040,12 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     stats.record(dtMs, performance.now() - t0, now);
   }
 
+  let lastAzimuth: number | null = null;
+
   function kick(): void {
     if (!raf && running()) {
       last = 0;
+      physics?.settle();
       raf = requestAnimationFrame(frame);
     }
   }
@@ -1128,6 +1171,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       animator.reducedMotion = reducedMotion;
       if (orbit) orbit.reduced = reducedMotion;
       env?.setReducedMotion(reducedMotion);
+      physics?.setReducedMotion(reducedMotion);
     },
     gesture(name) {
       kick();
@@ -1150,6 +1194,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     },
     setQuality(q) {
       env?.setQuality(q);
+      physics?.setQuality(q);
+      kick();
     },
     get quality() {
       return env?.quality ?? null;
@@ -1175,6 +1221,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     },
     dispose,
     stats,
+    physics,
     info: { placeholder, clips: player?.list() ?? [], extensions, rig: rig.report, hidden },
     three: { renderer, scene, camera, model },
     onTouch(cb) {
