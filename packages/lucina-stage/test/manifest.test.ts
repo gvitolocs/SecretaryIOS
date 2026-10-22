@@ -101,3 +101,13 @@ describe('resolveBones', () => {
     expect(r.bones.neck).toBeUndefined();
   });
 });
+
+describe('manifest state clip pools', () => {
+  it('reads state_clips for known states only, keeping string names', () => {
+    const m = normalizeManifest({
+      state_clips: { idle: ['status_loop', 'relax_loop', 3, ''], speaking: 'talk_left', dancing: ['x'] },
+    });
+    expect(m.stateClips).toEqual({ idle: ['status_loop', 'relax_loop'] });
+    expect(normalizeManifest({}).stateClips).toEqual({});
+  });
+});

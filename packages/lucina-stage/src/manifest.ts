@@ -3,7 +3,7 @@
  * plus optional camera framing. Everything is optional; missing names fall back to well-known
  * candidates (MMD Japanese names, VRM names) and finally to "not bound", which the animator tolerates.
  */
-import { LOGICAL_BONES, LOGICAL_MORPHS, type Framing, type LogicalBone, type LogicalMorph, type Vec3 } from './types';
+import { LOGICAL_BONES, LOGICAL_MORPHS, STAGE_STATES, type Framing, type LogicalBone, type LogicalMorph, type StageState, type Vec3 } from './types';
 
 export interface CameraFraming {
   /** Camera position in model space. */
@@ -30,6 +30,8 @@ export interface NormalizedManifest {
   idle: { rotations: Record<string, { axis: Vec3; angleDeg: number }>; morphs: Record<string, number> };
   /** Direction the character faces in the model's space. Auto-detected when absent. */
   facing?: '+z' | '-z';
+  /** Default clip pools per state for this model (`state_clips`); the host's `stateClips` option wins. */
+  stateClips: Partial<Record<StageState, string[]>>;
 }
 
 /** Fallback names, tried after anything the manifest lists. */
@@ -160,6 +162,7 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
     hide: [],
     hideMaterials: [],
     idle: { rotations: {}, morphs: {} },
+    stateClips: {},
   };
   if (!raw || typeof raw !== 'object') return out;
   const m = raw as Record<string, unknown>;
@@ -231,6 +234,15 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
     const morphs = idle.morphs as Record<string, unknown> | undefined;
     if (morphs && typeof morphs === 'object') {
       for (const [k, v] of Object.entries(morphs)) if (typeof v === 'number' && Number.isFinite(v)) out.idle.morphs[k] = v;
+    }
+  }
+
+  const pools = m.state_clips ?? m.stateClips;
+  if (pools && typeof pools === 'object' && !Array.isArray(pools)) {
+    for (const st of STAGE_STATES) {
+      const v = (pools as Record<string, unknown>)[st];
+      const names = Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string' && n.length > 0 && n.length <= 64) : [];
+      if (names.length) out.stateClips[st] = names;
     }
   }
 
