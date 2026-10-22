@@ -254,6 +254,8 @@ private struct MessageRow: View {
     var body: some View {
         if item.meta?.isReminder == true {
             ReminderCard(item: item)
+        } else if item.role == .lucina, let meta = item.meta, meta.isProactive {
+            ProactiveCard(item: item, meta: meta)
         } else if item.role == .lucina, let rich = item.rich {
             richRow(rich)
         } else {
@@ -358,6 +360,94 @@ private struct ReminderCard: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.orange.opacity(0.35)))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("reminderCard")
+    }
+}
+
+/// "Lucina reached out": a message she sent on her own (crates/lucina-proactive), with its
+/// priority, the feedback buttons and why she wrote. In-app links are web routes, so the
+/// card offers the feedback and the reason only.
+private struct ProactiveCard: View {
+    @Environment(ChatStore.self) private var store
+    let item: TimelineItem
+    let meta: TimelineMeta
+    @State private var chosen: String?
+    @State private var busy = false
+    @State private var failed = false
+    @State private var showWhy = false
+
+    private static let fallbackLabels = ["useful": "Useful", "not_now": "Not now", "stop": "Stop these"]
+    private static let doneLabels = ["useful": "Thanks, noted.", "not_now": "Got it: not now.", "stop": "Got it: no more of these."]
+
+    private var high: Bool { meta.priority == "high" }
+    private var tint: Color { high ? .orange : .purple }
+    private var priorityLabel: String {
+        switch meta.priority {
+        case "high": return "Important"
+        case "low": return "FYI"
+        default: return "For you"
+        }
+    }
+    private var buttons: [(id: String, label: String)] {
+        ProactiveAction.feedbackIds.map { id in
+            (id, meta.actions?.first(where: { $0.id == id && $0.isFeedback })?.label ?? Self.fallbackLabels[id] ?? id)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Lucina reached out", systemImage: "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(tint)
+                Spacer(minLength: 8)
+                Text(priorityLabel)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(tint.opacity(0.15), in: Capsule())
+                    .accessibilityIdentifier("proactivePriority")
+            }
+            Text(LinkText.attributed(item.text)).font(.subheadline).textSelection(.enabled)
+            HStack(spacing: 6) {
+                ForEach(buttons, id: \.id) { b in
+                    Button(b.label) { tap(b.id) }
+                        .font(.caption.weight(.medium))
+                        .buttonStyle(.bordered)
+                        .tint(chosen == b.id ? tint : .secondary)
+                        .disabled(busy || chosen != nil)
+                        .accessibilityIdentifier("proactiveFeedback_\(b.id)")
+                }
+            }
+            if let chosen, let done = Self.doneLabels[chosen] {
+                Text(done).font(.caption2).foregroundStyle(.secondary)
+            } else if failed {
+                Text("Couldn't send that. Try again.").font(.caption2).foregroundStyle(.red)
+            }
+            if let why = meta.why, !why.isEmpty {
+                DisclosureGroup("Why?", isExpanded: $showWhy) {
+                    Text(why).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.caption2)
+                .tint(.secondary)
+            }
+            SourceBadge(item: item)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(tint.opacity(0.4)))
+        .accessibilityIdentifier("proactiveCard")
+    }
+
+    private func tap(_ action: String) {
+        guard !busy, chosen == nil, let id = meta.outreachId else { return }
+        busy = true
+        failed = false
+        Task {
+            let ok = await store.outreachFeedback(id, action)
+            busy = false
+            if ok { chosen = action } else { failed = true }
+        }
     }
 }
 

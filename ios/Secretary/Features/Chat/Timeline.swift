@@ -38,6 +38,18 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
     let name: String?
 }
 
+/// A button on a proactive message: a feedback tap (`useful`, `not_now`, `stop`) or an
+/// in-app link (`route`).
+struct ProactiveAction: Codable, Equatable, Hashable, Sendable {
+    let id: String
+    let label: String
+    var route: String?
+    var feedback: Bool?
+
+    static let feedbackIds = ["useful", "not_now", "stop"]
+    var isFeedback: Bool { feedback == true && Self.feedbackIds.contains(id) }
+}
+
 struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var chatTitle: String?
     var guildName: String?
@@ -51,8 +63,20 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var hair: String?
     /// With `kind == "note"`: the note Lucina saved or read.
     var slug: String?
+    /// With `kind == "proactive"` (Lucina reached out on her own): `po_…`, `low|normal|high`,
+    /// what it is about, why she wrote, and the buttons.
+    var outreachId: String?
+    var priority: String?
+    var topic: String?
+    var why: String?
+    var actions: [ProactiveAction]?
 
     var isReminder: Bool { kind == "reminder" }
+    var isProactive: Bool {
+        guard kind == "proactive", let id = outreachId else { return false }
+        return id.count == 29 && id.hasPrefix("po_")
+            && id.dropFirst(3).allSatisfy { ("0"..."9").contains($0) || ("A"..."Z").contains($0) && !"ILOU".contains($0) }
+    }
     var isDeviceCommand: Bool { kind == "device_command" }
 
     init(chatTitle: String? = nil, guildName: String? = nil, channelName: String? = nil, isDm: Bool? = nil, kind: String? = nil) {
@@ -74,9 +98,17 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         outfit = c.lenientOptional(String.self, .outfit)
         hair = c.lenientOptional(String.self, .hair)
         slug = c.lenientOptional(String.self, .slug)
+        outreachId = c.lenientOptional(String.self, .outreachId)
+        priority = c.lenientOptional(String.self, .priority)
+        topic = c.lenientOptional(String.self, .topic)
+        why = c.lenientOptional(String.self, .why)
+        actions = c.lenientOptional([ProactiveAction].self, .actions)
     }
 
-    private enum CodingKeys: String, CodingKey { case chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug }
+    private enum CodingKeys: String, CodingKey {
+        case chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
+        case outreachId, priority, topic, why, actions
+    }
 }
 
 /// One message in the timeline. Server items have server ids; optimistic ones made on
