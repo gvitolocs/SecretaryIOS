@@ -1,0 +1,32 @@
+# Lucina's proactive engine (crates/lucina-proactive), a systemd USER unit on nezopt.
+#
+# Installed DISABLED. To enable (see the steps in the PR / report):
+#   lucina-proactive check                      # read-only connectivity check
+#   lucina-proactive migrate                    # creates schema lucina_proactive
+#   systemctl --user enable --now lucina-proactive
+#   journalctl --user -u lucina-proactive -f    # WOULD SEND lines while dry-run
+#   lucina-proactive report --hours 24          # what it would have sent, and why
+# Going live: set LUCINA_PROACTIVE_DRY_RUN=false in ~/.config/lucina-proactive/env,
+# then `systemctl --user restart lucina-proactive`.
+
+[Unit]
+Description=Lucina proactive engine (dry-run unless LUCINA_PROACTIVE_DRY_RUN=false)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LUCINA_PROACTIVE_CONFIG=%h/.config/lucina-proactive/config.toml
+# Ships in dry-run: it records what it would send and sends nothing.
+Environment=LUCINA_PROACTIVE_DRY_RUN=true
+# Optional overrides (e.g. LUCINA_PROACTIVE_DRY_RUN=false). Secrets are read
+# from Lucina's env files listed in config.toml [paths] env_files.
+EnvironmentFile=-%h/.config/lucina-proactive/env
+ExecStart=%h/.local/bin/lucina-proactive run
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

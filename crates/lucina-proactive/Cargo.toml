@@ -1,0 +1,38 @@
+[package]
+name = "lucina-proactive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina's proactive engine: observe signals, score them, reach out only when it is truly useful (Lucina First, Attention Engine, Daily Pulse)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lucina-proactive"
+path = "src/main.rs"
+
+[dependencies]
+lucina-llm = { path = "../lucina-llm" }
+lucina-store = { path = "../lucina-store" }
+lucina-memory = { path = "../lucina-memory" }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros"] }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+toml = "0.9"
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = "3"
