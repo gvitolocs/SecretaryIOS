@@ -8,6 +8,7 @@
 pub mod assets;
 pub mod auth;
 pub mod avatar;
+pub mod avatar_looks;
 pub mod calendar;
 pub mod cli;
 pub mod config;
