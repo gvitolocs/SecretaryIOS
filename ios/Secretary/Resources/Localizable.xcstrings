@@ -176,6 +176,38 @@
         }
       }
     },
+    "%lld events" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld eventi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld begivenheder"
+          }
+        }
+      }
+    },
+    "%lld events from the app's calendar bridge" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld eventi dal ponte calendario dell'app"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld begivenheder fra appens kalenderbro"
+          }
+        }
+      }
+    },
     "%lld exercises" : {
       "localizations" : {
         "da" : {
@@ -188,6 +220,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld esercizi"
+          }
+        }
+      }
+    },
+    "%lld items synced" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld elementi sincronizzati"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld elementer synkroniseret"
           }
         }
       }
@@ -274,6 +322,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld/%lld"
+          }
+        }
+      }
+    },
+    "+%lld more" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "+%lld altri"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "+%lld mere"
           }
         }
       }
@@ -393,6 +457,22 @@
         }
       }
     },
+    "AI clients" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Client AI"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI-klienter"
+          }
+        }
+      }
+    },
     "About" : {
       "localizations" : {
         "da" : {
@@ -425,6 +505,22 @@
         }
       }
     },
+    "Active %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attivo %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktiv %@"
+          }
+        }
+      }
+    },
     "Add" : {
       "localizations" : {
         "da" : {
@@ -453,6 +549,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aggiungi %@"
+          }
+        }
+      }
+    },
+    "Add a link" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi un link"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføj et link"
           }
         }
       }
@@ -585,6 +697,22 @@
         }
       }
     },
+    "Add to calendar" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi al calendario"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføj til kalender"
+          }
+        }
+      }
+    },
     "Add to shopping" : {
       "localizations" : {
         "da" : {
@@ -661,6 +789,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ aggiunto alla lista."
+          }
+        }
+      }
+    },
+    "Added to your calendar." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiunto al calendario."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføjet til din kalender."
           }
         }
       }
@@ -777,6 +921,22 @@
         }
       }
     },
+    "All day" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutto il giorno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hele dagen"
+          }
+        }
+      }
+    },
     "All exercises" : {
       "localizations" : {
         "da" : {
@@ -809,6 +969,22 @@
         }
       }
     },
+    "Allow Calendar in Lucina's access (Settings) to share your events." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti il Calendario nell'accesso di Lucina (Impostazioni) per condividere i tuoi eventi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tillad Kalender i Lucinas adgang (Indstillinger) for at dele dine begivenheder."
+          }
+        }
+      }
+    },
     "Allow the microphone and speech recognition in Settings to talk to Lucina." : {
       "localizations" : {
         "da" : {
@@ -821,6 +997,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Consenti microfono e riconoscimento vocale in Impostazioni per parlare con Lucina."
+          }
+        }
+      }
+    },
+    "An Alexa skill is planned." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Una skill Alexa è in arrivo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En Alexa-skill er planlagt."
           }
         }
       }
@@ -869,6 +1061,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Chiedi qualsiasi cosa a Lucina"
+          }
+        }
+      }
+    },
+    "Assistants that use Lucina through her MCP server." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Assistenti che usano Lucina tramite il suo server MCP."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Assistenter der bruger Lucina via hendes MCP-server."
+          }
+        }
+      }
+    },
+    "Available" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Disponibile"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilgængelig"
           }
         }
       }
@@ -949,6 +1173,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Misure corporee"
+          }
+        }
+      }
+    },
+    "Bookmark" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segnalibro"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bogmærke"
+          }
+        }
+      }
+    },
+    "Bookmarks for quick access, and MCP servers for Lucina to use later." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segnalibri a portata di mano e server MCP che Lucina potrà usare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bogmærker lige ved hånden og MCP-servere som Lucina kan bruge senere."
           }
         }
       }
@@ -1077,6 +1333,54 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kalender: giv besked før en begivenhed"
+          }
+        }
+      }
+    },
+    "Calendars" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendari"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalendere"
+          }
+        }
+      }
+    },
+    "Calendars synced." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendari sincronizzati."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalendere synkroniseret."
+          }
+        }
+      }
+    },
+    "Calendars, chat channels, AI clients and your own links" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendari, canali di chat, client AI e i tuoi link"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalendere, chatkanaler, AI-klienter og dine egne links"
           }
         }
       }
@@ -1273,6 +1577,22 @@
         }
       }
     },
+    "Chat channels" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Canali di chat"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chatkanaler"
+          }
+        }
+      }
+    },
     "Choose another list" : {
       "localizations" : {
         "da" : {
@@ -1445,6 +1765,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Completa le serie di lavoro per fissare i tuoi record personali."
+          }
+        }
+      }
+    },
+    "Connect" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collega"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forbind"
+          }
+        }
+      }
+    },
+    "Connected" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collegato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forbundet"
           }
         }
       }
@@ -2140,6 +2492,54 @@
         }
       }
     },
+    "Disconnect" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scollega"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afbryd"
+          }
+        }
+      }
+    },
+    "Disconnect %@? Lucina stops reading it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scollegare %@? Lucina smette di leggerlo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afbryde %@? Lucina holder op med at læse den."
+          }
+        }
+      }
+    },
+    "Disconnected." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scollegato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afbrudt."
+          }
+        }
+      }
+    },
     "Discord · %@" : {
       "localizations" : {
         "da" : {
@@ -2555,6 +2955,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Attrezzo"
+          }
+        }
+      }
+    },
+    "Error" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Errore"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fejl"
           }
         }
       }
@@ -3029,6 +3445,102 @@
         }
       }
     },
+    "Google" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google"
+          }
+        }
+      }
+    },
+    "Google Calendar" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google Calendar"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google Kalender"
+          }
+        }
+      }
+    },
+    "Google Drive" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google Drive"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google Drev"
+          }
+        }
+      }
+    },
+    "Google is connected. Your calendar is syncing." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google è collegato. Sto sincronizzando il calendario."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google er forbundet. Din kalender synkroniseres."
+          }
+        }
+      }
+    },
+    "Google sign-in didn't finish (%@)." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'accesso a Google non è stato completato (%@)."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google-login blev ikke gennemført (%@)."
+          }
+        }
+      }
+    },
+    "Google sign-in isn't set up on the server yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'accesso Google non è ancora configurato sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Google-login er ikke sat op på serveren endnu."
+          }
+        }
+      }
+    },
     "Groceries" : {
       "localizations" : {
         "da" : {
@@ -3334,6 +3846,22 @@
         }
       }
     },
+    "Icon (emoji)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Icona (emoji)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikon (emoji)"
+          }
+        }
+      }
+    },
     "In Settings → Focus, open a Focus, add a Focus Filter and choose Secretary." : {
       "localizations" : {
         "da" : {
@@ -3417,6 +3945,38 @@
         }
       }
     },
+    "Kind" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tipo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Type"
+          }
+        }
+      }
+    },
+    "Label" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Etichetta"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Navn"
+          }
+        }
+      }
+    },
     "Language" : {
       "localizations" : {
         "da" : {
@@ -3477,6 +4037,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Limite: %lld min al giorno"
+          }
+        }
+      }
+    },
+    "Link added." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link aggiunto."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Link tilføjet."
+          }
+        }
+      }
+    },
+    "Links" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collegamenti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forbindelser"
           }
         }
       }
@@ -4005,6 +4597,22 @@
         }
       }
     },
+    "Lucina on Discord. Presence watcher active." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina su Discord. Monitor della presenza attivo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina på Discord. Tilstedeværelsesovervågning aktiv."
+          }
+        }
+      }
+    },
     "Lucina online" : {
       "localizations" : {
         "da" : {
@@ -4049,6 +4657,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina ha avuto un problema."
+          }
+        }
+      }
+    },
+    "Lucina reads these to answer “what's on tomorrow?” and to plan your day." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina li legge per rispondere a “cosa ho domani?” e per organizzarti la giornata."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina læser dem for at svare på “hvad skal jeg i morgen?” og planlægge din dag."
           }
         }
       }
@@ -4101,6 +4725,22 @@
         }
       }
     },
+    "Lucina stores the server address encrypted and can use it later. Nothing is called now." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina salva l'indirizzo del server cifrato e potrà usarlo più avanti. Per ora non viene chiamato nulla."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina gemmer serverens adresse krypteret og kan bruge den senere. Intet kaldes nu."
+          }
+        }
+      }
+    },
     "Lucina took too long to answer. She may be busy; try again in a moment." : {
       "localizations" : {
         "da" : {
@@ -4145,6 +4785,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Accesso di Lucina"
+          }
+        }
+      }
+    },
+    "Lucina's bot. Reminders arrive here." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il bot di Lucina. I promemoria arrivano qui."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas bot. Påmindelser kommer her."
           }
         }
       }
@@ -4225,6 +4881,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Guardaroba di Lucina"
+          }
+        }
+      }
+    },
+    "MCP server" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server MCP"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP-server"
           }
         }
       }
@@ -4385,6 +5057,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mere"
+          }
+        }
+      }
+    },
+    "More Google services with the same sign-in, read-only." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altri servizi Google con lo stesso accesso, in sola lettura."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flere Google-tjenester med samme login, kun læsning."
           }
         }
       }
@@ -4693,6 +5381,22 @@
         }
       }
     },
+    "Next 7 days" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prossimi 7 giorni"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "De næste 7 dage"
+          }
+        }
+      }
+    },
     "No answer in time." : {
       "localizations" : {
         "da" : {
@@ -4789,6 +5493,22 @@
         }
       }
     },
+    "Not connected" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non collegato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke forbundet"
+          }
+        }
+      }
+    },
     "Not connected to live updates" : {
       "localizations" : {
         "da" : {
@@ -4833,6 +5553,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Non inviato: l'app si è chiusa prima della risposta di Lucina."
+          }
+        }
+      }
+    },
+    "Not set up" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non configurato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke sat op"
           }
         }
       }
@@ -4897,6 +5633,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Intet nyt"
+          }
+        }
+      }
+    },
+    "Nothing on your calendars." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niente in calendario."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet i dine kalendere."
           }
         }
       }
@@ -5141,6 +5893,22 @@
         }
       }
     },
+    "Open" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn"
+          }
+        }
+      }
+    },
     "Open Secretary and sign in first." : {
       "localizations" : {
         "da" : {
@@ -5317,6 +6085,22 @@
         }
       }
     },
+    "Paste a calendar's secret iCal address: Google's “Secret address in iCal format”, Outlook's ICS link or an iCloud public calendar. Read-only, stored encrypted." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Incolla l'indirizzo iCal segreto di un calendario: “Indirizzo segreto in formato iCal” di Google, il link ICS di Outlook o un calendario pubblico iCloud. Sola lettura, salvato cifrato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indsæt en kalenders hemmelige iCal-adresse: Googles “Hemmelig adresse i iCal-format”, Outlooks ICS-link eller en offentlig iCloud-kalender. Kun læsning, gemt krypteret."
+          }
+        }
+      }
+    },
     "Personal records" : {
       "localizations" : {
         "da" : {
@@ -5377,6 +6161,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Luoghi che visiti"
+          }
+        }
+      }
+    },
+    "Planned" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In arrivo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Planlagt"
           }
         }
       }
@@ -5445,6 +6245,22 @@
         }
       }
     },
+    "Proposed by %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Proposto da %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foreslået af %@"
+          }
+        }
+      }
+    },
     "Put on %@" : {
       "localizations" : {
         "da" : {
@@ -5505,6 +6321,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Comandi recenti di Lucina"
+          }
+        }
+      }
+    },
+    "Reconnect" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ricollega"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forbind igen"
+          }
+        }
+      }
+    },
+    "Reconnect needed" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Da ricollegare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skal forbindes igen"
           }
         }
       }
@@ -5589,6 +6437,22 @@
         }
       }
     },
+    "Remote MCP server, saved for Lucina. Nothing is called yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server MCP remoto, salvato per Lucina. Per ora non viene chiamato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern MCP-server, gemt til Lucina. Intet kaldes endnu."
+          }
+        }
+      }
+    },
     "Remote push (APNs)" : {
       "localizations" : {
         "it" : {
@@ -5617,6 +6481,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fjern-push kræver en betalt Apple Developer-konto. Indtil da: føj Secretary-webstedet til hjemmeskærmen, og slå notifikationer til der for at få push, når appen er lukket."
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimuovi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern"
+          }
+        }
+      }
+    },
+    "Remove %@?" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimuovere %@?"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjerne %@?"
           }
         }
       }
@@ -6017,6 +6913,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Salva routine"
+          }
+        }
+      }
+    },
+    "Saved" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salvato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemt"
           }
         }
       }
@@ -6846,6 +7758,118 @@
         }
       }
     },
+    "Subscribe" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Iscriviti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abonner"
+          }
+        }
+      }
+    },
+    "Subscribe to a calendar" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Iscriviti a un calendario"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abonner på en kalender"
+          }
+        }
+      }
+    },
+    "Subscribed: %lld events." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Iscritto: %lld eventi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abonnerer: %lld begivenheder."
+          }
+        }
+      }
+    },
+    "Sync" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sincronizza"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synkroniser"
+          }
+        }
+      }
+    },
+    "Sync calendars" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sincronizza calendari"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synkroniser kalendere"
+          }
+        }
+      }
+    },
+    "Synced %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sincronizzato %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synkroniseret %@"
+          }
+        }
+      }
+    },
+    "Tags, comma separated" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag, separati da virgole"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tags, adskilt med komma"
+          }
+        }
+      }
+    },
     "Tags, separated by commas" : {
       "localizations" : {
         "it" : {
@@ -7034,6 +8058,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Quel vestito non è più nel guardaroba."
+          }
+        }
+      }
+    },
+    "The MCP server's status isn't available right now." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lo stato del server MCP non è disponibile adesso."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MCP-serverens status er ikke tilgængelig lige nu."
           }
         }
       }
@@ -7550,6 +8590,22 @@
         }
       }
     },
+    "Through the Lucina MCP" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tramite Lucina MCP"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Via Lucina MCP"
+          }
+        }
+      }
+    },
     "Time" : {
       "localizations" : {
         "da" : {
@@ -8046,6 +9102,22 @@
         }
       }
     },
+    "Unknown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sconosciuto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukendt"
+          }
+        }
+      }
+    },
     "Unpin" : {
       "localizations" : {
         "it" : {
@@ -8346,6 +9418,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "In attesa del permesso."
+          }
+        }
+      }
+    },
+    "Waiting for your OK" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa del tuo ok"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Venter på dit ok"
           }
         }
       }
@@ -8718,6 +9806,22 @@
         }
       }
     },
+    "Where Lucina talks with you." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dove Lucina parla con te."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvor Lucina taler med dig."
+          }
+        }
+      }
+    },
     "With the Secretary Safari extension on, Lucina sees the sites (domain and title) you visit in Safari. Other browsers stay private." : {
       "localizations" : {
         "da" : {
@@ -8958,6 +10062,22 @@
         }
       }
     },
+    "Your links" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I tuoi link"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dine links"
+          }
+        }
+      }
+    },
     "Your list is empty" : {
       "localizations" : {
         "da" : {
@@ -9043,6 +10163,38 @@
     },
     "https://… or http://localhost:8791" : {
       "shouldTranslate" : false
+    },
+    "iCal address" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indirizzo iCal"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCal-adresse"
+          }
+        }
+      }
+    },
+    "iPhone Calendar" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Calendario iPhone"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iPhone-kalender"
+          }
+        }
+      }
     },
     "sec_…" : {
       "shouldTranslate" : false

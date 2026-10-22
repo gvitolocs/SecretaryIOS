@@ -15,6 +15,23 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink {
+                    LinksView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Links")
+                            Text("Calendars, chat channels, AI clients and your own links")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "link")
+                    }
+                }
+                .accessibilityIdentifier("openLinks")
+            }
+
             Section("Server") {
                 LabeledContent("Status") {
                     HStack(spacing: 6) {
