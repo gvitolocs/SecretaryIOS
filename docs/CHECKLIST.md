@@ -43,6 +43,9 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Touch + Custom Cast studio LIVE on web (main d1c7384): orbit/pinch/tap reactions, studio, photo, dance, gyro, presets
 - [ ] Refit 12 outfits to G (wardrobe rules temporarily all → uniform)
 - [ ] Physics (spring bones) on G chains
+- [ ] Character editor (Custom Cast SceneEdit parity): body/face sliders, eyes/skin/makeup, hair colours, accessory slots, outfit mix & match, saved looks — branch avatar-editor
+- [ ] Studio extras: hand shapes, IK posing, face sliders, props, photo decorations, flick shortcuts, filters, gaze, image backgrounds — branch studio-extras
+- [ ] AR (RealityKit place-in-room) + face tracking (ARKit / MediaPipe) — branches ar-facetrack, ios-ar
 - [x] Wardrobe UI LIVE (outfit/hair/colour tabs, rules per tab, remembered); LUCINA_AVATAR_OUTFIT not yet on
 - [ ] Outfit + hairstyle GLBs (Custom Cast first, then free assets) on the FIXED B
 - [x] Owner picked B (flower removed, tiara restored)
