@@ -1,21 +1,26 @@
 import SwiftUI
 
-/// Lucina's status in the navigation bar: green online, orange Lucina down, red server down.
+/// Lucina's status in the navigation bar: a faint green dot when online, orange when Lucina is down,
+/// red when the server is unreachable. It is the app's only connection indicator.
 struct StatusDot: View {
     @Environment(HealthStore.self) private var health
 
     var body: some View {
         Circle()
             .fill(color)
-            .frame(width: 10, height: 10)
-            .overlay(Circle().strokeBorder(.background, lineWidth: 1.5))
+            .frame(width: size, height: size)
+            .opacity(health.status == .online ? 0.45 : 1)
             .padding(8)
             .contentShape(Rectangle())
+            .animation(.easeInOut(duration: 0.3), value: health.status)
             .accessibilityElement()
             .accessibilityLabel("Lucina status")
             .accessibilityValue(health.summary)
             .accessibilityIdentifier("lucinaStatus")
     }
+
+    /// Small and quiet while everything works; a little larger when something needs attention.
+    private var size: CGFloat { health.status == .online || health.status == .unknown ? 6 : 8 }
 
     private var color: Color {
         switch health.status {

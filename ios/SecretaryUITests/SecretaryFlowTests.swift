@@ -108,10 +108,8 @@ final class SecretaryFlowTests: XCTestCase {
         // History from the timeline shows with source badges.
         let badge = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "From ")).firstMatch
         XCTAssertTrue(badge.waitForExistence(timeout: 15), "messages with their source badge")
-        let live = app.descendants(matching: .any)["liveIndicator"]
-        XCTAssertTrue(live.waitForExistence(timeout: 15))
-        let connected = NSPredicate(format: "label BEGINSWITH %@", "Live")
-        await fulfillment(of: [expectation(for: connected, evaluatedWith: live)], timeout: 15)
+        // The stream needs a moment to connect (the Live pill is gone; the status dot is the only indicator).
+        try await Task.sleep(nanoseconds: 3_000_000_000)
 
         // A Telegram message arrives through the stream while the app is open.
         let text = "From Telegram \(Int.random(in: 1000...9999))"
@@ -270,9 +268,8 @@ final class SecretaryFlowTests: XCTestCase {
     func testLucinaCommandNeedsConfirmationAndIsAcked() async throws {
         let app = launch()
         signIn(app)
-        let live = app.descendants(matching: .any)["liveIndicator"]
-        XCTAssertTrue(live.waitForExistence(timeout: 15))
-        await fulfillment(of: [expectation(for: NSPredicate(format: "label BEGINSWITH %@", "Live"), evaluatedWith: live)], timeout: 15)
+        // The stream needs a moment to connect (the Live pill is gone; the status dot is the only indicator).
+        try await Task.sleep(nanoseconds: 3_000_000_000)
 
         let id = "cmd-\(Int.random(in: 10000...99999))"
         _ = try await mock("POST", "/v1/_mock/timeline", [

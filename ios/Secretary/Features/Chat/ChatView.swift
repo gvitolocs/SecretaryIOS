@@ -36,30 +36,10 @@ extension ChatView where Stage == EmptyView {
     init() { self.init { EmptyView() } }
 }
 
-/// "Lucina" with a Live pill while the timeline stream is connected.
+/// "Lucina". Connection state is shown once, by the subtle status dot in the toolbar.
 struct ChatTitle: View {
-    @Environment(ChatStore.self) private var store
-
     var body: some View {
-        HStack(spacing: 8) {
-            Text("Lucina").font(.headline)
-            if store.mode == .server {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(store.isLive ? Color.green : Color.secondary)
-                        .frame(width: 6, height: 6)
-                    Text(store.isLive ? "Live" : "Offline")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(store.isLive ? .primary : .secondary)
-                }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(.thinMaterial, in: Capsule())
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(store.isLive ? String(localized: "Live: new messages from every channel appear here") : String(localized: "Not connected to live updates"))
-                .accessibilityIdentifier("liveIndicator")
-            }
-        }
+        Text("Lucina").font(.headline)
     }
 }
 
