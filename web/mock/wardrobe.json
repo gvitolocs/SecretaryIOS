@@ -1,0 +1,7 @@
+[
+  { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" }, "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] },
+  { "id": "gym", "name": { "it": "Palestra", "en": "Gym", "da": "Træning" }, "glb": "lucina-gym.glb", "thumbnail": "outfit-gym.webp", "tags": ["sport"] },
+  { "id": "chef", "name": { "it": "Chef", "en": "Chef", "da": "Kok" }, "glb": "lucina-chef.glb", "thumbnail": "outfit-chef.webp", "tags": ["work"] },
+  { "id": "maid", "name": { "it": "Cameriera", "en": "Maid", "da": "Stuepige" }, "glb": "lucina-maid.glb", "thumbnail": "outfit-maid.webp", "tags": ["work"] },
+  { "id": "casual", "name": { "it": "Casual", "en": "Casual", "da": "Hverdag" }, "glb": "lucina-casual.glb", "thumbnail": "outfit-casual.webp", "tags": ["casual"] }
+]

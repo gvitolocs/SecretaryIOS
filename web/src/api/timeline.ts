@@ -17,7 +17,9 @@ export interface ItemMeta {
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder";
+  kind?: "reminder" | "avatar_outfit";
+  /** With kind "avatar_outfit": the outfit Lucina put on (absent: back to automatic). */
+  outfit?: string;
 }
 
 export interface TimelineItem {
@@ -72,6 +74,10 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (channelName) out.channelName = channelName;
   if (typeof m.isDm === "boolean") out.isDm = m.isDm;
   if (m.kind === "reminder") out.kind = "reminder";
+  if (m.kind === "avatar_outfit") {
+    out.kind = "avatar_outfit";
+    if (typeof m.outfit === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.outfit)) out.outfit = m.outfit;
+  }
   return Object.keys(out).length ? out : undefined;
 }
 

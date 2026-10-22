@@ -4,6 +4,7 @@ import { t } from "../i18n";
 import { createMediaQuery, WIDE_QUERY } from "../lib/media";
 import { onLucinaReply, sending, sendMessage } from "../state/chat";
 import { setStageHidden, stageHidden } from "../state/stage";
+import { wardrobeOpen } from "../state/wardrobe";
 import { LucinaPanel } from "./LucinaPanel";
 
 /**
@@ -71,10 +72,11 @@ export function LucinaDock() {
     requestAnimationFrame(focus);
   }
 
-  const stageVisible = () => layout() !== "float" || expanded();
+  // The wardrobe needs her on stage (the live preview), even when the stage was hidden.
+  const stageVisible = () => layout() !== "float" || expanded() || wardrobeOpen();
 
   return (
-    <Show when={!stageHidden()}>
+    <Show when={!stageHidden() || wardrobeOpen()}>
       <aside
         class="dock"
         classList={{
@@ -82,6 +84,7 @@ export function LucinaDock() {
           "dock--strip": layout() === "strip",
           "dock--float": layout() === "float",
           "dock--open": layout() === "float" && expanded(),
+          "dock--wardrobe": wardrobeOpen(),
         }}
         data-layout={layout()}
         aria-label={t("shell.lucina")}
@@ -89,7 +92,7 @@ export function LucinaDock() {
         {/* Always mounted while shown; the float button only hides it (one WebGL context). */}
         <div class="dock-stage" hidden={!stageVisible()}>
           <LucinaPanel
-            framing={layout() === "side" ? "full" : "bust"}
+            framing={layout() === "side" || wardrobeOpen() ? "full" : "bust"}
             thinking={sending()}
             onTranscript={(text) => void sendMessage(text)}
             onTypeInstead={typeInstead}
@@ -100,7 +103,7 @@ export function LucinaDock() {
             onMinimize={layout() === "float" ? () => setExpanded(false) : undefined}
           />
         </div>
-        <Show when={layout() === "float" && !expanded()}>
+        <Show when={layout() === "float" && !expanded() && !wardrobeOpen()}>
           <button
             type="button"
             class="dock-fab"
@@ -112,7 +115,7 @@ export function LucinaDock() {
             <img src="/icon-192.png" alt="" width="56" height="56" />
           </button>
         </Show>
-        <Show when={bubble()}>
+        <Show when={!wardrobeOpen() && bubble()}>
           {(text) => (
             <div class="dock-bubble" role="status" onClick={dismissBubble}>
               <span class="sr-only">{t("shell.lucinaSays")} </span>

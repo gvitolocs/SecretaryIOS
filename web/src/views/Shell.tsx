@@ -1,15 +1,19 @@
 import { A, useLocation } from "@solidjs/router";
-import { createEffect, createSignal, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
+import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
 import { AvatarIcon, ChatIcon, DumbbellIcon, ListIcon, LogoutIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { StatusDot } from "../components/StatusDot";
 import { t } from "../i18n";
-import { resumeJobPolling } from "../state/chat";
+import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
+import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
+
+// The Wardrobe panel is only fetched the first time it opens.
+const Wardrobe = lazy(() => import("../components/Wardrobe"));
 
 function NavLinks(props: { class: string }) {
   return (
@@ -70,10 +74,18 @@ export default function Shell(props: { children?: JSX.Element }) {
   let accountButton: HTMLButtonElement | undefined;
   let main: HTMLElement | undefined;
   useRouteTransition(() => main);
+  const location = useLocation();
+  // Her outfit follows the section (Gym, Shopping, elsewhere).
+  createEffect(() => setAvatarPath(location.pathname));
+  const [wardrobeLoaded, setWardrobeLoaded] = createSignal(false);
+  createEffect(() => wardrobeOpen() && setWardrobeLoaded(true));
 
   onMount(() => {
     void checkHealth();
     resumeJobPolling();
+    // The timeline stream stays open on every page, so Lucina's outfit changes arrive live.
+    onCleanup(connectTimeline());
+    onCleanup(startAvatarSync());
     const timer = setInterval(() => void checkHealth(), HEALTH_POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") void checkHealth();
@@ -169,6 +181,11 @@ export default function Shell(props: { children?: JSX.Element }) {
         <LucinaDock />
       </div>
       <NavLinks class="tabbar" />
+      <Show when={wardrobeLoaded()}>
+        <Suspense>
+          <Wardrobe />
+        </Suspense>
+      </Show>
       <AccountDialog
         open={accountOpen()}
         onClose={() => {

@@ -282,11 +282,20 @@ export async function loadOlder(): Promise<number> {
   }
 }
 
+const itemListeners = new Set<(item: TimelineItem) => void>();
+
+/** Called with each live item from the stream (not with pages), e.g. Lucina's outfit changes. */
+export function onTimelineItem(cb: (item: TimelineItem) => void): () => void {
+  itemListeners.add(cb);
+  return () => itemListeners.delete(cb);
+}
+
 /** Merge one live item (from the stream). */
 export function receiveItem(item: TimelineItem): void {
   commit((list) => {
     mergeItems(list, [item], "end");
   });
+  for (const cb of itemListeners) cb(item);
 }
 
 // ---- Live stream ----------------------------------------------------------------

@@ -353,7 +353,15 @@ export async function createWardrobeStage(
       incomingCanvas.style.opacity = '1';
       incomingCanvas.style.pointerEvents = '';
       delete incomingCanvas.dataset.lucinaOutfit;
-      Object.assign(oldCanvas.style, { transition: `opacity ${FADE_MS}ms ease`, animation: 'none', opacity: '0', pointerEvents: 'none' });
+      oldCanvas.style.pointerEvents = 'none';
+      if (options.environment) {
+        // An opaque stage set: the old canvas stays under the new one while it fades in (no dip
+        // to the page in between), then hides.
+        setTimeout(() => (oldCanvas.style.visibility = 'hidden'), FADE_MS);
+      } else {
+        // A transparent canvas: crossfade, so the two outfits never show on top of each other.
+        Object.assign(oldCanvas.style, { transition: `opacity ${FADE_MS}ms ease`, animation: 'none', opacity: '0' });
+      }
     };
     const effect = (o.effect ?? options.changeEffect ?? true) && !reduced();
     if (effect) {

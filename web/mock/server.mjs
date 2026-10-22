@@ -40,15 +40,21 @@
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
 //                            The model is private: never copy it into the repo.
 //   POST /v1/tts {text, lang} -> a short silent audio/mpeg clip
+// Wardrobe (docs/server-api.md, "Avatar wardrobe"):
+//   GET/PUT /v1/avatar, GET /v1/avatar/wardrobe. The wardrobe is MOCK_WARDROBE_DIR/wardrobe.json
+//   (default ~/scratch/lucina-wardrobe) or the placeholder mock/wardrobe.json; outfit models
+//   missing there fall back to lucina.glb. Chat "mettiti la divisa", "put on your gym clothes",
+//   "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
 
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8791);
 const HOST = process.env.MOCK_HOST ?? "127.0.0.1";
@@ -1454,18 +1460,89 @@ const ASSET_TYPES = {
   ".ktx2": "image/ktx2",
 };
 
-function handleAsset(res, rel) {
-  const file = resolve(ASSETS_DIR, `.${sep}${rel}`);
-  const type = ASSET_TYPES[extname(file).toLowerCase()];
-  let st = null;
+// The wardrobe (outfit GLBs, thumbnails, wardrobe.json) is looked up here first, then in
+// ASSETS_DIR. Without a wardrobe.json there, mock/wardrobe.json is the placeholder, and a
+// missing outfit model (`lucina-<outfit>.glb`) is served as lucina.glb so swaps still run.
+const WARDROBE_DIR = resolve(process.env.MOCK_WARDROBE_DIR ?? join(homedir(), "scratch/lucina-wardrobe"));
+const WARDROBE_PLACEHOLDER = fileURLToPath(new URL("./wardrobe.json", import.meta.url));
+
+function statFile(file) {
   try {
-    st = statSync(file);
+    const st = statSync(file);
+    return st.isFile() ? st : null;
   } catch {
-    st = null;
+    return null;
   }
-  if (!type || !file.startsWith(ASSETS_DIR + sep) || !st?.isFile()) return fail(res, 404, "not_found", "No such asset.");
-  res.writeHead(200, { "Content-Type": type, "Content-Length": String(st.size), "Cache-Control": "private, no-store" });
-  createReadStream(file).pipe(res);
+}
+
+function findAsset(rel) {
+  for (const dir of [WARDROBE_DIR, ASSETS_DIR]) {
+    const file = resolve(dir, `.${sep}${rel}`);
+    if (!file.startsWith(dir + sep)) return null;
+    const st = statFile(file);
+    if (st) return { file, st };
+  }
+  if (/^lucina-[a-z0-9_-]+\.glb$/.test(rel)) return findAsset("lucina.glb");
+  return null;
+}
+
+function handleAsset(res, rel) {
+  const type = ASSET_TYPES[extname(rel).toLowerCase()];
+  const found = type ? findAsset(rel) : null;
+  if (!found) return fail(res, 404, "not_found", "No such asset.");
+  res.writeHead(200, { "Content-Type": type, "Content-Length": String(found.st.size), "Cache-Control": "private, no-store" });
+  createReadStream(found.file).pipe(res);
+}
+
+// ---------- Avatar wardrobe (GET/PUT /v1/avatar, GET /v1/avatar/wardrobe) ----------
+
+const OUTFIT_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+let avatar = { outfit: null, auto: true, rules: { gym: "gym", shopping: "chef", default: "uniform" }, updatedMs: 0, updatedBy: "" };
+
+function wardrobeList() {
+  const real = join(WARDROBE_DIR, "wardrobe.json");
+  for (const file of [real, WARDROBE_PLACEHOLDER]) {
+    try {
+      const list = JSON.parse(readFileSync(file, "utf8"));
+      if (Array.isArray(list)) return list.filter((e) => e && OUTFIT_ID.test(e.id) && typeof e.glb === "string");
+    } catch {
+      // next
+    }
+  }
+  return [];
+}
+
+/** PUT /v1/avatar: merge a patch like the real server (400 shape errors, 422 unknown_outfit). */
+function patchAvatar(body, by) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { status: 400, code: "bad_request", message: "expected an object" };
+  for (const k of Object.keys(body)) if (!["outfit", "auto", "rules"].includes(k)) return { status: 400, code: "bad_request", message: `unknown field ${k}` };
+  const rules = body.rules ?? {};
+  if (typeof rules !== "object" || Array.isArray(rules)) return { status: 400, code: "bad_request", message: "rules: expected an object" };
+  for (const k of Object.keys(rules)) if (!["gym", "shopping", "default"].includes(k)) return { status: 400, code: "bad_request", message: `rules: unknown field ${k}` };
+  if (body.auto !== undefined && typeof body.auto !== "boolean") return { status: 400, code: "bad_request", message: "auto: expected a boolean" };
+  const next = {
+    ...avatar,
+    ...("outfit" in body ? { outfit: body.outfit } : {}),
+    ...(body.auto !== undefined ? { auto: body.auto } : {}),
+    rules: { ...avatar.rules, ...rules },
+  };
+  const ids = [next.outfit, next.rules.gym, next.rules.shopping, next.rules.default].filter((v) => v !== null);
+  if (ids.some((v) => typeof v !== "string" || !OUTFIT_ID.test(v))) return { status: 400, code: "bad_request", message: "outfit ids must match [a-z0-9][a-z0-9_-]*" };
+  const known = wardrobeList().map((e) => e.id);
+  const bad = known.length ? ids.find((v) => !known.includes(v)) : undefined;
+  if (bad) return { status: 422, code: "unknown_outfit", message: `no outfit "${bad}" in the wardrobe; known: ${known.join(", ")}` };
+  avatar = { ...next, updatedMs: Date.now(), updatedBy: by };
+  return null;
+}
+
+/** "mettiti il vestito da cameriera", "put on your gym clothes", "torna automatica": Lucina changes outfit. */
+function outfitIntent(text) {
+  const m = text.toLowerCase();
+  if (!/\b(mettiti|metti|indossa|cambia(ti)? (vestito|abito)|put on|wear|change (into|your outfit)|tag .* på|skift)\b/.test(m)) return undefined;
+  if (/\b(automatic|automatico|automatica|auto|automatisk)\b/.test(m)) return null;
+  const words = { gym: /palestra|gym|tuta|træning|sport/, chef: /chef|cuoc|kok/, maid: /cameriera|maid|stuepige/, casual: /casual|hverdag/, uniform: /divisa|uniform/ };
+  for (const [id, re] of Object.entries(words)) if (re.test(m)) return id;
+  return undefined;
 }
 
 /** ~0.5 s of silence: MPEG-1 Layer III frames (32 kbps, 44.1 kHz, mono) with empty side info. */
@@ -1524,8 +1601,14 @@ async function handleChat(req, res) {
   if (/\bfail\b/.test(m)) return fail(res, 500, "internal", "Something broke (mock).");
 
   let reply;
+  let meta;
   const ids = { sessionId: `secretary_${sessionId}`, clientMessageId };
-  if (/(job|order|book|image)/.test(m)) {
+  const outfit = outfitIntent(message);
+  if (outfit !== undefined) {
+    patchAvatar(outfit === null ? { outfit: null, auto: true } : { outfit }, "lucina");
+    meta = outfit === null ? { kind: "avatar_outfit" } : { kind: "avatar_outfit", outfit };
+    reply = { reply: outfit === null ? "Va bene, torno a cambiarmi da sola." : "Un attimo… eccomi!", action: "avatar_outfit", job: null, ...ids };
+  } else if (/(job|order|book|image)/.test(m)) {
     const id = randomUUID();
     const action = m.includes("image") ? "generate_image" : m.includes("order") ? "spreadsheet_update_task" : "cursor_task";
     jobs.set(id, {
@@ -1555,6 +1638,7 @@ async function handleChat(req, res) {
     text: reply.reply,
     replyTo: userItemId,
     ...(clientMessageId ? { clientMessageId } : {}),
+    ...(meta ? { meta } : {}),
   });
   reply = { ...reply, userItemId, lucinaItemId: lucinaItem.id };
   if (reply.reminder) {
@@ -1744,6 +1828,14 @@ async function route(req, res) {
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
+  if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeList());
+  if (path === "/v1/avatar" && method === "GET") return send(res, 200, avatar);
+  if (path === "/v1/avatar" && method === "PUT") {
+    const body = await readJson(req);
+    const client = req.headers["x-secretary-client"];
+    const err = patchAvatar(body, client === "web" || client === "ios" ? client : "device");
+    return err ? fail(res, err.status, err.code, err.message) : send(res, 200, avatar);
+  }
   const assetMatch = path.match(/^\/v1\/assets\/(.+)$/);
   if (assetMatch && method === "GET") {
     let rel;

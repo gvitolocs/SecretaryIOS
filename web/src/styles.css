@@ -1,6 +1,7 @@
 /* Secretary web styles. Design tokens: styles/tokens.css; base, shell, stage and chat: styles/base.css. */
 @import "./styles/tokens.css";
 @import "./styles/base.css";
+@import "./styles/wardrobe.css";
 
 /* ---------- Shopping ---------- */
 

@@ -27,7 +27,7 @@ export interface OutfitEffectOptions {
   reducedMotion?: boolean;
   /** Called once at the flash peak: swap the model here. */
   onPeak?: () => void;
-  /** Total length in ms (default 1300). The peak is at 36 %. */
+  /** Total length in ms (default 1500). The peak is at 36 %. */
   duration?: number;
   /** For tests. */
   random?: () => number;
@@ -40,7 +40,7 @@ export interface OutfitEffect {
   cancel(): void;
 }
 
-export const EFFECT_DURATION_MS = 1300;
+export const EFFECT_DURATION_MS = 1500;
 export const EFFECT_PEAK = 0.36;
 
 const PALETTE = {
@@ -62,7 +62,7 @@ export function effectPhases(p: number, peak = EFFECT_PEAK) {
     /** Light column height, 0..1 of the subject, up to the peak. */
     column: easeOut(rise),
     /** Column and glow opacity: in, then out after the peak. */
-    glow: p < peak ? easeInOut(rise) : 1 - easeOut(after),
+    glow: p < peak ? Math.sin((rise * Math.PI) / 2) : 1 - easeInOut(after),
     /** Scanning ring position, 0 = feet, 1 = above the head. */
     ring: easeInOut(clamp01(p / 0.8)),
     /** Flash strength around the peak. */
@@ -142,7 +142,7 @@ export function playOutfitEffect(opts: OutfitEffectOptions): OutfitEffect {
     angle: random() * Math.PI * 2,
     radius: 0.35 + random() * 0.85,
     height: random(),
-    size: 1 + random() * 2.6,
+    size: 1.6 + random() * 3.2,
     hue: Math.floor(random() * 4) as Spark['hue'],
     spin: (random() - 0.5) * 3,
     drift: 0.4 + random() * 0.8,
@@ -184,24 +184,63 @@ export function playOutfitEffect(opts: OutfitEffectOptions): OutfitEffect {
     g.clearRect(0, 0, w, h);
     g.globalCompositeOperation = opts.theme === 'light' ? 'source-over' : 'lighter';
 
-    // Light column from the floor up.
+    // Light column from the floor up: a soft elongated glow with a brighter beam inside.
     const top = floor - s.height * 1.08 * ph.column;
-    const colAlpha = 0.55 * ph.glow * ph.fade;
-    if (colAlpha > 0.005) {
-      const grad = g.createLinearGradient(cx - halfW * 1.3, 0, cx + halfW * 1.3, 0);
-      grad.addColorStop(0, rgba(pal.b, 0));
-      grad.addColorStop(0.3, rgba(pal.a, colAlpha * 0.5));
-      grad.addColorStop(0.5, rgba(pal.core, colAlpha));
-      grad.addColorStop(0.7, rgba(pal.c, colAlpha * 0.5));
-      grad.addColorStop(1, rgba(pal.b, 0));
-      g.fillStyle = grad;
-      g.fillRect(cx - halfW * 1.3, top, halfW * 2.6, floor - top + s.height * 0.03);
-      const cap = g.createLinearGradient(0, top - s.height * 0.08, 0, top + s.height * 0.08);
-      cap.addColorStop(0, rgba(pal.core, 0));
-      cap.addColorStop(0.5, rgba(pal.core, colAlpha * 0.9));
-      cap.addColorStop(1, rgba(pal.core, 0));
-      g.fillStyle = cap;
-      g.fillRect(cx - halfW * 1.1, top - s.height * 0.08, halfW * 2.2, s.height * 0.16);
+    const colAlpha = 0.6 * ph.glow * ph.fade;
+    const colH = floor - top;
+    if (colAlpha > 0.005 && colH > 2) {
+      const glow = (radius: number, alpha: number, stops: [number, Rgb, number][]): void => {
+        g.save();
+        g.translate(cx, floor - colH / 2);
+        g.scale(1, colH / 2 / radius);
+        const rg = g.createRadialGradient(0, 0, 0, 0, 0, radius);
+        for (const [at, c, k] of stops) rg.addColorStop(at, rgba(c, alpha * k));
+        rg.addColorStop(1, rgba(pal.b, 0));
+        g.fillStyle = rg;
+        g.beginPath();
+        g.arc(0, 0, radius, 0, Math.PI * 2);
+        g.fill();
+        g.restore();
+      };
+      glow(halfW * 1.35, colAlpha, [
+        [0, pal.core, 0.55],
+        [0.35, pal.a, 0.45],
+        [0.7, pal.b, 0.2],
+      ]);
+      glow(halfW * 0.42, colAlpha, [
+        [0, pal.core, 0.9],
+        [0.6, pal.c, 0.35],
+      ]);
+      // The bright tip where the column is rising.
+      const tipR = halfW * 0.85;
+      g.save();
+      g.translate(cx, top);
+      g.scale(1, 0.5);
+      const tip = g.createRadialGradient(0, 0, 0, 0, 0, tipR);
+      tip.addColorStop(0, rgba(pal.core, colAlpha * (1 - ph.flash * 0.5)));
+      tip.addColorStop(0.4, rgba(pal.a, colAlpha * 0.4));
+      tip.addColorStop(1, rgba(pal.a, 0));
+      g.fillStyle = tip;
+      g.beginPath();
+      g.arc(0, 0, tipR, 0, Math.PI * 2);
+      g.fill();
+      g.restore();
+    }
+
+    // After the flash: two shock rings spread out from her chest.
+    if (ph.burst > 0 && ph.burst < 1) {
+      const cy = s.y + s.height * 0.42;
+      for (const [k, c] of [
+        [1, pal.a],
+        [0.7, pal.c],
+      ] as const) {
+        const r = halfW * (0.5 + 1.7 * ph.burst * k);
+        g.strokeStyle = rgba(c, 0.7 * (1 - ph.burst) * ph.fade);
+        g.lineWidth = 2.5 * (1 - ph.burst) + 0.5;
+        g.beginPath();
+        g.ellipse(cx, cy, r, r * 0.42, 0, 0, Math.PI * 2);
+        g.stroke();
+      }
     }
 
     // Scanning ring (an ellipse seen from slightly above), feet → above the head.
@@ -236,17 +275,24 @@ export function playOutfitEffect(opts: OutfitEffectOptions): OutfitEffect {
       } else {
         r = halfW * (0.25 + sp.radius * 1.9 * ph.burst);
         y = floor - s.height * (0.08 + 0.85 * sp.height) + s.height * 0.22 * sp.drift * ph.burst * ph.burst;
-        alpha = (1 - ph.burst * 0.85) * ph.fade;
+        alpha = (1 - ph.burst * 0.6) * ph.fade;
       }
+      alpha *= 0.65 + 0.35 * Math.sin(p * 38 + sp.angle * 7);
       const x = cx + Math.cos(a) * r;
       const depth = 0.65 + 0.35 * Math.sin(a);
+      const size = sp.size * depth * (p < EFFECT_PEAK ? 1 : 1 + 0.9 * (1 - ph.burst));
       if (alpha * depth < 0.02) continue;
       const color = rgba(hues[sp.hue]!, alpha * depth);
-      if (sp.star) star(x, y, sp.size * depth, color);
+      if (sp.star) {
+        g.shadowColor = color;
+        g.shadowBlur = 8;
+        star(x, y, size, color);
+        g.shadowBlur = 0;
+      }
       else {
         g.fillStyle = color;
         g.beginPath();
-        g.arc(x, y, sp.size * depth, 0, Math.PI * 2);
+        g.arc(x, y, size, 0, Math.PI * 2);
         g.fill();
       }
     }

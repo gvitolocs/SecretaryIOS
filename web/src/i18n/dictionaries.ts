@@ -6,8 +6,9 @@ import { common } from "./dict/common";
 import { gym } from "./dict/gym";
 import { login } from "./dict/login";
 import { shell } from "./dict/shell";
+import { wardrobe } from "./dict/wardrobe";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { common, shell, chat, login, weight, gym };
+export const dictionaries = { common, shell, chat, login, weight, gym, wardrobe };
 
 export type Dictionaries = typeof dictionaries;

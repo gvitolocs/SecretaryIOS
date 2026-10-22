@@ -196,3 +196,86 @@ export function CloseIcon() {
     </svg>
   );
 }
+
+/** The wardrobe: a coat hanger. */
+export function HangerIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 6.5a2 2 0 1 1 2.8 1.84c-.5.22-.8.7-.8 1.24V10.5" />
+      <path d="M12 10.5 3.6 16.2c-.9.6-.5 1.8.5 1.8h15.8c1 0 1.4-1.2.5-1.8z" />
+    </svg>
+  );
+}
+
+export function PinIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 4h6l-1 5 3 3v1.5H7V12l3-3z" />
+      <path d="M12 13.5V20" />
+    </svg>
+  );
+}
+
+export function CheckIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m5 12.5 4.5 4.5L19 7.5" />
+    </svg>
+  );
+}
+
+/** Wardrobe categories. */
+export function GridIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="6.5" height="6.5" rx="1.6" />
+      <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6" />
+      <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6" />
+      <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6" />
+    </svg>
+  );
+}
+
+export function DressIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9.5 3.5 9 7l-2 3 1.5 1.5L5 20.5h14l-3.5-9L17 10l-2-3-.5-3.5" />
+      <path d="M9 7c1.8 1.2 4.2 1.2 6 0" />
+    </svg>
+  );
+}
+
+export function ShirtIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 4 4 6.5l1.8 4L8 9.6V20h8V9.6l2.2.9 1.8-4L15 4c-.6 1.4-1.7 2.1-3 2.1S9.6 5.4 9 4z" />
+    </svg>
+  );
+}
+
+export function ChefHatIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 14.5c-2.2-.4-3.5-2-3.5-3.9A3.9 3.9 0 0 1 8 6.8a4.4 4.4 0 0 1 8 0 3.9 3.9 0 0 1 4.5 3.8c0 1.9-1.3 3.5-3.5 3.9V19H7z" />
+      <path d="M7 16.5h10" />
+    </svg>
+  );
+}
+
+export function BowIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10.5 12 4 8v8zM13.5 12 20 8v8z" />
+      <rect x="10.5" y="10.3" width="3" height="3.4" rx="1" />
+    </svg>
+  );
+}
+
+export function SparkleIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5c.6 4.2 2.3 5.9 6.5 6.5-4.2.6-5.9 2.3-6.5 6.5-.6-4.2-2.3-5.9-6.5-6.5 4.2-.6 5.9-2.3 6.5-6.5z" />
+      <path d="M18.5 15.5c.3 1.6.9 2.2 2.5 2.5-1.6.3-2.2.9-2.5 2.5-.3-1.6-.9-2.2-2.5-2.5 1.6-.3 2.2-.9 2.5-2.5z" />
+    </svg>
+  );
+}

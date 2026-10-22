@@ -1,6 +1,8 @@
 import { createEffect, createSignal, on, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
+import { openWardrobe } from "../state/wardrobe";
+import { HangerIcon } from "./Icons";
 import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
 import {
   QUALITIES,
@@ -166,6 +168,25 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
             <p id="appearance-quality-hint" class="muted small">
               {t("shell.stageQualityHint")}
             </p>
+            <button
+              type="button"
+              class="settings-link"
+              onClick={() => {
+                props.onClose();
+                openWardrobe();
+              }}
+            >
+              <span class="settings-link-icon" aria-hidden="true">
+                <HangerIcon />
+              </span>
+              <span class="settings-link-text">
+                <span class="settings-link-title">{t("wardrobe.open")}</span>
+                <span class="muted small">{t("wardrobe.openHint")}</span>
+              </span>
+              <span class="settings-link-chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
           </div>
           <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>
             <h3 class="field-label">{t("shell.changePassword")}</h3>
