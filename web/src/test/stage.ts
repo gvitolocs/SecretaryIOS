@@ -121,8 +121,135 @@ export class FakeStage {
   }
 }
 
+/** Fake of attachStudioExtras (studio2): records calls, keeps settings like the real one. */
+export class FakeExtras {
+  private listeners = new Set<(what: string) => void>();
+  settings = {
+    hands: { l: null as string | null, r: null as string | null },
+    poses: [] as { name: string; bones: Record<string, number[]> }[],
+    idlePose: null as string | null,
+    faces: [] as { name: string; morphs: Record<string, number> }[],
+    face: {} as Record<string, number>,
+    props: [] as { id: string; kind: string; x: number; z: number; y: number; rot: number; scale: number }[],
+    roll: 0,
+    filter: { id: "none", strength: 0.8 },
+    gaze: { mode: "camera", x: 0, y: 0 },
+    flick: "off",
+    flickSlots: [],
+    liveStamps: false,
+    danceMove: null as string | null,
+  };
+  editing = false;
+  activePose: string | null = null;
+  morphs = ["smile", "shy", "blink_l"];
+  backgroundImage = false;
+  selected: string | null = null;
+  private emit(what: string) {
+    for (const cb of this.listeners) cb(what);
+  }
+  readonly onChange = vi.fn((cb: (what: string) => void) => {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  });
+  readonly setHand = vi.fn((side: "l" | "r" | "both", shape: string | null) => {
+    if (side !== "r") this.settings.hands.l = shape;
+    if (side !== "l") this.settings.hands.r = shape;
+    this.emit("hands");
+  });
+  readonly editPose = vi.fn((on: boolean) => {
+    this.editing = on;
+    if (on && this.activePose === null) this.activePose = "";
+    this.emit("editing");
+  });
+  readonly savePose = vi.fn((name: string) => {
+    const p = { name, bones: {} };
+    this.settings.poses = [...this.settings.poses.filter((x) => x.name !== name), p];
+    this.activePose = name;
+    this.emit("poses");
+    return p;
+  });
+  readonly applyPose = vi.fn((name: string | null) => {
+    this.activePose = name;
+    this.emit("pose");
+  });
+  readonly deletePose = vi.fn();
+  readonly setIdlePose = vi.fn((name: string | null) => {
+    this.settings.idlePose = name;
+    this.emit("poses");
+  });
+  readonly setMorph = vi.fn((name: string, w: number) => {
+    this.settings.face = { ...this.settings.face, [name]: w };
+    this.emit("face");
+  });
+  readonly resetFace = vi.fn();
+  readonly saveFace = vi.fn((name: string) => {
+    this.settings.faces = [...this.settings.faces, { name, morphs: { ...this.settings.face } }];
+    this.emit("faces");
+    return this.settings.faces.at(-1);
+  });
+  readonly applyFace = vi.fn();
+  readonly deleteFace = vi.fn();
+  readonly loadProps = vi.fn(async () => {});
+  propKinds = ["chair", "cup"];
+  readonly addProp = vi.fn(async (kind: string) => {
+    const p = { id: `p${this.settings.props.length}`, kind, x: 0, z: 0, y: 0, rot: 0, scale: 1 };
+    this.settings.props = [...this.settings.props, p];
+    this.selected = p.id;
+    this.emit("props");
+    return p;
+  });
+  readonly updateProp = vi.fn((id: string, patch: Record<string, number>) => {
+    this.settings.props = this.settings.props.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    this.emit("props");
+  });
+  readonly removeProp = vi.fn((id: string) => {
+    this.settings.props = this.settings.props.filter((p) => p.id !== id);
+    if (this.selected === id) this.selected = null;
+    this.emit("props");
+  });
+  readonly clearProps = vi.fn();
+  readonly selectProp = vi.fn();
+  get selectedProp() {
+    return this.settings.props.find((p) => p.id === this.selected) ?? null;
+  }
+  readonly setRoll = vi.fn((deg: number) => {
+    this.settings.roll = deg;
+    this.emit("roll");
+  });
+  readonly setFilter = vi.fn((f: { id?: string; strength?: number }) => {
+    this.settings.filter = { ...this.settings.filter, ...f };
+    this.emit("filter");
+  });
+  readonly setGaze = vi.fn((g: { mode?: string; x?: number; y?: number }) => {
+    this.settings.gaze = { ...this.settings.gaze, ...g };
+    this.emit("gaze");
+  });
+  readonly setBackgroundImage = vi.fn(async (src: unknown) => {
+    this.backgroundImage = !!src;
+  });
+  readonly setFlick = vi.fn((m: string) => {
+    this.settings.flick = m;
+    this.emit("flick");
+  });
+  readonly setFlickSlots = vi.fn();
+  readonly setLiveStamps = vi.fn((on: boolean) => {
+    this.settings.liveStamps = on;
+    this.emit("liveStamps");
+  });
+  readonly popStamp = vi.fn();
+  readonly fireFlick = vi.fn();
+  readonly setDanceMove = vi.fn((m: string | null) => {
+    this.settings.danceMove = m;
+    this.emit("dance");
+  });
+  readonly snapshot = vi.fn(async () => new Blob(["filtered"], { type: "image/png" }));
+  readonly decorate = vi.fn(async (_photo: Blob, _opts?: unknown) => new Blob(["decorated"], { type: "image/png" }) as Blob | null);
+  readonly dispose = vi.fn();
+}
+
 export const fake = {
   stages: [] as FakeStage[],
+  extras: [] as FakeExtras[],
   /** Make createLucinaStage reject (no WebGL). */
   failStage: false,
   listenSupported: true,
@@ -133,6 +260,7 @@ export const fake = {
 
 export function resetFakeStage(): void {
   fake.stages = [];
+  fake.extras = [];
   fake.failStage = false;
   fake.listenSupported = true;
   fake.voiceOptions = [];
@@ -162,6 +290,11 @@ const module = {
     };
   },
   isVoiceError: (e: unknown, code?: VoiceErrorCode) => e instanceof FakeVoiceError && (!code || e.code === code),
+  attachStudioExtras: (_stage: unknown, _opts?: unknown) => {
+    const x = new FakeExtras();
+    fake.extras.push(x);
+    return x;
+  },
 } as unknown as StageModule;
 
 export const loadStage = vi.fn(async (): Promise<StageModule> => module);

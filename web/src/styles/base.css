@@ -2403,6 +2403,83 @@ select.text-input option {
 .studio-swatch[data-color="#ffd6e5"] { background: #ffd6e5; }
 .studio-swatch[data-color="#cfe8ff"] { background: #cfe8ff; }
 
+/* Studio extras: rows of chips, sliders and small forms (hands, pose, props, camera, fun). */
+.stage-studio-chips--tall {
+  max-height: min(42vh, 260px);
+}
+
+/* The sheet never grows past the stage (the compact mobile strip is short): the chips scroll. */
+.stage-studio {
+  max-height: calc(100% - 20px);
+}
+
+.stage-studio-chips {
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+.studio-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.studio-sliders {
+  gap: 4px 14px;
+}
+
+.studio-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  min-height: 32px;
+}
+
+.studio-range span {
+  min-width: 52px;
+  opacity: 0.85;
+}
+
+.studio-range input[type="range"] {
+  width: 120px;
+  accent-color: #ff6f9f;
+  touch-action: pan-x;
+}
+
+.studio-input {
+  flex: 1 1 140px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgb(160 200 255 / 0.22);
+  background: rgb(255 255 255 / 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+}
+
+.studio-tag {
+  font-size: var(--fs-xs);
+  opacity: 0.75;
+  padding: 0 4px;
+}
+
+.studio-chip .studio-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.18);
+  opacity: 1;
+}
+
+.studio-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Photo mode: only her (and the shutter) on screen. */
 .stage--photo .stage-hud,
 .stage--photo .stage-controls,
