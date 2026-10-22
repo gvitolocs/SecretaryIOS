@@ -9,7 +9,7 @@ struct StatusDot: View {
         Circle()
             .fill(color)
             .frame(width: size, height: size)
-            .opacity(health.status == .online ? 0.45 : 1)
+            .opacity(isOnline ? 0.45 : 1)
             .padding(8)
             .contentShape(Rectangle())
             .animation(.easeInOut(duration: 0.3), value: health.status)
@@ -20,7 +20,12 @@ struct StatusDot: View {
     }
 
     /// Small and quiet while everything works; a little larger when something needs attention.
-    private var size: CGFloat { health.status == .online || health.status == .unknown ? 6 : 8 }
+    private var size: CGFloat { isOnline || health.status == .unknown ? 6 : 8 }
+
+    private var isOnline: Bool {
+        if case .online = health.status { return true }
+        return false
+    }
 
     private var color: Color {
         switch health.status {
