@@ -120,22 +120,11 @@ others is refused). It is read per call (rotation needs no restart), held as a `
 prints `msy_…<last 4>`, and sent only as `Authorization: Bearer` to `MESHY_API_BASE`. Result
 files are downloaded from Meshy's asset hosts (`https://*.meshy.ai`) without the key.
 
-`crates/lucina-secrets` (branch `lucina-secrets`) has not landed in `lucina-rs` yet. The
-`KeySource` trait is async so it can switch to a secret reference:
-
-```rust
-struct InfisicalKey { store: Arc<lucina_secrets::SecretStore>, reference: lucina_secrets::SecretRef }
-
-#[async_trait::async_trait]
-impl lucina_meshy::key::KeySource for InfisicalKey {
-    async fn api_key(&self) -> Result<Secret, KeyError> {
-        let v = self.store.resolve(&self.reference, "meshy").await
-            .map_err(|e| KeyError::Unreadable(e.to_string()))?;
-        Ok(Secret::new(v.expose_secret()))
-    }
-    fn describe(&self) -> String { format!("secret ref {}", self.reference) }
-}
-```
+With the secrets skill (`crates/lucina-secrets`, `LUCINA_SECRETS_CONFIG`), map the setting
+`meshy.api_key` in `secrets.toml` to a reference such as
+`secret://lucina/prod/lucina#MESHY_API_KEY`: the server then uses `SecretRefKey` (resolved
+per call through Infisical, audited, never written to disk, redacted everywhere) instead of
+the file. Without that mapping it reads `MESHY_API_KEY_FILE`.
 
 ## Owner steps (Meshy account and key)
 
@@ -144,9 +133,11 @@ impl lucina_meshy::key::KeySource for InfisicalKey {
 2. Developer Platform → **API Keys** (https://www.meshy.ai/developers/keys) → *Create API key*,
    name it `lucina-nezopt`, copy the `msy_…` value. Optionally restrict it to nezopt's public
    IP (refused calls answer `403 ip_not_authorized` and cost nothing).
-3. On nezopt, store it without it ever touching chat or shell history:
-   `install -m 600 /dev/null ~/.config/lucina-rs/meshy.key && nano ~/.config/lucina-rs/meshy.key`
-   (paste, save). Check: `stat -c %a ~/.config/lucina-rs/meshy.key` → `600`.
+3. Store it without it ever touching chat or shell history, either
+   - in Infisical as `MESHY_API_KEY` in Lucina's folder, and in `secrets.toml`:
+     `meshy.api_key = "secret://lucina/prod/lucina#MESHY_API_KEY"` (preferred), or
+   - on nezopt: `install -m 600 /dev/null ~/.config/lucina-rs/meshy.key && nano ~/.config/lucina-rs/meshy.key`
+     (paste, save; `stat -c %a` must print `600`) and `MESHY_API_KEY_FILE` below.
 4. Add to `~/.config/lucina-rs/mode.env` (Rust Lucina):
    ```
    LUCINA_MESHY=true
@@ -225,9 +216,11 @@ Meshy's rig and clip library could feed Lucina's own clip library (`~/scratch/lu
 - `meshy-mock --assets <fixtures>` plus `lucina fake-deepseek` for end-to-end runs; the
   transcript of 2026-10-22 is in the session report.
 
-## Merging
+## Rich replies
 
-- **lucina-rich** (`crate::rich`): its `normalize_block` adds
-  `"model3d" => crate::model3d::normalize(raw)`; its Meta already has `format`, `blocks`,
-  `actions` (same names and types as here).
-- **rich-chat** (web): `RichReply.tsx` renders `model3d` blocks with `Model3dViewer`.
+`crate::rich::normalize_block` validates `model3d` blocks with `crate::model3d::normalize`
+and the plain-text fallback uses `crate::model3d::plain_text`. A pending Meshy plan is a
+pending confirmation for the composer (`action: "meshy"`, `[meshy plan awaiting
+confirmation]`), so with `LUCINA_RICH_REPLIES=true` it gets the Sì / No / Modifica buttons;
+without rich replies Lucina sends the v1 Sì / No buttons herself. The web branch `rich-chat`
+renders `model3d` blocks with `Model3dViewer` (branch `models-gallery`).
