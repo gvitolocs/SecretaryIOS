@@ -53,6 +53,7 @@ import { regionOfHit, type BodyMetrics, type Region, type Side } from './interac
 import { BLOCKED_CLIPS, ReactionPlanner, type Reaction } from './interact/reactions';
 import { Studio, type BackgroundId, type LightingId } from './interact/studio';
 import { GyroParallax } from './interact/gyro';
+import { FaceDriver, type FaceDrive } from './facedrive';
 import { playBeat, playTrack, type MusicHandle } from './interact/music';
 import { PhysicsRig, type PhysicsHandle, type PhysicsVariantSelection } from './physics/rig';
 
@@ -257,6 +258,13 @@ export interface LucinaStage {
   readonly gyro: boolean;
   /** Spring-bone physics (null without a `physics` block in the manifest, or when turned off). */
   readonly physics?: PhysicsHandle | null;
+  /**
+   * Face tracking (F1): one sample of the owner's tracked face (from `FaceSolver`), or `null` to stop.
+   * She eases into it, and back to her own motion when it stops or no sample came for half a second.
+   */
+  setFaceDrive(drive: FaceDrive | null): void;
+  /** Face samples are arriving. */
+  readonly faceDriven: boolean;
   /** Escape hatches for debugging. */
   readonly three: { renderer: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; model: Object3D };
 }
@@ -551,6 +559,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   // ---------- Studio (backgrounds, light, dance, gyro) ----------
   let studio: Studio | null = null;
   const gyro = new GyroParallax();
+  const face = new FaceDriver();
   let music: MusicHandle | null = null;
   let dancing = false;
 
@@ -1080,6 +1089,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     else lip = silentLip.silence(dt);
     updateLook();
     const f = motion.apply(animator.update(dt, machine.state, lip.weights, lip.stress), dt, machine.state, reducedMotion, !!player);
+    face.update(dt);
+    face.apply(f);
     if (player) {
       // clips underneath (frozen in reduced motion: a still idle pose, never the rest pose)
       rig.restoreBones();
@@ -1182,6 +1193,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     studio?.dispose();
     studio = null;
     gyro.dispose();
+    face.reset();
     music?.stop();
     music = null;
     interaction = null;
@@ -1375,6 +1387,13 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     },
     get gyro() {
       return gyro.enabled;
+    },
+    setFaceDrive(drive) {
+      face.set(drive);
+      kick();
+    },
+    get faceDriven() {
+      return face.live;
     },
   };
   return stage;

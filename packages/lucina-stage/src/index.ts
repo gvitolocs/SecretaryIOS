@@ -3,6 +3,7 @@ export { gltfExtensions, loadModel } from './loader';
 export type { LoadedModel, LoadOptions } from './loader';
 export type { LucinaStage, LucinaStageOptions, SpeakOptions, StageInfo, TapEvent, TouchEvent } from './stage';
 export * from './interact';
+export * from './facedrive';
 export {
   createVoice,
   getSpeechRecognition,

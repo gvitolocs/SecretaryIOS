@@ -1025,7 +1025,9 @@ these files, and they are never written to the web build.
 - `name`: `[a-z0-9][a-z0-9._-]*`, at most 128 bytes, no `..`, no slashes.
 - Extensions and content types: `.glb` `model/gltf-binary`, `.json`
   `application/json`, `.png` `image/png`, `.webp` `image/webp`, `.mp3`
-  `audio/mpeg`, `.vmd` `application/octet-stream`. Anything else is `404`.
+  `audio/mpeg`, `.vmd` `application/octet-stream`, `.usdz` `model/vnd.usdz+zip`
+  (the iOS AR model, `lucina.usdz` with its clip table `lucina-ar.json`, built by
+  `tools/lucina-usdz/run.sh`). Anything else is `404`.
 - `200` with `Cache-Control: private, max-age=86400`, `ETag`,
   `Last-Modified`. `If-None-Match` → `304`. `Range: bytes=…` → `206`.
 - `404 not_found` for a missing or refused name; `401 unauthorized` without
