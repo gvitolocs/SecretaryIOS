@@ -2,14 +2,12 @@
 //
 // Chat triggers:
 //   "inventario" -> the owner's 2026-10-22 inventory, as DeepSeek formats it now
-//                   (mock/rich-inventario.json; `before` is the original text wall)
+//                   (mock/rich-inventario.mjs; `before` is the original text wall)
 //   "calendario" / "dentista" -> a calendar event waiting for Sì / No / Modifica
 //   "widget" / "rich"         -> one of every widget type
 // Returns null for anything else (the plain mock replies stay as they were).
 
-import { readFileSync } from "node:fs";
-
-const INVENTARIO = JSON.parse(readFileSync(new URL("./rich-inventario.json", import.meta.url), "utf8"));
+import INVENTARIO from "./rich-inventario.mjs";
 
 export const INVENTARIO_BEFORE = INVENTARIO.before;
 export const INVENTARIO_QUESTION = INVENTARIO.question;

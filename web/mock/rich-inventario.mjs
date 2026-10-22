@@ -1,4 +1,6 @@
-{
+// The owner's 2026-10-22 "inventario" question: `before` is her original text wall,
+// `after` the same answer as DeepSeek formats it now (Lucina tests/fixtures/inventario-rich-v1.json).
+export default {
   "question": "Mi serve SOLO un inventario fattuale e breve di ciò che la tua app/backend supporta ORA. Distingui presente da ipotesi.",
   "before": "**Inventario fattuale — cosa supporto ORA**\n\n**Canali**\n- Telegram (chat + foto con vision) e Discord (chat + admin). Ora Discord risulta offline dalle 12:08 — fatto, non ipotesi.\n- Nessun altro canale push confermato (no email: Gmail rimosso il 20/09/2026; no SMS/app push).\n\n**Trigger e background jobs**\n- Reminder programmati (`schedule_reminder`, `list_reminders`): l'unico trigger temporale che so essere attivo end-to-end.\n- Il resto parte su richiesta: `graph_task`, `spreadsheet_update_task`, `generate_image`, `cursor_task` (DeepSeek Harness), azioni Poko su peer1, `oracle_monitor_task` (disabilitato su nezopt).\n- Non ho conferma di un loop autonomo che mi faccia scrivere per iniziativa mia (morning brief, check periodici): allo stato è **ipotesi**, non capacità presente. Non ho visibilità diretta sul crontab/scheduler del host oltre ai reminder.\n\n**Memoria**\n- Honcho, workspace `hermes-peer1`, con ricerca vettoriale. Persistente tra sessioni. È l'unica memoria che uso; non assumo fatti fuori da lì o da un tool result live.\n\n**Modelli/runtime**\n- Gemma su CPU come default chat; Qwen 3.6 35B locale su GPU quando serve lavoro pesante/Harness. Non tengo Qwen residente.\n\n**Approvazioni**\n- Non esiste un gate di approvazione formale che io possa confermare: eseguo un'azione quando la richiesta arriva, e per le azioni distruttive mi fermo a chiedere. Un flusso \"propongo → tu approvi → eseguo\" con stato persistente è **da costruire**, non presente.\n\n**Attività persistenti**\n- Sessioni Harness e reminder sì; non ho code di task durevoli con retry/stato supervisionato lato mio.\n\n**Limiti**\n- Nessuna email. Monitor Oracle spento. Discord offline ora. Nessuna capacità di push fuori da Telegram/Discord. Niente autonomia di iniziativa confermata.\n\nSe vuoi, il prossimo passo concreto è decidere *quale* di questi buchi colmare per primo — il loop proattivo o il gate di approvazione — e progettarlo sul serio.\n\n—\n💡 Posso anche:\n• Promemoria Telegram — es. «avvisami alle 21:30 di …»",
   "after": {
@@ -93,4 +95,4 @@
       }
     ]
   }
-}
+};
