@@ -328,12 +328,16 @@ impl Tool for TasksTool {
                     "daily_goal": v["goal"]["daily_goal"], "completed_today": v["goal"]["completed_today"],
                 });
                 match v["sync"]["status"].as_str() {
-                    Some("disconnected") => out["note"] = json!(
+                    Some("disconnected") => {
+                        out["note"] = json!(
                         "Todoist is not connected; Giuseppe can connect it in Secretary → Links."
-                    ),
-                    Some("reconnect") => out["note"] = json!(
+                    )
+                    }
+                    Some("reconnect") => {
+                        out["note"] = json!(
                         "Todoist needs reconnecting in Secretary → Links; changes wait until then."
-                    ),
+                    )
+                    }
                     _ => {}
                 }
                 Ok(out)

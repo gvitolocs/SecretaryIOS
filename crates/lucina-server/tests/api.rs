@@ -699,9 +699,15 @@ async fn shopping_routes() {
         .await;
     assert_eq!(s, 201, "{b}");
     let item = b["data"]["item"].clone();
+    // Item objects (Node 15d9629): `product` is the object's name in the
+    // owner's language (default it), `itemId` the catalog id.
     assert_eq!(
-        (item["product"].as_str(), item["status"].as_str()),
-        (Some("milk"), Some("needed"))
+        (
+            item["product"].as_str(),
+            item["itemId"].as_str(),
+            item["status"].as_str()
+        ),
+        (Some("Latte"), Some("milk"), Some("needed"))
     );
     let id = item["id"].as_str().unwrap().to_owned();
     let (s, b, _) = h
@@ -714,7 +720,7 @@ async fn shopping_routes() {
     assert_eq!(s, 200);
     assert_eq!(
         b["data"]["item"],
-        json!({"id": id, "product": "latte", "status": "purchased"})
+        json!({"id": id, "product": "Latte", "name": "Latte", "itemId": "milk", "status": "purchased"})
     );
     assert_eq!(
         h.call(
