@@ -84,11 +84,40 @@ final class ShopOpsTests: XCTestCase {
         XCTAssertEqual(result.items.first { $0.id == "b" }?.updatedBy, "ios")
     }
 
+    private static let banana = CatalogItem(id: "banana", name: "Banane", names: [:], aliases: [], section: "produce", icon: "🍌")
+
     func testNewRowUsesTheClientIdAndCatalogHints() {
-        let result = ShopOps.apply([], [ShopOp.add(itemId: "client-1", catalogId: "banana", name: "Banane")], context: ctx())
+        let result = ShopOps.apply([], [ShopOp.add(object: Self.banana, rowId: "client-1", name: "Banane")], context: ctx())
         XCTAssertEqual(result.items.first?.id, "client-1")
+        XCTAssertEqual(result.items.first?.objectId, "banana")
+        XCTAssertEqual(result.items.first?.kind, "catalog")
         XCTAssertEqual(result.items.first?.icon, "🍌")
         XCTAssertEqual(result.items.first?.section, "produce")
+    }
+
+    func testItemObjectsMatchInAnyLanguageAndEditEverywhere() {
+        let milk = ShopItem(id: "m", objectId: "milk", kind: "catalog", names: ["it": "Latte", "en": "Milk", "da": "Mælk"],
+                            catalogId: "milk", name: "Latte", status: .recent, position: 1)
+        let soap = ShopItem(id: "s", objectId: "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A", kind: "custom",
+                            names: ["it": "Detersivo piatti", "en": "Dish soap", "da": "Opvaskemiddel"], name: "Detersivo piatti", position: 2)
+        let added = ShopOps.apply([milk, soap], [ShopOp.add(text: "MÆLK", rowId: "r1"), ShopOp.add(text: "dish soap", rowId: "r2")], context: ctx())
+        XCTAssertEqual(added.items.count, 2, "one active row per object")
+        XCTAssertEqual(added.items.first { $0.id == "m" }?.status, .needed, "recent comes back")
+        XCTAssertEqual(milk.displayName("da"), "Mælk")
+
+        var context = ctx()
+        context.lang = "en"
+        let edited = ShopOps.apply([soap], [ShopOp.editItem("u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A", names: ["en": "Dishwashing liquid"], icon: "🫧")],
+                                   context: context).items[0]
+        XCTAssertEqual(edited.name, "Dishwashing liquid")
+        XCTAssertEqual(edited.icon, "🫧")
+        XCTAssertEqual(edited.names?["it"], "Detersivo piatti")
+
+        // An outbox from before item objects: the add's row id was a UUID in itemId.
+        let rowUUID = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+        let legacy = ShopOps.apply([], [ShopOp(opId: "l", kind: .add, itemId: rowUUID, catalogId: "banana", name: "Banane")], context: ctx())
+        XCTAssertEqual(legacy.items.first?.id, rowUUID)
+        XCTAssertEqual(legacy.items.first?.objectId, "banana")
     }
 
     func testRemovedStaysRemovedAndDuplicatesAreSkipped() {
@@ -100,7 +129,7 @@ final class ShopOpsTests: XCTestCase {
         XCTAssertEqual(again.duplicates, ["r"])
         XCTAssertEqual(again.items.first { $0.id == "a" }?.status, .removed, "need can't revive a removed row")
         // Re-adding the name makes a new row with a fresh id.
-        let readd = ShopOps.apply(again.items, [ShopOp.add(itemId: "a", catalogId: "banana", name: "Banane")], context: ctx(["fresh"]))
+        let readd = ShopOps.apply(again.items, [ShopOp.add(object: Self.banana, rowId: "a", name: "Banane")], context: ctx(["fresh"]))
         XCTAssertEqual(readd.items.filter(\.isActive).first { $0.catalogId == "banana" }?.id, "fresh")
     }
 
@@ -133,8 +162,16 @@ final class ShopOpsTests: XCTestCase {
         let clear = try json(ShopOp(opId: "1", kind: .setQuantity, itemId: "a", quantity: nil))
         XCTAssertEqual(clear["type"] as? String, "set_quantity")
         XCTAssertTrue(clear["quantity"] is NSNull)
-        let add = try json(.add(itemId: "c", catalogId: nil, name: "Pane", spec: ""))
-        XCTAssertEqual(Set(add.keys), ["opId", "type", "itemId", "name"])
+        let add = try json(.add(text: "Pane", rowId: "c"))
+        XCTAssertEqual(Set(add.keys), ["opId", "type", "rowId", "text", "name"])
+        let known = try json(.add(object: Self.banana, rowId: "c", name: "Banane"))
+        XCTAssertEqual(known["itemId"] as? String, "banana")
+        XCTAssertEqual(known["catalogId"] as? String, "banana", "legacy field for servers before item objects")
+        let edit = try json(.editItem("u_1", names: ["en": "Dish soap"], icon: ""))
+        XCTAssertEqual(edit["type"] as? String, "edit_item")
+        XCTAssertEqual((edit["names"] as? [String: String])?["en"], "Dish soap")
+        XCTAssertEqual(edit["icon"] as? String, "")
+        XCTAssertEqual(try JSONDecoder().decode(ShopOp.self, from: JSONEncoder().encode(ShopOp.editItem("u_1", names: ["da": "x"]))).names, ["da": "x"])
         let reorder = try json(ShopOp(opId: "2", kind: .reorder, itemId: "a", position: 3))
         XCTAssertEqual(reorder["position"] as? Int, 3)
         // Round trip (the outbox is persisted in this shape).
@@ -149,7 +186,16 @@ final class ShopOpsTests: XCTestCase {
                   {"id":2,"name":"Odd","status":"archived"},{"name":"no id"}]}
         """.utf8))
         let state = ListState(json: json, fallbackId: "default")
+        XCTAssertEqual(state.items.first?.objectId, "banana", "rows from before item objects: the catalog id")
         XCTAssertEqual(state.revision, 42)
+        let objectJSON = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"id":"r","itemId":"u_1","catalogId":null,"name":"Dish soap","typedName":"detersivo piatti","status":"needed","item":{"id":"u_1","kind":"custom","names":{"it":"Detersivo piatti","en":"Dish soap"},"needsTranslation":true}}"#.utf8))
+        let row = try XCTUnwrap(ShopItem(json: objectJSON, index: 0))
+        XCTAssertEqual(row.objectId, "u_1")
+        XCTAssertTrue(row.isCustom)
+        XCTAssertEqual(row.typedName, "detersivo piatti")
+        XCTAssertEqual(row.needsTranslation, true)
+        XCTAssertEqual(row.displayName("it"), "Detersivo piatti")
+        XCTAssertEqual(row.customObject(lang: "en")?.name, "Dish soap")
         XCTAssertEqual(state.list.theme, .home)
         XCTAssertEqual(state.items.map(\.id), ["1", "2"])
         XCTAssertEqual(state.items[1].status, .removed, "unknown statuses are treated like removed")
@@ -190,6 +236,7 @@ final class ShoppingV2StoreTests: XCTestCase {
             guard online else { return .init(error: URLError(.notConnectedToInternet)) }
             switch request.url?.path {
             case "/v1/shopping/catalog": return .init(body: #"{"version":1,"lang":"it","sections":[],"items":[]}"#, headers: ["ETag": "\"v1\""])
+            case "/v1/shopping/items": return .init(body: "[]")
             case "/v1/shopping/lists": return .init(body: #"[{"id":"default","name":"Casa","theme":"home","needed":1,"recent":0}]"#)
             case "/v1/shopping/lists/default": return .init(body: Self.state)
             default:
@@ -231,6 +278,7 @@ final class ShoppingV2StoreTests: XCTestCase {
         StubURLProtocol.handler = { request in
             switch request.url?.path {
             case "/v1/shopping/catalog": return .init(body: #"{"version":1,"lang":"it","sections":[],"items":[]}"#)
+            case "/v1/shopping/items": return .init(body: "[]")
             case "/v1/shopping/lists": return .init(body: #"[{"id":"default","name":"Casa","theme":"home"}]"#)
             case "/v1/shopping/lists/default":
                 return .init(body: opsCalls == 0 ? Self.state : #"{"list":{"id":"default","name":"Casa","theme":"home"},"revision":5,"items":[{"id":"a","name":"Pane","status":"needed","position":1},{"id":"z","name":"Latte","status":"needed","position":2}]}"#)
@@ -315,5 +363,33 @@ final class ShoppingV2StoreTests: XCTestCase {
         XCTAssertEqual(store.icon(for: byId["e"]!), "🍼", "stored values win")
         XCTAssertEqual(store.section(for: byId["e"]!), "other-shelf")
         XCTAssertNil(byId["a"]!.catalogId, "the row itself is not rewritten")
+    }
+
+    func testNamesFollowTheUILanguageAndCustomObjectsAreSearchable() async throws {
+        StubURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/v1/shopping/catalog":
+                return .init(body: #"{"version":1,"lang":"en","sections":[],"items":[{"id":"milk","name":"Milk","names":{"it":"Latte","en":"Milk","da":"Mælk"},"aliases":[],"section":"dairy","icon":"🥛"}]}"#)
+            case "/v1/shopping/items":
+                return .init(body: #"[{"id":"u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A","kind":"custom","names":{"it":"Spugne","en":"Sponges","da":"Svampe"},"aliases":["spugne"],"section":"household","icon":"🧽"}]"#)
+            case "/v1/shopping/lists": return .init(body: #"[{"id":"default","name":"Casa","theme":"home"}]"#)
+            case "/v1/shopping/lists/default":
+                return .init(body: #"{"list":{"id":"default","name":"Casa","theme":"home"},"revision":1,"items":[{"id":"a","itemId":"milk","catalogId":"milk","name":"Latte","typedName":"latte","status":"needed","position":1,"item":{"id":"milk","kind":"catalog","names":{"it":"Latte","en":"Milk","da":"Mælk"}}}]}"#)
+            default: return .init(error: URLError(.notConnectedToInternet))
+            }
+        }
+        let store = makeStore()
+        await store.load(lang: "en")
+        XCTAssertEqual(store.needed.first?.name, "Milk", "the object's name in the UI language")
+        XCTAssertTrue(StubURLProtocol.requests.contains { $0.url?.path == "/v1/shopping/lists/default" && $0.url?.query == "lang=en" })
+        XCTAssertEqual(store.search.search("svampe").first?.id, "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A", "custom objects are searchable in any language")
+        store.add("spugne")
+        let added = try XCTUnwrap(store.needed.first { $0.objectId == "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A" })
+        XCTAssertEqual(added.name, "Sponges")
+        XCTAssertEqual(store.outbox.last?.op.itemId, "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A")
+        store.add("MILK")
+        XCTAssertEqual(store.needed.filter { $0.objectKey == "milk" }.count, 1, "no duplicate row for the same object")
+        await store.loadCatalog(lang: "da")
+        XCTAssertEqual(store.needed.first { $0.id == "a" }?.name, "Mælk")
     }
 }

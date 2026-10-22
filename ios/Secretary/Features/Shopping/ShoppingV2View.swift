@@ -218,7 +218,7 @@ struct ShoppingV2View: View {
 
     /// Catalog items not on the list right now, by section (tap to add).
     @ViewBuilder private var catalogSections: some View {
-        let active = Set((store.current?.items ?? []).filter { $0.status == .needed }.compactMap(\.catalogId))
+        let active = Set((store.current?.items ?? []).filter { $0.status == .needed }.compactMap(\.objectKey))
         ForEach(store.catalog.sections) { section in
             let items = store.catalog.items.filter { $0.section == section.id && !active.contains($0.id) }
             if !items.isEmpty {
@@ -378,7 +378,7 @@ private struct SearchSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Bring.gap) {
                     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let needed = Set(store.needed.compactMap(\.catalogId))
+                    let needed = Set(store.needed.compactMap(\.objectKey))
                     LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                         if !trimmed.isEmpty, store.search.exactMatch(trimmed) == nil {
                             BringTile(icon: "✏️", name: trimmed, detail: "Add", color: Bring.teal)
@@ -442,7 +442,7 @@ private struct SearchSheet: View {
     }
 
     private var results: [CatalogItem] {
-        let used = Set((store.current?.items ?? []).compactMap(\.catalogId))
+        let used = Set((store.current?.items ?? []).compactMap(\.objectKey))
         return store.search.search(query, limit: 24) { used.contains($0) ? 1 : 0 }
     }
 
@@ -526,6 +526,9 @@ private struct ItemDetail: View {
     @Environment(\.dismiss) private var dismiss
     let itemId: String
     @State private var name = ""
+    /// A custom object's names (it, en, da) and icon, edited for every list.
+    @State private var names: [String: String] = [:]
+    @State private var icon = ""
     @State private var spec = ""
     @State private var quantity: Double = 0
     @State private var unit = "pz"
@@ -540,11 +543,35 @@ private struct ItemDetail: View {
         NavigationStack {
             Form {
                 if let item {
-                    Section {
-                        HStack(spacing: 12) {
-                            Text(store.icon(for: item)).font(.system(size: 44)).accessibilityHidden(true)
-                            TextField("Name", text: $name).font(.title3.weight(.semibold))
-                                .onSubmit { store.rename(item, name) }
+                    if item.isCustom {
+                        Section {
+                            HStack(spacing: 12) {
+                                Text(icon.isEmpty ? store.icon(for: item) : icon).font(.system(size: 44)).accessibilityHidden(true)
+                                Text(names[store.search.lang] ?? item.name).font(.title3.weight(.semibold))
+                            }
+                            ForEach(ShoppingLanguage.all, id: \.self) { lang in
+                                LabeledContent(ShoppingLanguage.title(lang)) {
+                                    TextField(ShoppingLanguage.title(lang), text: Binding(get: { names[lang] ?? "" }, set: { names[lang] = $0 }))
+                                        .multilineTextAlignment(.trailing)
+                                        .accessibilityIdentifier("name-\(lang)")
+                                }
+                            }
+                            LabeledContent("Icon") {
+                                TextField("🛒", text: $icon).multilineTextAlignment(.trailing).accessibilityIdentifier("iconField")
+                            }
+                        } header: {
+                            Text("Names")
+                        } footer: {
+                            Text(item.needsTranslation == true ? "Names to check: kept as typed. They apply to this item on every list."
+                                                               : "They apply to this item on every list.")
+                        }
+                    } else {
+                        Section {
+                            HStack(spacing: 12) {
+                                Text(store.icon(for: item)).font(.system(size: 44)).accessibilityHidden(true)
+                                TextField("Name", text: $name).font(.title3.weight(.semibold))
+                                    .onSubmit { store.rename(item, name) }
+                            }
                         }
                     }
                     Section("Details") {
@@ -631,6 +658,8 @@ private struct ItemDetail: View {
     private func load() {
         guard let item else { return }
         name = item.name
+        names = Dictionary(uniqueKeysWithValues: ShoppingLanguage.all.map { ($0, item.names?[$0] ?? item.name) })
+        icon = item.icon ?? ""
         spec = item.spec
         quantity = item.quantity ?? 0
         unit = item.unit ?? "pz"
@@ -638,7 +667,11 @@ private struct ItemDetail: View {
 
     private func save() {
         guard let item else { return }
-        store.rename(item, name)
+        if item.isCustom {
+            store.editObject(item, names: names, icon: icon)
+        } else {
+            store.rename(item, name)
+        }
         store.setSpec(item, spec)
         store.setQuantity(item, quantity > 0 ? quantity : nil, unit: unit)
     }

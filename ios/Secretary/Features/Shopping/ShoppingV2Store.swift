@@ -27,17 +27,25 @@ struct ShoppingV2Client: Sendable {
         return ShopList.lists(from: json)
     }
 
-    func state(_ listId: String) async throws -> ListState {
-        let json: JSONValue = try await client.get("/v1/shopping/lists/\(Self.escape(listId))")
+    /// `lang`: item names come back in the UI language.
+    func state(_ listId: String, lang: String? = nil) async throws -> ListState {
+        let json: JSONValue = try await client.get("/v1/shopping/lists/\(Self.escape(listId))",
+                                                   query: lang.map { [URLQueryItem(name: "lang", value: $0)] } ?? [])
         return ListState(json: json, fallbackId: listId)
     }
 
-    func ops(_ listId: String, expectedRevision: Int?, ops: [ShopOp]) async throws -> OpsResponse {
-        struct Body: Encodable { let expectedRevision: Int?; let ops: [ShopOp] }
+    func ops(_ listId: String, expectedRevision: Int?, ops: [ShopOp], lang: String? = nil) async throws -> OpsResponse {
+        struct Body: Encodable { let expectedRevision: Int?; let lang: String?; let ops: [ShopOp] }
         let json: JSONValue = try await client.send("POST", "/v1/shopping/lists/\(Self.escape(listId))/ops",
-                                                    body: Body(expectedRevision: expectedRevision, ops: ops),
+                                                    body: Body(expectedRevision: expectedRevision, lang: lang, ops: ops),
                                                     idempotent: true, headers: Self.headers)
         return OpsResponse(json: json)
+    }
+
+    /// The owner's custom item objects (`GET /v1/shopping/items`), as search entries.
+    func customItems(lang: String) async throws -> [CatalogItem] {
+        let json: JSONValue = try await client.get("/v1/shopping/items")
+        return (json.arrayValue ?? json["items"]?.arrayValue ?? []).compactMap { CatalogItem.custom(json: $0, lang: lang) }
     }
 
     func createList(name: String, theme: ListTheme) async throws -> ShopList? {
@@ -90,6 +98,8 @@ final class ShoppingV2Store {
     private(set) var server: [String: ListState] = [:]
     private(set) var outbox: [OutboxEntry] = []
     private(set) var catalog: ShoppingCatalog = .empty
+    /// The owner's custom item objects (searchable next to the catalog).
+    private(set) var customObjects: [CatalogItem] = []
     private(set) var isLoading = false
     private(set) var isSyncing = false
     /// The outbox could not be delivered (offline); shown as "waiting to sync".
@@ -124,11 +134,17 @@ final class ShoppingV2Store {
 
     func pending(_ listId: String) -> [ShopOp] { outbox.filter { $0.listId == listId }.map(\.op) }
 
-    /// The server state with the pending ops applied.
+    /// The server state with the pending ops applied; every row named in the UI language.
     func display(_ listId: String) -> ListState? {
         guard var state = server[listId] else { return nil }
         let ops = pending(listId)
         if !ops.isEmpty { state.items = ShopOps.apply(state.items, ops, context: context(listId)).items }
+        let lang = search.lang
+        state.items = state.items.map { item in
+            var shown = item
+            shown.name = item.displayName(lang)
+            return shown
+        }
         return state
     }
 
@@ -142,9 +158,9 @@ final class ShoppingV2Store {
         (current?.items ?? []).filter { $0.status == .recent }.sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
     }
 
-    /// The catalog item behind a row: its catalog id, else its name resolved like the server does.
+    /// The catalog item (or custom object) behind a row: its object id, else its name resolved like the server does.
     func catalogItem(for item: ShopItem) -> CatalogItem? {
-        if let id = item.catalogId { return catalog.item(id) }
+        if let id = item.objectKey { return catalog.item(id) ?? search.item(id) }
         // Reading `catalog` keeps views observing it; `search` is rebuilt whenever it changes.
         guard !catalog.items.isEmpty else { return nil }
         return search.resolve(item.name)?.item
@@ -162,8 +178,27 @@ final class ShoppingV2Store {
     private func context(_ listId: String) -> ShopOps.Context {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let catalog = catalog
-        return ShopOps.Context(listId: listId, now: formatter.string(from: now()), catalog: { catalog.item($0) })
+        let search = search
+        return ShopOps.Context(listId: listId, now: formatter.string(from: now()), catalog: { search.item($0) },
+                               resolve: { search.exactMatch($0)?.id }, lang: search.lang)
+    }
+
+    /// Remember custom objects seen on rows or listed by the server, and rebuild search.
+    private func mergeCustom(_ objects: [CatalogItem]) {
+        guard !objects.isEmpty else { return }
+        var byId = Dictionary(customObjects.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var changed = false
+        for object in objects where byId[object.id] != object {
+            byId[object.id] = object
+            changed = true
+        }
+        guard changed else { return }
+        customObjects = byId.values.sorted { $0.id < $1.id }
+        search = CatalogSearch(catalog: catalog, lang: search.lang, custom: customObjects)
+    }
+
+    private func mergeCustom(fromRows items: [ShopItem]) {
+        mergeCustom(items.compactMap { $0.customObject(lang: search.lang) })
     }
 
     // MARK: - Loading
@@ -172,6 +207,7 @@ final class ShoppingV2Store {
         isLoading = server[currentListId] == nil
         defer { isLoading = false }
         await loadCatalog(lang: lang)
+        if let objects = try? await api().customItems(lang: lang) { mergeCustom(objects) }
         do {
             let lists = try await api().lists()
             availability = .available
@@ -200,15 +236,17 @@ final class ShoppingV2Store {
                 catalogLang = lang
             }
             catalogETag = result.etag
-            search = CatalogSearch(catalog: catalog, lang: lang)
+            search = CatalogSearch(catalog: catalog, lang: lang, custom: customObjects)
         } catch {
             // The cached catalog (if any) keeps working.
-            search = CatalogSearch(catalog: catalog, lang: lang)
+            search = CatalogSearch(catalog: catalog, lang: lang, custom: customObjects)
         }
     }
 
     private func refreshState(_ listId: String) async throws {
-        server[listId] = try await api().state(listId)
+        let state = try await api().state(listId, lang: search.lang)
+        server[listId] = state
+        mergeCustom(fromRows: state.items)
     }
 
     func select(_ listId: String) async {
@@ -234,20 +272,21 @@ final class ShoppingV2Store {
         scheduleFlush()
     }
 
-    /// Adds a catalog item, or free text (matched to the catalog when the name is exact).
+    /// Adds a catalog item or custom object, or free text (matched to a known object when the
+    /// text is one of its names or aliases in any language; else the server creates a custom
+    /// object named in every language).
     func add(_ text: String, catalogItem: CatalogItem? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let item = catalogItem ?? search.exactMatch(trimmed)
         let name = item.map { $0.displayName(search.lang) } ?? trimmed
         guard !name.isEmpty else { return }
-        let itemId = UUID().uuidString.lowercased()
-        let existing = current?.items.first {
-            $0.isActive && TextFold.itemKey(catalogId: $0.catalogId, name: $0.name) == TextFold.itemKey(catalogId: item?.id, name: name)
-        }
-        let op = ShopOp.add(itemId: existing?.id ?? itemId, catalogId: item?.id, name: name, section: item?.section)
+        let rowId = UUID().uuidString.lowercased()
+        let existing = current?.items.first { $0.isActive && ShopOps.sameRow($0, objectId: item?.id, name: item == nil ? trimmed : name) }
+        let target = existing?.id ?? rowId
+        let op = item.map { ShopOp.add(object: $0, rowId: target, name: name) } ?? ShopOp.add(text: trimmed, rowId: target)
         var undo: Undo?
         if existing == nil {
-            undo = Undo(message: String(localized: "Added \(name)"), listId: currentListId, ops: [ShopOp(kind: .remove, itemId: itemId)])
+            undo = Undo(message: String(localized: "Added \(name)"), listId: currentListId, ops: [ShopOp(kind: .remove, itemId: rowId)])
         } else if existing?.status == .recent, let id = existing?.id {
             undo = Undo(message: String(localized: "Added \(name) back"), listId: currentListId, ops: [ShopOp(kind: .purchase, itemId: id)])
         }
@@ -266,11 +305,14 @@ final class ShoppingV2Store {
     }
 
     func remove(_ item: ShopItem) {
-        // A removed row never comes back, so undo re-adds it as a new row.
-        let restore = ShopOp(kind: .add, itemId: UUID().uuidString.lowercased(), catalogId: item.catalogId, name: item.name,
+        // A removed row never comes back, so undo re-adds it as a new row (the same object).
+        let rowId = UUID().uuidString.lowercased()
+        var restore = ShopOp(kind: .add, itemId: item.objectKey, catalogId: item.catalogId, name: item.name,
                              spec: item.spec.isEmpty ? nil : item.spec, quantity: item.quantity, unit: item.unit, section: item.section)
+        restore.rowId = rowId
+        if item.objectKey == nil { restore.text = item.typedName ?? item.name }
         var ops = [restore]
-        if item.status == .recent, let id = restore.itemId { ops.append(ShopOp(kind: .purchase, itemId: id)) }
+        if item.status == .recent { ops.append(ShopOp(kind: .purchase, itemId: rowId)) }
         perform([ShopOp(kind: .remove, itemId: item.id)], undo: Undo(message: String(localized: "Deleted \(item.name)"), listId: currentListId, ops: ops))
     }
 
@@ -284,15 +326,40 @@ final class ShoppingV2Store {
         perform([ShopOp(kind: .setQuantity, itemId: item.id, quantity: quantity, unit: quantity == nil ? nil : unit)])
     }
 
+    /// A custom object's section is an object edit (every list); a catalog row keeps a per-row section.
     func setSection(_ item: ShopItem, _ section: String?) {
         guard section != item.section else { return }
+        if item.isCustom, let objectId = item.objectId, let section {
+            perform([ShopOp.editItem(objectId, section: section)])
+            return
+        }
         perform([ShopOp(kind: .setSection, itemId: item.id, section: section)])
     }
 
+    /// A custom object's name in the UI language is an object edit; a catalog row is renamed
+    /// (the server points it to the object that name belongs to, or a new custom object).
     func rename(_ item: ShopItem, _ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != item.name else { return }
+        if item.isCustom, let objectId = item.objectId {
+            perform([ShopOp.editItem(objectId, names: [search.lang: trimmed])])
+            return
+        }
         perform([ShopOp(kind: .rename, itemId: item.id, name: trimmed)])
+    }
+
+    /// Edit a custom object's names (it/en/da) and icon, for every list; only changed fields are sent.
+    func editObject(_ item: ShopItem, names: [String: String], icon: String?) {
+        guard item.isCustom, let objectId = item.objectId else { return }
+        var changed: [String: String] = [:]
+        for (lang, value) in names {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, trimmed != item.names?[lang] { changed[lang] = trimmed }
+        }
+        let newIcon = icon.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let iconChanged = newIcon != nil && newIcon != (item.icon ?? "")
+        guard !changed.isEmpty || iconChanged else { return }
+        perform([ShopOp.editItem(objectId, names: changed.isEmpty ? nil : changed, icon: iconChanged ? newIcon : nil)])
     }
 
     func move(_ item: ShopItem, to listId: String) {
@@ -383,7 +450,7 @@ final class ShoppingV2Store {
         for attempt in 0..<2 {
             guard !batch.isEmpty else { return true }
             do {
-                let response = try await api().ops(listId, expectedRevision: server[listId]?.revision, ops: batch)
+                let response = try await api().ops(listId, expectedRevision: server[listId]?.revision, ops: batch, lang: search.lang)
                 let done = Set(response.applied + response.duplicates)
                 outbox.removeAll { $0.listId == listId && done.contains($0.op.opId) }
                 for op in batch where op.kind == .move { if let to = op.toListId { touchedLists.insert(to) } }
@@ -391,6 +458,7 @@ final class ShoppingV2Store {
                     state.items = items
                     state.revision = response.revision
                     server[listId] = state
+                    mergeCustom(fromRows: items)
                 } else {
                     try? await refreshState(listId)
                 }
@@ -468,11 +536,13 @@ final class ShoppingV2Store {
         var catalog: ShoppingCatalog?
         var catalogETag: String?
         var catalogLang: String?
+        var customObjects: [CatalogItem]?
     }
 
     private func persist() {
         let snapshot = Snapshot(currentListId: currentListId, lists: lists, server: server, outbox: outbox,
-                                catalog: catalog.items.isEmpty ? nil : catalog, catalogETag: catalogETag, catalogLang: catalogLang)
+                                catalog: catalog.items.isEmpty ? nil : catalog, catalogETag: catalogETag, catalogLang: catalogLang,
+                                customObjects: customObjects.isEmpty ? nil : customObjects)
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(snapshot).write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -487,11 +557,12 @@ final class ShoppingV2Store {
         lists = snapshot.lists
         server = snapshot.server
         outbox = snapshot.outbox
+        customObjects = snapshot.customObjects ?? []
         if let catalog = snapshot.catalog {
             self.catalog = catalog
             catalogETag = snapshot.catalogETag
             catalogLang = snapshot.catalogLang
-            search = CatalogSearch(catalog: catalog, lang: snapshot.catalogLang ?? catalog.lang)
+            search = CatalogSearch(catalog: catalog, lang: snapshot.catalogLang ?? catalog.lang, custom: customObjects)
         }
     }
 
@@ -502,6 +573,7 @@ final class ShoppingV2Store {
         lists = []
         server = [:]
         outbox = []
+        customObjects = []
         undo = nil
         error = nil
         syncProblem = nil
