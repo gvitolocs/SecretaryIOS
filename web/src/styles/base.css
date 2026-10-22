@@ -2131,3 +2131,133 @@ select.text-input option {
   margin: 0 0 16px;
   color: var(--text-muted);
 }
+
+/* ---- Lucina reached out (proactive outreach) ---- */
+
+.msg--proactive {
+  align-items: flex-start;
+}
+
+.proactive {
+  max-width: min(92%, 580px);
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--violet) 42%, transparent);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(var(--glass-strong), var(--glass-strong)) padding-box,
+    var(--grad-holo-soft);
+  color: var(--text);
+  box-shadow: 0 0 28px color-mix(in srgb, var(--violet) 20%, transparent);
+}
+
+.proactive--high {
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  box-shadow: 0 0 30px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+
+.msg--focus .proactive {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.proactive-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.proactive-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--violet);
+}
+
+.proactive-title .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.prio-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.prio-chip[data-priority="high"] {
+  color: var(--notice-text);
+  background: var(--notice-bg);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+}
+
+.proactive-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.proactive-actions,
+.proactive-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.proactive-feedback .chip:disabled:not(.chip--active) {
+  opacity: 0.5;
+}
+
+.proactive-note {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+
+.proactive-note--error {
+  color: var(--danger-text);
+}
+
+.proactive-why {
+  margin-top: 8px;
+}
+
+.proactive-why-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.proactive-why-text {
+  margin: 4px 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.proactive-missing {
+  margin: 8px auto;
+  max-width: min(92%, 580px);
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--violet) 42%, transparent);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.proactive-missing .proactive-feedback {
+  justify-content: center;
+  margin-bottom: 8px;
+}

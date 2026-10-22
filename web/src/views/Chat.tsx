@@ -1,6 +1,16 @@
+import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { outreachFromSearch, sendOutreachFeedback } from "../api/proactive";
 import { CHAT_MAX_CHARS } from "../api/secretary";
-import type { Attachment, Channel } from "../api/timeline";
+import {
+  FEEDBACK_ACTIONS,
+  type Attachment,
+  type Channel,
+  type FeedbackAction,
+  type ProactiveAction,
+  type ProactiveMeta,
+  type ProactivePriority,
+} from "../api/timeline";
 import {
   BellIcon,
   BubbleIcon,
@@ -9,6 +19,7 @@ import {
   GlobeIcon,
   PhoneIcon,
   SendIcon,
+  SparkleIcon,
   SpeakerIcon,
 } from "../components/Icons";
 import { LinkifiedText } from "../components/LinkifiedText";
@@ -66,6 +77,164 @@ const ATTACHMENT_LABELS: Record<Attachment["kind"], MessageKey> = {
   voice: "chat.voice",
   file: "chat.file",
 };
+
+const PRIORITY_LABELS = {
+  high: "chat.priorityHigh",
+  normal: "chat.priorityNormal",
+  low: "chat.priorityLow",
+} as const satisfies Record<ProactivePriority, MessageKey>;
+
+const FEEDBACK_LABELS = {
+  useful: "chat.fbUseful",
+  not_now: "chat.fbNotNow",
+  stop: "chat.fbStop",
+} as const satisfies Record<FeedbackAction, MessageKey>;
+
+const FEEDBACK_DONE = {
+  useful: "chat.fbThanks",
+  not_now: "chat.fbNotNowDone",
+  stop: "chat.fbStopDone",
+} as const satisfies Record<FeedbackAction, MessageKey>;
+
+/** In-app navigation when a router is around (tests render the view bare). */
+function useOptionalNavigate(): ReturnType<typeof useNavigate> | null {
+  try {
+    return useNavigate();
+  } catch {
+    return null;
+  }
+}
+
+function useOptionalLocation(): ReturnType<typeof useLocation> | null {
+  try {
+    return useLocation();
+  } catch {
+    return null;
+  }
+}
+
+/** "Utile / Non ora / Basta così": labels from the message (her language), else ours. */
+export function FeedbackButtons(props: { outreachId: string; actions?: ProactiveAction[] }) {
+  const [chosen, setChosen] = createSignal<FeedbackAction | null>(null);
+  const [busy, setBusy] = createSignal(false);
+  const [failed, setFailed] = createSignal(false);
+  const buttons = () =>
+    FEEDBACK_ACTIONS.map((id) => ({
+      id,
+      label: props.actions?.find((a) => a.feedback && a.id === id)?.label ?? t(FEEDBACK_LABELS[id]),
+    }));
+
+  async function tap(id: FeedbackAction) {
+    if (busy() || chosen()) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      await sendOutreachFeedback(props.outreachId, id);
+      setChosen(id);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div class="proactive-feedback" role="group" aria-label={t("chat.feedbackGroup")}>
+      <For each={buttons()}>
+        {(b) => (
+          <button
+            type="button"
+            class="chip proactive-fb"
+            classList={{ "chip--active": chosen() === b.id }}
+            aria-pressed={chosen() === b.id ? "true" : "false"}
+            disabled={busy() || chosen() !== null}
+            onClick={() => void tap(b.id)}
+          >
+            {b.label}
+          </button>
+        )}
+      </For>
+      <Show when={chosen()}>
+        {(c) => (
+          <span class="proactive-note" role="status">
+            {t(FEEDBACK_DONE[c()])}
+          </span>
+        )}
+      </Show>
+      <Show when={failed()}>
+        <span class="proactive-note proactive-note--error" role="alert">
+          {t("chat.fbFailed")}
+        </span>
+      </Show>
+    </div>
+  );
+}
+
+/** A message Lucina sent on her own: priority, content buttons, feedback, why. */
+function ProactiveCard(props: { text: string; meta: ProactiveMeta }) {
+  const navigate = useOptionalNavigate();
+  const [showWhy, setShowWhy] = createSignal(false);
+  const links = () => props.meta.actions.filter((a) => !a.feedback && a.route).slice(0, 2);
+
+  function open(a: ProactiveAction, e: MouseEvent) {
+    void sendOutreachFeedback(props.meta.outreachId, "opened").catch(() => undefined);
+    if (navigate && a.route) {
+      e.preventDefault();
+      navigate(a.route);
+    }
+  }
+
+  return (
+    <section
+      class="proactive"
+      classList={{ "proactive--high": props.meta.priority === "high" }}
+      data-priority={props.meta.priority}
+      aria-label={t("chat.proactiveHead")}
+    >
+      <header class="proactive-head">
+        <span class="proactive-title">
+          <SparkleIcon />
+          {t("chat.proactiveHead")}
+        </span>
+        <span class="prio-chip" data-priority={props.meta.priority}>
+          {t(PRIORITY_LABELS[props.meta.priority])}
+        </span>
+      </header>
+      <LinkifiedText class="proactive-text" text={props.text} />
+      <Show when={links().length > 0}>
+        <div class="proactive-actions">
+          <For each={links()}>
+            {(a) => (
+              <a class="btn btn--small proactive-link" href={a.route} onClick={(e) => open(a, e)}>
+                {a.label}
+              </a>
+            )}
+          </For>
+        </div>
+      </Show>
+      <FeedbackButtons outreachId={props.meta.outreachId} actions={props.meta.actions} />
+      <Show when={props.meta.why}>
+        {(why) => (
+          <div class="proactive-why">
+            <button
+              type="button"
+              class="proactive-why-btn"
+              aria-expanded={showWhy() ? "true" : "false"}
+              onClick={() => setShowWhy((v) => !v)}
+            >
+              {t("chat.proactiveWhy")}
+            </button>
+            <Show when={showWhy()}>
+              <p class="proactive-why-text" title={t("chat.proactiveWhyTitle")}>
+                {why()}
+              </p>
+            </Show>
+          </div>
+        )}
+      </Show>
+    </section>
+  );
+}
 
 /** Start loading older items when the list is scrolled this close to the top. */
 const LOAD_OLDER_PX = 200;
@@ -200,10 +369,12 @@ function Attachments(props: { items: Attachment[] }) {
   );
 }
 
-function MessageItem(props: { message: ChatMessage }) {
+function MessageItem(props: { message: ChatMessage; focused?: boolean }) {
   const [showTime, setShowTime] = createSignal(false);
   const isUser = () => props.message.role === "user";
   const isReminder = () => props.message.meta?.kind === "reminder";
+  const proactive = () =>
+    props.message.role === "lucina" && props.message.meta?.kind === "proactive" ? props.message.meta.proactive : undefined;
   const hasBody = () => !!props.message.text || !!props.message.attachments?.length;
 
   function toggleTime(e: MouseEvent) {
@@ -219,13 +390,17 @@ function MessageItem(props: { message: ChatMessage }) {
         "msg--user": isUser() && !isReminder(),
         "msg--lucina": !isUser() && !isReminder(),
         "msg--reminder": isReminder(),
+        "msg--proactive": !!proactive(),
+        "msg--focus": !!props.focused,
         "msg--backfilled": !!props.message.backfilled,
         "msg--show-time": showTime(),
       }}
       data-key={props.message.key}
+      data-outreach={proactive()?.outreachId}
     >
       <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
-      <Show when={hasBody() || isReminder()}>
+      <Show when={proactive()}>{(p) => <ProactiveCard text={props.message.text} meta={p()} />}</Show>
+      <Show when={!proactive() && (hasBody() || isReminder())}>
         <div
           class="bubble"
           classList={{
@@ -303,7 +478,12 @@ export default function ChatView() {
   const canSend = createMemo(() => draft().trim().length > 0 && !tooLong() && !sending());
   const visible = createMemo(() => {
     const f = filter();
-    return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m.channel, f));
+    // Lucina's proactive messages are written for the app, whatever their channel.
+    return f === "all"
+      ? chat.messages
+      : chat.messages.filter(
+          (m) => matchesFilter(m.channel, f) || (f === "app" && m.meta?.kind === "proactive"),
+        );
   });
   const filterLabel = () => {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
@@ -312,6 +492,39 @@ export default function ChatView() {
   let list: HTMLDivElement | undefined;
   let input: HTMLTextAreaElement | undefined;
   let atBottom = true;
+  // Deep link from a push or Telegram: /?outreach=po_… (also while already open:
+  // a notification click navigates here).
+  const location = useOptionalLocation();
+  const navigate = useOptionalNavigate();
+  const search = () => location?.search ?? (typeof window === "undefined" ? "" : window.location.search);
+  const [focusOutreach, setFocusOutreach] = createSignal<string | null>(outreachFromSearch(search()));
+  createEffect(
+    on(
+      search,
+      (q) => {
+        const id = outreachFromSearch(q);
+        if (id) setFocusOutreach(id);
+      },
+      { defer: true },
+    ),
+  );
+  const focused = createMemo(() => {
+    const id = focusOutreach();
+    return id ? (chat.messages.find((m) => m.meta?.proactive?.outreachId === id) ?? null) : null;
+  });
+  /** Drop `?outreach=` from the address, so a reload does not jump again. */
+  function clearOutreachParam() {
+    if (!search().includes("outreach=")) return;
+    if (navigate && location) {
+      navigate(location.pathname, { replace: true, scroll: false });
+    } else if (typeof window !== "undefined") {
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.hash);
+    }
+  }
+  function dismissFocus() {
+    setFocusOutreach(null);
+    clearOutreachParam();
+  }
   /** While our own scroll-to-end runs, scroll events are not the reader's. */
   let autoScrollUntil = 0;
 
@@ -365,6 +578,21 @@ export default function ChatView() {
       },
       { defer: true },
     ),
+  );
+
+  // Scroll the deep-linked message into view (after the first fill's jump to the end).
+  createEffect(
+    on(focused, (m) => {
+      if (!m) return;
+      atBottom = false;
+      clearOutreachParam();
+      requestAnimationFrame(() => {
+        const el = list?.querySelector(`[data-outreach="${m.meta?.proactive?.outreachId}"]`);
+        if (el && typeof (el as HTMLElement).scrollIntoView === "function") {
+          (el as HTMLElement).scrollIntoView({ block: "center" });
+        }
+      });
+    }),
   );
 
   createEffect(
@@ -474,6 +702,17 @@ export default function ChatView() {
             <p class="empty-sub">{t("chat.emptySub")}</p>
           </div>
         </Show>
+        <Show when={chat.loaded && focusOutreach() && !focused() ? focusOutreach() : null}>
+          {(id) => (
+            <div class="proactive-missing" role="status">
+              <p>{t("chat.outreachMissing")}</p>
+              <FeedbackButtons outreachId={id()} />
+              <button type="button" class="btn btn--small" onClick={dismissFocus}>
+                {t("chat.close")}
+              </button>
+            </div>
+          )}
+        </Show>
         <Show when={chat.messages.length > 0 && visible().length === 0}>
           <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
         </Show>
@@ -487,7 +726,7 @@ export default function ChatView() {
                   </div>
                 )}
               </Show>
-              <MessageItem message={m} />
+              <MessageItem message={m} focused={!!focusOutreach() && focused()?.key === m.key} />
             </>
           )}
         </For>

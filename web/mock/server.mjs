@@ -35,6 +35,7 @@
 //   POST /v1/chat records the user message (channel from X-Secretary-Client) and Lucina's
 //   reply, and answers userItemId / lucinaItemId. "remind" also posts a reminder item 15 s later.
 //   POST /v1/_mock/timeline {channel, role, text, meta?} -> injects an item (CSRF header needed)
+//   POST /v1/proactive/outreach/{po_id}/feedback {action} -> 201 {feedback} (logged, not stored)
 //   MOCK_FAKE_TRAFFIC=1 posts a fake Telegram message (and Lucina's answer) every ~20 s.
 // Lucina stage (session needed, like the real server):
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
@@ -1824,6 +1825,17 @@ async function route(req, res) {
     const text = typeof body.text === "string" ? body.text.slice(0, 4000) : "Hello from the mock.";
     const item = addItem({ channel, role, text, ...(body.meta && typeof body.meta === "object" ? { meta: body.meta } : {}) });
     return send(res, 201, item);
+  }
+
+  // Lucina's proactive outreach: feedback taps (the real server stores them for the engine).
+  const fb = path.match(/^\/v1\/proactive\/outreach\/(po_[0-9A-HJKMNP-TV-Z]{26})\/feedback$/);
+  if (fb && method === "POST") {
+    const body = await readJson(req);
+    if (!["useful", "not_now", "stop", "opened"].includes(body.action)) {
+      return send(res, 400, { error: { code: "bad_request", message: "action: one of useful, not_now, stop, opened" } });
+    }
+    console.log(`[mock] proactive feedback ${fb[1]} ${body.action}`);
+    return send(res, 201, { feedback: { id: `fb_${Date.now()}_mock`, outreachId: fb[1], action: body.action, at: Date.now(), device: "mock", source: "app" } });
   }
 
   if (path === "/v1/_mock/gym/bump" && method === "POST") {

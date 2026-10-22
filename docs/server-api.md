@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` (see [Notifications](#notifications)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` and `GET /v1/notify/settings` (see [Notifications](#notifications)), `GET /v1/proactive/feedback` (see [Proactive outreach](#proactive-outreach)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -1238,6 +1238,38 @@ Lucina posts a notification:
 or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
 `disabled` (category off) or `present` (a Lucina message while the owner is in
 the app). Device tokens and cookies get `401`.
+
+### `GET /v1/notify/settings` (service token)
+
+`{settings, present}`: the settings object above plus whether the app is in
+front, so Lucina's proactive engine plans around quiet hours and Do Not
+Disturb. No subscriptions or device list.
+
+## Proactive outreach
+
+Lucina's proactive engine (`crates/lucina-proactive`) reaches out with a
+timeline item `{role: "lucina", channel: "other", meta: {kind: "proactive",
+topic, priority: low|normal|high, outreachId: "po_…", why, actions: [{id,
+label, route?, feedback?}]}}` plus a `lucina_message` push whose route is
+`/?outreach=<id>`. Telegram copies carry the deep link
+`https://getsecretary.tech/?outreach=<id>`. The app renders the item as a
+"Lucina reached out" card: content buttons navigate to their `route`, the
+feedback buttons (`useful`, `not_now`, `stop`: "Utile / Non ora / Basta così")
+post here.
+
+### `POST /v1/proactive/outreach/{id}/feedback` (device)
+
+`{action: "useful" | "not_now" | "stop" | "opened"}` → `201 {feedback: {id,
+outreachId, action, at, device, source}}`; the same (outreach, action) again
+returns the stored tap with `200`. `400` for another action or an id that is
+not `po_` + 26 base-32 characters. Cookie requests need `X-Secretary-CSRF: 1`.
+
+### `GET /v1/proactive/feedback?after=<id>&limit=500` (service token)
+
+The taps after the cursor, oldest first: `{items: [tap], cursor}` (`cursor`
+is the last id returned, or `after` when there is nothing new). The engine
+pulls this every tick: "Non ora" holds that kind for a few hours, "Basta
+così" mutes it, everything is stored for learning.
 
 ## Links
 
