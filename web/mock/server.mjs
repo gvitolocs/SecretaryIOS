@@ -46,6 +46,8 @@
 //   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
 //   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
 //   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
+//   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
@@ -1846,6 +1848,7 @@ async function route(req, res) {
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });

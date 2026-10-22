@@ -7,10 +7,11 @@ import { gym } from "./dict/gym";
 import { links } from "./dict/links";
 import { login } from "./dict/login";
 import { notify } from "./dict/notify";
+import { notes } from "./dict/notes";
 import { shell } from "./dict/shell";
 import { wardrobe } from "./dict/wardrobe";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { common, shell, chat, login, weight, gym, wardrobe, notify, links };
+export const dictionaries = { common, shell, chat, login, weight, gym, wardrobe, notify, links, notes };
 
 export type Dictionaries = typeof dictionaries;

@@ -1,7 +1,7 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
-import { AvatarIcon, ChatIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, ScaleIcon, UserIcon } from "../components/Icons";
+import { AvatarIcon, ChatIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
@@ -40,6 +40,10 @@ function NavLinks(props: { class: string }) {
         <LinkIcon />
         <span>{t("shell.navLinks")}</span>
       </A>
+      <A href="/notes" class="tab" activeClass="tab--active">
+        <NoteIcon />
+        <span>{t("shell.navNotes")}</span>
+      </A>
     </nav>
   );
 }
@@ -52,12 +56,13 @@ function reducedMotion(): boolean {
   }
 }
 
-/** The page fades up into place when the section changes (not on first paint). */
+/** The page fades up into place when the section changes (not on first paint).
+ * Moving between notes stays inside one page, so it does not count. */
 function useRouteTransition(target: () => HTMLElement | undefined) {
   const location = useLocation();
   createEffect(
     on(
-      () => location.pathname,
+      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname),
       () => {
         const el = target();
         if (!el || reducedMotion() || typeof el.animate !== "function") return;

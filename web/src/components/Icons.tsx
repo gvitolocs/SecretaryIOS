@@ -35,6 +35,41 @@ export function ScaleIcon() {
   );
 }
 
+export function NoteIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6.5 3h8l4 4v11.5A2.5 2.5 0 0 1 16 21H6.5A2.5 2.5 0 0 1 4 18.5v-13A2.5 2.5 0 0 1 6.5 3z" />
+      <path d="M14.5 3v4h4M8 11.5h8M8 15h8M8 18h5" />
+    </svg>
+  );
+}
+
+export function SearchIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="6" />
+      <path d="m15 15 5 5" />
+    </svg>
+  );
+}
+
+export function TrashIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 6.5h15M9.5 6.5V4.5h5v2M6.5 6.5l1 13a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-13" />
+      <path d="M10 10.5v6M14 10.5v6" />
+    </svg>
+  );
+}
+
+export function BackIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M15 5l-7 7 7 7" />
+    </svg>
+  );
+}
+
 export function UserIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
