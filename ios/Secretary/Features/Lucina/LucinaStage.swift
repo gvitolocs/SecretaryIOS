@@ -352,6 +352,7 @@ final class LucinaStageController {
             placeholder = body["placeholder"] as? Bool ?? false
             phase = .ready
             runDemoIfAsked()
+            restoreStudio()
             // The look may have changed while she was loading.
             run("lucina.dress(\(wardrobeJSON), \(lookJSON))")
         case "state":
@@ -369,6 +370,8 @@ final class LucinaStageController {
             if !muted, !listening, !thinking, stageState != "speaking", let key = body["line"] as? String, let line = Self.touchLine(key) {
                 Task { await say(line) }
             }
+        case "photo":
+            if let url = body["dataUrl"] as? String { sharePhoto(dataURL: url) }
         case "stats", "demo":
             Self.log.notice("stage \(String(describing: body), privacy: .public)")
         default:
@@ -409,7 +412,7 @@ final class LucinaStageController {
         }
     }
 
-    private func run(_ script: String) {
+    func run(_ script: String) {
         guard let webViewStorage, phase == .ready || script.hasPrefix("lucina.start") else { return }
         webViewStorage.evaluateJavaScript(script, completionHandler: nil)
     }
@@ -560,6 +563,8 @@ struct LucinaControls: View {
                 .accessibilityLabel("Lucina's wardrobe")
                 .accessibilityIdentifier("lucinaWardrobe")
 
+                LucinaStudioMenu(controller: controller)
+
                 Button {
                     controller.muted.toggle()
                 } label: {
@@ -665,6 +670,7 @@ struct LucinaOverlay: View {
                 StageHost(controller: controller, framing: .full)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("lucinaStage")
+                LucinaViewBar(controller: controller)
                 LucinaControls(controller: controller)
                     .padding(.bottom, 24)
             }
@@ -690,6 +696,7 @@ struct LucinaColumn: View {
             StageHost(controller: controller, framing: .full)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("lucinaStage")
+            LucinaViewBar(controller: controller)
             LucinaControls(controller: controller)
                 .padding(.bottom, 16)
         }

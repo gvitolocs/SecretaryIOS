@@ -70,6 +70,26 @@ window.lucina = {
   cameraPreset(p) { stage && stage.cameraPreset(p); },
   resetView() { stage && stage.resetView(); },
   setInteractive(on) { stage && stage.setInteractive(!!on); },
+  setBackground(id) { stage && stage.setBackground(id); },
+  setLighting(id) { stage && stage.setLighting(id); },
+  setExpressionHold(e) { stage && stage.setExpression(e || null, 1); },
+  gesture(name) { stage && stage.gesture(name); },
+  /** Dance; music (the built-in beat) only when Swift says so, after a tap and unmuted. */
+  setDance(on, music) { stage && stage.setDance(!!on, music ? { music: true } : {}).catch((e) => post('error', { message: String(e) })); },
+  /** Gyro parallax fed by CoreMotion from Swift (degrees), as deviceorientation events. */
+  setGyro(on) { stage && stage.setGyro(!!on); },
+  tilt(beta, gamma) {
+    try { window.dispatchEvent(new DeviceOrientationEvent('deviceorientation', { beta, gamma, alpha: 0 })); } catch (_) { /* old WebKit */ }
+  },
+  /** A PNG of her for the share sheet (posted as a data URL). */
+  async snapshot() {
+    if (!stage) return;
+    try {
+      const blob = await stage.snapshot();
+      const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+      post('photo', { dataUrl: url });
+    } catch (e) { post('error', { message: 'snapshot: ' + String(e) }); }
+  },
   /** Frame stats for profiling (posted as a 'stats' message). */
   stats() { if (stage) post('stats', { stats: stage.stats.snapshot(), view: stage.view }); },
   /** Scripted gestures for device checks (no user needed): orbit, pinch, tap her head twice. */
