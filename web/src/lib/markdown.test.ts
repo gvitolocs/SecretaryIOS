@@ -88,6 +88,7 @@ describe("plainExcerpt", async () => {
     expect(plainExcerpt("Saved by Lucina. - **Mamma**: a cookbook (*Il cucchiaio*) - [ ] Check")).toBe("Saved by Lucina. Mamma: a cookbook (Il cucchiaio) Check");
     expect(plainExcerpt("## Friday Train at 08:10 ## Saturday 1. Galleria [site](https://x.it) | Day | Budget |")).toBe("Friday Train at 08:10 Saturday Galleria site Day Budget");
     expect(plainExcerpt("snake_case_name stays")).toBe("snake_case_name stays");
+    expect(plainExcerpt("a cookbook (*Il cucchiaio d'argento*) Marco")).toBe("a cookbook (Il cucchiaio d'argento) Marco");
     expect(plainExcerpt("*Briefing di ChatGPT, cut off before the clos…")).toBe("Briefing di ChatGPT, cut off before the clos…");
     expect(parseTags("Work, #rome , work,, ")).toEqual(["work", "rome"]);
   });

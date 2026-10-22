@@ -152,7 +152,7 @@ export function plainExcerpt(excerpt: string, title = ""): string {
     .replace(/(^|\s)(?:[-*+]|\d{1,3}[.)])\s+(?:\[[ xX]\]\s+)?/g, "$1")
     .replace(/\*\*|__|~~|`+/g, "")
     .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,;:!?]|$)/g, "$1$2")
-    .replace(/(^|\s)[*_]+(?=\S)|(\S)[*_]+(?=\s|$)/g, "$1$2")
+    .replace(/(^|[\s(])[*_]+(?=\S)|(\S)[*_]+(?=[\s).,;:!?]|$)/g, "$1$2")
     .replace(/\|/g, " ")
     .replace(/(^|\s)-{3,}(?=\s|$)/g, "$1")
     .replace(/\s+/g, " ")
