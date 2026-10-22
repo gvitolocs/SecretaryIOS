@@ -50,6 +50,27 @@ struct MainTabs: View {
         .sheet(item: Binding(get: { app.device.bridge.pendingConfirmations.first }, set: { _ in })) { command in
             CommandConfirmation(command: command)
         }
+        // Her outfit follows the tab (gym, shopping, elsewhere) unless pinned.
+        .onChange(of: app.selectedTab, initial: true) { _, tab in
+            app.wardrobe.section = AvatarSettings.Section(tab: tab)
+        }
+        .onChange(of: app.wardrobe.current, initial: true) { _, outfit in
+            app.lucina.dress(app.wardrobe.outfits, wearing: outfit?.id)
+        }
+        // The Wardrobe: Lucina comes forward as the live preview above the sheet. (On its own
+        // host view: two sheets chained on one view do not both present.)
+        .background {
+            Color.clear
+                .sheet(isPresented: Binding(get: { app.wardrobe.presented }, set: { app.wardrobe.presented = $0 }), onDismiss: {
+                    if !sideColumn { app.lucina.expanded = false }
+                }) {
+                    WardrobeView()
+                        .environment(app.wardrobe)
+                        .presentationDetents([.medium, .large])
+                        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                        .onAppear { if app.lucina.enabled && !sideColumn { app.lucina.expanded = true } }
+                }
+        }
     }
 
     private var tabs: some View {
@@ -80,6 +101,7 @@ struct MainTabs: View {
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { await app.health.poll() }
                 group.addTask { await app.watchPrimary() }
+                group.addTask { await app.wardrobe.load() }
             }
         }
     }

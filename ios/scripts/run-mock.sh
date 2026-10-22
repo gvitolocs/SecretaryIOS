@@ -19,18 +19,21 @@ repo="$(cd "$ios/.." && pwd)"
 dir="$ios/.mock"
 port="${MOCK_PORT:-8791}"
 pidfile="$dir/mock.pid"
-modules=(server.mjs shopping-v2.mjs)
+# wardrobe.json: the placeholder wardrobe the mock serves when no real one is installed.
+modules=(server.mjs shopping-v2.mjs wardrobe.json)
 mkdir -p "$dir"
 
 fetch() {
     if [[ -n "${MOCK_SOURCE:-}" ]]; then
         cp "$MOCK_SOURCE"/*.mjs "$dir/"
+        cp "$MOCK_SOURCE"/wardrobe.json "$dir/" 2>/dev/null || true
     elif ssh -o ConnectTimeout=5 nezopt true 2>/dev/null; then
         for m in "${modules[@]}"; do
             scp -q "nezopt:/home/nez/Projects/SecretaryIOS/web/mock/$m" "$dir/$m" 2>/dev/null || true
         done
     elif [[ -f "$repo/web/mock/server.mjs" ]]; then
         cp "$repo"/web/mock/*.mjs "$dir/"
+        cp "$repo"/web/mock/wardrobe.json "$dir/" 2>/dev/null || true
     else
         echo "error: no mock source (set MOCK_SOURCE=/path/to/web/mock)" >&2
         exit 1

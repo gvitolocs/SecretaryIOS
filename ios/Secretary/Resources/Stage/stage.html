@@ -16,7 +16,7 @@
 // private model under lucina-app://stage/ (the model and manifest are proxied by Swift
 // with the device token, so no token ever reaches this page). Audio plays only when Swift
 // asks: the stage starts muted and nothing here plays on its own.
-import { createLucinaStage } from './lucina-stage.standalone.js';
+import { createWardrobeStage } from './lucina-stage.standalone.js';
 
 const post = (type, payload = {}) => {
   try { window.webkit.messageHandlers.lucina.postMessage({ type, ...payload }); } catch (_) { /* not in the app */ }
@@ -30,8 +30,12 @@ window.lucina = {
     if (starting) return starting;
     starting = (async () => {
       try {
-        stage = await createLucinaStage(canvas, {
+        // The wardrobe stage: setOutfit swaps the model with the change effect.
+        stage = await createWardrobeStage(canvas, {
           modelUrl: opts.modelUrl,
+          wardrobe: opts.wardrobe || [],
+          outfit: opts.outfit || null,
+          assetBase: opts.assetBase,
           manifestUrl: opts.manifestUrl,
           framing: opts.framing || 'bust',
           muted: opts.muted !== false,
@@ -41,6 +45,8 @@ window.lucina = {
           onError: (e) => post('error', { message: String((e && e.message) || e) }),
         });
         stage.onStateChange((next) => post('state', { state: next }));
+        stage.onChanging((changing) => post('changing', { changing }));
+        stage.onOutfitChange((outfit) => post('outfit', { outfit }));
         stage.onTap(() => post('tap'));
         post('ready', { placeholder: !!stage.info.placeholder });
       } catch (e) {
@@ -50,6 +56,12 @@ window.lucina = {
     return starting;
   },
   setFraming(f) { stage && stage.setFraming(f); },
+  setWardrobe(list) { stage && stage.setWardrobe(list || []); },
+  /** Puts a wardrobe outfit on (no-op when she already wears it). */
+  setOutfit(id) {
+    if (!stage || !id) return;
+    stage.setOutfit(id).catch((e) => post('error', { message: 'outfit: ' + String((e && e.message) || e) }));
+  },
   setState(s) { stage && stage.setState(s); },
   setMuted(m) { stage && stage.setMuted(!!m); },
   setReducedMotion(r) { stage && stage.setReducedMotion(r); },

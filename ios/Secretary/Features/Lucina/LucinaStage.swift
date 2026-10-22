@@ -225,6 +225,8 @@ final class LucinaStageController {
     private(set) var listening = false
     private(set) var thinking = false
     private(set) var transcript = ""
+    /// The stage is loading or playing an outfit change.
+    private(set) var changingOutfit = false
     var message: String?
     var expanded = false
 
@@ -244,6 +246,9 @@ final class LucinaStageController {
     @ObservationIgnored private var webViewStorage: WKWebView?
     @ObservationIgnored private var schemeHandler: LucinaSchemeHandler?
     @ObservationIgnored private var framing: Framing = .bust
+    /// The wardrobe (JSON for the page) and the outfit she should wear.
+    @ObservationIgnored private var wardrobeJSON = "[]"
+    @ObservationIgnored private var outfitId: String?
     @ObservationIgnored private let voice = VoiceInput()
     @ObservationIgnored private let client: APIClient
     @ObservationIgnored private let chat: ChatStore
@@ -284,6 +289,27 @@ final class LucinaStageController {
         return view
     }
 
+    /// Hands the wardrobe to the stage and puts `id` on (with the change effect once she is
+    /// on stage; before that, she simply starts in it).
+    func dress(_ outfits: [Outfit], wearing id: String?) {
+        let list: [[String: Any]] = outfits.map { outfit in
+            var entry: [String: Any] = ["id": outfit.id, "glb": outfit.glb, "name": outfit.names]
+            if let manifest = outfit.manifest { entry["manifest"] = manifest }
+            if !outfit.tags.isEmpty { entry["tags"] = outfit.tags }
+            return entry
+        }
+        let json = (try? JSONSerialization.data(withJSONObject: list)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let changedList = json != wardrobeJSON
+        wardrobeJSON = json
+        guard id != outfitId || changedList else { return }
+        outfitId = id
+        guard let id, Outfit.isValidId(id) else {
+            if changedList { run("lucina.setWardrobe(\(json))") }
+            return
+        }
+        run("lucina.setWardrobe(\(json)); lucina.setOutfit('\(id)')")
+    }
+
     func setFraming(_ framing: Framing) {
         guard framing != self.framing else { return }
         self.framing = framing
@@ -299,13 +325,19 @@ final class LucinaStageController {
                 "framing": framing.rawValue,
                 "muted": muted,
                 "reducedMotion": UIAccessibility.isReduceMotionEnabled,
+                "assetBase": LucinaSchemeHandler.base + "v1/assets/",
+                "outfit": outfitId as Any,
             ]
-            if let data = try? JSONSerialization.data(withJSONObject: options), let json = String(data: data, encoding: .utf8) {
+            if let data = try? JSONSerialization.data(withJSONObject: options), var json = String(data: data, encoding: .utf8) {
+                // The wardrobe list is already JSON: splice it in.
+                json = String(json.dropLast()) + ",\"wardrobe\":\(wardrobeJSON)}"
                 run("lucina.start(\(json))")
             }
         case "ready":
             placeholder = body["placeholder"] as? Bool ?? false
             phase = .ready
+            // The outfit may have changed while she was loading.
+            if let outfitId, Outfit.isValidId(outfitId) { run("lucina.setWardrobe(\(wardrobeJSON)); lucina.setOutfit('\(outfitId)')") }
         case "state":
             stageState = body["state"] as? String ?? "idle"
         case "spoken":
@@ -314,6 +346,8 @@ final class LucinaStageController {
         case "error":
             let text = body["message"] as? String ?? "unknown error"
             if body["fatal"] as? Bool == true { phase = .failed(text) }
+        case "changing":
+            changingOutfit = body["changing"] as? Bool ?? false
         case "tap":
             run("lucina.nod()")
         default:
@@ -444,6 +478,7 @@ struct StageHost: UIViewRepresentable {
 /// Mute, talk and status, shared by the expanded panel and the side column.
 struct LucinaControls: View {
     @Bindable var controller: LucinaStageController
+    @Environment(WardrobeStore.self) private var wardrobe
 
     var body: some View {
         VStack(spacing: 10) {
@@ -454,10 +489,23 @@ struct LucinaControls: View {
                     .font(.subheadline).multilineTextAlignment(.center).lineLimit(3)
             } else if controller.thinking {
                 Text("Lucina is thinking…").font(.subheadline).foregroundStyle(.secondary)
+            } else if controller.changingOutfit {
+                Text("Changing…").font(.subheadline).foregroundStyle(.secondary)
             } else if case let .failed(reason) = controller.phase {
                 Text("Lucina couldn't load: \(reason)").font(.footnote).foregroundStyle(.secondary).lineLimit(2)
             }
             HStack(spacing: 18) {
+                Button {
+                    wardrobe.presented = true
+                } label: {
+                    Image(systemName: "hanger")
+                        .font(.title3)
+                        .frame(width: 52, height: 52)
+                        .background(.thinMaterial, in: Circle())
+                }
+                .accessibilityLabel("Lucina's wardrobe")
+                .accessibilityIdentifier("lucinaWardrobe")
+
                 Button {
                     controller.muted.toggle()
                 } label: {

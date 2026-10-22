@@ -91,6 +91,18 @@ struct SettingsView: View {
                     .accessibilityIdentifier("lucinaEnabled")
                 Toggle("Voice replies", isOn: Binding(get: { !app.lucina.muted }, set: { app.lucina.muted = !$0 }))
                     .accessibilityIdentifier("lucinaVoice")
+                Button {
+                    app.wardrobe.presented = true
+                } label: {
+                    HStack {
+                        Label("Lucina's wardrobe", systemImage: "hanger")
+                        Spacer()
+                        Text(app.wardrobe.current?.name ?? "").foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                }
+                .foregroundStyle(.primary)
+                .accessibilityIdentifier("openWardrobe")
             } header: {
                 Text("Lucina")
             } footer: {

@@ -38,6 +38,8 @@ final class AppModel {
     let weight: WeightStore
     let health: HealthStore
     let lucina: LucinaStageController
+    /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
+    let wardrobe: WardrobeStore
     let device: DeviceHub
 
     var api: SecretaryAPI { SecretaryAPI(client: client) }
@@ -77,6 +79,7 @@ final class AppModel {
         weight = WeightStore(client: { BodyClient(client: client) })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         lucina = LucinaStageController(client: client, chat: chat)
+        wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         if let tab = launch.initialTab { selectedTab = tab }
 
@@ -85,7 +88,11 @@ final class AppModel {
         chat.onTransportError = onError
         chat.onTransportSuccess = onSuccess
         let device = device
-        chat.onItems = { items in device.bridge.consider(items) }
+        let wardrobe = wardrobe
+        chat.onItems = { items in
+            device.bridge.consider(items)
+            wardrobe.consider(items)
+        }
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         shopping.onTransportError = onError

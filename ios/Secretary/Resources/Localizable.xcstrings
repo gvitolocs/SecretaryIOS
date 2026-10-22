@@ -89,15 +89,26 @@
         }
       }
     },
+    "%@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      },
+      "shouldTranslate" : false
+    },
     "%lld" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld"
@@ -263,16 +274,16 @@
     },
     "A limit for Lucina" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Un limite per Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "En grænse for Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un limite per Lucina"
           }
         }
       }
@@ -289,6 +300,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Un po' più forte, una sessione alla volta."
+          }
+        }
+      }
+    },
+    "A pinned outfit is worn everywhere until you unpin it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un vestito fissato si indossa ovunque finché non lo sblocchi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgjort tøj bæres overalt, indtil du frigør det."
           }
         }
       }
@@ -661,6 +688,22 @@
         }
       }
     },
+    "All" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle"
+          }
+        }
+      }
+    },
     "All exercises" : {
       "localizations" : {
         "da" : {
@@ -711,16 +754,16 @@
     },
     "Apps and websites" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "App e siti web"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Apps og websteder"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "App e siti web"
           }
         }
       }
@@ -949,6 +992,22 @@
         }
       }
     },
+    "Can't reach the server, so the outfit wasn't saved." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il server non risponde, quindi il vestito non è stato salvato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Serveren svarer ikke, så tøjet blev ikke gemt."
+          }
+        }
+      }
+    },
     "Can't reach the server. Check your connection." : {
       "localizations" : {
         "da" : {
@@ -997,6 +1056,22 @@
         }
       }
     },
+    "Casual" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Casual"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hverdag"
+          }
+        }
+      }
+    },
     "Catalog language" : {
       "localizations" : {
         "da" : {
@@ -1013,6 +1088,22 @@
         }
       }
     },
+    "Change by section" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambia in base alla sezione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skift efter sektion"
+          }
+        }
+      }
+    },
     "Change password" : {
       "localizations" : {
         "da" : {
@@ -1025,6 +1116,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Cambia password"
+          }
+        }
+      }
+    },
+    "Changing…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si cambia…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skifter…"
           }
         }
       }
@@ -2219,6 +2326,22 @@
         }
       }
     },
+    "Everywhere else" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altrove"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle andre steder"
+          }
+        }
+      }
+    },
     "Exercise" : {
       "localizations" : {
         "da" : {
@@ -2363,6 +2486,22 @@
         }
       }
     },
+    "Fantasy" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fantasy"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fantasy"
+          }
+        }
+      }
+    },
     "Finish" : {
       "localizations" : {
         "da" : {
@@ -2439,6 +2578,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Segue la lingua dell'iPhone, a meno che tu non ne scelga una. Lucina risponde nella lingua in cui scrivi."
+          }
+        }
+      }
+    },
+    "Formal" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegante"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Galla"
           }
         }
       }
@@ -2605,6 +2760,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Palestra"
+          }
+        }
+      }
+    },
+    "Gym clothes in the Gym, her shopping outfit in Shopping, the default everywhere else." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tuta in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Træningstøj under Træning, indkøbstøjet under Indkøb, standardtøjet alle andre steder."
           }
         }
       }
@@ -2886,16 +3057,16 @@
     },
     "Limit: %lld min a day" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Limite: %lld min al giorno"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Grænse: %lld min om dagen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limite: %lld min al giorno"
           }
         }
       }
@@ -3378,16 +3549,16 @@
     },
     "Lucina no longer gets Screen Time notes." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina non riceve più avvisi da Tempo di utilizzo."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina får ikke længere Skærmtid-beskeder."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non riceve più avvisi da Tempo di utilizzo."
           }
         }
       }
@@ -3564,6 +3735,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "La voce di Lucina non è disponibile in questo momento."
+          }
+        }
+      }
+    },
+    "Lucina's wardrobe" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardaroba di Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas garderobe"
           }
         }
       }
@@ -3762,16 +3949,16 @@
     },
     "Name for Lucina" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nome per Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Navn til Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nome per Lucina"
           }
         }
       }
@@ -3932,6 +4119,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ancora nessuna misurazione. Registra la prima pesata qui sopra."
+          }
+        }
+      }
+    },
+    "No outfits yet" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ancora nessun vestito"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet tøj endnu"
           }
         }
       }
@@ -4224,6 +4427,22 @@
         }
       }
     },
+    "Outfit per section" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vestito per sezione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tøj pr. sektion"
+          }
+        }
+      }
+    },
     "Password" : {
       "localizations" : {
         "da" : {
@@ -4268,6 +4487,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Record personali"
+          }
+        }
+      }
+    },
+    "Pinned" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissato"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgjort"
           }
         }
       }
@@ -4332,6 +4567,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Progressi"
+          }
+        }
+      }
+    },
+    "Put on %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indossa %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag %@ på"
           }
         }
       }
@@ -4530,16 +4781,16 @@
     },
     "Report and limits" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Report e limiti"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rapport og grænser"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Report e limiti"
           }
         }
       }
@@ -5113,6 +5364,22 @@
         }
       }
     },
+    "She always wears the default outfit." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indossa sempre il vestito predefinito."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hun har altid standardtøjet på."
+          }
+        }
+      }
+    },
     "Shopping" : {
       "localizations" : {
         "da" : {
@@ -5289,6 +5556,22 @@
         }
       }
     },
+    "Sport" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sport"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sport"
+          }
+        }
+      }
+    },
     "Start %@" : {
       "localizations" : {
         "da" : {
@@ -5355,16 +5638,16 @@
     },
     "Start watching" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Inizia a osservare"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Begynd at holde øje"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inizia a osservare"
           }
         }
       }
@@ -5451,16 +5734,16 @@
     },
     "Stop watching" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smetti di osservare"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stop med at holde øje"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smetti di osservare"
           }
         }
       }
@@ -5609,6 +5892,22 @@
         }
       }
     },
+    "That outfit isn't in the wardrobe any more." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quel vestito non è più nel guardaroba."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det tøj er ikke længere i garderoben."
+          }
+        }
+      }
+    },
     "The Safari extension and the Screen Time report are separate parts of the app; see the notes under each." : {
       "localizations" : {
         "da" : {
@@ -5733,6 +6032,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Il motore della palestra sul dispositivo non è disponibile."
+          }
+        }
+      }
+    },
+    "The outfit wasn't saved. Try again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il vestito non è stato salvato. Riprova."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tøjet blev ikke gemt. Prøv igen."
           }
         }
       }
@@ -5877,6 +6192,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tema"
+          }
+        }
+      }
+    },
+    "They appear here once the wardrobe is installed on the server." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compariranno qui quando il guardaroba sarà installato sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det dukker op her, når garderoben er installeret på serveren."
           }
         }
       }
@@ -6075,16 +6406,16 @@
     },
     "Today" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oggi"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "I dag"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oggi"
           }
         }
       }
@@ -6409,6 +6740,22 @@
         }
       }
     },
+    "Uniform" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Divisa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uniform"
+          }
+        }
+      }
+    },
     "Unit" : {
       "localizations" : {
         "da" : {
@@ -6421,6 +6768,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Unità"
+          }
+        }
+      }
+    },
+    "Unpins the outfit and follows the section again" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sblocca il vestito e torna a seguire la sezione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frigør tøjet og følger sektionen igen"
           }
         }
       }
@@ -6649,6 +7012,22 @@
         }
       }
     },
+    "Wardrobe" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardaroba"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Garderobe"
+          }
+        }
+      }
+    },
     "Warm-up" : {
       "localizations" : {
         "da" : {
@@ -6683,16 +7062,32 @@
     },
     "Watching. Lucina hears “%@” when it happens." : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Holder øje. Lucina hører “%@”, når det sker."
+          }
+        },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "In osservazione. Lucina riceve “%@” quando succede."
           }
+        }
+      }
+    },
+    "Wearing" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indossa"
+          }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Holder øje. Lucina hører “%@”, når det sker."
+            "value" : "Har på"
           }
         }
       }
@@ -6859,16 +7254,16 @@
     },
     "When the chosen apps pass the limit today, Lucina gets a note with the name above. iOS never shares which apps or how long." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quando le app scelte superano il limite oggi, Lucina riceve un avviso con il nome sopra. iOS non rivela mai quali app né per quanto."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Når de valgte apps passerer grænsen i dag, får Lucina en besked med navnet ovenfor. iOS deler aldrig hvilke apps eller hvor længe."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando le app scelte superano il limite oggi, Lucina riceve un avviso con il nome sopra. iOS non rivela mai quali app né per quanto."
           }
         }
       }
@@ -6981,6 +7376,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opzioni allenamento"
+          }
+        }
+      }
+    },
+    "You can also ask her: “put on your gym clothes”." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Puoi anche chiederlo a lei: «mettiti la tuta da palestra»."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du kan også bede hende: »tag træningstøjet på«."
           }
         }
       }
