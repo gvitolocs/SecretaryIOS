@@ -478,15 +478,13 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
   );
 }
 
+/**
+ * The stream state for screen readers only: the header status dot is the one visible connection
+ * signal (as on iOS).
+ */
 function LiveIndicator() {
   return (
-    <span
-      class="live"
-      classList={{ "live--on": streamStatus() === "live" }}
-      role="status"
-      title={streamStatus() === "live" ? t("chat.liveTitle") : undefined}
-    >
-      <span class="live-dot" aria-hidden="true" />
+    <span class="sr-only" role="status">
       {t(STREAM_LABELS[streamStatus()])}
     </span>
   );

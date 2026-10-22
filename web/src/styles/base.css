@@ -2403,3 +2403,23 @@ select.text-input option {
     animation: none;
   }
 }
+
+/* One subtle connection indicator (iOS parity): a faint 6 px dot while all is well; the full,
+   glowing 8 px dot only on problems. */
+.status {
+  min-width: 0;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.dot--ok {
+  width: 6px;
+  height: 6px;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.dot--ok::after {
+  animation: none;
+}
