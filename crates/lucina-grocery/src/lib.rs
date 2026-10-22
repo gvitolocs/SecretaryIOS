@@ -79,6 +79,10 @@ pub enum GroceryError {
         message: String,
         revision: Option<i64>,
         conflicts: Vec<String>,
+        /// With `revision_conflict`: the batch's op ids that were applied
+        /// before (receipts). The client drops them instead of rebasing them
+        /// as new ops (docs/verification.md, S1).
+        duplicates: Vec<String>,
     },
     #[error("grocery database unreachable: {0}")]
     Unavailable(String),
@@ -93,6 +97,7 @@ impl GroceryError {
             message: message.into(),
             revision: None,
             conflicts: Vec::new(),
+            duplicates: Vec::new(),
         }
     }
 
@@ -336,13 +341,26 @@ struct Ctx<'a> {
     translations: HashMap<String, Translation>,
     merged: bool,
     edited: HashSet<String>,
+    /// `grocery.shopping_row_aliases` exists (migration 004).
+    aliases: bool,
 }
 
 pub struct GroceryRepo {
     pool: PgPool,
     catalog: Catalog,
     seeded: tokio::sync::OnceCell<()>,
+    aliases: tokio::sync::OnceCell<bool>,
     namer: ItemNamer,
+}
+
+/// The client's optimistic row id of an add op: `rowId` (item-objects
+/// clients), or a UUID in `itemId` (the first v2 clients). See S2.
+pub fn add_row_id(op: &Value) -> Option<Uuid> {
+    ["rowId", "itemId"]
+        .iter()
+        .filter_map(|k| str_field(op, k))
+        .find(|s| is_uuid(s))
+        .and_then(|s| Uuid::parse_str(s).ok())
 }
 
 impl std::fmt::Debug for GroceryRepo {
@@ -369,6 +387,7 @@ impl GroceryRepo {
             pool,
             catalog,
             seeded: tokio::sync::OnceCell::new(),
+            aliases: tokio::sync::OnceCell::new(),
             namer: ItemNamer::default(),
         }
     }
@@ -387,6 +406,27 @@ impl GroceryRepo {
     /// The current shopping catalog.
     pub fn catalog_index(&self) -> std::sync::Arc<CatalogIndex> {
         self.catalog.index()
+    }
+
+    /// Whether migration 004 (`grocery.shopping_row_aliases`) is applied.
+    /// Without it an add that merges into an existing row records no alias
+    /// (the behaviour before S2's fix); everything else works.
+    async fn aliases_ready(&self) -> bool {
+        *self
+            .aliases
+            .get_or_init(|| async {
+                let found: std::result::Result<Option<bool>, sqlx::Error> = sqlx::query_scalar(
+                    "SELECT to_regclass('grocery.shopping_row_aliases') IS NOT NULL",
+                )
+                .fetch_optional(&self.pool)
+                .await;
+                let ok = matches!(found, Ok(Some(true)));
+                if !ok {
+                    tracing::warn!("grocery.shopping_row_aliases missing: apply migration 004");
+                }
+                ok
+            })
+            .await
     }
 
     /// Seed `grocery.canonical_products` once (as Node's `ready()`).
@@ -1060,8 +1100,51 @@ impl GroceryRepo {
         Ok(out)
     }
 
+    /// A row or an alias already has this id (any list, any user).
+    async fn row_id_taken(
+        conn: &mut PgConnection,
+        aliases: bool,
+        id: Uuid,
+    ) -> std::result::Result<bool, sqlx::Error> {
+        let sql = if aliases {
+            "SELECT EXISTS (SELECT 1 FROM grocery.shopping_list_items WHERE id = $1) \
+             OR EXISTS (SELECT 1 FROM grocery.shopping_row_aliases WHERE alias_id = $1)"
+        } else {
+            "SELECT EXISTS (SELECT 1 FROM grocery.shopping_list_items WHERE id = $1)"
+        };
+        sqlx::query_scalar(sql).bind(id).fetch_one(&mut *conn).await
+    }
+
+    /// The row an op names: its id, or (S2) a client's optimistic row id
+    /// recorded as an alias when that client's add merged into another row.
+    async fn resolve_row(
+        conn: &mut PgConnection,
+        aliases: bool,
+        id: Uuid,
+    ) -> std::result::Result<Uuid, sqlx::Error> {
+        if !aliases {
+            return Ok(id);
+        }
+        let exists: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM grocery.shopping_list_items WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if exists.is_some() {
+            return Ok(id);
+        }
+        let target: Option<Uuid> = sqlx::query_scalar(
+            "SELECT item_id FROM grocery.shopping_row_aliases WHERE alias_id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(target.unwrap_or(id))
+    }
+
     async fn item_in_list(
         conn: &mut PgConnection,
+        aliases: bool,
         list_id: Uuid,
         item_id: Option<&str>,
     ) -> OpResult<ItemRow> {
@@ -1071,6 +1154,7 @@ impl GroceryRepo {
         else {
             return Err(OpError::Rejected("item_not_found"));
         };
+        let id = Self::resolve_row(conn, aliases, id).await?;
         sqlx::query_as::<_, ItemRow>(&format!(
             "SELECT {ITEM_COLUMNS} FROM grocery.shopping_list_items i WHERE i.id = $1 AND i.list_id = $2 FOR UPDATE"
         ))
@@ -1096,6 +1180,7 @@ impl GroceryRepo {
     async fn find_conflicts(
         &self,
         conn: &mut PgConnection,
+        aliases: bool,
         list: &ListRow,
         ops: &[&Value],
         expected: i64,
@@ -1130,6 +1215,7 @@ impl GroceryRepo {
                 .filter(|s| is_uuid(s))
                 .and_then(|s| Uuid::parse_str(s).ok())
             {
+                let id = Self::resolve_row(conn, aliases, id).await?;
                 sqlx::query(
                     "SELECT rev FROM grocery.shopping_list_items WHERE id = $1 AND list_id = $2",
                 )
@@ -1259,6 +1345,20 @@ impl GroceryRepo {
                     .bind(&section)
                     .execute(&mut *conn)
                     .await?;
+                    // S2: later ops of this client name its optimistic row.
+                    if let Some(rid) = add_row_id(op).filter(|r| *r != existing.id) {
+                        if ctx.aliases && !Self::row_id_taken(conn, ctx.aliases, rid).await? {
+                            sqlx::query(
+                                "INSERT INTO grocery.shopping_row_aliases (alias_id, list_id, item_id) \
+                                 VALUES ($1, $2, $3) ON CONFLICT (alias_id) DO NOTHING",
+                            )
+                            .bind(rid)
+                            .bind(list_id)
+                            .bind(existing.id)
+                            .execute(&mut *conn)
+                            .await?;
+                        }
+                    }
                     return Ok(Some(existing.id));
                 }
                 let product = resolve_canonical_product(&typed);
@@ -1272,10 +1372,16 @@ impl GroceryRepo {
                 .execute(&mut *conn)
                 .await?;
                 let position = Self::next_position(conn, list_id).await?;
+                // S2: the client's fresh row id becomes the row's id, so its
+                // later ops (same batch, or after a lost ack) find the row.
+                let new_id = match add_row_id(op) {
+                    Some(rid) if !Self::row_id_taken(conn, ctx.aliases, rid).await? => rid,
+                    _ => Uuid::new_v4(),
+                };
                 let row = sqlx::query(
                     "INSERT INTO grocery.shopping_list_items (user_id, list_id, product_id, raw_name, status, item_id, catalog_item_id, \
-                     specification, quantity, unit, section_override, position, rev, modified_by) \
-                     VALUES ($1, $2, $3, $4, 'needed', $5, $6, $7, $8::numeric, $9, $10, $11, $12, $13) RETURNING id",
+                     specification, quantity, unit, section_override, position, rev, modified_by, id) \
+                     VALUES ($1, $2, $3, $4, 'needed', $5, $6, $7, $8::numeric, $9, $10, $11, $12, $13, $14) RETURNING id",
                 )
                 .bind(ctx.user_id)
                 .bind(list_id)
@@ -1290,6 +1396,7 @@ impl GroceryRepo {
                 .bind(position)
                 .bind(ctx.rev)
                 .bind(ctx.modified_by)
+                .bind(new_id)
                 .fetch_one(&mut *conn)
                 .await?;
                 Ok(Some(row.get::<Uuid, _>("id")))
@@ -1299,7 +1406,7 @@ impl GroceryRepo {
                 let reference =
                     op_text(op.get("itemId"), MAX_CATALOG_ID, true)?.unwrap_or_default();
                 let object_id = if is_uuid(&reference) {
-                    Self::item_in_list(conn, list_id, Some(&reference))
+                    Self::item_in_list(conn, ctx.aliases, list_id, Some(&reference))
                         .await?
                         .item_id
                         .unwrap_or_default()
@@ -1334,7 +1441,8 @@ impl GroceryRepo {
                 Ok(row.map(|r| r.get::<Uuid, _>("id")))
             }
             "rename" => {
-                let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
+                let item =
+                    Self::item_in_list(conn, ctx.aliases, list_id, str_field(op, "itemId")).await?;
                 if item.status == "removed" {
                     return Ok(Some(item.id));
                 }
@@ -1405,7 +1513,8 @@ impl GroceryRepo {
                 Ok(Some(item.id))
             }
             "need" | "purchase" | "remove" => {
-                let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
+                let item =
+                    Self::item_in_list(conn, ctx.aliases, list_id, str_field(op, "itemId")).await?;
                 // Deleted stays deleted.
                 if item.status == "removed" {
                     return Ok(Some(item.id));
@@ -1419,7 +1528,8 @@ impl GroceryRepo {
                 Ok(Some(item.id))
             }
             "set_spec" | "set_quantity" | "set_section" => {
-                let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
+                let item =
+                    Self::item_in_list(conn, ctx.aliases, list_id, str_field(op, "itemId")).await?;
                 if item.status == "removed" {
                     return Ok(Some(item.id));
                 }
@@ -1461,7 +1571,8 @@ impl GroceryRepo {
                 Ok(Some(item.id))
             }
             "reorder" => {
-                let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
+                let item =
+                    Self::item_in_list(conn, ctx.aliases, list_id, str_field(op, "itemId")).await?;
                 let position = op.get("position").map(js_to_number).unwrap_or(f64::NAN);
                 if !position.is_finite()
                     || position.fract() != 0.0
@@ -1489,7 +1600,8 @@ impl GroceryRepo {
                 Ok(Some(item.id))
             }
             "move" => {
-                let item = Self::item_in_list(conn, list_id, str_field(op, "itemId")).await?;
+                let item =
+                    Self::item_in_list(conn, ctx.aliases, list_id, str_field(op, "itemId")).await?;
                 if item.status == "removed" {
                     return Ok(Some(item.id));
                 }
@@ -1618,17 +1730,22 @@ impl GroceryRepo {
             translations,
             merged: false,
             edited: HashSet::new(),
+            aliases: self.aliases_ready().await,
         };
         if let Some(expected) = expected_revision.filter(|e| *e < revision) {
             let conflicts = self
-                .find_conflicts(&mut tx, &list, &fresh, expected)
+                .find_conflicts(&mut tx, ctx.aliases, &list, &fresh, expected)
                 .await?;
             if !conflicts.is_empty() {
+                // Nothing is recorded on a 409, but the ops of this batch that
+                // were applied before (a lost ack) are named, so the client
+                // drops them instead of rebasing them into new ops (S1).
                 return Err(GroceryError::Shopping {
                     code: "revision_conflict",
                     message: "The list changed since expectedRevision".into(),
                     revision: Some(revision),
                     conflicts,
+                    duplicates,
                 });
             }
         }

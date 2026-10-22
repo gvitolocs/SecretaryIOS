@@ -881,6 +881,7 @@ fn grocery_error(e: GroceryError) -> ApiError {
             message,
             revision,
             conflicts,
+            duplicates,
         } => {
             let status = match code {
                 "list_not_found" | "item_not_found" => 404,
@@ -889,7 +890,9 @@ fn grocery_error(e: GroceryError) -> ApiError {
             };
             let mut err = ApiError::new(status, code, message);
             if code == "revision_conflict" {
-                err.extra = Some(json!({"revision": revision, "conflicts": conflicts}));
+                err.extra = Some(
+                    json!({"revision": revision, "conflicts": conflicts, "duplicates": duplicates}),
+                );
             }
             err
         }
