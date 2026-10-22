@@ -36,6 +36,12 @@
     },
     "%@ hair: %@" : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hår under %@: %@"
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "new",
@@ -46,12 +52,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Capelli in %@: %@"
-          }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hår under %@: %@"
           }
         }
       }
@@ -156,6 +156,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld / %lld allenamenti"
+          }
+        }
+      }
+    },
+    "%lld characters" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld caratteri"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld tegn"
           }
         }
       }
@@ -950,6 +966,22 @@
         }
       }
     },
+    "Briefings and documents saved by Lucina, ChatGPT, Grok or Claude Code show up here. You can write one too." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Qui trovi i briefing e i documenti salvati da Lucina, ChatGPT, Grok o Claude Code. Puoi anche scriverne una tu."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Briefinger og dokumenter, som Lucina, ChatGPT, Grok eller Claude Code gemmer, vises her. Du kan også skrive en selv."
+          }
+        }
+      }
+    },
     "Browsing and Screen Time" : {
       "localizations" : {
         "da" : {
@@ -1272,16 +1304,16 @@
     },
     "Colour" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Colore"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Farve"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Colore"
           }
         }
       }
@@ -1426,6 +1458,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Impossibile esportare i dati della palestra."
+          }
+        }
+      }
+    },
+    "Couldn't load the note" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile caricare la nota"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke indlæse noten"
           }
         }
       }
@@ -1893,6 +1941,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Eliminato: %@"
+          }
+        }
+      }
+    },
+    "Deleted for good on %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eliminata definitivamente il %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slettes endeligt %@"
+          }
+        }
+      }
+    },
+    "Deleted notes stay here for 30 days." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le note eliminate restano qui per 30 giorni."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slettede noter bliver her i 30 dage."
           }
         }
       }
@@ -2540,6 +2620,22 @@
         }
       }
     },
+    "Filter by tag" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filtra per tag"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filtrer efter tag"
+          }
+        }
+      }
+    },
     "Finish" : {
       "localizations" : {
         "da" : {
@@ -2690,6 +2786,22 @@
         }
       }
     },
+    "Give the note a title." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dai un titolo alla nota."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giv noten en titel."
+          }
+        }
+      }
+    },
     "Goal" : {
       "localizations" : {
         "da" : {
@@ -2804,16 +2916,16 @@
     },
     "Gym clothes and a ponytail in the Gym, her shopping outfit in Shopping, the default everywhere else." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tuta e coda in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Træningstøj og hestehale under Træning, indkøbstøjet under Indkøb, standardtøjet alle andre steder."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tuta e coda in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove."
           }
         }
       }
@@ -2837,64 +2949,64 @@
     },
     "Hair" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Capelli"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hår"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capelli"
           }
         }
       }
     },
     "Hair colour: %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Colore dei capelli: %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hårfarve: %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Colore dei capelli: %@"
           }
         }
       }
     },
     "Hair colours appear here once they are installed on the server." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "I colori compariranno qui quando saranno installati sul server."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hårfarver dukker op her, når de er installeret på serveren."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I colori compariranno qui quando saranno installati sul server."
           }
         }
       }
     },
     "Hairstyles appear here once they are installed on the server." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Le acconciature compariranno qui quando saranno installate sul server."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Frisurer dukker op her, når de er installeret på serveren."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le acconciature compariranno qui quando saranno installate sul server."
           }
         }
       }
@@ -2965,16 +3077,16 @@
     },
     "Her own hair" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Capelli suoi"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hendes eget hår"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capelli suoi"
           }
         }
       }
@@ -3454,6 +3566,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina può aggiungere e completare promemoria e vede quelli in arrivo. Per eliminarli ti chiede prima."
+          }
+        }
+      }
+    },
+    "Lucina can recall it: ask her “what's in the note %@”." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina la ritrova: chiedile “cosa c'è nella nota %@”."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina kan finde den frem: spørg “hvad står der i noten %@”."
           }
         }
       }
@@ -4002,6 +4130,22 @@
         }
       }
     },
+    "More" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altro"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mere"
+          }
+        }
+      }
+    },
     "Most reps" : {
       "localizations" : {
         "da" : {
@@ -4030,6 +4174,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sposta in un'altra lista"
+          }
+        }
+      }
+    },
+    "Move “%@” to the trash? You can restore it for 30 days." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spostare “%@” nel cestino? Potrai ripristinarla per 30 giorni."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Flyt “%@” til papirkurven? Du kan gendanne den i 30 dage."
           }
         }
       }
@@ -4114,18 +4274,34 @@
         }
       }
     },
-    "Natural" : {
+    "Name: %@" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Naturale"
+            "value" : "Nome: %@"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Navn: %@"
+          }
+        }
+      }
+    },
+    "Natural" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Naturlig"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naturale"
           }
         }
       }
@@ -4190,6 +4366,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nuova misura"
+          }
+        }
+      }
+    },
+    "New note" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nuova nota"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ny note"
           }
         }
       }
@@ -4270,6 +4462,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ancora nessuna misurazione. Registra la prima pesata qui sopra."
+          }
+        }
+      }
+    },
+    "No notes yet" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ancora nessuna nota"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen noter endnu"
           }
         }
       }
@@ -4386,6 +4594,38 @@
         }
       }
     },
+    "Notes" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Note"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noter"
+          }
+        }
+      }
+    },
+    "Nothing matches “%@”." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessuna nota corrisponde a “%@”."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet matcher “%@”."
+          }
+        }
+      }
+    },
     "Nothing to buy" : {
       "localizations" : {
         "da" : {
@@ -4398,6 +4638,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niente da comprare"
+          }
+        }
+      }
+    },
+    "Nothing to preview yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ancora niente da mostrare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet at vise endnu."
           }
         }
       }
@@ -4580,16 +4836,16 @@
     },
     "Outfit" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vestito"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tøj"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vestito"
           }
         }
       }
@@ -4658,6 +4914,22 @@
         }
       }
     },
+    "Pin" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Metti in evidenza"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør"
+          }
+        }
+      }
+    },
     "Pinned" : {
       "localizations" : {
         "da" : {
@@ -4702,6 +4974,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Libbre"
+          }
+        }
+      }
+    },
+    "Preview" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anteprima"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forhåndsvisning"
           }
         }
       }
@@ -5042,6 +5330,22 @@
         }
       }
     },
+    "Restore" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gendan"
+          }
+        }
+      }
+    },
     "Restore JSON backup" : {
       "localizations" : {
         "da" : {
@@ -5202,6 +5506,22 @@
         }
       }
     },
+    "Saved by %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salvata da %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemt af %@"
+          }
+        }
+      }
+    },
     "Screen Time" : {
       "localizations" : {
         "da" : {
@@ -5214,6 +5534,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tempo di utilizzo"
+          }
+        }
+      }
+    },
+    "Search notes" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerca nelle note"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Søg i noter"
           }
         }
       }
@@ -5917,16 +6253,32 @@
     },
     "Style her hair: %@" : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt hendes hår: %@"
+          }
+        },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Acconciatura: %@"
           }
+        }
+      }
+    },
+    "Tags, separated by commas" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag, separati da virgole"
+          }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sæt hendes hår: %@"
+            "value" : "Tags, adskilt med komma"
           }
         }
       }
@@ -6007,6 +6359,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Prova la connessione"
+          }
+        }
+      }
+    },
+    "Text (Markdown)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Testo (Markdown)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tekst (Markdown)"
           }
         }
       }
@@ -6203,6 +6571,22 @@
         }
       }
     },
+    "The note is too long (256 KB at most)." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La nota è troppo lunga (al massimo 256 KB)."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noten er for lang (højst 256 KB)."
+          }
+        }
+      }
+    },
     "The on-device gym engine isn't available." : {
       "localizations" : {
         "da" : {
@@ -6363,6 +6747,22 @@
         }
       }
     },
+    "The trash is empty." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il cestino è vuoto."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Papirkurven er tom."
+          }
+        }
+      }
+    },
     "Theme" : {
       "localizations" : {
         "da" : {
@@ -6475,6 +6875,38 @@
         }
       }
     },
+    "This note changed while you were editing (Lucina may have added to it). Your text is kept here: copy it, close, and edit again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La nota è cambiata mentre la modificavi (forse Lucina ha aggiunto qualcosa). Il tuo testo resta qui: copialo, chiudi e modifica di nuovo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noten blev ændret, mens du redigerede (måske har Lucina tilføjet noget). Din tekst er her stadig: kopiér den, luk og rediger igen."
+          }
+        }
+      }
+    },
+    "This note doesn't exist anymore." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa nota non esiste più."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne note findes ikke længere."
+          }
+        }
+      }
+    },
     "This server doesn't offer password sign-in yet. Use your access key." : {
       "localizations" : {
         "da" : {
@@ -6551,6 +6983,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Timer"
+          }
+        }
+      }
+    },
+    "Title" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Titolo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Titel"
           }
         }
       }
@@ -6795,6 +7243,22 @@
         }
       }
     },
+    "Trash" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cestino"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Papirkurv"
+          }
+        }
+      }
+    },
     "Trend" : {
       "localizations" : {
         "da" : {
@@ -6955,6 +7419,22 @@
         }
       }
     },
+    "Unpin" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Togli dall'evidenza"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frigør"
+          }
+        }
+      }
+    },
     "Unpins the outfit and follows the section again" : {
       "localizations" : {
         "da" : {
@@ -6967,6 +7447,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sblocca il vestito e torna a seguire la sezione"
+          }
+        }
+      }
+    },
+    "Updated %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiornata %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opdateret %@"
           }
         }
       }
@@ -7563,6 +8059,38 @@
         }
       }
     },
+    "Write" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scrivi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skriv"
+          }
+        }
+      }
+    },
+    "You" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tu"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dig"
+          }
+        }
+      }
+    },
     "You can also ask her: “put on your gym clothes”." : {
       "localizations" : {
         "da" : {
@@ -7766,6 +8294,22 @@
     },
     "·" : {
       "shouldTranslate" : false
+    },
+    "“%@” is in the trash." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” è nel cestino."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” er i papirkurven."
+          }
+        }
+      }
     },
     "🛒 Other" : {
       "localizations" : {

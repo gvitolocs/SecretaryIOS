@@ -23,6 +23,8 @@ final class AppModel {
     /// Shown above the chat when Lucina is unreachable or slow.
     var lucinaNotice: String?
     var selectedTab: Tab = .chat
+    /// Notes open on top of the chat (the tab bar has no room for a sixth tab on iPhone).
+    var showNotes = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -36,6 +38,8 @@ final class AppModel {
     /// Set when the on-device engine could not open (the server engine is used instead).
     private(set) var gymEngineError: String?
     let weight: WeightStore
+    /// Notes, briefings and documents (/v1/notes).
+    let notes: NotesStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -77,11 +81,16 @@ final class AppModel {
             if case let .failure(error) = engine { gymEngineError = error.localizedDescription } else { gymEngineError = nil }
         }
         weight = WeightStore(client: { BodyClient(client: client) })
+        notes = NotesStore(api: { NotesAPI(client: client) })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         lucina = LucinaStageController(client: client, chat: chat)
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         if let tab = launch.initialTab { selectedTab = tab }
+        if launch.openNotes {
+            selectedTab = .chat
+            showNotes = true
+        }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -89,9 +98,11 @@ final class AppModel {
         chat.onTransportSuccess = onSuccess
         let device = device
         let wardrobe = wardrobe
+        let notes = notes
         chat.onItems = { items in
             device.bridge.consider(items)
             wardrobe.consider(items)
+            notes.consider(items)
         }
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
@@ -101,6 +112,7 @@ final class AppModel {
         gym.onTransportError = onError
         transportErrorHandler = onError
         weight.onTransportError = onError
+        notes.onTransportError = onError
         client.onEndpointChange = { [weak self] url in
             Task { @MainActor in self?.baseURL = url }
         }
@@ -299,11 +311,14 @@ final class AppModel {
 struct LaunchOptions {
     var resetState = false
     var initialTab: AppModel.Tab?
+    /// `-SecretaryInitialTab notes`: start on the Notes screen.
+    var openNotes = false
 
     init(defaults: UserDefaults) {
         #if DEBUG
         resetState = defaults.bool(forKey: "SecretaryResetState")
         initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
+        openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         #endif
     }
 }

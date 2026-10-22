@@ -321,4 +321,31 @@ final class SecretaryFlowTests: XCTestCase {
         XCTAssertTrue(entry.waitForExistence(timeout: 10), "logged entry \(value) kg")
         attach(app, "Weight")
     }
+
+    // MARK: - Notes
+
+    func testNotesListDetailAndNewNote() {
+        let app = launch(tab: "notes")
+        signIn(app)
+        let row = app.buttons["note-reading-list"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "the mock's sample note is listed")
+        row.tap()
+        XCTAssertTrue(app.staticTexts["Reading list"].waitForExistence(timeout: 10), "the note opens")
+        XCTAssertTrue(app.staticTexts["Name: reading-list"].exists)
+        attach(app, "Note")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        app.buttons["newNoteButton"].tap()
+        let title = app.textFields["noteTitleField"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.tap()
+        let name = "UI test \(Int.random(in: 1000...9999))"
+        title.typeText(name)
+        let content = app.textViews["noteContentField"]
+        content.tap()
+        content.typeText("Hello from the UI test")
+        app.buttons["saveNoteButton"].tap()
+        XCTAssertTrue(app.staticTexts[name].waitForExistence(timeout: 10), "the new note is listed")
+        attach(app, "Notes")
+    }
 }

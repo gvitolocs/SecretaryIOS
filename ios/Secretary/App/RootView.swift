@@ -76,7 +76,7 @@ struct MainTabs: View {
     private var tabs: some View {
         @Bindable var app = app
         return TabView(selection: $app.selectedTab) {
-            NavigationStack { ChatView().lucinaStatusToolbar() }
+            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
             NavigationStack { ShoppingTab().lucinaStatusToolbar() }
@@ -88,6 +88,7 @@ struct MainTabs: View {
             NavigationStack { WeightView().lucinaStatusToolbar() }
                 .tabItem { Label("Weight", systemImage: "scalemass") }
                 .tag(AppModel.Tab.weight)
+
             NavigationStack { SettingsView().lucinaStatusToolbar() }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppModel.Tab.settings)

@@ -13,6 +13,7 @@ struct SecretaryApp: App {
                 .environment(app.shoppingV2)
                 .environment(app.gym)
                 .environment(app.weight)
+                .environment(app.notes)
                 .environment(app.health)
                 .environment(app.wardrobe)
                 .task {
