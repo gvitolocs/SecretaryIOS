@@ -7,7 +7,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Inventory of the Node Lucina (every module PORT / DROP / OTHER-BOT) and the port plan → `docs/lucina-rust/`
 - [ ] Core crates on branch `lucina-rs`: `lucina-llm` (DeepSeek + tools), `lucina-tools` (plugins, confirmation flow),
       `lucina-memory` (Honcho), `lucina-store` (timeline/reminders, Node-compatible), `lucina-grocery`, `lucina-server`
-- [ ] Phase 1: the Secretary API (app + web) served by the Rust Lucina, side by side with Node, then cut over
+- [x] Phase 1: Secretary API on the Rust Lucina — CUT OVER 2026-10-22 16:35 (parity 106/106, parsers 239/239)
 - [ ] Phase 2: reminders and scheduler (single writer)
 - [ ] Phase 3: Telegram
 - [ ] Phase 4: Discord (owner: keep, with Lucina's persona; needs the owner's Discord user id)
