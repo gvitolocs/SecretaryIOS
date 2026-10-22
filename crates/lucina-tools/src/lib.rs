@@ -485,7 +485,7 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 12);
+        assert_eq!(all.names().len(), 13);
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));
         assert_eq!(some.names(), vec!["time", "calculator"]);
         assert!(Registry::builtin(&ToolSelection::parse("none")).is_empty());
