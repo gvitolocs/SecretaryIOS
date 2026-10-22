@@ -1,58 +1,44 @@
 //! `POST /api/secretary/chat`: one Lucina text turn.
 //!
-//! Pipeline: timeline (owner item) -> pending-confirmation check -> context
-//! (turn metadata, recent turns, delivered reminders, Honcho) -> planner
-//! (`LUCINA_PLANNER=json`: Node's JSON-action planner; `tools`: the native
-//! tool loop) -> actions -> timeline (tool items, reply) -> Honcho remember
-//! (readwrite only).
+//! `LUCINA_PLANNER=json` (default) is the Node Lucina's `runChatTurn`, step
+//! for step: timeline user item (with `meta: {via: "mcp", caller}` on Lucina
+//! MCP turns) → turn context (tier-0 / DeepSeek intent, context policy,
+//! gated sources) → outfit → notes → calendar → grocery → the JSON-action
+//! planner → MCP guard → reminders / jobs / reply → recent turns, Honcho
+//! (`readwrite` only), the Lucina item.
+//!
+//! `LUCINA_PLANNER=tools` is the native tool loop (Rust tools, confirmation
+//! flow); it is not part of the Node parity surface.
 
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures_util::FutureExt;
+use lucina_intent::mcp::{self, McpTurn};
+use lucina_intent::{grocery as gi, notes as nt, outfit};
 use lucina_llm::Message;
 use lucina_memory::{secretary_session_id, MemoryMode};
+use lucina_store::jobs::Job;
 use lucina_store::parser::{parse_at_time, parse_date_part, parse_reminder_message, ParseOptions};
-use lucina_store::reminders::{
-    delivered_context, format_confirmation, format_list, CreateReminder, Reminder,
-};
+use lucina_store::reminders::{format_confirmation, format_list, CreateReminder};
 use lucina_store::timeline::{Meta, TimelineTurn};
-use lucina_store::timeutil::{iso_ms, utf16_len};
+use lucina_store::timeutil::{iso_ms, now_iso, utf16_len};
 use lucina_tools::agent::{self, AgentConfig, ToolRecord};
 use lucina_tools::pending::{classify_reply, Reply};
-use lucina_tools::{Ctx, Effect, Registry, ToolSelection};
+use lucina_tools::{Ctx, Effect};
 use serde_json::{json, Value};
 
 use crate::api::{optional_string, owner_reminders, ApiError, PLATFORM_LABEL, USER_LABEL};
 use crate::planner::TurnInput;
 use crate::prompts::Prompts;
-use crate::{AppState, PlannerMode};
+use crate::{jobs, AppState, PlannerMode};
 
-const MAX_MESSAGE_CHARS: usize = 4000;
+/// Counted after the MCP prefix (which may add up to 100 more on the wire).
+pub const MAX_MESSAGE_CHARS: usize = 12_000;
 const CLIENT_MESSAGE_TTL: Duration = Duration::from_secs(600);
 const CLIENT_MESSAGE_KEEP: usize = 200;
-const PLANNER_PLATFORM: &str = "secretary";
-const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
-const ASYNC_ACTIONS: [&str; 6] = [
-    "cursor_task",
-    "oracle_monitor_task",
-    "spreadsheet_update_task",
-    "graph_task",
-    "generate_image",
-    "social_post_task",
-];
-
-fn async_label(action: &str) -> &'static str {
-    match action {
-        "cursor_task" => "Harness task",
-        "oracle_monitor_task" => "Oracle monitor check",
-        "spreadsheet_update_task" => "spreadsheet update",
-        "graph_task" => "graph",
-        "generate_image" => "image generation",
-        "social_post_task" => "social post",
-        _ => "task",
-    }
-}
+pub const PLANNER_PLATFORM: &str = "secretary";
+pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
 /// Validate the body, dedupe `clientMessageId` retries, run the turn.
 pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
@@ -60,10 +46,13 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
         Value::String(s) if !s.trim().is_empty() => lucina_store::timeutil::js_trim(s).to_owned(),
         _ => return Err(ApiError::bad_request("message is required")),
     };
-    if utf16_len(&message) > MAX_MESSAGE_CHARS {
-        return Err(ApiError::bad_request(format!(
+    let too_long = || {
+        ApiError::bad_request(format!(
             "message must be at most {MAX_MESSAGE_CHARS} characters"
-        )));
+        ))
+    };
+    if utf16_len(&message) > MAX_MESSAGE_CHARS + mcp::PREFIX_ROOM {
+        return Err(too_long());
     }
     let requested = optional_string(&body, "sessionId", 64)?;
     if !requested.is_empty()
@@ -86,10 +75,18 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
         return Err(ApiError::bad_request("channel must be web or ios"));
     }
     let session = secretary_session_id(&requested, &st.cfg.default_session);
-    tracing::info!(session_id = %session, %channel, chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
+    let mcp_turn = mcp::turn_info(&requested, &message);
+    let text = mcp_turn
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_else(|| message.clone());
+    if utf16_len(&text) > MAX_MESSAGE_CHARS {
+        return Err(too_long());
+    }
+    tracing::info!(session_id = %session, %channel, mcp = mcp_turn.as_ref().map(|m| m.caller.as_str()), chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
-        return run_turn(st, message, session, None, channel).await;
+        return run_turn(st, text, session, None, channel, mcp_turn).await;
     };
     let key = format!("{session}:{cmid_value}");
     enum Slot {
@@ -112,7 +109,7 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
                         None => break,
                     };
                 }
-                let fut = run_turn(st.clone(), message, session, cmid, channel)
+                let fut = run_turn(st.clone(), text, session, cmid, channel, mcp_turn)
                     .boxed()
                     .shared();
                 map.insert(key.clone(), (Instant::now(), fut.clone()));
@@ -138,12 +135,16 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
     out
 }
 
+/// What the turn answered.
 struct Finish {
     reply: String,
     action: String,
     extra: serde_json::Map<String, Value>,
     meta: Option<Meta>,
     action_result: String,
+    job: Option<Job>,
+    /// The plan of a job to start once the ack item is on the timeline.
+    job_plan: Option<Value>,
 }
 
 impl Finish {
@@ -154,7 +155,21 @@ impl Finish {
             extra: serde_json::Map::new(),
             meta: None,
             action_result: String::new(),
+            job: None,
+            job_plan: None,
         }
+    }
+
+    fn with(mut self, action_result: impl Into<String>, meta: Option<Meta>) -> Self {
+        self.action_result = action_result.into();
+        self.meta = meta;
+        self
+    }
+
+    fn refusal(persona: &str, blocked: &str) -> Self {
+        let mut f = Finish::reply(mcp::refusal(persona, blocked), "needs_confirmation");
+        f.extra.insert("blockedAction".into(), json!(blocked));
+        f
     }
 }
 
@@ -200,6 +215,656 @@ fn resolve_reminder(message: &str, plan: &Value, o: &ParseOptions) -> Option<(St
     }
 }
 
+/// Everything a turn needs once it is past validation.
+struct Turn<'a> {
+    st: &'a AppState,
+    message: String,
+    session: String,
+    channel: String,
+    mcp: Option<McpTurn>,
+    user_label: String,
+    extra_system: String,
+}
+
+impl Turn<'_> {
+    fn persona(&self) -> &str {
+        &self.st.cfg.persona
+    }
+
+    fn input<'b>(&'b self, memory: &'b str, platform: &'b str) -> TurnInput<'b> {
+        TurnInput {
+            user_text: &self.message,
+            memory,
+            user_label: &self.user_label,
+            platform,
+        }
+    }
+}
+
+async fn run_turn(
+    st: AppState,
+    message: String,
+    session: String,
+    cmid: Option<String>,
+    channel: String,
+    mcp_turn: Option<McpTurn>,
+) -> Result<Value, ApiError> {
+    if st.cfg.planner == PlannerMode::Tools {
+        return tools_turn(st, message, session, cmid, channel).await;
+    }
+    let (user_label, extra_system) = match &mcp_turn {
+        Some(m) => (
+            format!("{USER_LABEL}; {}", mcp::note(m)),
+            format!("{SECRETARY_EXTRA_SYSTEM} {}", mcp::note(m)),
+        ),
+        None => (USER_LABEL.to_owned(), SECRETARY_EXTRA_SYSTEM.to_owned()),
+    };
+    let turn_meta = mcp_turn.as_ref().map(|m| Meta {
+        via: Some("mcp".into()),
+        caller: Some(m.caller.clone()),
+        ..Meta::default()
+    });
+    let timeline =
+        TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
+    let user_item = timeline.record_user(&message, Vec::new());
+    let t = Turn {
+        st: &st,
+        message,
+        session,
+        channel,
+        mcp: mcp_turn,
+        user_label,
+        extra_system,
+    };
+    let prepared =
+        crate::context::prepare(&st, &t.session, &t.message, &t.user_label, PLANNER_PLATFORM).await;
+    st.recent.append(&t.session, "user", &t.message, Utc::now());
+
+    let finish = json_turn(&t, &prepared, cmid.as_deref()).await;
+
+    // Finish: recent turns, Honcho, the Lucina item.
+    let reply = finish.reply.trim().to_owned();
+    st.recent
+        .append(&t.session, "assistant", &reply, Utc::now());
+    remember_turn(&st, &t, &finish.action, &reply, &finish.action_result);
+    let meta = match &finish.job {
+        Some(job) => Some(Meta {
+            job_id: Some(job.id.clone()),
+            ..Meta::default()
+        }),
+        None => finish.meta.clone(),
+    };
+    let lucina_item = timeline.record_lucina(&reply, Vec::new(), meta);
+    // Node queues the job's result after the ack on the turn's timeline chain.
+    if let (Some(job), Some(plan)) = (&finish.job, &finish.job_plan) {
+        spawn_job(
+            st.clone(),
+            job.clone(),
+            plan.clone(),
+            t.message.clone(),
+            prepared.memory_context.clone(),
+            t.session.clone(),
+            timeline.user_item_id(),
+            t.channel.clone(),
+        );
+    }
+    let mut out = json!({
+        "reply": reply,
+        "action": finish.action,
+        "job": finish.job.as_ref().map(|j| json!({"id": j.id, "status": j.status})),
+        "sessionId": t.session,
+        "clientMessageId": cmid,
+        "userItemId": user_item.map(|i| i.id),
+        "lucinaItemId": lucina_item.map(|i| i.id),
+    });
+    for (k, v) in finish.extra {
+        out[k] = v;
+    }
+    Ok(out)
+}
+
+/// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
+fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
+    if st.memory.mode() != MemoryMode::ReadWrite {
+        return;
+    }
+    let label = match &t.mcp {
+        Some(m) => format!(
+            "[{PLATFORM_LABEL}, via Lucina MCP from {}] {}",
+            m.caller, t.message
+        ),
+        None => format!("[{PLATFORM_LABEL}] {}", t.message),
+    };
+    let assistant = [
+        format!(
+            "[action:{}]",
+            if action.is_empty() { "reply" } else { action }
+        ),
+        reply.to_owned(),
+        if action_result.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "[result]\n{}",
+                action_result.chars().take(3000).collect::<String>()
+            )
+        },
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    let (mem, peer, sid) = (
+        st.memory.clone(),
+        st.cfg.owner_peer_id.clone(),
+        t.session.clone(),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = mem.remember(&peer, &sid, &label, &assistant).await {
+            tracing::warn!(error = %e, "secretary honcho remember failed");
+        }
+    });
+}
+
+async fn json_turn(
+    t: &Turn<'_>,
+    prepared: &crate::context::Prepared,
+    cmid: Option<&str>,
+) -> Finish {
+    let st = t.st;
+    let persona = t.persona().to_owned();
+    let memory = prepared.memory_context.as_str();
+
+    // "Mettiti il vestito da cameriera" (LUCINA_AVATAR_OUTFIT=true; never from MCP).
+    if t.mcp.is_none() && st.cfg.outfit_enabled {
+        if let Some(look) = outfit::parse_outfit_intent(&t.message) {
+            let o = crate::bridges::change_look(&st.secretary, &look).await;
+            return Finish::reply(o.reply, "avatar_outfit").with(o.action_result, o.meta);
+        }
+    }
+
+    // Notes (LUCINA_NOTES=true): save, append, read, list; MCP callers may too.
+    if st.cfg.notes_enabled {
+        let pending = !st.bridge_state.pending_part(&t.session).is_empty();
+        if let Some(intent) = nt::parse_notes_intent(&t.message, pending) {
+            if t.mcp.is_some() && !mcp::ALLOWED_ACTIONS.contains(&"notes") {
+                return Finish::refusal(&persona, "notes");
+            }
+            let source = t
+                .mcp
+                .as_ref()
+                .map(|m| mcp::note_source(&m.caller))
+                .unwrap_or_else(|| "owner".into());
+            let o = crate::bridges::notes_turn(
+                &st.secretary,
+                &st.bridge_state,
+                &intent,
+                &t.session,
+                &source,
+            )
+            .await;
+            if let Some(note) = &o.memory_note {
+                remember_note(st, &t.session, note, &source);
+            }
+            let mut reply = o.reply.clone();
+            if let Some(note) = &o.read_note {
+                let context = [nt::render_note_context(note, 12_000), memory.to_owned()]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let extra = [
+                    t.extra_system.clone(),
+                    format!("The owner asked about the saved note \"{}\" ({}); its content is in the context above.", note["title"].as_str().unwrap_or(""), note["slug"].as_str().unwrap_or("")),
+                    "Answer from it: a short summary with the key points unless a detail is asked for (a few bullet points are fine).".into(),
+                    "Say that the whole note is in the Secretary app under Notes. Never invent content that is not in the note.".into(),
+                ]
+                .join(" ");
+                reply = st
+                    .planner
+                    .generate_reply(&t.input(&context, PLATFORM_LABEL), &extra, "", "reply")
+                    .await
+                    .unwrap_or_default();
+                if reply.trim().is_empty() {
+                    reply = format!(
+                        "{}\n\n{}",
+                        note["title"].as_str().unwrap_or(""),
+                        note["content"]
+                            .as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(1500)
+                            .collect::<String>()
+                    );
+                }
+            }
+            return Finish::reply(reply, "notes").with(o.action_result, o.meta);
+        }
+    }
+
+    // Calendar questions and confirmed event creation (LUCINA_CALENDAR=true).
+    if st.cfg.calendar_enabled {
+        match crate::bridges::calendar_turn(
+            &st.secretary,
+            &st.bridge_state,
+            &t.message,
+            &t.session,
+            t.mcp.is_some(),
+            Utc::now(),
+            st.cfg.time_zone,
+        )
+        .await
+        {
+            Some(Err(blocked)) => {
+                tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
+                return Finish::refusal(&persona, blocked);
+            }
+            Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
+            None => {}
+        }
+    }
+
+    // The deterministic grocery path (same as a Telegram text turn).
+    if t.mcp.is_some() {
+        if let Some(g) = gi::parse_grocery_intent(&t.message) {
+            if !mcp::ALLOWED_GROCERY_INTENTS.contains(&g.intent) {
+                tracing::warn!(session_id = %t.session, blocked = g.intent, "secretary mcp turn refused");
+                return Finish::refusal(&persona, g.intent);
+            }
+        }
+    }
+    match crate::grocery_turn::process(
+        st.grocery.as_deref(),
+        &st.cfg.grocery_user_id,
+        &t.message,
+        &prepared.recent_context,
+        &t.channel,
+    )
+    .await
+    {
+        Ok(Some(h)) => {
+            let meta = h.list_id.map(|id| Meta {
+                list_id: Some(id),
+                ..Meta::kind("shopping")
+            });
+            return Finish::reply(h.reply, "grocery").with(h.intent, meta);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "secretary grocery turn failed");
+            return Finish::reply(
+                "I could not update grocery accounting right now. Your purchase was not recorded.",
+                "grocery",
+            );
+        }
+    }
+
+    // The JSON-action planner, with the turn's classification.
+    let plan = match st
+        .planner
+        .route_classified(
+            &t.input(memory, PLANNER_PLATFORM),
+            &prepared.classification,
+            &st.cfg.intent,
+            st.cfg.capability_hints,
+        )
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(surface = "secretary", error = %e, "response planning failed");
+            match st
+                .planner
+                .generate_reply(&t.input(memory, PLATFORM_LABEL), "", "", "reply")
+                .await
+            {
+                Ok(text) => json!({"action": "reply", "text": text}),
+                Err(_) => {
+                    json!({"action": "reply", "text": format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")})
+                }
+            }
+        }
+    };
+    let action = plan["action"]
+        .as_str()
+        .filter(|a| !a.is_empty())
+        .unwrap_or("reply")
+        .to_owned();
+
+    if t.mcp.is_some() && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
+        tracing::warn!(session_id = %t.session, blocked = %action, "secretary mcp turn refused");
+        return Finish::refusal(&persona, &action);
+    }
+
+    let tz = st.cfg.time_zone;
+    if action == "list_reminders" && st.cfg.reminders_enabled {
+        let scope = plan["scope"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| lucina_intent::heuristics::reminder_list_scope(&t.message));
+        let pending: Vec<_> = owner_reminders(st)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.status == "pending")
+            .collect();
+        return Finish::reply(
+            format_list(&pending, tz, &persona, scope == "today", Utc::now()),
+            "list_reminders",
+        );
+    }
+
+    if action == "schedule_reminder" {
+        if !st.cfg.reminders_enabled {
+            return Finish::reply(
+                format!("{persona}: timed reminders are disabled on this host."),
+                &action,
+            );
+        }
+        let Some(chat) = st.cfg.owner_chat_id.clone().filter(|c| !c.is_empty()) else {
+            return Finish::reply(format!("{persona}: no owner Telegram chat is configured, so I cannot schedule reminders."), &action);
+        };
+        let o = ParseOptions {
+            tz,
+            default_hour: st.cfg.reminder_default_hour,
+            default_minute: st.cfg.reminder_default_minute,
+            now: Utc::now(),
+        };
+        let Some((text, due)) = resolve_reminder(&t.message, &plan, &o) else {
+            return Finish::reply(format!("{persona}: I could not parse that reminder. Examples: \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\"."), &action);
+        };
+        return match st
+            .writer
+            .create(CreateReminder {
+                text,
+                due_at: due,
+                chat_id: chat,
+                user_peer_id: st.cfg.owner_peer_id.clone(),
+                user_label: t.user_label.clone(),
+                persona: persona.clone(),
+                time_zone: tz.name().into(),
+                dedupe_key: None,
+                source: "secretary".into(),
+            })
+            .await
+        {
+            Ok((created, reminder)) => {
+                let prefix = if created {
+                    ""
+                } else {
+                    "That reminder was already scheduled. "
+                };
+                let mut f = Finish::reply(
+                    format!("{prefix}{}", format_confirmation(&reminder, tz)),
+                    &action,
+                );
+                f.extra.insert("reminder".into(), reminder.public());
+                f.action_result = format!(
+                    "[reminder {}]",
+                    if created { "created" } else { "existing" }
+                );
+                f
+            }
+            Err(e) => Finish::reply(
+                format!(
+                    "{persona}: I could not schedule that reminder ({}).",
+                    e.code
+                ),
+                &action,
+            ),
+        };
+    }
+
+    if jobs::ASYNC_ACTIONS.contains(&action.as_str()) {
+        let blocker = if action == "generate_image" && st.cfg.image_jobs {
+            None
+        } else {
+            jobs::blocker(&plan, &st.cfg.dsh)
+        };
+        if let Some(b) = blocker {
+            return Finish::reply(b, &action);
+        }
+        let now = now_iso();
+        let job = Job {
+            id: uuid::Uuid::new_v4().to_string(),
+            action: action.clone(),
+            status: "queued".into(),
+            result: None,
+            error: None,
+            image_url: None,
+            session_id: t.session.clone(),
+            client_message_id: cmid.map(str::to_owned),
+            created_at: now.clone(),
+            started_at: None,
+            finished_at: None,
+            updated_at: now,
+            timeline_item_id: None,
+            extra: Default::default(),
+        };
+        match st.jobs.insert(job) {
+            Ok(job) => {
+                let mut f = Finish::reply(
+                    format!(
+                        "On it: I started the {}. The result will appear here when it finishes.",
+                        jobs::label(&action)
+                    ),
+                    &action,
+                );
+                f.job = Some(job);
+                f.job_plan = Some(plan.clone());
+                return f;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "secretary job insert failed");
+                return Finish::reply(
+                    format!("I could not start the {}.", jobs::label(&action)),
+                    &action,
+                );
+            }
+        }
+    }
+
+    if action == "reply" {
+        let text = match plan["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(text) => text.to_owned(),
+            None => st
+                .planner
+                .generate_reply(
+                    &t.input(memory, PLATFORM_LABEL),
+                    &t.extra_system,
+                    "",
+                    "reply",
+                )
+                .await
+                .unwrap_or_default(),
+        };
+        let text = if text.trim().is_empty() {
+            "I could not generate a reply.".to_owned()
+        } else {
+            text
+        };
+        return Finish::reply(text, "reply");
+    }
+
+    // A tool the app cannot run (Discord admin, web crawl, log inspection, …).
+    let extra = format!(
+        "{} This request needs the \"{action}\" tool, which the Secretary app cannot run. Say so in one sentence, answer whatever you can without it, and suggest asking on Telegram for the tool. Never claim the tool ran.",
+        t.extra_system
+    );
+    let text = st
+        .planner
+        .generate_reply(&t.input(memory, PLATFORM_LABEL), &extra, "", "reply")
+        .await
+        .unwrap_or_default();
+    let text = if text.trim().is_empty() {
+        "I cannot do that from the app yet. Ask me on Telegram.".to_owned()
+    } else {
+        text
+    };
+    Finish::reply(text, "reply")
+}
+
+/// Honcho: a saved note's summary (`rememberNote`).
+fn remember_note(st: &AppState, session: &str, note: &Value, source: &str) {
+    if st.memory.mode() != MemoryMode::ReadWrite {
+        return;
+    }
+    let user = format!(
+        "[Secretary note saved by {source}] {} ({})",
+        note["title"].as_str().unwrap_or(""),
+        note["slug"].as_str().unwrap_or("")
+    );
+    let assistant = nt::summary_for_memory(note, source);
+    let (mem, peer, sid) = (
+        st.memory.clone(),
+        st.cfg.owner_peer_id.clone(),
+        session.to_owned(),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = mem.remember(&peer, &sid, &user, &assistant).await {
+            tracing::warn!(error = %e, "note honcho remember failed");
+        }
+    });
+}
+
+/// `startJob`: run the action, report on the timeline and the job record.
+#[allow(clippy::too_many_arguments)]
+fn spawn_job(
+    st: AppState,
+    job: Job,
+    plan: Value,
+    message: String,
+    memory: String,
+    session: String,
+    user_item: Option<String>,
+    channel: String,
+) {
+    tokio::spawn(async move {
+        let record = |text: String| {
+            st.timeline.record(lucina_store::timeline::NewItem {
+                channel: channel.clone(),
+                role: "lucina".into(),
+                text,
+                reply_to: user_item.clone(),
+                meta: Some(Meta {
+                    job_id: Some(job.id.clone()),
+                    ..Meta::default()
+                }),
+                ..Default::default()
+            })
+        };
+        let _ = st.jobs.update(&job.id, |j| {
+            j.status = "running".into();
+            j.started_at = Some(now_iso());
+        });
+        let action = plan["action"].as_str().unwrap_or("").to_owned();
+        let t = TurnInput {
+            user_text: &message,
+            memory: &memory,
+            user_label: USER_LABEL,
+            platform: PLATFORM_LABEL,
+        };
+        let outcome: Result<(String, String), String> = async {
+            match action.as_str() {
+                "cursor_task" => {
+                    let result = jobs::run_harness(&st.tool_env.http, &st.cfg.dsh, plan["prompt"].as_str().unwrap_or(&message)).await?;
+                    let reply = st.planner.generate_skill_reply(&t, st.cfg.dsh.skill_name(), &result, "Answer in 1-3 short sentences. Say what was done or found. Do not dump raw logs.").await.map_err(|e| e.to_string())?;
+                    Ok((reply, result))
+                }
+                "spreadsheet_update_task" => {
+                    let prompt = jobs::spreadsheet_prompt(plan["spreadsheetName"].as_str().unwrap_or(""), plan["prompt"].as_str().unwrap_or(""), &message, &memory);
+                    let result = jobs::run_harness(&st.tool_env.http, &st.cfg.dsh, &prompt).await?;
+                    let reply = st.planner.generate_skill_reply(&t, "Google Drive spreadsheet update through Cursor", &result, "Answer in 1-3 short sentences. Say updated only if the result contains \"Verification: PASS\"; otherwise say it was not confirmed.").await.map_err(|e| e.to_string())?;
+                    Ok((reply, result))
+                }
+                "oracle_monitor_task" => Ok(("Oracle SSH monitoring is disabled on nezopt. Oracle peer1 runs Poko only, not Lucina.".into(), String::new())),
+                "generate_image" => Err("image generation (ComfyUI) is not available on the Rust Lucina yet".into()),
+                "graph_task" => Err("graph_task needs rclone and the Drive cache, which the Rust Lucina does not have".into()),
+                "social_post_task" => Err("social posts are published by Poko through the Node Lucina, not from the Rust Lucina".into()),
+                other => Err(format!("Unsupported async action: {other}")),
+            }
+        }
+        .await;
+        match outcome {
+            Ok((reply, action_result)) => {
+                let result = if reply.trim().is_empty() {
+                    "Done.".to_owned()
+                } else {
+                    reply.trim().to_owned()
+                };
+                let item = record(result.clone());
+                let _ = st.jobs.update(&job.id, |j| {
+                    j.status = "done".into();
+                    j.result = Some(result.clone());
+                    j.timeline_item_id = item.map(|i| i.id);
+                    j.finished_at = Some(now_iso());
+                });
+                st.recent.append(&session, "assistant", &result, Utc::now());
+                remember_job(&st, &session, &message, &action, &result, &action_result);
+            }
+            Err(reason) => {
+                let reason: String = reason.chars().take(500).collect();
+                tracing::error!(job_id = %job.id, %action, error = %reason.chars().take(300).collect::<String>(), "secretary job failed");
+                let text = format!("{} failed: {reason}", jobs::label(&action));
+                let item = record(text.clone());
+                let _ = st.jobs.update(&job.id, |j| {
+                    j.status = "error".into();
+                    j.error = Some(reason.clone());
+                    j.timeline_item_id = item.map(|i| i.id);
+                    j.finished_at = Some(now_iso());
+                });
+                remember_job(&st, &session, &message, &action, &text, "");
+            }
+        }
+        st.jobs.finish(&job.id);
+    });
+}
+
+fn remember_job(
+    st: &AppState,
+    session: &str,
+    message: &str,
+    action: &str,
+    reply: &str,
+    action_result: &str,
+) {
+    if st.memory.mode() != MemoryMode::ReadWrite {
+        return;
+    }
+    let user = format!("[{PLATFORM_LABEL}] {message}");
+    let assistant = [
+        format!("[action:{action}]"),
+        reply.to_owned(),
+        if action_result.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "[result]\n{}",
+                action_result.chars().take(3000).collect::<String>()
+            )
+        },
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    let (mem, peer, sid) = (
+        st.memory.clone(),
+        st.cfg.owner_peer_id.clone(),
+        session.to_owned(),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = mem.remember(&peer, &sid, &user, &assistant).await {
+            tracing::warn!(error = %e, "secretary honcho remember failed");
+        }
+    });
+}
+
+// ---------------------------------------------------------------- tools mode
+
 fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     let mut f = Finish::reply(reply, "reply");
     if let Some((reminder, created)) = effects.iter().rev().find_map(|e| match e {
@@ -224,8 +889,6 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     } else if effects.iter().any(|e| matches!(e, Effect::RemindersListed)) {
         f.action = "list_reminders".into();
     }
-    // Her outfit changed: the apps apply it from this item's meta (unless another
-    // effect already owns the meta, e.g. a shopping list).
     if let Some((outfit, hair)) = effects.iter().rev().find_map(|e| match e {
         Effect::AvatarOutfit { outfit, hair } => Some((outfit.clone(), hair.clone())),
         _ => None,
@@ -260,7 +923,8 @@ fn tool_item_text(r: &ToolRecord) -> String {
     format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" })
 }
 
-async fn run_turn(
+/// `LUCINA_PLANNER=tools`: the native tool loop with the confirmation flow.
+async fn tools_turn(
     st: AppState,
     message: String,
     session: String,
@@ -272,46 +936,11 @@ async fn run_turn(
     let persona = st.cfg.persona.clone();
     let turn = TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone());
     let user_item = turn.record_user(&message, Vec::new());
-
-    // Context: turn metadata, recent turns, delivered reminders, Honcho.
-    let owner = owner_reminders(&st).unwrap_or_default();
-    let delivered = st
-        .cfg
-        .owner_chat_id
-        .as_deref()
-        .map(|c| delivered_context(&owner, c, tz, now))
-        .unwrap_or_default();
-    let honcho = tokio::time::timeout(
-        Duration::from_secs(12),
-        st.memory
-            .build_context(&st.cfg.owner_peer_id, &session, &message),
-    )
-    .await
-    .unwrap_or_default();
-    let presence = if st.cfg.presence_context {
-        lucina_discord::store::context_line(&st.cfg.presence_dir, tz, now, st.cfg.presence_max_age)
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    // Today's events (Google, iPhone, ICS via secretary-server), when configured.
-    let calendar = lucina_tools::tools::calendar::today_context(&st.tool_env, now)
-        .await
-        .unwrap_or_default();
-    let memory_context = [
-        st.recent.metadata_block(&session, tz, now),
-        presence,
-        calendar,
-        st.recent.render(&session, tz),
-        delivered,
-        honcho,
-    ]
-    .into_iter()
-    .filter(|s| !s.is_empty())
-    .collect::<Vec<_>>()
-    .join("\n\n");
+    let prepared =
+        crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true)
+            .await;
+    let memory_context = prepared.memory_context;
     st.recent.append(&session, "user", &message, now);
-
     let ctx = Ctx::new(st.tool_env.clone(), &channel, &session);
     let on_tool = |r: &ToolRecord| {
         turn.record_lucina(
@@ -334,8 +963,6 @@ async fn run_turn(
         user_label: USER_LABEL,
         platform: PLATFORM_LABEL,
     };
-
-    // A pending confirmation from an earlier turn of this session.
     let mut pending_note = String::new();
     let mut settled: Option<String> = None;
     if let Some(p) = st.pending.current(&session, now) {
@@ -368,113 +995,68 @@ async fn run_turn(
                 settled = Some(format!("The owner declined the pending action \"{}\". It was not run and is discarded.", p.summary));
             }
             Reply::Other => {
-                pending_note = format!(
-                    "A pending action awaits the owner's explicit confirmation: \"{}\" (expires {}). If this message does not answer it, handle the message normally and mention in one short sentence that the action still needs an explicit yes.",
-                    p.summary, p.expires_at
-                );
+                pending_note = format!("A pending action awaits the owner's explicit confirmation: \"{}\" (expires {}). If this message does not answer it, handle the message normally and mention in one short sentence that the action still needs an explicit yes.", p.summary, p.expires_at);
             }
         }
     }
-
     let fallback = || {
         format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")
     };
     let finish = if let Some(result) = settled {
-        let reply = st
-            .planner
-            .generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.")
-            .await
-            .unwrap_or_else(|_| fallback());
+        let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
     } else {
-        match st.cfg.planner {
-            PlannerMode::Tools => {
-                let extra = format!("{SECRETARY_EXTRA_SYSTEM} {pending_note}");
-                let system = st.planner.prompts.agent_system(
-                    PLATFORM_LABEL,
-                    &message,
-                    &memory_context,
-                    extra.trim(),
-                    now,
-                    tz,
-                );
-                let msgs = vec![
-                    Message::system(system),
-                    Message::user(Prompts::user_block(USER_LABEL, &memory_context, &message)),
-                ];
-                match agent::run(
-                    st.model.as_ref(),
-                    &st.registry,
-                    msgs,
-                    &ctx,
-                    &st.pending,
-                    &agent_cfg,
-                    &on_tool,
-                )
-                .await
-                {
-                    Ok(out) if !out.text.is_empty() => effects_to_finish(&ctx.effects(), out.text),
-                    Ok(_) | Err(_) => {
-                        let reply = st
-                            .planner
-                            .generate_reply(&t, SECRETARY_EXTRA_SYSTEM, "", "reply")
-                            .await
-                            .unwrap_or_else(|_| fallback());
-                        effects_to_finish(&ctx.effects(), reply)
-                    }
-                }
+        let extra = format!("{SECRETARY_EXTRA_SYSTEM} {pending_note}");
+        let system = st.planner.prompts.agent_system(
+            PLATFORM_LABEL,
+            &message,
+            &memory_context,
+            extra.trim(),
+            now,
+            tz,
+        );
+        let msgs = vec![
+            Message::system(system),
+            Message::user(Prompts::user_block(USER_LABEL, &memory_context, &message)),
+        ];
+        match agent::run(
+            st.model.as_ref(),
+            &st.registry,
+            msgs,
+            &ctx,
+            &st.pending,
+            &agent_cfg,
+            &on_tool,
+        )
+        .await
+        {
+            Ok(out) if !out.text.is_empty() => effects_to_finish(&ctx.effects(), out.text),
+            Ok(_) | Err(_) => {
+                let reply = st
+                    .planner
+                    .generate_reply(&t, SECRETARY_EXTRA_SYSTEM, "", "reply")
+                    .await
+                    .unwrap_or_else(|_| fallback());
+                effects_to_finish(&ctx.effects(), reply)
             }
-            PlannerMode::Json => json_turn(
-                &st,
-                &t,
-                &ctx,
-                &agent_cfg,
-                &on_tool,
-                &message,
-                &pending_note,
-                &owner,
-            )
-            .await
-            .unwrap_or_else(|_| Finish::reply(fallback(), "reply")),
         }
     };
-
-    // Finish: recent turns, memory, the Lucina item.
     let reply = if finish.reply.trim().is_empty() {
         "I could not generate a reply.".to_owned()
     } else {
         finish.reply.trim().to_owned()
     };
     st.recent.append(&session, "assistant", &reply, Utc::now());
-    if st.memory.mode() == MemoryMode::ReadWrite {
-        let (mem, peer, sid) = (
-            st.memory.clone(),
-            st.cfg.owner_peer_id.clone(),
-            session.clone(),
-        );
-        let user_text = format!("[{PLATFORM_LABEL}] {message}");
-        let assistant = [
-            format!("[action:{}]", finish.action),
-            reply.clone(),
-            if finish.action_result.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "[result]\n{}",
-                    finish.action_result.chars().take(3000).collect::<String>()
-                )
-            },
-        ]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-        tokio::spawn(async move {
-            if let Err(e) = mem.remember(&peer, &sid, &user_text, &assistant).await {
-                tracing::warn!(error = %e, "secretary honcho remember failed");
-            }
-        });
-    }
+    let t2 = Turn {
+        st: &st,
+        message: message.clone(),
+        session: session.clone(),
+        channel: channel.clone(),
+        mcp: None,
+        user_label: USER_LABEL.into(),
+        extra_system: String::new(),
+    };
+    remember_turn(&st, &t2, &finish.action, &reply, &finish.action_result);
     let lucina_item = turn.record_lucina(&reply, Vec::new(), finish.meta.clone());
     let mut out = json!({
         "reply": reply,
@@ -489,187 +1071,6 @@ async fn run_turn(
         out[k] = v;
     }
     Ok(out)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn json_turn(
-    st: &AppState,
-    t: &TurnInput<'_>,
-    ctx: &Ctx,
-    agent_cfg: &AgentConfig,
-    on_tool: &(dyn Fn(&ToolRecord) + Send + Sync),
-    message: &str,
-    pending_note: &str,
-    owner: &[Reminder],
-) -> Result<Finish, lucina_llm::LlmError> {
-    let tz = st.cfg.time_zone;
-    let persona = &st.cfg.persona;
-    let extra = format!("{SECRETARY_EXTRA_SYSTEM} {pending_note}")
-        .trim()
-        .to_owned();
-    let planner_input = TurnInput {
-        platform: PLANNER_PLATFORM,
-        ..*t
-    };
-    let (plan, class) = match st.planner.route(&planner_input, &extra).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(surface = "secretary", error = %e, "response planning failed");
-            let text = st.planner.generate_reply(t, "", "", "reply").await?;
-            (
-                json!({"action": "reply", "text": text}),
-                crate::planner::Classification {
-                    intent: "unknown".into(),
-                    confidence: 0.0,
-                    needs_tools: false,
-                    reply_mode: "full_plan".into(),
-                    scope: "all".into(),
-                },
-            )
-        }
-    };
-    let action = plan["action"].as_str().unwrap_or("reply").to_owned();
-    match action.as_str() {
-        "grocery" => {
-            if st.grocery.is_none() {
-                let reply = st.planner.generate_reply(t, &format!("{extra} The shopping list is not available on this host right now; say so in one sentence."), "", "reply").await?;
-                return Ok(Finish::reply(reply, "reply"));
-            }
-            let registry = Registry::builtin(&ToolSelection::Only(
-                ["shopping".to_owned()].into_iter().collect(),
-            ));
-            let system = st.planner.prompts.agent_system(
-                PLATFORM_LABEL,
-                message,
-                t.memory,
-                &extra,
-                Utc::now(),
-                tz,
-            );
-            let msgs = vec![
-                Message::system(system),
-                Message::user(Prompts::user_block(USER_LABEL, t.memory, message)),
-            ];
-            match agent::run(st.model.as_ref(), &registry, msgs, ctx, &st.pending, agent_cfg, on_tool).await {
-                Ok(out) if !out.text.is_empty() => {
-                    let mut f = effects_to_finish(&ctx.effects(), out.text);
-                    f.action = "grocery".into();
-                    f.action_result = class.intent;
-                    Ok(f)
-                }
-                _ => Ok(Finish::reply("I could not update grocery accounting right now. Your purchase was not recorded.", "grocery")),
-            }
-        }
-        "list_reminders" if st.cfg.reminders_enabled => {
-            let today = plan["scope"] == "today"
-                || (plan["scope"].is_null()
-                    && regex::Regex::new(r"(?i)\b(oggi|today|stamattina|stasera)\b")
-                        .map(|r| r.is_match(message))
-                        .unwrap_or(false));
-            Ok(Finish::reply(
-                format_list(owner, tz, persona, today, Utc::now()),
-                "list_reminders",
-            ))
-        }
-        "schedule_reminder" => {
-            if !st.cfg.reminders_enabled {
-                return Ok(Finish::reply(
-                    format!("{persona}: timed reminders are disabled on this host."),
-                    &action,
-                ));
-            }
-            let Some(chat) = st.cfg.owner_chat_id.clone().filter(|c| !c.is_empty()) else {
-                return Ok(Finish::reply(format!("{persona}: no owner Telegram chat is configured, so I cannot schedule reminders."), &action));
-            };
-            let o = ParseOptions {
-                tz,
-                default_hour: st.cfg.reminder_default_hour,
-                default_minute: st.cfg.reminder_default_minute,
-                now: Utc::now(),
-            };
-            let Some((text, due)) = resolve_reminder(message, &plan, &o) else {
-                return Ok(Finish::reply(
-                    format!("{persona}: I could not parse that reminder. Examples: \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\"."),
-                    &action,
-                ));
-            };
-            match st
-                .writer
-                .create(CreateReminder {
-                    text,
-                    due_at: due,
-                    chat_id: chat,
-                    user_peer_id: st.cfg.owner_peer_id.clone(),
-                    user_label: USER_LABEL.into(),
-                    persona: persona.clone(),
-                    time_zone: tz.name().into(),
-                    dedupe_key: None,
-                    source: "secretary".into(),
-                })
-                .await
-            {
-                Ok((created, reminder)) => {
-                    let prefix = if created {
-                        ""
-                    } else {
-                        "That reminder was already scheduled. "
-                    };
-                    let mut f = Finish::reply(
-                        format!("{prefix}{}", format_confirmation(&reminder, tz)),
-                        &action,
-                    );
-                    f.extra.insert("reminder".into(), reminder.public());
-                    f.action_result = format!(
-                        "[reminder {}]",
-                        if created { "created" } else { "existing" }
-                    );
-                    Ok(f)
-                }
-                Err(e) => Ok(Finish::reply(
-                    format!(
-                        "{persona}: I could not schedule that reminder ({}).",
-                        e.code
-                    ),
-                    &action,
-                )),
-            }
-        }
-        a if ASYNC_ACTIONS.contains(&a) => Ok(Finish::reply(
-            format!(
-                "The {} cannot start from this Lucina host yet: ask me on Telegram for it.",
-                async_label(a)
-            ),
-            a,
-        )),
-        "reply" => {
-            let text = match plan["text"]
-                .as_str()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                Some(t) => t.to_owned(),
-                None => {
-                    st.planner
-                        .generate_reply(t, SECRETARY_EXTRA_SYSTEM, "", "reply")
-                        .await?
-                }
-            };
-            Ok(Finish::reply(text, "reply"))
-        }
-        other => {
-            let extra = format!(
-                "{SECRETARY_EXTRA_SYSTEM} This request needs the \"{other}\" tool, which the Secretary app cannot run. Say so in one sentence, answer whatever you can without it, and suggest asking on Telegram for the tool. Never claim the tool ran."
-            );
-            let text = st
-                .planner
-                .generate_reply(t, &extra, "", "reply")
-                .await
-                .unwrap_or_else(|_| {
-                    "I cannot do that from the app yet. Ask me on Telegram.".into()
-                });
-            Ok(Finish::reply(text, "reply"))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -725,20 +1126,10 @@ mod tests {
             "Eccomi!".into(),
         );
         assert_eq!(f.action, "avatar_outfit");
-        let meta = serde_json::to_value(f.meta.unwrap()).unwrap();
-        assert_eq!(meta, json!({"kind": "avatar_outfit", "outfit": "maid"}));
-
-        let auto = effects_to_finish(
-            &[Effect::AvatarOutfit {
-                outfit: None,
-                hair: None,
-            }],
-            "Ok".into(),
+        assert_eq!(
+            serde_json::to_value(f.meta.unwrap()).unwrap(),
+            json!({"kind": "avatar_outfit", "outfit": "maid"})
         );
-        let meta = serde_json::to_value(auto.meta.unwrap()).unwrap();
-        assert_eq!(meta, json!({"kind": "avatar_outfit"}));
-
-        // A shopping change keeps its own meta.
         let both = effects_to_finish(
             &[
                 Effect::Shopping {
@@ -753,16 +1144,5 @@ mod tests {
         );
         assert_eq!(both.action, "grocery");
         assert_eq!(both.meta.unwrap().kind.as_deref(), Some("shopping"));
-
-        let hair = effects_to_finish(
-            &[Effect::AvatarOutfit {
-                outfit: None,
-                hair: Some("ponytail".into()),
-            }],
-            "Fatto".into(),
-        );
-        assert_eq!(hair.action_result, "[look hair ponytail]");
-        let meta = serde_json::to_value(hair.meta.unwrap()).unwrap();
-        assert_eq!(meta, json!({"kind": "avatar_outfit", "hair": "ponytail"}));
     }
 }

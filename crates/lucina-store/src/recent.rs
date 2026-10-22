@@ -56,6 +56,28 @@ impl RecentChat {
         f(map)
     }
 
+    /// Import sessions starting with `prefix` from another buffer file (the
+    /// Node Lucina's `recent-telegram-chat.json`, read only) when this buffer
+    /// does not have them yet. Returns how many sessions were imported.
+    pub fn seed_from(&self, path: &std::path::Path, prefix: &str) -> usize {
+        let Some(seed) = std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<BTreeMap<String, Vec<Turn>>>(&b).ok())
+        else {
+            return 0;
+        };
+        self.with(|map| {
+            let mut n = 0;
+            for (k, v) in seed {
+                if k.starts_with(prefix) && !map.contains_key(&k) {
+                    map.insert(k, v);
+                    n += 1;
+                }
+            }
+            n
+        })
+    }
+
     pub fn append(&self, chat_id: &str, role: &str, text: &str, at: DateTime<Utc>) {
         if chat_id.is_empty() || text.trim().is_empty() {
             return;

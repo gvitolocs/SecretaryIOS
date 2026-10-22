@@ -202,6 +202,82 @@ impl Planner {
             .await
     }
 
+    /// Tier 1 intent classifier: the model's JSON (`None` when it was not
+    /// JSON). `t.memory` is the recent-turn context (Node passes the
+    /// classifier only that).
+    pub async fn classify_json(&self, t: &TurnInput<'_>) -> Result<Option<Value>, LlmError> {
+        let content = self
+            .complete(
+                self.prompts.intent_system(),
+                Prompts::intent_user(t.platform, t.user_label, t.memory, t.user_text),
+                0.0,
+                "intent",
+            )
+            .await?;
+        let text = content.trim();
+        // Node `extractJsonObject`: first `{` to last `}`.
+        let parsed = match (text.find('{'), text.rfind('}')) {
+            (Some(a), Some(b)) if b > a => serde_json::from_str::<Value>(&text[a..=b]).ok(),
+            _ => None,
+        };
+        if parsed.is_none() {
+            tracing::warn!("intent classifier output was not JSON");
+        }
+        Ok(parsed)
+    }
+
+    /// `routeLucinaPlan` with the classification the turn already made
+    /// (`precomputedClassification`): full plan, chat reply (with capability
+    /// hints on non-casual replies), a direct plan, or the full plan.
+    pub async fn route_classified(
+        &self,
+        t: &TurnInput<'_>,
+        c: &lucina_intent::tier0::Classification,
+        s: &lucina_intent::heuristics::Settings,
+        capability_hints: bool,
+    ) -> Result<Value, LlmError> {
+        use lucina_intent::heuristics::{looks_like_complex, looks_like_vulnerable_support};
+        use lucina_intent::tier0::{direct_plan, is_misrouted, should_use_full_plan};
+        if !s.intent_router || should_use_full_plan(c, t.user_text, s) {
+            return self.plan_response(t).await;
+        }
+        if c.reply_mode == "chat" || c.intent == "chat" {
+            let casual =
+                !looks_like_complex(t.user_text, s) && !looks_like_vulnerable_support(t.user_text);
+            let knowledge = if casual {
+                String::new()
+            } else {
+                self.prompts.operator_brief.clone()
+            };
+            let memory = clip_memory_for_reply(t.memory, if casual { 1600 } else { 4000 });
+            let extra = if casual {
+                "Reply like a normal Telegram chat. One or two short sentences. No capability menus."
+            } else {
+                ""
+            };
+            let inner = TurnInput {
+                memory: &memory,
+                ..*t
+            };
+            let raw = self
+                .generate_reply(&inner, extra, &knowledge, "reply")
+                .await?;
+            let text = if casual {
+                raw.trim().to_owned()
+            } else {
+                lucina_intent::hints::append_capability_hints(&raw, t.user_text, capability_hints)
+            };
+            return Ok(json!({"action": "reply", "text": text}));
+        }
+        if let Some(p) = direct_plan(c, t.user_text, t.memory, s) {
+            if !is_misrouted(c, t.user_text, t.memory) {
+                return Ok(p);
+            }
+            tracing::warn!(intent = %c.intent, "lucina tier0 tool intent ignored for chat message");
+        }
+        self.plan_response(t).await
+    }
+
     /// Tier 1 intent classifier. A parse failure is `unknown`/`full_plan`.
     pub async fn classify(&self, t: &TurnInput<'_>) -> Result<Classification, LlmError> {
         let content = self

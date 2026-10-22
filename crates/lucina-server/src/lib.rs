@@ -9,9 +9,14 @@
 //! only. See `README` in the crate docs of [`config`].
 
 pub mod api;
+pub mod bridges;
 pub mod chat;
 pub mod config;
+pub mod context;
 pub mod fake;
+pub mod grocery_turn;
+pub mod jobs;
+pub mod parity;
 pub mod planner;
 pub mod prompts;
 
@@ -57,6 +62,9 @@ pub struct Inner {
     pub pending: Arc<PendingStore>,
     pub recent: Arc<RecentChat>,
     pub planner: planner::Planner,
+    /// secretary-server for the notes, calendar and outfit bridges.
+    pub secretary: bridges::Secretary,
+    pub bridge_state: bridges::BridgeState,
     pub client_messages: Mutex<HashMap<String, (Instant, SharedChat)>>,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
@@ -128,6 +136,7 @@ impl AppState {
         env.presence_max_age = cfg.presence_max_age;
         env.secretary_url = cfg.secretary_url.clone();
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
+        let env_http = env.http.clone();
         let registry = Arc::new(Registry::builtin(&cfg.tools));
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {
@@ -156,9 +165,22 @@ impl AppState {
                 cfg.data_dir.join("lucina-rs/pending-actions.json"),
                 DEFAULT_TTL,
             )),
-            recent: Arc::new(RecentChat::new(Some(
-                cfg.data_dir.join("lucina-rs/recent-chat.json"),
-            ))),
+            recent: {
+                let recent = RecentChat::new(Some(cfg.data_dir.join("lucina-rs/recent-chat.json")));
+                if let Some(seed) = &cfg.recent_seed_path {
+                    let n = recent.seed_from(seed, "secretary_");
+                    if n > 0 {
+                        tracing::info!(sessions = n, "recent turns seeded from the Node buffer");
+                    }
+                }
+                Arc::new(recent)
+            },
+            secretary: bridges::Secretary {
+                http: env_http.clone(),
+                url: cfg.secretary_url.clone(),
+                token_file: cfg.secretary_service_token_file.clone(),
+            },
+            bridge_state: bridges::BridgeState::default(),
             client_messages: Mutex::new(HashMap::new()),
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),

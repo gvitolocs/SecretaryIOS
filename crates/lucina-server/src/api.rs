@@ -237,6 +237,12 @@ async fn health(State(st): State<AppState>) -> Response {
             "version": env!("CARGO_PKG_VERSION"),
             "uptimeSeconds": st.started.elapsed().as_secs(),
             "secretaryApi": c.secretary_enabled,
+            "shadow": c.shadow,
+            "binds": c.binds.iter().map(|b| b.to_string()).collect::<Vec<_>>(),
+            "timelinePath": c.timeline_path.display().to_string(),
+            "intent": {"fastChat": c.intent.fast_chat, "router": c.intent.intent_router, "capabilityHints": c.capability_hints},
+            "bridges": {"notes": c.notes_enabled, "calendar": c.calendar_enabled, "outfit": c.outfit_enabled, "appNotify": c.app_notify, "secretaryServer": c.secretary_url.is_some()},
+            "jobs": {"harness": c.dsh.ready(), "enabled": c.dsh.enabled},
             "planner": match c.planner { crate::PlannerMode::Json => "json", crate::PlannerMode::Tools => "tools" },
             "tools": st.registry.names(),
             "memory": {"provider": "honcho", "mode": st.memory.mode().as_str(), "workspace": c.honcho.workspace_id},
@@ -692,9 +698,23 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
         .filter(|r| r.due().is_some_and(|d| ymd_in_tz(d, tz) == date))
         .collect();
     reminders.sort_by(by_due);
+    // LUCINA_CALENDAR=true: the day's events join the briefing.
+    let events = if st.cfg.calendar_enabled {
+        Some(crate::bridges::events_for_briefing(&st.secretary, &date).await)
+    } else {
+        None
+    };
     let fingerprint = reminders
         .iter()
         .map(|r| format!("{}:{}:{}", r.id, r.status, r.due_at))
+        .chain(events.iter().flatten().map(|e| {
+            let s = |k: &str| {
+                e[k].as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| e[k].to_string())
+            };
+            format!("{}:{}:{}:{}", s("id"), s("start"), s("end"), s("title"))
+        }))
         .collect::<Vec<_>>()
         .join("|");
     let ttl = st.cfg.briefing_cache;
@@ -740,7 +760,7 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
                 )
             })
             .collect();
-        let skill_result = format!(
+        let mut skill_result = format!(
             "Date: {date} ({})\n{}",
             tz.name(),
             if lines.is_empty() {
@@ -749,10 +769,25 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
                 format!("Reminders for that day:\n{}", lines.join("\n"))
             }
         );
+        if let Some(evs) = &events {
+            skill_result.push('\n');
+            skill_result.push_str(&if evs.is_empty() {
+                "Calendar events for that day: none.".to_owned()
+            } else {
+                let l = lucina_intent::calendar::event_lines(evs, tz, "en");
+                format!(
+                    "Calendar events for that day:\n{}",
+                    l.iter()
+                        .map(|x| format!("- {x}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            });
+        }
         let persona = &st.cfg.persona;
         let instruction = [
             format!("Write a short daily briefing for {date} in at most {BRIEFING_MAX_SENTENCES} sentences, speaking as {persona}."),
-            "Mention the reminders in time order with their times. If there are none, say the day is clear.".into(),
+            "Mention the reminders and calendar events in time order with their times. If there are none, say the day is clear.".into(),
             "You may add one grounded note from memory if it is relevant to that day. Do not invent appointments.".into(),
             "Plain text: no lists, no markdown, no greetings longer than a few words.".into(),
         ]
@@ -1084,6 +1119,9 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
     let store = st.timeline.clone();
     let ping = st.cfg.timeline_ping;
+    // Index what other writers appended so far, then listen: only lines that
+    // arrive after the connection are live items.
+    let _ = store.poll();
     let mut live = store.subscribe();
     tokio::spawn(async move {
         let _guard = guard;
@@ -1094,6 +1132,7 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
         {
             return;
         }
+        let replayed_ids_open = last.is_none();
         let mut cursor: String = match &last {
             Some(id) => {
                 let Ok(items) = store.after(id, TIMELINE_REPLAY_MAX) else {
@@ -1114,6 +1153,9 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                 .and_then(|(i, _)| i.first().map(|x| x.id.clone()))
                 .unwrap_or_default(),
         };
+        let replay_end = cursor.clone();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_order: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         let mut ping_tick = tokio::time::interval_at(tokio::time::Instant::now() + ping, ping);
         let mut follow = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(1),
@@ -1126,7 +1168,12 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => store.after(&cursor, TIMELINE_REPLAY_MAX).unwrap_or_default(),
                     Err(_) => return,
                 },
-                _ = follow.tick() => store.after(&cursor, TIMELINE_REPLAY_MAX).unwrap_or_default(),
+                _ = follow.tick() => {
+                    // Publishes other writers' new lines (they arrive on `live`), then
+                    // catches up on anything newer than the cursor that was missed.
+                    let _ = store.poll();
+                    store.after(&cursor, TIMELINE_REPLAY_MAX).unwrap_or_default()
+                }
                 _ = ping_tick.tick() => {
                     if tx.send(Bytes::from_static(b": ping\n\n")).await.is_err() { return; }
                     continue;
@@ -1134,13 +1181,24 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                 _ = tx.closed() => return,
             };
             for it in batch {
-                if !cursor.is_empty() && it.id <= cursor {
+                // Replayed or already sent; a line another process wrote late (a
+                // smaller id than the cursor) is still new to this client.
+                if seen.contains(&it.id) || (!replayed_ids_open && it.id <= replay_end) {
                     continue;
                 }
                 if tx.send(sse_item(&it)).await.is_err() {
                     return;
                 }
-                cursor = it.id.clone();
+                if it.id > cursor {
+                    cursor = it.id.clone();
+                }
+                seen.insert(it.id.clone());
+                seen_order.push_back(it.id.clone());
+                if seen_order.len() > 4096 {
+                    if let Some(old) = seen_order.pop_front() {
+                        seen.remove(&old);
+                    }
+                }
             }
         }
     });

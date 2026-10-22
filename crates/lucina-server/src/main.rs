@@ -44,6 +44,22 @@ enum Cmd {
         #[arg(long)]
         data: PathBuf,
     },
+    /// Compare the deterministic parsers with the live Node ones on a corpus
+    /// (runs the Node side read-only in the container with `docker exec`).
+    ParityParsers {
+        #[arg(long, default_value = "tools/parity/parser-corpus.json")]
+        cases: PathBuf,
+        #[arg(long, default_value = "tools/parity/node-parsers.mjs")]
+        script: PathBuf,
+        #[arg(long, default_value = "lucina-nez")]
+        container: String,
+        /// Fixed clock for both sides (default: now).
+        #[arg(long)]
+        now: Option<String>,
+        /// Tier-0 settings as on lucina-nez (`LUCINA_FAST_CHAT_ENABLED=true`).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        fast_chat: bool,
+    },
     /// Watch the owner's Discord presence (separate gateway session).
     PresenceWatch {
         /// Data dir (default LUCINA_DATA_DIR or ./data); files go to <data>/presence.
@@ -187,16 +203,33 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Serve => {
             let cfg = Config::from_env()?;
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");
-            let bind = cfg.bind;
+            let binds = cfg.binds.clone();
             let state = AppState::build(cfg, None)?;
             state.spawn_background();
-            let listener = tokio::net::TcpListener::bind(bind).await?;
-            tracing::info!(%bind, "listening");
-            axum::serve(listener, app(state))
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
-                .await?;
+            // One server per address (127.0.0.1 and the Tailscale IP), one shutdown.
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let mut servers = tokio::task::JoinSet::new();
+            for bind in binds {
+                let listener = tokio::net::TcpListener::bind(bind).await?;
+                tracing::info!(%bind, "listening");
+                let router = app(state.clone());
+                let mut rx = stop_rx.clone();
+                servers.spawn(async move {
+                    axum::serve(listener, router)
+                        .with_graceful_shutdown(async move {
+                            let _ = rx.wait_for(|stop| *stop).await;
+                        })
+                        .await
+                });
+            }
+            tokio::select! {
+                _ = shutdown_signal() => tracing::info!("shutting down"),
+                Some(r) = servers.join_next() => {
+                    tracing::error!(result = ?r.map(|x| x.map_err(|e| e.to_string())), "a listener stopped");
+                }
+            }
+            let _ = stop_tx.send(true);
+            while servers.join_next().await.is_some() {}
         }
         Cmd::FakeDeepseek {
             bind,
@@ -210,6 +243,70 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             let fake = lucina_server::fake::spawn(bind, script, record).await?;
             println!("fake DeepSeek at {}", fake.base_url);
             tokio::signal::ctrl_c().await?;
+        }
+        Cmd::ParityParsers {
+            cases,
+            script,
+            container,
+            now,
+            fast_chat,
+        } => {
+            let mut input: serde_json::Value = serde_json::from_slice(&std::fs::read(&cases)?)?;
+            let now = now.unwrap_or_else(|| {
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            });
+            input["now"] = serde_json::json!(now);
+            let js = std::fs::read_to_string(&script)?;
+            let mut child = std::process::Command::new("docker")
+                .args([
+                    "exec",
+                    "-i",
+                    &container,
+                    "node",
+                    "--input-type=module",
+                    "-e",
+                    &js,
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            {
+                use std::io::Write;
+                let mut stdin = child.stdin.take().expect("stdin");
+                stdin.write_all(input.to_string().as_bytes())?;
+            }
+            let out = child.wait_with_output()?;
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let line = stdout
+                .lines()
+                .find_map(|l| l.strip_prefix("PARITY_JSON:"))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no PARITY_JSON from the Node side: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                            .chars()
+                            .take(500)
+                            .collect::<String>()
+                    )
+                })?;
+            let node: serde_json::Value = serde_json::from_str(line)?;
+            let settings = lucina_intent::heuristics::Settings {
+                fast_chat,
+                ..Default::default()
+            };
+            let (n, bad, report) =
+                lucina_server::parity::parsers::compare(&input, &node, &settings);
+            for l in &report {
+                println!("{l}");
+            }
+            println!(
+                "parity-parsers: {n} phrases, {} identical, {bad} different",
+                n - bad
+            );
+            if bad > 0 {
+                std::process::exit(1);
+            }
         }
         Cmd::CheckData { data } => {
             if !check_data(&data)? {

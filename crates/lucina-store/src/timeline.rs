@@ -67,14 +67,23 @@ pub struct Meta {
     pub job_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_id: Option<String>,
+    /// `"mcp"` on Lucina MCP turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command_id: Option<String>,
+    pub via: Option<String>,
+    /// The MCP caller ("chatgpt", "claude-code", …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
     /// With `kind: "avatar_outfit"`: the outfit Lucina put on (none = back to automatic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outfit: Option<String>,
     /// With `kind: "avatar_outfit"`: the hairstyle Lucina put on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hair: Option<String>,
+    /// With `kind: "note"`: the note she saved or read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_dm: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,9 +109,12 @@ impl Meta {
             && self.kind.is_none()
             && self.job_id.is_none()
             && self.list_id.is_none()
+            && self.via.is_none()
+            && self.caller.is_none()
             && self.command_id.is_none()
             && self.outfit.is_none()
             && self.hair.is_none()
+            && self.slug.is_none()
             && self.is_dm.is_none()
             && self.ok.is_none()
             && self.command.is_none()
@@ -121,9 +133,12 @@ impl Meta {
             kind,
             job_id,
             list_id,
+            via,
+            caller,
             command_id,
             outfit,
             hair,
+            slug,
             is_dm,
             ok,
             command,
@@ -235,9 +250,12 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         kind: s(m.kind),
         job_id: s(m.job_id),
         list_id: s(m.list_id),
-        command_id: s(m.command_id),
+        via: s(m.via),
+        caller: s(m.caller),
         outfit: s(m.outfit),
         hair: s(m.hair),
+        slug: s(m.slug),
+        command_id: s(m.command_id),
         is_dm: m.is_dm,
         ok: m.ok,
         command: m.command.as_deref().and_then(normalize_command),
@@ -549,7 +567,7 @@ impl Inner {
         Ok(())
     }
 
-    fn write_lines(&mut self, lines: &str) -> Result<()> {
+    fn write_lines(&mut self, lines: &str) -> Result<Vec<StoredItem>> {
         let bytes = lines.len() as u64;
         if self.known_size > 0 && self.known_size + bytes > self.max_bytes {
             self.rotate()?;
@@ -563,8 +581,7 @@ impl Inner {
         // One write per call: O_APPEND keeps concurrent writers' lines whole.
         file.write_all(payload.as_bytes())?;
         self.needs_leading_newline = false;
-        self.refresh()?;
-        Ok(())
+        self.refresh()
     }
 
     fn read_entries(&self, selected: &[Entry]) -> Result<Vec<StoredItem>> {
@@ -601,6 +618,24 @@ impl Inner {
         }
         Ok(out)
     }
+}
+
+/// Exclusive advisory lock on `<path>.lock` (released on drop).
+fn lock_sidecar(path: &Path) -> Result<fs::File> {
+    let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+    if let Some(dir) = lock_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let f = opts.open(&lock_path)?;
+    f.lock()?;
+    Ok(f)
 }
 
 /// The timeline store. Cheap to share behind an `Arc`.
@@ -652,24 +687,50 @@ impl TimelineStore {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Append one item and notify live subscribers. Returns the stored item.
-    pub fn append(&self, input: NewItem) -> Result<TimelineItem> {
-        let item = normalize(input, now_ms())?;
-        let line = serde_json::to_string(&item)?;
-        {
-            let mut inner = self.lock();
-            inner.refresh()?;
-            if inner.by_id.contains(&item.id) {
-                return Ok(item);
-            }
-            inner.write_lines(&format!("{line}\n"))?;
-            let raw: Arc<str> = Arc::from(line.as_str());
-            inner.cache_item(&item.id, raw.clone());
-            let _ = self.tx.send(StoredItem {
-                id: item.id.clone(),
-                raw,
-            });
+    /// Send newly indexed lines (this process's or another writer's) to the
+    /// live subscribers, once each.
+    fn publish(&self, items: Vec<StoredItem>) {
+        for it in items {
+            let _ = self.tx.send(it);
         }
+    }
+
+    /// Index lines other writers appended and publish them (SSE follow).
+    pub fn poll(&self) -> Result<()> {
+        let mut inner = self.lock();
+        let found = inner.refresh()?;
+        self.publish(found);
+        Ok(())
+    }
+
+    /// Append one item and notify live subscribers. Returns the stored item.
+    ///
+    /// Shared-writer rules (the Node Lucina appends to the same file): one
+    /// `O_APPEND` write per line; an advisory `flock` on `<path>.lock` around
+    /// refresh + append + rotation for every Rust writer; a generated id is
+    /// moved past the newest id already in the file, so Rust lines never sort
+    /// before lines that were written first.
+    pub fn append(&self, input: NewItem) -> Result<TimelineItem> {
+        let explicit_id = input.id.as_deref().is_some_and(is_timeline_id);
+        let mut item = normalize(input, now_ms())?;
+        let mut inner = self.lock();
+        let _flock = lock_sidecar(&inner.file_path)?;
+        let found = inner.refresh()?;
+        self.publish(found);
+        if inner.by_id.contains(&item.id) {
+            return Ok(item);
+        }
+        if !explicit_id {
+            if let Some(last) = inner.entries.last() {
+                if item.id <= last.id {
+                    item.id = crate::ulid::successor(&last.id);
+                }
+            }
+        }
+        let line = serde_json::to_string(&item)?;
+        let added = inner.write_lines(&format!("{line}\n"))?;
+        inner.cache_item(&item.id, Arc::from(line.as_str()));
+        self.publish(added);
         Ok(item)
     }
 
@@ -682,7 +743,8 @@ impl TimelineStore {
     ) -> Result<(Vec<StoredItem>, Option<String>)> {
         let size = limit.clamp(1, MAX_LIST_LIMIT);
         let mut inner = self.lock();
-        inner.refresh()?;
+        let found = inner.refresh()?;
+        self.publish(found);
         let end = match before {
             Some(b) if !b.is_empty() => inner.entries.partition_point(|e| e.id.as_str() < b),
             _ => inner.entries.len(),
@@ -698,7 +760,8 @@ impl TimelineStore {
     /// Items with an id strictly after `after_id`, oldest first (SSE replay).
     pub fn after(&self, after_id: &str, limit: usize) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();
-        inner.refresh()?;
+        let found = inner.refresh()?;
+        self.publish(found);
         let start = inner.entries.partition_point(|e| e.id.as_str() <= after_id);
         let end = (start + limit).min(inner.entries.len());
         let selected = inner.entries[start..end].to_vec();
@@ -708,14 +771,16 @@ impl TimelineStore {
     /// Every stored item, oldest first.
     pub fn read_all(&self) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();
-        inner.refresh()?;
+        let found = inner.refresh()?;
+        self.publish(found);
         let selected = inner.entries.clone();
         inner.read_entries(&selected)
     }
 
     pub fn len(&self) -> Result<usize> {
         let mut inner = self.lock();
-        inner.refresh()?;
+        let found = inner.refresh()?;
+        self.publish(found);
         Ok(inner.entries.len())
     }
 
@@ -751,6 +816,9 @@ pub struct TimelineTurn {
     store: Arc<TimelineStore>,
     channel: String,
     client_message_id: Option<String>,
+    /// On every item of the turn (Lucina items merge their own on top), as
+    /// Node's `createTimelineTurn({meta})`: `{via: "mcp", caller}`.
+    meta: Option<Meta>,
     user_item: Mutex<Option<Option<TimelineItem>>>,
 }
 
@@ -764,8 +832,15 @@ impl TimelineTurn {
             store,
             channel: channel.to_owned(),
             client_message_id,
+            meta: None,
             user_item: Mutex::new(None),
         }
+    }
+
+    /// Meta for every item of this turn.
+    pub fn with_meta(mut self, meta: Option<Meta>) -> Self {
+        self.meta = meta;
+        self
     }
 
     pub fn channel(&self) -> &str {
@@ -784,6 +859,7 @@ impl TimelineTurn {
             text: text.to_owned(),
             client_message_id: self.client_message_id.clone(),
             attachments,
+            meta: self.meta.clone(),
             ..NewItem::default()
         });
         *slot = Some(item.clone());
@@ -810,7 +886,10 @@ impl TimelineTurn {
             role: "lucina".into(),
             text: text.to_owned(),
             attachments,
-            meta,
+            meta: match (self.meta.clone(), meta) {
+                (Some(base), Some(extra)) => Some(base.merge(extra)),
+                (base, extra) => base.or(extra),
+            },
             reply_to: self.user_item_id(),
             ..NewItem::default()
         })

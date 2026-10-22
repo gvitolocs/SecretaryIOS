@@ -91,11 +91,20 @@ async fn golden_secretary_transcripts() {
             let got: Vec<Value> = executed.iter().map(|l| l["meta"]["ok"].clone()).collect();
             check(&got == oks, format!("tool ok {got:?}"));
         }
-        check(
-            lines.first().is_some_and(|l| l["role"] == "user")
-                && lines.last().is_some_and(|l| l["id"] == d["lucinaItemId"]),
-            "timeline shape".into(),
-        );
+        if e["job"] == true {
+            check(d["job"]["status"] == "queued", format!("job {}", d["job"]));
+            // The job's own item follows the ack.
+            check(
+                lines.get(1).is_some_and(|l| l["id"] == d["lucinaItemId"]),
+                "timeline shape (job)".into(),
+            );
+        } else {
+            check(
+                lines.first().is_some_and(|l| l["role"] == "user")
+                    && lines.last().is_some_and(|l| l["id"] == d["lucinaItemId"]),
+                "timeline shape".into(),
+            );
+        }
     }
     assert!(
         failures.is_empty(),

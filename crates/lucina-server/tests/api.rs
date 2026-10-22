@@ -95,7 +95,8 @@ async fn envelope_auth_and_routing() {
 #[tokio::test]
 async fn chat_reply_timeline_and_client_message_dedupe() {
     let h = harness(chat_script("Ciao Giuseppe!"), |_| {}).await;
-    let body = json!({"message": "ciao", "sessionId": "iphone", "clientMessageId": "c-1", "channel": "ios"});
+    // Not settled by tier 0 (fast chat is off here), so the model classifies it.
+    let body = json!({"message": "che ne pensi dei gatti?", "sessionId": "iphone", "clientMessageId": "c-1", "channel": "ios"});
     let (s, b) = h.post("/chat", body.clone()).await;
     assert_eq!(s, 200, "{b}");
     let d = &b["data"];

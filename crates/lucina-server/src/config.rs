@@ -31,6 +31,30 @@ pub enum WriterKind {
 #[derive(Clone)]
 pub struct Config {
     pub bind: SocketAddr,
+    /// Every address to listen on (`LUCINA_BIND`, comma-separated; the
+    /// first is `bind`).
+    pub binds: Vec<SocketAddr>,
+    /// `LUCINA_SHADOW=true`: reported on `/health` (side-by-side with Node).
+    pub shadow: bool,
+    /// Tier-0 / planner settings (`LUCINA_FAST_CHAT_*`, `LUCINA_INTENT_*`).
+    pub intent: lucina_intent::heuristics::Settings,
+    /// `LUCINA_CAPABILITY_HINTS_ENABLED` (default true, as in Node).
+    pub capability_hints: bool,
+    /// `LUCINA_NOTES`, `LUCINA_CALENDAR`, `LUCINA_AVATAR_OUTFIT`,
+    /// `LUCINA_APP_NOTIFY` (all default false, as in Node).
+    pub notes_enabled: bool,
+    pub calendar_enabled: bool,
+    pub outfit_enabled: bool,
+    pub app_notify: bool,
+    /// dsh-remote for app jobs (`DSH_REMOTE_*`; `LUCINA_JOBS=false` turns
+    /// Harness jobs off, e.g. in shadow mode).
+    pub dsh: crate::jobs::DshConfig,
+    /// `IMAGE_PROVIDER=comfyui` with `COMFYUI_BASE_URL`: image jobs start
+    /// (and fail here); otherwise Node's ComfyUI blocker text.
+    pub image_jobs: bool,
+    /// Node's `recent-telegram-chat.json`: secretary sessions seed the Rust
+    /// recent-turn buffer (read only).
+    pub recent_seed_path: Option<PathBuf>,
     pub data_dir: PathBuf,
     pub persona: String,
     pub host_label: String,
@@ -111,6 +135,13 @@ impl std::fmt::Debug for Config {
             .field("memory_mode", &self.memory_mode)
             .field("reminders_writer", &self.reminders_writer)
             .field("scheduler", &self.scheduler)
+            .field("binds", &self.binds)
+            .field("shadow", &self.shadow)
+            .field("fast_chat", &self.intent.fast_chat)
+            .field("notes", &self.notes_enabled)
+            .field("calendar", &self.calendar_enabled)
+            .field("outfit", &self.outfit_enabled)
+            .field("jobs", &self.dsh.enabled)
             .finish_non_exhaustive()
     }
 }
@@ -198,14 +229,53 @@ impl Config {
         if let Some(v) = get("LUCINA_NOMINATIM_URL") {
             endpoints.nominatim = v;
         }
+        let binds: Vec<SocketAddr> = get("LUCINA_BIND")
+            .unwrap_or_else(|| DEFAULT_BIND.into())
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse())
+            .collect::<Result<_, _>>()?;
+        let bind = *binds
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("LUCINA_BIND is empty"))?;
+        let host_label = get("LUCINA_RUNTIME_HOST")
+            .or_else(|| get("LUCINA_HOST_LABEL"))
+            .map(|s| s.trim().to_lowercase())
+            .unwrap_or_else(|| "nezopt".into());
+        let oracle_monitor_enabled = flag("LUCINA_ORACLE_MONITOR_ENABLED", false);
+        let intent = lucina_intent::heuristics::Settings {
+            fast_chat: flag("LUCINA_FAST_CHAT_ENABLED", false),
+            fast_chat_max_chars: num("LUCINA_FAST_CHAT_MAX_CHARS", 320) as usize,
+            aggressive_tool_routing: flag("LUCINA_AGGRESSIVE_TOOL_ROUTING", true),
+            confidence_min: get("LUCINA_INTENT_CONFIDENCE_MIN")
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.72),
+            oracle_monitor: oracle_monitor_enabled,
+            intent_router: flag("LUCINA_INTENT_ROUTER_ENABLED", true),
+        };
+        let jobs_enabled = flag("LUCINA_JOBS", true);
         Ok(Self {
-            bind: get("LUCINA_BIND")
-                .unwrap_or_else(|| DEFAULT_BIND.into())
-                .parse()?,
-            persona: get("LUCINA_PERSONA_NAME").unwrap_or_else(|| "Lucina".into()),
-            host_label: get("LUCINA_HOST_LABEL")
-                .map(|s| s.to_lowercase())
-                .unwrap_or_else(|| "nezopt".into()),
+            bind,
+            binds,
+            shadow: flag("LUCINA_SHADOW", false),
+            intent,
+            capability_hints: flag("LUCINA_CAPABILITY_HINTS_ENABLED", true),
+            notes_enabled: flag("LUCINA_NOTES", false),
+            calendar_enabled: flag("LUCINA_CALENDAR", false),
+            outfit_enabled: flag("LUCINA_AVATAR_OUTFIT", false),
+            app_notify: flag("LUCINA_APP_NOTIFY", false),
+            dsh: crate::jobs::DshConfig::from_lookup(&get, jobs_enabled, &host_label),
+            image_jobs: get("IMAGE_PROVIDER").as_deref().map(str::trim) == Some("comfyui")
+                && get("COMFYUI_BASE_URL").is_some(),
+            recent_seed_path: Some(path_or(
+                "LUCINA_RECENT_SEED_PATH",
+                "recent-telegram-chat.json",
+            )),
+            persona: get("LUCINA_PERSONA_NAME")
+                .or_else(|| get("TELEGRAM_PERSONA"))
+                .unwrap_or_else(|| "Lucina".into()),
+            host_label,
             secretary_enabled: get("SECRETARY_API_ENABLED").as_deref() == Some("true"),
             token,
             default_session: get("SECRETARY_SESSION_ID").unwrap_or_else(|| "secretary_app".into()),
@@ -251,7 +321,7 @@ impl Config {
             },
             tools: ToolSelection::parse(&get("LUCINA_TOOLS").unwrap_or_else(|| "all".into())),
             turn_deadline: Duration::from_millis(num("LUCINA_TURN_DEADLINE_MS", 90_000).max(1000)),
-            oracle_monitor_enabled: flag("LUCINA_ORACLE_MONITOR_ENABLED", false),
+            oracle_monitor_enabled,
             persona_path: get("LUCINA_PERSONA_PATH").map(PathBuf::from),
             recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH")
                 .map(PathBuf::from)

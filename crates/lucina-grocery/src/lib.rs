@@ -11,6 +11,7 @@
 //! - deleted stays deleted; one active row per (list, catalogId-or-name).
 
 pub mod catalog;
+pub mod ledger;
 pub mod products;
 
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,7 @@ use sqlx::{Connection, Row};
 use uuid::Uuid;
 
 pub use catalog::{Catalog, CatalogIndex};
+pub use ledger::{Price, StoreRow, Summary};
 pub use products::{resolve_canonical_product, Product};
 
 pub const THEMES: [&str; 8] = [

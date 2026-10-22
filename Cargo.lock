@@ -1731,6 +1731,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-intent"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "fancy-regex",
+ "lucina-grocery",
+ "lucina-store",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "lucina-llm"
 version = "0.1.0"
 dependencies = [
@@ -1772,6 +1786,7 @@ dependencies = [
  "futures-util",
  "lucina-discord",
  "lucina-grocery",
+ "lucina-intent",
  "lucina-llm",
  "lucina-memory",
  "lucina-store",
