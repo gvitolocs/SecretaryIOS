@@ -16,6 +16,9 @@
 //!   and `POST /v1/device/state {alarms, timers, reminders, events, focus}`
 //!   are validated and forwarded.
 //!
+//! `POST /v1/device/state` also hands the snapshot's timed events to the
+//! notifier for calendar notifications.
+//!
 //! Every forwarded body gets `device: {id, name}` (the authenticated
 //! device); a client-sent `device` is ignored.
 
@@ -208,7 +211,15 @@ async fn state(
     JsonBody(mut snapshot): JsonBody<DeviceState>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     snapshot.device = Some(device_ref(&ident));
-    forward(&st, &Call::device_state(&snapshot)?).await
+    let call = Call::device_state(&snapshot)?;
+    // Upcoming events feed calendar notifications, whatever Lucina answers.
+    let (notify, device, snap) = (st.notify.clone(), ident.device_id.clone(), snapshot.clone());
+    match tokio::task::spawn_blocking(move || notify.device_state(&device, &snap)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not keep calendar events"),
+        Err(_) => tracing::warn!("calendar events task failed"),
+    }
+    forward(&st, &call).await
 }
 
 /// `POST /v1/device/events`, behind [`crate::auth::require_device_events`].

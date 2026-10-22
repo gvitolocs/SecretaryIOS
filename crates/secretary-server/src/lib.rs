@@ -16,6 +16,7 @@ pub mod engines;
 pub mod error;
 pub mod health;
 pub mod insights;
+pub mod notify;
 pub mod owner;
 pub mod ratelimit;
 pub mod routes;
@@ -63,9 +64,12 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// - `connect-src blob: data:`, `media-src blob:`, `worker-src blob:`:
 ///   fetches of those URLs, audio and decoder workers.
 ///
+/// `worker-src 'self'` also admits the PWA service worker (`/sw.js`, Web
+/// Push), and `manifest-src 'self'` the web app manifest.
+///
 /// Plus `base-uri 'none'`. Same directives as the standalone `/lucina/`
 /// page in `deploy/Caddyfile.p1`.
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'";
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
@@ -96,6 +100,8 @@ pub struct Inner {
     pub streams: timeline::StreamSlots,
     /// Flipped to `true` on shutdown; open streams end when it is.
     pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// Inbox, settings, Web Push / APNs and the timeline ingester.
+    pub notify: Arc<notify::Notifier>,
 }
 
 #[derive(Clone)]
@@ -139,6 +145,7 @@ impl AppState {
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
+            notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
         })))
     }
 
@@ -208,7 +215,8 @@ pub fn app(state: AppState) -> Router {
         .merge(tts::routes())
         .merge(timeline::routes())
         .merge(shopping::routes())
-        .merge(device::routes());
+        .merge(device::routes())
+        .merge(notify::routes::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -229,6 +237,7 @@ pub fn app(state: AppState) -> Router {
         .merge(protected)
         .merge(insights::routes(state.clone()))
         .merge(avatar::routes(state.clone()))
+        .merge(notify::routes::service_routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
@@ -316,6 +325,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         trust_proxy = cfg.trust_proxy,
         "secretary-server listening"
     );
+    notify::spawn_workers(&state);
     let st = state.clone();
     let shutdown = async move {
         shutdown_signal().await;

@@ -367,6 +367,16 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
         }
         Err(e) => return Err(registry_error(&e)),
     };
+    // `system` notification (off by default): a new device signed in.
+    let notifier = st.notify.clone();
+    let lang = notifier.settings.read(|s| s.language.clone());
+    let notice = crate::notify::NewNotification::new(
+        crate::notify::Category::System,
+        crate::notify::text::new_device(&dev.name, &lang),
+    );
+    tokio::spawn(async move {
+        let _ = notifier.publish(notice).await;
+    });
     let mut resp = (
         StatusCode::CREATED,
         Json(json!({"token": token, "deviceId": dev.id, "deviceName": dev.name})),
