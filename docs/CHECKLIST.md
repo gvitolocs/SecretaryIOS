@@ -7,6 +7,7 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Inventory of the Node Lucina (every module PORT / DROP / OTHER-BOT) and the port plan → `docs/lucina-rust/`
 - [ ] Core crates on branch `lucina-rs`: `lucina-llm` (DeepSeek + tools), `lucina-tools` (plugins, confirmation flow),
       `lucina-memory` (Honcho), `lucina-store` (timeline/reminders, Node-compatible), `lucina-grocery`, `lucina-server`
+- [x] Rich replies LIVE on Rust (lucina-rs 9c3dddc, LUCINA_RICH_REPLIES=true) + web rich chat LIVE (main 2bfe0b6); iOS rich chat installed on iPhone (ios-rich-chat bff95d9). Node (Telegram) still needs flag + restart
 - [x] Intent false-positive fix live on Rust (c33f67c); Node f4b61e2 committed, restart of lucina-nez held until the shopping item-objects migration 003 is applied
 - [x] Phase 1: Secretary API on the Rust Lucina — CUT OVER 2026-10-22 16:35 (parity 106/106, parsers 239/239)
 - [ ] Phase 2: reminders and scheduler (single writer)
