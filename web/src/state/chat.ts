@@ -21,6 +21,7 @@ import {
 } from "../api/timeline";
 import { t } from "../i18n";
 import { chatSessionId, uuid } from "../lib/ids";
+import { parseRich, speechText, stripMarkdown, type RichMessage } from "../lib/rich";
 import { readJSON, removeKey, writeJSON } from "../lib/storage";
 import { markLucinaOnline } from "./lucina";
 
@@ -59,6 +60,15 @@ export interface ChatMessage {
   error?: string;
   action?: string | null;
   job?: JobState | null;
+  /** Lucina message format v1 from the chat response (timeline items carry it in meta.rich). */
+  rich?: RichMessage;
+  /** Arrived while the chat was open: reveal its bubbles one by one. Never cached. */
+  reveal?: boolean;
+}
+
+/** The v1 rich message of a chat message, if it has one. */
+export function richOf(m: ChatMessage): RichMessage | undefined {
+  return m.meta?.rich ?? m.rich;
 }
 
 export type LoadState = "idle" | "loading" | "ready" | "error";
@@ -88,6 +98,12 @@ function hydrate(): ChatMessage[] {
     if (typeof msg.createdAt !== "number" || !Number.isFinite(msg.createdAt)) continue;
     if (!(CHANNELS as readonly string[]).includes(msg.channel)) continue;
     seen.add(msg.key);
+    delete msg.reveal;
+    if (msg.rich !== undefined) {
+      const rich = parseRich(msg.rich);
+      if (rich) msg.rich = rich;
+      else delete msg.rich;
+    }
     // A reload interrupted this send; let the user retry it.
     out.push(msg.status === "sending" ? { ...msg, status: "error", error: t("chat.errReloaded") } : msg);
   }
@@ -111,6 +127,48 @@ const [olderState, setOlderState] = createSignal<LoadState>("idle");
 const [streamStatus, setStreamStatus] = createSignal<StreamStatus>("connecting");
 
 export { chat, sending, lastReply, loadState, olderState, streamStatus };
+
+// ---- Rich replies: composer prefill, reveal progress, chosen buttons ----------
+
+/** Text a button wants in the composer (`prefill` replies, "Modifica"); `n` makes repeats distinct. */
+const [prefill, setPrefill] = createSignal<{ text: string; n: number } | null>(null);
+let prefillCount = 0;
+export { prefill };
+export function requestPrefill(text: string): void {
+  setPrefill({ text, n: ++prefillCount });
+}
+
+/** Bumped whenever a revealing reply shows another bubble (keeps the list pinned to the end). */
+const [revealTick, setRevealTick] = createSignal(0);
+export { revealTick };
+export function bumpReveal(): void {
+  setRevealTick((n) => n + 1);
+}
+
+const CHOICES_KEY = "secretary.chat.choices.v1";
+const CHOICES_LIMIT = 200;
+
+function readChoices(): Record<string, string> {
+  const data = readJSON("local", CHOICES_KEY);
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data as Record<string, unknown>)) if (typeof v === "string") out[k] = v;
+  return out;
+}
+
+const [choices, setChoices] = createStore<Record<string, string>>(readChoices());
+
+/** The button already used on this message (by item id once known, else its key). */
+export function chosenAction(m: ChatMessage): string | undefined {
+  return (m.itemId && choices[m.itemId]) || choices[m.key];
+}
+
+export function chooseAction(m: ChatMessage, actionId: string): void {
+  const id = m.itemId ?? m.key;
+  setChoices(id, actionId);
+  const all = Object.entries(unwrap(choices));
+  writeJSON("local", CHOICES_KEY, Object.fromEntries(all.slice(-CHOICES_LIMIT)));
+}
 
 const replyListeners = new Set<(text: string) => void>();
 
@@ -293,7 +351,12 @@ export function onTimelineItem(cb: (item: TimelineItem) => void): () => void {
 /** Merge one live item (from the stream). */
 export function receiveItem(item: TimelineItem): void {
   commit((list) => {
-    mergeItems(list, [item], "end");
+    const added = mergeItems(list, [item], "end");
+    // A rich reply that arrives live is "said" bubble by bubble.
+    if (added && item.role === "lucina" && item.meta?.rich) {
+      const m = list.find((x) => x.itemId === item.id);
+      if (m) m.reveal = true;
+    }
   });
   for (const cb of itemListeners) cb(item);
 }
@@ -384,6 +447,7 @@ async function deliver(key: string): Promise<void> {
     const rawJob = res?.job && res.job.id !== undefined && res.job.id !== null ? res.job : null;
     const action = typeof res?.action === "string" ? res.action : null;
     const replyText = typeof res?.reply === "string" ? res.reply : "";
+    const rich = parseRich(res) ?? undefined;
     const job: JobState | null = rawJob
       ? { id: String(rawJob.id), status: String(rawJob.status ?? "queued"), action, pollError: null }
       : null;
@@ -414,6 +478,7 @@ async function deliver(key: string): Promise<void> {
         existing.action = action;
         existing.job = job;
         if (!existing.text) existing.text = replyText;
+        if (rich && !existing.meta?.rich) existing.rich = rich;
         replyKey = existing.key;
         return;
       }
@@ -427,14 +492,17 @@ async function deliver(key: string): Promise<void> {
         replyFor: cmid,
         action,
         job,
+        ...(rich ? { rich, reveal: true } : {}),
       };
       if (lucinaItemId) reply.itemId = lucinaItemId;
       list.push(reply);
       replyKey = reply.key;
     });
-    if (replyText) {
-      setLastReply(replyText);
-      for (const fn of replyListeners) fn(replyText);
+    if (replyText || rich) {
+      // Her voice and the live region get the bubbles only (never the widgets), without markdown.
+      const spoken = rich ? speechText(rich) : stripMarkdown(replyText);
+      setLastReply(spoken);
+      for (const fn of replyListeners) fn(spoken);
     }
     if (job && replyKey) scheduleJobPoll(replyKey, isTerminalJob(job.status) ? 0 : JOB_POLL_MS);
   } catch (e) {

@@ -20,6 +20,12 @@ export interface ChatResponse {
   /** Timeline ids of the recorded user message and Lucina's reply (newer servers). */
   userItemId?: string | number | null;
   lucinaItemId?: string | number | null;
+  /** Lucina message format v1 (docs/lucina-message-format.md); `reply` is then the plain fallback. */
+  format?: "v1";
+  lang?: string;
+  bubbles?: unknown;
+  blocks?: unknown;
+  actions?: unknown;
 }
 
 export interface JobInfo {

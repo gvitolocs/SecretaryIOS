@@ -65,11 +65,11 @@ describe("Chat", () => {
     const link = await screen.findByRole("link", { name: "https://example.com" });
     expect(link).toHaveAttribute("href", "https://example.com/");
     expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
-    // Markup in replies stays text.
+    // Markup in replies stays text (her replies go through the safe markdown renderer).
     expect(document.querySelector(".msg--lucina b")).toBeNull();
-    expect(document.querySelector(".msg--lucina .bubble")?.textContent).toBe(
-      "Line one\n<b>not bold</b> https://example.com",
-    );
+    const bubble = document.querySelector(".msg--lucina .bubble")!;
+    expect(bubble.textContent).toBe("Line one<b>not bold</b> https://example.com");
+    expect(bubble.querySelector("br")).not.toBeNull();
     // The live region announces the new reply.
     expect(document.querySelector("[aria-live=polite]")?.textContent).toContain("Lucina: Line one");
 
