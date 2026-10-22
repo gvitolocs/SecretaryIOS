@@ -92,6 +92,18 @@ pub struct Meta {
     pub command: Option<Box<RawValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// Lucina message format v1 (`crate::rich`): `"v1"` plus the parts,
+    /// validated again on write. `text` holds the plain fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubbles: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actions: Option<Vec<serde_json::Value>>,
 }
 
 impl Meta {
@@ -119,6 +131,19 @@ impl Meta {
             && self.ok.is_none()
             && self.command.is_none()
             && self.tool.is_none()
+            && self.format.is_none()
+    }
+
+    /// The meta of a rich reply (merged onto the turn's own meta).
+    pub fn rich(m: &crate::rich::RichMessage) -> Self {
+        Self {
+            format: Some(crate::rich::FORMAT.into()),
+            bubbles: Some(m.bubbles.clone()),
+            lang: m.lang.clone(),
+            blocks: (!m.blocks.is_empty()).then(|| m.blocks.clone()),
+            actions: (!m.actions.is_empty()).then(|| m.actions.clone()),
+            ..Self::default()
+        }
     }
 
     /// Later keys win (`{...a, ...b}`).
@@ -142,7 +167,12 @@ impl Meta {
             is_dm,
             ok,
             command,
-            tool
+            tool,
+            format,
+            bubbles,
+            lang,
+            blocks,
+            actions
         );
         self
     }
@@ -260,6 +290,22 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         ok: m.ok,
         command: m.command.as_deref().and_then(normalize_command),
         tool: s(m.tool),
+        ..Meta::default()
+    };
+    // Rich reply parts: validated again here, the timeline is what the apps render.
+    let out = if m.format.as_deref() == Some(crate::rich::FORMAT) {
+        let input = serde_json::json!({
+            "bubbles": m.bubbles,
+            "blocks": m.blocks,
+            "actions": m.actions,
+            "lang": m.lang,
+        });
+        match crate::rich::normalize(&input) {
+            Ok((rich, _)) => out.merge(Meta::rich(&rich)),
+            Err(_) => out,
+        }
+    } else {
+        out
     };
     (!out.is_empty()).then_some(out)
 }

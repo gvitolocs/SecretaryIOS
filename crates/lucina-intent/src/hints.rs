@@ -201,6 +201,54 @@ pub fn append_capability_hints(reply: &str, user_text: &str, enabled: bool) -> S
     }
 }
 
+const HINT_IDS: [&str; 8] = [
+    "reminder",
+    "list-reminders",
+    "sheet",
+    "graph",
+    "image",
+    "harness",
+    "poko",
+    "menu",
+];
+
+/// The label of a hint line (before " — "), lowercase.
+fn hint_head(line: &str) -> String {
+    line.split('—').next().unwrap_or("").trim().to_lowercase()
+}
+
+/// Split a reply into its body and the capability-hint footer that
+/// [`append_capability_hints`] added: `(body, hint ids, footer language)`.
+/// Footers stored before 2026-10-22 ("Promemoria Telegram") still parse.
+pub fn extract_capability_hints(reply: &str) -> (String, Vec<&'static str>, Option<&'static str>) {
+    for (lang, heading) in [("it", "💡 Posso anche:"), ("en", "💡 I can also:")] {
+        let Some(at) = reply.rfind(heading) else {
+            continue;
+        };
+        let body = reply[..at]
+            .trim_end()
+            .trim_end_matches('—')
+            .trim_end()
+            .to_owned();
+        let ids = reply[at + heading.len()..]
+            .lines()
+            .map(|l| l.trim().trim_start_matches('•').trim())
+            .filter(|l| !l.is_empty())
+            .filter_map(|l| {
+                let head = hint_head(l);
+                if head == "promemoria telegram" || head == "telegram reminders" {
+                    return Some("reminder");
+                }
+                HINT_IDS.into_iter().find(|id| {
+                    hint_head(hint(id, "it")) == head || hint_head(hint(id, "en")) == head
+                })
+            })
+            .collect();
+        return (body, ids, Some(lang));
+    }
+    (reply.to_owned(), Vec::new(), None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +270,12 @@ mod tests {
             append_capability_hints("Ok.", "puoi fare un grafico?", false),
             "Ok."
         );
+        let (body, ids, lang) = extract_capability_hints(&out);
+        assert_eq!(body, "Certo, posso aiutarti con questo.");
+        assert!(ids.contains(&"graph"), "{ids:?}");
+        assert_eq!(lang, Some("it"));
+        let legacy =
+            "Ok\n\n—\n💡 Posso anche:\n• Promemoria Telegram — es. «avvisami alle 21:30 di …»";
+        assert_eq!(extract_capability_hints(legacy).1, vec!["reminder"]);
     }
 }

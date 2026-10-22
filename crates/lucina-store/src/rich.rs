@@ -1,0 +1,1299 @@
+//! Lucina message format v1 (`docs/lucina-message-format.md`; Node
+//! `src/lucina-message-format.js`): short bubbles, typed widgets (blocks) and
+//! buttons (actions), plus the plain-text fallback for every surface that does
+//! not render them. Pure: the timeline validates stored meta with it, the
+//! server composes replies with it.
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+
+pub const FORMAT: &str = "v1";
+pub const MAX_BUBBLES: usize = 4;
+pub const BUBBLE_SOFT_CHARS: usize = 280;
+const BUBBLE_HARD_CHARS: usize = 900;
+pub const MAX_BLOCKS: usize = 8;
+pub const MAX_ACTIONS: usize = 4;
+const MAX_LIST_ITEMS: usize = 20;
+const MAX_CHECKLIST_ITEMS: usize = 12;
+const MAX_STATS: usize = 4;
+pub const MAX_TABLE_COLUMNS: usize = 4;
+pub const MAX_TABLE_ROWS: usize = 6;
+const MAX_STEPS: usize = 8;
+const MAX_TITLE: usize = 120;
+const MAX_TEXT: usize = 400;
+const MAX_BODY: usize = 600;
+const MAX_LABEL: usize = 40;
+const MAX_CELL: usize = 80;
+const MAX_PAYLOAD_TEXT: usize = 500;
+
+/// A validated v1 message. `blocks` and `actions` are normalized JSON objects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RichMessage {
+    pub format: String,
+    pub bubbles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Value>,
+}
+
+// ---------------------------------------------------------------- helpers
+
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(max - 1).collect();
+    format!("{}…", head.trim_end())
+}
+
+/// Trimmed text without control characters (newline and tab kept), clipped.
+fn clean(v: &Value, max: usize) -> String {
+    let raw = match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return String::new(),
+    };
+    let text: String = raw
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+        .collect();
+    clip(text.trim(), max)
+}
+
+fn line(v: &Value, max: usize) -> String {
+    clean(v, max)
+        .split('\n')
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn emoji_of(v: &Value) -> Option<String> {
+    let t = line(v, 16);
+    (!t.is_empty() && !t.chars().any(|c| c.is_ascii_alphanumeric())).then_some(t)
+}
+
+/// An `http(s)` URL, else `None`.
+pub fn safe_http_url(v: &Value) -> Option<String> {
+    let t = line(v, 2000);
+    let lower = t.to_ascii_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return None;
+    }
+    let host = t.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    (!host.is_empty() && !t.chars().any(char::is_whitespace)).then_some(t)
+}
+
+fn str_v(s: &str) -> Value {
+    Value::String(s.to_owned())
+}
+
+/// Chunks of at most `max` characters, cut at sentence ends, then at spaces.
+pub fn split_into_chunks(text: &str, max: usize) -> Vec<String> {
+    let source = text.trim();
+    if source.is_empty() {
+        return Vec::new();
+    }
+    if source.chars().count() <= max {
+        return vec![source.to_owned()];
+    }
+    // Sentences: up to and including a run of .!?… (plus closing quotes) or a newline.
+    let mut sentences: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\n' {
+            cur.push(' ');
+            sentences.push(std::mem::take(&mut cur));
+            i += 1;
+            continue;
+        }
+        cur.push(c);
+        if matches!(c, '.' | '!' | '?' | '…') {
+            while i + 1 < chars.len()
+                && matches!(
+                    chars[i + 1],
+                    '.' | '!' | '?' | '…' | '"' | '»' | '”' | '\'' | ')' | ']'
+                )
+            {
+                i += 1;
+                cur.push(chars[i]);
+            }
+            while i + 1 < chars.len() && chars[i + 1] == ' ' {
+                i += 1;
+                cur.push(' ');
+            }
+            sentences.push(std::mem::take(&mut cur));
+        }
+        i += 1;
+    }
+    if !cur.is_empty() {
+        sentences.push(cur);
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for sentence in sentences {
+        if sentence.trim().is_empty() {
+            continue;
+        }
+        let joined = format!("{current}{sentence}");
+        if joined.trim().chars().count() <= max {
+            current = joined;
+            continue;
+        }
+        if !current.trim().is_empty() {
+            out.push(current.trim().to_owned());
+        }
+        if sentence.trim().chars().count() <= max {
+            current = sentence;
+            continue;
+        }
+        let mut rest: Vec<char> = sentence.trim().chars().collect();
+        while rest.len() > max {
+            let window: String = rest[..max].iter().collect();
+            let cut = match window.rfind(' ') {
+                Some(b) if window[..b].chars().count() >= max / 2 => window[..b].chars().count(),
+                _ => max,
+            };
+            out.push(rest[..cut].iter().collect::<String>().trim().to_owned());
+            rest = rest[cut..]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .chars()
+                .collect();
+        }
+        current = rest.into_iter().collect();
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_owned());
+    }
+    out
+}
+
+fn normalize_bubbles(v: &Value) -> Result<Vec<String>, String> {
+    let Value::Array(items) = v else {
+        return Err("bubbles must be an array of strings".into());
+    };
+    let mut chunks = Vec::new();
+    for raw in items {
+        if !raw.is_string() {
+            continue;
+        }
+        let text = clean(raw, 4000);
+        if !text.is_empty() {
+            chunks.extend(split_into_chunks(&text, BUBBLE_SOFT_CHARS));
+        }
+    }
+    if chunks.len() > MAX_BUBBLES {
+        let tail = chunks.split_off(MAX_BUBBLES - 1).join(" ");
+        chunks.push(tail);
+    }
+    Ok(chunks.iter().map(|c| clip(c, BUBBLE_HARD_CHARS)).collect())
+}
+
+// ---------------------------------------------------------------- blocks
+
+fn items(raw: &Value) -> &[Value] {
+    raw.get("items")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn with_title(mut block: Map<String, Value>, raw: &Value) -> Value {
+    let title = line(&raw["title"], MAX_TITLE);
+    if !title.is_empty() {
+        block.insert("title".into(), str_v(&title));
+    }
+    Value::Object(block)
+}
+
+fn item_text(item: &Value, max: usize) -> String {
+    if item.is_string() {
+        clean(item, max)
+    } else {
+        clean(&item["text"], max)
+    }
+}
+
+/// One block, or `None` when it does not fit the contract.
+pub fn normalize_block(raw: &Value) -> Option<Value> {
+    let kind = raw.get("type")?.as_str()?;
+    match kind {
+        "checklist" => {
+            let list: Vec<Value> = items(raw)
+                .iter()
+                .filter_map(|i| {
+                    let text = item_text(i, MAX_TEXT);
+                    if text.is_empty() {
+                        return None;
+                    }
+                    Some(if i["done"] == Value::Bool(true) {
+                        json!({"text": text, "done": true})
+                    } else {
+                        json!({"text": text})
+                    })
+                })
+                .take(MAX_CHECKLIST_ITEMS)
+                .collect();
+            if list.is_empty() {
+                return None;
+            }
+            let mut b = Map::new();
+            b.insert("type".into(), str_v("checklist"));
+            b.insert("items".into(), Value::Array(list));
+            Some(with_title(b, raw))
+        }
+        "card" => {
+            let title = line(&raw["title"], MAX_TITLE);
+            let body = clean(&raw["body"], MAX_BODY);
+            if title.is_empty() && body.is_empty() {
+                return None;
+            }
+            let tone = raw["tone"]
+                .as_str()
+                .filter(|t| matches!(*t, "info" | "success" | "warning"))
+                .unwrap_or("info");
+            let mut b = Map::new();
+            b.insert("type".into(), str_v("card"));
+            b.insert(
+                "title".into(),
+                str_v(&if title.is_empty() {
+                    line(&str_v(&body), 60)
+                } else {
+                    title.clone()
+                }),
+            );
+            b.insert("tone".into(), str_v(tone));
+            if let Some(e) = emoji_of(&raw["emoji"]) {
+                b.insert("emoji".into(), str_v(&e));
+            }
+            let subtitle = line(&raw["subtitle"], MAX_TITLE);
+            if !subtitle.is_empty() {
+                b.insert("subtitle".into(), str_v(&subtitle));
+            }
+            if !body.is_empty() && (!title.is_empty() || body.chars().count() > 60) {
+                b.insert("body".into(), str_v(&body));
+            }
+            Some(Value::Object(b))
+        }
+        "stat" => {
+            let source: Vec<Value> = match raw.get("items") {
+                Some(Value::Array(a)) => a.clone(),
+                _ => vec![raw.clone()],
+            };
+            let list: Vec<Value> = source
+                .iter()
+                .filter_map(|i| {
+                    let label = line(&i["label"], MAX_LABEL);
+                    let value = line(&i["value"], MAX_LABEL);
+                    if label.is_empty() || value.is_empty() {
+                        return None;
+                    }
+                    let delta = line(&i["delta"], MAX_LABEL);
+                    Some(if delta.is_empty() {
+                        json!({"label": label, "value": value})
+                    } else {
+                        json!({"label": label, "value": value, "delta": delta})
+                    })
+                })
+                .take(MAX_STATS)
+                .collect();
+            (!list.is_empty()).then(|| json!({"type": "stat", "items": list}))
+        }
+        "list" => {
+            let list: Vec<Value> = items(raw)
+                .iter()
+                .filter_map(|i| {
+                    let text = item_text(i, MAX_TEXT);
+                    if text.is_empty() {
+                        return None;
+                    }
+                    let mut e = Map::new();
+                    e.insert("text".into(), str_v(&text));
+                    if let Some(em) = emoji_of(&i["emoji"]) {
+                        e.insert("emoji".into(), str_v(&em));
+                    }
+                    let meta = line(&i["meta"], MAX_LABEL * 2);
+                    if !meta.is_empty() {
+                        e.insert("meta".into(), str_v(&meta));
+                    }
+                    Some(Value::Object(e))
+                })
+                .take(MAX_LIST_ITEMS)
+                .collect();
+            if list.is_empty() {
+                return None;
+            }
+            let mut b = Map::new();
+            b.insert("type".into(), str_v("list"));
+            b.insert("items".into(), Value::Array(list));
+            Some(with_title(b, raw))
+        }
+        "table" => {
+            let columns: Vec<String> = raw["columns"]
+                .as_array()?
+                .iter()
+                .map(|c| line(c, MAX_CELL))
+                .take(MAX_TABLE_COLUMNS)
+                .collect();
+            if columns.iter().all(String::is_empty) {
+                return None;
+            }
+            let rows: Vec<Vec<String>> = raw["rows"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(Value::as_array)
+                .map(|r| {
+                    (0..columns.len())
+                        .map(|k| line(r.get(k).unwrap_or(&Value::Null), MAX_CELL))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|r| r.iter().any(|c| !c.is_empty()))
+                .take(MAX_TABLE_ROWS)
+                .collect();
+            if rows.is_empty() {
+                return None;
+            }
+            let mut b = Map::new();
+            b.insert("type".into(), str_v("table"));
+            b.insert("columns".into(), json!(columns));
+            b.insert("rows".into(), json!(rows));
+            Some(with_title(b, raw))
+        }
+        "steps" => {
+            let list: Vec<Value> = items(raw)
+                .iter()
+                .map(|i| item_text(i, MAX_TEXT))
+                .filter(|t| !t.is_empty())
+                .take(MAX_STEPS)
+                .map(|t| str_v(&t))
+                .collect();
+            if list.is_empty() {
+                return None;
+            }
+            let mut b = Map::new();
+            b.insert("type".into(), str_v("steps"));
+            b.insert("items".into(), Value::Array(list));
+            Some(with_title(b, raw))
+        }
+        "quote" => {
+            let text = clean(&raw["text"], MAX_BODY);
+            if text.is_empty() {
+                return None;
+            }
+            let cite = line(&raw["cite"], MAX_TITLE);
+            Some(if cite.is_empty() {
+                json!({"type": "quote", "text": text})
+            } else {
+                json!({"type": "quote", "text": text, "cite": cite})
+            })
+        }
+        "link_preview" => {
+            let url = safe_http_url(&raw["url"])?;
+            let mut title = line(&raw["title"], MAX_TITLE);
+            if title.is_empty() {
+                title = url
+                    .split("://")
+                    .nth(1)
+                    .unwrap_or("")
+                    .split('/')
+                    .next()
+                    .unwrap_or("")
+                    .to_owned();
+            }
+            Some(json!({"type": "link_preview", "url": url, "title": title}))
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------- actions
+
+fn valid_id(s: &str) -> bool {
+    (1..=48).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+}
+
+fn valid_route(p: &str) -> bool {
+    p.starts_with('/')
+        && !p.starts_with("//")
+        && !p.contains("..")
+        && p.len() <= 121
+        && p.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_-.%".contains(&b))
+}
+
+/// One action (button), or `None`.
+pub fn normalize_action(raw: &Value, index: usize) -> Option<Value> {
+    let kind = raw.get("kind")?.as_str()?;
+    if !matches!(kind, "reply" | "route" | "confirm" | "dismiss") {
+        return None;
+    }
+    let label = line(&raw["label"], MAX_LABEL);
+    if label.is_empty() {
+        return None;
+    }
+    let id = raw["id"]
+        .as_str()
+        .filter(|s| valid_id(s))
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("a{}", index + 1));
+    let p = &raw["payload"];
+    let mut payload = Map::new();
+    match kind {
+        "reply" => {
+            let text = clean(&p["text"], MAX_PAYLOAD_TEXT);
+            if text.is_empty() {
+                return None;
+            }
+            payload.insert("text".into(), str_v(&text));
+            if p["prefill"] == Value::Bool(true) {
+                payload.insert("prefill".into(), Value::Bool(true));
+            }
+        }
+        "route" => {
+            let path = line(&p["path"], 128);
+            if !valid_route(&path) {
+                return None;
+            }
+            payload.insert("path".into(), str_v(&path));
+        }
+        "confirm" => {
+            let answer = p["answer"]
+                .as_str()
+                .filter(|a| matches!(*a, "yes" | "no" | "edit"))?;
+            payload.insert("answer".into(), str_v(answer));
+            let text = clean(&p["text"], MAX_PAYLOAD_TEXT);
+            if answer != "edit" && text.is_empty() {
+                return None;
+            }
+            if !text.is_empty() {
+                payload.insert("text".into(), str_v(&text));
+            }
+        }
+        _ => {}
+    }
+    let mut a = Map::new();
+    a.insert("id".into(), str_v(&id));
+    a.insert("label".into(), str_v(&label));
+    a.insert("kind".into(), str_v(kind));
+    a.insert("payload".into(), Value::Object(payload));
+    if let Some(e) = emoji_of(&raw["emoji"]) {
+        a.insert("emoji".into(), str_v(&e));
+    }
+    Some(Value::Object(a))
+}
+
+// ---------------------------------------------------------------- message
+
+/// Validate an untrusted message (the model, stored meta). Bad blocks and
+/// actions are dropped (listed in the second value); the message is only
+/// invalid without a usable bubble.
+pub fn normalize(input: &Value) -> Result<(RichMessage, Vec<String>), Vec<String>> {
+    let Value::Object(m) = input else {
+        return Err(vec!["message must be a JSON object".into()]);
+    };
+    let mut errors = Vec::new();
+    if let Some(f) = m.get("format") {
+        if f != FORMAT {
+            errors.push(format!("format must be \"{FORMAT}\""));
+        }
+    }
+    let bubbles = match normalize_bubbles(m.get("bubbles").unwrap_or(&Value::Null)) {
+        Ok(b) => b,
+        Err(e) => {
+            errors.push(e);
+            Vec::new()
+        }
+    };
+    if bubbles.is_empty() && errors.is_empty() {
+        errors.push("bubbles must contain 1-4 non-empty strings".into());
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut dropped = Vec::new();
+    let mut blocks = Vec::new();
+    for raw in m
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        match normalize_block(raw) {
+            Some(b) => blocks.push(b),
+            None => dropped.push(format!("block {}", raw.get("type").unwrap_or(&Value::Null))),
+        }
+        if blocks.len() >= MAX_BLOCKS {
+            break;
+        }
+    }
+    let mut actions: Vec<Value> = Vec::new();
+    for raw in m
+        .get("actions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let Some(mut a) = normalize_action(raw, actions.len()) else {
+            dropped.push(format!(
+                "action {}",
+                raw.get("kind").unwrap_or(&Value::Null)
+            ));
+            continue;
+        };
+        let id = a["id"].as_str().unwrap_or_default().to_owned();
+        if actions.iter().any(|x| x["id"] == a["id"]) {
+            a["id"] = str_v(&format!("{id}-{}", actions.len() + 1));
+        }
+        actions.push(a);
+        if actions.len() >= MAX_ACTIONS {
+            break;
+        }
+    }
+    let lang = m
+        .get("lang")
+        .and_then(Value::as_str)
+        .filter(|l| matches!(*l, "it" | "en" | "da"))
+        .map(str::to_owned);
+    Ok((
+        RichMessage {
+            format: FORMAT.into(),
+            bubbles,
+            lang,
+            blocks,
+            actions,
+        },
+        dropped,
+    ))
+}
+
+/// Code-made actions first (confirmations, hints), then the model's: at most
+/// 4, no repeated labels, unique ids.
+pub fn merge_actions(primary: Vec<Value>, secondary: Vec<Value>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
+    for mut a in primary.into_iter().chain(secondary) {
+        if out.len() >= MAX_ACTIONS {
+            break;
+        }
+        let label = a["label"].as_str().unwrap_or_default().to_lowercase();
+        if labels.contains(&label) {
+            continue;
+        }
+        labels.push(label);
+        let mut id = a["id"].as_str().unwrap_or("a").to_owned();
+        while out.iter().any(|x| x["id"] == str_v(&id)) {
+            id.push('x');
+        }
+        a["id"] = str_v(&id);
+        out.push(a);
+    }
+    out
+}
+
+// ---------------------------------------------------------------- plain text
+
+/// Inline markdown removed (speech, plain surfaces).
+pub fn strip_inline_markdown(text: &str) -> String {
+    let mut s = text.to_owned();
+    for (open, close) in [("**", "**"), ("__", "__"), ("~~", "~~"), ("`", "`")] {
+        s = strip_pairs(&s, open, close);
+    }
+    // [label](url) -> label (url)
+    let mut out = String::new();
+    let mut rest = s.as_str();
+    while let Some(start) = rest.find('[') {
+        let after = &rest[start + 1..];
+        if let Some(mid) = after.find("](") {
+            let label = &after[..mid];
+            let tail = &after[mid + 2..];
+            if let Some(end) = tail.find(')') {
+                let url = &tail[..end];
+                if !label.contains('\n') && (url.starts_with("http") || url.starts_with("mailto:"))
+                {
+                    out.push_str(&rest[..start]);
+                    if label.is_empty() || label == url {
+                        out.push_str(url);
+                    } else {
+                        out.push_str(&format!("{label} ({url})"));
+                    }
+                    rest = &tail[end + 1..];
+                    continue;
+                }
+            }
+        }
+        out.push_str(&rest[..=start]);
+        rest = &rest[start + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn strip_pairs(s: &str, open: &str, close: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(a) = rest.find(open) {
+        let inner_start = a + open.len();
+        match rest[inner_start..].find(close) {
+            Some(b) if b > 0 && !rest[inner_start..inner_start + b].contains('\n') => {
+                out.push_str(&rest[..a]);
+                out.push_str(&rest[inner_start..inner_start + b]);
+                rest = &rest[inner_start + b + close.len()..];
+            }
+            _ => {
+                out.push_str(&rest[..inner_start]);
+                rest = &rest[inner_start..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn more_items(lang: &str, n: usize) -> String {
+    match lang {
+        "en" => format!("… and {n} more"),
+        "da" => format!("… og {n} mere"),
+        _ => format!("… e altri {n}"),
+    }
+}
+
+fn s<'a>(v: &'a Value, k: &str) -> &'a str {
+    v.get(k).and_then(Value::as_str).unwrap_or("")
+}
+
+/// One block as compact text lines (markdown kept).
+pub fn block_to_text(block: &Value, lang: &str, list_limit: usize) -> Vec<String> {
+    let titled = |lines: Vec<String>| {
+        let title = s(block, "title");
+        if title.is_empty() {
+            lines
+        } else {
+            std::iter::once(format!("**{title}**"))
+                .chain(lines)
+                .collect()
+        }
+    };
+    let arr = |k: &str| {
+        block
+            .get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    match s(block, "type") {
+        "checklist" => titled(
+            arr("items")
+                .iter()
+                .map(|i| {
+                    format!(
+                        "{} {}",
+                        if i["done"] == Value::Bool(true) {
+                            "✅"
+                        } else {
+                            "⬜"
+                        },
+                        s(i, "text")
+                    )
+                })
+                .collect(),
+        ),
+        "card" => {
+            let emoji = s(block, "emoji");
+            let sub = s(block, "subtitle");
+            let head = format!(
+                "{}**{}**{}",
+                if emoji.is_empty() {
+                    String::new()
+                } else {
+                    format!("{emoji} ")
+                },
+                s(block, "title"),
+                if sub.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {sub}")
+                }
+            );
+            let body = s(block, "body");
+            if body.is_empty() {
+                vec![head]
+            } else {
+                vec![head, body.to_owned()]
+            }
+        }
+        "stat" => arr("items")
+            .iter()
+            .map(|i| {
+                let d = s(i, "delta");
+                format!(
+                    "{}: **{}**{}",
+                    s(i, "label"),
+                    s(i, "value"),
+                    if d.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({d})")
+                    }
+                )
+            })
+            .collect(),
+        "list" => {
+            let all = arr("items");
+            let mut lines: Vec<String> = all
+                .iter()
+                .take(list_limit)
+                .map(|i| {
+                    let e = s(i, "emoji");
+                    let m = s(i, "meta");
+                    format!(
+                        "{}{}{}",
+                        if e.is_empty() {
+                            "• ".to_owned()
+                        } else {
+                            format!("{e} ")
+                        },
+                        s(i, "text"),
+                        if m.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {m}")
+                        }
+                    )
+                })
+                .collect();
+            if all.len() > list_limit {
+                lines.push(more_items(lang, all.len() - list_limit));
+            }
+            titled(lines)
+        }
+        "table" => {
+            let cols: Vec<String> = arr("columns")
+                .iter()
+                .map(|c| c.as_str().unwrap_or("").to_owned())
+                .collect();
+            let mut lines = vec![cols.join(" · ")];
+            for r in arr("rows") {
+                lines.push(
+                    r.as_array()
+                        .map(|r| {
+                            r.iter()
+                                .map(|c| c.as_str().unwrap_or(""))
+                                .collect::<Vec<_>>()
+                                .join(" · ")
+                        })
+                        .unwrap_or_default(),
+                );
+            }
+            titled(lines)
+        }
+        "steps" => titled(
+            arr("items")
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{}. {}", i + 1, t.as_str().unwrap_or("")))
+                .collect(),
+        ),
+        "quote" => {
+            let mut lines = vec![format!("> {}", s(block, "text").replace('\n', "\n> "))];
+            let cite = s(block, "cite");
+            if !cite.is_empty() {
+                lines.push(format!("— {cite}"));
+            }
+            lines
+        }
+        "link_preview" => vec![format!("🔗 [{}]({})", s(block, "title"), s(block, "url"))],
+        _ => Vec::new(),
+    }
+}
+
+/// `↪︎ rispondi: «sì» · «no»` for the actions a text surface can follow by typing.
+pub fn action_hint_line(actions: &[Value], lang: &str) -> String {
+    let mut typed = Vec::new();
+    let mut routes = Vec::new();
+    for a in actions {
+        match s(a, "kind") {
+            "reply" | "confirm" => {
+                let p = &a["payload"];
+                let text = s(p, "text");
+                let said = if text.is_empty() {
+                    s(a, "label").to_owned()
+                } else if p["prefill"] == Value::Bool(true) || s(p, "answer") == "edit" {
+                    format!("{} …", text.trim_end_matches([' ', ':']))
+                } else {
+                    text.to_owned()
+                };
+                typed.push(format!("«{said}»"));
+            }
+            "route" => routes.push(s(a, "label").to_owned()),
+            _ => {}
+        }
+    }
+    let lead = match lang {
+        "en" => ("reply", "in the app"),
+        "da" => ("svar", "i appen"),
+        _ => ("rispondi", "nell'app"),
+    };
+    let mut parts = Vec::new();
+    if !typed.is_empty() {
+        parts.push(format!("{}: {}", lead.0, typed.join(" · ")));
+    }
+    if !routes.is_empty() {
+        parts.push(format!("{}: {}", lead.1, routes.join(" · ")));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("↪︎ {}", parts.join(" — "))
+    }
+}
+
+impl RichMessage {
+    fn lang(&self) -> &str {
+        self.lang.as_deref().unwrap_or("it")
+    }
+
+    /// The plain-text fallback: bubbles, each widget as text, the action hints.
+    pub fn plain_text(&self, include_actions: bool) -> String {
+        let mut parts: Vec<String> = self.bubbles.clone();
+        for b in &self.blocks {
+            parts.push(block_to_text(b, self.lang(), usize::MAX).join("\n"));
+        }
+        if include_actions {
+            parts.push(action_hint_line(&self.actions, self.lang()));
+        }
+        parts.retain(|p| !p.is_empty());
+        parts.join("\n\n")
+    }
+
+    /// What her voice reads: the bubbles only, without markdown.
+    pub fn speech_text(&self) -> String {
+        strip_inline_markdown(&self.bubbles.join(" "))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The timeline meta fields (`format`, `bubbles`, `lang`, `blocks`, `actions`).
+    pub fn to_value(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+}
+
+// ---------------------------------------------------------------- plain text -> rich
+
+#[derive(Debug, Clone, PartialEq)]
+enum Segment {
+    Heading(String),
+    Para(String),
+    Bullets(Vec<String>),
+    Ordered(Vec<String>),
+    Tasks(Vec<(String, bool)>),
+    Table(Vec<String>, Vec<Vec<String>>),
+    Quote(String),
+}
+
+fn heading_of(l: &str) -> Option<String> {
+    let t = l.trim();
+    if t.starts_with('#') && l.len() - l.trim_start().len() <= 3 {
+        let rest = t.trim_start_matches('#');
+        if rest.starts_with(' ') && t.len() - rest.len() <= 6 {
+            let h = rest.trim().trim_end_matches('#').trim();
+            return (!h.is_empty()).then(|| h.to_owned());
+        }
+    }
+    // A line that is only **bold** (optionally with a trailing colon).
+    let b = t.trim_end_matches(':').trim_end();
+    if b.len() > 4 && b.starts_with("**") && b.ends_with("**") {
+        let inner = &b[2..b.len() - 2];
+        if !inner.contains('*') && inner.chars().count() <= 120 && !inner.trim().is_empty() {
+            return Some(inner.trim().trim_end_matches(':').trim().to_owned());
+        }
+    }
+    None
+}
+
+fn bullet_of(l: &str) -> Option<(bool, String)> {
+    let t = l.trim_start();
+    for m in ["- ", "* ", "+ ", "• ", "– "] {
+        if let Some(rest) = t.strip_prefix(m) {
+            return Some((false, rest.trim().to_owned()));
+        }
+    }
+    let digits: String = t.chars().take_while(char::is_ascii_digit).collect();
+    if (1..=2).contains(&digits.len()) {
+        let rest = &t[digits.len()..];
+        if let Some(r) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return Some((true, r.trim().to_owned()));
+        }
+    }
+    None
+}
+
+fn is_rule(l: &str) -> bool {
+    let t: String = l.chars().filter(|c| !c.is_whitespace()).collect();
+    !t.is_empty() && t.chars().all(|c| matches!(c, '-' | '*' | '_' | '—' | '–'))
+}
+
+fn is_table_sep(l: &str) -> bool {
+    let t = l.trim();
+    t.contains('-')
+        && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+        && t.matches('-').count() >= 2
+}
+
+fn split_row(l: &str) -> Vec<String> {
+    let t = l.trim().trim_start_matches('|').trim_end_matches('|');
+    t.split('|').map(|c| c.trim().to_owned()).collect()
+}
+
+fn segment(text: &str) -> Vec<Segment> {
+    let lines: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        if l.trim().is_empty() || is_rule(l) {
+            i += 1;
+            continue;
+        }
+        if let Some(h) = heading_of(l) {
+            out.push(Segment::Heading(h));
+            i += 1;
+            continue;
+        }
+        if l.contains('|') && lines.get(i + 1).is_some_and(|n| is_table_sep(n)) {
+            let cols = split_row(l);
+            i += 2;
+            let mut rows = Vec::new();
+            while i < lines.len() && lines[i].contains('|') && !lines[i].trim().is_empty() {
+                rows.push(split_row(lines[i]));
+                i += 1;
+            }
+            out.push(Segment::Table(cols, rows));
+            continue;
+        }
+        if l.trim_start().starts_with('>') {
+            let mut body = Vec::new();
+            while i < lines.len() && lines[i].trim_start().starts_with('>') {
+                body.push(lines[i].trim_start()[1..].trim_start().to_owned());
+                i += 1;
+            }
+            out.push(Segment::Quote(body.join("\n").trim().to_owned()));
+            continue;
+        }
+        if let Some((ordered, _)) = bullet_of(l) {
+            let mut list: Vec<String> = Vec::new();
+            while i < lines.len() && !lines[i].trim().is_empty() {
+                if let Some((_, item)) = bullet_of(lines[i]) {
+                    list.push(item);
+                } else if !list.is_empty() && lines[i].starts_with("  ") {
+                    let last = list.last_mut().unwrap();
+                    last.push(' ');
+                    last.push_str(lines[i].trim());
+                } else {
+                    break;
+                }
+                i += 1;
+            }
+            let tasks: Vec<Option<(String, bool)>> = list
+                .iter()
+                .map(|it| {
+                    let b = it.as_bytes();
+                    (b.len() > 4
+                        && b[0] == b'['
+                        && b[2] == b']'
+                        && b[3] == b' '
+                        && matches!(b[1], b' ' | b'x' | b'X'))
+                    .then(|| (it[4..].to_owned(), b[1] != b' '))
+                })
+                .collect();
+            if tasks.iter().all(Option::is_some) {
+                out.push(Segment::Tasks(tasks.into_iter().flatten().collect()));
+            } else if ordered {
+                out.push(Segment::Ordered(list));
+            } else {
+                out.push(Segment::Bullets(list));
+            }
+            continue;
+        }
+        let mut body = vec![l.trim().to_owned()];
+        i += 1;
+        while i < lines.len()
+            && !lines[i].trim().is_empty()
+            && bullet_of(lines[i]).is_none()
+            && heading_of(lines[i]).is_none()
+            && !lines[i].trim_start().starts_with('>')
+            && !is_rule(lines[i])
+        {
+            body.push(lines[i].trim().to_owned());
+            i += 1;
+        }
+        out.push(Segment::Para(body.join("\n")));
+    }
+    out
+}
+
+fn list_item(text: &str) -> Value {
+    let t = text.trim();
+    let first = t.chars().next().unwrap_or(' ');
+    // A leading emoji (not a letter, digit or ASCII mark) becomes the item's emoji.
+    if !first.is_alphanumeric() && !first.is_ascii() && !matches!(first, '«' | '“' | '‘' | '"')
+    {
+        let emoji: String = t.chars().take_while(|c| !c.is_whitespace()).collect();
+        if emoji.chars().count() <= 3 {
+            let rest = t[emoji.len()..].trim();
+            if !rest.is_empty() {
+                return json!({"emoji": emoji, "text": rest});
+            }
+        }
+    }
+    json!({"text": t})
+}
+
+fn first_sentence(text: &str, max: usize) -> String {
+    let plain: String = strip_inline_markdown(text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let end = plain
+        .char_indices()
+        .find(|(i, c)| *i >= 8 && matches!(c, '.' | '!' | '?' | '…'))
+        .map(|(i, c)| i + c.len_utf8());
+    let sentence = match end {
+        Some(e) if plain[..e].chars().count() <= max => plain[..e].to_owned(),
+        _ => plain,
+    };
+    clip(&sentence, max)
+}
+
+/// Deterministic plain text → v1: loose paragraphs become bubbles (at most
+/// `max_bubbles`), headings with their content become widgets. The fallback
+/// when the model's JSON is unusable, and the formatter for short replies.
+pub fn from_plain_text(
+    text: &str,
+    lang: &str,
+    max_bubbles: usize,
+    actions: Vec<Value>,
+) -> RichMessage {
+    let segments = segment(text);
+    let mut bubbles: Vec<String> = Vec::new();
+    let mut blocks: Vec<Value> = Vec::new();
+    let mut title = String::new();
+    let last = segments.len().saturating_sub(1);
+    for (index, seg) in segments.iter().enumerate() {
+        let room = max_bubbles.saturating_sub(bubbles.len());
+        match seg {
+            Segment::Heading(h) => {
+                let next_is_heading =
+                    matches!(segments.get(index + 1), None | Some(Segment::Heading(_)));
+                if bubbles.is_empty() && blocks.is_empty() && next_is_heading {
+                    bubbles.push(h.clone());
+                    continue;
+                }
+                if !title.is_empty() && blocks.is_empty() && bubbles.is_empty() {
+                    bubbles.push(std::mem::take(&mut title));
+                }
+                title = h.clone();
+            }
+            Segment::Para(p) => {
+                if !title.is_empty() {
+                    blocks.push(json!({"type": "card", "title": std::mem::take(&mut title), "body": p, "tone": "info"}));
+                    continue;
+                }
+                let chunks = split_into_chunks(p, BUBBLE_SOFT_CHARS);
+                let opening = blocks.is_empty();
+                let closing = index == last;
+                if (opening || closing) && chunks.len() <= room {
+                    bubbles.extend(chunks);
+                } else if opening && room > 0 {
+                    bubbles.push(chunks[0].clone());
+                    let rest = chunks[1..].join(" ");
+                    if !rest.is_empty() {
+                        blocks.push(json!({"type": "card", "title": first_sentence(&rest, 70), "body": rest, "tone": "info"}));
+                    }
+                } else {
+                    blocks.push(json!({"type": "card", "emoji": "📝", "title": first_sentence(p, 70), "body": p, "tone": "info"}));
+                }
+            }
+            Segment::Bullets(list) => {
+                let t = std::mem::take(&mut title);
+                if list.len() == 1 && !t.is_empty() {
+                    blocks
+                        .push(json!({"type": "card", "title": t, "body": list[0], "tone": "info"}));
+                } else {
+                    blocks.push(json!({"type": "list", "title": t, "items": list.iter().map(|x| list_item(x)).collect::<Vec<_>>()}));
+                }
+            }
+            Segment::Ordered(list) => {
+                blocks.push(
+                    json!({"type": "steps", "title": std::mem::take(&mut title), "items": list}),
+                );
+            }
+            Segment::Tasks(list) => {
+                let items: Vec<Value> = list
+                    .iter()
+                    .map(|(t, d)| json!({"text": t, "done": d}))
+                    .collect();
+                blocks.push(json!({"type": "checklist", "title": std::mem::take(&mut title), "items": items}));
+            }
+            Segment::Table(cols, rows) => {
+                blocks.push(json!({"type": "table", "title": std::mem::take(&mut title), "columns": cols, "rows": rows}));
+            }
+            Segment::Quote(q) => blocks.push(json!({"type": "quote", "text": q})),
+        }
+    }
+    if !title.is_empty() {
+        if bubbles.len() < max_bubbles {
+            bubbles.push(title);
+        } else {
+            blocks.push(json!({"type": "card", "title": title, "tone": "info"}));
+        }
+    }
+    if bubbles.is_empty() {
+        let lead = blocks
+            .iter()
+            .find(|b| matches!(s(b, "type"), "card" | "list" | "checklist"))
+            .map(|b| s(b, "title").to_owned())
+            .filter(|t| !t.is_empty());
+        bubbles.push(lead.unwrap_or_else(|| match lang {
+            "en" => "Here you go 👇".into(),
+            "da" => "Her 👇".into(),
+            _ => "Ecco qui 👇".into(),
+        }));
+    }
+    bubbles.truncate(max_bubbles);
+    let input = json!({"bubbles": bubbles, "blocks": blocks, "actions": actions, "lang": lang});
+    match normalize(&input) {
+        Ok((m, _)) => m,
+        Err(_) => RichMessage {
+            format: FORMAT.into(),
+            bubbles: split_into_chunks(&strip_inline_markdown(text), BUBBLE_SOFT_CHARS)
+                .into_iter()
+                .take(max_bubbles.max(1))
+                .collect(),
+            lang: Some(lang.to_owned()),
+            blocks: Vec::new(),
+            actions: Vec::new(),
+        },
+    }
+}
+
+/// Already chat-shaped: short, only paragraphs, at most two chunks.
+pub fn is_conversational(text: &str) -> bool {
+    let t = text.trim();
+    !t.is_empty()
+        && t.chars().count() <= BUBBLE_SOFT_CHARS * 2
+        && segment(t).iter().all(|s| matches!(s, Segment::Para(_)))
+        && split_into_chunks(t, BUBBLE_SOFT_CHARS).len() <= 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_valid_parts_and_drops_junk() {
+        let (m, dropped) = normalize(&json!({
+            "bubbles": ["Ciao! ✅"],
+            "blocks": [
+                {"type": "checklist", "title": "Oggi", "items": [{"text": "Spesa", "done": true}, {"text": "Palestra"}]},
+                {"type": "stat", "label": "Peso", "value": "82 kg", "delta": "-0.4"},
+                {"type": "table", "columns": ["a","b","c","d","e"], "rows": (0..9).map(|i| vec![format!("r{i}"), "x".into(), "y".into(), "z".into(), "w".into()]).collect::<Vec<Vec<String>>>()},
+                {"type": "link_preview", "url": "javascript:alert(1)", "title": "bad"},
+                {"type": "html", "html": "<script>"}
+            ],
+            "actions": [
+                {"id": "a", "label": "Sì", "kind": "confirm", "payload": {"answer": "yes", "text": "sì"}},
+                {"id": "b", "label": "Note", "kind": "route", "payload": {"path": "/notes/spesa"}},
+                {"id": "c", "label": "Evil", "kind": "route", "payload": {"path": "https://evil.example"}},
+                {"id": "d", "label": "Up", "kind": "route", "payload": {"path": "/../etc"}},
+                {"id": "f", "label": "Dettagli", "kind": "reply", "payload": {"text": "Dammi i dettagli"}},
+                {"id": "g", "label": "Chiudi", "kind": "dismiss", "payload": {}},
+                {"id": "h", "label": "Fifth", "kind": "reply", "payload": {"text": "x"}}
+            ]
+        }))
+        .unwrap();
+        let kinds: Vec<&str> = m.blocks.iter().map(|b| s(b, "type")).collect();
+        assert_eq!(kinds, ["checklist", "stat", "table"]);
+        assert_eq!(m.blocks[2]["columns"].as_array().unwrap().len(), 4);
+        assert_eq!(m.blocks[2]["rows"].as_array().unwrap().len(), 6);
+        let ids: Vec<&str> = m.actions.iter().map(|a| s(a, "id")).collect();
+        assert_eq!(ids, ["a", "b", "f", "g"]);
+        assert_eq!(dropped.len(), 4);
+        assert!(normalize(&json!({"bubbles": []})).is_err());
+        assert!(normalize(&json!({"bubbles": ["x"], "format": "v2"})).is_err());
+        assert!(normalize(&json!("x")).is_err());
+    }
+
+    #[test]
+    fn long_bubbles_split_and_cap_at_four() {
+        let long: String = (0..20)
+            .map(|i| format!("Frase numero {i} con un po' di testo per riempire. "))
+            .collect();
+        let (m, _) = normalize(&json!({"bubbles": [long]})).unwrap();
+        assert!(m.bubbles.len() <= MAX_BUBBLES);
+        for b in &m.bubbles[..m.bubbles.len() - 1] {
+            assert!(b.chars().count() <= BUBBLE_SOFT_CHARS, "{}", b.len());
+        }
+    }
+
+    #[test]
+    fn plain_fallback_and_speech() {
+        let (m, _) = normalize(&json!({
+            "lang": "it",
+            "bubbles": ["Ecco la lista 🛒", "Vuoi **altro**?"],
+            "blocks": [{"type": "list", "items": [{"emoji": "🥛", "text": "Latte", "meta": "2 L"}, {"text": "Pane"}]}],
+            "actions": [
+                {"id": "d", "label": "Dettagli", "kind": "reply", "payload": {"text": "Dammi i dettagli"}},
+                {"id": "p", "label": "Promemoria", "kind": "reply", "payload": {"text": "Ricordami alle 21:30 di", "prefill": true}}
+            ]
+        }))
+        .unwrap();
+        let text = m.plain_text(true);
+        assert!(text.contains("🥛 Latte — 2 L"), "{text}");
+        assert!(text.contains("• Pane"));
+        assert!(
+            text.ends_with("↪︎ rispondi: «Dammi i dettagli» · «Ricordami alle 21:30 di …»"),
+            "{text}"
+        );
+        assert_eq!(m.speech_text(), "Ecco la lista 🛒 Vuoi altro?");
+    }
+
+    #[test]
+    fn a_text_wall_becomes_few_bubbles_and_widgets() {
+        let wall = "**Inventario fattuale — cosa supporto ORA**\n\n**Canali**\n- Telegram (chat + foto)\n- Discord\n\n**Memoria**\n- Honcho, workspace `hermes-peer1`.\n\n**Limiti**\n- Nessuna email.\n\nSe vuoi, il prossimo passo è decidere *quale* buco colmare.";
+        let m = from_plain_text(wall, "it", 3, Vec::new());
+        assert!(m.bubbles.len() <= 3);
+        assert_eq!(m.bubbles[0], "Inventario fattuale — cosa supporto ORA");
+        assert!(m.bubbles.last().unwrap().starts_with("Se vuoi"));
+        let kinds: Vec<&str> = m.blocks.iter().map(|b| s(b, "type")).collect();
+        assert_eq!(kinds, ["list", "card", "card"]);
+        assert_eq!(s(&m.blocks[0], "title"), "Canali");
+        assert!(is_conversational(
+            "Fatto ✅ Ti ricordo la spesa domani alle 9."
+        ));
+        assert!(!is_conversational(wall));
+        let tasks = from_plain_text(
+            "Ecco:\n\n- [x] uno\n- [ ] due\n\n1. primo\n2. secondo",
+            "it",
+            3,
+            Vec::new(),
+        );
+        let kinds: Vec<&str> = tasks.blocks.iter().map(|b| s(b, "type")).collect();
+        assert_eq!(kinds, ["checklist", "steps"]);
+    }
+}

@@ -252,12 +252,18 @@ async fn run_turn(
     if st.cfg.planner == PlannerMode::Tools {
         return tools_turn(st, message, session, cmid, channel).await;
     }
+    // With rich replies the app turns structure into widgets and buttons.
+    let base_system = if st.cfg.rich_replies {
+        crate::rich::SECRETARY_EXTRA_SYSTEM_RICH
+    } else {
+        SECRETARY_EXTRA_SYSTEM
+    };
     let (user_label, extra_system) = match &mcp_turn {
         Some(m) => (
             format!("{USER_LABEL}; {}", mcp::note(m)),
-            format!("{SECRETARY_EXTRA_SYSTEM} {}", mcp::note(m)),
+            format!("{base_system} {}", mcp::note(m)),
         ),
-        None => (USER_LABEL.to_owned(), SECRETARY_EXTRA_SYSTEM.to_owned()),
+        None => (USER_LABEL.to_owned(), base_system.to_owned()),
     };
     let turn_meta = mcp_turn.as_ref().map(|m| Meta {
         via: Some("mcp".into()),
@@ -283,10 +289,18 @@ async fn run_turn(
     let finish = json_turn(&t, &prepared, cmid.as_deref()).await;
 
     // Finish: recent turns, Honcho, the Lucina item.
-    let reply = finish.reply.trim().to_owned();
+    let (rich_msg, reply, remembered) = rich_reply(
+        &st,
+        finish.reply.trim(),
+        &t.message,
+        &finish.action,
+        &finish.action_result,
+        true,
+    )
+    .await;
     st.recent
-        .append(&t.session, "assistant", &reply, Utc::now());
-    remember_turn(&st, &t, &finish.action, &reply, &finish.action_result);
+        .append(&t.session, "assistant", &remembered, Utc::now());
+    remember_turn(&st, &t, &finish.action, &remembered, &finish.action_result);
     let meta = match &finish.job {
         Some(job) => Some(Meta {
             job_id: Some(job.id.clone()),
@@ -294,6 +308,7 @@ async fn run_turn(
         }),
         None => finish.meta.clone(),
     };
+    let meta = with_rich_meta(meta, rich_msg.as_ref());
     let lucina_item = timeline.record_lucina(&reply, Vec::new(), meta);
     // Node queues the job's result after the ack on the turn's timeline chain.
     if let (Some(job), Some(plan)) = (&finish.job, &finish.job_plan) {
@@ -317,10 +332,62 @@ async fn run_turn(
         "userItemId": user_item.map(|i| i.id),
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
+    add_rich(&mut out, rich_msg.as_ref());
     for (k, v) in finish.extra {
         out[k] = v;
     }
     Ok(out)
+}
+
+/// `LUCINA_RICH_REPLIES=true`: the reply as Lucina message format v1, plus the
+/// plain fallback text (timeline, `reply`, MCP callers, old clients) and the
+/// text to remember (without the button hints). Off: the reply unchanged.
+async fn rich_reply(
+    st: &AppState,
+    reply: &str,
+    user_text: &str,
+    action: &str,
+    action_result: &str,
+    use_model: bool,
+) -> (Option<lucina_store::rich::RichMessage>, String, String) {
+    if !st.cfg.rich_replies {
+        return (None, reply.to_owned(), reply.to_owned());
+    }
+    let draft = crate::rich::Draft {
+        text: reply,
+        user_text,
+        action,
+        action_result,
+        use_model,
+    };
+    match crate::rich::compose(&st.model, draft, st.cfg.rich_compose_timeout).await {
+        Some(m) => {
+            let (text, remembered) = (m.plain_text(true), m.plain_text(false));
+            (Some(m), text, remembered)
+        }
+        None => (None, reply.to_owned(), reply.to_owned()),
+    }
+}
+
+fn with_rich_meta(
+    meta: Option<Meta>,
+    rich: Option<&lucina_store::rich::RichMessage>,
+) -> Option<Meta> {
+    match rich {
+        Some(m) => Some(meta.unwrap_or_default().merge(Meta::rich(m))),
+        None => meta,
+    }
+}
+
+/// The v1 fields of the chat response (`reply` is the plain fallback).
+fn add_rich(out: &mut Value, rich: Option<&lucina_store::rich::RichMessage>) {
+    if let Some(m) = rich {
+        out["format"] = json!(m.format);
+        out["lang"] = json!(m.lang);
+        out["bubbles"] = json!(m.bubbles);
+        out["blocks"] = json!(m.blocks);
+        out["actions"] = json!(m.actions);
+    }
 }
 
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
@@ -909,16 +976,17 @@ fn spawn_job(
     channel: String,
 ) {
     tokio::spawn(async move {
-        let record = |text: String| {
+        let record = |text: String, rich: Option<&lucina_store::rich::RichMessage>| {
+            let meta = Some(Meta {
+                job_id: Some(job.id.clone()),
+                ..Meta::default()
+            });
             st.timeline.record(lucina_store::timeline::NewItem {
                 channel: channel.clone(),
                 role: "lucina".into(),
                 text,
                 reply_to: user_item.clone(),
-                meta: Some(Meta {
-                    job_id: Some(job.id.clone()),
-                    ..Meta::default()
-                }),
+                meta: with_rich_meta(meta, rich),
                 ..Default::default()
             })
         };
@@ -961,7 +1029,10 @@ fn spawn_job(
                 } else {
                     reply.trim().to_owned()
                 };
-                let item = record(result.clone());
+                // Job results are formatted without another model call.
+                let (rich_msg, text, _) =
+                    rich_reply(&st, &result, &message, &action, "", false).await;
+                let item = record(text, rich_msg.as_ref());
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
                     j.result = Some(result.clone());
@@ -975,7 +1046,7 @@ fn spawn_job(
                 let reason: String = reason.chars().take(500).collect();
                 tracing::error!(job_id = %job.id, %action, error = %reason.chars().take(300).collect::<String>(), "secretary job failed");
                 let text = format!("{} failed: {reason}", jobs::label(&action));
-                let item = record(text.clone());
+                let item = record(text.clone(), None);
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "error".into();
                     j.error = Some(reason.clone());
@@ -1212,7 +1283,17 @@ async fn tools_turn(
     } else {
         finish.reply.trim().to_owned()
     };
-    st.recent.append(&session, "assistant", &reply, Utc::now());
+    let (rich_msg, reply, remembered) = rich_reply(
+        &st,
+        &reply,
+        &message,
+        &finish.action,
+        &finish.action_result,
+        true,
+    )
+    .await;
+    st.recent
+        .append(&session, "assistant", &remembered, Utc::now());
     let t2 = Turn {
         st: &st,
         message: message.clone(),
@@ -1222,8 +1303,12 @@ async fn tools_turn(
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
     };
-    remember_turn(&st, &t2, &finish.action, &reply, &finish.action_result);
-    let lucina_item = turn.record_lucina(&reply, Vec::new(), finish.meta.clone());
+    remember_turn(&st, &t2, &finish.action, &remembered, &finish.action_result);
+    let lucina_item = turn.record_lucina(
+        &reply,
+        Vec::new(),
+        with_rich_meta(finish.meta.clone(), rich_msg.as_ref()),
+    );
     let mut out = json!({
         "reply": reply,
         "action": finish.action,
@@ -1233,6 +1318,7 @@ async fn tools_turn(
         "userItemId": user_item.map(|i| i.id),
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
+    add_rich(&mut out, rich_msg.as_ref());
     for (k, v) in finish.extra {
         out[k] = v;
     }

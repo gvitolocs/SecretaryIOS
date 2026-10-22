@@ -20,6 +20,7 @@ pub mod jobs;
 pub mod parity;
 pub mod planner;
 pub mod prompts;
+pub mod rich;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;

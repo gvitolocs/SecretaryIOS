@@ -40,6 +40,11 @@ pub struct Config {
     pub intent: lucina_intent::heuristics::Settings,
     /// `LUCINA_CAPABILITY_HINTS_ENABLED` (default true, as in Node).
     pub capability_hints: bool,
+    /// `LUCINA_RICH_REPLIES` (default false): Lucina message format v1 replies
+    /// and the conversational style rules (`crate::rich`).
+    pub rich_replies: bool,
+    /// `LUCINA_RICH_COMPOSE_TIMEOUT_MS` (25000): one JSON-mode compose call.
+    pub rich_compose_timeout: Duration,
     /// `LUCINA_NOTES`, `LUCINA_CALENDAR`, `LUCINA_AVATAR_OUTFIT`,
     /// `LUCINA_APP_NOTIFY` (all default false, as in Node).
     pub notes_enabled: bool,
@@ -266,6 +271,10 @@ impl Config {
             shadow: flag("LUCINA_SHADOW", false),
             intent,
             capability_hints: flag("LUCINA_CAPABILITY_HINTS_ENABLED", true),
+            rich_replies: flag("LUCINA_RICH_REPLIES", false),
+            rich_compose_timeout: Duration::from_millis(
+                num("LUCINA_RICH_COMPOSE_TIMEOUT_MS", 25_000).max(1000),
+            ),
             notes_enabled: flag("LUCINA_NOTES", false),
             calendar_enabled: flag("LUCINA_CALENDAR", false),
             outfit_enabled: flag("LUCINA_AVATAR_OUTFIT", false),

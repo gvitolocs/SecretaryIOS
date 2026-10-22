@@ -24,6 +24,8 @@ pub struct Prompts {
     pub deepseek_only: bool,
     /// The "Runtime capabilities" block (from the runtime's flags).
     pub capability_block: String,
+    /// `LUCINA_RICH_REPLIES`: the conversational style rules in every prompt.
+    pub rich_replies: bool,
 }
 
 fn read_clip(path: &Path, max: usize, marker: &str) -> String {
@@ -60,6 +62,7 @@ impl Prompts {
             oracle_monitor_enabled: cfg.oracle_monitor_enabled,
             deepseek_only: cfg.caps.deepseek_only,
             capability_block: cfg.caps.block(),
+            rich_replies: cfg.rich_replies,
         };
         // `loadLucinaOperatorBrief`: the runtime line and the capability block
         // first and never truncated, then the brief file and the Pokoin
@@ -115,6 +118,7 @@ impl Prompts {
             oracle_monitor_enabled: false,
             deepseek_only: false,
             capability_block: String::new(),
+            rich_replies: false,
         }
     }
 
@@ -224,7 +228,10 @@ impl Prompts {
                 "{p} can use skills through Hermes (DeepSeek Harness project work on nezopt, not Cursor CLI; image generation; Google Drive spreadsheets; Discord/Telegram; the Poko API). What is live right now is in the runtime capability block; never describe yourself from memory or older chat turns. When a skill or tool result is used, reply as {p} and briefly state the result in first person when natural."
             ));
         }
-        // Chat style rules come only with LUCINA_RICH_REPLIES (off; not ported).
+        // Chat style rules come only with LUCINA_RICH_REPLIES.
+        if is_lucina && self.rich_replies {
+            parts.push(crate::rich::STYLE_RULES.into());
+        }
         // Self-description questions get the live capability block, casual chat included.
         if is_lucina
             && crate::capabilities::looks_like_self_description(user_text)
@@ -392,6 +399,11 @@ impl Prompts {
         };
         let lines: Vec<String> = vec![
             format!("You are {p}, a concise helpful assistant connected to chat platforms through Hermes."),
+            if self.rich_replies && (p == "Lucina" || p == "Hermes") {
+                crate::rich::STYLE_RULES.into()
+            } else {
+                String::new()
+            },
             "On Telegram the operator may use a display name like Pokoin or @pokoinpos — that is Giuseppe's personal account, NOT the Pokoin product or Poko support bot. Never greet the operator as Pokoin or ask what Pokoin help they need.".into(),
             operator,
             format!("{p} can use these skills: normal chat, OpenAI image recognition for uploaded photos, Obscura extraction for supplied public URLs and Crawl4AI for search-only requests, ComfyUI image generation, Google Drive spreadsheet graph generation, Google Drive spreadsheet updates through Harness+rclone, persisted Telegram reminders (schedule_reminder), social posting to the Pokoin Telegram channel through Poko (peer1), {oracle_skill}DeepSeek Harness project work (local Qwen 3.8 27B; not Cursor CLI), Gemini CLI through shell/project work, {host} self-diagnostics with journalctl and ripgrep (rg), Discord server administration when running inside Discord, and Poko API/admin API."),

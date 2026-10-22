@@ -79,6 +79,8 @@ pub fn kind_of(req: &Value) -> &'static str {
         .unwrap_or("");
     if system.starts_with("You classify ") {
         "intent"
+    } else if system.starts_with("You turn a draft reply by Lucina") {
+        "rich"
     } else if system
         .contains("a concise helpful assistant connected to chat platforms through Hermes")
         && system.contains("Return only compact JSON with this schema:")

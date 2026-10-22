@@ -229,6 +229,7 @@ pub async fn run(
             temperature: cfg.temperature,
             max_tokens: None,
             purpose: "agent",
+            json_object: false,
         };
         let response = match tokio::time::timeout(remaining, model.complete(request)).await {
             Ok(r) => r?,

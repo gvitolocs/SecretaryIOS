@@ -18,6 +18,7 @@ pub mod jobs;
 pub mod parser;
 pub mod recent;
 pub mod reminders;
+pub mod rich;
 pub mod scheduler;
 pub mod timeline;
 pub mod timeutil;

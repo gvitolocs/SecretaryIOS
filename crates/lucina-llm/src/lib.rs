@@ -160,6 +160,9 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// Free-form purpose for the usage log (`chat`, `briefing`, ...).
     pub purpose: &'static str,
+    /// JSON output mode (`response_format: {type: "json_object"}`); the
+    /// prompt must ask for JSON and show the shape.
+    pub json_object: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -330,6 +333,8 @@ struct WireRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -416,6 +421,9 @@ impl DeepSeek {
             max_tokens: req.max_tokens,
             stream,
             stream_options: stream.then(|| serde_json::json!({"include_usage": true})),
+            response_format: req
+                .json_object
+                .then(|| serde_json::json!({"type": "json_object"})),
         }
     }
 
