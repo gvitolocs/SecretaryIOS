@@ -1,5 +1,6 @@
 // Notes for the mock server (docs/server-api.md, "Notes"), in memory.
-// Seeds: the repo's deploy/seed/notes/*.md (front matter + markdown) plus a few samples.
+// Seeds: the repo's deploy/seed/notes/*.md (front matter + markdown; MOCK_NOTES_SEED_DIR
+// overrides the directory) plus a few samples.
 // Chat "salva questo come nota <name>: <text>" in the mock is not wired; use the app or
 // POST /v1/notes.
 
@@ -58,7 +59,8 @@ function add(n, at = now()) {
 }
 
 function seedFromRepo() {
-  const dir = fileURLToPath(new URL("../../deploy/seed/notes/", import.meta.url));
+  const env = process.env.MOCK_NOTES_SEED_DIR;
+  const dir = env ? `${env.replace(/\/+$/, "")}/` : fileURLToPath(new URL("../../deploy/seed/notes/", import.meta.url));
   let files = [];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
