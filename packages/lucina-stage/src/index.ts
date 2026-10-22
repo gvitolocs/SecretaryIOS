@@ -21,3 +21,7 @@ export type { RigReport } from './rig';
 export * from './types';
 export { isStageQuality, registerClip, STAGE_QUALITIES } from './scene';
 export type { Clip, ClipSample, EnvironmentOptions, StageQuality, StageQualitySetting, StageTheme } from './scene';
+export { createWardrobeStage, outfitName, outfitUrls, parseWardrobe, subjectRect } from './wardrobe';
+export type { SetModelOptions, StageFactory, WardrobeEntry, WardrobeStage, WardrobeStageOptions } from './wardrobe';
+export { EFFECT_DURATION_MS, effectPhases, playOutfitEffect } from './outfitEffect';
+export type { OutfitEffect, OutfitEffectOptions, SubjectRect } from './outfitEffect';
