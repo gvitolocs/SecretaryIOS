@@ -371,7 +371,8 @@ fn settle_matches_kernel_exhaustively() {
 #[test]
 fn built_in_tools_are_not_denied() {
     let all = Registry::builtin(&lucina_tools::ToolSelection::All);
-    assert_eq!(all.names().len(), 12);
+    // 12 + tasks + secrets_status + secrets_audit
+    assert_eq!(all.names().len(), 15);
     for n in all.names() {
         assert!(!is_denied_name(n), "{n}");
     }

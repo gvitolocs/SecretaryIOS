@@ -6,8 +6,17 @@
 //! and the active rows of the list must agree, and the kernel's invariants
 //! (one active row per key, removed stays removed) are checked on the way.
 //!
+//! Item objects (lucina-items, after the Verus model was written): a row's
+//! key is its item object. Typed text finds an object by any of its names
+//! (it/en/da; without the translator every language starts as the typed
+//! text), a rename edits the object's Italian name (or points the row at
+//! another object that has the typed name). The kernel copy below models
+//! that with a small object table; the Verus model on verus-proofs still has
+//! text keys (to port there).
+//!
 //! Needs `LUCINA_TEST_DATABASE_URL` like tests/shopping.rs (the URL must
-//! contain `55432` or `lucina_test`; the grocery schema is recreated).
+//! contain `55432` or `lucina_test`; the grocery schema is recreated with
+//! migrations 001, 002 and 003).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -31,9 +40,23 @@ mod kernel {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Row {
-        pub key: String,
+        /// The item object (index into `St::objects`).
+        pub key: usize,
         pub status: Status,
         pub rev: i64,
+    }
+
+    /// A custom item object: its Italian name and every term that finds it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Obj {
+        pub it: String,
+        pub others: Vec<String>,
+    }
+
+    impl Obj {
+        fn finds(&self, text: &str) -> bool {
+            self.it == text || self.others.iter().any(|o| o == text)
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -58,6 +81,31 @@ mod kernel {
     pub struct St {
         pub rows: BTreeMap<u64, Row>,
         pub next_row: u64,
+        pub objects: Vec<Obj>,
+    }
+
+    impl St {
+        /// The object typed text names (first created wins).
+        pub fn lookup(&self, text: &str) -> Option<usize> {
+            self.objects.iter().position(|o| o.finds(text))
+        }
+
+        /// The object for an add: found, or a new one named `text` in every
+        /// language.
+        fn object_for(&mut self, text: &str) -> usize {
+            self.lookup(text).unwrap_or_else(|| {
+                self.objects.push(Obj {
+                    it: text.to_owned(),
+                    others: vec![text.to_owned(), text.to_owned()],
+                });
+                self.objects.len() - 1
+            })
+        }
+
+        /// The visible name of a row.
+        pub fn name(&self, r: &Row) -> String {
+            self.objects[r.key].it.clone()
+        }
     }
 
     #[derive(Debug, Clone, Default)]
@@ -71,7 +119,7 @@ mod kernel {
         r.status != Status::Removed
     }
 
-    pub fn the_active(rows: &BTreeMap<u64, Row>, key: &str) -> Option<u64> {
+    pub fn the_active(rows: &BTreeMap<u64, Row>, key: usize) -> Option<u64> {
         rows.iter()
             .find(|(_, r)| active(r) && r.key == key)
             .map(|(k, _)| *k)
@@ -93,11 +141,12 @@ mod kernel {
     pub fn step(s: &mut St, rev: i64, op: &Op) -> (bool, Option<u64>) {
         match op {
             Op::Add { key, .. } => {
+                let key = s.object_for(key);
                 if let Some(r) = the_active(&s.rows, key) {
                     s.rows.insert(
                         r,
                         Row {
-                            key: key.clone(),
+                            key,
                             status: Status::Needed,
                             rev,
                         },
@@ -108,7 +157,7 @@ mod kernel {
                     s.rows.insert(
                         n,
                         Row {
-                            key: key.clone(),
+                            key,
                             status: Status::Needed,
                             rev,
                         },
@@ -128,18 +177,28 @@ mod kernel {
                     (true, None)
                 }
             },
-            Op::Rename(r, key) => {
+            Op::Rename(r, text) => {
                 let Some(row) = s.rows.get(r) else {
                     return (false, None);
                 };
                 if !active(row) {
                     return (true, None);
                 }
-                if the_active(&s.rows, key).is_some_and(|a| a != *r) {
+                let current = row.key;
+                let hit = s.lookup(text);
+                if hit.is_none() || hit == Some(current) {
+                    // An edit of the object's Italian name.
+                    s.objects[current].it = text.clone();
+                    s.rows.get_mut(r).unwrap().rev = rev;
+                    return (true, None);
+                }
+                // Another object's name: point the row there.
+                let other = hit.unwrap();
+                if the_active(&s.rows, other).is_some_and(|a| a != *r) {
                     return (false, None);
                 }
                 let row = s.rows.get_mut(r).unwrap();
-                row.key = key.clone();
+                row.key = other;
                 row.rev = rev;
                 (true, None)
             }
@@ -168,7 +227,9 @@ mod kernel {
         match op {
             Op::Add { key, overwrites } => {
                 if *overwrites {
-                    the_active(&s.rows, key).map(|r| s.rows[&r].rev)
+                    s.lookup(key)
+                        .and_then(|o| the_active(&s.rows, o))
+                        .map(|r| s.rows[&r].rev)
                 } else {
                     None
                 }
@@ -256,7 +317,7 @@ mod kernel {
         let mut keys = HashSet::new();
         rows.values()
             .filter(|r| active(r))
-            .all(|r| keys.insert(r.key.clone()))
+            .all(|r| keys.insert(r.key))
     }
 }
 
@@ -282,6 +343,11 @@ async fn repo() -> Option<GroceryRepo> {
         .await
         .unwrap();
     sqlx::raw_sql(include_str!("../migrations/002_shopping_v2.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Item objects (lucina-items): rows point to an item object.
+    sqlx::raw_sql(include_str!("../migrations/003_shopping_items.sql"))
         .execute(&pool)
         .await
         .unwrap();
@@ -353,7 +419,8 @@ async fn run_case(r: &GroceryRepo, batches: Vec<GenBatch>) -> Result<(), TestCas
 
     let mut model = kernel::ListState::default();
     let mut uuid_of: HashMap<u64, String> = HashMap::new();
-    let mut target_keys: HashSet<String> = HashSet::new();
+    // Objects with an active row in the move target list.
+    let mut target_keys: HashSet<usize> = HashSet::new();
     let mut used_ids: Vec<String> = Vec::new();
 
     for b in batches {
@@ -436,7 +503,7 @@ async fn run_case(r: &GroceryRepo, batches: Vec<GenBatch>) -> Result<(), TestCas
             let Some(row) = st.rows.get(&r).filter(|row| kernel::active(row)) else {
                 return false;
             };
-            let key = row.key.clone();
+            let key = row.key;
             if tk.contains(&key) {
                 true
             } else {
@@ -510,13 +577,18 @@ async fn run_case(r: &GroceryRepo, batches: Vec<GenBatch>) -> Result<(), TestCas
                         } else {
                             "recent"
                         };
-                        km.insert(uuid_of[rid].clone(), (row.key.clone(), st.to_owned()));
+                        km.insert(uuid_of[rid].clone(), (model.st.name(row), st.to_owned()));
                     }
                 }
                 prop_assert_eq!(db, km);
                 // Every row of the list, removed ones included, with its rev.
+                // The key is the item object's name (a rename edits a custom
+                // object's name, not the row's legacy name_key).
                 let rows = sqlx::query_as::<_, (String, String, i64, String)>(
-                    "SELECT id::text, status, rev, name_key FROM grocery.shopping_list_items WHERE list_id = $1::uuid",
+                    "SELECT i.id::text, i.status, i.rev, lower(COALESCE(c.names->>'it', i.name_key)) \
+                       FROM grocery.shopping_list_items i \
+                       LEFT JOIN grocery.shopping_custom_items c ON c.id = i.item_id \
+                      WHERE i.list_id = $1::uuid",
                 )
                 .bind(&list_id)
                 .fetch_all(r.pool())
@@ -538,7 +610,7 @@ async fn run_case(r: &GroceryRepo, batches: Vec<GenBatch>) -> Result<(), TestCas
                         };
                         (
                             uuid_of[rid].clone(),
-                            (row.key.clone(), st.to_owned(), row.rev),
+                            (model.st.name(row), st.to_owned(), row.rev),
                         )
                     })
                     .collect();
