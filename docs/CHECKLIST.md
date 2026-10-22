@@ -59,6 +59,9 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Lucina calendar bridge LIVE (LUCINA_CALENDAR=true); MCP calendar_list/calendar_create (proposals only)
 - [x] Notifications LIVE 2026-10-22 (merged into main 64c747a). iOS native part on branch ios-notifications (not installed). APNs needs a paid team
 
+### Tasks / Todoist (owner, 2026-10-22)
+- [ ] secretary-tasks engine + Todoist two-way sync (official API), Todoist-like UX on web + iOS, Lucina/MCP tools, Links card — branch tasks-todoist
+
 ### Notes (owner, 2026-10-22)
 - [x] Notes LIVE (main 326fbf2): server /v1/notes, MCP note_save/append/get/search, Lucina LUCINA_NOTES, web + iOS (ios-app 0986f57); craftit-meeting briefing restored; ask_lucina limit 12000
 
