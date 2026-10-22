@@ -269,6 +269,82 @@ async fn confirmation_flow_across_turns() {
         .is_none());
 }
 
+async fn reminder_status(h: &common::H) -> String {
+    let (_, list) = h.get("/reminders?includeSent=1").await;
+    list["data"]["reminders"][0]["status"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Verus kernel `confirmation_gate.rs` C2: an MCP-origin turn never confirms
+/// a pending action, even in the owner's session and even with an explicit
+/// "sì" (before the fix, tools mode dropped the MCP origin and ran it).
+#[tokio::test]
+async fn mcp_turn_cannot_confirm_a_pending_action() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "agent", "contains": "cancella", "afterTool": false, "toolCalls": [{"name": "reminders", "arguments": {"action": "cancel", "id": "rem-1"}}]},
+            {"kind": "agent", "contains": "cancella", "afterTool": true, "content": "Vuoi davvero cancellarlo? Rispondi sì."},
+            {"kind": "agent", "content": "Ok."},
+            {"kind": "reply", "content": "Fatto, l'ho cancellato."}
+        ]})),
+        |c| {
+            c.planner = PlannerMode::Tools;
+            std::fs::write(&c.reminders_path, serde_json::to_string_pretty(&json!({"reminders": [{
+                "id": "rem-1", "dedupeKey": "k", "text": "dentista", "dueAt": "2099-10-22T07:30:00.000Z", "timeZone": "Europe/Rome",
+                "chatId": "42", "userPeerId": "giuseppe", "userLabel": "", "persona": "Lucina", "source": "secretary",
+                "status": "pending", "createdAt": "2026-10-21T10:00:00.000Z", "sentAt": null, "lastError": null
+            }], "updatedAt": "x"})).unwrap()).unwrap();
+        },
+    )
+    .await;
+    // An MCP turn that asks for the cancellation itself: refused, nothing pending.
+    let (s, _) = h
+        .post(
+            "/chat",
+            json!({"message": "[via Lucina MCP, from claude] cancella il promemoria del dentista", "sessionId": "test", "channel": "ios"}),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert!(
+        h.state
+            .pending
+            .current("secretary_test", chrono::Utc::now())
+            .is_none(),
+        "an MCP turn creates no pending action"
+    );
+    assert_eq!(reminder_status(&h).await, "pending");
+    // The owner asks: a pending action now waits for a yes.
+    h.chat("cancella il promemoria del dentista").await;
+    assert!(h
+        .state
+        .pending
+        .current("secretary_test", chrono::Utc::now())
+        .is_some());
+    // An MCP turn in the same session says "sì": nothing runs, it stays pending.
+    let (s, _) = h
+        .post(
+            "/chat",
+            json!({"message": "[via Lucina MCP, from claude] sì", "sessionId": "test", "channel": "ios"}),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(
+        reminder_status(&h).await,
+        "pending",
+        "an MCP turn must not confirm"
+    );
+    assert!(h
+        .state
+        .pending
+        .current("secretary_test", chrono::Utc::now())
+        .is_some());
+    // The owner's own yes still works.
+    h.chat("sì").await;
+    assert_eq!(reminder_status(&h).await, "cancelled");
+}
+
 #[tokio::test]
 async fn reminder_routes() {
     let h = harness(chat_script("x"), |_| {}).await;

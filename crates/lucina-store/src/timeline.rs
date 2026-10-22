@@ -360,6 +360,9 @@ struct Inner {
     known_ino: Option<u64>,
     needs_leading_newline: bool,
     loaded: bool,
+    /// The newest id this store appended (kept across reloads: the lines it
+    /// was bumped past may be rotated or truncated away).
+    last_appended: Option<String>,
 }
 
 #[cfg(unix)]
@@ -673,6 +676,7 @@ impl TimelineStore {
                 known_ino: None,
                 needs_leading_newline: false,
                 loaded: false,
+                last_appended: None,
             }),
             tx,
             recording,
@@ -721,14 +725,30 @@ impl TimelineStore {
             return Ok(item);
         }
         if !explicit_id {
-            if let Some(last) = inner.entries.last() {
-                if item.id <= last.id {
-                    item.id = crate::ulid::successor(&last.id);
+            // Past the newest id in the file and the newest this store wrote
+            // (Verus kernel `choose_id` in verification/verus/timeline_ids.rs).
+            let floor = match (inner.entries.last(), &inner.last_appended) {
+                (Some(e), Some(l)) => Some(e.id.clone().max(l.clone())),
+                (Some(e), None) => Some(e.id.clone()),
+                (None, l) => l.clone(),
+            };
+            if let Some(f) = floor {
+                if item.id <= f {
+                    item.id = crate::ulid::successor(&f).ok_or_else(|| {
+                        StoreError::Invalid(format!("timeline: no id sorts after {f}"))
+                    })?;
                 }
             }
         }
         let line = serde_json::to_string(&item)?;
         let added = inner.write_lines(&format!("{line}\n"))?;
+        if inner
+            .last_appended
+            .as_deref()
+            .is_none_or(|l| item.id.as_str() > l)
+        {
+            inner.last_appended = Some(item.id.clone());
+        }
         inner.cache_item(&item.id, Arc::from(line.as_str()));
         self.publish(added);
         Ok(item)

@@ -1720,6 +1720,7 @@ name = "lucina-grocery"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "proptest",
  "serde",
  "serde_json",
  "sqlx",
@@ -1816,6 +1817,7 @@ dependencies = [
  "chrono-tz",
  "fancy-regex",
  "getrandom 0.3.4",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -1837,6 +1839,7 @@ dependencies = [
  "lucina-grocery",
  "lucina-llm",
  "lucina-store",
+ "proptest",
  "reqwest 0.12.28",
  "schemars",
  "serde",

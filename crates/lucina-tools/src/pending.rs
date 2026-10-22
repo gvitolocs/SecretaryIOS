@@ -200,6 +200,30 @@ const NO: &[&str] = &[
     "lad være",
 ];
 
+/// What a turn does with its session's live pending action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settle {
+    /// No pending action, or an MCP turn (it never answers one).
+    Nothing,
+    Run,
+    Discard,
+    StillPending,
+}
+
+/// The confirmation rule (Verus kernel `settle` in
+/// `verification/verus/confirmation_gate.rs`): only an owner turn that is an
+/// explicit yes runs the action; an MCP turn never settles it, whatever it says.
+pub fn settle(has_current: bool, reply: Reply, origin: crate::Origin) -> Settle {
+    if !has_current || origin == crate::Origin::Mcp {
+        return Settle::Nothing;
+    }
+    match reply {
+        Reply::Yes => Settle::Run,
+        Reply::No => Settle::Discard,
+        Reply::Other => Settle::StillPending,
+    }
+}
+
 /// Strict: the whole message (lowercased, punctuation and emoji trimmed)
 /// must be an explicit yes or no. Anything else is `Other`.
 pub fn classify_reply(text: &str) -> Reply {
