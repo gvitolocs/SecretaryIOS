@@ -2,6 +2,7 @@
 @import "./styles/tokens.css";
 @import "./styles/base.css";
 @import "./styles/wardrobe.css";
+@import "./styles/editor.css";
 @import "./styles/notifications.css";
 @import "./styles/notes.css";
 @import "./styles/rich.css";

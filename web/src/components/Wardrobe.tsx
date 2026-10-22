@@ -20,6 +20,7 @@ import {
   avatarSettings,
   avatarStatus,
   closeWardrobe,
+  openEditor,
   currentHair,
   currentHairColor,
   currentOutfit,
@@ -41,6 +42,7 @@ import {
   DressIcon,
   DropIcon,
   DumbbellIcon,
+  EditIcon,
   GridIcon,
   HairIcon,
   HangerIcon,
@@ -191,6 +193,9 @@ export default function Wardrobe() {
                 {t("wardrobe.title")}
               </h2>
             </div>
+            <button type="button" class="wchip wchip--on wardrobe-edit" onClick={openEditor}>
+              <EditIcon /> {t("editor.open")}
+            </button>
             <button ref={closeBtn} type="button" class="icon-btn wardrobe-close" onClick={closeWardrobe} aria-label={t("wardrobe.close")}>
               <CloseIcon />
             </button>

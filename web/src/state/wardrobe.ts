@@ -8,6 +8,10 @@ import {
   applyPatch,
   DEFAULT_SETTINGS,
   isOutfitId,
+  lookHair,
+  lookHairColor,
+  lookOutfit,
+  wornLook as wornLookOf,
   parseSettings,
   parseHairColors,
   parseHairstyles,
@@ -42,6 +46,8 @@ interface Cached {
   outfits: Outfit[];
   hairstyles: Hairstyle[];
   colors: HairColor[];
+  accessories?: unknown[];
+  parts?: unknown[];
 }
 
 function readCache(): Cached | null {
@@ -52,6 +58,8 @@ function readCache(): Cached | null {
     outfits: parseWardrobe(raw.outfits),
     hairstyles: parseHairstyles(raw.hairstyles),
     colors: parseHairColors(raw.colors),
+    accessories: Array.isArray(raw.accessories) ? raw.accessories : [],
+    parts: Array.isArray(raw.parts) ? raw.parts : [],
   };
 }
 
@@ -61,15 +69,23 @@ const store = createRoot(() => {
   const [outfits, setOutfits] = createSignal<Outfit[]>(cached?.outfits ?? []);
   const [hairstyles, setHairstyles] = createSignal<Hairstyle[]>(cached?.hairstyles ?? []);
   const [colors, setColors] = createSignal<HairColor[]>(cached?.colors ?? []);
+  const [accessories, setAccessories] = createSignal<unknown[]>(cached?.accessories ?? []);
+  const [parts, setParts] = createSignal<unknown[]>(cached?.parts ?? []);
+  const [editorOpen, setEditorOpen] = createSignal(false);
   const [status, setStatus] = createSignal<Status>("idle");
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [section, setSection] = createSignal<Section>("default");
   const [open, setOpen] = createSignal(false);
   const [changing, setChanging] = createSignal(false);
-  const current = createMemo(() => resolveOutfit(settings(), section(), outfits()));
-  const hair = createMemo(() => resolveHair(settings(), section(), hairstyles()));
-  const hairColor = createMemo(() => resolveHairColor(settings(), colors()));
+  const worn = createMemo(() => wornLookOf(settings()));
+  // The look she wears overrides the outfit, hairstyle and colour it sets; the rest follows the wardrobe.
+  const current = createMemo(() => {
+    const id = lookOutfit(worn(), outfits());
+    return (id ? outfits().find((o) => o.id === id) : undefined) ?? resolveOutfit(settings(), section(), outfits());
+  });
+  const hair = createMemo(() => lookHair(worn(), hairstyles()) ?? resolveHair(settings(), section(), hairstyles()));
+  const hairColor = createMemo(() => lookHairColor(worn()) ?? resolveHairColor(settings(), colors()));
   return {
     cachedAtStart: !!cached,
     settings,
@@ -80,6 +96,13 @@ const store = createRoot(() => {
     setHairstyles,
     colors,
     setColors,
+    accessories,
+    setAccessories,
+    parts,
+    setParts,
+    editorOpen,
+    setEditorOpen,
+    worn,
     hair,
     hairColor,
     status,
@@ -116,6 +139,51 @@ export const currentOutfit = store.current;
 export const currentHair = store.hair;
 /** The hair colour id she should wear now (null: natural). */
 export const currentHairColor = store.hairColor;
+/** The look she wears now (null: the model as authored). */
+export const currentLook = store.worn;
+export const wardrobeAccessories = store.accessories;
+export const wardrobeParts = store.parts;
+/** The "Edit Lucina" screen is open. */
+export const editorOpen = store.editorOpen;
+
+export function openEditor(): void {
+  store.setOpen(false);
+  store.setEditorOpen(true);
+  void refreshAvatar();
+}
+
+export function closeEditor(): void {
+  store.setEditorOpen(false);
+}
+
+/** Saves a look (a new one without `id`) and wears it. Resolves to its id, or null on failure. */
+export async function saveLook(name: string, look: Record<string, unknown>, id?: string): Promise<string | null> {
+  store.setError(null);
+  store.setSaving(true);
+  try {
+    const saved = await avatarApi.put({ saveLook: id ? { id, name, look } : { name, look } });
+    const added = id ?? saved.looks.find((l) => !store.settings().looks.some((o) => o.id === l.id))?.id ?? saved.looks.at(-1)?.id ?? null;
+    const worn = added ? await avatarApi.put({ current: added }) : saved;
+    store.setSettings(worn);
+    persist();
+    return added;
+  } catch (e) {
+    const err = toApiError(e);
+    store.setError(err.isNetwork ? t("wardrobe.errOffline") : t("wardrobe.errSave"));
+    return null;
+  } finally {
+    store.setSaving(false);
+  }
+}
+
+/** Wear a saved look (null: none, back to the model as authored). */
+export function wearLook(id: string | null): Promise<boolean> {
+  return updateAvatar({ current: id });
+}
+
+export function deleteLook(id: string): Promise<boolean> {
+  return updateAvatar({ deleteLook: id });
+}
 
 function persist(): void {
   writeJSON("local", CACHE_KEY, {
@@ -123,6 +191,8 @@ function persist(): void {
     outfits: store.outfits(),
     hairstyles: store.hairstyles(),
     colors: store.colors(),
+    accessories: store.accessories(),
+    parts: store.parts(),
   });
 }
 
@@ -155,6 +225,8 @@ export function loadAvatar(): Promise<void> {
       store.setOutfits(w.value.outfits);
       store.setHairstyles(w.value.hairstyles);
       store.setColors(w.value.colors);
+      store.setAccessories(w.value.accessories);
+      store.setParts(w.value.parts);
     }
     lastLoad = Date.now();
     if (s.status === "fulfilled" || w.status === "fulfilled") {
@@ -224,6 +296,12 @@ export function setHairColor(id: string | null): Promise<boolean> {
 
 /** Lucina changed outfit (timeline item): show it now, then read the truth. */
 export function handleTimelineItem(item: TimelineItem, now = Date.now()): boolean {
+  // Lucina put on a saved look ("mettiti il look serata"): read the truth.
+  if (item.meta?.kind === "avatar_look" && item.role === "lucina") {
+    if (now - item.ts > LIVE_ITEM_MS) return false;
+    void refreshAvatar(true);
+    return true;
+  }
   if (item.meta?.kind !== "avatar_outfit" || item.role !== "lucina") return false;
   if (now - item.ts > LIVE_ITEM_MS) return false;
   const { outfit, hair } = item.meta;
@@ -262,6 +340,9 @@ export function resetWardrobeState(): void {
   store.setOutfits(cached?.outfits ?? []);
   store.setHairstyles(cached?.hairstyles ?? []);
   store.setColors(cached?.colors ?? []);
+  store.setAccessories(cached?.accessories ?? []);
+  store.setParts(cached?.parts ?? []);
+  store.setEditorOpen(false);
   store.setStatus("idle");
   store.setSaving(false);
   store.setError(null);

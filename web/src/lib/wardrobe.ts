@@ -38,6 +38,9 @@ export interface WardrobeFile {
   outfits: Outfit[];
   hairstyles: Hairstyle[];
   colors: HairColor[];
+  /** Editor accessories and outfit parts: passed to the stage, which validates them. */
+  accessories: unknown[];
+  parts: unknown[];
 }
 
 export type Section = "gym" | "shopping" | "default";
@@ -65,6 +68,18 @@ export interface AvatarSettings {
   rules: AvatarRules;
   updatedMs: number;
   updatedBy: string;
+  /** Saved looks of the character editor. */
+  looks: SavedLook[];
+  /** The look she wears (an id in `looks`), or null. */
+  current: string | null;
+}
+
+/** One saved look (`look` is the stage's Look JSON; the stage normalizes it). */
+export interface SavedLook {
+  id: string;
+  name: string;
+  look: Record<string, unknown>;
+  updatedMs: number;
 }
 
 export interface AvatarPatch {
@@ -73,6 +88,10 @@ export interface AvatarPatch {
   hairColor?: string | null;
   auto?: boolean;
   rules?: Partial<Record<Section, Partial<AvatarRule>>>;
+  /** Pick a saved look by id or name; null: none. */
+  current?: string | null;
+  saveLook?: { id?: string; name: string; look: Record<string, unknown> };
+  deleteLook?: string;
 }
 
 export const ASSET_BASE = "/v1/assets/";
@@ -91,6 +110,8 @@ export const DEFAULT_SETTINGS: AvatarSettings = {
   rules: DEFAULT_RULES,
   updatedMs: 0,
   updatedBy: "",
+  looks: [],
+  current: null,
 };
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/;
@@ -187,6 +208,8 @@ export function parseWardrobeFile(raw: unknown): WardrobeFile {
     outfits: parseWardrobe(Array.isArray(raw) ? raw : o.outfits),
     hairstyles: parseHairstyles(o.hairstyles),
     colors: parseHairColors(o.colors),
+    accessories: objects(o.accessories),
+    parts: objects(o.parts),
   };
 }
 
@@ -215,6 +238,7 @@ export function parseSettings(raw: unknown): AvatarSettings {
     },
     updatedMs: typeof r.updatedMs === "number" && Number.isFinite(r.updatedMs) ? r.updatedMs : 0,
     updatedBy: typeof r.updatedBy === "string" ? r.updatedBy.slice(0, 16) : "",
+    ...parseLooks(r.looks, r.current),
   };
 }
 
@@ -231,6 +255,7 @@ export function applyPatch(s: AvatarSettings, p: AvatarPatch): AvatarSettings {
     ...(p.hairColor !== undefined ? { hairColor: p.hairColor } : {}),
     ...(p.auto !== undefined ? { auto: p.auto } : {}),
     rules,
+    ...lookPatch(s, p),
   };
 }
 
@@ -344,4 +369,70 @@ export function categoryOf(o: Outfit): Category {
 export function categoriesPresent(outfits: readonly Outfit[]): (Category | "all")[] {
   const present = new Set(outfits.map(categoryOf));
   return ["all", ...CATEGORIES.filter((c) => present.has(c))];
+}
+
+// ---- Saved looks (the character editor) ------------------------------------
+
+/** Plain objects of an untrusted list (at most 200). */
+function objects(raw: unknown): unknown[] {
+  return Array.isArray(raw) ? raw.filter((x) => x && typeof x === "object" && !Array.isArray(x)).slice(0, 200) : [];
+}
+
+/** At most 20 looks with valid ids and names; `current` only when it names one of them. */
+export function parseLooks(raw: unknown, current: unknown): { looks: SavedLook[]; current: string | null } {
+  const looks = uniqueValid(raw, (o) => {
+    if (!isOutfitId(o.id) || typeof o.name !== "string" || !o.name.trim()) return null;
+    if (!o.look || typeof o.look !== "object" || Array.isArray(o.look)) return null;
+    return {
+      id: o.id,
+      name: o.name.trim().slice(0, 40),
+      look: o.look as Record<string, unknown>,
+      updatedMs: typeof o.updatedMs === "number" && Number.isFinite(o.updatedMs) ? o.updatedMs : 0,
+    };
+  }).slice(0, 20);
+  return { looks, current: typeof current === "string" && looks.some((l) => l.id === current) ? current : null };
+}
+
+/** The optimistic effect of the look fields of a patch (the server's answer replaces it). */
+function lookPatch(s: AvatarSettings, p: AvatarPatch): { looks: SavedLook[]; current: string | null } {
+  let looks = s.looks;
+  let current = s.current;
+  if (p.deleteLook) {
+    looks = looks.filter((l) => l.id !== p.deleteLook);
+    if (current === p.deleteLook) current = null;
+  }
+  if (p.saveLook?.id) {
+    const saved: SavedLook = { id: p.saveLook.id, name: p.saveLook.name, look: p.saveLook.look, updatedMs: Date.now() };
+    looks = looks.some((l) => l.id === saved.id) ? looks.map((l) => (l.id === saved.id ? saved : l)) : [...looks, saved];
+  }
+  if (p.current !== undefined) current = p.current === null ? null : (looks.find((l) => l.id === p.current)?.id ?? current);
+  return { looks, current };
+}
+
+/** The look she wears now, or null (the model as authored). */
+export function wornLook(s: AvatarSettings): Record<string, unknown> | null {
+  return s.current ? (s.looks.find((l) => l.id === s.current)?.look ?? null) : null;
+}
+
+const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+
+/** A look's outfit override: `base` when it picks parts, else its outfit id, else null. */
+export function lookOutfit(look: Record<string, unknown> | null, outfits: readonly Outfit[]): string | null {
+  if (!look) return null;
+  const o = obj(look.outfit);
+  const parts = obj(o.parts);
+  if (Object.values(parts).some(isOutfitId) && outfits.some((x) => x.id === "base")) return "base";
+  return isOutfitId(o.id) && outfits.some((x) => x.id === o.id) ? o.id : null;
+}
+
+/** A look's hairstyle override (installed ones only), else null. */
+export function lookHair(look: Record<string, unknown> | null, hairstyles: readonly Hairstyle[]): string | null {
+  const h = obj(look?.hair).style;
+  return isOutfitId(h) && (h === NATURAL_HAIR || hairstyles.some((x) => x.id === h && x.glb)) ? h : null;
+}
+
+/** A look's hair colour (`#rrggbb`), else null. */
+export function lookHairColor(look: Record<string, unknown> | null): string | null {
+  const c = obj(look?.hair).color;
+  return typeof c === "string" && HEX_RE.test(c) ? c.toLowerCase() : null;
 }

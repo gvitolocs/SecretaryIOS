@@ -12,10 +12,12 @@ import { lucinaNotice, markLucinaOnline } from "../state/lucina";
 import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
-import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
+import { editorOpen, setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
 
 // The Wardrobe panel is only fetched the first time it opens.
 const Wardrobe = lazy(() => import("../components/Wardrobe"));
+// "Edit Lucina" (the character editor) likewise.
+const LucinaEditor = lazy(() => import("../components/LucinaEditor"));
 
 function NavLinks(props: { class: string }) {
   return (
@@ -211,6 +213,11 @@ export default function Shell(props: { children?: JSX.Element }) {
       <Show when={wardrobeLoaded()}>
         <Suspense>
           <Wardrobe />
+        </Suspense>
+      </Show>
+      <Show when={editorOpen()}>
+        <Suspense>
+          <LucinaEditor />
         </Suspense>
       </Show>
       <AccountDialog
