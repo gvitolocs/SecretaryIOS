@@ -506,7 +506,19 @@ impl Config {
         if !(0.0..=1.0).contains(&t.send) || !(0.0..=1.0).contains(&t.digest) || t.digest > t.send {
             return Err("thresholds: 0 <= digest <= send <= 1".into());
         }
+        if !(0.0..=1.0).contains(&t.min_confidence) || !(0.0..=1.0).contains(&t.high_priority) {
+            return Err("thresholds: min_confidence and high_priority in [0, 1]".into());
+        }
         let w = &self.weights;
+        // Each weight in [0, 1] (NaN fails `contains`), so the score stays in
+        // [0, 1] (Verus kernel attention_engine.rs, E1; score::total clamps
+        // the rounding).
+        if [w.urgency, w.relevance, w.confidence, w.actionability]
+            .iter()
+            .any(|v| !(0.0..=1.0).contains(v))
+        {
+            return Err("weights: each in [0, 1]".into());
+        }
         let sum = w.urgency + w.relevance + w.confidence + w.actionability;
         if (sum - 1.0).abs() > 0.01 {
             return Err(format!("weights must sum to 1 (they sum to {sum:.2})"));

@@ -34,5 +34,6 @@ anyhow = "1"
 toml = "0.9"
 
 [dev-dependencies]
+proptest = "1"
 wiremock = "0.6"
 tempfile = "3"

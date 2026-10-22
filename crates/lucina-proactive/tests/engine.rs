@@ -904,3 +904,48 @@ async fn pinned_note_for_tomorrows_meeting_is_pulse_material() {
         .unwrap();
     assert_eq!(d.decision, Decision::Digest, "{}", d.reason);
 }
+
+/// Verus kernel `attention_engine.rs` E6: "Basta così" on the Daily Pulse mutes
+/// the Pulse for `stop_days` (before the fix the Pulse kept coming).
+#[tokio::test]
+async fn basta_cosi_on_the_pulse_mutes_the_pulse() {
+    let w = world(with_pulse());
+    let morning = at("2026-10-22T06:00:00Z");
+    w.feeds.reminders.lock().unwrap().push(reminder(
+        "r1",
+        at("2026-10-22T16:00:00Z"),
+        "Chiama il commercialista",
+        "pending",
+    ));
+    let r = w.engine.tick(morning, false).await.unwrap();
+    assert_eq!(r.pulse, "sent");
+    let pulse = r.outreach.iter().find(|o| o.kind == Kind::Pulse).unwrap();
+    w.api.feedback.lock().unwrap().push(json!({"id": "fb_0100", "outreachId": pulse.id, "action": "stop", "at": (morning + Duration::minutes(5)).timestamp_millis()}));
+    // Next morning there is something new: still no Pulse.
+    w.feeds.reminders.lock().unwrap().push(reminder(
+        "r3",
+        at("2026-10-23T16:00:00Z"),
+        "Ritira il pacco",
+        "pending",
+    ));
+    let r = w
+        .engine
+        .tick(at("2026-10-23T06:00:00Z"), false)
+        .await
+        .unwrap();
+    assert!(r.pulse.starts_with("suppressed: muted"), "{}", r.pulse);
+    assert!(r.outreach.iter().all(|o| o.kind != Kind::Pulse));
+    // After 30 days it is back.
+    w.feeds.reminders.lock().unwrap().push(reminder(
+        "r4",
+        at("2026-11-22T16:00:00Z"),
+        "Rinnova l'assicurazione",
+        "pending",
+    ));
+    let r = w
+        .engine
+        .tick(at("2026-11-22T07:00:00Z"), false)
+        .await
+        .unwrap();
+    assert_eq!(r.pulse, "sent");
+}

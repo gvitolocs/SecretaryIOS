@@ -597,6 +597,22 @@ impl Engine {
         if last.get("date").and_then(Value::as_str) == Some(today.as_str()) {
             return Ok((String::new(), None));
         }
+        // "Basta così" on a Pulse mutes the Pulse like any other kind.
+        if let Some(t) = store
+            .last_feedback(Kind::Pulse, FeedbackAction::Stop)
+            .await?
+        {
+            let until = t + Duration::days(i64::from(cfg.budget.stop_days));
+            if until > now {
+                return Ok((
+                    format!(
+                        "suppressed: muted (\"Basta così\") until {}",
+                        until.with_timezone(&tz).format("%Y-%m-%d")
+                    ),
+                    None,
+                ));
+            }
+        }
         if quiet.quiet {
             return Ok(("waiting: quiet hours".into(), None));
         }

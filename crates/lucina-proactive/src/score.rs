@@ -56,11 +56,18 @@ pub struct Scored {
     pub reason: String,
 }
 
+/// The weighted sum, in `[0, 1]`: validated weights may sum to 1 ± 0.01 and
+/// f32 rounding may land just above 1, so it is clamped (NaN counts as 0).
 pub fn total(w: &Weights, s: &Scores) -> f32 {
-    w.urgency * s.urgency
+    let t = w.urgency * s.urgency
         + w.relevance * s.relevance
         + w.confidence * s.confidence
-        + w.actionability * s.actionability
+        + w.actionability * s.actionability;
+    if t > 0.0 {
+        t.min(1.0)
+    } else {
+        0.0
+    }
 }
 
 pub fn evaluate(w: &Weights, t: &Thresholds, s: &Scores) -> Scored {
