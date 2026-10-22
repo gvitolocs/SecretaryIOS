@@ -43,5 +43,6 @@ p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 chrono = { workspace = true }
 
 [dev-dependencies]
+proptest = "1"
 tempfile = "3"
 url = "2"
