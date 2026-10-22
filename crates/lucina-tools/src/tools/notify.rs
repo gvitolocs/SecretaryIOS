@@ -126,6 +126,8 @@ impl Tool for NotifyTool {
         }) {
             payload.as_object_mut().map(|o| o.remove("channel"));
         }
+        // Notifications are a sink: no secret leaves on a push.
+        lucina_secrets::redactor().redact_json(&mut payload);
         let (base, token) = server(ctx)?;
         let resp = ctx
             .env

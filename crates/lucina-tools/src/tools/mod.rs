@@ -8,6 +8,7 @@ pub mod notify;
 pub mod places;
 pub mod presence;
 pub mod reminders;
+pub mod secrets;
 pub mod shopping;
 pub mod tasks;
 pub mod time;
@@ -34,6 +35,8 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(presence::PresenceTool),
         Arc::new(avatar::AvatarOutfitTool),
         Arc::new(notify::NotifyTool),
+        Arc::new(secrets::SecretsStatusTool),
+        Arc::new(secrets::SecretsAuditTool),
     ]
 }
 

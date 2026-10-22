@@ -14,6 +14,17 @@ use crate::Result;
 
 pub const JOBS_KEEP: usize = 200;
 
+/// Job results and errors are a sink (file, API, timeline): no secrets.
+fn scrub(job: &mut Job) {
+    let r = lucina_secrets::redactor();
+    for t in [job.result.as_mut(), job.error.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        r.redact_string(t);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -114,7 +125,8 @@ impl JobStore {
         Ok(())
     }
 
-    pub fn insert(&self, job: Job) -> Result<Job> {
+    pub fn insert(&self, mut job: Job) -> Result<Job> {
+        scrub(&mut job);
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         self.active
             .lock()
@@ -133,6 +145,7 @@ impl JobStore {
             return Ok(None);
         };
         patch(job);
+        scrub(job);
         job.updated_at = now_iso();
         let out = job.clone();
         self.write(jobs)?;

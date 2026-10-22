@@ -759,6 +759,8 @@ impl TimelineStore {
     pub fn append(&self, input: NewItem) -> Result<TimelineItem> {
         let explicit_id = input.id.as_deref().is_some_and(is_timeline_id);
         let mut item = normalize(input, now_ms())?;
+        // The timeline is a sink: no secret reaches the file or the live stream.
+        lucina_secrets::redactor().redact_string(&mut item.text);
         let mut inner = self.lock();
         let _flock = lock_sidecar(&inner.file_path)?;
         let found = inner.refresh()?;

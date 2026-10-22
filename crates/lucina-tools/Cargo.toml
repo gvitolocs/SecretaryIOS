@@ -6,6 +6,7 @@ license.workspace = true
 description = "Lucina's tool plugins, registry, agent loop and confirmation flow"
 
 [dependencies]
+lucina-secrets = { path = "../lucina-secrets" }
 lucina-llm = { path = "../lucina-llm" }
 lucina-store = { path = "../lucina-store" }
 lucina-grocery = { path = "../lucina-grocery" }

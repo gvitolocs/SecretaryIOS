@@ -82,6 +82,9 @@ impl RecentChat {
         if chat_id.is_empty() || text.trim().is_empty() {
             return;
         }
+        // Recent turns feed prompts and a file: redact first.
+        let text = lucina_secrets::redactor().redact(text);
+        let text: &str = &text;
         let snapshot = self.with(|map| {
             let turns = map.entry(chat_id.to_owned()).or_default();
             turns.push(Turn {

@@ -1,5 +1,11 @@
 //! `weather`: Open-Meteo forecast + geocoding (no key). Default location
 //! from config (`LUCINA_DEFAULT_LOCATION_*`, Copenhagen, Denmark).
+//!
+//! With a commercial Open-Meteo plan, `secrets.toml` maps the setting
+//! `weather.api_key` to a secret ref; the key is resolved here, right
+//! before each request, and sent as the `apikey` parameter (point the
+//! endpoints at `customer-api.open-meteo.com` then). It never appears in
+//! the result.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -156,7 +162,10 @@ impl Tool for WeatherTool {
             "{}/v1/forecast",
             ctx.env.endpoints.open_meteo_forecast.trim_end_matches('/')
         );
-        let resp = ctx
+        // Resolved right before the call (cached at most 10 minutes), never
+        // returned: the value only goes into this request's query.
+        let api_key = ctx.secret("weather.api_key", "weather").await?;
+        let mut request = ctx
             .env
             .http
             .get(url)
@@ -167,7 +176,11 @@ impl Tool for WeatherTool {
                 ("daily", "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,sunrise,sunset".into()),
                 ("timezone", "auto".into()),
                 ("forecast_days", days.to_string()),
-            ])
+            ]);
+        if let Some(key) = &api_key {
+            request = request.query(&[("apikey", key.expose_secret())]);
+        }
+        let resp = request
             .send()
             .await
             .map_err(|e| ToolError::new(format!("forecast unreachable: {}", e.without_url())))?;

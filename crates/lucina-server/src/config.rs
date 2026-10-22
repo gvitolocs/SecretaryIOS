@@ -132,6 +132,9 @@ pub struct Config {
     pub secretary_url: Option<String>,
     /// Its service token file (`LUCINA_SECRETARY_SERVICE_TOKEN_FILE`, read per call).
     pub secretary_service_token_file: Option<PathBuf>,
+    /// `secrets.toml` for the Infisical secrets skill (`LUCINA_SECRETS_CONFIG`;
+    /// unset: no secrets, the redactor still runs).
+    pub secrets_config: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -152,6 +155,7 @@ impl std::fmt::Debug for Config {
             .field("calendar", &self.calendar_enabled)
             .field("outfit", &self.outfit_enabled)
             .field("jobs", &self.dsh.enabled)
+            .field("secrets_config", &self.secrets_config)
             .finish_non_exhaustive()
     }
 }
@@ -368,6 +372,7 @@ impl Config {
             secretary_url: get("LUCINA_SECRETARY_SERVER_URL").filter(|s| !s.trim().is_empty()),
             secretary_service_token_file: get("LUCINA_SECRETARY_SERVICE_TOKEN_FILE")
                 .map(PathBuf::from),
+            secrets_config: get("LUCINA_SECRETS_CONFIG").map(PathBuf::from),
             data_dir,
         })
     }
