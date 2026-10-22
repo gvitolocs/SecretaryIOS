@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>tech.getsecretary.app.refresh</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
@@ -53,6 +57,8 @@
 	<string>Your words are turned into text so Lucina can answer them.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>SecretaryAPNsEnabled</key>
+	<false/>
 	<key>SecretaryKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)tech.getsecretary.shared</string>
 	<key>UIApplicationSceneManifest</key>
@@ -60,6 +66,10 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

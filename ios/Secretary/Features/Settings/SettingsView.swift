@@ -57,6 +57,15 @@ struct SettingsView: View {
                 }
             }
 
+            Section {
+                NavigationLink {
+                    NotificationSettingsScreen()
+                } label: {
+                    Label("Notifications", systemImage: "bell.badge")
+                }
+                .accessibilityIdentifier("notificationSettings")
+            }
+
             Section("This device") {
                 LabeledContent("Device name", value: app.deviceName ?? "—")
                 Button("Change password", systemImage: "key") { showPassword = true }

@@ -85,9 +85,21 @@ route (CSRF-exempt, as on the real server), `POST /v1/auth/device` and
   one refers to ids the other never made. Two-way sync needs engine-side id assignment from the client
   (or an id map) first.
 - A body-weight `FFIBodyTransport` the same way (`secretary_body_*` is already in the library).
-- Push notifications for reminders (APNs, server side + a device-registration route).
 - `LucinaStage` (the animated avatar with voice) in the slot above the chat transcript.
 - TestFlight, which needs the owner's paid Apple developer team.
+
+## Notifications (docs/notifications.md)
+
+- The bell in the navigation bar opens the in-app notification center (the server inbox:
+  mark read, swipe, tap opens the right tab). Settings → Notifications mirrors the web
+  settings (categories, quiet hours, Do Not Disturb, previews) plus this iPhone's switch.
+- Local notifications (`Features/Notifications`): new inbox entries while the app runs or
+  refreshes in the background (`BGAppRefreshTask` `tech.getsecretary.app.refresh`), Lucina's
+  timeline messages when the chat is not in view, and Lucina's reminders and calendar events
+  scheduled ahead so they fire with the app closed.
+- APNs is built but off (`SecretaryAPNsEnabled: false`, no `aps-environment`): the free
+  Personal Team cannot use it. Until a paid team exists, the home-screen web app gives real
+  push on the iPhone (Web Push, iOS 16.4+).
 
 ## Device bridge (docs/device-bridge.md)
 
