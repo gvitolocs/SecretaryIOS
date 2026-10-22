@@ -33,6 +33,8 @@ client ──HTTPS──▶ Caddy (getsecretary.tech) ──▶ secretary-mcp 12
 | `reminders_list {scope?, include_sent?}` | `read` | `GET /v1/reminders`, times in the owner's zone. |
 | `reminder_create {text, when}` | `write` | `when` as RFC 3339 sends `{text, dueAt}`. Anything else sends `{naturalText: "<when> — <text>"}` to Lucina's parser. |
 | `reminder_cancel {id}` | `write` | `DELETE /v1/reminders/{id}`: status becomes `cancelled`. The record is kept. Annotated `destructiveHint`. |
+| `calendar_list {from?, to?, days?}` | `read` | `GET /v1/calendar/events`: Google, iPhone and ICS events merged, times in the owner's zone, with ids. Default: 7 days from today. |
+| `calendar_create {title, start, end?, location?, description?}` | `write` | **Never writes.** Files a proposal (`POST /v1/calendar/proposals`, `from: mcp:<caller>`) and answers that it needs owner confirmation in the app (Links → Waiting for your OK). |
 | `gym_summary {workouts?}` | `read` | `GET /v1/insights/summary` (service token). Without it, `GET /v1/gym/state`. |
 | `body_summary` | `read` | `GET /v1/body/state`: current weight, 7-day average, trends, goal, latest entries. |
 | `lucina_status` | `read` | Server and Lucina health, whether the backend token is accepted, owner time zone and local time, this caller's scopes. |
@@ -50,6 +52,8 @@ notifications go out every 10 s while she thinks.
 agenda is unavailable, it falls back to today's reminders.
 
 `tools/list`, `resources/list` and `prompts/list` show only what the caller's scopes allow.
+
+**AI client status.** With `SECRETARY_MCP_STATUS_TOKEN_FILE` set, `GET /internal/status` (Bearer that token; 404 otherwise; not routed by Caddy) lists callers, how they connect, scopes, created/last-used times and whether they are active, never ids or hashes. secretary-server reads it for the Links tab.
 
 **Safety.**
 

@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | Only `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)) and `POST /v1/notify` (see [Notifications](#notifications)). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` (see [Notifications](#notifications)) and the `/v1/calendar/*` routes (see [Calendar](#calendar)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -1238,6 +1238,124 @@ Lucina posts a notification:
 or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
 `disabled` (category off) or `present` (a Lucina message while the owner is in
 the app). Device tokens and cookies get `401`.
+
+## Links
+
+The connections hub behind the Links tab (web and iOS). The server computes
+every status; clients render cards and send the connect/disconnect requests.
+State: `$SECRETARY_DATA_DIR/links.json` (atomic, 0600). Secrets in it (the
+Google refresh token, ICS addresses, remote MCP addresses) are sealed with
+ChaCha20-Poly1305 under `links.key` (32 random bytes, 0600, created on first
+use) and are **never returned**: clients only see a host. Device auth (Bearer
+or cookie + CSRF); the service token gets `401` here.
+
+### `GET /v1/links`
+
+```json
+{ "timeZone": "Europe/Rome",
+  "google": { "configured": true, "status": "connected", "account": "owner@gmail.com", "services": ["calendar"] },
+  "groups": [
+    { "id": "calendars", "cards": [
+      { "id": "google-calendar", "kind": "google", "service": "calendar", "name": "Google Calendar",
+        "status": "connected", "account": "owner@gmail.com", "scopes": ["calendar.events", "calendar.readonly"],
+        "lastSyncAt": "2026-10-22T09:00:00.000Z", "count": 57, "detail": "57 items synced", "actions": ["sync", "disconnect"] },
+      { "id": "iphone-calendar", "kind": "iphone", "status": "connected", "account": "Giuseppe's iPhone", "count": 24, "…": "…" },
+      { "id": "ics:ics_Ab3…", "kind": "ics", "name": "Serie A", "status": "connected", "account": "calendar.google.com",
+        "count": 38, "scopes": ["read-only"], "actions": ["sync", "remove"] } ] },
+    { "id": "channels", "cards": [ "telegram, discord: connected; alexa: planned; lastSyncAt = latest timeline activity" ] },
+    { "id": "ai", "cards": [ "ai:claude-code, ai:chatgpt, ai:grok (+ other MCP callers), from secretary-mcp" ] },
+    { "id": "google", "cards": [ "google-gmail, google-drive: available | connected" ] },
+    { "id": "custom", "cards": [ { "id": "custom:lnk_…", "kind": "bookmark", "url": "https://…", "icon": "🏦", "tags": ["money"] },
+                                 { "id": "custom:lnk_…", "kind": "mcp", "status": "saved", "account": "mcp.example.com" } ] } ],
+  "proposals": [ <Proposal> ] }
+```
+
+Card `status`: `connected`, `disconnected`, `reconnect` (Google refused the
+refresh token: show **Reconnect**), `error` (an ICS feed failed; `error` says
+why), `planned`, `available`, `unavailable` (Google not configured on the
+server), `unknown` (secretary-mcp status not reachable), `saved` (MCP URL).
+`actions` ⊂ `connect`, `reconnect`, `sync`, `disconnect`, `remove`, `edit`.
+AI client status comes from secretary-mcp's `GET /internal/status`
+(`SECRETARY_MCP_STATUS_URL`, bearer `SECRETARY_MCP_STATUS_TOKEN_FILE`).
+
+### Google: `POST /v1/links/google/connect`, `GET /v1/links/google/callback`, `DELETE /v1/links/google`
+
+- `POST /v1/links/google/connect {"services": ["calendar"|"gmail"|"drive"], "client": "web"|"ios"}`
+  → `{"authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth?…"}`. The
+  app navigates there (iOS: `ASWebAuthenticationSession`, callback scheme
+  `secretary`). Authorization code + PKCE S256, `access_type=offline`,
+  `prompt=consent`, `include_granted_scopes=true`. Scopes: calendar →
+  `calendar.events` + `calendar.readonly`; gmail → `gmail.readonly`; drive →
+  `drive.readonly` (already granted services are kept). `state` and the PKCE
+  verifier live in memory only, single use, 10 minutes. `503
+  google_not_configured` without the client files.
+- `GET /v1/links/google/callback?code&state` (no auth: the `SameSite=Strict`
+  cookie is not sent on Google's cross-site redirect; the unguessable state
+  is the binding) exchanges the code, reads the primary calendar id (the
+  account email), stores the sealed refresh token, starts a sync and answers
+  `303` to `/links?google=connected` (iOS: `secretary://links?google=connected`)
+  or `?google=error&reason=<code>`.
+- `DELETE /v1/links/google` revokes the grant at Google (best effort), drops
+  the token and the Google cache: `{"disconnected": true, "revokedAtGoogle": true}`.
+
+### ICS subscriptions: `POST /v1/links/ics`, `DELETE /v1/links/ics/{id}`
+
+`{"label": "Serie A", "url": "webcal://…"}` (any provider's secret iCal
+address; `webcal(s)://` becomes `https://`; plain `http`, `localhost` and
+private/Tailscale IP literals are refused). The feed is fetched once (`422
+ics_unavailable` when it cannot be read or is not iCalendar, at most 10 MB),
+then on every sync with `If-None-Match` / `If-Modified-Since`. `201 {id,
+label, host, eventCount, feedName}`. Read-only.
+
+### Custom links: `POST /v1/links/custom`, `PATCH|DELETE /v1/links/custom/{id}`
+
+`{"kind": "bookmark"|"mcp", "label": "Bank", "url": "https://…", "icon": "🏦", "tags": ["money"]}`.
+Label 1–80, URL http(s) (MCP: https only) ≤ 2048, icon ≤ 16 characters, ≤ 10
+tags of ≤ 24 (lowercased, deduplicated), ≤ 200 links. MCP server URLs are
+sealed and never called (stored for Lucina's later use); bookmarks return
+their `url`.
+
+## Calendar
+
+All sources merged: Google Calendar (synced into `calendar.json` every
+`SECRETARY_CALENDAR_SYNC_SECS`, default 300, with sync tokens; a `410 Gone`
+triggers a full resync from 365 days back; recurring events are expanded by
+`secretary-calendar`, DST-correct, with EXDATEs and per-instance
+exceptions), ICS subscriptions, and the iPhone's EventKit events from the
+latest `POST /v1/device/state` snapshot (`events: [{id, title, start, end,
+allDay?, location?, calendar?, notes?}]`, start/end RFC 3339, epoch ms or
+`YYYY-MM-DD`). Auth: device Bearer, cookie (+CSRF on writes), or **Lucina's
+service token** (`svc_…`).
+
+Event:
+
+```json
+{ "id": "google:abc_20261022T070000Z", "source": "google", "sourceId": "abc", "calendar": "Google",
+  "title": "Gym", "start": "2026-10-22T07:00:00.000Z", "end": "2026-10-22T08:00:00.000Z", "allDay": false,
+  "startMs": 1792652400000, "endMs": 1792656000000, "location": "…", "url": "https://calendar.google.com/…",
+  "recurring": true, "editable": true }
+```
+
+All-day events have `start`/`end` as `YYYY-MM-DD` (end exclusive) and
+`allDay: true`. Ids: `google:<event or instance id>`, `ics:<sub>:<hash>`,
+`iphone:<EventKit id>`.
+
+| Route | |
+|---|---|
+| `GET /v1/calendar/events?from&to&days&sources` | `from`/`to`: `YYYY-MM-DD` (owner's zone, `to` inclusive) or RFC 3339; default today + 7 days; `days` 1–400; `sources=google,ics,iphone`. `{from, to, timeZone, events, sources}` (`sources` has each source's status). Range ≤ 400 days. |
+| `GET /v1/calendar/free?from&to&minutes=60&dayStart=9&dayEnd=19&limit=5` | Gaps between timed events inside working hours: `{slots: [{start, end}]}`. All-day events do not block. |
+| `POST /v1/calendar/sync` | Sync now: `{google: {ok, changed?, error?}, ics: [{id, ok, changed?, error?}]}`. `error: "reconnect_needed"` when Google revoked access. |
+| `POST /v1/calendar/events` | `{title, start, end?, allDay?, location?, description?, timeZone?}` → Google primary calendar. `start` RFC 3339 with offset (default end +1 h) or `YYYY-MM-DD` (all-day, default +1 day). `201 {created, event}`. |
+| `PATCH /v1/calendar/events/{id}` | **`confirm: true` required** (`428 confirmation_required` otherwise) + any of the create fields. Moving `start` without `end` keeps the duration. Google events only (`422 read_only_source` for ICS/iPhone). |
+| `DELETE /v1/calendar/events/{id}?confirm=true` | Same rules. Deleting a recurring instance id cancels that instance only. |
+| `GET /v1/calendar/proposals` · `POST /v1/calendar/proposals` | Proposals from clients that may not write (the Lucina MCP): body as for create plus `from`; validated, kept 7 days, ≤ 50. |
+| `POST /v1/calendar/proposals/{id}/accept` `{confirm: true}` · `DELETE /v1/calendar/proposals/{id}` | The owner accepts (creates the event) or dismisses it **in the app**; the service token gets `403 owner_only`. |
+
+Errors: `409 google_not_connected`, `409 google_reconnect_needed` (show
+Reconnect in Links), `404 event_not_found`, `400 google_rejected`, `502
+google_unreachable` / `google_error`, `400 bad_request`.
+
+`GET /v1/agenda` also carries `events`: the merged events of that date.
 
 ## Error codes
 
