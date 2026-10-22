@@ -9,3 +9,7 @@ export type { Reaction, LineKey } from './reactions';
 export { createInteraction, GAZE_RELEASE_MS } from './controller';
 export type { InteractionController, InteractionDeps } from './controller';
 export { registerTouchClips } from './touchClips';
+export { Studio, BACKGROUNDS, ROOMS, SOLID_COLORS, LIGHTINGS } from './studio';
+export type { BackgroundId, LightingId, RoomId } from './studio';
+export { GyroParallax, gyroOffset, requestMotionPermission, GYRO_LIMITS } from './gyro';
+export { playBeat, playTrack } from './music';

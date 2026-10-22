@@ -325,3 +325,61 @@ describe('reactions', () => {
     }
   });
 });
+
+describe('studio', () => {
+  it('backgrounds hide the stage set; lighting reaches toon materials; dance shows lights', async () => {
+    const THREE = await import('three');
+    const { Studio, gyroOffset, GYRO_LIMITS } = await import('../src/interact');
+    const scene = new THREE.Scene();
+    const sky = new THREE.Object3D();
+    const model = new THREE.Group();
+    const toonMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tint: { value: new THREE.Color(1, 1, 1) },
+        lightDirection: { value: new THREE.Vector3(0, 1, 0) },
+        ambient: { value: 0.03 },
+        rimColor: { value: new THREE.Color(0, 1, 1) },
+      },
+    });
+    model.add(new THREE.Mesh(new THREE.BoxGeometry(), toonMat));
+    const lights = {
+      hemi: new THREE.HemisphereLight(0xffffff, 0x000000, 1),
+      key: new THREE.DirectionalLight(0xffffff, 1.7),
+      rim: new THREE.DirectionalLight(0xffffff, 2),
+      rim2: new THREE.DirectionalLight(0xffffff, 0.9),
+    };
+    const s = new Studio({ scene, model, lights, envObjects: () => [sky], floorY: 0, height: 1.6, center: new THREE.Vector3() });
+    s.setBackground('room:cafe');
+    expect(sky.visible).toBe(false);
+    expect(scene.getObjectByName('Room:cafe')?.visible).toBe(true);
+    s.setBackground('color:#ffd6e5');
+    expect((scene.background as InstanceType<typeof THREE.Color>).getHexString()).toBe('ffd6e5');
+    expect(scene.getObjectByName('Room:cafe')?.visible).toBe(false);
+    s.setBackground('default');
+    expect(sky.visible).toBe(true);
+    expect(scene.background).toBeNull();
+    expect(() => s.setBackground('room:moon')).toThrow();
+
+    s.setLighting('sunset');
+    expect(lights.key.color.getHex()).toBe(0xff9a62);
+    expect((toonMat.uniforms.tint!.value as InstanceType<typeof THREE.Color>).getHex()).not.toBe(0xffffff);
+    s.setLighting('default');
+    expect(lights.key.intensity).toBe(1.7);
+    expect((toonMat.uniforms.tint!.value as InstanceType<typeof THREE.Color>).getHex()).toBe(0xffffff);
+    expect((toonMat.uniforms.lightDirection!.value as InstanceType<typeof THREE.Vector3>).y).toBe(1);
+
+    s.setDance(true);
+    s.update(0.3);
+    expect(scene.getObjectByName('DanceShow')?.visible).toBe(true);
+    s.setDance(false);
+    expect(scene.getObjectByName('DanceShow')?.visible).toBe(false);
+    s.dispose();
+    expect(scene.getObjectByName('Room:cafe')).toBeUndefined();
+
+    // Gyro: dead zone, clamp.
+    expect(gyroOffset(30, 0, { beta: 30, gamma: 0 })).toEqual({ yaw: 0, pitch: 0 });
+    const big = gyroOffset(80, -60, { beta: 30, gamma: 0 });
+    expect(big.yaw).toBeCloseTo(GYRO_LIMITS.yaw, 9);
+    expect(big.pitch).toBeCloseTo(GYRO_LIMITS.pitch, 9);
+  });
+});

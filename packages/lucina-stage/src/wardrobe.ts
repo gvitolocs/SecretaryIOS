@@ -253,6 +253,9 @@ export async function createWardrobeStage(
   const tapCbs = new Set<(e: TapEvent) => void>();
   const touchCbs = new Set<(e: TouchEvent) => void>();
   let interactive = options.interactive ?? false;
+  let background: string = 'default';
+  let lighting: string = 'default';
+  let gyroOn = false;
   const changingCbs = new Set<(c: boolean) => void>();
   const outfitCbs = new Set<(o: string | null) => void>();
   const owned = new Set<HTMLCanvasElement>();
@@ -433,6 +436,10 @@ export async function createWardrobeStage(
     ns.setMuted(cur.isMuted());
     ns.lookAtPointer(look);
     if (expression) ns.setExpression(expression.e, expression.w);
+    if (background !== 'default') ns.setBackground?.(background);
+    if (lighting !== 'default') ns.setLighting?.(lighting as never);
+    if (gyroOn) ns.setGyro?.(true);
+    if (cur.dancing) void ns.setDance?.(true);
     await waitQuiet(cur, token);
     if (token !== swapToken || disposed) return abandon();
     if (cur.state !== 'speaking') ns.setState(cur.state);
@@ -662,6 +669,32 @@ export async function createWardrobeStage(
     },
     get interactive() {
       return cur.interactive;
+    },
+    setBackground(id) {
+      cur.setBackground(id);
+      background = id;
+    },
+    get background() {
+      return cur.background;
+    },
+    setLighting(id) {
+      cur.setLighting(id);
+      lighting = id;
+    },
+    get lighting() {
+      return cur.lighting;
+    },
+    snapshot: () => cur.snapshot(),
+    setDance: (on, o) => cur.setDance(on, o),
+    get dancing() {
+      return cur.dancing;
+    },
+    setGyro(on) {
+      gyroOn = !!on;
+      cur.setGyro(on);
+    },
+    get gyro() {
+      return cur.gyro;
     },
     setModel,
     setOutfit(id, o = {}) {

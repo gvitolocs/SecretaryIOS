@@ -51,6 +51,9 @@ import { createInteraction, type InteractionController } from './interact/contro
 import { Orbit, PRESET_ZOOM, composeCamera, gazeFollowWeight, type Shot, type ViewPreset, type ViewState } from './interact/orbit';
 import { regionOfHit, type BodyMetrics, type Region, type Side } from './interact/regions';
 import { BLOCKED_CLIPS, ReactionPlanner, type Reaction } from './interact/reactions';
+import { Studio, type BackgroundId, type LightingId } from './interact/studio';
+import { GyroParallax } from './interact/gyro';
+import { playBeat, playTrack, type MusicHandle } from './interact/music';
 
 export interface LucinaStageOptions {
   /** GLB URL. Production: `/v1/assets/lucina.glb`. Omit to use the procedural placeholder. */
@@ -227,6 +230,24 @@ export interface LucinaStage {
   /** Turn touch/mouse control on or off (e.g. while a slider is dragged). */
   setInteractive(on: boolean): void;
   readonly interactive: boolean;
+  /** Background: `default` (the stage set or transparent), `transparent`, `color:#rrggbb`, `room:cafe|bedroom|rooftop`. */
+  setBackground(id: BackgroundId): void;
+  readonly background: BackgroundId;
+  /** Lighting preset: default, studio, warm, cool, sunset, night. */
+  setLighting(id: LightingId): void;
+  readonly lighting: LightingId;
+  /** Renders one frame and returns it as a PNG (photo mode). */
+  snapshot(): Promise<Blob>;
+  /**
+   * Dance mode: a dance clip (or a procedural dance), stage lights. Music only when `music` is
+   * given (call it from a tap): an owner-provided track, or `true` for the built-in beat. Muted
+   * stages stay silent.
+   */
+  setDance(on: boolean, opts?: { music?: boolean | Blob | ArrayBuffer }): Promise<void>;
+  readonly dancing: boolean;
+  /** Gyro parallax (call `requestMotionPermission()` from a tap first on iOS). Off in reduced motion. */
+  setGyro(on: boolean): void;
+  readonly gyro: boolean;
   /** Escape hatches for debugging. */
   readonly three: { renderer: WebGLRenderer; scene: Scene; camera: PerspectiveCamera; model: Object3D };
 }
@@ -502,6 +523,11 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   const bodyBounds = { min: { x: bbox.min.x, y: bbox.min.y, z: bbox.min.z }, max: { x: bbox.max.x, y: bbox.max.y, z: bbox.max.z }, height };
   let orbit: Orbit | null = null;
   let interaction: InteractionController | null = null;
+  // ---------- Studio (backgrounds, light, dance, gyro) ----------
+  let studio: Studio | null = null;
+  const gyro = new GyroParallax();
+  let music: MusicHandle | null = null;
+  let dancing = false;
 
   function manifestFraming(f: Framing): CameraFraming | undefined {
     const c = manifest.camera[f];
@@ -590,7 +616,9 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   function applyCamera(dt: number, snap: boolean): void {
     if (orbit) {
       // The orbit does its own easing (Custom Cast's damping); follow it exactly.
-      const c = composeCamera(orbit.shots, orbit.view, orbit.limits);
+      const g = gyro.offset;
+      const v = g.yaw || g.pitch ? { ...orbit.view, yaw: orbit.view.yaw + g.yaw, pitch: orbit.view.pitch + g.pitch } : orbit.view;
+      const c = composeCamera(orbit.shots, v, orbit.limits);
       camNow.pos.set(c.pos.x, c.pos.y, c.pos.z);
       camNow.target.set(c.target.x, c.target.y, c.target.z);
       camNow.fov = c.fov;
@@ -644,6 +672,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       reducedMotion = mql?.matches ?? false;
       animator.reducedMotion = reducedMotion;
       if (orbit) orbit.reduced = reducedMotion;
+      if (studio) studio.reduced = reducedMotion;
+      if (reducedMotion) gyro.enable(false);
       env?.setReducedMotion(reducedMotion);
     }
   };
@@ -887,6 +917,60 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     interaction = createInteraction({ canvas, orbit, touch, kick });
   }
 
+  function getStudio(): Studio {
+    if (!studio) {
+      studio = new Studio({
+        scene,
+        model,
+        lights: { hemi, key, rim, rim2 },
+        envObjects: () => (env ? [env.sky.mesh, env.floor.mesh, env.motes.points] : []),
+        floorY: bbox.min.y,
+        height,
+        center: new Vector3((bbox.min.x + bbox.max.x) / 2, bbox.min.y, (bbox.min.z + bbox.max.z) / 2),
+      });
+      studio.reduced = reducedMotion;
+    }
+    return studio;
+  }
+
+  async function setDance(on: boolean, opts: { music?: boolean | Blob | ArrayBuffer } = {}): Promise<void> {
+    music?.stop();
+    music = null;
+    dancing = !!on;
+    getStudio().setDance(dancing);
+    kick();
+    if (!dancing) {
+      if (player?.current === 'dance_loop') player.stop();
+      motion.stop();
+      return;
+    }
+    if (!reducedMotion) {
+      if (player?.has('dance_loop')) void player.play('dance_loop', { loop: true }).catch(() => {});
+      else motion.play('dance');
+    }
+    if (!opts.music || muted) return;
+    const a = ensureAudio();
+    if (a.ctx.state !== 'running') await a.ctx.resume().catch(() => {});
+    if (!dancing) return;
+    // Straight to the mute gain: the analyser (her lip-sync) never hears the music.
+    if (opts.music === true) music = playBeat(a.ctx, a.gain);
+    else {
+      const data = opts.music instanceof Blob ? await opts.music.arrayBuffer() : opts.music.slice(0);
+      const buf = await decode(a.ctx, data);
+      if (dancing && !music) music = playTrack(a.ctx, a.gain, buf);
+    }
+  }
+
+  /** One frame, drawn now and read back before the browser clears it. */
+  function snapshot(): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      toon?.update();
+      if (env) env.render(0);
+      else renderer.render(scene, camera);
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Snapshot failed'))), 'image/png');
+    });
+  }
+
   const _p = new Vector3();
   const _c = new Vector3();
   /** Converts the pointer (or the camera) into gaze angles relative to her eyes. */
@@ -958,6 +1042,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
 
   function step(dt: number): void {
     interaction?.update(dt);
+    gyro.update(dt);
+    studio?.update(dt);
     if (heldUntil && performance.now() > heldUntil) {
       heldUntil = 0;
       animator.setExpression(baseExpression.e, baseExpression.w);
@@ -1050,6 +1136,11 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     canvas.removeEventListener('pointerdown', onDown);
     canvas.removeEventListener('pointerup', onUp);
     interaction?.dispose();
+    studio?.dispose();
+    studio = null;
+    gyro.dispose();
+    music?.stop();
+    music = null;
     interaction = null;
     touchListeners.clear();
     removeGestureUnlock();
@@ -1127,6 +1218,8 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       reducedMotion = r ?? mql?.matches ?? false;
       animator.reducedMotion = reducedMotion;
       if (orbit) orbit.reduced = reducedMotion;
+      if (studio) studio.reduced = reducedMotion;
+      if (reducedMotion) gyro.enable(false);
       env?.setReducedMotion(reducedMotion);
     },
     gesture(name) {
@@ -1210,6 +1303,31 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     },
     get interactive() {
       return !!interaction?.enabled;
+    },
+    setBackground(id) {
+      getStudio().setBackground(id);
+      kick();
+    },
+    get background() {
+      return studio?.background ?? 'default';
+    },
+    setLighting(id) {
+      getStudio().setLighting(id);
+      kick();
+    },
+    get lighting() {
+      return studio?.lighting ?? 'default';
+    },
+    snapshot,
+    setDance,
+    get dancing() {
+      return dancing;
+    },
+    setGyro(on) {
+      gyro.enable(!!on && !reducedMotion);
+    },
+    get gyro() {
+      return gyro.enabled;
     },
   };
   return stage;

@@ -9,10 +9,11 @@ import { login } from "./dict/login";
 import { notify } from "./dict/notify";
 import { notes } from "./dict/notes";
 import { shell } from "./dict/shell";
+import { studio } from "./dict/studio";
 import { tasks } from "./dict/tasks";
 import { wardrobe } from "./dict/wardrobe";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { common, shell, chat, login, weight, gym, wardrobe, notify, links, notes, tasks };
+export const dictionaries = { common, shell, chat, login, weight, gym, wardrobe, notify, links, notes, tasks, studio };
 
 export type Dictionaries = typeof dictionaries;

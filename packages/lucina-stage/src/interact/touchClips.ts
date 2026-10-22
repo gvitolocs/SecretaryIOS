@@ -82,4 +82,26 @@ registerClip('look', {
     return { bones: { head: { x: 0.16 * e, z: 0.06 * e }, neck: { x: 0.06 * e } } };
   },
 });
+
+// Dance mode without the clip file: a bouncy groove at 120 BPM until stopped (long duration).
+registerClip('dance', {
+  duration: 3600,
+  sample: (t, c) => {
+    const e = Math.min(t / 0.4, 1);
+    const b = Math.sin(t * TAU * 2);
+    const sway = Math.sin(t * TAU);
+    return {
+      bones: {
+        spine: { z: 0.06 * sway * e, x: 0.03 * Math.abs(b) * e },
+        chest: { z: -0.05 * sway * e, y: 0.08 * sway * e },
+        head: { z: 0.08 * sway * e, x: -0.04 * Math.abs(b) * e },
+        upper_arm_l: { z: c.leftSide * (0.35 + 0.15 * b) * e, x: -0.2 * e },
+        upper_arm_r: { z: -c.leftSide * (0.35 - 0.15 * b) * e, x: -0.2 * e },
+        lower_arm_l: { x: -0.5 * e },
+        lower_arm_r: { x: -0.5 * e },
+      },
+      morphs: { smile: 0.8 * e },
+    };
+  },
+});
 }

@@ -2268,3 +2268,138 @@ select.text-input option {
   justify-content: center;
   margin-bottom: 8px;
 }
+
+.stage-canvas:active {
+  cursor: grabbing;
+}
+
+/* Lucina's studio: a glass sheet over the bottom of the stage (Custom Cast's slide-up panels). */
+.stage-studio {
+  position: absolute;
+  z-index: 3;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 18px;
+  background: rgb(8 10 30 / 0.62);
+  border: 1px solid rgb(160 200 255 / 0.22);
+  color: #e9edff;
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  animation: sheet-up var(--dur-4) var(--ease-out) both;
+}
+
+.stage-studio-tabs,
+.stage-studio-chips,
+.stage-studio-actions,
+.stage-photo-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.stage-studio-chips {
+  flex-wrap: wrap;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.studio-tab,
+.studio-chip,
+.studio-action,
+.studio-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgb(160 200 255 / 0.22);
+  background: rgb(255 255 255 / 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.studio-tab[aria-selected="true"],
+.studio-chip[aria-pressed="true"],
+.studio-action[aria-pressed="true"] {
+  background: var(--grad-primary);
+  border-color: transparent;
+  color: #fff;
+}
+
+.studio-close {
+  margin-left: auto;
+  padding: 0 10px;
+  font-size: var(--fs-md);
+}
+
+.studio-empty {
+  font-size: var(--fs-xs);
+  opacity: 0.7;
+}
+
+.studio-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgb(255 255 255 / 0.4);
+}
+
+.studio-swatch[data-color="#101426"] { background: #101426; }
+.studio-swatch[data-color="#f4f1ec"] { background: #f4f1ec; }
+.studio-swatch[data-color="#ffd6e5"] { background: #ffd6e5; }
+.studio-swatch[data-color="#cfe8ff"] { background: #cfe8ff; }
+
+/* Photo mode: only her (and the shutter) on screen. */
+.stage--photo .stage-hud,
+.stage--photo .stage-controls,
+.stage--photo .stage-pill,
+.stage--photo .stage-wave {
+  display: none;
+}
+
+.stage-photo-bar {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  overflow: visible;
+}
+
+.stage-photo-bar .studio-action {
+  background: rgb(8 10 30 / 0.55);
+  color: #fff;
+}
+
+.stage-shutter {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 4px solid #fff;
+  background: rgb(255 255 255 / 0.25);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+}
+
+.stage-shutter:active {
+  background: rgb(255 255 255 / 0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-studio {
+    animation: none;
+  }
+}

@@ -19,7 +19,8 @@ import {
   wardrobeHairstyles,
   wardrobeOutfits,
 } from "../state/wardrobe";
-import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, SparkleIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { LucinaStudio, restoreStudio, savePhoto } from "./LucinaStudio";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
 export const MUTE_KEY = "lucina-stage:muted";
@@ -89,6 +90,9 @@ export function LucinaPanel(props: {
   const [listening, setListening] = createSignal(false);
   const [note, setNote] = createSignal<string | null>(null);
   const [hint, setHint] = createSignal(false);
+  const [studioOpen, setStudioOpen] = createSignal(false);
+  const [photo, setPhoto] = createSignal(false);
+  const [stageRef, setStageRef] = createSignal<WardrobeStage | null>(null);
   let canvas: HTMLCanvasElement | undefined;
   let mod: StageModule | null = null;
   let stage: WardrobeStage | null = null;
@@ -139,6 +143,8 @@ export function LucinaPanel(props: {
         return;
       }
       stage = s;
+      setStageRef(s);
+      restoreStudio(s);
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));
       s.onChanging(setOutfitChanging);
@@ -166,6 +172,7 @@ export function LucinaPanel(props: {
     ttsCtrl?.abort();
     stage?.dispose();
     stage = null;
+    setStageRef(null);
     setLucinaActivity("idle");
     setOutfitChanging(false);
   });
@@ -267,6 +274,17 @@ export function LucinaPanel(props: {
     }
   }
 
+  async function takePhoto() {
+    const s = stage;
+    if (!s) return;
+    try {
+      const result = await savePhoto(await s.snapshot());
+      if (result !== "cancelled") setNote(t("studio.photoSaved"));
+    } catch {
+      // The frame could not be read back: nothing to save.
+    }
+  }
+
   async function talk() {
     setHint(false);
     if (listening()) {
@@ -311,7 +329,7 @@ export function LucinaPanel(props: {
   return (
     <section
       class="stage"
-      classList={{ "stage--listening": listening() }}
+      classList={{ "stage--listening": listening(), "stage--photo": photo() }}
       data-state={activity()}
       aria-label={t("shell.lucina")}
     >
@@ -361,6 +379,19 @@ export function LucinaPanel(props: {
             <VolumeOffIcon />
           </Show>
         </button>
+        <Show when={mode() === "ready"}>
+          <button
+            type="button"
+            class="icon-btn stage-btn"
+            classList={{ "stage-btn--busy": studioOpen() }}
+            onClick={() => setStudioOpen(!studioOpen())}
+            aria-expanded={studioOpen() ? "true" : "false"}
+            aria-label={t("studio.open")}
+            title={t("studio.title")}
+          >
+            <SparkleIcon />
+          </button>
+        </Show>
         <button
           type="button"
           class="icon-btn stage-btn stage-btn--wardrobe"
@@ -394,6 +425,23 @@ export function LucinaPanel(props: {
           <CloseIcon />
         </button>
       </div>
+      <Show when={studioOpen() && mode() === "ready" && !photo()}>
+        <LucinaStudio
+          stage={stageRef}
+          muted={muted}
+          fetchInit={AUTH}
+          onClose={() => setStudioOpen(false)}
+          onPhoto={() => setPhoto(true)}
+        />
+      </Show>
+      <Show when={photo()}>
+        <div class="stage-photo-bar">
+          <button type="button" class="studio-action" onClick={() => setPhoto(false)}>
+            {t("studio.photoDone")}
+          </button>
+          <button type="button" class="stage-shutter" onClick={() => void takePhoto()} aria-label={t("studio.photoTake")} title={t("studio.photoTake")} />
+        </div>
+      </Show>
       <Show when={activity() === "listening"}>
         <div class="stage-wave" aria-hidden="true">
           {Array.from({ length: WAVE_BARS }, (_, i) => (

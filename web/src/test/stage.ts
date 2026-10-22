@@ -23,6 +23,26 @@ export class FakeStage {
     return () => {};
   });
   readonly cameraPreset = vi.fn();
+  background = "default";
+  lighting = "default";
+  dancing = false;
+  gyro = false;
+  info = { clips: [{ name: "greet_wave", loop: false }, { name: "bow", loop: false }, { name: "status_loop", loop: true }] };
+  gestures = ["nod", "tilt", "dance"];
+  readonly play = vi.fn(async (_name: string, _opts?: unknown) => {});
+  readonly setExpression = vi.fn();
+  readonly setInteractive = vi.fn();
+  readonly setBackground = vi.fn((id: string) => {
+    this.background = id;
+  });
+  readonly setLighting = vi.fn((id: string) => {
+    this.lighting = id;
+  });
+  readonly setDance = vi.fn(async (on: boolean, _opts?: unknown) => {
+    this.dancing = on;
+  });
+  readonly setGyro = vi.fn();
+  readonly snapshot = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
   readonly resetView = vi.fn();
   readonly setView = vi.fn();
   private stateListeners: ((next: StageState, prev: StageState) => void)[] = [];
