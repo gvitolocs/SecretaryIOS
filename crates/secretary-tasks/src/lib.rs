@@ -204,9 +204,9 @@ impl Engine {
             ok: true,
             ..Default::default()
         };
-        let mut view_query = None;
+        let mut view_query = req.view.clone();
         match &req.command {
-            Command::Snapshot { view } => view_query = view.clone(),
+            Command::Snapshot { view } => view_query = view.clone().or(view_query),
             Command::ParseQuickAdd { text, lang } => {
                 out.parsed = Some(self.parse_quick(text, lang.as_deref(), tz, now));
             }
@@ -262,12 +262,15 @@ impl Engine {
                 }
             }
         }
-        out.view = Some(views::view(
-            &self.state,
-            view_query.as_ref().unwrap_or(&ViewQuery::default()),
-            tz,
-            now,
-        ));
+        // a quick add preview (every keystroke) needs no lists
+        if !matches!(req.command, Command::ParseQuickAdd { .. }) {
+            out.view = Some(views::view(
+                &self.state,
+                view_query.as_ref().unwrap_or(&ViewQuery::default()),
+                tz,
+                now,
+            ));
+        }
         Ok(out)
     }
 

@@ -377,6 +377,10 @@ pub struct Request {
     #[serde(default = "utc")]
     pub timezone: String,
     pub command: Command,
+    /// The list the answer's view shows (default `today`); for `snapshot`
+    /// the command's own `view` wins.
+    #[serde(default)]
+    pub view: Option<ViewQuery>,
 }
 fn utc() -> String {
     "UTC".into()
