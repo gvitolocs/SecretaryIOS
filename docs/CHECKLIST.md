@@ -21,6 +21,12 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] ChatGPT (custom plugin, OAuth) and Grok Bot (custom MCP server, OAuth) connected
 - [ ] Grok Bot caller shows as "www": map the cursor.com redirect host to "grok"
 
+## Proactive Lucina (owner, 2026-10-22: "she reaches out before you ask")
+- [ ] MVP1 Lucina First + MVP2 Attention Engine + Daily Pulse (Rust crate lucina-proactive, Postgres schema, app + Telegram outreach, feedback) — dry-run first
+- [ ] MVP3 persistent background tasks + Smart Approval (Approve/Edit/Ignore)
+- [ ] MVP4 external sources (email, GitHub, Pokoin servers)
+- [ ] MVP5 learning from feedback + Lucina proposes automations
+
 ## Waiting
 ### Web
 - [x] Persistent full-body Lucina in the right column on desktop, compact on mobile; `/lucina/` retired (20e811e, live)
