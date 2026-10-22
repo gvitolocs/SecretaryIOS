@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use crate::pending::{PendingAction, PendingStore};
-use crate::{is_denied_name, Ctx, Registry};
+use crate::{is_denied_name, Ctx, Origin, Registry};
 
 pub const MAX_ROUNDS: usize = 6;
 const MAX_TOOL_OUTPUT_CHARS: usize = 8000;
@@ -123,6 +123,36 @@ pub async fn execute(
     (ok, output, summary)
 }
 
+/// What a model's tool call becomes in the turn that proposes it (Verus
+/// kernel `propose` in `verification/verus/confirmation_gate.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallGate {
+    /// Needs the owner's yes: stored as a pending action, not run.
+    Defer,
+    /// Goes to [`execute`] (which still refuses unknown, denied and invalid calls).
+    Execute,
+    /// Needs the owner's yes but the turn came through Lucina MCP: refused.
+    RefuseMcp,
+}
+
+pub fn call_gate(registry: &Registry, name: &str, args: &Value, origin: Origin) -> CallGate {
+    match registry.get(name) {
+        Some(tool)
+            if tool.needs_confirmation(args)
+                && !is_denied_name(name)
+                && !tool.moves_money()
+                && registry.validate(name, args).is_ok() =>
+        {
+            if origin == Origin::Mcp {
+                CallGate::RefuseMcp
+            } else {
+                CallGate::Defer
+            }
+        }
+        _ => CallGate::Execute,
+    }
+}
+
 async fn handle_call(
     registry: &Registry,
     call: &ToolCall,
@@ -152,11 +182,25 @@ async fn handle_call(
             }
         }
     };
+    let gate = call_gate(registry, &name, &args, ctx.origin);
+    if gate == CallGate::RefuseMcp {
+        let summary = registry
+            .get(&name)
+            .map(|t| t.summarize(&args))
+            .unwrap_or_else(|| name.clone());
+        return ToolRecord {
+            call_id: call.id.clone(),
+            name,
+            args,
+            ok: false,
+            output: json!({"error": "refused: this needs the owner's own confirmation, so it does not run from Lucina MCP. Ask the owner to do it in the Secretary app."}),
+            summary,
+            pending: None,
+            ms: started.elapsed().as_millis() as u64,
+        };
+    }
     if let Some(tool) = registry.get(&name) {
-        let gated = tool.needs_confirmation(&args)
-            && !is_denied_name(&name)
-            && registry.validate(&name, &args).is_ok();
-        if gated {
+        if gate == CallGate::Defer {
             let summary = tool.summarize(&args);
             let action = pending.create(&ctx.session_id, &name, args.clone(), &summary, ctx.now);
             return ToolRecord {

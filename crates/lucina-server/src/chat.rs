@@ -24,8 +24,8 @@ use lucina_store::reminders::{format_confirmation, format_list, CreateReminder};
 use lucina_store::timeline::{Meta, TimelineTurn};
 use lucina_store::timeutil::{iso_ms, now_iso, utf16_len};
 use lucina_tools::agent::{self, AgentConfig, ToolRecord};
-use lucina_tools::pending::{classify_reply, Reply};
-use lucina_tools::{Ctx, Effect};
+use lucina_tools::pending::{classify_reply, settle, Settle};
+use lucina_tools::{Ctx, Effect, Origin};
 use serde_json::{json, Value};
 
 use crate::api::{optional_string, owner_reminders, ApiError, PLATFORM_LABEL, USER_LABEL};
@@ -250,7 +250,12 @@ async fn run_turn(
     mcp_turn: Option<McpTurn>,
 ) -> Result<Value, ApiError> {
     if st.cfg.planner == PlannerMode::Tools {
-        return tools_turn(st, message, session, cmid, channel, mcp_turn.is_some()).await;
+        let origin = if mcp_turn.is_some() {
+            Origin::Mcp
+        } else {
+            Origin::Owner
+        };
+        return tools_turn(st, message, session, cmid, channel, origin).await;
     }
     // With rich replies the app turns structure into widgets and buttons.
     let base_system = if st.cfg.rich_replies {
@@ -1221,8 +1226,9 @@ async fn tools_turn(
     session: String,
     cmid: Option<String>,
     channel: String,
-    mcp: bool,
+    origin: Origin,
 ) -> Result<Value, ApiError> {
+    let mcp = matches!(origin, Origin::Mcp);
     let now = Utc::now();
     let tz = st.cfg.time_zone;
     let persona = st.cfg.persona.clone();
@@ -1243,7 +1249,7 @@ async fn tools_turn(
             .memory_context
     };
     st.recent.append(&session, "user", &message, now);
-    let ctx = Ctx::new(st.tool_env.clone(), &channel, &session);
+    let ctx = Ctx::new(st.tool_env.clone(), &channel, &session).with_origin(origin);
     let on_tool = |r: &ToolRecord| {
         turn.record_lucina(
             &tool_item_text(r),
@@ -1273,8 +1279,9 @@ async fn tools_turn(
         st.pending.current(&session, now)
     };
     if let Some(p) = pending_now {
-        match classify_reply(&message) {
-            Reply::Yes => {
+        match settle(true, classify_reply(&message), origin) {
+            Settle::Nothing => {}
+            Settle::Run => {
                 if let Some(action) = st.pending.take(&p.id) {
                     let (ok, output, summary) = agent::execute(
                         &registry,
@@ -1297,11 +1304,11 @@ async fn tools_turn(
                     settled = Some(format!("The owner confirmed the pending action \"{summary}\" and it has now run (ok: {ok}). Result: {output}"));
                 }
             }
-            Reply::No => {
+            Settle::Discard => {
                 st.pending.take(&p.id);
                 settled = Some(format!("The owner declined the pending action \"{}\". It was not run and is discarded.", p.summary));
             }
-            Reply::Other => {
+            Settle::StillPending => {
                 pending_note = format!("A pending action awaits the owner's explicit confirmation: \"{}\" (expires {}). If this message does not answer it, handle the message normally and mention in one short sentence that the action still needs an explicit yes.", p.summary, p.expires_at);
             }
         }

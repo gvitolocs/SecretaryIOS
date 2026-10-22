@@ -63,12 +63,17 @@ pub fn new_id(now_ms: i64) -> String {
 }
 
 /// The smallest id after `id` (Crockford base 32 plus one), so an append
-/// never sorts before a line another process already wrote.
-pub fn successor(id: &str) -> String {
+/// never sorts before a line another process already wrote. `None` for the
+/// largest id (`ZZZ…Z`): nothing sorts after it (it used to wrap around to
+/// `000…0`, which sorts first; Verus kernel verification/verus/timeline_ids.rs).
+pub fn successor(id: &str) -> Option<String> {
     let mut digits: Vec<u8> = id
         .bytes()
         .map(|b| CROCKFORD.iter().position(|c| *c == b).unwrap_or(0) as u8)
         .collect();
+    if digits.iter().all(|d| *d == 31) {
+        return None;
+    }
     for d in digits.iter_mut().rev() {
         if *d == 31 {
             *d = 0;
@@ -77,10 +82,12 @@ pub fn successor(id: &str) -> String {
             break;
         }
     }
-    digits
-        .iter()
-        .map(|d| CROCKFORD[*d as usize] as char)
-        .collect()
+    Some(
+        digits
+            .iter()
+            .map(|d| CROCKFORD[*d as usize] as char)
+            .collect(),
+    )
 }
 
 /// `^[0-9A-HJKMNP-TV-Z]{26}$`
@@ -106,13 +113,14 @@ mod tests {
         assert_eq!(encode_time(1_760_000_000_000), "01K742SG00");
         assert!(!is_timeline_id("01K7BV6Q00ILOU000000000000"));
         assert_eq!(
-            successor("01K742SG000000000000000000"),
+            successor("01K742SG000000000000000000").unwrap(),
             "01K742SG000000000000000001"
         );
         assert_eq!(
-            successor("01K742SG00000000000000000Z"),
+            successor("01K742SG00000000000000000Z").unwrap(),
             "01K742SG000000000000000010"
         );
-        assert!(successor(&prev) > prev);
+        assert!(successor(&prev).unwrap() > prev);
+        assert_eq!(successor(&"Z".repeat(26)), None);
     }
 }

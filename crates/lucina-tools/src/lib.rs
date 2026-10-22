@@ -240,6 +240,16 @@ impl ToolEnv {
     }
 }
 
+/// Who started a turn. A Lucina MCP turn (another assistant asking through
+/// secretary-mcp) never confirms or creates a pending action: tools that
+/// need the owner's yes are refused there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Origin {
+    #[default]
+    Owner,
+    Mcp,
+}
+
 /// Per-turn context.
 pub struct Ctx {
     pub env: Arc<ToolEnv>,
@@ -247,6 +257,7 @@ pub struct Ctx {
     pub channel: String,
     pub session_id: String,
     pub now: DateTime<Utc>,
+    pub origin: Origin,
     effects: Mutex<Vec<Effect>>,
 }
 
@@ -257,8 +268,14 @@ impl Ctx {
             channel: channel.into(),
             session_id: session_id.into(),
             now: Utc::now(),
+            origin: Origin::Owner,
             effects: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn with_origin(mut self, origin: Origin) -> Self {
+        self.origin = origin;
+        self
     }
 
     pub fn push_effect(&self, e: Effect) {
@@ -351,6 +368,42 @@ pub fn is_denied_name(name: &str) -> bool {
     name.to_ascii_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
         .any(|t| DENY_TERMS.contains(&t))
+        || name_words(name)
+            .iter()
+            .any(|t| DENY_TERMS.contains(&t.as_str()))
+}
+
+/// The words of a tool name, lower-cased: split at non-alphanumerics, at
+/// lower-to-upper case changes and before the last capital of an acronym
+/// (`sendMoney` -> `send`, `money`; `IBANTransfer` -> `iban`, `transfer`),
+/// and between letters and digits.
+pub fn name_words(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_ascii_alphanumeric() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        if let Some(&p) = i.checked_sub(1).and_then(|j| chars.get(j)) {
+            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_ascii_lowercase());
+            let boundary = (c.is_ascii_uppercase()
+                && (p.is_ascii_lowercase() || p.is_ascii_digit()))
+                || (c.is_ascii_uppercase() && p.is_ascii_uppercase() && next_lower)
+                || (c.is_ascii_digit() != p.is_ascii_digit() && p.is_ascii_alphanumeric());
+            if boundary && !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        }
+        cur.push(c.to_ascii_lowercase());
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// Tools for the owner only: never registered on Lucina MCP turns.
