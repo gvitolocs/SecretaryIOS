@@ -271,6 +271,16 @@ final class ChatStore {
         return await deliver(clientId: clientId, text: message) ?? ""
     }
 
+    /// Feedback on a message Lucina sent on her own; `true` when the server took it.
+    func outreachFeedback(_ outreachId: String, _ action: String) async -> Bool {
+        do {
+            try await api().outreachFeedback(id: outreachId, action: action)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Resends a failed message with the same `clientMessageId` (idempotent on the server).
     func retry(_ itemId: String) async {
         guard let index = items.firstIndex(where: { $0.id == itemId }), items[index].localStatus == .error,

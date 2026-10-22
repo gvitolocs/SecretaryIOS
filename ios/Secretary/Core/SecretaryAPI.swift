@@ -210,6 +210,15 @@ struct SecretaryAPI: Sendable {
         return try await client.get("/v1/timeline", query: query)
     }
 
+    /// `POST /v1/proactive/outreach/{id}/feedback`: "Utile" / "Non ora" / "Basta così" on a
+    /// message Lucina sent on her own (`useful`, `not_now`, `stop`).
+    func outreachFeedback(id: String, action: String) async throws {
+        struct Body: Encodable { let action: String }
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? id
+        let body = try APIClient.encoder.encode(Body(action: action))
+        _ = try await client.send("POST", "/v1/proactive/outreach/\(escaped)/feedback", body: body)
+    }
+
     func job(_ id: String) async throws -> JobInfo {
         let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? id
         return try await client.get("/v1/jobs/\(escaped)")

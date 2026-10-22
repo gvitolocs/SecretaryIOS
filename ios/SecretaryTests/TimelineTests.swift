@@ -51,6 +51,26 @@ final class TimelineMergeTests: XCTestCase {
         XCTAssertEqual(Set(result.items.map(\.id)), ["local-c1", "tl_5"])
     }
 
+    func testProactiveItemDecoding() throws {
+        let decoder = JSONDecoder()
+        let item = try decoder.decode(TimelineItem.self, from: Data("""
+        {"id":"01K85Z3Q4X5Y6Z7A8B9C0D1E2G","ts":"2026-10-22T11:50:00.000Z","channel":"other","role":"lucina",
+         "text":"Tra un'ora hai CRAFT-IT4SD.",
+         "meta":{"kind":"proactive","topic":"meeting_prep","priority":"high","outreachId":"po_01K85Z3Q4X5Y6Z7A8B9C0D1E2F",
+                 "why":"starts in 60 min","actions":[{"id":"open_note","label":"Apri la nota","route":"/notes/x"},
+                 {"id":"useful","label":"Utile","feedback":true},{"id":"not_now","label":"Non ora","feedback":true},
+                 {"id":"stop","label":"Basta così","feedback":true}]}}
+        """.utf8))
+        XCTAssertTrue(item.meta?.isProactive == true)
+        XCTAssertEqual(item.meta?.priority, "high")
+        XCTAssertEqual(item.meta?.actions?.filter(\.isFeedback).map(\.id), ["useful", "not_now", "stop"])
+        XCTAssertEqual(item.meta?.actions?.first?.route, "/notes/x")
+
+        // A bad outreach id is not a proactive card.
+        let bad = try decoder.decode(TimelineItem.self, from: Data(#"{"id":"b","ts":1,"channel":"other","role":"lucina","text":"x","meta":{"kind":"proactive","outreachId":"po_nope"}}"#.utf8))
+        XCTAssertFalse(bad.meta?.isProactive == true)
+    }
+
     func testItemDecoding() throws {
         let decoder = JSONDecoder()
         let full = try decoder.decode(TimelineItem.self, from: Data("""
