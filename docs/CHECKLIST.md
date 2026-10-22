@@ -63,6 +63,12 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 ### Tasks / Todoist (owner, 2026-10-22)
 - [ ] secretary-tasks engine + Todoist two-way sync (official API), Todoist-like UX on web + iOS, Lucina/MCP tools, Links card — branch tasks-todoist
 
+### Shopping icons (owner, 2026-10-22)
+- [x] 395 original SVG item icons + 17 sections, style B, each inspected — LIVE on web (main 2556872); iOS wiring + 8 list-theme images pending
+
+### Secrets (owner, 2026-10-22)
+- [x] lucina-secrets skill (Infisical refs, redaction everywhere, no reveal path, sudo out of scope) on branch lucina-secrets — owner steps pending (Infisical identity, tss group, store-identity.sh)
+
 ### Notes (owner, 2026-10-22)
 - [x] Notes LIVE (main 326fbf2): server /v1/notes, MCP note_save/append/get/search, Lucina LUCINA_NOTES, web + iOS (ios-app 0986f57); craftit-meeting briefing restored; ask_lucina limit 12000
 
