@@ -10,6 +10,8 @@ import {
   enqueue,
   flushOutbox,
   initShopping,
+  itemIcon,
+  itemSection,
   outboxSnapshot,
   resetShopping,
   shop,
@@ -87,6 +89,20 @@ describe("shopping state", () => {
     // The client's item ids were kept by the server.
     expect(srv.lists.get("default")!.items.map((i) => i.name)).toContain("Caffè");
     expect(shop.items).toHaveLength(4);
+  });
+
+  it("rows with no catalog id (pre-catalog, old server) take icon and section from their name", async () => {
+    await booted();
+    await waitFor(() => expect(shop.catalog.items.length).toBeGreaterThan(0));
+    const row = (name: string, extra: Record<string, unknown> = {}) => ({ name, catalogId: null, icon: null, section: null, ...extra });
+    expect([itemIcon(row("milk")), itemSection(row("milk"))]).toEqual(["🥛", "dairy"]);
+    expect([itemIcon(row("Mælk")), itemSection(row("LATTE"))]).toEqual(["🥛", "dairy"]);
+    expect([itemIcon(row("espresso")), itemSection(row("espresso"))]).toEqual(["☕", "pantry"]);
+    expect([itemIcon(row("Candele")), itemSection(row("Candele"))]).toEqual([null, "other"]);
+    expect(itemIcon(row("the milk"))).toBeNull();
+    expect(itemIcon(row("milk", { icon: "🍼", section: "pantry" }))).toBe("🍼");
+    expect(itemSection(row("milk", { section: "pantry" }))).toBe("pantry");
+    expect(itemIcon(row("whatever", { catalogId: "coffee" }))).toBe("☕");
   });
 
   it("keeps ops in the outbox while offline, persists them and replays them with the same ids", async () => {
