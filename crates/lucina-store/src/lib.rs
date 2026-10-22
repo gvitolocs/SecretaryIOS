@@ -15,6 +15,7 @@
 pub mod atomic;
 pub mod device;
 pub mod jobs;
+pub mod model3d;
 pub mod parser;
 pub mod recent;
 pub mod reminders;

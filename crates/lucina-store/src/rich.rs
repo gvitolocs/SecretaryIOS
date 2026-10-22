@@ -414,6 +414,7 @@ pub fn normalize_block(raw: &Value) -> Option<Value> {
             }
             Some(json!({"type": "link_preview", "url": url, "title": title}))
         }
+        "model3d" => crate::model3d::normalize(raw),
         _ => None,
     }
 }
@@ -816,6 +817,7 @@ pub fn block_to_text(block: &Value, lang: &str, list_limit: usize) -> Vec<String
             lines
         }
         "link_preview" => vec![format!("🔗 [{}]({})", s(block, "title"), s(block, "url"))],
+        "model3d" => vec![crate::model3d::plain_text(block)],
         _ => Vec::new(),
     }
 }

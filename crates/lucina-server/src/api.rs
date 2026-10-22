@@ -252,6 +252,7 @@ async fn health(State(st): State<AppState>) -> Response {
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
             "timelineStreams": st.streams.load(Ordering::Relaxed),
+            "meshy": st.meshy.as_ref().map(|m| m.health()),
         }),
     )
 }
@@ -397,6 +398,11 @@ async fn route(
         (Some("agenda"), None) => {
             only(&["GET"])?;
             agenda(st, uri).await
+        }
+        (Some("meshy"), Some("confirm")) => {
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            Ok(ok(crate::chat::meshy_turn::confirm_by_id(st, &body).await?))
         }
         (Some("presence"), None) => {
             only(&["GET"])?;

@@ -33,6 +33,8 @@ use crate::planner::TurnInput;
 use crate::prompts::Prompts;
 use crate::{jobs, AppState, PlannerMode};
 
+pub mod meshy_turn;
+
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
 pub const MAX_MESSAGE_CHARS: usize = 12_000;
 const CLIENT_MESSAGE_TTL: Duration = Duration::from_secs(600);
@@ -602,6 +604,11 @@ async fn json_turn(
     let st = t.st;
     let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
+
+    // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request.
+    if let Some(f) = meshy_turn::try_turn(t, memory).await {
+        return f;
+    }
 
     // "Mettiti il vestito da cameriera" (LUCINA_AVATAR_OUTFIT=true; never from MCP).
     if t.mcp.is_none() && st.cfg.outfit_enabled {
@@ -1283,11 +1290,12 @@ async fn tools_turn(
             Settle::Nothing => {}
             Settle::Run => {
                 if let Some(action) = st.pending.take(&p.id) {
+                    let confirmed = Ctx::new(st.tool_env.clone(), &channel, &session).confirmed();
                     let (ok, output, summary) = agent::execute(
                         &registry,
                         &action.tool,
                         action.args.clone(),
-                        &ctx,
+                        &confirmed,
                         Duration::from_secs(30),
                     )
                     .await;
@@ -1346,7 +1354,13 @@ async fn tools_turn(
         )
         .await
         {
-            Ok(out) if !out.text.is_empty() => effects_to_finish(&ctx.effects(), out.text),
+            Ok(out) if !out.text.is_empty() => {
+                let mut f = effects_to_finish(&ctx.effects(), out.text);
+                if meshy_turn::after_agent(&st, &out.records, &message).await {
+                    meshy_turn::mark_pending(&st, &mut f, &message);
+                }
+                f
+            }
             Ok(_) | Err(_) => {
                 let reply = st
                     .planner

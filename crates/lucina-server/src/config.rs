@@ -137,6 +137,8 @@ pub struct Config {
     /// `secrets.toml` for the Infisical secrets skill (`LUCINA_SECRETS_CONFIG`;
     /// unset: no secrets, the redactor still runs).
     pub secrets_config: Option<PathBuf>,
+    /// Meshy 3D (`LUCINA_MESHY`, `MESHY_*`, `LUCINA_MESHY_*`).
+    pub meshy: lucina_meshy::MeshyConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -159,6 +161,7 @@ impl std::fmt::Debug for Config {
             .field("outfit", &self.outfit_enabled)
             .field("jobs", &self.dsh.enabled)
             .field("secrets_config", &self.secrets_config)
+            .field("meshy", &self.meshy.enabled)
             .finish_non_exhaustive()
     }
 }
@@ -272,6 +275,16 @@ impl Config {
             intent_router: flag("LUCINA_INTENT_ROUTER_ENABLED", true),
         };
         let jobs_enabled = flag("LUCINA_JOBS", true);
+        let secretary_url = get("LUCINA_SECRETARY_SERVER_URL").filter(|s| !s.trim().is_empty());
+        let secretary_service_token_file =
+            get("LUCINA_SECRETARY_SERVICE_TOKEN_FILE").map(PathBuf::from);
+        let meshy = lucina_meshy::MeshyConfig::from_lookup(
+            &get,
+            &data_dir,
+            time_zone,
+            secretary_url.clone(),
+            secretary_service_token_file.clone(),
+        );
         Ok(Self {
             bind,
             binds,
@@ -373,10 +386,10 @@ impl Config {
             ),
             presence_retention_days: num("LUCINA_PRESENCE_RETENTION_DAYS", 90).clamp(1, 3650)
                 as i64,
-            secretary_url: get("LUCINA_SECRETARY_SERVER_URL").filter(|s| !s.trim().is_empty()),
-            secretary_service_token_file: get("LUCINA_SECRETARY_SERVICE_TOKEN_FILE")
-                .map(PathBuf::from),
+            secretary_url,
+            secretary_service_token_file,
             secrets_config: get("LUCINA_SECRETS_CONFIG").map(PathBuf::from),
+            meshy,
             data_dir,
         })
     }

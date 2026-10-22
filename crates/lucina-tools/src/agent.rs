@@ -338,3 +338,14 @@ pub async fn run(
         messages,
     })
 }
+
+/// One call through the confirmation and MCP gates (tests of other modules).
+#[cfg(test)]
+pub(crate) async fn handle_call_for_test(
+    registry: &Registry,
+    call: &ToolCall,
+    ctx: &Ctx,
+    pending: &PendingStore,
+) -> ToolRecord {
+    handle_call(registry, call, ctx, pending, Duration::from_secs(30)).await
+}

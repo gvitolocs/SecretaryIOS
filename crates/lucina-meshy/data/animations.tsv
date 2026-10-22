@@ -1,0 +1,679 @@
+# Meshy animation library snapshot (GET https://api.meshy.ai/web/public/animations/resources, 2026-10-22). id<TAB>key<TAB>name<TAB>category/sub_category
+0	Idle	Idle	DailyActions/Idle
+1	Walking_Woman	Walking Woman	WalkAndRun/Walking
+2	Alert	Alert	DailyActions/LookingAround
+3	Arise	Arise	DailyActions/LookingAround
+4	Attack	Attack	Fighting/AttackingwithWeapon
+5	BackLeft_run	BackLeft Run	WalkAndRun/Running
+6	BackRight_Run	BackRight Run	WalkAndRun/Running
+7	BeHit_FlyUp	BeHit FlyUp	Fighting/GettingHit
+8	Dead	Dead	Fighting/Dying
+9	ForwardLeft_Run_Fight	ForwardLeft Run Fight	Fighting/Transitioning
+10	ForwardRight_Run_Fight	ForwardRight Run Fight	Fighting/Transitioning
+11	Idle_02	Idle 1	DailyActions/Idle
+12	Idle_03	Idle 2	DailyActions/Idle
+13	Jump_Run	Jump Run	WalkAndRun/Running
+14	Run_02	Run 2	WalkAndRun/Running
+15	Run_03	Run 3	WalkAndRun/Running
+16	RunFast	Run Fast	WalkAndRun/Running
+17	Skill_01	Skill 1	BodyMovements/Acting
+18	Skill_02	Skill 2	BodyMovements/Acting
+19	Skill_03	Skill 3	BodyMovements/Acting
+20	Walk_Fight_Back	Walk Fight Back	WalkAndRun/Walking
+21	Walk_Fight_Forward	Walk Fight Forward	WalkAndRun/Walking
+22	FunnyDancing_01	Funny Dancing 1	Dancing/Dancing
+23	FunnyDancing_02	Funny Dancing 2	Dancing/Dancing
+24	FunnyDancing_03	Funny Dancing 3	Dancing/Dancing
+25	Agree_Gesture	Agree Gesture	DailyActions/Interacting
+26	Angry_Stomp	Angry Stomp	DailyActions/Interacting
+27	Big_Heart_Gesture	Big Heart Gesture	BodyMovements/Acting
+28	Big_Wave_Hello	Big Wave Hello	DailyActions/Interacting
+29	Call_Gesture	Call Gesture	BodyMovements/Acting
+30	Casual_Walk	Casual Walk	WalkAndRun/Walking
+31	Catching_Breath	Catching Breath	BodyMovements/Acting
+32	Chair_Sit_Idle_F	Chair Sit Idle Female	DailyActions/Idle
+33	Chair_Sit_Idle_M	Chair Sit Idle Male	DailyActions/Idle
+34	Checkout_Gesture	Checkout Gesture	DailyActions/Interacting
+35	Clapping_Run	Clapping Run	BodyMovements/Acting
+36	Confused_Scratch	Confused Scratch	DailyActions/Idle
+37	Discuss_While_Moving	Discuss While Moving	DailyActions/Interacting
+38	Dozing_Elderly	Dozing Elderly	DailyActions/Idle
+39	Excited_Walk_F	Excited Walk Female	BodyMovements/Acting
+40	Excited_Walk_M	Excited Walk Male	BodyMovements/Acting
+41	Formal_Bow	Formal Bow	DailyActions/Interacting
+42	Gentlemans_Bow	Gentlemans Bow	DailyActions/Interacting
+43	Handbag_Walk	Handbag Walk	BodyMovements/Acting
+44	Happy_jump_f	Happy Jump Female	BodyMovements/Acting
+45	Indoor_Play	Indoor Play	BodyMovements/Acting
+46	Jump_Rope	Jump Rope	BodyMovements/Acting
+47	Listening_Gesture	Listening Gesture	DailyActions/Interacting
+48	Mirror_Viewing	Mirror Viewing	DailyActions/Idle
+49	Motivational_Cheer	Motivational Cheer	DailyActions/Interacting
+50	Phone_Call_Gesture	Phone Call Gesture	DailyActions/Interacting
+51	Shouting_Angrily	Shouting Angrily	BodyMovements/Acting
+52	Sit_to_Stand_Transition_F	Sit to Stand Transition Female	DailyActions/Transitioning
+53	Sit_to_Stand_Transition_M	Sit to Stand Transition Male	DailyActions/Transitioning
+54	Squat_Stance	Squat Stance	Dancing/Dancing
+55	Stage_Walk	Stage Walk	WalkAndRun/Walking
+56	Stand_and_Chat	Stand and Chat	DailyActions/Interacting
+57	Stand_to_Sit_Transition_M	Stand to Sit Transition Male	DailyActions/Transitioning
+58	Step_to_Sit_Transition	Step to Sit Transition	DailyActions/Transitioning
+59	Victory_Cheer	Victory Cheer	BodyMovements/Acting
+60	Walk_to_Sit	Walk to Sit	DailyActions/Transitioning
+61	happy_jump_m	Happy Jump Male	BodyMovements/Acting
+62	penguin_walk	Penguin Walk	BodyMovements/Acting
+63	Arm_Circle_Shuffle	Arm Circle Shuffle	Dancing/Dancing
+64	All_Night_Dance	All Night Dance	Dancing/Dancing
+65	Bass_Beats	Bass Beats	Dancing/Dancing
+66	Boom_Dance	Boom Dance	Dancing/Dancing
+67	Bubble_Dance	Bubble Dance	Dancing/Dancing
+68	Cherish_Pop_Dance	Cherish Pop Dance	Dancing/Dancing
+69	Crystal_Beads	Crystal Beads	Dancing/Dancing
+70	Cardio_Dance	Cardio Dance	Dancing/Dancing
+71	Denim_Pop_Dance	Denim Pop Dance	Dancing/Dancing
+72	Dont_You_Dare	Dont You Dare	Dancing/Dancing
+73	Fast_Lightning	Fast Lightning	Dancing/Dancing
+74	Gangnam_Groove	Gangnam Groove	Dancing/Dancing
+75	Indoor_Swing	Indoor Swing	Dancing/Dancing
+76	Love_You_Pop_Dance	Love You Pop Dance	Dancing/Dancing
+77	Magic_Genie	Magic Genie	Dancing/Dancing
+78	Not_Your_Mom	Rhythmic Dance	Dancing/Dancing
+79	OMG_Groove	OMG Groove	Dancing/Dancing
+80	Pop_Dance_LSA2	Pop Dance LSA2	Dancing/Dancing
+81	Pod_Baby_Groove	Pod Baby Groove	Dancing/Dancing
+82	Shake_It_Off_Dance	Shake It Off Dance	Dancing/Dancing
+83	Superlove_Pop_Dance	Superlove Pop Dance	Dancing/Dancing
+84	You_Groove	You Groove	Dancing/Dancing
+85	Axe_Stance	Axe Stance	Fighting/Transitioning
+86	Basic_Jump	Jump Attack	Fighting/AttackingwithWeapon
+87	Boxing_Practice	Boxing Practice	Fighting/Punching
+88	Chest_Pound_Taunt	Chest Pound Taunt	Fighting/Transitioning
+89	Combat_Stance	Combat Idel	Fighting/AttackingwithWeapon
+90	Counterstrike	Counterstrike	Fighting/Punching
+91	Double_Blade_Spin	Double Blade Spin	Fighting/AttackingwithWeapon
+92	Double_Combo_Attack	Double Combo Attack	Fighting/AttackingwithWeapon
+93	Dodge_and_Counter	Dodge and Counter	Fighting/Punching
+94	Flying_Fist_Kick	Flying Fist Kick	Fighting/Punching
+95	Gun_Hold_Left_Turn	Gun Hold Left Turn	Fighting/AttackingwithWeapon
+96	Kung_Fu_Punch	Kung Fu Punch	Fighting/Punching
+97	Left_Slash	Left Slash	Fighting/AttackingwithWeapon
+98	Run_and_Shoot	Run and Shoot	Fighting/AttackingwithWeapon
+99	Reaping_Swing	Reaping Swing	Fighting/Transitioning
+100	Rightward_Spin	Spin Down and Stand Up	Fighting/Transitioning
+101	Sword_Shout	Sword Shout	BodyMovements/Acting
+102	Sword_Judgment	Sword Judgment	Fighting/AttackingwithWeapon
+103	Simple_Kick	Simple Kick	Fighting/AttackingwithWeapon
+104	Side_Shot	Side Shot	Fighting/AttackingwithWeapon
+105	Triple_Combo_Attack	Triple Combo Attack	Fighting/AttackingwithWeapon
+106	Confident_Walk	Hot walk	WalkAndRun/Walking
+107	Confident_Strut	Confident Strut	WalkAndRun/Walking
+108	Flirty_Strut	Flirty Strut	WalkAndRun/Walking
+109	Groovy_Walk	Groovy Walk	BodyMovements/Acting
+110	Hello_Run	Hello Run	WalkAndRun/Running
+111	Injured_Walk	Injured Walk	WalkAndRun/Walking
+112	Monster_Walk	Frankenstein Walk	WalkAndRun/Walking
+113	Mummy_Stagger	Mummy Stagger	BodyMovements/Acting
+114	Proud_Strut	Proud Strut	WalkAndRun/Walking
+115	Quick_Walk	Quick Walk	WalkAndRun/Walking
+116	Run_to_Walk_Transition	Run to Walk Transition	WalkAndRun/Walking
+117	Red_Carpet_Walk	Red Carpet Walk	WalkAndRun/Walking
+118	Skip_Forward	Skip Forward	WalkAndRun/Walking
+119	Slow_Orc_Walk	Slow Orc Walk	WalkAndRun/Walking
+120	Touch_and_Run	Touch and Run	WalkAndRun/Running
+121	Thoughtful_Walk	Thoughtful Walk	WalkAndRun/Walking
+122	Texting_Walk	Texting Walk	WalkAndRun/Walking
+123	Unsteady_Walk	Unsteady Walk	WalkAndRun/Walking
+124	Walking_with_Phone	Walking with Phone	WalkAndRun/Walking
+125	Charged_Spell_Cast	Charged Spell Cast	Fighting/CastingSpell
+126	Charged_Spell_Cast_1	Charged Spell Cast 1	Fighting/CastingSpell
+127	Charged_Ground_Slam	Charged Ground Slam	Fighting/CastingSpell
+128	Heavy_Hammer_Swing	Heavy Hammer Swing	Fighting/AttackingwithWeapon
+129	mage_soell_cast	Mage Soell Cast	Fighting/CastingSpell
+130	mage_soell_cast_1	Mage Soell Cast 1	Fighting/CastingSpell
+131	mage_soell_cast_2	Mage Soell Cast 2	Fighting/CastingSpell
+132	mage_soell_cast_3	Mage Soell Cast 3	Fighting/CastingSpell
+133	mage_soell_cast_4	Mage Soell Cast 4	Fighting/CastingSpell
+134	mage_soell_cast_5	Mage Soell Cast 5	Fighting/CastingSpell
+135	mage_soell_cast_6	Mage Soell Cast 6	Fighting/CastingSpell
+136	mage_soell_cast_7	Mage Soell Cast 7	Fighting/CastingSpell
+137	mage_soell_cast_8	Mage Soell Cast 8	Fighting/CastingSpell
+138	Block1	Block1	Fighting/Blocking
+139	Block2	Block2	Fighting/Blocking
+140	Block3	Block3	Fighting/Blocking
+141	Block4	Block4	Fighting/Blocking
+142	Block5	Block5	Fighting/Blocking
+143	Block6	Block6	Fighting/Blocking
+144	Block8	Block8	Fighting/Blocking
+145	Block9	Block9	Fighting/Blocking
+146	Block10	Block10	Fighting/Blocking
+147	Sword_Parry	Sword Parry	Fighting/Blocking
+148	Sword_Parry_Backward	Sword Parry Backward	Fighting/Blocking
+149	Two_Handed_Parry	Two-handed Parry	Fighting/Blocking
+150	Hit_Reaction_with_Bow	Hit Reaction with Bow	Fighting/Blocking
+151	Sword_Parry_Backward_1	Sword Parry Backward 1	Fighting/Blocking
+152	Sword_Parry_Backward_2	Sword Parry Backward 2	Fighting/Blocking
+153	Sword_Parry_Backward_3	Sword Parry Backward 3	Fighting/Blocking
+154	Sword_Parry_Backward_4	Sword Parry Backward 4	Fighting/Blocking
+155	Sword_Parry_Backward_5	Sword Parry Backward 5	Fighting/Blocking
+156	Stand_Dodge	Stand Dodge	Fighting/Transitioning
+157	Stand_Dodge_1	Stand Dodge 1	Fighting/Transitioning
+158	Roll_Dodge	Roll Dodge	Fighting/Transitioning
+159	Roll_Dodge_1	Roll Dodge 1	Fighting/Transitioning
+160	Roll_Dodge_2	Roll Dodge 2	Fighting/Transitioning
+161	Roll_Dodge_3	Roll Dodge 3	Fighting/Transitioning
+162	Stand_Dodge_2	Stand Dodge 2	Fighting/Transitioning
+163	Roll_Dodge_4	Roll Dodge 4	Fighting/Transitioning
+164	Stand_Dodge_3	Stand Dodge 3	Fighting/Transitioning
+165	Kneeling_Reload	Kneeling Reload	Fighting/Transitioning
+166	Running_Reload	Running Reload	Fighting/Transitioning
+167	Slow_Walk_Reload	Slow Walk Reload	Fighting/Transitioning
+168	Prone_Reload	Prone Reload	Fighting/Transitioning
+169	Forward_Reload_Subtle	Forward Reload (subtle)	Fighting/Transitioning
+170	Standing_Reload	Standing Reload	Fighting/Transitioning
+171	Hit_Reaction_to_Waist	Hit Reaction to Waist	Fighting/Transitioning
+172	Electrocution_Reaction	Electrocution Reaction	Fighting/GettingHit
+173	Slap_Reaction	Slap Reaction	Fighting/GettingHit
+174	Face_Punch_Reaction	Face Punch Reaction	Fighting/GettingHit
+175	Face_Punch_Reaction_1	Face Punch Reaction 1	Fighting/GettingHit
+176	Face_Punch_Reaction_2	Face Punch Reaction 2	Fighting/GettingHit
+177	Gunshot_Reaction	Gunshot Reaction	Fighting/GettingHit
+178	Hit_Reaction	Hit Reaction	Fighting/GettingHit
+179	Hit_Reaction_1	Hit Reaction 1	Fighting/GettingHit
+180	Shot_in_the_Back_and_Fall	Shot in the Back and Fall	Fighting/GettingHit
+181	Electrocuted_Fall	Electrocuted Fall	Fighting/Dying
+182	Shot_and_Blown_Back	Shot and Blown Back	Fighting/Dying
+183	Shot_and_Fall_Backward	Shot and Fall Backward	Fighting/Dying
+184	Shot_and_Fall_Forward	Shot and Fall Forward	Fighting/Dying
+185	Shot_and_Slow_Fall_Backward	Shot and Slow Fall Backward	Fighting/Dying
+186	Strangled_and_Fall_Forward	Strangled and Fall Forward	Fighting/Dying
+187	Knock_Down	Knock Down	Fighting/Dying
+188	Fall_Dead_from_Abdominal_Injury	Fall Dead from Abdominal Injury	Fighting/Dying
+189	dying_backwards	Dying Backwards	Fighting/Dying
+190	Knock_Down_1	Knock Down 1	Fighting/Dying
+191	Left_Jab_from_Guard	Left Jab from Guard	Fighting/Punching
+192	Right_Jab_from_Guard	Right Jab from Guard	Fighting/Punching
+193	Left_Hook_from_Guard	Left Hook from Guard	Fighting/Punching
+194	Right_Uppercut_from_Guard	Right Uppercut from Guard	Fighting/Punching
+195	Right_Upper_Hook_from_Guard	Right Upper Hook from Guard	Fighting/Punching
+196	Left_Uppercut_from_Guard	Left Uppercut from Guard	Fighting/Punching
+197	Left_Short_Hook_from_Guard	Left Short Hook from Guard	Fighting/Punching
+198	Punch_Combo	Punch Combo	Fighting/Punching
+199	Weapon_Combo	Weapon Combo	Fighting/Punching
+200	Punch_Combo_1	Punch Combo 1	Fighting/Punching
+201	Punch_Combo_2	Punch Combo 2	Fighting/Punching
+202	Weapon_Combo_1	Weapon Combo 1	Fighting/Punching
+203	Punch_Combo_3	Punch Combo 3	Fighting/Punching
+204	Punch_Combo_4	Punch Combo 4	Fighting/Punching
+205	Punch_Combo_5	Punch Combo 5	Fighting/Punching
+206	Spartan_Kick	Spartan Kick	Fighting/Punching
+207	Roundhouse_Kick	Roundhouse Kick	Fighting/Punching
+208	Lunge_Roundhouse_Kick	Lunge Roundhouse Kick	Fighting/Punching
+209	Boxing_Guard_Right_Straight_Kick	Boxing Guard, Right Straight Kick	Fighting/Punching
+210	Boxing_Guard_Prep_Straight_Punch	Boxing Guard, Prep Straight Punch	Fighting/Punching
+211	Boxing_Guard_Step_Knee_Strike	Boxing Guard, Step Knee Strike	Fighting/Punching
+212	Elbow_Strike	Elbow Strike	Fighting/Punching
+213	Leg_Sweep	Leg Sweep	Fighting/Punching
+214	Punch_Forward_with_Both_Fists	Punch Forward with Both Fists	Fighting/Punching
+215	High_Kick	High Kick	Fighting/Punching
+216	Lunge_Spin_Kick	Lunge Spin Kick	Fighting/Punching
+217	Sweeping_Kick	Sweeping Kick	Fighting/Punching
+218	Step_in_High_Kick	Step-in High Kick	Fighting/Punching
+219	Right_Hand_Sword_Slash	Right-hand Sword Slash	Fighting/Punching
+220	Shield_Push_Left	Shield Push Left	Fighting/Punching
+221	Charged_Upward_Slash	Charged Upward Slash	Fighting/Punching
+222	Draw_and_Shoot_from_Back	Draw and Shoot from Back	Fighting/AttackingwithWeapon
+223	Draw_and_Shoot_from_Back_1	Draw and Shoot from Back 1	Fighting/AttackingwithWeapon
+224	Archery_Shot	Archery Shot	Fighting/AttackingwithWeapon
+225	Archery_Shot_1	Archery Shot 1	Fighting/AttackingwithWeapon
+226	Archery_Shot_2	Archery Shot 2	Fighting/AttackingwithWeapon
+227	Archery_Shot_3	Archery Shot 3	Fighting/AttackingwithWeapon
+228	Walk_Forward_with_Bow_Aimed	Walk Forward with Bow Aimed	Fighting/AttackingwithWeapon
+229	Draw_and_Shoot_from_Back_2	Draw and Shoot from Back 2	Fighting/AttackingwithWeapon
+230	Walk_Backward_with_Bow_Aimed	Walk Backward with Bow Aimed	Fighting/AttackingwithWeapon
+231	Archery_Aim_with_Lateral_Scan	Archery Aim with Lateral Scan	Fighting/AttackingwithWeapon
+232	Cowboy_Quick_Draw_Shooting	Cowboy Quick Draw Shooting	Fighting/AttackingwithWeapon
+233	Walk_Backward_While_Shooting	Walk Backward While Shooting	Fighting/AttackingwithWeapon
+234	Walk_Forward_While_Shooting	Walk Forward While Shooting	Fighting/AttackingwithWeapon
+235	Forward_Roll_and_Fire	Forward Roll and Fire	Fighting/AttackingwithWeapon
+236	Draw_and_Shoot_Left	Draw and Shoot Left	Fighting/AttackingwithWeapon
+237	Charged_Axe_Chop	Charged Axe Chop	Fighting/AttackingwithWeapon
+238	Axe_Spin_Attack	Axe Spin Attack	Fighting/AttackingwithWeapon
+239	Crouch_Pull_and_Throw	Crouch Pull and Throw	Fighting/AttackingwithWeapon
+240	Thrust_Slash	Thrust Slash	Fighting/AttackingwithWeapon
+241	Weapon_Combo_2	Weapon Combo 2	Fighting/AttackingwithWeapon
+242	Charged_Slash	Charged Slash	Fighting/AttackingwithWeapon
+243	Idle_3	Idle 3	DailyActions/Idle
+244	Idle_4	Idle 4	DailyActions/Idle
+245	Idle_5	Idle 5	DailyActions/Idle
+246	Idle_6	Idle 6	DailyActions/Idle
+247	Idle_7	Idle 7	DailyActions/Idle
+248	Idle_8	Idle 8	DailyActions/Idle
+249	Idle_9	Idle 9	DailyActions/Idle
+250	Idle_10	Idle 10	DailyActions/Idle
+251	Idle_11	Idle 11	DailyActions/Idle
+252	Idle_12	Idle 12	DailyActions/Idle
+253	Idle_13	Idle 13	DailyActions/Idle
+254	Idle_14	Idle 14	DailyActions/Idle
+255	Angry_Ground_Stomp	Angry Ground Stomp	DailyActions/Idle
+256	Angry_Ground_Stomp_1	Angry Ground Stomp 1	DailyActions/Idle
+257	Angry_Ground_Stomp_2	Angry Ground Stomp 2	DailyActions/Idle
+258	CrouchLookAroundBow	Crouchlookaroundbow	DailyActions/Idle
+259	Step_Forward_and_Push	Step Forward and Push	DailyActions/Pushing
+260	Push_Forward_and_Stop	Push Forward and Stop	DailyActions/Pushing
+261	Push_and_Walk_Forward	Push and Walk Forward	DailyActions/Pushing
+262	Crouch_and_Push_Forward	Crouch and Push Forward	DailyActions/Pushing
+263	Sleep_on_Desk	Sleep on Desk	DailyActions/Sleeping
+264	Cough_While_Sleeping	Cough While Sleeping	DailyActions/Sleeping
+265	Groan_Holding_Stomach_in_Sleep	Groan Holding Stomach in Sleep	DailyActions/Sleeping
+266	Lie_Down_Hands_Spread	Lie Down, Hands Spread	DailyActions/Sleeping
+267	Sleep_Normally	Sleep Normally	DailyActions/Sleeping
+268	Sit_and_Doze_Off	Sit and Doze Off	DailyActions/Sleeping
+269	sleep	Sleep	DailyActions/Sleeping
+270	Toss_and_Turn	Toss and Turn	DailyActions/Sleeping
+271	Wake_Up_and_Look_Up	Wake Up and Look Up	DailyActions/Sleeping
+272	Lie_on_Chair_Sunbathe_and_Sleep	Lie on Chair, Sunbathe and Sleep	DailyActions/Sleeping
+273	Male_Run_Forward_Pick_Up_Left	Male Run Forward Pick Up Left	DailyActions/PickingUpItem
+274	Female_Crouch_Pick_Up_Place_Side	Female Crouch Pick Up Place Side	DailyActions/PickingUpItem
+275	Female_Run_Forward_Pick_Up_Right	Female Run Forward Pick Up Right	DailyActions/PickingUpItem
+276	Male_Bend_Over_Pick_Up	Male Bend Over Pick Up	DailyActions/PickingUpItem
+277	Female_Crouch_Pick_Fruit_Basket_Stand	Female Crouch Pick Fruit Basket Stand	DailyActions/PickingUpItem
+278	Female_Stand_Pick_Fruit_Basket	Female Stand Pick Fruit Basket	DailyActions/PickingUpItem
+279	Female_Crouch_Pick_Gun_Point_Forward	Female Crouch Pick Gun Point Forward	DailyActions/PickingUpItem
+280	Female_Crouch_Pick_Throw_Forward	Female Crouch Pick Throw Forward	DailyActions/PickingUpItem
+281	Female_Bend_Over_Pick_Up_Inspect	Female Bend Over Pick Up Inspect	DailyActions/PickingUpItem
+282	Female_Walk_Pick_Put_In_Pocket	Female Walk Pick Put in Pocket	DailyActions/PickingUpItem
+283	Pull_Radish	Pull Radish	DailyActions/PickingUpItem
+284	Collect_Object	Collect Object	DailyActions/PickingUpItem
+285	open_door	Open Door	DailyActions/Interacting
+286	open_door_1	Open Door 1	DailyActions/Interacting
+287	open_door_2	Open Door 2	DailyActions/Interacting
+288	open_door_3	Open Door 3	DailyActions/Interacting
+289	open_door_4	Open Door 4	DailyActions/Interacting
+290	Wave_One_Hand	Wave One Hand	DailyActions/Interacting
+291	Wave_for_Help	Wave for Help	DailyActions/Interacting
+292	Gesture_with_Hand_on_Gun	Gesture with Hand on Gun	DailyActions/Interacting
+293	Wave_for_Help_1	Wave for Help 1	DailyActions/Interacting
+294	Wave_for_Help_2	Wave for Help 2	DailyActions/Interacting
+295	Wave_for_Help_3	Wave for Help 3	DailyActions/Interacting
+296	Wave_for_Help_4	Wave for Help 4	DailyActions/Interacting
+297	Personalized_Gesture	Personalized Gesture	DailyActions/Interacting
+298	Cheer_with_Both_Hands_Up	Cheer with Both Hands Up	DailyActions/Interacting
+299	Stand_Clap_and_Sit_Down	Stand Clap and Sit Down	DailyActions/Interacting
+300	Sit_Cheer_with_Left_Hand	Sit Cheer with Left Hand	DailyActions/Interacting
+301	Cheer_with_Both_Hands_1	Cheer with Both Hands 1	DailyActions/Interacting
+302	Stand_Wave_and_Sit_Down	Stand Wave and Sit Down	DailyActions/Interacting
+303	Cheer_with_Both_Hands	Cheer with Both Hands	DailyActions/Interacting
+304	Seated_Fist_Pump	Seated Fist Pump	DailyActions/Interacting
+305	Stand_Cheer_and_Sit_Down	Stand Cheer and Sit Down	DailyActions/Interacting
+306	Cheer_with_One_Hand_Up	Cheer with One Hand Up	DailyActions/Interacting
+307	Sitting_Answering_Questions	Sitting Answering Questions	DailyActions/Interacting
+308	Talk_Passionately	Talk Passionately	DailyActions/Interacting
+309	Talk_with_Left_Hand_on_Hip	Talk with Left Hand on Hip	DailyActions/Interacting
+310	Talk_with_Left_Hand_Raised	Talk with Left Hand Raised	DailyActions/Interacting
+311	Stand_Talking_Angry	Stand Talking Angry	DailyActions/Interacting
+312	Phone_Conversation	Phone Conversation	DailyActions/Interacting
+313	Talk_with_Hands_Open	Talk with Hands Open	DailyActions/Interacting
+314	Talk_with_Right_Hand_Open	Talk with Right Hand Open	DailyActions/Interacting
+315	Hand_on_Hip_Gesture	Hand on Hip Gesture	DailyActions/Interacting
+316	Headache_Relief	Headache Relief	DailyActions/Interacting
+317	Shrug	Shrug	DailyActions/Interacting
+318	Scheming_Hand_Rub	Scheming Hand Rub	DailyActions/Interacting
+319	air_squat	Air Squat	DailyActions/WorkingOut
+320	bicep_curl	Bicep Curl	DailyActions/WorkingOut
+321	bicycle_crunch	Bicycle Crunch	DailyActions/WorkingOut
+322	circle_crunch	Circle Crunch	DailyActions/WorkingOut
+323	golf_drive	Golf Drive	DailyActions/WorkingOut
+324	idle_to_push_up	Idle to Push Up	DailyActions/WorkingOut
+325	jump_push_up	Jump Push Up	DailyActions/WorkingOut
+326	jumping_jacks	Jumping Jacks	DailyActions/WorkingOut
+327	kettlebell_swing	Kettlebell Swing	DailyActions/WorkingOut
+328	push_up_to_idle	Push Up to Idle	DailyActions/WorkingOut
+329	push_up	Push Up	DailyActions/WorkingOut
+330	situps	Situps	DailyActions/WorkingOut
+331	Sumo_High_Pull	Sumo High Pull	DailyActions/WorkingOut
+333	Look_Around_Dumbfounded	Look Around Dumbfounded	DailyActions/LookingAround
+334	Lower_Weapon_Look_Raise	Lower Weapon, Look, Raise	DailyActions/LookingAround
+335	Axe_Breathe_and_Look_Around	Axe Breathe and Look Around	DailyActions/LookingAround
+336	Long_Breathe_and_Look_Around	Long Breathe and Look Around	DailyActions/LookingAround
+337	Torch_Look_Around	Torch Look Around	DailyActions/LookingAround
+338	Short_Breathe_and_Look_Around	Short Breathe and Look Around	DailyActions/LookingAround
+339	Walking_Scan_with_Sudden_Look_Back	Walking Scan with Sudden Look Back	DailyActions/LookingAround
+340	Crawl_and_Look_Back	Crawl and Look Back	DailyActions/LookingAround
+341	Walk_Slowly_and_Look_Around	Walk Slowly and Look Around	DailyActions/LookingAround
+342	Stand_and_Drink	Stand and Drink	DailyActions/Drinking
+343	Sit_and_Drink	Sit and Drink	DailyActions/Drinking
+344	Stand_Up1	Stand Up 1	DailyActions/Transitioning
+345	Stand_Up2	Stand Up 2	DailyActions/Transitioning
+346	Stand_Up3	Stand Up 3	DailyActions/Transitioning
+347	Stand_Up4	Stand Up 4	DailyActions/Transitioning
+348	Stand_Up5	Stand Up 5	DailyActions/Transitioning
+349	Stand_Up6	Stand Up 6	DailyActions/Transitioning
+350	Stand_Up7	Stand Up 7	DailyActions/Transitioning
+351	Stand_Up8	Stand Up 8	DailyActions/Transitioning
+352	Stand_Up9	Stand Up 9	DailyActions/Transitioning
+353	Stand_Up10	Stand Up 10	DailyActions/Transitioning
+354	Sitting_Clap	Sitting Clap	DailyActions/Transitioning
+355	Sit_Finger_Wag_No	Sit Finger Wag No	DailyActions/Transitioning
+356	Sit_Hands_on_Head_Lean_Back	Sit Hands on Head Lean Back	DailyActions/Transitioning
+357	Sit_Thumbs_Up_Right	Sit Thumbs Up Right	DailyActions/Transitioning
+358	Sit_Shout_Hands_on_Mouth	Sit Shout Hands on Mouth	DailyActions/Transitioning
+359	Look_Back_and_Sit	Look Back and Sit	DailyActions/Transitioning
+360	Sit_to_standTransition_Female_2	Sit to Standtransition Female 2	DailyActions/Transitioning
+361	Sit_Dodge	Sit Dodge	DailyActions/Transitioning
+362	Sit_Cross_Legged	Sit Cross-legged	DailyActions/Transitioning
+363	Sit_Cross_Legged_on_Floor	Sit Cross-legged on Floor	DailyActions/Transitioning
+364	Sit_on_Chair_Arms_Crossed	Sit on Chair Arms Crossed	DailyActions/Transitioning
+365	Kneel_on_One_Knee_and_Stand	Kneel on One Knee and Stand	DailyActions/Transitioning
+366	falling_down	Falling Down	DailyActions/Transitioning
+367	SideLying_Reach_Help	Sidelying Reach Help	DailyActions/Transitioning
+368	Angry_To_Tantrum_Sit	Angry to Tantrum Sit	DailyActions/Transitioning
+369	Lie_Back_Leg_Swing	Lie Back Leg Swing	DailyActions/Transitioning
+370	Stand_To_Side_Lying	Stand to Side Lying	DailyActions/Transitioning
+371	Sit_Lie_Bed	Sit Lie Bed	DailyActions/Transitioning
+372	Prone_Reach_Help	Prone Reach Help	DailyActions/Transitioning
+375	Handstand_Flip	Handstand Flip	BodyMovements/Acting
+376	Punch_Pose	Punch Pose	BodyMovements/Acting
+377	Relax_arms_then_strike_battle_pose	Relax Arms, Then Strike Battle Pose	BodyMovements/Acting
+378	Large_step_then_high_kick	Large Step, Then High Kick	BodyMovements/Acting
+379	Side_jumps_in_horse_stance	Side Jumps in Horse Stance.	BodyMovements/Acting
+381	Step_Right_for_Exercise	Step Right for Exercise	BodyMovements/Acting
+382	Jump_and_Slam_Back_Down	Jump and Slam Back Down	BodyMovements/Acting
+384	Quick_Step_and_Spin_Dodge	Quick Step and Spin Dodge	BodyMovements/Acting
+385	Boxing_Warmup	Boxing Warm-up	BodyMovements/Acting
+386	Zombie_Scream	Zombie Scream	BodyMovements/Acting
+387	Half_Squat_with_Thumb_Up	Half Squat with Thumb Up	BodyMovements/Acting
+388	Show_Both_Arm_Muscles	Show Both Arm Muscles	BodyMovements/Acting
+389	Grip_and_Throw_Down	Grip and Throw Down	BodyMovements/Acting
+390	Stand_on_Pole_and_Balance	Stand on Pole and Balance	BodyMovements/Acting
+391	Head_Hold_in_Pain	Head Hold in Pain	BodyMovements/Acting
+392	Ground_Flip_and_Sweep_Up	Ground Flip and Sweep Up	BodyMovements/Acting
+393	baseball_pitching	Baseball Pitching	BodyMovements/Acting
+394	Backflip_and_Hooks	Backflip and Hooks	BodyMovements/Acting
+395	Breakdance_1990	Breakdance 1990	BodyMovements/Acting
+396	Burpee_Exercise	Burpee Exercise	BodyMovements/Acting
+397	360_Power_Spin_Jump	360 Power Spin Jump	BodyMovements/Acting
+398	Crouch_Charge_and_Throw	Crouch Charge and Throw	BodyMovements/Acting
+399	Step_Step_Turn_Kick	Step Step Turn Kick	BodyMovements/Acting
+401	Sprint_Roll_and_Flip	Sprint, Roll, and Flip	BodyMovements/Acting
+402	Run_and_Leap	Run and Leap	BodyMovements/Acting
+403	Victory_Fist_Pump	Victory Fist Pump	BodyMovements/Acting
+404	Crouch_and_Step_Back	Crouch and Step Back	BodyMovements/Acting
+405	Joyful_Dance_with_Hand_Sway	Joyful Dance with Hand Sway	BodyMovements/Acting
+406	Thomas_Flair_to_Jump_Up	Thomas Flair to Jump Up	BodyMovements/Acting
+407	Wall_Push_Jump_and_Flip	Wall Push Jump and Flip	BodyMovements/Acting
+408	Jazz_Hands	Jazz Hands	BodyMovements/Acting
+409	Finger_Wag_No	Finger Wag No	BodyMovements/Acting
+410	Kick_a_Soccer_Ball	Kick a Soccer Ball	BodyMovements/Acting
+411	Neck_Slashing_Gesture	Neck Slashing Gesture	BodyMovements/Acting
+412	victory	Victory	BodyMovements/Acting
+413	Backflip_and_Rise	Backflip and Rise	BodyMovements/Acting
+414	Double_kick_forward	Double Kick Forward.	BodyMovements/Acting
+415	Happy_Sway_Standing	Happy Sway Standing	BodyMovements/Acting
+416	Hit_in_Back_While_Running	Hit in Back While Running	BodyMovements/Acting
+417	Hop_with_Arms_Raised	Hop with Arms Raised	BodyMovements/Acting
+419	Jump_to_Catch_and_Fall	Jump to Catch and Fall	BodyMovements/Acting
+420	Left_Hand_Bitten_Step_Back	Left Hand Bitten, Step Back	BodyMovements/Acting
+421	Over_Shoulder_Throw	Over Shoulder Throw	BodyMovements/Acting
+422	Rising_Flying_Kick	Rising Flying Kick	BodyMovements/Acting
+425	Vault_with_Rifle	Vault with Rifle	BodyMovements/VaultingOverObstacle
+426	Roll_Behind_Cover	Roll Behind Cover	BodyMovements/VaultingOverObstacle
+427	Vault_and_Land	Vault and Land	BodyMovements/VaultingOverObstacle
+428	Unarmed_Vault	Unarmed Vault	BodyMovements/VaultingOverObstacle
+429	Parkour_Vault	Parkour Vault	BodyMovements/VaultingOverObstacle
+430	Parkour_Vault_with_Roll	Parkour Vault with Roll	BodyMovements/VaultingOverObstacle
+431	Parkour_Vault_1	Parkour Vault 1	BodyMovements/VaultingOverObstacle
+432	Parkour_Vault_2	Parkour Vault 2	BodyMovements/VaultingOverObstacle
+433	Parkour_Vault_3	Parkour Vault 3	BodyMovements/VaultingOverObstacle
+434	Fast_Ladder_Climb	Fast Ladder Climb	BodyMovements/Climbing
+435	Ladder_Climb_Finish	Ladder Climb Finish	BodyMovements/Climbing
+436	Ladder_Mount_Start	Ladder Mount Start	BodyMovements/Climbing
+437	Slow_Ladder_Climb	Slow Ladder Climb	BodyMovements/Climbing
+438	Ladder_Climb_Loop	Ladder Climb Loop	BodyMovements/Climbing
+439	Climb_Left_with_Both_Limbs	Climb Left with Both Limbs	BodyMovements/Climbing
+440	Climb_Right_with_Both_Limbs	Climb Right with Both Limbs	BodyMovements/Climbing
+441	Climb_Stairs	Climb Stairs	BodyMovements/Climbing
+442	Fast_Stair_Climb	Fast Stair Climb	BodyMovements/Climbing
+444	climbing_up_wall	Climbing Up Wall	BodyMovements/Climbing
+445	diagonal_wall_run	Diagonal Wall Run	BodyMovements/Climbing
+446	Hang_and_Climb_Left	Hang and Climb Left	BodyMovements/Climbing
+447	Hang_and_Climb_Rght	Hang and Climb Rght	BodyMovements/Climbing
+448	Jump_and_Grab_Wall	Jump and Grab Wall	BodyMovements/Climbing
+449	Climb_Up_Rope	Climb Up Rope	BodyMovements/Climbing
+450	Wall_Flip	Wall Flip	BodyMovements/PerformingStunt
+451	One_Arm_Handstand	One-arm Handstand	BodyMovements/PerformingStunt
+452	Backflip	Backflip	BodyMovements/PerformingStunt
+453	Backflip_Sweep_Kick	Backflip Sweep Kick	BodyMovements/PerformingStunt
+455	Sweep_Kick	Sweep Kick	BodyMovements/PerformingStunt
+456	Jumping_Head_Scissor_Takedown	Jumping Head Scissor Takedown	BodyMovements/PerformingStunt
+457	Jumping_Punch	Jumping Punch	BodyMovements/PerformingStunt
+458	Unicycle_Jump_Dismount	Unicycle Jump Dismount	BodyMovements/PerformingStunt
+459	Run_Jump_and_Roll	Run, Jump, and Roll	BodyMovements/PerformingStunt
+460	Jump_with_Arms_Open	Jump with Arms Open	BodyMovements/Jumping
+461	Jump_with_Arms_and_Legs_Open	Jump with Arms and Legs Open	BodyMovements/Jumping
+462	Backflip_Jump	Backflip Jump	BodyMovements/Jumping
+463	Run_and_Jump	Run and Jump	BodyMovements/Jumping
+464	Leap_and_Punch	Leap and Punch	BodyMovements/Jumping
+465	Leap_Right_and_Catch	Leap Right and Catch	BodyMovements/Jumping
+466	Regular_Jump	Regular Jump	BodyMovements/Jumping
+467	Jump_Over_Obstacle_2	Jump Over Obstacle 2	BodyMovements/Jumping
+468	Back_Jump	Back Jump	BodyMovements/Jumping
+470	Jumping_Down	Jumping Down	BodyMovements/Jumping
+471	Jump_Over_Obstacle	Jump Over Obstacle	BodyMovements/Jumping
+472	Jump_Over_Obstacle_1	Jump Over Obstacle 1	BodyMovements/Jumping
+473	Quad_Jump_Left	Quad Jump Left	BodyMovements/HangingfromLedge
+474	Quad_Jump_Up	Quad Jump Up	BodyMovements/HangingfromLedge
+475	Quad_Climb_Right	Quad Climb Right	BodyMovements/HangingfromLedge
+476	Hang_and_Push_with_Foot	Hang and Push with Foot	BodyMovements/HangingfromLedge
+477	Rope_Hang_Idle	Rope Hang Idle	BodyMovements/HangingfromLedge
+478	Bar_Hang_Idle	Bar Hang Idle	BodyMovements/HangingfromLedge
+479	Upside_Down_Rope_Hang	Upside Down Rope Hang	BodyMovements/HangingfromLedge
+480	Upside_Down_Rope_Hang_1	Upside Down Rope Hang 1	BodyMovements/HangingfromLedge
+481	Upside_Down_Rope_Hang_2	Upside Down Rope Hang 2	BodyMovements/HangingfromLedge
+482	Grab_Wall_Midair_Idle	Grab Wall Midair Idle	BodyMovements/HangingfromLedge
+483	Slow_Bar_Hang_Left	Slow Bar Hang Left	BodyMovements/HangingfromLedge
+484	Slow_Bar_Hang_Right	Slow Bar Hang Right	BodyMovements/HangingfromLedge
+485	Jump_and_Hang_on_Bar	Jump and Hang on Bar	BodyMovements/HangingfromLedge
+486	Wall_Support_to_Step_Down	Wall Support to Step Down	BodyMovements/HangingfromLedge
+487	Climb_Attempt_and_Fall_3	Climb Attempt and Fall 3	BodyMovements/FallingFreely
+488	Climb_Attempt_and_Fall_4	Climb Attempt and Fall 4	BodyMovements/FallingFreely
+489	Climb_Attempt_and_Fall_5	Climb Attempt and Fall 5	BodyMovements/FallingFreely
+490	Fall_Down	Fall Down	BodyMovements/HangingfromLedge
+491	Fall_from_Bar	Fall from Bar	BodyMovements/HangingfromLedge
+492	Wall_Support_Jump_to_Ground	Wall Support, Jump to Ground	BodyMovements/HangingfromLedge
+493	Jump_Down_from_Wall	Jump Down from Wall	BodyMovements/HangingfromLedge
+494	Swing_on_Rope_to_Ground	Swing on Rope to Ground	BodyMovements/HangingfromLedge
+495	Grab_Bar_and_Swing_Forward	Grab Bar and Swing Forward	BodyMovements/HangingfromLedge
+496	Rope_Hang_Backflip_to_Crouch	Rope Hang Backflip to Crouch	BodyMovements/HangingfromLedge
+497	climbing_down_wall	Climbing Down Wall	BodyMovements/Climbing
+498	Climb_Attempt_and_Fall	Climb Attempt and Fall	BodyMovements/FallingFreely
+499	Climb_Attempt_and_Fall_1	Climb Attempt and Fall 1	BodyMovements/FallingFreely
+500	Climb_Attempt_and_Fall_2	Climb Attempt and Fall 2	BodyMovements/FallingFreely
+501	Leap_of_Faith	Leap of Faith	BodyMovements/FallingFreely
+502	Fall1	Fall 1	BodyMovements/FallingFreely
+503	Fall2	Fall 2	BodyMovements/FallingFreely
+504	Fall3	Fall 3	BodyMovements/FallingFreely
+505	Fall4	Fall 4	BodyMovements/FallingFreely
+506	Dive_Down_and_Land	Dive Down and Land	BodyMovements/FallingFreely
+507	Dive_Down_and_Land_1	Dive Down and Land 1	BodyMovements/FallingFreely
+508	Dive_Down_and_Land_2	Dive Down and Land 	BodyMovements/FallingFreely
+509	Lean_Forward_Sprint	Lean Forward Sprint	WalkAndRun/Running
+510	Standard_Forward_Charge	Standard Forward Charge	WalkAndRun/Running
+511	Rifle_Charge	Rifle Charge	WalkAndRun/Running
+512	Male_Head_Down_Charge	Male Head-down Charge	WalkAndRun/Running
+513	Female_Head_Down_Charge	Female Head-down Charge	WalkAndRun/Running
+514	Female_Bow_Charge_Left_Hand	Female Bow Charge Left Hand	WalkAndRun/Running
+515	Female_Throwing_Stance_Charge	Female Throwing Stance Charge	WalkAndRun/Running
+516	slide_light	Slide Light	WalkAndRun/Running
+517	slide_right	Slide Right	WalkAndRun/Running
+518	sliding_rool	Sliding Rool	WalkAndRun/Running
+519	sliding_stumble	Sliding Stumble	WalkAndRun/Running
+520	Crouch_Walk_with_Torch	Crouch Walk with Torch	WalkAndRun/CrouchWalking
+521	Crouch_Walk_Left_with_Torch	Crouch Walk Left with Torch	WalkAndRun/CrouchWalking
+522	Crouch_Walk_Right_with_Torch	Crouch Walk Right with Torch	WalkAndRun/CrouchWalking
+523	Cautious_Crouch_Walk_Backward	Cautious Crouch Walk Backward	WalkAndRun/CrouchWalking
+524	Cautious_Crouch_Walk_Forward	Cautious Crouch Walk Forward	WalkAndRun/CrouchWalking
+525	Cautious_Crouch_Walk_Left	Cautious Crouch Walk Left	WalkAndRun/CrouchWalking
+526	Cautious_Crouch_Walk_Right	Cautious Crouch Walk Right	WalkAndRun/CrouchWalking
+527	Crouch_Walk_Left_with_Gun	Crouch Walk Left with Gun	WalkAndRun/CrouchWalking
+528	Walk_Left_with_Gun	Walk Left with Gun	WalkAndRun/CrouchWalking
+529	Walk_Backward_with_Gun	Walk Backward with Gun	WalkAndRun/CrouchWalking
+530	run_fast_3	Run Fast 3	WalkAndRun/Running
+531	Sprint_and_Sudden_Stop	Sprint and Sudden Stop	WalkAndRun/Running
+532	run_fast_4	Run Fast 4	WalkAndRun/Running
+533	run_fast_5	Run Fast 5	WalkAndRun/Running
+534	run_fast_6	Run Fast 6	WalkAndRun/Running
+535	run_fast_7	Run Fast 7	WalkAndRun/Running
+536	run_fast_8	Run Fast 8	WalkAndRun/Running
+537	run_fast_9	Run Fast 9	WalkAndRun/Running
+538	run_fast_10	Run Fast 10	WalkAndRun/Running
+539	run_fast_2	Run Fast 2	WalkAndRun/Running
+540	Injured_Walk_Backward	Injured Walk Backward	WalkAndRun/Walking
+541	Walk_Backward_with_Gun_1	Walk Backward with Gun 1	WalkAndRun/Walking
+542	Walk_Backward_with_Grenade	Walk Backward with Grenade	WalkAndRun/Walking
+543	Step_Back	Step Back	WalkAndRun/Walking
+544	Walk_Backward	Walk Backward	WalkAndRun/Walking
+545	Walk_Backward_with_Bow	Walk Backward with Bow	WalkAndRun/Walking
+546	Walk_Backward_with_Sword	Walk Backward with Sword	WalkAndRun/Walking
+547	Walk_Backward_with_Bow_1	Walk Backward with Bow 1	WalkAndRun/Walking
+548	Walk_Backward_with_Sword_Shield	Walk Backward with Sword & Shield	WalkAndRun/Walking
+549	Crawl_Backward	Crawl Backward	WalkAndRun/Walking
+550	Carry_Heavy_Cannon_Forward	Carry Heavy Cannon Forward	WalkAndRun/Walking
+551	Carry_Heavy_Object_Walk	Carry Heavy Object Walk	WalkAndRun/Walking
+552	Carry_Water_Bucket_Walk	Carry Water Bucket Walk	WalkAndRun/Walking
+553	Elderly_Shaky_Walk	Elderly Shaky Walk	WalkAndRun/Walking
+554	Funky_Walk	Funky Walk	WalkAndRun/Walking
+555	Limping_Walk_1	Limping Walk 1	WalkAndRun/Walking
+556	Limping_Walk_2	Limping Walk 2	WalkAndRun/Walking
+557	Limping_Walk_3	Limping Walk 3	WalkAndRun/Walking
+558	Limping_Walk	Limping Walk	WalkAndRun/Walking
+559	Sneaky_Walk	Sneaky Walk	WalkAndRun/Walking
+560	Spear_Walk	Spear Walk	WalkAndRun/Walking
+561	Step_Hip_Hop_Dance	Step Hip Hop Dance	WalkAndRun/Walking
+562	Stumble_Walk	Stumble Walk	WalkAndRun/Walking
+563	Stylish_Walk	Stylish Walk	WalkAndRun/Walking
+564	Tightrope_Walk	Tightrope Walk	WalkAndRun/Walking
+565	Walk_with_Umbrella	Walk with Umbrella	WalkAndRun/Walking
+566	walking_2	Walking 2	WalkAndRun/Walking
+567	Walk_with_Walker_Support	Walk with Walker Support	WalkAndRun/Walking
+568	Swim_Idle	Swim Idle	WalkAndRun/Swimming
+569	Swim_Forward	Swim Forward	WalkAndRun/Swimming
+570	swimming_to_edge	Swimming to Edge	WalkAndRun/Swimming
+571	Run_Turn_Left	Run Turn Left	WalkAndRun/TurningAround
+572	Walk_Turn_Left	Walk Turn Left	WalkAndRun/TurningAround
+573	Rifle_Turn_Left	Rifle Turn Left	WalkAndRun/TurningAround
+574	Walk_Turn_Left_with_Weapon	Walk Turn Left with Weapon	WalkAndRun/TurningAround
+575	Combat_Idle_Turn_Left	Combat Idle Turn Left	WalkAndRun/TurningAround
+576	Idle_Turn_Left	Idle Turn Left	WalkAndRun/TurningAround
+577	Idle_Step_Turn_Left	Idle Step Turn Left	WalkAndRun/TurningAround
+578	Idle_Torch_Turn_Left	Idle Torch Turn Left	WalkAndRun/TurningAround
+579	Depressed_Full_Turn_Left	Depressed Full Turn Left	WalkAndRun/TurningAround
+580	Sword_and_Shield_Alert_Turn_Left	Sword and Shield Alert Turn Left	WalkAndRun/TurningAround
+581	Run_Sharp_Turn_Right	Run Sharp Turn Right	WalkAndRun/TurningAround
+582	Run_Turn_Right	Run Turn Right	WalkAndRun/TurningAround
+583	Walk_Turn_Right	Walk Turn Right	WalkAndRun/TurningAround
+584	Walk_Turn_Right_Female	Walk Turn Right (female)	WalkAndRun/TurningAround
+585	Rifle_Aim_Turn_Right	Rifle Aim Turn Right	WalkAndRun/TurningAround
+586	Idle_Turn_Right	Idle Turn Right	WalkAndRun/TurningAround
+587	Walk_Turn_Right_Idle_Style	Walk Turn Right (idle Style)	WalkAndRun/TurningAround
+588	Frustrated_Turn_Right	Frustrated Turn Right	WalkAndRun/TurningAround
+589	Alert_Quick_Turn_Right	Alert Quick Turn Right	WalkAndRun/TurningAround
+590	Sword_and_Shield_Alert_Turn_Right	Sword and Shield Alert Turn Right	WalkAndRun/TurningAround
+591	Hip_Hop_Dance	Hip Hop Dance	Dancing/Dancing
+592	Hip_Hop_Dance_1	Hip Hop Dance 1	Dancing/Dancing
+593	Hip_Hop_Dance_2	Hip Hop Dance 2	Dancing/Dancing
+594	Hip_Hop_Dance_3	Hip Hop Dance 3	Dancing/Dancing
+595	jazz_danc	Jazz Danc	Dancing/Dancing
+596	ymca_dance	Ymca Dance	Dancing/Dancing
+597	Hip_Hop_Dance_4	Hip Hop Dance 	Dancing/Dancing
+598	kettlebell_swing_1	Kettlebell Swing 1	DailyActions/WorkingOut
+599	Idle_15	Idle 15	DailyActions/Idle
+601	Backflip_inplace	Backflip	BodyMovements/PerformingStunt
+604	Backflip_Sweep_Kick_inplace	Backflip Sweep Kick	BodyMovements/PerformingStunt
+605	Back_Jump_inplace	Back Jump	BodyMovements/Jumping
+606	BackLeft_run_inplace	BackLeft Run	WalkAndRun/Running
+607	BackRight_Run_inplace	BackRight Run	WalkAndRun/Running
+608	BeHit_FlyUp_inplace	BeHit FlyUp	Fighting/GettingHit
+609	Boxing_Practice_inplace	Boxing Practice	Fighting/Punching
+610	Carry_Heavy_Cannon_Forward_inplace	Carry Heavy Cannon Forward	WalkAndRun/Walking
+611	Carry_Heavy_Object_Walk_inplace	Carry Heavy Object Walk	WalkAndRun/Walking
+612	Carry_Water_Bucket_Walk_inplace	Carry Water Bucket Walk	WalkAndRun/Walking
+613	Casual_Walk_inplace	Casual Walk	WalkAndRun/Walking
+615	Cautious_Crouch_Walk_Backward_inplace	Cautious Crouch Walk Backward	WalkAndRun/CrouchWalking
+616	Cautious_Crouch_Walk_Forward_inplace	Cautious Crouch Walk Forward	WalkAndRun/CrouchWalking
+617	Cautious_Crouch_Walk_Left_inplace	Cautious Crouch Walk Left	WalkAndRun/CrouchWalking
+618	Cautious_Crouch_Walk_Right_inplace	Cautious Crouch Walk Right	WalkAndRun/CrouchWalking
+619	Climb_Left_with_Both_Limbs_inplace	Climb Left with Both Limbs	BodyMovements/Climbing
+620	Climb_Right_with_Both_Limbs_inplace	Climb Right with Both Limbs	BodyMovements/Climbing
+621	Confident_Strut_inplace	Confident Strut	WalkAndRun/Walking
+622	Crawl_Backward_inplace	Crawl Backward	WalkAndRun/Walking
+623	Crouch_Walk_Left_with_Gun_inplace	Crouch Walk Left with Gun	WalkAndRun/CrouchWalking
+624	Crouch_Walk_Left_with_Torch_inplace	Crouch Walk Left with Torch	WalkAndRun/CrouchWalking
+625	Crouch_Walk_Right_with_Torch_inplace	Crouch Walk Right with Torch	WalkAndRun/CrouchWalking
+626	Elderly_Shaky_Walk_inplace	Elderly Shaky Walk	WalkAndRun/Walking
+627	Female_Bow_Charge_Left_Hand_inplace	Female Bow Charge Left Hand	WalkAndRun/Running
+628	Female_Throwing_Stance_Charge_inplace	Female Throwing Stance Charge	WalkAndRun/Running
+629	Flirty_Strut_inplace	Flirty Strut	WalkAndRun/Walking
+630	ForwardLeft_Run_Fight_inplace	ForwardLeft Run Fight	Fighting/Transitioning
+631	ForwardRight_Run_Fight_inplace	ForwardRight Run Fight	Fighting/Transitioning
+632	Funky_Walk_inplace	Funky Walk	WalkAndRun/Walking
+635	Handbag_Walk_inplace	Handbag Walk	BodyMovements/Acting
+636	Hello_Run_inplace	Hello Run	WalkAndRun/Running
+637	Injured_Walk_inplace	Injured Walk	WalkAndRun/Walking
+638	Injured_Walk_Backward_inplace	Injured Walk Backward	WalkAndRun/Walking
+639	Jazz_Hands_inplace	Jazz Hands	BodyMovements/Acting
+640	Jump_Over_Obstacle_inplace	Jump Over Obstacle	BodyMovements/Jumping
+641	Jump_Over_Obstacle_1_inplace	Jump Over Obstacle 1	BodyMovements/Jumping
+642	Jump_Over_Obstacle_2_inplace	Jump Over Obstacle 2	BodyMovements/Jumping
+643	Jump_Run_inplace	Jump Run	WalkAndRun/Running
+644	Lean_Forward_Sprint_inplace	Lean Forward Sprint	WalkAndRun/Running
+645	Limping_Walk_inplace	Limping Walk	WalkAndRun/Walking
+646	Limping_Walk_1_inplace	Limping Walk 1	WalkAndRun/Walking
+647	Limping_Walk_2_inplace	Limping Walk 2	WalkAndRun/Walking
+648	Limping_Walk_3_inplace	Limping Walk 3	WalkAndRun/Walking
+649	Lunge_Roundhouse_Kick_inplace	Lunge Roundhouse Kick	Fighting/Punching
+650	Mummy_Stagger_inplace	Mummy Stagger	BodyMovements/Acting
+651	Parkour_Vault_with_Roll_inplace	Parkour Vault with Roll	BodyMovements/VaultingOverObstacle
+652	Proud_Strut_inplace	Proud Strut	WalkAndRun/Walking
+653	Red_Carpet_Walk_inplace	Red Carpet Walk	WalkAndRun/Walking
+654	Rifle_Charge_inplace	Rifle Charge	WalkAndRun/Running
+656	Run_and_Leap_inplace	Run and Leap	BodyMovements/Acting
+657	run_fast_10_inplace	Run Fast 10	WalkAndRun/Running
+658	run_fast_2_inplace	Run Fast 2	WalkAndRun/Running
+659	run_fast_3_inplace	Run Fast 3	WalkAndRun/Running
+660	run_fast_4_inplace	Run Fast 4	WalkAndRun/Running
+661	run_fast_5_inplace	Run Fast 5	WalkAndRun/Running
+662	run_fast_6_inplace	Run Fast 6	WalkAndRun/Running
+663	run_fast_7_inplace	Run Fast 7	WalkAndRun/Running
+664	run_fast_8_inplace	Run Fast 8	WalkAndRun/Running
+665	run_fast_9_inplace	Run Fast 9	WalkAndRun/Running
+666	Running_Reload_inplace	Running Reload	Fighting/Transitioning
+667	Run_to_Walk_Transition_inplace	Run to Walk Transition	WalkAndRun/Walking
+668	Skip_Forward_inplace	Skip Forward	WalkAndRun/Walking
+669	Slow_Orc_Walk_inplace	Slow Orc Walk	WalkAndRun/Walking
+670	Slow_Walk_Reload_inplace	Slow Walk Reload	Fighting/Transitioning
+671	Sneaky_Walk_inplace	Sneaky Walk	WalkAndRun/Walking
+672	Spear_Walk_inplace	Spear Walk	WalkAndRun/Walking
+673	Standard_Forward_Charge_inplace	Standard Forward Charge	WalkAndRun/Running
+674	Stumble_Walk_inplace	Stumble Walk	WalkAndRun/Walking
+675	Stylish_Walk_inplace	Stylish Walk	WalkAndRun/Walking
+676	Texting_Walk_inplace	Texting Walk	WalkAndRun/Walking
+677	Tightrope_Walk_inplace	Tightrope Walk	WalkAndRun/Walking
+678	Unsteady_Walk_inplace	Unsteady Walk	WalkAndRun/Walking
+679	Walk_Backward_inplace	Walk Backward	WalkAndRun/Walking
+680	Walk_Backward_While_Shooting_inplace	Walk Backward While Shooting	Fighting/AttackingwithWeapon
+681	Walk_Backward_with_Bow_inplace	Walk Backward with Bow	WalkAndRun/Walking
+682	Walk_Backward_with_Bow_1_inplace	Walk Backward with Bow 1	WalkAndRun/Walking
+683	Walk_Backward_with_Bow_Aimed_inplace	Walk Backward with Bow Aimed	Fighting/AttackingwithWeapon
+684	Walk_Backward_with_Grenade_inplace	Walk Backward with Grenade	WalkAndRun/Walking
+685	Walk_Backward_with_Gun_inplace	Walk Backward with Gun	WalkAndRun/CrouchWalking
+686	Walk_Backward_with_Gun_1_inplace	Walk Backward with Gun 1	WalkAndRun/Walking
+687	Walk_Backward_with_Sword_inplace	Walk Backward with Sword	WalkAndRun/Walking
+688	Walk_Fight_Back_inplace	Walk Fight Back	WalkAndRun/Walking
+689	Walk_Fight_Forward_inplace	Walk Fight Forward	WalkAndRun/Walking
+690	Walk_Forward_While_Shooting_inplace	Walk Forward While Shooting	Fighting/AttackingwithWeapon
+691	Walk_Forward_with_Bow_Aimed_inplace	Walk Forward with Bow Aimed	Fighting/AttackingwithWeapon
+692	walking_2_inplace	Walking 2	WalkAndRun/Walking
+693	Walking_with_Phone_inplace	Walking with Phone	WalkAndRun/Walking
+694	Walk_Left_with_Gun_inplace	Walk Left with Gun	WalkAndRun/CrouchWalking
+695	Walk_with_Umbrella_inplace	Walk with Umbrella	WalkAndRun/Walking
+696	Walk_with_Walker_Support_inplace	Walk with Walker Support	WalkAndRun/Walking
