@@ -14,7 +14,7 @@ describe("itemArt", () => {
     expect(itemArtUrl(null, "banana")).toMatch(/banana.*\.svg/);
     expect(itemArtUrl("🍒", "banana", "🍌")).toBeNull();
     expect(itemArtUrl("🍌", null)).toBeNull();
-    expect(itemArtUrl("🥝", "kiwi", "🥝")).toBeNull();
+    expect(itemArtUrl("🫙", "not-a-catalog-item", "🫙")).toBeNull();
   });
 
   it("finds section art", () => {
