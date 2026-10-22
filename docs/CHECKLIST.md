@@ -31,9 +31,9 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Futuristic redesign of the whole UI and the Lucina stage (Custom Cast study), live edb6405
 
 ### Avatar
-- [ ] Base = game-accurate Engage Lucina with toon shading (separate session "Engage toon shading for the three.js Lucina avatar")
+- [ ] Base = variant B (Summer face + tiara on the Engage body), owner pick 2026-10-22: deploy B + its clips to p1; game toon shading only as an optional material
 - [ ] Wardrobe: outfits (gym+ponytail, maid, chef, c584, c591) + Wardrobe UI (Custom Cast style), remembered, auto per tab, Lucina can change it
-- [ ] Owner picked Summer, but in her uniform: variants A/B being built → → owner picks → convert → p1 private assets
+- [x] Owner picked B (flower removed, tiara restored)
 - [x] Animation library: 22 clips per model (f432912 stage API; MMD clips live on p1)
 
 ### iOS
