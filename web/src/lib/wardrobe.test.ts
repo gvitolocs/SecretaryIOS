@@ -10,9 +10,17 @@ import {
   resolveOutfit,
   sectionFor,
   thumbnailUrl,
+  hairChoices,
+  NATURAL_HAIR,
+  parseHairColors,
+  parseHairstyles,
+  parseWardrobeFile,
+  resolveHair,
+  resolveHairColor,
+  wantedHair,
   wantedOutfit,
 } from "./wardrobe";
-import { OUTFITS } from "../test/wardrobe";
+import { OUTFITS, WARDROBE } from "../test/wardrobe";
 
 describe("wardrobe parsing", () => {
   it("keeps only valid outfits", () => {
@@ -32,19 +40,31 @@ describe("wardrobe parsing", () => {
 
   it("fills settings defaults", () => {
     expect(parseSettings(null)).toEqual(DEFAULT_SETTINGS);
-    expect(parseSettings({ outfit: "maid", auto: false, rules: { gym: "x", shopping: 3 }, updatedMs: 5 })).toEqual({
+    expect(parseSettings({ outfit: "maid", hair: "bun", hairColor: "pink", auto: false, rules: { gym: "x", shopping: 3, default: { hair: "bun" } }, updatedMs: 5 })).toEqual({
       outfit: "maid",
+      hair: "bun",
+      hairColor: "pink",
       auto: false,
-      rules: { gym: "x", shopping: "chef", default: "uniform" },
+      rules: {
+        gym: { outfit: "x", hair: "natural" },
+        shopping: { outfit: "chef", hair: "natural" },
+        default: { outfit: "uniform", hair: "bun" },
+      },
       updatedMs: 5,
       updatedBy: "",
     });
+    expect(DEFAULT_SETTINGS.rules.gym).toEqual({ outfit: "gym", hair: "ponytail" });
     expect(parseSettings({ outfit: "Bad Id" }).outfit).toBeNull();
   });
 
   it("patches", () => {
-    const s = applyPatch(DEFAULT_SETTINGS, { rules: { gym: "maid" } });
-    expect(s.rules).toEqual({ gym: "maid", shopping: "chef", default: "uniform" });
+    const s = applyPatch(DEFAULT_SETTINGS, { rules: { gym: { outfit: "maid" }, shopping: { hair: "bun" } }, hairColor: "pink" });
+    expect(s.rules).toEqual({
+      gym: { outfit: "maid", hair: "ponytail" },
+      shopping: { outfit: "chef", hair: "bun" },
+      default: { outfit: "uniform", hair: "natural" },
+    });
+    expect(s.hairColor).toBe("pink");
     expect(applyPatch({ ...s, outfit: "maid" }, { outfit: null }).outfit).toBeNull();
   });
 });
@@ -87,5 +107,36 @@ describe("which outfit", () => {
     expect(outfits.map(categoryOf)).toEqual(["uniform", "sport", "work", "work"]);
     expect(categoriesPresent(outfits)).toEqual(["all", "uniform", "sport", "work"]);
     expect(categoryOf({ id: "x", glb: "x.glb" })).toBe("other");
+  });
+});
+
+describe("hair", () => {
+  const file = parseWardrobeFile(WARDROBE);
+
+  it("reads the whole wardrobe file, and the old bare array", () => {
+    expect(file.hairstyles.map((h) => h.id)).toEqual(["natural", "ponytail", "bun"]);
+    expect(file.hairstyles[0]!.glb).toBeUndefined();
+    expect(file.hairstyles[1]!.hideTiara).toBe(true);
+    expect(file.colors).toEqual([
+      { id: "pink", name: { en: "Pink", it: "Rosa" }, hex: "#ff8ac8" },
+      { id: "silver", name: { en: "Silver" }, hex: "#c8cedc" },
+    ]);
+    expect(parseWardrobeFile(OUTFITS).outfits).toHaveLength(4);
+    expect(parseHairstyles([{ id: "x" }, { id: "y", glb: "../y.glb" }])).toEqual([]);
+    expect(parseHairColors([{ id: "red", hex: "red" }])).toEqual([]);
+  });
+
+  it("resolves the hairstyle and colour by section, pins and installs", () => {
+    const s = DEFAULT_SETTINGS;
+    expect(wantedHair(s, "gym")).toBe("ponytail");
+    expect(resolveHair(s, "gym", file.hairstyles)).toBe("ponytail");
+    expect(resolveHair(s, "default", file.hairstyles)).toBe(NATURAL_HAIR);
+    expect(resolveHair({ ...s, auto: false }, "gym", file.hairstyles)).toBe(NATURAL_HAIR);
+    expect(resolveHair({ ...s, hair: "bun" }, "shopping", file.hairstyles)).toBe("bun");
+    expect(resolveHair(s, "gym", []), "not installed: her own hair").toBe(NATURAL_HAIR);
+    expect(resolveHairColor({ ...s, hairColor: "pink" }, file.colors)).toBe("pink");
+    expect(resolveHairColor({ ...s, hairColor: "green" }, file.colors)).toBeNull();
+    expect(hairChoices([]).map((h) => h.id)).toEqual([NATURAL_HAIR]);
+    expect(hairChoices(file.hairstyles.slice(1)).map((h) => h.id)).toEqual([NATURAL_HAIR, "ponytail", "bun"]);
   });
 });

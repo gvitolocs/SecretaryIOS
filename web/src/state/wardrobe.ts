@@ -9,11 +9,17 @@ import {
   DEFAULT_SETTINGS,
   isOutfitId,
   parseSettings,
+  parseHairColors,
+  parseHairstyles,
   parseWardrobe,
+  resolveHair,
+  resolveHairColor,
   resolveOutfit,
   sectionFor,
   type AvatarPatch,
   type AvatarSettings,
+  type HairColor,
+  type Hairstyle,
   type Outfit,
   type Section,
 } from "../lib/wardrobe";
@@ -23,7 +29,7 @@ import { onTimelineItem } from "./chat";
 // (GET/PUT /v1/avatar); localStorage only caches it so her first frame is
 // already in the right outfit. The stage follows `currentOutfit()`.
 
-export const CACHE_KEY = "secretary.avatar.v1";
+export const CACHE_KEY = "secretary.avatar.v2";
 /** A live `avatar_outfit` timeline item older than this is history, not news. */
 export const LIVE_ITEM_MS = 10 * 60_000;
 /** Coming back to the tab refreshes at most this often. */
@@ -34,18 +40,27 @@ type Status = "idle" | "loading" | "ready" | "error";
 interface Cached {
   settings: AvatarSettings;
   outfits: Outfit[];
+  hairstyles: Hairstyle[];
+  colors: HairColor[];
 }
 
 function readCache(): Cached | null {
   const raw = readJSON("local", CACHE_KEY) as Partial<Cached> | null;
   if (!raw || typeof raw !== "object") return null;
-  return { settings: parseSettings(raw.settings), outfits: parseWardrobe(raw.outfits) };
+  return {
+    settings: parseSettings(raw.settings),
+    outfits: parseWardrobe(raw.outfits),
+    hairstyles: parseHairstyles(raw.hairstyles),
+    colors: parseHairColors(raw.colors),
+  };
 }
 
 const store = createRoot(() => {
   const cached = readCache();
   const [settings, setSettings] = createSignal<AvatarSettings>(cached?.settings ?? DEFAULT_SETTINGS);
   const [outfits, setOutfits] = createSignal<Outfit[]>(cached?.outfits ?? []);
+  const [hairstyles, setHairstyles] = createSignal<Hairstyle[]>(cached?.hairstyles ?? []);
+  const [colors, setColors] = createSignal<HairColor[]>(cached?.colors ?? []);
   const [status, setStatus] = createSignal<Status>("idle");
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -53,12 +68,20 @@ const store = createRoot(() => {
   const [open, setOpen] = createSignal(false);
   const [changing, setChanging] = createSignal(false);
   const current = createMemo(() => resolveOutfit(settings(), section(), outfits()));
+  const hair = createMemo(() => resolveHair(settings(), section(), hairstyles()));
+  const hairColor = createMemo(() => resolveHairColor(settings(), colors()));
   return {
     cachedAtStart: !!cached,
     settings,
     setSettings,
     outfits,
     setOutfits,
+    hairstyles,
+    setHairstyles,
+    colors,
+    setColors,
+    hair,
+    hairColor,
     status,
     setStatus,
     saving,
@@ -77,6 +100,8 @@ const store = createRoot(() => {
 
 export const avatarSettings = store.settings;
 export const wardrobeOutfits = store.outfits;
+export const wardrobeHairstyles = store.hairstyles;
+export const wardrobeColors = store.colors;
 export const avatarStatus = store.status;
 export const avatarSaving = store.saving;
 export const avatarError = store.error;
@@ -87,9 +112,18 @@ export const outfitChanging = store.changing;
 export const setOutfitChanging = store.setChanging;
 /** The outfit she should wear right now (null: no wardrobe installed). */
 export const currentOutfit = store.current;
+/** The hairstyle she should wear now (`natural`: her own hair). */
+export const currentHair = store.hair;
+/** The hair colour id she should wear now (null: natural). */
+export const currentHairColor = store.hairColor;
 
 function persist(): void {
-  writeJSON("local", CACHE_KEY, { settings: store.settings(), outfits: store.outfits() });
+  writeJSON("local", CACHE_KEY, {
+    settings: store.settings(),
+    outfits: store.outfits(),
+    hairstyles: store.hairstyles(),
+    colors: store.colors(),
+  });
 }
 
 export function setAvatarPath(pathname: string): void {
@@ -117,7 +151,11 @@ export function loadAvatar(): Promise<void> {
     const [s, w] = await Promise.allSettled([avatarApi.get(), avatarApi.wardrobe()]);
     // A write that started meanwhile wins over this read.
     if (s.status === "fulfilled" && !store.saving()) store.setSettings(s.value);
-    if (w.status === "fulfilled") store.setOutfits(w.value);
+    if (w.status === "fulfilled") {
+      store.setOutfits(w.value.outfits);
+      store.setHairstyles(w.value.hairstyles);
+      store.setColors(w.value.colors);
+    }
     lastLoad = Date.now();
     if (s.status === "fulfilled" || w.status === "fulfilled") {
       store.setStatus("ready");
@@ -161,7 +199,7 @@ export async function updateAvatar(patch: AvatarPatch): Promise<boolean> {
     if (seq === writeSeq) {
       store.setSettings(before);
       const err = toApiError(e);
-      store.setError(err.code === "unknown_outfit" ? t("wardrobe.errUnknown") : err.isNetwork ? t("wardrobe.errOffline") : t("wardrobe.errSave"));
+      store.setError(err.code.startsWith("unknown_") ? t("wardrobe.errUnknown") : err.isNetwork ? t("wardrobe.errOffline") : t("wardrobe.errSave"));
     }
     return false;
   } finally {
@@ -174,13 +212,27 @@ export function wearOutfit(id: string): Promise<boolean> {
   return updateAvatar({ outfit: id });
 }
 
+/** Style her hair `id` and keep it (a pin; `natural` is her own hair). */
+export function wearHair(id: string): Promise<boolean> {
+  return updateAvatar({ hair: id });
+}
+
+/** Tint her hair (null: natural colour). */
+export function setHairColor(id: string | null): Promise<boolean> {
+  return updateAvatar({ hairColor: id });
+}
+
 /** Lucina changed outfit (timeline item): show it now, then read the truth. */
 export function handleTimelineItem(item: TimelineItem, now = Date.now()): boolean {
   if (item.meta?.kind !== "avatar_outfit" || item.role !== "lucina") return false;
   if (now - item.ts > LIVE_ITEM_MS) return false;
-  const id = item.meta.outfit;
+  const { outfit, hair } = item.meta;
   if (!store.saving()) {
-    store.setSettings(applyPatch(store.settings(), isOutfitId(id) ? { outfit: id } : { outfit: null, auto: true }));
+    const patch: AvatarPatch = {};
+    if (isOutfitId(outfit)) patch.outfit = outfit;
+    if (isOutfitId(hair)) patch.hair = hair;
+    // Neither: back to automatic.
+    store.setSettings(applyPatch(store.settings(), Object.keys(patch).length ? patch : { outfit: null, hair: null, auto: true }));
   }
   void refreshAvatar(true);
   return true;
@@ -208,6 +260,8 @@ export function resetWardrobeState(): void {
   const cached = readCache();
   store.setSettings(cached?.settings ?? DEFAULT_SETTINGS);
   store.setOutfits(cached?.outfits ?? []);
+  store.setHairstyles(cached?.hairstyles ?? []);
+  store.setColors(cached?.colors ?? []);
   store.setStatus("idle");
   store.setSaving(false);
   store.setError(null);

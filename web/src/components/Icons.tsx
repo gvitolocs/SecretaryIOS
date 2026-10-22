@@ -279,3 +279,25 @@ export function SparkleIcon() {
     </svg>
   );
 }
+
+/** Hairstyles: a head with a flowing ponytail. */
+export function HairIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 13.5c-1.3-.7-2-2.2-2-4A6 6 0 0 1 12 3.5a6 6 0 0 1 6 6c0 1.6-.6 3-1.7 3.8" />
+      <path d="M8.5 9.5c1.6.2 4.2-.6 5.6-2.4.6 1.2 1.6 2 2.9 2.4" />
+      <path d="M9 13.5c.6 1.6 1.7 2.5 3 2.5s2.4-.9 3-2.5" />
+      <path d="M17.5 11.5c1.8 1.4 2.4 4 1.6 6.3-.6 1.7-2 2.7-3.6 2.7" />
+    </svg>
+  );
+}
+
+/** Hair colour: a drop. */
+export function DropIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5c3 3.6 5.5 6.9 5.5 10a5.5 5.5 0 0 1-11 0c0-3.1 2.5-6.4 5.5-10z" />
+      <path d="M9.3 14.2a2.8 2.8 0 0 0 2.4 2.6" />
+    </svg>
+  );
+}

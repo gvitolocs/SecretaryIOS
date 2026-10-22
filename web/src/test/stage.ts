@@ -57,14 +57,28 @@ export class FakeStage {
     this.outfit = id;
     for (const cb of this.changingListeners) cb(false);
   });
+  hair = "natural";
+  hairColor: string | null = null;
+  readonly setHairstyles = vi.fn();
+  readonly setHair = vi.fn(async (id: string | null) => {
+    this.hair = id ?? "natural";
+  });
+  readonly setHairColor = vi.fn(async (id: string | null) => {
+    this.hairColor = id;
+  });
   readonly onChanging = vi.fn((cb: (c: boolean) => void) => {
     this.changingListeners.push(cb);
     return () => {};
   });
 
-  constructor(readonly canvas: HTMLCanvasElement, readonly options: LucinaStageOptions & { outfit?: string | null }) {
+  constructor(
+    readonly canvas: HTMLCanvasElement,
+    readonly options: LucinaStageOptions & { outfit?: string | null; hair?: string | null; hairColor?: string | null },
+  ) {
     this.muted = options.muted ?? false;
     this.outfit = options.outfit ?? null;
+    this.hair = options.hair ?? "natural";
+    this.hairColor = options.hairColor ?? null;
   }
 
   /** Simulates a tap on Lucina. */

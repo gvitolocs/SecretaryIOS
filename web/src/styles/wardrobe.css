@@ -828,3 +828,142 @@
   color: var(--text-muted);
   font-size: 1.4rem;
 }
+
+/* ---------- Hair and colour ---------- */
+
+.wtile-art[data-cat="hair"] {
+  --cat: var(--violet);
+}
+
+.wtile-art[data-cat="natural"] {
+  --cat: var(--cyan);
+}
+
+.wardrobe-now-hair {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.wswatch-dot {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-left: 0.4em;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: 0 0 0 2px var(--surface-solid), 0 0 0 3px var(--border-strong);
+  vertical-align: 0.05em;
+}
+
+/* Outfit categories, under the Outfit tab: a row of small pills. */
+.wchips {
+  display: flex;
+  gap: 8px;
+  margin: 0 calc(-1 * var(--pad-right)) 12px calc(-1 * var(--pad-left));
+  padding: 2px var(--pad-right) 4px var(--pad-left);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.wchips::-webkit-scrollbar {
+  display: none;
+}
+
+.wchip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-2), color var(--dur-2), border-color var(--dur-2);
+}
+
+.wchip .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.wchip--on {
+  border-color: transparent;
+  background: var(--grad-holo-soft);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Hair colours: round swatches with a name. */
+.wswatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 14px 10px;
+}
+
+.wswatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wswatch-chip {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.55), transparent 42%),
+    linear-gradient(160deg, color-mix(in srgb, var(--swatch, #4a5cc9) 100%, white 0%), color-mix(in srgb, var(--swatch, #4a5cc9) 70%, black));
+  box-shadow: 0 0 0 1px var(--border), 0 6px 16px color-mix(in srgb, var(--swatch, #4a5cc9) 35%, transparent);
+  transition: transform var(--dur-2) var(--ease-spring), box-shadow var(--dur-2);
+}
+
+/* Natural: her own blue, with a hint that it is the original. */
+.wswatch--natural .wswatch-chip {
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.5), transparent 42%),
+    conic-gradient(from 210deg, #2f3f9f, #5a72d6, #2f3f9f);
+}
+
+.wswatch:hover .wswatch-chip {
+  transform: translateY(-2px) scale(1.04);
+}
+
+.wswatch--on {
+  color: var(--text);
+}
+
+.wswatch--on .wswatch-chip {
+  box-shadow: 0 0 0 3px var(--surface-solid), 0 0 0 5px var(--accent), 0 0 22px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.wswatch:focus-visible,
+.wchip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.wrule-picks--hair {
+  padding-top: 0;
+}
+
+.wpick--hair .wtile-art--sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}

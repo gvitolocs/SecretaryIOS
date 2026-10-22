@@ -1,7 +1,22 @@
-[
-  { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" }, "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] },
-  { "id": "gym", "name": { "it": "Palestra", "en": "Gym", "da": "Træning" }, "glb": "lucina-gym.glb", "thumbnail": "outfit-gym.webp", "tags": ["sport"] },
-  { "id": "chef", "name": { "it": "Chef", "en": "Chef", "da": "Kok" }, "glb": "lucina-chef.glb", "thumbnail": "outfit-chef.webp", "tags": ["work"] },
-  { "id": "maid", "name": { "it": "Cameriera", "en": "Maid", "da": "Stuepige" }, "glb": "lucina-maid.glb", "thumbnail": "outfit-maid.webp", "tags": ["work"] },
-  { "id": "casual", "name": { "it": "Casual", "en": "Casual", "da": "Hverdag" }, "glb": "lucina-casual.glb", "thumbnail": "outfit-casual.webp", "tags": ["casual"] }
-]
+{
+  "outfits": [
+    { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" }, "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] },
+    { "id": "gym", "name": { "it": "Palestra", "en": "Gym", "da": "Træning" }, "glb": "lucina-gym.glb", "thumbnail": "outfit-gym.webp", "tags": ["sport"] },
+    { "id": "chef", "name": { "it": "Chef", "en": "Chef", "da": "Kok" }, "glb": "lucina-chef.glb", "thumbnail": "outfit-chef.webp", "tags": ["work"] },
+    { "id": "maid", "name": { "it": "Cameriera", "en": "Maid", "da": "Stuepige" }, "glb": "lucina-maid.glb", "thumbnail": "outfit-maid.webp", "tags": ["work"] },
+    { "id": "casual", "name": { "it": "Casual", "en": "Casual", "da": "Hverdag" }, "glb": "lucina-casual.glb", "thumbnail": "outfit-casual.webp", "tags": ["casual"] }
+  ],
+  "hairstyles": [
+    { "id": "natural", "name": { "it": "Capelli suoi", "en": "Her own hair", "da": "Hendes eget hår" } },
+    { "id": "ponytail", "name": { "it": "Coda", "en": "Ponytail", "da": "Hestehale" }, "glb": "lucina-hair-ponytail.glb", "thumbnail": "hair-ponytail.webp", "hideTiara": true },
+    { "id": "bun", "name": { "it": "Chignon", "en": "Bun", "da": "Knold" }, "glb": "lucina-hair-bun.glb", "thumbnail": "hair-bun.webp", "hideTiara": true },
+    { "id": "twintails", "name": { "it": "Codini", "en": "Twin tails", "da": "Rottehaler" }, "glb": "lucina-hair-twintails.glb", "thumbnail": "hair-twintails.webp" }
+  ],
+  "colors": [
+    { "id": "midnight", "name": { "it": "Notte", "en": "Midnight", "da": "Midnat" }, "hex": "#3a3f8f" },
+    { "id": "pink", "name": { "it": "Rosa", "en": "Pink", "da": "Lyserød" }, "hex": "#ff8ac8" },
+    { "id": "silver", "name": { "it": "Argento", "en": "Silver", "da": "Sølv" }, "hex": "#c8cedc" },
+    { "id": "crimson", "name": { "it": "Cremisi", "en": "Crimson", "da": "Karmin" }, "hex": "#c2304a" },
+    { "id": "gold", "name": { "it": "Oro", "en": "Gold", "da": "Guld" }, "hex": "#f2c14e" }
+  ]
+}

@@ -7,7 +7,18 @@ import { effectiveTheme, stageQuality } from "../state/appearance";
 import { onLucinaReply } from "../state/chat";
 import { lucinaActivity, setLucinaActivity, type LucinaActivity } from "../state/stage";
 import { ASSET_BASE } from "../lib/wardrobe";
-import { avatarReady, currentOutfit, openWardrobe, outfitChanging, setOutfitChanging, wardrobeOutfits } from "../state/wardrobe";
+import {
+  avatarReady,
+  currentHair,
+  currentHairColor,
+  currentOutfit,
+  openWardrobe,
+  outfitChanging,
+  setOutfitChanging,
+  wardrobeColors,
+  wardrobeHairstyles,
+  wardrobeOutfits,
+} from "../state/wardrobe";
 import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
@@ -91,6 +102,10 @@ export function LucinaPanel(props: {
         modelUrl: MODEL_URL,
         wardrobe: wardrobeOutfits(),
         outfit: currentOutfit()?.id ?? null,
+        hairstyles: wardrobeHairstyles(),
+        hairColors: wardrobeColors(),
+        hair: currentHair(),
+        hairColor: currentHairColor(),
         assetBase: ASSET_BASE,
         manifestUrl: MANIFEST_URL,
         clipsUrl: CLIPS_URL,
@@ -117,9 +132,7 @@ export function LucinaPanel(props: {
       if (props.thinking) s.setState("thinking");
       if (import.meta.env.DEV) (window as unknown as { __lucina?: unknown }).__lucina = { stage: s, mod };
       // The wardrobe may have answered while the stage was loading.
-      s.setWardrobe(wardrobeOutfits());
-      const want = currentOutfit()?.id;
-      if (want && s.outfit !== want) s.setOutfit(want).catch((e: unknown) => console.warn("[wardrobe] outfit not loaded:", e));
+      dress(s);
       setMode("ready");
     } catch {
       // No WebGL (or the stage failed to start): show her portrait instead.
@@ -140,18 +153,24 @@ export function LucinaPanel(props: {
     setOutfitChanging(false);
   });
 
-  // Her outfit follows the wardrobe (section rules, pins, Lucina's own changes).
-  createEffect(
-    on(wardrobeOutfits, (list) => stage?.setWardrobe(list), { defer: true }),
-  );
+  /**
+   * Her look follows the wardrobe (section rules, pins, Lucina's own changes). A failed load
+   * keeps what she has on; the next change tries again.
+   */
+  function dress(s: WardrobeStage): void {
+    s.setWardrobe(wardrobeOutfits());
+    s.setHairstyles(wardrobeHairstyles(), wardrobeColors());
+    const warn = (what: string) => (e: unknown) => console.warn(`[wardrobe] ${what} not loaded:`, e);
+    const outfit = currentOutfit()?.id;
+    if (outfit && s.outfit !== outfit) s.setOutfit(outfit).catch(warn("outfit"));
+    if (s.hair !== currentHair()) s.setHair(currentHair()).catch(warn("hairstyle"));
+    if (s.hairColor !== currentHairColor()) s.setHairColor(currentHairColor()).catch(warn("hair colour"));
+  }
+
   createEffect(
     on(
-      () => [currentOutfit()?.id, wardrobeOutfits()] as const,
-      ([id]) => {
-        if (!stage || !id || stage.outfit === id) return;
-        // A failed load keeps the outfit she has on; the next change tries again.
-        stage.setOutfit(id).catch((e: unknown) => console.warn("[wardrobe] outfit not loaded:", e));
-      },
+      () => [currentOutfit()?.id, currentHair(), currentHairColor(), wardrobeOutfits(), wardrobeHairstyles(), wardrobeColors()] as const,
+      () => stage && dress(stage),
     ),
   );
 

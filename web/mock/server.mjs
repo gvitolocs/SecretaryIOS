@@ -40,11 +40,12 @@
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
 //                            The model is private: never copy it into the repo.
 //   POST /v1/tts {text, lang} -> a short silent audio/mpeg clip
-// Wardrobe (docs/server-api.md, "Avatar wardrobe"):
+// Wardrobe (docs/server-api.md, "Avatar wardrobe"): outfits, hairstyles, hair colours.
 //   GET/PUT /v1/avatar, GET /v1/avatar/wardrobe. The wardrobe is MOCK_WARDROBE_DIR/wardrobe.json
 //   (default ~/scratch/lucina-wardrobe) or the placeholder mock/wardrobe.json; outfit models
-//   missing there fall back to lucina.glb. Chat "mettiti la divisa", "put on your gym clothes",
-//   "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+//   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
+//   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
+//   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
@@ -1497,51 +1498,87 @@ function handleAsset(res, rel) {
 // ---------- Avatar wardrobe (GET/PUT /v1/avatar, GET /v1/avatar/wardrobe) ----------
 
 const OUTFIT_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
-let avatar = { outfit: null, auto: true, rules: { gym: "gym", shopping: "chef", default: "uniform" }, updatedMs: 0, updatedBy: "" };
+const SECTION_KEYS = ["gym", "shopping", "default"];
+const DEFAULT_RULES = {
+  gym: { outfit: "gym", hair: "ponytail" },
+  shopping: { outfit: "chef", hair: "natural" },
+  default: { outfit: "uniform", hair: "natural" },
+};
+let avatar = { outfit: null, hair: null, hairColor: null, auto: true, rules: DEFAULT_RULES, updatedMs: 0, updatedBy: "" };
 
-function wardrobeList() {
+/** `{outfits, hairstyles, colors}` (a bare array is the outfits), from the wardrobe dir or the placeholder. */
+function wardrobeFile() {
   const real = join(WARDROBE_DIR, "wardrobe.json");
   for (const file of [real, WARDROBE_PLACEHOLDER]) {
     try {
-      const list = JSON.parse(readFileSync(file, "utf8"));
-      if (Array.isArray(list)) return list.filter((e) => e && OUTFIT_ID.test(e.id) && typeof e.glb === "string");
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      const o = Array.isArray(raw) ? { outfits: raw } : raw;
+      const list = (v, glb) => (Array.isArray(v) ? v.filter((e) => e && OUTFIT_ID.test(e.id) && (!glb || e.id === "natural" || typeof e.glb === "string")) : []);
+      return {
+        outfits: list(o.outfits, true),
+        hairstyles: list(o.hairstyles, true),
+        colors: list(o.colors).filter((c) => /^#[0-9a-f]{6}$/i.test(c.hex ?? "")),
+      };
     } catch {
       // next
     }
   }
-  return [];
+  return { outfits: [], hairstyles: [], colors: [] };
 }
 
-/** PUT /v1/avatar: merge a patch like the real server (400 shape errors, 422 unknown_outfit). */
+const bad = (message) => ({ status: 400, code: "bad_request", message });
+
+/** PUT /v1/avatar: merge a patch like the real server (400 shape errors, 422 unknown_*). */
 function patchAvatar(body, by) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return { status: 400, code: "bad_request", message: "expected an object" };
-  for (const k of Object.keys(body)) if (!["outfit", "auto", "rules"].includes(k)) return { status: 400, code: "bad_request", message: `unknown field ${k}` };
+  if (!body || typeof body !== "object" || Array.isArray(body)) return bad("expected an object");
+  for (const k of Object.keys(body)) if (!["outfit", "hair", "hairColor", "auto", "rules"].includes(k)) return bad(`unknown field ${k}`);
   const rules = body.rules ?? {};
-  if (typeof rules !== "object" || Array.isArray(rules)) return { status: 400, code: "bad_request", message: "rules: expected an object" };
-  for (const k of Object.keys(rules)) if (!["gym", "shopping", "default"].includes(k)) return { status: 400, code: "bad_request", message: `rules: unknown field ${k}` };
-  if (body.auto !== undefined && typeof body.auto !== "boolean") return { status: 400, code: "bad_request", message: "auto: expected a boolean" };
-  const next = {
-    ...avatar,
-    ...("outfit" in body ? { outfit: body.outfit } : {}),
-    ...(body.auto !== undefined ? { auto: body.auto } : {}),
-    rules: { ...avatar.rules, ...rules },
+  if (typeof rules !== "object" || Array.isArray(rules)) return bad("rules: expected an object");
+  if (body.auto !== undefined && typeof body.auto !== "boolean") return bad("auto: expected a boolean");
+  const nextRules = { ...avatar.rules };
+  for (const [k, v] of Object.entries(rules)) {
+    if (!SECTION_KEYS.includes(k)) return bad(`rules: unknown field ${k}`);
+    const p = typeof v === "string" ? { outfit: v } : v;
+    if (!p || typeof p !== "object" || Object.keys(p).some((f) => f !== "outfit" && f !== "hair")) return bad(`rules.${k}: expected {outfit?, hair?}`);
+    nextRules[k] = { ...nextRules[k], ...p };
+  }
+  const next = { ...avatar, rules: nextRules };
+  for (const f of ["outfit", "hair", "hairColor"]) if (f in body) next[f] = body[f];
+  if (body.auto !== undefined) next.auto = body.auto;
+  const outfits = [next.outfit, ...SECTION_KEYS.map((k) => next.rules[k].outfit)].filter((v) => v !== null);
+  const hairs = [next.hair, ...SECTION_KEYS.map((k) => next.rules[k].hair)].filter((v) => v !== null);
+  const colors = [next.hairColor].filter((v) => v !== null);
+  if ([...outfits, ...hairs, ...colors].some((v) => typeof v !== "string" || !OUTFIT_ID.test(v))) return bad("ids must match [a-z0-9][a-z0-9_-]*");
+  const w = wardrobeFile();
+  const check = (ids, list, code, what, extra = []) => {
+    const known = [...extra, ...list.map((e) => e.id)];
+    const miss = list.length ? ids.find((v) => !known.includes(v)) : undefined;
+    return miss ? { status: 422, code, message: `no ${what} "${miss}" in the wardrobe; known: ${known.join(", ")}` } : null;
   };
-  const ids = [next.outfit, next.rules.gym, next.rules.shopping, next.rules.default].filter((v) => v !== null);
-  if (ids.some((v) => typeof v !== "string" || !OUTFIT_ID.test(v))) return { status: 400, code: "bad_request", message: "outfit ids must match [a-z0-9][a-z0-9_-]*" };
-  const known = wardrobeList().map((e) => e.id);
-  const bad = known.length ? ids.find((v) => !known.includes(v)) : undefined;
-  if (bad) return { status: 422, code: "unknown_outfit", message: `no outfit "${bad}" in the wardrobe; known: ${known.join(", ")}` };
+  const err =
+    check(outfits, w.outfits, "unknown_outfit", "outfit") ??
+    check(hairs, w.hairstyles, "unknown_hairstyle", "hairstyle", ["natural"]) ??
+    check(colors, w.colors, "unknown_hair_color", "hair colour");
+  if (err) return err;
   avatar = { ...next, updatedMs: Date.now(), updatedBy: by };
   return null;
 }
 
-/** "mettiti il vestito da cameriera", "put on your gym clothes", "torna automatica": Lucina changes outfit. */
-function outfitIntent(text) {
+/**
+ * "mettiti il vestito da cameriera", "put on your gym clothes", "fatti la coda", "put your hair in
+ * a bun", "torna automatica": Lucina changes her look. Returns a patch, null (back to automatic)
+ * or undefined (not a request).
+ */
+function lookIntent(text) {
   const m = text.toLowerCase();
-  if (!/\b(mettiti|metti|indossa|cambia(ti)? (vestito|abito)|put on|wear|change (into|your outfit)|tag .* på|skift)\b/.test(m)) return undefined;
-  if (/\b(automatic|automatico|automatica|auto|automatisk)\b/.test(m)) return null;
+  if (/\b(torna|go back|switch back|skift).*\b(automatic|automatico|automatica|automatisk)\b/.test(m)) return null;
+  const hairWords = { ponytail: /\bcoda\b|ponytail|hestehale/, bun: /chignon|\bbun\b|knold/, natural: /capelli sciolti|hair down|løst hår/ };
+  if (/\b(fatti|raccogli|pettina|put your hair|wear your hair|do your hair|sæt dit hår|sæt håret)\b/.test(m)) {
+    for (const [id, re] of Object.entries(hairWords)) if (re.test(m)) return { hair: id };
+  }
+  if (!/\b(mettiti|indossa|cambia(ti)? (vestito|abito)|put on|change into|tag .* på|skift til)\b/.test(m)) return undefined;
   const words = { gym: /palestra|gym|tuta|træning|sport/, chef: /chef|cuoc|kok/, maid: /cameriera|maid|stuepige/, casual: /casual|hverdag/, uniform: /divisa|uniform/ };
-  for (const [id, re] of Object.entries(words)) if (re.test(m)) return id;
+  for (const [id, re] of Object.entries(words)) if (re.test(m)) return { outfit: id };
   return undefined;
 }
 
@@ -1603,11 +1640,11 @@ async function handleChat(req, res) {
   let reply;
   let meta;
   const ids = { sessionId: `secretary_${sessionId}`, clientMessageId };
-  const outfit = outfitIntent(message);
-  if (outfit !== undefined) {
-    patchAvatar(outfit === null ? { outfit: null, auto: true } : { outfit }, "lucina");
-    meta = outfit === null ? { kind: "avatar_outfit" } : { kind: "avatar_outfit", outfit };
-    reply = { reply: outfit === null ? "Va bene, torno a cambiarmi da sola." : "Un attimo… eccomi!", action: "avatar_outfit", job: null, ...ids };
+  const look = lookIntent(message);
+  if (look !== undefined) {
+    patchAvatar(look === null ? { outfit: null, hair: null, auto: true } : look, "lucina");
+    meta = { kind: "avatar_outfit", ...(look ?? {}) };
+    reply = { reply: look === null ? "Va bene, torno a cambiarmi da sola." : "Un attimo… eccomi!", action: "avatar_outfit", job: null, ...ids };
   } else if (/(job|order|book|image)/.test(m)) {
     const id = randomUUID();
     const action = m.includes("image") ? "generate_image" : m.includes("order") ? "spreadsheet_update_task" : "cursor_task";
@@ -1828,7 +1865,7 @@ async function route(req, res) {
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
-  if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeList());
+  if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeFile());
   if (path === "/v1/avatar" && method === "GET") return send(res, 200, avatar);
   if (path === "/v1/avatar" && method === "PUT") {
     const body = await readJson(req);

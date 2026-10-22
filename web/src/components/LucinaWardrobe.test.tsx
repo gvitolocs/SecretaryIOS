@@ -6,7 +6,7 @@ import { reloadStageFromStorage, setStageHidden } from "../state/stage";
 import { closeWardrobe, resetWardrobeState, wardrobeOpen } from "../state/wardrobe";
 import { stubFetch, type Call } from "../test/fetch";
 import { fake, resetFakeStage } from "../test/stage";
-import { OUTFITS, settings } from "../test/wardrobe";
+import { merge, settings, WARDROBE } from "../test/wardrobe";
 import Shell from "../views/Shell";
 
 // No WebGL in tests: the Lucina stage is a fake.
@@ -17,10 +17,10 @@ function serve(avatar = settings()): Call[] {
   return stubFetch((c) => {
     if (c.url.startsWith("/v1/timeline")) return { body: { items: [], nextBefore: null } };
     if (c.url === "/v1/health") return { body: { ok: true, lucina: { reachable: true } } };
-    if (c.url === "/v1/avatar/wardrobe") return { body: OUTFITS };
+    if (c.url === "/v1/avatar/wardrobe") return { body: WARDROBE };
     if (c.url === "/v1/avatar" && c.method === "GET") return { body: current };
     if (c.url === "/v1/avatar" && c.method === "PUT") {
-      current = { ...current, ...(c.body as object) };
+      current = merge(current, c.body as Record<string, unknown>);
       return { body: current };
     }
     return { status: 404 };
@@ -58,11 +58,13 @@ describe("Lucina's outfit in the shell", () => {
     renderShell("/gym");
     await waitFor(() => expect(fake.stages).toHaveLength(1));
     const stage = fake.stages[0]!;
-    expect(stage.options).toMatchObject({ outfit: "gym", assetBase: "/v1/assets/" });
+    expect(stage.options).toMatchObject({ outfit: "gym", hair: "ponytail", hairColor: null, assetBase: "/v1/assets/" });
+    expect((stage.options as { hairstyles: unknown[] }).hairstyles).toHaveLength(3);
     expect((stage.options as { wardrobe: unknown[] }).wardrobe).toHaveLength(4);
 
     go("Shopping");
     await waitFor(() => expect(stage.setOutfit).toHaveBeenLastCalledWith("chef"));
+    await waitFor(() => expect(stage.setHair).toHaveBeenLastCalledWith("natural"));
     go("Chat");
     await waitFor(() => expect(stage.setOutfit).toHaveBeenLastCalledWith("uniform"));
     expect(fake.stages).toHaveLength(1);
@@ -76,6 +78,8 @@ describe("Lucina's outfit in the shell", () => {
     await waitFor(() => expect(stage.outfit).toBe("uniform"));
     receiveItem({ id: "x1", ts: Date.now(), channel: "telegram", role: "lucina", text: "Ecco!", meta: { kind: "avatar_outfit", outfit: "maid" } });
     await waitFor(() => expect(stage.setOutfit).toHaveBeenLastCalledWith("maid"));
+    receiveItem({ id: "x2", ts: Date.now(), channel: "web", role: "lucina", text: "Coda!", meta: { kind: "avatar_outfit", hair: "bun" } });
+    await waitFor(() => expect(stage.setHair).toHaveBeenLastCalledWith("bun"));
   });
 
   it("opens the wardrobe from her controls, even with the stage hidden", async () => {

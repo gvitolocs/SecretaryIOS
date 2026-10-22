@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TimelineItem } from "../api/timeline";
 import { deferred, stubFetch, type Call } from "../test/fetch";
-import { OUTFITS, settings } from "../test/wardrobe";
+import { merge, settings, WARDROBE } from "../test/wardrobe";
 import { receiveItem } from "./chat";
 import {
   avatarError,
@@ -12,6 +12,10 @@ import {
   loadAvatar,
   resetWardrobeState,
   setAvatarPath,
+  setHairColor,
+  wearHair,
+  currentHair,
+  currentHairColor,
   startAvatarSync,
   updateAvatar,
   wardrobeOutfits,
@@ -22,11 +26,11 @@ function serve(state = settings(), extra?: (c: Call) => { status?: number; body?
   return stubFetch((c) => {
     const x = extra?.(c);
     if (x) return x;
-    if (c.url === "/v1/avatar/wardrobe") return { body: OUTFITS };
+    if (c.url === "/v1/avatar/wardrobe") return { body: WARDROBE };
     if (c.url === "/v1/avatar" && c.method === "GET") return { body: current };
     if (c.url === "/v1/avatar" && c.method === "PUT") {
       const p = c.body as Record<string, unknown>;
-      current = { ...current, ...p, rules: { ...current.rules, ...((p.rules as object) ?? {}) }, updatedBy: "web" } as typeof current;
+      current = { ...merge(current, p), updatedBy: "web" };
       return { body: current };
     }
     return { status: 404 };
@@ -70,7 +74,7 @@ describe("wardrobe state", () => {
     await loadAvatar();
     expect(wardrobeOutfits()).toEqual([]);
     expect(currentOutfit()).toBeNull();
-    expect(avatarSettings().rules.gym).toBe("gym");
+    expect(avatarSettings().rules.gym).toEqual({ outfit: "gym", hair: "ponytail" });
   });
 
   it("writes optimistically with the CSRF header and rolls back a refused write", async () => {
@@ -103,7 +107,7 @@ describe("wardrobe state", () => {
         await gate.promise;
         return { body: settings({ outfit: "gym" }) };
       }
-      if (c.url === "/v1/avatar/wardrobe") return { body: OUTFITS };
+      if (c.url === "/v1/avatar/wardrobe") return { body: WARDROBE };
       return { body: settings() };
     });
     const w = updateAvatar({ outfit: "gym" });
@@ -138,5 +142,35 @@ describe("wardrobe state", () => {
     } finally {
       off();
     }
+  });
+});
+
+describe("wardrobe state: hair", () => {
+  beforeEach(() => resetWardrobeState());
+  afterEach(() => resetWardrobeState());
+
+  it("follows the section's hair, pins a hairstyle and a colour", async () => {
+    const calls = serve();
+    await loadAvatar();
+    setAvatarPath("/gym");
+    expect(currentHair()).toBe("ponytail");
+    setAvatarPath("/");
+    expect(currentHair()).toBe("natural");
+    expect(currentHairColor()).toBeNull();
+    expect(await wearHair("bun")).toBe(true);
+    expect(await setHairColor("pink")).toBe(true);
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ hair: "bun" }, { hairColor: "pink" }]);
+    setAvatarPath("/gym");
+    expect(currentHair()).toBe("bun");
+    expect(currentHairColor()).toBe("pink");
+  });
+
+  it("applies the hair in Lucina's live items", async () => {
+    serve();
+    await loadAvatar();
+    handleTimelineItem(lucinaItem({ kind: "avatar_outfit", hair: "bun" }));
+    expect(avatarSettings().hair).toBe("bun");
+    expect(avatarSettings().outfit).toBeNull();
+    expect(currentHair()).toBe("bun");
   });
 });

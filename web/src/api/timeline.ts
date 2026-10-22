@@ -18,8 +18,9 @@ export interface ItemMeta {
   channelName?: string;
   isDm?: boolean;
   kind?: "reminder" | "avatar_outfit";
-  /** With kind "avatar_outfit": the outfit Lucina put on (absent: back to automatic). */
+  /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
   outfit?: string;
+  hair?: string;
 }
 
 export interface TimelineItem {
@@ -77,6 +78,7 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (m.kind === "avatar_outfit") {
     out.kind = "avatar_outfit";
     if (typeof m.outfit === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.outfit)) out.outfit = m.outfit;
+    if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
   }
   return Object.keys(out).length ? out : undefined;
 }
