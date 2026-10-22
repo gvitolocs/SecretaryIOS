@@ -14,6 +14,7 @@ pub mod capabilities;
 pub mod chat;
 pub mod config;
 pub mod context;
+pub mod delegation;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
@@ -69,6 +70,8 @@ pub struct Inner {
     /// Meshy 3D (`LUCINA_MESHY=true`) and its one-tool registry.
     pub meshy: Option<Arc<lucina_meshy::MeshyService>>,
     pub meshy_registry: Option<Arc<Registry>>,
+    /// Delegation to Claude, Grok and ChatGPT (`LUCINA_DELEGATE`).
+    pub delegator: Option<Arc<lucina_delegate::Delegator>>,
     pub pending: Arc<PendingStore>,
     pub recent: Arc<RecentChat>,
     pub planner: planner::Planner,
@@ -199,7 +202,20 @@ impl AppState {
                 timeline.clone(),
             ))
         });
+        // The judge and summaries use the redacting model: nothing secret
+        // reaches DeepSeek either.
+        let delegator = delegation::build(
+            &cfg,
+            model.clone(),
+            env_http.clone(),
+            secret_store.clone(),
+            timeline.clone(),
+        );
+        env.delegator = delegator.clone();
         let mut registry = Registry::builtin(&cfg.tools);
+        if delegator.is_none() {
+            registry = registry.without(lucina_tools::tools::delegate::DELEGATION_TOOLS);
+        }
         let meshy_registry = meshy.as_ref().map(|svc| {
             let tool = Arc::new(lucina_tools::tools::meshy::MeshyTool::new(svc.clone()));
             if cfg.tools.allows("meshy") {
@@ -212,7 +228,8 @@ impl AppState {
             Arc::new(only)
         });
         let registry = Arc::new(registry);
-        let mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
+        // MCP turns: no owner-only tools and no delegation, ever.
+        let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {
             timeline,
@@ -240,6 +257,7 @@ impl AppState {
             registry,
             mcp_registry,
             secrets: secret_store,
+            delegator,
             pending: Arc::new(PendingStore::file(
                 cfg.data_dir.join("lucina-rs/pending-actions.json"),
                 DEFAULT_TTL,

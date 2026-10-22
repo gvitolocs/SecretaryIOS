@@ -618,6 +618,14 @@ async fn json_turn(
         }
     }
 
+    // Delegation (LUCINA_DELEGATE=true): the owner's switches, undo, and
+    // explicit asks ("chiedi a Grok …"). Never from Lucina MCP.
+    if let Some(d) = st.delegator.clone() {
+        if let Some(f) = delegation_hook(t, &d, memory).await {
+            return f;
+        }
+    }
+
     // A question about two or more of the owner's data ("cosa c'è sulla lista
     // della spesa e cosa ho nella nota X?"): no single bridge may answer it.
     // Gather each part's data and let the model answer every part.
@@ -835,6 +843,27 @@ async fn json_turn(
         return Finish::refusal(&persona, &action);
     }
 
+    // Lucina decided herself that another agent should do it.
+    if action == "delegate_task" {
+        if let Some(d) = st.delegator.clone() {
+            let task = plan["task"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&t.message)
+                .to_owned();
+            let to = plan["to"]
+                .as_str()
+                .and_then(lucina_delegate::AgentId::parse);
+            let kind = plan["kind"]
+                .as_str()
+                .and_then(lucina_delegate::Kind::parse)
+                .unwrap_or_else(|| lucina_delegate::intent::infer_kind(&task, to));
+            let req = owner_request(t, to, kind, task, None);
+            return delegated_finish(t, &d, req, memory).await;
+        }
+    }
+
     let tz = st.cfg.time_zone;
     if action == "list_reminders" && st.cfg.reminders_enabled {
         let scope = plan["scope"]
@@ -1004,6 +1033,117 @@ async fn json_turn(
         text
     };
     Finish::reply(text, "reply")
+}
+
+/// A delegation request from the owner's own turn.
+fn owner_request(
+    t: &Turn<'_>,
+    to: Option<lucina_delegate::AgentId>,
+    kind: lucina_delegate::Kind,
+    task: String,
+    workspace: Option<String>,
+) -> lucina_delegate::Request {
+    lucina_delegate::Request {
+        to,
+        kind,
+        task,
+        workspace,
+        origin: lucina_delegate::Origin::Owner,
+        depth: 0,
+        caller: None,
+        session_id: t.session.clone(),
+        channel: t.channel.clone(),
+        lang: None,
+        resume_job: None,
+    }
+}
+
+/// The owner's switches ("non usare Grok", "stop delegating") and undo
+/// ("annulla delega 1a2b3c4d"); `mcp`: refused.
+async fn delegation_settings(
+    d: &std::sync::Arc<lucina_delegate::Delegator>,
+    message: &str,
+    mcp: bool,
+) -> Option<Finish> {
+    use lucina_delegate::intent;
+    let (reply, action) = if let Some(s) = intent::parse_switch(message) {
+        if mcp {
+            return Some(delegation_refused(s.lang));
+        }
+        (d.switch(&s), "delegation_settings")
+    } else if let Some((id, lang)) = intent::parse_undo(message) {
+        if mcp {
+            return Some(delegation_refused(lang));
+        }
+        (d.undo(&id, lang).await, "delegation_undo")
+    } else {
+        return None;
+    };
+    Some(Finish::reply(reply, action).with(format!("[{action}]"), Some(Meta::kind("delegation"))))
+}
+
+/// Hard limit: outside agents calling Lucina never drive delegation.
+fn delegation_refused(lang: &str) -> Finish {
+    let mut f = Finish::reply(
+        lucina_delegate::policy::Refusal::McpOrigin.message(lang),
+        "needs_confirmation",
+    );
+    f.extra.insert("blockedAction".into(), json!("delegate"));
+    f.action_result = "[delegation refused: mcp_origin]".into();
+    f
+}
+
+/// The JSON planner path's delegation hook (before the planner).
+async fn delegation_hook(
+    t: &Turn<'_>,
+    d: &std::sync::Arc<lucina_delegate::Delegator>,
+    memory: &str,
+) -> Option<Finish> {
+    if let Some(f) = delegation_settings(d, &t.message, t.mcp.is_some()).await {
+        return Some(f);
+    }
+    let i = lucina_delegate::intent::parse_delegation(&t.message)?;
+    if t.mcp.is_some() {
+        tracing::warn!(session_id = %t.session, "secretary mcp turn refused: delegation");
+        return Some(delegation_refused(i.lang));
+    }
+    let req = owner_request(t, i.to, i.kind, i.task, i.workspace);
+    Some(delegated_finish(t, d, req, memory).await)
+}
+
+/// Run a delegation and turn it into the reply: a finished answer is
+/// relayed in Lucina's words, anything else gets a fixed sentence (the
+/// card on the timeline carries the details).
+async fn delegated_finish(
+    t: &Turn<'_>,
+    d: &std::sync::Arc<lucina_delegate::Delegator>,
+    req: lucina_delegate::Request,
+    memory: &str,
+) -> Finish {
+    use crate::delegation as dg;
+    let ran = dg::run(d, req).await;
+    let fallback = dg::plain_reply(&ran);
+    let reply = match &ran.job {
+        Some(job) if ran.finished && job.status == lucina_delegate::JobStatus::Done => {
+            let instruction = format!(
+                "Relay this answer to Giuseppe in the language of his message: 1-4 short sentences, saying it comes from {}. If it says the full answer is in Notes, say so. Do not add facts that are not in it.",
+                job.agent.label()
+            );
+            t.st.planner
+                .generate_skill_reply(
+                    &t.input(memory, PLATFORM_LABEL),
+                    &format!("{} (asked by Lucina)", job.agent.label()),
+                    &dg::answer_text(job),
+                    &instruction,
+                )
+                .await
+                .ok()
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or(fallback)
+        }
+        _ => fallback,
+    };
+    Finish::reply(reply, "delegate").with(dg::action_result(&ran), dg::meta(&ran))
 }
 
 /// Honcho: a saved note's summary (`rememberNote`).
@@ -1324,7 +1464,13 @@ async fn tools_turn(
     let fallback = || {
         format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")
     };
+    let delegation = match (&st.delegator, &secrets) {
+        (Some(d), None) => delegation_settings(d, &message, mcp).await,
+        _ => None,
+    };
     let finish = if let Some(f) = secrets {
+        f
+    } else if let Some(f) = delegation {
         f
     } else if let Some(result) = settled {
         let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());

@@ -139,6 +139,12 @@ pub struct Config {
     pub secrets_config: Option<PathBuf>,
     /// Meshy 3D (`LUCINA_MESHY`, `MESHY_*`, `LUCINA_MESHY_*`).
     pub meshy: lucina_meshy::MeshyConfig,
+    /// `LUCINA_DELEGATE` (default false): Lucina delegates to Claude, Grok
+    /// and ChatGPT on her own judgement (crate `lucina-delegate`).
+    pub delegate_enabled: bool,
+    /// `LUCINA_DELEGATE_CONFIG`: the delegation policy (`delegate.toml`;
+    /// unset or missing: the defaults).
+    pub delegate_config: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Config {
@@ -162,6 +168,7 @@ impl std::fmt::Debug for Config {
             .field("jobs", &self.dsh.enabled)
             .field("secrets_config", &self.secrets_config)
             .field("meshy", &self.meshy.enabled)
+            .field("delegate", &self.delegate_enabled)
             .finish_non_exhaustive()
     }
 }
@@ -390,6 +397,8 @@ impl Config {
             secretary_service_token_file,
             secrets_config: get("LUCINA_SECRETS_CONFIG").map(PathBuf::from),
             meshy,
+            delegate_enabled: flag("LUCINA_DELEGATE", false),
+            delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             data_dir,
         })
     }
@@ -425,6 +434,7 @@ mod tests {
         assert!(c.presence_context);
         assert_eq!(c.presence_retention_days, 90);
         assert_eq!(c.owner_discord_user_id, None);
+        assert!(!c.delegate_enabled, "delegation is opt-in per host");
         assert!(!format!("{c:?}").contains("\"t\""));
     }
 }

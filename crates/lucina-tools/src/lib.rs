@@ -14,9 +14,11 @@
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
 //!   `notes`, `reminders`, `calendar`, `shopping`, `presence`, `avatar_outfit`, `notify`,
-//!   and the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]:
-//!   never offered on Lucina MCP turns); `meshy` (3D models, registered by the
-//!   server when `LUCINA_MESHY=true`).
+//!   the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]),
+//!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
+//!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
+//!   these is offered on Lucina MCP turns ([`NO_MCP_TOOLS`]); `meshy` (3D
+//!   models, registered by the server when `LUCINA_MESHY=true`).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
 //!   (`weather.api_key` -> `secret://lucina/prod/lucina#OPEN_METEO_API_KEY`),
 //!   uses the value for its own outbound call only, and every tool result is
@@ -49,6 +51,11 @@ pub enum SideEffect {
     External,
     /// Acts on the owner's devices.
     Device,
+    /// Hands work to another AI agent (Claude, Grok, ChatGPT). Not
+    /// confirmed by the owner: Lucina's own self-review decides, and the
+    /// hard limits of `lucina-delegate` hold (no secrets out, no money,
+    /// depth 1, never from Lucina MCP, code only in a sandbox).
+    Delegate,
 }
 
 impl SideEffect {
@@ -58,6 +65,7 @@ impl SideEffect {
             SideEffect::Local => "local",
             SideEffect::External => "external",
             SideEffect::Device => "device",
+            SideEffect::Delegate => "delegate",
         }
     }
 }
@@ -195,6 +203,8 @@ pub struct ToolEnv {
     pub secretary_service_token_file: Option<PathBuf>,
     /// Infisical (`LUCINA_SECRETS_CONFIG`): secrets by reference, for tools.
     pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
+    /// Delegation to Claude, Grok and ChatGPT (`LUCINA_DELEGATE`).
+    pub delegator: Option<Arc<lucina_delegate::Delegator>>,
 }
 
 impl ToolEnv {
@@ -237,6 +247,7 @@ impl ToolEnv {
             secretary_url: None,
             secretary_service_token_file: None,
             secrets: None,
+            delegator: None,
         }
     }
 }
@@ -419,6 +430,17 @@ pub fn name_words(name: &str) -> Vec<String> {
 /// Tools for the owner only: never registered on Lucina MCP turns.
 pub const OWNER_ONLY_TOOLS: &[&str] = &["secrets_status", "secrets_audit"];
 
+/// Every tool a Lucina MCP turn never gets: the owner-only tools and the
+/// delegation tools (outside agents calling Lucina must not drive her).
+pub const NO_MCP_TOOLS: &[&str] = &[
+    "secrets_status",
+    "secrets_audit",
+    "ask_claude",
+    "ask_grok",
+    "ask_chatgpt",
+    "delegate",
+];
+
 /// Which tools are enabled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolSelection {
@@ -587,9 +609,16 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 15);
-        let mcp = all.without(OWNER_ONLY_TOOLS);
+        assert_eq!(all.names().len(), 19);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 17);
+        let mcp = all.without(NO_MCP_TOOLS);
         assert_eq!(mcp.names().len(), 13);
+        for t in tools::delegate::DELEGATION_TOOLS
+            .iter()
+            .chain(OWNER_ONLY_TOOLS)
+        {
+            assert!(NO_MCP_TOOLS.contains(t), "{t}");
+        }
         assert!(mcp.get("secrets_status").is_none() && mcp.get("secrets_audit").is_none());
         let some = Registry::builtin(&ToolSelection::parse("time, calculator"));
         assert_eq!(some.names(), vec!["time", "calculator"]);

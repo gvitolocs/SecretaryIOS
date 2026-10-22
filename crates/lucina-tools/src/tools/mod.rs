@@ -3,6 +3,7 @@
 pub mod avatar;
 pub mod calculator;
 pub mod calendar;
+pub mod delegate;
 pub mod meshy;
 pub mod notes;
 pub mod notify;
@@ -38,6 +39,10 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(notify::NotifyTool),
         Arc::new(secrets::SecretsStatusTool),
         Arc::new(secrets::SecretsAuditTool),
+        Arc::new(delegate::AskClaudeTool),
+        Arc::new(delegate::AskGrokTool),
+        Arc::new(delegate::AskChatgptTool),
+        Arc::new(delegate::DelegateTool),
     ]
 }
 

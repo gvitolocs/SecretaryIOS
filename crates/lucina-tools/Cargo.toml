@@ -12,6 +12,7 @@ lucina-store = { path = "../lucina-store" }
 lucina-grocery = { path = "../lucina-grocery" }
 lucina-discord = { path = "../lucina-discord" }
 lucina-meshy = { path = "../lucina-meshy" }
+lucina-delegate = { path = "../lucina-delegate" }
 async-trait = { workspace = true }
 schemars = "1"
 jsonschema = { version = "0.59", default-features = false }

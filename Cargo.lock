@@ -1698,6 +1698,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "lucina-delegate"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "lucina-llm",
+ "lucina-secrets",
+ "lucina-store",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "lucina-discord"
 version = "0.1.0"
 dependencies = [
@@ -1837,6 +1859,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "futures-util",
+ "lucina-delegate",
  "lucina-discord",
  "lucina-grocery",
  "lucina-intent",
@@ -1890,6 +1913,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "jsonschema",
+ "lucina-delegate",
  "lucina-discord",
  "lucina-grocery",
  "lucina-llm",

@@ -249,6 +249,7 @@ async fn health(State(st): State<AppState>) -> Response {
             "reminders": {"enabled": c.reminders_enabled, "writer": st.writer.kind(), "scheduler": c.scheduler && c.reminders_writer == crate::WriterKind::Local},
             "channels": {"telegram": false, "discord": false},
             "grocery": st.grocery.is_some(),
+            "delegation": {"enabled": st.delegator.is_some()},
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
             "timelineStreams": st.streams.load(Ordering::Relaxed),
@@ -407,6 +408,41 @@ async fn route(
         (Some("presence"), None) => {
             only(&["GET"])?;
             Ok(ok(presence_report(st, Utc::now())))
+        }
+        (Some("delegations"), None) => {
+            only(&["GET"])?;
+            let mut v = crate::delegation::api_status(st.delegator.as_ref()).await;
+            lucina_secrets::redactor().redact_json(&mut v);
+            Ok(ok(v))
+        }
+        (Some("delegations"), Some(id)) => {
+            only(&["GET"])?;
+            let job = st
+                .delegator
+                .as_ref()
+                .and_then(|d| d.job(id))
+                .ok_or_else(|| ApiError::new(404, "job_not_found", "No such delegation"))?;
+            let mut v = serde_json::to_value(job).unwrap_or_default();
+            lucina_secrets::redactor().redact_json(&mut v);
+            Ok(ok(v))
+        }
+        (Some("delegate"), None) => {
+            only(&["POST"])?;
+            let d = st.delegator.clone().ok_or_else(|| {
+                ApiError::new(
+                    404,
+                    "delegation_disabled",
+                    "Delegation is off (LUCINA_DELEGATE)",
+                )
+            })?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            match crate::delegation::api_delegate(&d, &body).await {
+                Ok(mut v) => {
+                    lucina_secrets::redactor().redact_json(&mut v);
+                    Ok(ok(v))
+                }
+                Err((status, code, msg)) => Err(ApiError::new(status, code, msg)),
+            }
         }
         (Some("shopping"), id) => {
             let allowed: &[&str] = if id.is_some() {

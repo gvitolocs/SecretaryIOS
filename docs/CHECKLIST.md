@@ -20,6 +20,15 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [x] Lucina guard for MCP turns (allowlist of actions) + strip the MCP prefix before intents (c37de51, live)
 - [x] ChatGPT (custom plugin, OAuth) and Grok Bot (custom MCP server, OAuth) connected
 - [ ] Grok Bot caller shows as "www": map the cursor.com redirect host to "grok"
+- [x] Lucina delegates on her own to Claude (CLI), Grok (Grok Bot / xAI) and ChatGPT (OpenAI / Codex): self-judged,
+      no confirmations, hard limits (no secrets out, no money, depth 1, never from MCP, code only in a bwrap sandbox
+      on `lucina/<job>`), budget as a runaway guard, cards + notes + audit → `docs/lucina-rust/DELEGATION.md`
+      (branch `lucina-delegate`)
+- [ ] Deploy delegation: `LUCINA_DELEGATE=true` + `~/.config/lucina-rs/delegate.toml` on lucina-rs
+- [ ] Grok for Lucina: sign the Grok Bot app on nezopt back in (it is signed out), or add an xAI key
+      (`delegate.xai_api_key`); until then research goes to ChatGPT (Codex)
+- [ ] Proactive engine: call `/api/secretary/delegate` (dry run) for research once `lucina-proactive` merges
+- [ ] Telegram/Discord (Node Lucina): thin bridge to `/api/secretary/delegate`-style delegation, behind a flag
 
 ## Waiting
 ### Web
