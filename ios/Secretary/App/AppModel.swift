@@ -25,6 +25,8 @@ final class AppModel {
     var selectedTab: Tab = .chat
     /// Notes open on top of the chat (the tab bar has no room for a sixth tab on iPhone).
     var showNotes = false
+    /// Tasks open on top of the chat, like Notes.
+    var showTasks = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -40,6 +42,8 @@ final class AppModel {
     let weight: WeightStore
     /// Notes, briefings and documents (/v1/notes).
     let notes: NotesStore
+    /// Tasks synced with Todoist (/v1/tasks).
+    let tasks: TasksStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -86,6 +90,7 @@ final class AppModel {
         }
         weight = WeightStore(client: { BodyClient(client: client) })
         notes = NotesStore(api: { NotesAPI(client: client) })
+        tasks = TasksStore(api: { TasksAPI(client: client) })
         health = HealthStore(api: { SecretaryAPI(client: client) })
         lucina = LucinaStageController(client: client, chat: chat)
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
@@ -95,6 +100,10 @@ final class AppModel {
         if launch.openNotes {
             selectedTab = .chat
             showNotes = true
+        }
+        if launch.openTasks {
+            selectedTab = .chat
+            showTasks = true
         }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
@@ -122,6 +131,7 @@ final class AppModel {
         transportErrorHandler = onError
         weight.onTransportError = onError
         notes.onTransportError = onError
+        tasks.onTransportError = onError
         client.onEndpointChange = { [weak self] url in
             Task { @MainActor in self?.baseURL = url }
         }
@@ -323,12 +333,15 @@ struct LaunchOptions {
     var initialTab: AppModel.Tab?
     /// `-SecretaryInitialTab notes`: start on the Notes screen.
     var openNotes = false
+    /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
+    var openTasks = false
 
     init(defaults: UserDefaults) {
         #if DEBUG
         resetState = defaults.bool(forKey: "SecretaryResetState")
         initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
+        openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
         #endif
     }
 }

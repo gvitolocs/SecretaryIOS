@@ -7,6 +7,7 @@ struct LinksView: View {
     @State private var store: LinksStore?
     @State private var addingCalendar = false
     @State private var addingLink = false
+    @State private var pastingToken = false
     @State private var confirming: LinkCard?
 
     var body: some View {
@@ -100,14 +101,19 @@ struct LinksView: View {
         }
         .confirmationDialog(confirmTitle, isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
                             titleVisibility: .visible, presenting: confirming) { card in
-            Button(card.kind == "google" ? "Disconnect" : "Remove", role: .destructive) {
+            Button(card.kind == "google" || card.kind == "todoist" ? "Disconnect" : "Remove", role: .destructive) {
                 Task {
-                    if card.kind == "google" { await store.disconnectGoogle() } else { await store.remove(card) }
+                    if card.kind == "google" { await store.disconnectGoogle() }
+                    else if card.kind == "todoist" { await store.disconnectTodoist() }
+                    else { await store.remove(card) }
                 }
             }
         }
         .sheet(isPresented: $addingCalendar) {
             AddCalendarSheet { label, url in await store.addSubscription(label: label, url: url) }
+        }
+        .sheet(isPresented: $pastingToken) {
+            TodoistTokenSheet { token in await store.saveTodoistToken(token) }
         }
         .sheet(isPresented: $addingLink) {
             AddLinkSheet { kind, label, url, icon, tags in await store.addLink(kind: kind, label: label, url: url, icon: icon, tags: tags) }
@@ -116,12 +122,22 @@ struct LinksView: View {
 
     private var confirmTitle: String {
         guard let card = confirming else { return "" }
-        return card.kind == "google"
+        return card.kind == "google" || card.kind == "todoist"
             ? String(localized: "Disconnect \(LinkRow.displayName(card))? Lucina stops reading it.")
             : String(localized: "Remove \(LinkRow.displayName(card))?")
     }
 
     private func perform(_ action: String, on card: LinkCard, store: LinksStore) {
+        if card.kind == "todoist" {
+            switch action {
+            case "connect", "reconnect": Task { await store.connectTodoist(card) }
+            case "token": pastingToken = true
+            case "sync": Task { await store.syncTodoist() }
+            case "disconnect": confirming = card
+            default: break
+            }
+            return
+        }
         switch action {
         case "connect", "reconnect": Task { await store.connectGoogle(card) }
         case "sync": Task { await store.sync() }
@@ -133,6 +149,7 @@ struct LinksView: View {
     static func title(_ group: String) -> LocalizedStringKey {
         switch group {
         case "calendars": "Calendars"
+        case "tasks": "Tasks"
         case "channels": "Chat channels"
         case "ai": "AI clients"
         case "google": "Google"
@@ -144,6 +161,7 @@ struct LinksView: View {
     static func hint(_ group: String) -> LocalizedStringKey {
         switch group {
         case "calendars": "Lucina reads these to answer “what's on tomorrow?” and to plan your day."
+        case "tasks": "Todoist, synced both ways: what you do here shows up in Todoist and the other way round."
         case "channels": "Where Lucina talks with you."
         case "ai": "Assistants that use Lucina through her MCP server."
         case "google": "More Google services with the same sign-in, read-only."
@@ -287,6 +305,7 @@ struct LinkRow: View {
         case "disconnect": "Disconnect"
         case "sync": "Sync"
         case "remove": "Remove"
+        case "token": "Paste API token"
         default: LocalizedStringKey(action)
         }
         if action == "connect" || action == "reconnect" {
@@ -422,6 +441,44 @@ private struct ProposalRow: View {
 }
 
 // MARK: - Sheets
+
+private struct TodoistTokenSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let save: (String) async -> Bool
+    @State private var token = ""
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("API token", text: $token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("todoistToken")
+                } footer: {
+                    Text("In Todoist: Settings → Integrations → Developer → copy the API token. It is stored encrypted on the server and never shown again.")
+                }
+            }
+            .navigationTitle("Todoist")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Connect") {
+                        saving = true
+                        Task {
+                            if await save(token.trimmingCharacters(in: .whitespacesAndNewlines)) { dismiss() }
+                            saving = false
+                        }
+                    }
+                    .disabled(saving || token.trimmingCharacters(in: .whitespaces).count < 20)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+}
 
 private struct AddCalendarSheet: View {
     @Environment(\.dismiss) private var dismiss

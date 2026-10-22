@@ -76,7 +76,7 @@ struct MainTabs: View {
     private var tabs: some View {
         @Bindable var app = app
         return TabView(selection: $app.selectedTab) {
-            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry() }
+            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
             NavigationStack { ShoppingTab().lucinaStatusToolbar() }

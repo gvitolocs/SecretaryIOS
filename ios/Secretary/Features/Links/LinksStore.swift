@@ -81,6 +81,62 @@ final class LinksStore {
         }
     }
 
+    // MARK: - Todoist (docs/server-api.md, "Tasks")
+
+    /// Checks the pasted API token with Todoist (on the server) and stores it encrypted.
+    func saveTodoistToken(_ token: String) async -> Bool {
+        struct Body: Encodable { let token: String }
+        struct Answer: Decodable { let account: String? }
+        do {
+            let answer: Answer = try await client.send("POST", "/v1/links/todoist/token", body: Body(token: token), timeout: 30)
+            notice = String(localized: "Todoist is connected (\(answer.account ?? "Todoist")). Importing your tasks…")
+            await load()
+            return true
+        } catch let APIError.server(_, code, _) where code == "todoist_token_rejected" {
+            error = String(localized: "Todoist didn't accept that token. Copy it again from Settings → Integrations → Developer.")
+            return false
+        } catch {
+            self.error = Self.message(error)
+            return false
+        }
+    }
+
+    /// Todoist's own sign-in (when the server has a Todoist app configured).
+    func connectTodoist(_ card: LinkCard) async {
+        busyCard = card.id
+        defer { busyCard = nil }
+        do {
+            struct Body: Encodable { let client: String }
+            struct Answer: Decodable { let authorizeUrl: String }
+            let answer: Answer = try await client.send("POST", "/v1/links/todoist/connect", body: Body(client: "ios"))
+            guard let url = URL(string: answer.authorizeUrl) else { throw APIError.invalidURL }
+            let callback = try await authenticate(url)
+            let outcome = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "todoist" }?.value
+            if outcome == "connected" { notice = String(localized: "Todoist is connected. Importing your tasks…") }
+            else { error = String(localized: "Todoist didn't connect.") }
+            await load()
+        } catch is CancellationError {
+        } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
+        } catch {
+            self.error = Self.message(error)
+        }
+    }
+
+    func syncTodoist() async {
+        await run(card: "todoist") {
+            struct Empty: Encodable {}
+            _ = try await self.client.send("POST", "/v1/links/todoist/sync", query: [], body: try APIClient.encoder.encode(Empty()), timeout: 45)
+            self.notice = String(localized: "Todoist synced.")
+        }
+    }
+
+    func disconnectTodoist() async {
+        await run(card: "todoist") {
+            _ = try await self.client.send("DELETE", "/v1/links/todoist", body: nil)
+            self.notice = String(localized: "Disconnected.")
+        }
+    }
+
     func remove(_ card: LinkCard) async {
         let parts = card.id.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return }
