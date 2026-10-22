@@ -96,6 +96,8 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
     var attachments: [TimelineAttachment]
     var meta: TimelineMeta?
     var backfilled: Bool
+    /// Lucina message format v1 (`meta.format == "v1"`): bubbles, widgets and buttons.
+    var rich: RichMessage?
 
     // Local only (never on the wire).
     var localStatus: LocalStatus?
@@ -107,7 +109,7 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
 
     init(id: String, ts: Date, channel: TimelineChannel, role: Role, text: String, clientMessageId: String? = nil,
          replyTo: String? = nil, attachments: [TimelineAttachment] = [], meta: TimelineMeta? = nil, backfilled: Bool = false,
-         localStatus: LocalStatus? = nil, localError: String? = nil) {
+         localStatus: LocalStatus? = nil, localError: String? = nil, rich: RichMessage? = nil) {
         self.id = id
         self.ts = ts
         self.channel = channel
@@ -120,6 +122,7 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
         self.backfilled = backfilled
         self.localStatus = localStatus
         self.localError = localError
+        self.rich = rich
     }
 
     init(from decoder: Decoder) throws {
@@ -138,6 +141,8 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
         attachments = c.lenient([TimelineAttachment].self, .attachments, [])
         meta = c.lenientOptional(TimelineMeta.self, .meta)
         backfilled = c.lenient(Bool.self, .backfilled, false)
+        // From the server: inside meta. From this phone's cache: under `rich`.
+        rich = RichMessage.parse(c.lenientOptional(JSONValue.self, .meta)) ?? c.lenientOptional(RichMessage.self, .rich)
         localStatus = c.lenientOptional(LocalStatus.self, .localStatus)
         localError = c.lenientOptional(String.self, .localError)
     }
@@ -156,10 +161,11 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
         if backfilled { try c.encode(true, forKey: .backfilled) }
         try c.encodeIfPresent(localStatus, forKey: .localStatus)
         try c.encodeIfPresent(localError, forKey: .localError)
+        try c.encodeIfPresent(rich, forKey: .rich)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, ts, channel, role, text, clientMessageId, replyTo, attachments, meta, backfilled, localStatus, localError
+        case id, ts, channel, role, text, clientMessageId, replyTo, attachments, meta, backfilled, localStatus, localError, rich
     }
 
     /// `ts` as an ISO 8601 string (with or without fractions) or epoch milliseconds.

@@ -96,8 +96,11 @@ struct ChatResponse: Decodable, Equatable, Sendable {
     /// Timeline ids of the two messages this exchange created (unified chat servers).
     let userItemId: String?
     let lucinaItemId: String?
+    /// Lucina message format v1 (docs/lucina-message-format.md); `reply` is then the plain fallback.
+    let rich: RichMessage?
 
     init(from decoder: Decoder) throws {
+        rich = RichMessage.parse(try? JSONValue(from: decoder))
         let c = try decoder.container(keyedBy: CodingKeys.self)
         userItemId = (try? c.decodeIfPresent(FlexibleID.self, forKey: .userItemId))?.value
         lucinaItemId = (try? c.decodeIfPresent(FlexibleID.self, forKey: .lucinaItemId))?.value

@@ -46,6 +46,19 @@ final class ChatStore {
     /// The live stream is connected.
     private(set) var isLive = false
     private(set) var loadError: String?
+    /// Text a rich-reply button wants in the composer ("Ricordami alle 21:30 di …", "Modifica").
+    private(set) var prefill: PrefillRequest?
+    /// Buttons already used, by Lucina item id (persisted).
+    private(set) var choices: [String: String] = [:]
+    /// Rich replies that just arrived: their bubbles appear one by one, once.
+    @ObservationIgnored private var revealIds: Set<String> = []
+
+    struct PrefillRequest: Equatable {
+        let text: String
+        let id = UUID()
+    }
+
+    nonisolated static let choicesKey = "secretary.chat.choices.v1"
 
     @ObservationIgnored private let api: () -> SecretaryAPI
     @ObservationIgnored private let fileURL: URL
@@ -71,6 +84,34 @@ final class ChatStore {
         jobs = cache.jobs
         lastEventId = cache.lastEventId
         if cache.localOnly { mode = .localOnly }
+        choices = (defaults.dictionary(forKey: Self.choicesKey) as? [String: String]) ?? [:]
+    }
+
+    // MARK: - Rich replies
+
+    func requestPrefill(_ text: String) {
+        prefill = PrefillRequest(text: text)
+    }
+
+    func chosenAction(for itemId: String) -> String? { choices[itemId] }
+
+    func choose(_ actionId: String, for itemId: String) {
+        choices[itemId] = actionId
+        if choices.count > 200 { choices = Dictionary(uniqueKeysWithValues: choices.suffix(200).map { ($0.key, $0.value) }) }
+        defaults.set(choices, forKey: Self.choicesKey)
+    }
+
+    /// True once for a rich reply that arrived while the chat was open.
+    func consumeReveal(_ itemId: String) -> Bool {
+        revealIds.remove(itemId) != nil
+    }
+
+    /// A Lucina message's button the owner answered by typing its text in the next message.
+    func inferredChoice(after item: TimelineItem) -> String? {
+        guard let rich = item.rich, !rich.actions.isEmpty, let index = items.firstIndex(where: { $0.id == item.id }),
+              let next = items[(index + 1)...].first(where: { $0.role == .user }) else { return nil }
+        let said = next.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return rich.actions.first { ($0.kind == .reply || $0.kind == .confirm) && $0.text?.lowercased() == said }?.id
     }
 
     nonisolated static var defaultFileURL: URL {
@@ -242,6 +283,7 @@ final class ChatStore {
         if let id = event.id { lastEventId = id }
         guard event.event == "item" || event.event == "message" else { return } // pings and unknown events
         guard let item = try? JSONDecoder().decode(TimelineItem.self, from: Data(event.data.utf8)) else { return }
+        if item.role == .lucina, item.rich != nil, !items.contains(where: { $0.id == item.id }) { revealIds.insert(item.id) }
         apply([item])
     }
 
@@ -299,7 +341,7 @@ final class ChatStore {
             if items[index].id == userId { user.localStatus = items[index].isLocal ? .sent : nil }
             let reply = TimelineItem(id: replyId, ts: max(Date(), sentAt.addingTimeInterval(0.001)), channel: .ios, role: .lucina,
                                      text: response.reply, clientMessageId: clientId, replyTo: userId,
-                                     localStatus: response.lucinaItemId == nil ? .sent : nil)
+                                     localStatus: response.lucinaItemId == nil ? .sent : nil, rich: response.rich)
             if userId != localId { items.removeAll { $0.id == localId } }
             // The stream may have delivered the real items first; never downgrade them.
             var incoming: [TimelineItem] = []
@@ -307,6 +349,7 @@ final class ChatStore {
             if !items.contains(where: { $0.id == replyId && !$0.isLocal })
                 && !items.contains(where: { $0.role == .lucina && !$0.isLocal && ($0.replyTo == userId || $0.clientMessageId == clientId) }) {
                 incoming.append(reply)
+                if response.rich != nil { revealIds.insert(replyId) }
             }
             let merged = TimelineMerge.merge(items.filter { !incoming.map(\.id).contains($0.id) }, incoming)
             items = merged.items
@@ -315,7 +358,8 @@ final class ChatStore {
                 if !JobInfo.isTerminal(job.status) { startPolling(itemId: replyId, delay: pollInterval) }
             }
             persist()
-            return response.reply
+            // Her voice reads only the bubbles (never the widgets), without markdown.
+            return response.rich?.speechText ?? RichMessage.stripMarkdown(response.reply)
         } catch {
             let apiError = APIError.wrap(error)
             onTransportError?(apiError)
