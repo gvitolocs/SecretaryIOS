@@ -319,11 +319,22 @@ async fn route(
         }
         return device(st, method, id, extra, fourth, body).await;
     }
+    if resource == Some("shopping") && id == Some("items") && extra.is_none() {
+        if method != Method::GET {
+            return Err(ApiError::method_not_allowed(&["GET"]));
+        }
+        let repo = repo(st)?;
+        let items = repo
+            .custom_items(&st.cfg.grocery_user_id)
+            .await
+            .map_err(grocery_error)?;
+        return Ok(ok(json!({ "items": items })));
+    }
     if resource == Some("shopping") && id == Some("lists") {
         if parts.len() > 4 {
             return Err(ApiError::not_found());
         }
-        return shopping_lists(st, method, extra, fourth, body).await;
+        return shopping_lists(st, method, uri, extra, fourth, body).await;
     }
     if extra.is_some() {
         return Err(ApiError::not_found());
@@ -395,7 +406,7 @@ async fn route(
                 &["GET", "POST"]
             };
             only(allowed)?;
-            shopping_legacy(st, method, id, body).await
+            shopping_legacy(st, method, uri, id, body).await
         }
         _ => Err(ApiError::not_found()),
     }
@@ -884,18 +895,38 @@ fn repo(st: &AppState) -> Result<&lucina_grocery::GroceryRepo, ApiError> {
     })
 }
 
+/// `?lang=it|en|da` (or the body's `lang`): the language of item names;
+/// `None` = the owner's. Anything else is `400 bad_request`.
+fn shopping_lang(uri: &Uri, body: Option<&Value>) -> Result<Option<String>, ApiError> {
+    let v = query_param(uri, "lang")
+        .filter(|s| !s.is_empty())
+        .or_else(|| body.and_then(|b| b["lang"].as_str()).map(str::to_owned));
+    match v {
+        None => Ok(None),
+        Some(l) if lucina_grocery::items::LANGS.contains(&l.as_str()) => Ok(Some(l)),
+        Some(_) => Err(ApiError::bad_request(format!(
+            "lang must be one of {}",
+            lucina_grocery::items::LANGS.join(", ")
+        ))),
+    }
+}
+
 async fn shopping_legacy(
     st: &AppState,
     method: &Method,
+    uri: &Uri,
     item_id: Option<&str>,
     body: Body,
 ) -> ApiResult {
     let repo = repo(st)?;
     let user = &st.cfg.grocery_user_id;
     match (method.as_str(), item_id) {
-        ("GET", None) => Ok(ok(
-            json!({"items": repo.legacy_list(user).await.map_err(grocery_error)?}),
-        )),
+        ("GET", None) => {
+            let lang = shopping_lang(uri, None)?;
+            Ok(ok(
+                json!({"items": repo.legacy_list_in(user, lang.as_deref()).await.map_err(grocery_error)?}),
+            ))
+        }
         ("POST", None) => {
             let body = read_json(body, MAX_BODY_BYTES).await?;
             let raw = optional_string(&body, "rawName", MAX_SHOPPING_NAME_CHARS)?;
@@ -908,8 +939,15 @@ async fn shopping_legacy(
             } else {
                 &product
             });
+            let lang = shopping_lang(uri, Some(&body))?;
             let item = repo
-                .add_item(user, &canonical, &raw, shopping_channel(&body))
+                .add_item_in(
+                    user,
+                    &canonical,
+                    &raw,
+                    shopping_channel(&body),
+                    lang.as_deref(),
+                )
                 .await
                 .map_err(grocery_error)?;
             Ok(ok_status(201, json!({"item": item})))
@@ -942,6 +980,7 @@ async fn shopping_legacy(
 async fn shopping_lists(
     st: &AppState,
     method: &Method,
+    uri: &Uri,
     list_id: Option<&str>,
     sub: Option<&str>,
     body: Body,
@@ -988,8 +1027,16 @@ async fn shopping_lists(
             }
             _ => return Err(ApiError::bad_request("expectedRevision must be an integer")),
         };
+        let lang = shopping_lang(uri, Some(&body))?;
         let out = repo
-            .apply_ops(user, id, &body["ops"], expected, shopping_channel(&body))
+            .apply_ops_in(
+                user,
+                id,
+                &body["ops"],
+                expected,
+                shopping_channel(&body),
+                lang.as_deref(),
+            )
             .await
             .map_err(grocery_error)?;
         return Ok(ok(out.to_json()));
@@ -998,10 +1045,13 @@ async fn shopping_lists(
         return Err(ApiError::not_found());
     }
     match method.as_str() {
-        "GET" => Ok(ok(repo
-            .list_state(user, id)
-            .await
-            .map_err(grocery_error)?)),
+        "GET" => {
+            let lang = shopping_lang(uri, None)?;
+            Ok(ok(repo
+                .list_state_in(user, id, lang.as_deref())
+                .await
+                .map_err(grocery_error)?))
+        }
         "PATCH" => {
             let body = read_json(body, MAX_BODY_BYTES).await?;
             if body.get("name").is_none() && body.get("theme").is_none() {

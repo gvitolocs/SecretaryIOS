@@ -198,7 +198,7 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
         return Some(base("grocery.shopping_list.query"));
     }
     if re!(r"\b(add|put)\b.*\b(shopping list|grocery list)\b", "i").test(value)
-        || re!(r"\btilføj\b.*\b(indkøbsliste|listen)\b", "i").test(value)
+        || re!(r"\btilføj\b.*\b(indkøbslisten?|listen)\b", "i").test(value)
         || re!(
             r"\b(add|put)\s+.+(?:\s+on(?:to)?\s+(?:the\s+|my\s+)?list)\b",
             "i"
@@ -213,7 +213,7 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
         let raw = product_after(
             value,
             re!(
-                r"(?:add|put|tilføj|aggiungi|metti)\s+(.+?)(?:\s+(?:to|on|onto|på|alla|nella|in|su)\s+(?:my\s+|the\s+|la\s+|mia\s+)?(?:shopping|grocery|indkøbs)?\s*lista?(?:\s+della\s+spesa)?)?$",
+                r"(?:add|put|tilføj|aggiungi|metti)\s+(.+?)(?:\s+(?:to|on|onto|på|til|alla|nella|in|su)\s+(?:my\s+|the\s+|la\s+|mia\s+|min\s+)?(?:(?:shopping|grocery)\s*list|indkøbslisten?|listen|lista(?:\s+della\s+spesa)?|list))?$",
                 "i"
             ),
         );
@@ -437,8 +437,23 @@ mod tests {
                 .raw_product,
             "eggs"
         );
-        // V8: `\b` never matches inside "indkøbslisten", so only "listen" works.
-        assert_eq!(intent("tilføj mælk til indkøbslisten"), None);
+        // Node 2026-10-22: "indkøbslisten" (definite form) parses too.
+        assert_eq!(
+            intent("tilføj mælk til indkøbslisten"),
+            Some("grocery.shopping_list.add")
+        );
+        assert_eq!(
+            parse_grocery_intent("tilføj mælk til indkøbslisten")
+                .unwrap()
+                .raw_product,
+            "mælk"
+        );
+        assert_eq!(
+            parse_grocery_intent("add milk to my shopping list")
+                .unwrap()
+                .raw_product,
+            "milk"
+        );
         assert_eq!(
             intent("tilføj mælk til listen"),
             Some("grocery.shopping_list.add")

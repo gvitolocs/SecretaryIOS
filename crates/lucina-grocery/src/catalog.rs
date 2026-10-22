@@ -71,10 +71,21 @@ impl CatalogItem {
     }
 }
 
+/// A catalog section (`{id, names, icon, order}`; localised files have `name`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogSection {
+    pub id: String,
+    pub name: Option<String>,
+    pub names: HashMap<String, String>,
+    pub icon: Option<String>,
+    pub order: f64,
+}
+
 #[derive(Debug, Default)]
 pub struct CatalogIndex {
     pub version: Option<Value>,
     items: HashMap<String, CatalogItem>,
+    sections: Vec<CatalogSection>,
     /// Folded id, name and per-language names; they win over aliases.
     by_name: HashMap<String, String>,
     by_alias: HashMap<String, String>,
@@ -108,6 +119,40 @@ impl CatalogIndex {
             version: data.get("version").cloned(),
             ..Default::default()
         };
+        for s in data
+            .get("sections")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = s
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+            else {
+                continue;
+            };
+            idx.sections.push(CatalogSection {
+                id: id.to_owned(),
+                name: s.get("name").and_then(Value::as_str).map(str::to_owned),
+                names: s
+                    .get("names")
+                    .and_then(Value::as_object)
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|x| (k.clone(), x.to_owned())))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                icon: s.get("icon").and_then(Value::as_str).map(str::to_owned),
+                order: s.get("order").and_then(Value::as_f64).unwrap_or(0.0),
+            });
+        }
+        idx.sections.sort_by(|a, b| {
+            a.order
+                .partial_cmp(&b.order)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let mut aliases: Vec<(String, Vec<String>)> = Vec::new();
         for item in data
             .get("items")
@@ -176,6 +221,30 @@ impl CatalogIndex {
 
     pub fn item(&self, id: &str) -> Option<&CatalogItem> {
         self.items.get(id)
+    }
+
+    /// Every section, in catalog order.
+    pub fn sections(&self) -> &[CatalogSection] {
+        &self.sections
+    }
+
+    pub fn section(&self, id: &str) -> Option<&CatalogSection> {
+        self.sections.iter().find(|s| s.id == id)
+    }
+
+    /// An already folded key: a name in any language (`"name"`) or an alias
+    /// (`"alias"`); no plural guessing.
+    pub fn lookup(&self, key: &str) -> Option<(&CatalogItem, &'static str)> {
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(id) = self.by_name.get(key) {
+            return self.items.get(id).map(|i| (i, "name"));
+        }
+        self.by_alias
+            .get(key)
+            .and_then(|id| self.items.get(id))
+            .map(|i| (i, "alias"))
     }
 
     /// Exact folded match of an id, name, translation or alias (a trailing

@@ -78,17 +78,26 @@ UPDATE grocery.shopping_list_items i
 
 -- Existing duplicates (same list and key, not removed): keep one, preferring
 -- a needed row, then the most recently updated; the rest become removed.
-UPDATE grocery.shopping_list_items i
-   SET status = 'removed', updated_at = now()
-  FROM (SELECT id, row_number() OVER (
-                 PARTITION BY list_id, COALESCE(catalog_item_id, name_key)
-                 ORDER BY (status = 'needed') DESC, updated_at DESC, id) AS rn
-          FROM grocery.shopping_list_items WHERE status <> 'removed') ranked
- WHERE i.id = ranked.id AND ranked.rn > 1;
+-- Skipped once 003_shopping_items has run (item_id exists): from then on
+-- uniqueness is per item object (shopping_list_items_one_active_per_item),
+-- and re-running this file must not collapse rows of different objects.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = 'grocery' AND table_name = 'shopping_list_items' AND column_name = 'item_id') THEN
+    UPDATE grocery.shopping_list_items i
+       SET status = 'removed', updated_at = now()
+      FROM (SELECT id, row_number() OVER (
+                     PARTITION BY list_id, COALESCE(catalog_item_id, name_key)
+                     ORDER BY (status = 'needed') DESC, updated_at DESC, id) AS rn
+              FROM grocery.shopping_list_items WHERE status <> 'removed') ranked
+     WHERE i.id = ranked.id AND ranked.rn > 1;
 
-CREATE UNIQUE INDEX IF NOT EXISTS shopping_list_items_one_active_per_key
-  ON grocery.shopping_list_items (list_id, (COALESCE(catalog_item_id, name_key)))
-  WHERE status <> 'removed';
+    CREATE UNIQUE INDEX IF NOT EXISTS shopping_list_items_one_active_per_key
+      ON grocery.shopping_list_items (list_id, (COALESCE(catalog_item_id, name_key)))
+      WHERE status <> 'removed';
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS shopping_list_items_list_idx
   ON grocery.shopping_list_items (list_id, status);
 
