@@ -397,8 +397,16 @@ struct Inner {
     max_bytes: u64,
     keep_rotated: u64,
     cache_size: usize,
+    /// Sorted by id (pages, `before` cursors).
     entries: Vec<Entry>,
-    by_id: HashSet<String>,
+    /// id → arrival sequence number.
+    by_id: HashMap<String, u64>,
+    /// `(seq, id)` in arrival order, which is file order: the order the
+    /// lines were committed, whoever wrote them. Ids are not commit order (a
+    /// slow writer's line can land behind a newer id), so the SSE replay and
+    /// follow use this order (docs/verification.md, T1 fix A).
+    arrival: VecDeque<(u64, String)>,
+    next_seq: u64,
     cache: HashMap<String, Arc<str>>,
     cache_order: VecDeque<String>,
     current_gen: u64,
@@ -469,10 +477,13 @@ impl Inner {
     }
 
     fn insert_entry(&mut self, entry: Entry) -> bool {
-        if self.by_id.contains(&entry.id) {
+        if self.by_id.contains_key(&entry.id) {
             return false;
         }
-        self.by_id.insert(entry.id.clone());
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.by_id.insert(entry.id.clone(), seq);
+        self.arrival.push_back((seq, entry.id.clone()));
         match self.entries.last() {
             Some(last) if last.id >= entry.id => {
                 let pos = self.entries.partition_point(|e| e.id < entry.id);
@@ -528,6 +539,8 @@ impl Inner {
     fn load_all(&mut self) -> Result<()> {
         self.entries.clear();
         self.by_id.clear();
+        // Rebuilt in file order (oldest generation first): the arrival order.
+        self.arrival.clear();
         self.cache.clear();
         self.cache_order.clear();
         self.known_size = 0;
@@ -551,6 +564,22 @@ impl Inner {
         Ok(())
     }
 
+    /// Rebuild the index after another process rotated or truncated the
+    /// file; returns the lines it had not indexed before, in arrival order,
+    /// so they are published like any other new line (a stream following by
+    /// arrival must see them before anything that arrives later).
+    fn reload(&mut self) -> Result<Vec<StoredItem>> {
+        let before: HashSet<String> = self.by_id.keys().cloned().collect();
+        self.load_all()?;
+        let fresh: Vec<Entry> = self
+            .arrival
+            .iter()
+            .filter(|(_, id)| !before.contains(id))
+            .filter_map(|(_, id)| self.entry(id).cloned())
+            .collect();
+        self.read_entries(&fresh)
+    }
+
     /// Pick up lines appended by anyone since the last scan.
     fn refresh(&mut self) -> Result<Vec<StoredItem>> {
         if !self.loaded {
@@ -564,15 +593,14 @@ impl Inner {
         };
         let Some(meta) = meta else {
             if self.known_size > 0 || self.known_ino.is_some() {
-                self.load_all()?;
+                return self.reload();
             }
             return Ok(Vec::new());
         };
         let ino = ino_of(&meta);
         if self.known_ino.is_some_and(|k| k != ino) || meta.len() < self.known_size {
             // Rotated or truncated by another process: rebuild.
-            self.load_all()?;
-            return Ok(Vec::new());
+            return self.reload();
         }
         if meta.len() == self.known_size {
             self.known_ino = Some(ino);
@@ -606,10 +634,12 @@ impl Inner {
         self.current_gen += 1;
         let oldest = self.current_gen - self.keep_rotated;
         self.entries.retain(|e| e.gen >= oldest);
-        self.by_id = self.entries.iter().map(|e| e.id.clone()).collect();
+        let kept: HashSet<&str> = self.entries.iter().map(|e| e.id.as_str()).collect();
+        self.by_id.retain(|k, _| kept.contains(k.as_str()));
+        self.arrival.retain(|(_, k)| kept.contains(k.as_str()));
         let by_id = &self.by_id;
-        self.cache.retain(|k, _| by_id.contains(k));
-        self.cache_order.retain(|k| by_id.contains(k));
+        self.cache.retain(|k, _| by_id.contains_key(k));
+        self.cache_order.retain(|k| by_id.contains_key(k));
         self.known_size = 0;
         self.known_ino = None;
         self.needs_leading_newline = false;
@@ -667,6 +697,41 @@ impl Inner {
         }
         Ok(out)
     }
+
+    fn entry(&self, id: &str) -> Option<&Entry> {
+        self.entries
+            .binary_search_by(|e| e.id.as_str().cmp(id))
+            .ok()
+            .map(|i| &self.entries[i])
+    }
+
+    /// Up to `limit` entries that arrived after `after`, in arrival order
+    /// (T1 fix A). An id the index no longer holds (rotated away, or from
+    /// another store) falls back to "ids after it", still in arrival order;
+    /// `None` is everything.
+    fn after_arrival(&self, after: Option<&str>, limit: usize) -> Vec<Entry> {
+        let ids: Vec<&String> = match after.map(|a| (a, self.by_id.get(a))) {
+            None => self.arrival.iter().map(|(_, id)| id).take(limit).collect(),
+            Some((_, Some(&seq))) => {
+                let start = self.arrival.partition_point(|(s, _)| *s <= seq);
+                self.arrival
+                    .range(start..)
+                    .map(|(_, id)| id)
+                    .take(limit)
+                    .collect()
+            }
+            Some((a, None)) => self
+                .arrival
+                .iter()
+                .map(|(_, id)| id)
+                .filter(|id| id.as_str() > a)
+                .take(limit)
+                .collect(),
+        };
+        ids.into_iter()
+            .filter_map(|id| self.entry(id).cloned())
+            .collect()
+    }
 }
 
 /// Exclusive advisory lock on `<path>.lock` (released on drop).
@@ -714,7 +779,9 @@ impl TimelineStore {
                 keep_rotated: DEFAULT_KEEP_ROTATED,
                 cache_size: DEFAULT_CACHE_SIZE,
                 entries: Vec::new(),
-                by_id: HashSet::new(),
+                by_id: HashMap::new(),
+                arrival: VecDeque::new(),
+                next_seq: 0,
                 cache: HashMap::new(),
                 cache_order: VecDeque::new(),
                 current_gen: DEFAULT_KEEP_ROTATED,
@@ -769,7 +836,7 @@ impl TimelineStore {
         let _flock = lock_sidecar(&inner.file_path)?;
         let found = inner.refresh()?;
         self.publish(found);
-        if inner.by_id.contains(&item.id) {
+        if inner.by_id.contains_key(&item.id) {
             return Ok(item);
         }
         if !explicit_id {
@@ -825,7 +892,9 @@ impl TimelineStore {
         Ok((items, next))
     }
 
-    /// Items with an id strictly after `after_id`, oldest first (SSE replay).
+    /// Items with an id strictly after `after_id`, oldest id first. Not for
+    /// resuming a stream: a line can land after a newer id (use
+    /// [`Self::after_arrival`]).
     pub fn after(&self, after_id: &str, limit: usize) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();
         let found = inner.refresh()?;
@@ -834,6 +903,26 @@ impl TimelineStore {
         let end = (start + limit).min(inner.entries.len());
         let selected = inner.entries[start..end].to_vec();
         inner.read_entries(&selected)
+    }
+
+    /// Items that arrived after `after_id` (file order), oldest first: the
+    /// SSE replay and follow (T1 fix A). Gap-free across writers: a late
+    /// line with a smaller id than the cursor is still after it here. An id
+    /// the index does not hold falls back to ids after it; `None` = all.
+    pub fn after_arrival(&self, after_id: Option<&str>, limit: usize) -> Result<Vec<StoredItem>> {
+        let mut inner = self.lock();
+        let found = inner.refresh()?;
+        self.publish(found);
+        let selected = inner.after_arrival(after_id, limit);
+        inner.read_entries(&selected)
+    }
+
+    /// The id of the line that arrived last (a fresh stream's cursor).
+    pub fn newest_arrival(&self) -> Result<Option<String>> {
+        let mut inner = self.lock();
+        let found = inner.refresh()?;
+        self.publish(found);
+        Ok(inner.arrival.back().map(|(_, id)| id.clone()))
     }
 
     /// Every stored item, oldest first.
@@ -1091,6 +1180,60 @@ mod tests {
         let (latest, _) = s.list(None, 3).unwrap();
         assert!(latest[0].raw.contains("filler 19"));
         assert!(fs::metadata(&path).unwrap().len() <= 600);
+    }
+
+    /// T1 (docs/verification.md): a line whose id was taken before a newer
+    /// line's but which lands after it in the file. Resuming by id skips it;
+    /// resuming by arrival does not.
+    #[test]
+    fn late_line_is_after_the_cursor_in_arrival_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("timeline.jsonl");
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        let old = s.append(item("old")).unwrap();
+        // Node takes N2's id, then Rust writes R (a newer id) first.
+        let late = normalize(item("late node line"), now_ms()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let newer = s.append(item("rust line")).unwrap();
+        assert!(late.id < newer.id);
+        // The client resumes from R (the last event it saw): N2 lands now.
+        let mut f = open_append(&path).unwrap();
+        writeln!(f, "{}", serde_json::to_string(&late).unwrap()).unwrap();
+        drop(f);
+        assert!(
+            s.after(&newer.id, 500).unwrap().is_empty(),
+            "by id: skipped"
+        );
+        let ids = |v: Vec<StoredItem>| v.into_iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(s.after_arrival(Some(&newer.id), 500).unwrap()),
+            vec![late.id.clone()]
+        );
+        assert_eq!(s.newest_arrival().unwrap(), Some(late.id.clone()));
+        assert_eq!(
+            ids(s.after_arrival(Some(&old.id), 500).unwrap()),
+            vec![newer.id.clone(), late.id.clone()]
+        );
+        assert_eq!(
+            ids(s.after_arrival(Some(&late.id), 500).unwrap()),
+            Vec::<String>::new()
+        );
+        // An id the index does not know: ids after it, in arrival order.
+        assert_eq!(
+            ids(s.after_arrival(Some(&old.id[..20]), 500).unwrap()).len(),
+            3
+        );
+        // A fresh store rebuilds the same order from the file.
+        let fresh = store(dir.path(), DEFAULT_MAX_BYTES);
+        assert_eq!(
+            ids(fresh.after_arrival(Some(&newer.id), 500).unwrap()),
+            vec![late.id.clone()]
+        );
+        // limit
+        assert_eq!(
+            ids(fresh.after_arrival(None, 2).unwrap()),
+            vec![old.id, newer.id]
+        );
     }
 
     #[test]

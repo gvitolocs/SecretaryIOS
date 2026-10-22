@@ -646,6 +646,108 @@ async fn timeline_pages_and_sse() {
     assert!(bad.status().as_u16() == 400 || bad.status().as_u16() == 429);
 }
 
+/// Read SSE text until `done(buf)` or 5 s.
+async fn read_sse<B: AsRef<[u8]>>(
+    stream: &mut (impl futures_util::Stream<Item = reqwest::Result<B>> + Unpin),
+    buf: &mut String,
+    done: impl Fn(&str) -> bool,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !done(buf) && tokio::time::Instant::now() < deadline {
+        if let Ok(Some(Ok(chunk))) =
+            tokio::time::timeout(Duration::from_millis(300), stream.next()).await
+        {
+            buf.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        }
+    }
+}
+
+/// T1 (docs/verification.md): Node took N2's id, Rust then wrote R (a newer
+/// id), the app saw R and reconnects with `Last-Event-ID: R`, and only then
+/// does N2 land in the file. Resuming by id skipped N2 forever; by arrival it
+/// is replayed (already landed) or sent live (lands later), exactly once.
+#[tokio::test]
+async fn resume_by_last_event_id_replays_a_late_line() {
+    let h = harness(chat_script("ok"), |_| {}).await;
+    let path = h.dir.path().join("timeline.jsonl");
+    let late_line = |text: &str| {
+        lucina_store::timeline::normalize(
+            lucina_store::NewItem {
+                channel: "telegram".into(),
+                role: "user".into(),
+                text: text.into(),
+                ..Default::default()
+            },
+            chrono::Utc::now().timestamp_millis(),
+        )
+        .unwrap()
+    };
+    let write_line = |item: &lucina_store::timeline::TimelineItem| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .unwrap();
+        writeln!(f, "{}", serde_json::to_string(item).unwrap()).unwrap();
+    };
+    let n2 = late_line("late node line");
+    let n3 = late_line("later node line");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    h.chat("rust line").await;
+    let (_, b) = h.get("/timeline?limit=1").await;
+    let r = b["data"]["items"][0]["id"].as_str().unwrap().to_owned();
+    assert!(n2.id < r && n3.id < r, "the late lines have smaller ids");
+    // N2 lands, then the app resumes from R: N2 comes in the replay.
+    write_line(&n2);
+    let resp = h
+        .http
+        .get(h.url("/timeline/stream"))
+        .bearer_auth(TOKEN)
+        .header("last-event-id", &r)
+        .send()
+        .await
+        .unwrap();
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    read_sse(&mut stream, &mut buf, |b| b.contains("late node line")).await;
+    assert!(buf.contains(&format!("id: {}\n", n2.id)), "replayed: {buf}");
+    // N3 lands while the stream is open: the follow tick sends it (its id is
+    // smaller than the cursor's), once.
+    write_line(&n3);
+    read_sse(&mut stream, &mut buf, |b| b.contains("later node line")).await;
+    // Two more follow ticks: nothing is sent again.
+    let until = tokio::time::Instant::now() + Duration::from_millis(2500);
+    while tokio::time::Instant::now() < until {
+        if let Ok(Some(Ok(chunk))) =
+            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
+        {
+            buf.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        }
+    }
+    assert_eq!(buf.matches(&format!("id: {}\n", n3.id)).count(), 1, "{buf}");
+    assert_eq!(buf.matches(&format!("id: {}\n", n2.id)).count(), 1, "{buf}");
+    assert_eq!(buf.matches(&format!("id: {r}\n")).count(), 0, "{buf}");
+    // A fresh stream (no id) starts after the line that arrived last (N3),
+    // not after the newest id (R).
+    drop(stream);
+    let resp = h
+        .http
+        .get(h.url("/timeline/stream"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    read_sse(&mut stream, &mut buf, |b| b.contains(": connected")).await;
+    let n4 = late_line("fresh-stream line");
+    write_line(&n4);
+    read_sse(&mut stream, &mut buf, |b| b.contains("fresh-stream line")).await;
+    assert!(buf.contains("fresh-stream line"), "{buf}");
+    assert!(!buf.contains("late node line"), "{buf}");
+}
+
 #[tokio::test]
 async fn device_bridge_routes() {
     let h = harness(chat_script("ok"), |_| {}).await;
