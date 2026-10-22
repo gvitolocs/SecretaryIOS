@@ -315,6 +315,25 @@ describe("live stream", () => {
     await vi.waitFor(() => expect(calls).toHaveLength(1));
   });
 
+  it("resyncs when the stream drops before its first item (no Last-Event-ID to resume from)", async () => {
+    // Model: verification/models/src/timeline.rs case T5, formal/timeline/Timeline_gap_bug.cfg.
+    installEventSource();
+    let n = 0;
+    const calls = stubFetch(() => {
+      n++;
+      return { body: { items: n === 1 ? page(1, 2) : page(1, 3), nextBefore: null } };
+    });
+    disconnect = connectTimeline();
+    await vi.waitFor(() => expect(ids()).toEqual(["1", "2"]));
+    const es = MockEventSource.latest();
+    es.open();
+    es.drop(); // dropped before any item: the browser reconnects without Last-Event-ID
+    es.open(); // so the server starts fresh; item 3 was written in between
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await vi.waitFor(() => expect(ids()).toEqual(["1", "2", "3"]));
+    expect(MockEventSource.instances).toHaveLength(1);
+  });
+
   it("reopens a closed stream with backoff and resyncs the timeline", async () => {
     vi.useFakeTimers();
     installEventSource();

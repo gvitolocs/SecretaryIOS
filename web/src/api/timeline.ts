@@ -240,6 +240,11 @@ export interface StreamHandlers {
  * server answers with an error status instead, EventSource gives up
  * (readyState CLOSED); then this opens a new one with backoff and asks the
  * caller to resync, because a new EventSource has no Last-Event-ID.
+ *
+ * A connection that drops before it delivered any item reconnects without a
+ * Last-Event-ID too (the browser only sends the id of an event it saw), so
+ * the server starts that stream fresh and the items written in between would
+ * be lost: resync on that reopen as well (docs/verification.md, bug T5).
  */
 export class TimelineStream {
   private es: EventSource | null = null;
@@ -247,6 +252,8 @@ export class TimelineStream {
   private attempt = 0;
   private stopped = true;
   private needsResync = false;
+  /** The current EventSource has dispatched an item (so it has an id to resume from). */
+  private sawItem = false;
 
   constructor(private readonly handlers: StreamHandlers) {}
 
@@ -291,6 +298,7 @@ export class TimelineStream {
       return;
     }
     this.es = es;
+    this.sawItem = false;
     es.onopen = () => {
       if (this.es !== es) return;
       this.attempt = 0;
@@ -307,11 +315,15 @@ export class TimelineStream {
         this.es = null;
         this.scheduleRetry();
       } else {
+        // The browser retries by itself; without a seen item it has no
+        // Last-Event-ID to send, so fill the gap once it is back.
+        if (!this.sawItem) this.needsResync = true;
         this.handlers.onStatus("reconnecting");
       }
     };
     es.addEventListener("item", (ev) => {
       if (this.es !== es) return;
+      this.sawItem = true;
       let data: unknown;
       try {
         data = JSON.parse((ev as MessageEvent<string>).data);
