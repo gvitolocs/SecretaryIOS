@@ -15,6 +15,8 @@ export interface CameraFraming {
 }
 
 export interface NormalizedManifest {
+  material?: string;
+  toon?: unknown;
   /** Logical morph -> candidate model morph names, most specific first. */
   morphs: Partial<Record<LogicalMorph, string[]>>;
   /** Logical bone -> candidate model node names. */
@@ -161,6 +163,8 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
   };
   if (!raw || typeof raw !== 'object') return out;
   const m = raw as Record<string, unknown>;
+  if (typeof m.material === 'string') out.material = m.material;
+  if (m.toon !== undefined) out.toon = m.toon;
 
   const morphSrc = (m.morphs ?? m.morph_map ?? m.morphMap ?? m.morphTargets ?? m.blendshapes ?? m.expressions) as unknown;
   if (morphSrc && typeof morphSrc === 'object' && !Array.isArray(morphSrc)) {

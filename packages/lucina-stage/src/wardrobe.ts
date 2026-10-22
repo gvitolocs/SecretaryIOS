@@ -21,6 +21,7 @@
  */
 import { Box3, Vector3, type Object3D } from 'three';
 import { HairRig, loadHairPart, NATURAL_HAIR, parseHairColors, parseHairstyles, type HairColor, type HairEntry } from './hair';
+import { applyToonHairPart, toonFallbackFor } from './toon';
 import { playOutfitEffect, type SubjectRect } from './outfitEffect';
 import type { StageQualitySetting, StageTheme } from './scene/quality';
 import { createLucinaStage, type LucinaStage, type LucinaStageOptions, type TapEvent } from './stage';
@@ -36,7 +37,7 @@ export interface WardrobeEntry {
   /** Asset name of the tile picture (`.png` / `.webp`). */
   thumbnail?: string;
   tags?: string[];
-  /** Asset name of a per-outfit manifest; default: the stage's own `manifestUrl`. */
+  /** Per-outfit manifest; otherwise reuse the starting toon look (or the stage's rig manifest). */
   manifest?: string;
 }
 
@@ -132,8 +133,8 @@ export interface SetModelOptions {
 
 export interface WardrobeStage extends LucinaStage {
   /**
-   * Swap the model. `manifest`: a URL, a manifest object, or nothing for the stage's own
-   * `manifestUrl`. Resolves once the new model is on stage (or the call was superseded).
+   * Swap the model. `manifest`: a URL or manifest object. Without it, reuse the starting toon
+   * look (or the original rig manifest). Resolves once the model is on stage or superseded.
    */
   setModel(url: string, manifest?: string | object | null, opts?: SetModelOptions): Promise<void>;
   /** Swap to a wardrobe outfit by id; rejects for an unknown id. No-op if already wearing it. */
@@ -151,7 +152,7 @@ export interface WardrobeStage extends LucinaStage {
   onOutfitChange(cb: (outfit: string | null) => void): () => void;
   /** Put a hairstyle on (`natural`/null: her own hair), with the change effect. */
   setHair(id: string | null, opts?: { effect?: boolean }): Promise<void>;
-  /** Tint the hair (a colour id; null: natural), with the change effect. */
+  /** Tint the hair (a colour id or #rrggbb; null: natural), with the change effect. */
   setHairColor(id: string | null, opts?: { effect?: boolean }): Promise<void>;
   setHairstyles(hairstyles: HairEntry[], colors?: HairColor[]): void;
   readonly hairstyles: readonly HairEntry[];
@@ -233,6 +234,7 @@ export async function createWardrobeStage(
   const startUrls = startEntry ? outfitUrls(startEntry, assetBase, options.manifestUrl) : null;
 
   let cur = await factory(canvas, startUrls ? { ...base, ...startUrls } : base);
+  base.toonFallback = toonFallbackFor(cur.three.model, options.manifestUrl) ?? base.toonFallback;
   let curCanvas = canvas;
   let outfit: string | null = startEntry && !cur.info.placeholder ? startEntry.id : null;
   let modelUrl: string | null = cur.info.placeholder ? null : (startUrls?.modelUrl ?? options.modelUrl ?? null);
@@ -287,20 +289,22 @@ export async function createWardrobeStage(
     return r;
   }
 
-  const hexOf = (id: string | null): string | null => (id ? (hairColors.find((c) => c.id === id)?.hex ?? null) : null);
+  const hexOf = (id: string | null): string | null => (id ? (hairColors.find((c) => c.id === id)?.hex ?? (/^#[0-9a-f]{6}$/i.test(id) ? id : null)) : null);
 
-  async function partFor(id: string): Promise<{ entry: HairEntry | null; part: Object3D | null }> {
+  async function partFor(id: string, model: Object3D): Promise<{ entry: HairEntry | null; part: Object3D | null }> {
     if (id === NATURAL_HAIR) return { entry: null, part: null };
     const entry = hairstyles.find((h) => h.id === id);
     if (!entry?.glb) throw new Error(`Unknown hairstyle: ${id}`);
-    return { entry, part: await loadHair(assetDir + entry.glb) };
+    const part = await loadHair(assetDir + entry.glb);
+    await applyToonHairPart(model, part);
+    return { entry, part };
   }
 
   /** Put the current hair and colour on `s` (a new model); a failed part leaves her own hair. */
   async function dressHair(s: LucinaStage): Promise<void> {
     if (s.info.placeholder) return;
     try {
-      const { entry, part } = await partFor(hair);
+      const { entry, part } = await partFor(hair, s.three.model);
       rigFor(s).attach(part, entry);
     } catch (e) {
       console.warn('[lucina-stage] hairstyle not loaded:', e);
@@ -503,7 +507,7 @@ export async function createWardrobeStage(
       if (disposed || want === hair) return;
       setChanging(1);
       try {
-        const { entry, part } = await partFor(want);
+        const { entry, part } = await partFor(want, cur.three.model);
         if (disposed) return;
         const s = cur;
         await underEffect(() => {
@@ -519,7 +523,7 @@ export async function createWardrobeStage(
   }
 
   function setHairColor(id: string | null, o: { effect?: boolean } = {}): Promise<void> {
-    if (id !== null && !hairColors.some((c) => c.id === id)) return Promise.reject(new Error(`Unknown hair colour: ${id}`));
+    if (id !== null && !/^#[0-9a-f]{6}$/i.test(id) && !hairColors.some((c) => c.id === id)) return Promise.reject(new Error(`Unknown hair colour: ${id}`));
     return queue(async () => {
       if (disposed || id === hairColor) return;
       setChanging(1);

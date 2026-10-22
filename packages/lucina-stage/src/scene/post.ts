@@ -12,8 +12,10 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 export class BloomPipeline {
   private readonly composer: EffectComposer;
   private readonly bloom: UnrealBloomPass;
+  private readonly toon: { threshold: number; strength: number; radius: number } | undefined;
 
   constructor(renderer: WebGLRenderer, scene: Scene, camera: Camera) {
+    this.toon = scene.userData.toonBloom;
     const size = renderer.getSize(new Vector2());
     this.composer = new EffectComposer(renderer);
     this.composer.renderTarget1.texture.type = HalfFloatType;
@@ -21,6 +23,7 @@ export class BloomPipeline {
     this.composer.addPass(new RenderPass(scene, camera));
     this.bloom = new UnrealBloomPass(new Vector2(size.x, size.y), 0.5, 0.55, 0.82);
     this.composer.addPass(this.bloom);
+    // OutputPass tone-maps the complete bloom image, including toneMapped=false toon pixels.
     this.composer.addPass(new OutputPass());
   }
 
@@ -31,13 +34,13 @@ export class BloomPipeline {
 
   /** 0..1 extra glow (e.g. while she speaks). */
   setBoost(k: number): void {
-    this.bloom.strength = 0.45 + 0.35 * k;
+    this.bloom.strength = (this.toon?.strength ?? 0.45) + 0.35 * k;
   }
 
   setTheme(light: boolean): void {
     // Bright backgrounds would bloom everywhere: raise the threshold on the light theme.
-    this.bloom.threshold = light ? 0.97 : 0.82;
-    this.bloom.radius = light ? 0.35 : 0.55;
+    this.bloom.threshold = light ? 0.97 : (this.toon?.threshold ?? 0.82);
+    this.bloom.radius = light ? 0.35 : (this.toon?.radius ?? 0.55);
   }
 
   render(dt: number): void {

@@ -30,6 +30,7 @@ import {
   type ToneMapping,
 } from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { applyManifestToon, type ToonHandle, type ToonSource } from './toon';
 import { Animator } from './animator';
 import { AnalyserLipSync, LipSyncProcessor, type LipSyncFrame } from './lipsync';
 import { fixMaterials, hideNodes, loadManifest, loadModel } from './loader';
@@ -49,6 +50,10 @@ import { clamp, type Expression, type Framing, type StageState } from './types';
 export interface LucinaStageOptions {
   /** GLB URL. Production: `/v1/assets/lucina.glb`. Omit to use the procedural placeholder. */
   modelUrl?: string;
+  /** Standard keeps the GLB materials; otherwise the manifest can opt into toon shading. */
+  material?: 'engage-toon' | 'standard';
+  /** Inherited look for models without a toon block; wardrobe preserves the original asset URL. */
+  toonFallback?: ToonSource;
   /** Manifest URL (morph/bone names, camera). Optional. */
   manifestUrl?: string;
   /** Applied to the model and manifest requests: `{ credentials: 'include' }` or an Authorization header. */
@@ -308,6 +313,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
   // ---------- Model ----------
   let manifest: NormalizedManifest = normalizeManifest(null);
   let model: Object3D;
+  let toon: ToonHandle | null = null;
   let placeholder = false;
   let extensions: string[] = [];
   let clipLib: ClipLibrary | null = null;
@@ -365,6 +371,10 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       }
     });
     fixMaterials(model);
+    toon = await applyManifestToon(model, manifest, { ...options, baseUrl: options.manifestUrl?.startsWith('blob:') ? options.modelUrl : options.manifestUrl });
+    if (toon) {
+      scene.userData.toonBloom = toon.config.bloom;
+    }
   }
 
   let rig = new Rig(container, manifest);
@@ -791,6 +801,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
       rig.apply(f, { driven: player.drivenNodes });
     } else rig.apply(f);
     applyCamera(dt, false);
+    toon?.update();
     if (env) {
       env.update(dt, machine.state, lip.open);
       env.driftCamera(camera, camNow.target);
@@ -800,6 +811,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
 
   function renderOnce(): void {
     if (disposed) return;
+    toon?.update();
     if (env) env.render(0);
     else renderer.render(scene, camera);
   }
@@ -866,6 +878,7 @@ export async function createLucinaStage(canvas: HTMLCanvasElement, options: Luci
     removeGestureUnlock();
     tapListeners.clear();
     stats.clear();
+    toon?.dispose();
     env?.dispose();
     env = null;
     const textures = new Set<Texture>();

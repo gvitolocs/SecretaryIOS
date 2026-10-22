@@ -43,9 +43,14 @@ async function main(): Promise<void> {
   const q = new URLSearchParams(location.search);
   const canvas = $<HTMLCanvasElement>('#stage');
   const model = await pickModel();
+  const clips = await fetch('/dev-assets/lucina-anims.glb', { method: 'HEAD' }).then((r) => r.ok).catch(() => false);
+  const clipsMeta = clips && await fetch('/dev-assets/clips.json', { method: 'HEAD' }).then((r) => r.ok).catch(() => false);
   const framingParam = q.get('framing') === 'full' ? 'full' : 'bust';
   const stage: LucinaStage = await createLucinaStage(canvas, {
     ...model,
+    material: q.get('material') === 'standard' ? 'standard' : 'engage-toon',
+    ...(clips ? { clipsUrl: '/dev-assets/lucina-anims.glb' } : {}),
+    ...(clipsMeta ? { clipsMetaUrl: '/dev-assets/clips.json' } : {}),
     framing: framingParam,
     fetchInit: { credentials: 'include' },
     ...(q.has('reduced') ? { reducedMotion: true } : {}),
