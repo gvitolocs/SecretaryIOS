@@ -17,12 +17,76 @@ export interface ItemMeta {
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder" | "avatar_outfit" | "note" | "notes";
+  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive";
   /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
   outfit?: string;
   hair?: string;
   /** With kind "note": the note Lucina saved or read. */
   slug?: string;
+  /** With kind "proactive": Lucina reached out on her own. */
+  proactive?: ProactiveMeta;
+}
+
+export type ProactivePriority = "low" | "normal" | "high";
+
+/** A button on a proactive message: a feedback tap, or a link into the app. */
+export interface ProactiveAction {
+  id: string;
+  label: string;
+  /** In-app path (content buttons). */
+  route?: string;
+  /** "useful" | "not_now" | "stop": posted as feedback. */
+  feedback?: boolean;
+}
+
+export interface ProactiveMeta {
+  /** `po_` + 26 base-32 characters; also in the deep link `/?outreach=<id>`. */
+  outreachId: string;
+  priority: ProactivePriority;
+  /** What it is about (meeting_prep, service_down, pulse, ...). */
+  topic?: string;
+  /** Why Lucina reached out (shown on tap). */
+  why?: string;
+  actions: ProactiveAction[];
+}
+
+export const OUTREACH_ID = /^po_[0-9A-HJKMNP-TV-Z]{26}$/;
+export const FEEDBACK_ACTIONS = ["useful", "not_now", "stop"] as const;
+export type FeedbackAction = (typeof FEEDBACK_ACTIONS)[number];
+
+/** An in-app path: one leading slash, no scheme or backslash, printable ASCII. */
+export function safeRoute(v: unknown): string | undefined {
+  if (typeof v !== "string" || v.length > 200) return undefined;
+  if (!v.startsWith("/") || v.startsWith("//") || v.includes("\\")) return undefined;
+  return /^[\x21-\x7e]+$/.test(v) ? v : undefined;
+}
+
+function parseProactive(m: Record<string, unknown>): ProactiveMeta | undefined {
+  const id = m.outreachId;
+  if (typeof id !== "string" || !OUTREACH_ID.test(id)) return undefined;
+  const priority: ProactivePriority =
+    m.priority === "high" || m.priority === "low" ? m.priority : "normal";
+  const actions: ProactiveAction[] = [];
+  if (Array.isArray(m.actions)) {
+    for (const a of m.actions.slice(0, 8)) {
+      if (!a || typeof a !== "object") continue;
+      const r = a as Record<string, unknown>;
+      const aid = typeof r.id === "string" && /^[a-z_]{1,32}$/.test(r.id) ? r.id : null;
+      const label = str(r.label, 40);
+      if (!aid || !label) continue;
+      const feedback = r.feedback === true && (FEEDBACK_ACTIONS as readonly string[]).includes(aid);
+      const route = feedback ? undefined : safeRoute(r.route);
+      // A content button without a valid route does nothing: drop it.
+      if (!feedback && !route) continue;
+      actions.push(feedback ? { id: aid, label, feedback: true } : { id: aid, label, route: route! });
+    }
+  }
+  const out: ProactiveMeta = { outreachId: id, priority, actions };
+  const topic = typeof m.topic === "string" && /^[a-z_]{1,40}$/.test(m.topic) ? m.topic : undefined;
+  if (topic) out.topic = topic;
+  const why = str(m.why, 400);
+  if (why) out.why = why;
+  return out;
 }
 
 export interface TimelineItem {
@@ -83,6 +147,13 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
   }
   if (m.kind === "notes") out.kind = "notes";
+  if (m.kind === "proactive") {
+    const p = parseProactive(m);
+    if (p) {
+      out.kind = "proactive";
+      out.proactive = p;
+    }
+  }
   if (m.kind === "note") {
     out.kind = "note";
     if (typeof m.slug === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.slug)) out.slug = m.slug;
