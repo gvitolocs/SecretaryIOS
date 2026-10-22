@@ -1461,6 +1461,40 @@ kept unless `--replace`. `secretary-server notes list` prints id, slug,
 size, source and title. The running server picks imported notes up on its
 next request.
 
+## Models
+
+The owner's private 3D gallery: models Lucina made with Meshy AI (crate
+`lucina-meshy` on the Rust Lucina), each with its prompt, Meshy task ids,
+clips, credits and files. Lucina adds models with her service token; the
+apps list, view and delete them. Files are never served without auth.
+
+| Route | Who | |
+|---|---|---|
+| `GET /v1/models?limit=50&q=` | device, Lucina | `{models: [Model]}`, newest first; `q` searches title, prompt, animations |
+| `GET /v1/models/{id}` | device, Lucina | `{model}` |
+| `DELETE /v1/models/{id}` | device (cookie + `X-Secretary-CSRF: 1`), Lucina | `{ok, id}`; the model and its files are gone |
+| `GET /v1/models/{id}/files/{name}` | device, Lucina | the file; `Cache-Control: private, max-age=3600`, `ETag`, `Range` |
+| `POST /v1/models` | Lucina only (403 for devices) | 201 `{model}` |
+| `PUT /v1/models/{id}/files/{name}` | Lucina only | raw body → `{model}` |
+
+`Model`: `{id: "mdl_…", title, prompt, source: "meshy"|"upload", jobId,
+credits, animations: [name], clips: [{actionId, name, inPlace}], formats,
+parent, meshy: {taskId, taskKind, rigTaskId, finalTaskId, aiModel, steps},
+files: [{name, bytes, contentType, updatedAt}], createdAt, updatedAt,
+createdBy}`. `meshy.taskId`/`taskKind`/`rigTaskId` let Lucina post-process a
+model later (remesh, retexture, rig, animate, export).
+
+File names: `model.glb`, `thumb.png|jpg|webp`, `preview.mp4` (the CPU turntable
+video), `model.fbx|usdz|obj|stl|3mf`. Uploads are checked against the format's
+magic bytes (`glTF`, PNG, JPEG, WebP, `ftyp`, zip for USDZ/3MF); at most 200 MB
+(20 MB for thumbnails and the preview). Storage:
+`$SECRETARY_DATA_DIR/models/<id>/` (0700) with `model.json` and the files
+(0600); at most 500 models.
+
+The chat shows a model as the v1 `model3d` block (`meta.blocks`): `{type:
+"model3d", id, title, prompt?, animations?, credits?, formats?, poster?,
+video?, rigged?}`. Clients build the file URLs from the id on their own origin.
+
 ## Error codes
 
 | HTTP | `code` | Source | When |

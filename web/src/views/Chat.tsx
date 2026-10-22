@@ -12,6 +12,7 @@ import {
   SpeakerIcon,
 } from "../components/Icons";
 import { LinkifiedText } from "../components/LinkifiedText";
+import Model3dViewer from "../components/Model3dViewer";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
 import {
@@ -248,6 +249,7 @@ function MessageItem(props: { message: ChatMessage }) {
           </Show>
         </div>
       </Show>
+      <For each={props.message.meta?.blocks ?? []}>{(b) => <Model3dViewer block={b} />}</For>
       <Show when={props.message.job}>{(job) => <JobCard job={job()} />}</Show>
       <div class="msg-info">
         <SourceBadge message={props.message} />
