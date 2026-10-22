@@ -246,9 +246,9 @@ final class LucinaStageController {
     @ObservationIgnored private var webViewStorage: WKWebView?
     @ObservationIgnored private var schemeHandler: LucinaSchemeHandler?
     @ObservationIgnored private var framing: Framing = .bust
-    /// The wardrobe (JSON for the page) and the outfit she should wear.
-    @ObservationIgnored private var wardrobeJSON = "[]"
-    @ObservationIgnored private var outfitId: String?
+    /// The wardrobe and the look she should wear (JSON for the page).
+    @ObservationIgnored private var wardrobeJSON = "{}"
+    @ObservationIgnored private var lookJSON = "{}"
     @ObservationIgnored private let voice = VoiceInput()
     @ObservationIgnored private let client: APIClient
     @ObservationIgnored private let chat: ChatStore
@@ -289,25 +289,31 @@ final class LucinaStageController {
         return view
     }
 
-    /// Hands the wardrobe to the stage and puts `id` on (with the change effect once she is
-    /// on stage; before that, she simply starts in it).
-    func dress(_ outfits: [Outfit], wearing id: String?) {
-        let list: [[String: Any]] = outfits.map { outfit in
-            var entry: [String: Any] = ["id": outfit.id, "glb": outfit.glb, "name": outfit.names]
-            if let manifest = outfit.manifest { entry["manifest"] = manifest }
-            if !outfit.tags.isEmpty { entry["tags"] = outfit.tags }
-            return entry
-        }
-        let json = (try? JSONSerialization.data(withJSONObject: list)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
-        let changedList = json != wardrobeJSON
-        wardrobeJSON = json
-        guard id != outfitId || changedList else { return }
-        outfitId = id
-        guard let id, Outfit.isValidId(id) else {
-            if changedList { run("lucina.setWardrobe(\(json))") }
-            return
-        }
-        run("lucina.setWardrobe(\(json)); lucina.setOutfit('\(id)')")
+    /// Hands the wardrobe to the stage and dresses her: outfit, hairstyle, hair colour (with the
+    /// change effect once she is on stage; before that, she simply starts in it).
+    func dress(_ wardrobe: WardrobeFile, outfit: String?, hair: String, hairColor: String?) {
+        let file: [String: Any] = [
+            "outfits": wardrobe.outfits.map { outfit -> [String: Any] in
+                var entry: [String: Any] = ["id": outfit.id, "glb": outfit.glb, "name": outfit.names]
+                if let manifest = outfit.manifest { entry["manifest"] = manifest }
+                if !outfit.tags.isEmpty { entry["tags"] = outfit.tags }
+                return entry
+            },
+            "hairstyles": wardrobe.hairstyles.map { hair -> [String: Any] in
+                var entry: [String: Any] = ["id": hair.id, "name": hair.names, "hideTiara": hair.hideTiara]
+                if let glb = hair.glb { entry["glb"] = glb }
+                if !hair.hideMaterials.isEmpty { entry["hideMaterials"] = hair.hideMaterials }
+                return entry
+            },
+            "colors": wardrobe.colors.map { ["id": $0.id, "hex": $0.hex, "name": $0.names] as [String: Any] },
+        ]
+        let look: [String: Any] = ["outfit": outfit as Any, "hair": hair, "hairColor": hairColor as Any]
+        let encode: (Any) -> String = { (try? JSONSerialization.data(withJSONObject: $0)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}" }
+        let (w, l) = (encode(file), encode(look))
+        guard w != wardrobeJSON || l != lookJSON else { return }
+        wardrobeJSON = w
+        lookJSON = l
+        run("lucina.dress(\(w), \(l))")
     }
 
     func setFraming(_ framing: Framing) {
@@ -326,18 +332,17 @@ final class LucinaStageController {
                 "muted": muted,
                 "reducedMotion": UIAccessibility.isReduceMotionEnabled,
                 "assetBase": LucinaSchemeHandler.base + "v1/assets/",
-                "outfit": outfitId as Any,
             ]
             if let data = try? JSONSerialization.data(withJSONObject: options), var json = String(data: data, encoding: .utf8) {
-                // The wardrobe list is already JSON: splice it in.
-                json = String(json.dropLast()) + ",\"wardrobe\":\(wardrobeJSON)}"
+                // The wardrobe and the look are already JSON: splice them in.
+                json = String(json.dropLast()) + ",\"wardrobe\":\(wardrobeJSON),\"look\":\(lookJSON)}"
                 run("lucina.start(\(json))")
             }
         case "ready":
             placeholder = body["placeholder"] as? Bool ?? false
             phase = .ready
-            // The outfit may have changed while she was loading.
-            if let outfitId, Outfit.isValidId(outfitId) { run("lucina.setWardrobe(\(wardrobeJSON)); lucina.setOutfit('\(outfitId)')") }
+            // The look may have changed while she was loading.
+            run("lucina.dress(\(wardrobeJSON), \(lookJSON))")
         case "state":
             stageState = body["state"] as? String ?? "idle"
         case "spoken":

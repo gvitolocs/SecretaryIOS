@@ -34,6 +34,28 @@
         }
       }
     },
+    "%@ hair: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ hair: %2$@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capelli in %@: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hår under %@: %@"
+          }
+        }
+      }
+    },
     "%@ · %@" : {
       "localizations" : {
         "en" : {
@@ -306,16 +328,16 @@
     },
     "A pinned outfit is worn everywhere until you unpin it." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Un vestito fissato si indossa ovunque finché non lo sblocchi."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fastgjort tøj bæres overalt, indtil du frigør det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un vestito fissato si indossa ovunque finché non lo sblocchi."
           }
         }
       }
@@ -690,16 +712,16 @@
     },
     "All" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tutti"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Alle"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutti"
           }
         }
       }
@@ -994,16 +1016,16 @@
     },
     "Can't reach the server, so the outfit wasn't saved." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il server non risponde, quindi il vestito non è stato salvato."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Serveren svarer ikke, så tøjet blev ikke gemt."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il server non risponde, quindi il vestito non è stato salvato."
           }
         }
       }
@@ -1058,16 +1080,16 @@
     },
     "Casual" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Casual"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hverdag"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Casual"
           }
         }
       }
@@ -1090,16 +1112,16 @@
     },
     "Change by section" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cambia in base alla sezione"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skift efter sektion"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambia in base alla sezione"
           }
         }
       }
@@ -1122,16 +1144,16 @@
     },
     "Changing…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Si cambia…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Skifter…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Si cambia…"
           }
         }
       }
@@ -1244,6 +1266,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Chiusa"
+          }
+        }
+      }
+    },
+    "Colour" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Colore"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Farve"
           }
         }
       }
@@ -2328,16 +2366,16 @@
     },
     "Everywhere else" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Altrove"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Alle andre steder"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altrove"
           }
         }
       }
@@ -2488,13 +2526,13 @@
     },
     "Fantasy" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fantasy"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fantasy"
@@ -2584,16 +2622,16 @@
     },
     "Formal" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Elegante"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Galla"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elegante"
           }
         }
       }
@@ -2764,18 +2802,99 @@
         }
       }
     },
-    "Gym clothes in the Gym, her shopping outfit in Shopping, the default everywhere else." : {
+    "Gym clothes and a ponytail in the Gym, her shopping outfit in Shopping, the default everywhere else." : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tuta in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove."
+            "value" : "Tuta e coda in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove."
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Træningstøj og hestehale under Træning, indkøbstøjet under Indkøb, standardtøjet alle andre steder."
+          }
+        }
+      }
+    },
+    "Gym clothes in the Gym, her shopping outfit in Shopping, the default everywhere else." : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Træningstøj under Træning, indkøbstøjet under Indkøb, standardtøjet alle andre steder."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tuta in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove."
+          }
+        }
+      }
+    },
+    "Hair" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capelli"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hår"
+          }
+        }
+      }
+    },
+    "Hair colour: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Colore dei capelli: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hårfarve: %@"
+          }
+        }
+      }
+    },
+    "Hair colours appear here once they are installed on the server." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I colori compariranno qui quando saranno installati sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hårfarver dukker op her, når de er installeret på serveren."
+          }
+        }
+      }
+    },
+    "Hairstyles appear here once they are installed on the server." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le acconciature compariranno qui quando saranno installate sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Frisurer dukker op her, når de er installeret på serveren."
           }
         }
       }
@@ -2840,6 +2959,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Peso massimo"
+          }
+        }
+      }
+    },
+    "Her own hair" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Capelli suoi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hendes eget hår"
           }
         }
       }
@@ -3741,16 +3876,16 @@
     },
     "Lucina's wardrobe" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Guardaroba di Lucina"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucinas garderobe"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardaroba di Lucina"
           }
         }
       }
@@ -3979,6 +4114,22 @@
         }
       }
     },
+    "Natural" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naturale"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naturlig"
+          }
+        }
+      }
+    },
     "Needs iOS 26." : {
       "localizations" : {
         "da" : {
@@ -4125,16 +4276,16 @@
     },
     "No outfits yet" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ancora nessun vestito"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Intet tøj endnu"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ancora nessun vestito"
           }
         }
       }
@@ -4427,18 +4578,34 @@
         }
       }
     },
-    "Outfit per section" : {
+    "Outfit" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Vestito per sezione"
+            "value" : "Vestito"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Tøj"
+          }
+        }
+      }
+    },
+    "Outfit per section" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Tøj pr. sektion"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vestito per sezione"
           }
         }
       }
@@ -4493,16 +4660,16 @@
     },
     "Pinned" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fissato"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fastgjort"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissato"
           }
         }
       }
@@ -4573,16 +4740,16 @@
     },
     "Put on %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Indossa %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tag %@ på"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indossa %@"
           }
         }
       }
@@ -5366,16 +5533,16 @@
     },
     "She always wears the default outfit." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Indossa sempre il vestito predefinito."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hun har altid standardtøjet på."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indossa sempre il vestito predefinito."
           }
         }
       }
@@ -5558,13 +5725,13 @@
     },
     "Sport" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sport"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sport"
@@ -5748,6 +5915,22 @@
         }
       }
     },
+    "Style her hair: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Acconciatura: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt hendes hår: %@"
+          }
+        }
+      }
+    },
     "Talk to Lucina" : {
       "localizations" : {
         "da" : {
@@ -5894,16 +6077,16 @@
     },
     "That outfit isn't in the wardrobe any more." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quel vestito non è più nel guardaroba."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Det tøj er ikke længere i garderoben."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quel vestito non è più nel guardaroba."
           }
         }
       }
@@ -6038,16 +6221,16 @@
     },
     "The outfit wasn't saved. Try again." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il vestito non è stato salvato. Riprova."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tøjet blev ikke gemt. Prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il vestito non è stato salvato. Riprova."
           }
         }
       }
@@ -6198,16 +6381,16 @@
     },
     "They appear here once the wardrobe is installed on the server." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Compariranno qui quando il guardaroba sarà installato sul server."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Det dukker op her, når garderoben er installeret på serveren."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compariranno qui quando il guardaroba sarà installato sul server."
           }
         }
       }
@@ -6742,16 +6925,16 @@
     },
     "Uniform" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Divisa"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Uniform"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Divisa"
           }
         }
       }
@@ -6774,16 +6957,16 @@
     },
     "Unpins the outfit and follows the section again" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sblocca il vestito e torna a seguire la sezione"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Frigør tøjet og følger sektionen igen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sblocca il vestito e torna a seguire la sezione"
           }
         }
       }
@@ -7014,16 +7197,16 @@
     },
     "Wardrobe" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Guardaroba"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Garderobe"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Guardaroba"
           }
         }
       }
@@ -7078,16 +7261,16 @@
     },
     "Wearing" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Indossa"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Har på"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indossa"
           }
         }
       }
@@ -7382,16 +7565,16 @@
     },
     "You can also ask her: “put on your gym clothes”." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Puoi anche chiederlo a lei: «mettiti la tuta da palestra»."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Du kan også bede hende: »tag træningstøjet på«."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Puoi anche chiederlo a lei: «mettiti la tuta da palestra»."
           }
         }
       }

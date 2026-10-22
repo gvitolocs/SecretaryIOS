@@ -466,5 +466,16 @@
   "Unpins the outfit and follows the section again": ["Sblocca il vestito e torna a seguire la sezione", "Frigør tøjet og følger sektionen igen"],
   "Wardrobe": ["Guardaroba", "Garderobe"],
   "Wearing": ["Indossa", "Har på"],
-  "You can also ask her: “put on your gym clothes”.": ["Puoi anche chiederlo a lei: «mettiti la tuta da palestra».", "Du kan også bede hende: »tag træningstøjet på«."]
+  "You can also ask her: “put on your gym clothes”.": ["Puoi anche chiederlo a lei: «mettiti la tuta da palestra».", "Du kan også bede hende: »tag træningstøjet på«."],
+  "%@ hair: %@": ["Capelli in %@: %@", "Hår under %@: %@"],
+  "Colour": ["Colore", "Farve"],
+  "Gym clothes and a ponytail in the Gym, her shopping outfit in Shopping, the default everywhere else.": ["Tuta e coda in Palestra, il vestito per la spesa in Spesa, quello predefinito altrove.", "Træningstøj og hestehale under Træning, indkøbstøjet under Indkøb, standardtøjet alle andre steder."],
+  "Hair": ["Capelli", "Hår"],
+  "Hair colour: %@": ["Colore dei capelli: %@", "Hårfarve: %@"],
+  "Hair colours appear here once they are installed on the server.": ["I colori compariranno qui quando saranno installati sul server.", "Hårfarver dukker op her, når de er installeret på serveren."],
+  "Hairstyles appear here once they are installed on the server.": ["Le acconciature compariranno qui quando saranno installate sul server.", "Frisurer dukker op her, når de er installeret på serveren."],
+  "Her own hair": ["Capelli suoi", "Hendes eget hår"],
+  "Natural": ["Naturale", "Naturlig"],
+  "Outfit": ["Vestito", "Tøj"],
+  "Style her hair: %@": ["Acconciatura: %@", "Sæt hendes hår: %@"]
 }

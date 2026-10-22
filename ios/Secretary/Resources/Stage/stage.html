@@ -30,11 +30,17 @@ window.lucina = {
     if (starting) return starting;
     starting = (async () => {
       try {
-        // The wardrobe stage: setOutfit swaps the model with the change effect.
+        // The wardrobe stage: outfit, hairstyle and hair colour change with the effect.
+        const wardrobe = opts.wardrobe || {};
+        const look = opts.look || {};
         stage = await createWardrobeStage(canvas, {
           modelUrl: opts.modelUrl,
-          wardrobe: opts.wardrobe || [],
-          outfit: opts.outfit || null,
+          wardrobe: wardrobe.outfits || [],
+          hairstyles: wardrobe.hairstyles || [],
+          hairColors: wardrobe.colors || [],
+          outfit: look.outfit || null,
+          hair: look.hair || null,
+          hairColor: look.hairColor || null,
           assetBase: opts.assetBase,
           manifestUrl: opts.manifestUrl,
           framing: opts.framing || 'bust',
@@ -47,6 +53,7 @@ window.lucina = {
         stage.onStateChange((next) => post('state', { state: next }));
         stage.onChanging((changing) => post('changing', { changing }));
         stage.onOutfitChange((outfit) => post('outfit', { outfit }));
+        stage.onHairChange((hair, hairColor) => post('hair', { hair, hairColor }));
         stage.onTap(() => post('tap'));
         post('ready', { placeholder: !!stage.info.placeholder });
       } catch (e) {
@@ -56,11 +63,17 @@ window.lucina = {
     return starting;
   },
   setFraming(f) { stage && stage.setFraming(f); },
-  setWardrobe(list) { stage && stage.setWardrobe(list || []); },
-  /** Puts a wardrobe outfit on (no-op when she already wears it). */
-  setOutfit(id) {
-    if (!stage || !id) return;
-    stage.setOutfit(id).catch((e) => post('error', { message: 'outfit: ' + String((e && e.message) || e) }));
+  /** Hands over the wardrobe and dresses her (each part is a no-op when it is already on). */
+  dress(wardrobe, look) {
+    if (!stage) return;
+    const w = wardrobe || {};
+    const l = look || {};
+    const fail = (what) => (e) => post('error', { message: what + ': ' + String((e && e.message) || e) });
+    stage.setWardrobe(w.outfits || []);
+    stage.setHairstyles(w.hairstyles || [], w.colors || []);
+    if (l.outfit && stage.outfit !== l.outfit) stage.setOutfit(l.outfit).catch(fail('outfit'));
+    if ((l.hair || 'natural') !== stage.hair) stage.setHair(l.hair || null).catch(fail('hair'));
+    if ((l.hairColor || null) !== stage.hairColor) stage.setHairColor(l.hairColor || null).catch(fail('hair colour'));
   },
   setState(s) { stage && stage.setState(s); },
   setMuted(m) { stage && stage.setMuted(!!m); },

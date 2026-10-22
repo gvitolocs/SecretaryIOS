@@ -46,8 +46,9 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var kind: String?
     /// `{id, type, args}` when `kind == "device_command"`.
     var command: JSONValue?
-    /// With `kind == "avatar_outfit"`: the outfit Lucina put on (nil: back to automatic).
+    /// With `kind == "avatar_outfit"`: the outfit / hairstyle Lucina put on (neither: back to automatic).
     var outfit: String?
+    var hair: String?
 
     var isReminder: Bool { kind == "reminder" }
     var isDeviceCommand: Bool { kind == "device_command" }
@@ -69,9 +70,10 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         kind = c.lenientOptional(String.self, .kind)
         command = c.lenientOptional(JSONValue.self, .command)
         outfit = c.lenientOptional(String.self, .outfit)
+        hair = c.lenientOptional(String.self, .hair)
     }
 
-    private enum CodingKeys: String, CodingKey { case chatTitle, guildName, channelName, isDm, kind, command, outfit }
+    private enum CodingKeys: String, CodingKey { case chatTitle, guildName, channelName, isDm, kind, command, outfit, hair }
 }
 
 /// One message in the timeline. Server items have server ids; optimistic ones made on

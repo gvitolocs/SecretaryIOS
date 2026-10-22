@@ -54,8 +54,8 @@ struct MainTabs: View {
         .onChange(of: app.selectedTab, initial: true) { _, tab in
             app.wardrobe.section = AvatarSettings.Section(tab: tab)
         }
-        .onChange(of: app.wardrobe.current, initial: true) { _, outfit in
-            app.lucina.dress(app.wardrobe.outfits, wearing: outfit?.id)
+        .onChange(of: LookKey(app.wardrobe), initial: true) { _, look in
+            app.lucina.dress(look.wardrobe, outfit: look.outfit, hair: look.hair, hairColor: look.hairColor)
         }
         // The Wardrobe: Lucina comes forward as the live preview above the sheet. (On its own
         // host view: two sheets chained on one view do not both present.)
@@ -104,5 +104,20 @@ struct MainTabs: View {
                 group.addTask { await app.wardrobe.load() }
             }
         }
+    }
+}
+
+/// What Lucina should wear, as one value for `onChange`.
+private struct LookKey: Equatable {
+    let wardrobe: WardrobeFile
+    let outfit: String?
+    let hair: String
+    let hairColor: String?
+
+    @MainActor init(_ store: WardrobeStore) {
+        wardrobe = store.wardrobe
+        outfit = store.current?.id
+        hair = store.currentHair
+        hairColor = store.currentHairColor
     }
 }
