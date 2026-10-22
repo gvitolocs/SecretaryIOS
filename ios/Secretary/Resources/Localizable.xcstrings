@@ -374,6 +374,22 @@
         }
       }
     },
+    "1 task completed" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 attività completata"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 opgave fuldført"
+          }
+        }
+      }
+    },
     "7-day average" : {
       "localizations" : {
         "da" : {
@@ -466,6 +482,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Client AI"
+          }
+        }
+      }
+    },
+    "API token" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token API"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API-token"
           }
         }
       }
@@ -642,6 +674,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aggiungi qualcosa qui sopra, o chiedi a Lucina di metterlo in lista."
+          }
+        }
+      }
+    },
+    "Add task — “Call Marco tomorrow 9am #Work p1”" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi attività — “Chiamare Marco domani alle 9 #Lavoro p1”"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilføj opgave — “Ring til Marco i morgen kl 9 #Arbejde p1”"
           }
         }
       }
@@ -1718,6 +1766,22 @@
         }
       }
     },
+    "Complete" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Completa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fuldfør"
+          }
+        }
+      }
+    },
     "Complete set %lld" : {
       "localizations" : {
         "da" : {
@@ -2006,6 +2070,7 @@
         }
       }
     },
+    "Couldn't send that. Try again." : {},
     "Couldn’t open your gym data" : {
       "localizations" : {
         "da" : {
@@ -2114,6 +2179,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Password attuale"
+          }
+        }
+      }
+    },
+    "Daily goal: %lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Daily goal: %1$lld of %2$lld"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obiettivo giornaliero: %lld di %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagligt mål: %lld af %lld"
           }
         }
       }
@@ -3875,6 +3962,38 @@
         }
       }
     },
+    "In Todoist: Settings → Integrations → Developer → copy the API token. It is stored encrypted on the server and never shown again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In Todoist: Impostazioni → Integrazioni → Sviluppatore → copia il token API. Viene salvato cifrato sul server e non viene più mostrato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I Todoist: Indstillinger → Integrationer → Udvikler → kopiér API-tokenet. Det gemmes krypteret på serveren og vises aldrig igen."
+          }
+        }
+      }
+    },
+    "Inbox" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In arrivo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indbakke"
+          }
+        }
+      }
+    },
     "Italiano" : {
       "shouldTranslate" : false
     },
@@ -4658,6 +4777,7 @@
         }
       }
     },
+    "Lucina reached out" : {},
     "Lucina reads these to answer “what's on tomorrow?” and to plan your day." : {
       "localizations" : {
         "da" : {
@@ -4942,6 +5062,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Segna tutte come lette"
+          }
+        }
+      }
+    },
+    "Mark as not done" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Segna come non completata"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Markér som ikke fuldført"
           }
         }
       }
@@ -5394,6 +5530,22 @@
         }
       }
     },
+    "Next week" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Settimana prossima"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Næste uge"
+          }
+        }
+      }
+    },
     "No answer in time." : {
       "localizations" : {
         "da" : {
@@ -5566,6 +5718,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Non configurato"
+          }
+        }
+      }
+    },
+    "Not yet in Todoist" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non ancora in Todoist"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Endnu ikke i Todoist"
           }
         }
       }
@@ -5810,6 +5978,22 @@
         }
       }
     },
+    "Offline: %lld changes will be sent when you're back online" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offline: %lld modifiche verranno inviate quando torni online"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offline: %lld ændringer sendes, når du er online igen"
+          }
+        }
+      }
+    },
     "On" : {
       "localizations" : {
         "da" : {
@@ -6050,6 +6234,22 @@
         }
       }
     },
+    "Overdue" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In ritardo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forfaldne"
+          }
+        }
+      }
+    },
     "Password" : {
       "localizations" : {
         "da" : {
@@ -6082,6 +6282,22 @@
         }
       }
     },
+    "Paste API token" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Incolla token API"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indsæt API-token"
+          }
+        }
+      }
+    },
     "Paste a calendar's secret iCal address: Google's “Secret address in iCal format”, Outlook's ICS link or an iCloud public calendar. Read-only, stored encrypted." : {
       "localizations" : {
         "da" : {
@@ -6110,6 +6326,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Record personali"
+          }
+        }
+      }
+    },
+    "Pick a date" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scegli una data"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vælg en dato"
           }
         }
       }
@@ -6702,6 +6934,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Richiesta non riuscita (%lld)."
+          }
+        }
+      }
+    },
+    "Reschedule" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprogramma"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Planlæg igen"
           }
         }
       }
@@ -7915,6 +8163,38 @@
         }
       }
     },
+    "Task deleted" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività eliminata"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opgave slettet"
+          }
+        }
+      }
+    },
+    "Tasks" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opgaver"
+          }
+        }
+      }
+    },
     "Tell Lucina" : {
       "localizations" : {
         "da" : {
@@ -8731,6 +9011,182 @@
         }
       }
     },
+    "Todoist" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist"
+          }
+        }
+      }
+    },
+    "Todoist didn't accept that token. Copy it again from Settings → Integrations → Developer." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist non ha accettato quel token. Copialo di nuovo da Impostazioni → Integrazioni → Sviluppatore."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist godtog ikke det token. Kopiér det igen fra Indstillinger → Integrationer → Udvikler."
+          }
+        }
+      }
+    },
+    "Todoist didn't connect." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist non si è collegato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist blev ikke forbundet."
+          }
+        }
+      }
+    },
+    "Todoist is connected (%@). Importing your tasks…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist è collegato (%@). Importo le tue attività…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist er forbundet (%@). Henter dine opgaver…"
+          }
+        }
+      }
+    },
+    "Todoist is connected. Importing your tasks…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist è collegato. Importo le tue attività…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist er forbundet. Henter dine opgaver…"
+          }
+        }
+      }
+    },
+    "Todoist isn't connected. Connect it in Settings → Links." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist non è collegato. Collegalo in Impostazioni → Link."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist er ikke forbundet. Forbind det under Indstillinger → Links."
+          }
+        }
+      }
+    },
+    "Todoist kept its version" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist ha tenuto la sua versione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist beholdt sin version"
+          }
+        }
+      }
+    },
+    "Todoist needs reconnecting in Settings → Links." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist va ricollegato in Impostazioni → Link."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist skal forbindes igen under Indstillinger → Links."
+          }
+        }
+      }
+    },
+    "Todoist synced." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist sincronizzato."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist synkroniseret."
+          }
+        }
+      }
+    },
+    "Todoist, synced both ways: what you do here shows up in Todoist and the other way round." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist, sincronizzato nei due sensi: quello che fai qui compare in Todoist e viceversa."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Todoist, synkroniseret begge veje: det du gør her, vises i Todoist og omvendt."
+          }
+        }
+      }
+    },
+    "Tomorrow" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domani"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I morgen"
+          }
+        }
+      }
+    },
     "Too many failed sign-ins. Try again in %lld s." : {
       "localizations" : {
         "da" : {
@@ -9195,6 +9651,22 @@
         }
       }
     },
+    "Upcoming" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In programma"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kommende"
+          }
+        }
+      }
+    },
     "Updated %@" : {
       "localizations" : {
         "da" : {
@@ -9335,6 +9807,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Versione"
+          }
+        }
+      }
+    },
+    "View" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vista"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Visning"
           }
         }
       }
@@ -9819,6 +10307,7 @@
         }
       }
     },
+    "Why?" : {},
     "With the Secretary Safari extension on, Lucina sees the sites (domain and title) you visit in Safari. Other browsers stay private." : {
       "localizations" : {
         "da" : {
@@ -9931,6 +10420,22 @@
         }
       }
     },
+    "Yesterday" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ieri"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I går"
+          }
+        }
+      }
+    },
     "You" : {
       "localizations" : {
         "da" : {
@@ -9995,6 +10500,22 @@
         }
       }
     },
+    "You're all done for today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Per oggi hai finito"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du er færdig for i dag"
+          }
+        }
+      }
+    },
     "Your Screen Time report inside the app, and a note to Lucina when an app passes a limit you set. The numbers never leave the phone." : {
       "localizations" : {
         "da" : {
@@ -10055,6 +10576,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "I tuoi dati restano tra questo iPhone, il tuo server e Lucina."
+          }
+        }
+      }
+    },
+    "Your inbox is clear" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La posta in arrivo è vuota"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Din indbakke er tom"
           }
         }
       }
