@@ -44,13 +44,21 @@ async fn start(cfg: &Config) -> (String, oneshot::Sender<()>) {
     (base, tx)
 }
 
-const WARDROBE: &str = r#"[
+const WARDROBE: &str = r##"{"outfits": [
   {"id": "uniform", "name": {"it": "Divisa", "en": "Uniform", "da": "Uniform"}, "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["default"]},
   {"id": "gym", "name": {"it": "Palestra", "en": "Gym", "da": "Træning"}, "glb": "lucina-gym.glb", "tags": ["sport"]},
   {"id": "chef", "name": {"en": "Chef"}, "glb": "lucina-chef.glb", "tags": ["work"]},
   {"id": "maid", "name": {"en": "Maid"}, "glb": "lucina-maid.glb", "tags": ["work"]},
   {"id": "broken", "glb": "../../etc/passwd"}
-]"#;
+], "hairstyles": [
+  {"id": "natural", "name": {"en": "Natural"}},
+  {"id": "ponytail", "name": {"it": "Coda", "en": "Ponytail"}, "glb": "lucina-hair-ponytail.glb", "thumbnail": "hair-ponytail.webp", "hideTiara": true},
+  {"id": "bun", "name": {"en": "Bun"}, "glb": "lucina-hair-bun.glb"},
+  {"id": "noglb", "name": {"en": "x"}}
+], "colors": [
+  {"id": "pink", "name": {"en": "Pink"}, "hex": "#ff88cc"},
+  {"id": "bad", "hex": "pink"}
+]}"##;
 
 impl H {
     async fn new(with_wardrobe: bool) -> Self {
@@ -140,14 +148,28 @@ async fn defaults_partial_updates_and_persistence() {
     assert_eq!(v["auto"], true);
     assert_eq!(
         v["rules"],
-        json!({"gym": "gym", "shopping": "chef", "default": "uniform"})
+        json!({"gym": {"outfit": "gym", "hair": "ponytail"}, "shopping": {"outfit": "chef", "hair": "natural"}, "default": {"outfit": "uniform", "hair": "natural"}})
     );
     assert_eq!(v["updatedMs"], 0);
 
     let (s, v) = h.put(json!({"rules": {"shopping": "maid"}})).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["rules"]["shopping"], "maid");
-    assert_eq!(v["rules"]["gym"], "gym");
+    assert_eq!(
+        v["rules"]["shopping"],
+        json!({"outfit": "maid", "hair": "natural"}),
+        "an outfit string is still a rule"
+    );
+    assert_eq!(v["rules"]["gym"]["hair"], "ponytail");
+    let (s, v) = h.put(json!({"rules": {"shopping": {"hair": "bun"}}, "hair": "ponytail", "hairColor": "pink"})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["rules"]["shopping"],
+        json!({"outfit": "maid", "hair": "bun"})
+    );
+    assert_eq!(
+        (v["hair"].as_str(), v["hairColor"].as_str()),
+        (Some("ponytail"), Some("pink"))
+    );
     assert_eq!(v["updatedBy"], "ios");
     assert!(v["updatedMs"].as_u64().unwrap() > 0);
 
@@ -161,7 +183,8 @@ async fn defaults_partial_updates_and_persistence() {
     h.restart().await;
     let (_, v) = h.get("/v1/avatar").await;
     assert_eq!(v["outfit"], "maid", "persisted across a restart");
-    assert_eq!(v["rules"]["shopping"], "maid");
+    assert_eq!(v["rules"]["shopping"]["outfit"], "maid");
+    assert_eq!(v["hairColor"], "pink");
     let file = h.cfg.data_dir.join("avatar.json");
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
@@ -172,6 +195,12 @@ async fn defaults_partial_updates_and_persistence() {
     let (s, v) = h.put(json!({"outfit": null})).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["outfit"], Value::Null, "null unpins");
+    assert_eq!(v["hair"], "ponytail", "the hair stays pinned");
+    let (_, v) = h.put(json!({"hair": null, "hairColor": null})).await;
+    assert_eq!(
+        (v["hair"].clone(), v["hairColor"].clone()),
+        (Value::Null, Value::Null)
+    );
     assert_eq!(v["auto"], false, "absent fields are kept");
 }
 
@@ -180,18 +209,42 @@ async fn validation_and_the_wardrobe() {
     let h = H::new(true).await;
     let (s, v) = h.get("/v1/avatar/wardrobe").await;
     assert_eq!(s, StatusCode::OK);
-    let ids: Vec<_> = v
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["id"].as_str().unwrap())
-        .collect();
+    let ids = |k: &str| -> Vec<String> {
+        v[k].as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
     assert_eq!(
-        ids,
+        ids("outfits"),
         ["uniform", "gym", "chef", "maid"],
         "invalid entries are dropped"
     );
-    assert_eq!(v[0]["name"]["it"], "Divisa");
+    assert_eq!(ids("hairstyles"), ["natural", "ponytail", "bun"]);
+    assert_eq!(ids("colors"), ["pink"]);
+    assert_eq!(v["outfits"][0]["name"]["it"], "Divisa");
+    assert_eq!(v["hairstyles"][1]["hideTiara"], true);
+
+    for (patch, code) in [
+        (json!({"hair": "mohawk"}), "unknown_hairstyle"),
+        (
+            json!({"rules": {"gym": {"hair": "mohawk"}}}),
+            "unknown_hairstyle",
+        ),
+        (json!({"hairColor": "green"}), "unknown_hair_color"),
+    ] {
+        let (s, v) = h.put(patch.clone()).await;
+        assert_eq!(
+            (s, v["error"]["code"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some(code)),
+            "{patch}"
+        );
+    }
+    let (s, v) = h.put(json!({"hair": "natural"})).await;
+    assert_eq!((s, v["hair"].as_str()), (StatusCode::OK, Some("natural")));
+    let (s, _) = h.put(json!({"hair": null})).await;
+    assert_eq!(s, StatusCode::OK);
 
     let (s, v) = h.put(json!({"outfit": "pirate"})).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
@@ -208,19 +261,27 @@ async fn validation_and_the_wardrobe() {
         json!({"auto": "yes"}),
         json!({"rules": {"chat": "maid"}}),
         json!({"colour": "red"}),
+        json!({"rules": {"gym": {"shoes": "x"}}}),
+        json!({"hairColor": 3}),
     ] {
         let (s, v) = h.put(bad.clone()).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{bad} → {v}");
     }
     let (_, v) = h.get("/v1/avatar").await;
-    assert_eq!(v["updatedMs"], 0, "refused writes change nothing");
+    assert_eq!(v["hair"], Value::Null, "refused writes change nothing");
 }
 
 #[tokio::test]
 async fn any_well_formed_id_without_a_wardrobe() {
     let h = H::new(false).await;
     let (s, v) = h.get("/v1/avatar/wardrobe").await;
-    assert_eq!((s, v), (StatusCode::OK, json!([])));
+    assert_eq!(
+        (s, v),
+        (
+            StatusCode::OK,
+            json!({"outfits": [], "hairstyles": [], "colors": []})
+        )
+    );
     let (s, v) = h.put(json!({"outfit": "pirate"})).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["outfit"], "pirate");
@@ -289,7 +350,15 @@ async fn auth_csrf_and_the_service_token() {
         )
         .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(v.as_array().unwrap().len(), 4);
+    assert_eq!(v["outfits"].as_array().unwrap().len(), 4);
+    let (s, v) = h
+        .send(
+            h.req(Method::PUT, "/v1/avatar")
+                .bearer_auth(&h.service)
+                .json(&json!({"hair": "bun"})),
+        )
+        .await;
+    assert_eq!((s, v["hair"].as_str()), (StatusCode::OK, Some("bun")));
     let (s, _) = h
         .send(
             h.req(Method::PUT, "/v1/avatar")

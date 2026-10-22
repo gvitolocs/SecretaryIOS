@@ -1078,10 +1078,10 @@ await audio.play();
 
 ## Avatar wardrobe
 
-Lucina's 3D avatar has outfits. The owner picks one in the app (the
-Wardrobe), lets it follow the app section, or asks Lucina in chat ("mettiti
-il vestito da cameriera"). The choice lives on the server, so every client
-and Lucina see the same one.
+Lucina's 3D avatar has outfits, hairstyles and hair colours. The owner picks
+them in the app (the Wardrobe), lets the look follow the app section, or asks
+Lucina in chat ("mettiti il vestito da cameriera", "fatti la coda"). The
+choice lives on the server, so every client and Lucina see the same one.
 
 Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
 the `PUT`) **or** Lucina's service token (`Authorization: Bearer svc_…`).
@@ -1092,76 +1092,100 @@ the `PUT`) **or** Lucina's service token (`Authorization: Bearer svc_…`).
 ```json
 {
   "outfit": null,
+  "hair": null,
+  "hairColor": null,
   "auto": true,
-  "rules": { "gym": "gym", "shopping": "chef", "default": "uniform" },
+  "rules": {
+    "gym": { "outfit": "gym", "hair": "ponytail" },
+    "shopping": { "outfit": "chef", "hair": "natural" },
+    "default": { "outfit": "uniform", "hair": "natural" }
+  },
   "updatedMs": 1792602906912,
   "updatedBy": "web"
 }
 ```
 
-- `outfit`: the **pinned** outfit, worn everywhere until unpinned; `null` =
-  none pinned.
-- `auto`: with no pin, the outfit follows the app section: `rules.gym` on
-  the Gym tab, `rules.shopping` on Shopping, `rules.default` anywhere else.
-  With `auto: false` (and no pin) she wears `rules.default`.
+- `outfit` / `hair`: **pinned** (worn everywhere until unpinned); `null` =
+  follow the rules. The hairstyle `natural` is her own hair and is always
+  valid.
+- `hairColor`: a colour id from the wardrobe; `null` = natural colour. It
+  applies to whatever hair shows.
+- `auto`: with nothing pinned, the look follows the app section: `rules.gym`
+  on the Gym tab, `rules.shopping` on Shopping, `rules.default` anywhere
+  else. With `auto: false` she wears `rules.default`.
 - `updatedMs` / `updatedBy` (`web` | `ios` | `device` | `lucina`): the last
-  change; `0` / `""` until the first one. The values above (`null`, `true`,
-  `gym` / `chef` / `uniform`) are the defaults.
+  change; `0` / `""` until the first one. The values above are the defaults.
 
-Clients resolve the outfit themselves:
-`outfit ?? (auto ? rules[section] : rules.default)`.
+Clients resolve the look themselves: `rule = auto ? rules[section] :
+rules.default`, then `outfit ?? rule.outfit` and `hair ?? rule.hair`.
 
 ### `PUT /v1/avatar`
 
-A patch: any of `outfit` (an id, or `null` to unpin), `auto` (bool),
-`rules` (any of `gym`, `shopping`, `default`). Absent fields keep their
-value. Answers the full new settings (`200`).
+A patch: any of `outfit`, `hair`, `hairColor` (an id, or `null`), `auto`
+(bool), `rules` (any of `gym`, `shopping`, `default`, each `{outfit?,
+hair?}`; a bare string is an outfit, the older form). Absent fields keep
+their value. Answers the full new settings (`200`).
 
 ```json
 { "outfit": "maid" }
-{ "outfit": null, "auto": true }
-{ "rules": { "shopping": "maid" } }
+{ "hair": "bun", "hairColor": "pink" }
+{ "outfit": null, "hair": null, "auto": true }
+{ "rules": { "shopping": { "outfit": "maid" }, "gym": { "hair": "bun" } } }
 ```
 
 - Ids: `[a-z0-9][a-z0-9_-]*`, at most 40 characters. Unknown fields and
   wrong types are refused (`400 bad_request`).
-- When the wardrobe is installed, every id must be one of its outfits:
-  `422 unknown_outfit` (the message lists the known ids). Without a
-  wardrobe any well-formed id is accepted.
+- When the wardrobe lists outfits / hairstyles / colours, the ids must be
+  among them: `422 unknown_outfit` / `unknown_hairstyle` /
+  `unknown_hair_color` (the message lists the known ids). A kind the
+  wardrobe does not list accepts any well-formed id.
 - Stored in `$SECRETARY_DATA_DIR/avatar.json` (atomic write, mode 0600). A
-  refused write changes nothing.
+  refused write changes nothing. A file from before hairstyles (rules as
+  outfit strings) still loads.
 
 ### `GET /v1/avatar/wardrobe`
 
-The outfits, from `{SECRETARY_PRIVATE_ASSETS_DIR}/wardrobe.json`. Only valid
-entries are served (file order, first of each id, at most 200); `[]` when
-the file is missing or not a JSON array.
+From `{SECRETARY_PRIVATE_ASSETS_DIR}/wardrobe.json`, which is
+`{outfits, hairstyles, colors?}` (a bare array is read as the outfits). Only
+valid entries are served (file order, first of each id, at most 200 per
+list); every list is empty when the file is missing.
 
 ```json
-[
-  { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" },
-    "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] },
-  { "id": "gym", "name": { "it": "Palestra", "en": "Gym", "da": "Træning" },
-    "glb": "lucina-gym.glb", "thumbnail": "outfit-gym.webp", "tags": ["sport"] }
-]
+{
+  "outfits": [
+    { "id": "uniform", "name": { "it": "Divisa", "en": "Uniform", "da": "Uniform" },
+      "glb": "lucina.glb", "thumbnail": "outfit-uniform.webp", "tags": ["uniform"] }
+  ],
+  "hairstyles": [
+    { "id": "natural", "name": { "it": "Naturali", "en": "Natural", "da": "Naturligt" } },
+    { "id": "ponytail", "name": { "it": "Coda", "en": "Ponytail", "da": "Hestehale" },
+      "glb": "lucina-hair-ponytail.glb", "thumbnail": "hair-ponytail.webp", "hideTiara": true }
+  ],
+  "colors": [
+    { "id": "pink", "name": { "it": "Rosa", "en": "Pink", "da": "Lyserød" }, "hex": "#ff8ac8" }
+  ]
+}
 ```
 
-- `id`: as above. `glb`: an asset name ending in `.glb`, loaded from
-  `/v1/assets/{glb}`. `thumbnail` (optional): a `.png`/`.webp` asset name.
-- `name`: `{it?, en?, da?}` (or one string), at most 80 characters each.
-- `tags` (optional): at most 16 strings. The Wardrobe groups outfits by the
-  first known one: `uniform`, `casual`, `sport`, `work`, `formal`,
-  `fantasy`; anything else lands under "Other".
-- Other fields (e.g. `manifest`, a per-outfit manifest asset) pass through
-  unchanged.
+- Outfits: `id`; `glb` (asset name ending in `.glb`, loaded from
+  `/v1/assets/{glb}`); `thumbnail` (optional `.png`/`.webp`); `name`
+  (`{it?, en?, da?}` or one string, at most 80 characters each); `tags`
+  (optional, at most 16). The Wardrobe groups outfits by the first known
+  tag: `uniform`, `casual`, `sport`, `work`, `formal`, `fantasy`.
+- Hairstyles: the same fields (`natural` needs no `glb` or `name`), plus
+  `hideTiara` (bool: hide the tiara while it is on) and `hideMaterials`
+  (base-model materials to hide instead of the hair). A part is a separate
+  GLB attached to the `head` bone; the base hair is hidden while it is on.
+- Colours: `id`, `hex` (`#rrggbb`), optional `name`.
+- Other fields pass through unchanged.
 
 ### Live changes
 
-When Lucina changes her outfit she also writes a timeline item with
-`meta: {kind: "avatar_outfit", outfit: "<id>"}` (no `outfit` when she went
-back to automatic). Clients that see one on the timeline stream refetch
-`GET /v1/avatar` and apply it with the change effect. Clients also refetch
-when they come back to the foreground.
+When Lucina changes her look she also writes a timeline item with
+`meta: {kind: "avatar_outfit", outfit?, hair?}` (`outfit` / `hair` name what
+she put on; neither when she went back to automatic). Clients that see one
+on the timeline stream refetch `GET /v1/avatar` and apply it with the change
+effect. Clients also refetch when they come back to the foreground.
 
 ## Error codes
 
@@ -1180,7 +1204,7 @@ when they come back to the foreground.
 | 413 | `payload_too_large` | server or Lucina | Body over 256 KiB (server; 4.5 MiB for `POST /v1/device/events`) / 64 KiB (Lucina). |
 | 415 | `unsupported_media_type` | server | Body without `Content-Type: application/json`. |
 | 422 | `invalid_command`, `op_id_reused` | gym/body engine | Engine rejected the command (engine body). |
-| 422 | `unknown_outfit` | server | `PUT /v1/avatar` names an outfit the wardrobe does not have. |
+| 422 | `unknown_outfit`, `unknown_hairstyle`, `unknown_hair_color` | server | `PUT /v1/avatar` names an outfit, hairstyle or colour the wardrobe does not have. |
 | 429 | `rate_limited` | server | See rate limits; honour `Retry-After`. |
 | 429 | `too_many_streams` | server | Over 4 open timeline streams for this device or 20 in total; honour `Retry-After`. |
 | 500 | `internal` | server | Unexpected server failure. |
