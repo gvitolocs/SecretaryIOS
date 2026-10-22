@@ -87,6 +87,14 @@ describe('toon config', () => {
     expect(cfg.materials.Skin?.outline).toBeUndefined();
     expect(cfg.materials.invalid).toBeUndefined();
   });
+  it('parses the eye camera-follow rates, dropping out-of-range ones', () => {
+    const cfg = normalizeToon({
+      materials: { EyeL: { eyeFollow: { x: 0.02, y: -0.1 } }, EyeR: { eyeFollow: { x: 5, y: 'a' } }, Skin: {} },
+    });
+    expect(cfg.materials.EyeL?.eyeFollow).toEqual({ x: 0.02, y: -0.1 });
+    expect(cfg.materials.EyeR?.eyeFollow).toBeUndefined();
+    expect(cfg.materials.Skin?.eyeFollow).toBeUndefined();
+  });
 });
 
 describe('toon scene', () => {

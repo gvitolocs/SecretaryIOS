@@ -25,6 +25,9 @@ attribute vec3 color;
 #ifdef OUTLINE_WEIGHT
 attribute float outlineWeight;
 #endif
+#ifdef EYE_FOLLOW
+uniform vec2 eyeFollow;
+#endif
 void main() {
   tUv = uv;
   #include <beginnormal_vertex>
@@ -37,6 +40,15 @@ void main() {
   #include <begin_vertex>
   #include <morphtarget_vertex>
   #include <skinning_vertex>
+  #ifdef EYE_FOLLOW
+  // View direction in the eye bone's rest frame (x = her left, y = up, z = forward); the iris texture follows it.
+  vec3 camLocal = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
+  vec3 eyeDir = normalize(camLocal - transformed);
+  #ifdef USE_SKINNING
+  eyeDir = normalize(transpose(mat3(skinMatrix)) * eyeDir);
+  #endif
+  tUv = uv - eyeFollow * eyeDir.xy;
+  #endif
   float k = 1.0;
   #ifdef OUTLINE_COLOR
   k = clamp(color.r / outlineMax, 0.0, 1.0);
