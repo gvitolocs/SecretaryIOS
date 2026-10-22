@@ -32,6 +32,14 @@ final class SecretaryFlowTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Chat"].waitForExistence(timeout: 15), "signed in")
     }
 
+    /// Settings is a lazy list: rows below the fold exist only once scrolled into view.
+    private func scrolledTo(_ element: XCUIElement, in app: XCUIApplication) -> XCUIElement {
+        for _ in 0..<6 where !(element.exists && element.isHittable) {
+            app.swipeUp()
+        }
+        return element
+    }
+
     private func attach(_ app: XCUIApplication, _ name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name
@@ -103,8 +111,7 @@ final class SecretaryFlowTests: XCTestCase {
         let live = app.descendants(matching: .any)["liveIndicator"]
         XCTAssertTrue(live.waitForExistence(timeout: 15))
         let connected = NSPredicate(format: "label BEGINSWITH %@", "Live")
-        expectation(for: connected, evaluatedWith: live)
-        waitForExpectations(timeout: 15)
+        await fulfillment(of: [expectation(for: connected, evaluatedWith: live)], timeout: 15)
 
         // A Telegram message arrives through the stream while the app is open.
         let text = "From Telegram \(Int.random(in: 1000...9999))"
@@ -265,8 +272,7 @@ final class SecretaryFlowTests: XCTestCase {
         signIn(app)
         let live = app.descendants(matching: .any)["liveIndicator"]
         XCTAssertTrue(live.waitForExistence(timeout: 15))
-        expectation(for: NSPredicate(format: "label BEGINSWITH %@", "Live"), evaluatedWith: live)
-        waitForExpectations(timeout: 15)
+        await fulfillment(of: [expectation(for: NSPredicate(format: "label BEGINSWITH %@", "Live"), evaluatedWith: live)], timeout: 15)
 
         let id = "cmd-\(Int.random(in: 10000...99999))"
         _ = try await mock("POST", "/v1/_mock/timeline", [
@@ -293,8 +299,9 @@ final class SecretaryFlowTests: XCTestCase {
     func testAccessScreenListsEverySource() {
         let app = launch(tab: "settings")
         signIn(app)
-        let access = app.buttons["lucinaAccess"]
-        XCTAssertTrue(access.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["openLinks"].waitForExistence(timeout: 10), "Settings")
+        let access = scrolledTo(app.buttons["lucinaAccess"], in: app)
+        XCTAssertTrue(access.waitForExistence(timeout: 5))
         access.tap()
         for source in ["alarms", "reminders", "calendar", "health", "location", "focus"] {
             XCTAssertTrue(app.switches["access-\(source)"].waitForExistence(timeout: 5), source)
@@ -347,5 +354,40 @@ final class SecretaryFlowTests: XCTestCase {
         app.buttons["saveNoteButton"].tap()
         XCTAssertTrue(app.staticTexts[name].waitForExistence(timeout: 10), "the new note is listed")
         attach(app, "Notes")
+    }
+
+    // MARK: - Links, notifications, wardrobe
+
+    func testLinksScreenListsConnections() {
+        let app = launch(tab: "settings")
+        signIn(app)
+        let links = app.buttons["openLinks"]
+        XCTAssertTrue(links.waitForExistence(timeout: 10), "Links is a row in Settings")
+        links.tap()
+        XCTAssertTrue(app.staticTexts["Google Calendar"].waitForExistence(timeout: 15), "the calendars group")
+        attach(app, "Links")
+    }
+
+    func testNotificationCenterShowsTheInbox() {
+        let app = launch()
+        signIn(app)
+        let bell = app.navigationBars.buttons["notificationBell"].firstMatch
+        XCTAssertTrue(bell.waitForExistence(timeout: 10), "the bell in the navigation bar")
+        XCTAssertTrue(app.navigationBars.buttons["notesButton"].exists, "Notes stays next to the chat title")
+        bell.tap()
+        let item = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "dentist")).firstMatch
+        XCTAssertTrue(item.waitForExistence(timeout: 15), "the mock's reminder is in the inbox")
+        attach(app, "Notification center")
+    }
+
+    func testWardrobeOpensFromSettings() {
+        let app = launch(tab: "settings")
+        signIn(app)
+        XCTAssertTrue(app.buttons["openLinks"].waitForExistence(timeout: 10), "Settings")
+        let row = scrolledTo(app.buttons["openWardrobe"], in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["wardrobeAuto"].waitForExistence(timeout: 15), "the Wardrobe sheet")
+        attach(app, "Wardrobe")
     }
 }

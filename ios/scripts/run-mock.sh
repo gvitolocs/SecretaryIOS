@@ -19,21 +19,23 @@ repo="$(cd "$ios/.." && pwd)"
 dir="$ios/.mock"
 port="${MOCK_PORT:-8791}"
 pidfile="$dir/mock.pid"
+# Every mock module (server.mjs imports shopping-v2, links, notes and notifications), and
 # wardrobe.json: the placeholder wardrobe the mock serves when no real one is installed.
-modules=(server.mjs shopping-v2.mjs wardrobe.json)
-mkdir -p "$dir"
+# The seed notes (deploy/seed/notes/*.md) go to .mock/seed-notes (MOCK_NOTES_SEED_DIR).
+mkdir -p "$dir" "$dir/seed-notes"
 
 fetch() {
     if [[ -n "${MOCK_SOURCE:-}" ]]; then
         cp "$MOCK_SOURCE"/*.mjs "$dir/"
         cp "$MOCK_SOURCE"/wardrobe.json "$dir/" 2>/dev/null || true
+        cp "$MOCK_SOURCE"/../../deploy/seed/notes/*.md "$dir/seed-notes/" 2>/dev/null || true
     elif ssh -o ConnectTimeout=5 nezopt true 2>/dev/null; then
-        for m in "${modules[@]}"; do
-            scp -q "nezopt:/home/nez/Projects/SecretaryIOS/web/mock/$m" "$dir/$m" 2>/dev/null || true
-        done
+        scp -q "nezopt:/home/nez/Projects/SecretaryIOS/web/mock/*.mjs" "nezopt:/home/nez/Projects/SecretaryIOS/web/mock/wardrobe.json" "$dir/"
+        scp -q "nezopt:/home/nez/Projects/SecretaryIOS/deploy/seed/notes/*.md" "$dir/seed-notes/" 2>/dev/null || true
     elif [[ -f "$repo/web/mock/server.mjs" ]]; then
         cp "$repo"/web/mock/*.mjs "$dir/"
         cp "$repo"/web/mock/wardrobe.json "$dir/" 2>/dev/null || true
+        cp "$repo"/deploy/seed/notes/*.md "$dir/seed-notes/" 2>/dev/null || true
     else
         echo "error: no mock source (set MOCK_SOURCE=/path/to/web/mock)" >&2
         exit 1
@@ -97,7 +99,7 @@ start() {
     stop
     fetch
     patch
-    MOCK_PORT="$port" nohup node "$dir/server.ios.mjs" > "$dir/mock.log" 2>&1 &
+    MOCK_PORT="$port" MOCK_NOTES_SEED_DIR="$dir/seed-notes" nohup node "$dir/server.ios.mjs" > "$dir/mock.log" 2>&1 &
     echo $! > "$pidfile"
     for _ in $(seq 1 50); do
         if curl -sf "http://127.0.0.1:$port/v1/health" >/dev/null; then

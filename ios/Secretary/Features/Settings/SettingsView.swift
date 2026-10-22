@@ -129,6 +129,7 @@ struct SettingsView: View {
                 }
                 .foregroundStyle(.primary)
                 .accessibilityIdentifier("openWardrobe")
+                .accessibilityIdentifier("openWardrobe")
             } header: {
                 Text("Lucina")
             } footer: {

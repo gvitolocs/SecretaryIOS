@@ -194,8 +194,13 @@ final class APIClient: @unchecked Sendable {
               let scheme = components.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
             throw APIError.invalidURL
         }
-        let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
-        components.path = basePath + path
+        // Callers percent-encode path segments themselves (an id with `/` or a space); `path` would
+        // encode their `%` a second time. Anything else a path may not contain is still encoded here.
+        let basePath = components.percentEncodedPath.hasSuffix("/") ? String(components.percentEncodedPath.dropLast()) : components.percentEncodedPath
+        // A `%` that does not start an escape is a literal one (an invalid escape would trap).
+        let literal = path.replacingOccurrences(of: "%(?![0-9A-Fa-f]{2})", with: "%25", options: .regularExpression)
+        let encoded = literal.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlPathAllowed.union(CharacterSet(charactersIn: "%"))) ?? literal
+        components.percentEncodedPath = basePath + encoded
         if !query.isEmpty { components.queryItems = query }
         guard let url = components.url else { throw APIError.invalidURL }
 

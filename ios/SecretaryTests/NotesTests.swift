@@ -15,7 +15,7 @@ final class NotesTests: XCTestCase {
 
     func testDecodesListsLenientlyAndNotes() async throws {
         StubURLProtocol.handler = { _ in
-            .init(body: #"{"notes": [{"id": "n_1", "slug": "a", "title": "A", "excerpt": "# A *Hello*", "size": 9, "pinned": true, "updatedAt": "2026-10-22T11:31:00.456Z"}, {"broken": true}, {"id": "n_2", "slug": "b"}]}"#)
+            .init(body: ##"{"notes": [{"id": "n_1", "slug": "a", "title": "A", "excerpt": "# A *Hello*", "size": 9, "pinned": true, "updatedAt": "2026-10-22T11:31:00.456Z"}, {"broken": true}, {"id": "n_2", "slug": "b"}]}"##)
         }
         let api = NotesAPI(client: StubURLProtocol.makeClient())
         let list = try await api.list(query: " aarhus ", tag: "work")

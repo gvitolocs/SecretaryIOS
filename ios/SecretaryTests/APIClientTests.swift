@@ -30,6 +30,17 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(request.timeoutInterval, 15)
     }
 
+    func testPathsAreEncodedOnce() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"authenticated":true,"deviceName":"Phone"}"#) }
+        let client = StubURLProtocol.makeClient()
+        // Pre-encoded segments stay as they are; raw spaces and a stray `%` are encoded.
+        for (path, expected) in [("/v1/notes/a%20b%2Fc", "/v1/notes/a%20b%2Fc"), ("/v1/assets/a b.webp", "/v1/assets/a%20b.webp"),
+                                 ("/v1/x/100%", "/v1/x/100%25")] {
+            let _: SessionInfo = try await client.get(path)
+            XCTAssertEqual(StubURLProtocol.requests.last?.url?.absoluteString, "https://example.test" + expected)
+        }
+    }
+
     func testChatUsesTheLongTimeoutAndJSONBody() async throws {
         StubURLProtocol.handler = { _ in .init(body: #"{"reply":"hi","action":"reply","job":null}"#) }
         let api = SecretaryAPI(client: StubURLProtocol.makeClient())
