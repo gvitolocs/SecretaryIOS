@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import os
 import Speech
 import SwiftUI
 import WebKit
@@ -278,6 +279,15 @@ final class LucinaStageController {
         view.scrollView.backgroundColor = .clear
         view.scrollView.isScrollEnabled = false
         view.scrollView.contentInsetAdjustmentBehavior = .never
+        // The stage handles every gesture itself (orbit, pinch, taps): no WebKit zoom or bounce.
+        view.scrollView.bounces = false
+        view.scrollView.alwaysBounceVertical = false
+        view.scrollView.alwaysBounceHorizontal = false
+        view.scrollView.minimumZoomScale = 1
+        view.scrollView.maximumZoomScale = 1
+        view.scrollView.pinchGestureRecognizer?.isEnabled = false
+        view.scrollView.delaysContentTouches = false
+        view.allowsLinkPreview = false
         view.accessibilityLabel = "Lucina"
         #if DEBUG
         if #available(iOS 16.4, *) { view.isInspectable = true }
@@ -341,6 +351,7 @@ final class LucinaStageController {
         case "ready":
             placeholder = body["placeholder"] as? Bool ?? false
             phase = .ready
+            runDemoIfAsked()
             // The look may have changed while she was loading.
             run("lucina.dress(\(wardrobeJSON), \(lookJSON))")
         case "state":
@@ -353,10 +364,48 @@ final class LucinaStageController {
             if body["fatal"] as? Bool == true { phase = .failed(text) }
         case "changing":
             changingOutfit = body["changing"] as? Bool ?? false
-        case "tap":
-            run("lucina.nod()")
+        case "touch":
+            // She already reacted on stage; a short line only when her voice is on and she is free.
+            if !muted, !listening, !thinking, stageState != "speaking", let key = body["line"] as? String, let line = Self.touchLine(key) {
+                Task { await say(line) }
+            }
+        case "stats", "demo":
+            Self.log.notice("stage \(String(describing: body), privacy: .public)")
         default:
             break
+        }
+    }
+
+    static let log = Logger(subsystem: "tech.getsecretary.lucina", category: "stage")
+
+    /// Lines for touch reactions (keys from lucina-stage interact/reactions.ts).
+    static func touchLine(_ key: String) -> String? {
+        switch key {
+        case "head": return String(localized: "Hm? Yes?")
+        case "face": return String(localized: "Ah! My face…")
+        case "chest": return String(localized: "Hey! Hands to yourself.")
+        case "hips": return String(localized: "W-what are you doing?")
+        case "skirt": return String(localized: "Not the skirt!")
+        case "arm": return String(localized: "Mm? Need something?")
+        case "hand": return String(localized: "Hi there!")
+        case "leg": return String(localized: "Eek! That tickles.")
+        case "pat": return String(localized: "Ehehe…")
+        case "pat_more": return String(localized: "That feels nice.")
+        case "pat_love": return String(localized: "I love head pats!")
+        case "enough": return String(localized: "Okay, that's enough now.")
+        default: return nil
+        }
+    }
+
+    /// Device check without a user: `-lucinaDemo` opens the stage and runs scripted gestures.
+    private func runDemoIfAsked() {
+        guard ProcessInfo.processInfo.arguments.contains("-lucinaDemo") else { return }
+        expanded = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(4))
+            run("lucina.demo()")
+            try? await Task.sleep(for: .seconds(32))
+            run("lucina.stats()")
         }
     }
 
