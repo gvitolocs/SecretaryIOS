@@ -39,6 +39,8 @@ pub struct MockConfig {
     /// `Retry-After` seconds on running tasks (0 = header omitted).
     pub retry_after: u64,
     pub balance: i64,
+    /// Credits charged above the price table per task (price drift; tests).
+    pub overcharge: u32,
 }
 
 impl Default for MockConfig {
@@ -49,6 +51,7 @@ impl Default for MockConfig {
             polls_to_finish: 3,
             retry_after: 0,
             balance: 1000,
+            overcharge: 0,
         }
     }
 }
@@ -367,6 +370,13 @@ async fn create(
             (pricing::ANIMATION_PER_ACTION * n as u32, "knight")
         }
     };
+    let credits = credits
+        + st.cfg
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|c| c.overcharge)
+            .unwrap_or(0);
     {
         let mut bal = st.balance.lock().unwrap();
         if *bal < i64::from(credits) {

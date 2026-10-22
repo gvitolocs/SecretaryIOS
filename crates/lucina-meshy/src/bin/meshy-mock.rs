@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
         polls_to_finish: cli.polls.max(1),
         retry_after: cli.retry_after,
         balance: cli.balance,
+        overcharge: 0,
     })
     .await?;
     println!("meshy mock at {} (api base {})", h.base_url, h.api_base());

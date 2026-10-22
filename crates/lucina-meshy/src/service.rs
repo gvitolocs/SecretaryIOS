@@ -289,7 +289,8 @@ impl MeshyService {
     }
 
     pub fn check(&self, plan: &Plan) -> Result<(), LimitError> {
-        self.ledger.check(self.cfg.limits, plan.total, Utc::now())
+        self.ledger
+            .check(self.cfg.limits, plan.reservation(), Utc::now())
     }
 
     pub async fn list(&self, limit: u32) -> Result<Vec<Value>, String> {
@@ -320,12 +321,15 @@ impl MeshyService {
         self.key.api_key().await.map_err(|e| e.to_string())?;
         let id = uuid::Uuid::new_v4().to_string();
         self.ledger
-            .reserve(self.cfg.limits, &id, plan.total, Utc::now())
+            .reserve(self.cfg.limits, &id, plan.reservation(), Utc::now())
             .map_err(|e| e.to_string())?;
         let now = lucina_store::timeutil::now_iso();
         let mut extra = serde_json::Map::new();
         extra.insert("plan".into(), plan.to_json());
-        extra.insert("credits".into(), json!({"estimate": plan.total}));
+        extra.insert(
+            "credits".into(),
+            json!({"estimate": plan.total, "reserved": plan.reservation()}),
+        );
         let job = Job {
             id: id.clone(),
             action: JOB_ACTION.into(),
@@ -579,7 +583,25 @@ impl MeshyService {
         let of = plan.steps.len();
         let mut done: Vec<StepDone> = Vec::new();
         let mut failure: Option<Failure> = None;
+        let reserved = plan.reservation();
         for (i, step) in plan.steps.iter().enumerate() {
+            // G4: never start a step whose worst case no longer fits in the
+            // reservation (the day's cap is enforced on reservations).
+            let consumed: u32 = done.iter().map(|d| d.credits).sum();
+            let worst = crate::budget::worst_case(step.credits);
+            if !crate::budget::step_fits(consumed, worst, reserved) {
+                failure = Some(Failure {
+                    step: Some(step.kind),
+                    task_id: None,
+                    error: format!(
+                        "stopped before the {} step: it may cost up to {worst} credits and only {} of the {reserved} reserved are left; nothing more was spent.",
+                        step.kind.as_str(),
+                        reserved.saturating_sub(consumed)
+                    ),
+                    code: "budget",
+                });
+                break;
+            }
             self.progress(&job_id, i, of, step.kind, None, 0);
             let body = match self.body(step.kind, &plan, &done) {
                 Ok(b) => b,
@@ -614,12 +636,32 @@ impl MeshyService {
             self.progress(&job_id, i, of, step.kind, Some(&task_id), 0);
             match self.poll(&job_id, kind, &task_id, i, of, step.kind).await {
                 Ok(task) if task.status == crate::api::Status::Succeeded => {
-                    let credits = task.consumed_credits.unwrap_or(step.credits);
+                    // Unreported: count the worst case (the ledger errs high).
+                    let credits = task
+                        .consumed_credits
+                        .unwrap_or(crate::budget::worst_case(step.credits));
+                    let task_id = task.id.clone();
                     done.push(StepDone {
                         step: step.kind,
                         task,
                         credits,
                     });
+                    if credits > crate::budget::worst_case(step.credits) {
+                        // Meshy charged more than our worst case: prices
+                        // changed. Stop here rather than trust the table.
+                        failure = Some(Failure {
+                            step: Some(step.kind),
+                            task_id: Some(task_id),
+                            error: format!(
+                                "Meshy charged {credits} credits for the {} step, more than the {} it may cost by our price table ({}); stopped, update pricing.rs.",
+                                step.kind.as_str(),
+                                crate::budget::worst_case(step.credits),
+                                crate::pricing::PRICES_AS_OF
+                            ),
+                            code: "overcharged",
+                        });
+                        break;
+                    }
                 }
                 Ok(task) => {
                     failure = Some(Failure {

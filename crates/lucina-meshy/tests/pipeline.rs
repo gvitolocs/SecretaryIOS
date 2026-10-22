@@ -131,10 +131,15 @@ fn fixtures(dir: &Path) -> std::path::PathBuf {
 }
 
 async fn rig(limits: Limits, step_timeout: Duration) -> Rig {
+    rig_with(limits, step_timeout, 0).await
+}
+
+async fn rig_with(limits: Limits, step_timeout: Duration, overcharge: u32) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let mock = mock::spawn(MockConfig {
         assets: fixtures(dir.path()),
         polls_to_finish: 2,
+        overcharge,
         ..MockConfig::default()
     })
     .await
@@ -413,4 +418,51 @@ async fn budget_and_key_gate_the_start() {
         .unwrap();
     assert_eq!(p.total, 3, "already rigged");
     assert!(matches!(&p.spec.source, plan::Source::Input(i) if i.rig_task_id.is_some()));
+}
+
+/// G4 (docs/verification.md): the daily cap was checked against the plan's
+/// estimate, and nothing stopped a job when Meshy charged more than that.
+/// With prices 2 credits above the table per task, the knight (estimate 38)
+/// would have cost 46 against a 45-credit day. Now the plan reserves every
+/// step's worst case (43) and the job stops as soon as a step is charged
+/// more than its worst case, so the day stays within its cap.
+#[tokio::test]
+async fn meshy_charges_stay_within_the_reservation() {
+    let r = rig_with(Limits::new(45, 45), Duration::from_secs(10), 2).await;
+    let p = r
+        .svc
+        .plan(&args(
+            json!({"action": "text_to_3d", "prompt": "knight", "animations": ["walk"]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!((p.total, p.reservation()), (38, 43));
+    let job = r.svc.start(p, origin()).await.unwrap();
+    let done = wait_done(&r, &job.id).await;
+    assert_eq!(done["status"], "error", "{done}");
+    assert!(
+        done["error"].as_str().unwrap().contains("charged 12"),
+        "{done}"
+    );
+    assert_eq!(
+        r.mock.creates("/openapi/v1/rigging"),
+        0,
+        "stopped before rigging"
+    );
+    let charged = r.svc.ledger.entry(&job.id).unwrap().consumed.unwrap();
+    assert_eq!(charged, 22 + 12);
+    assert!(r.svc.ledger.spent_today(chrono::Utc::now()) <= 45);
+
+    // Within the margin (1 over per task) the same plan completes.
+    let r = rig_with(Limits::new(45, 45), Duration::from_secs(10), 1).await;
+    let p = r
+        .svc
+        .plan(&args(
+            json!({"action": "text_to_3d", "prompt": "knight", "animations": ["walk"]}),
+        ))
+        .await
+        .unwrap();
+    let job = r.svc.start(p, origin()).await.unwrap();
+    assert_eq!(wait_done(&r, &job.id).await["status"], "done");
+    assert_eq!(r.svc.ledger.entry(&job.id).unwrap().consumed, Some(42));
 }
