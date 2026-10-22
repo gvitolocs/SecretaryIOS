@@ -1883,3 +1883,20 @@ body:has(.dock--float:not(.dock--open)) .bring-search-row {
     background-position: 150% 0;
   }
 }
+
+/* Details sheet: a custom item object's names (it/en/da) and icon. */
+.bring-names {
+  gap: 8px;
+  padding: 12px;
+}
+
+.bring-names .bring-qty,
+.bring-names .bring-qty:first-child {
+  flex: 0 0 auto;
+}
+
+.bring-hint {
+  margin: 0;
+  color: var(--b-text-2);
+  font-size: 12px;
+}

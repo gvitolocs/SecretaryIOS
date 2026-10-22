@@ -16,6 +16,7 @@ import {
   refreshing,
   refreshShopping,
   removeItems,
+  rowKeyId,
   setGrouped,
   setLang,
   shop,
@@ -156,7 +157,7 @@ export default function ShoppingView() {
     }
     return shop.catalog.sections.filter((s) => bySection.has(s.id)).map((s) => ({ ...s, items: bySection.get(s.id) ?? [] }));
   });
-  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(i.catalogId, i.name), i])));
+  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(rowKeyId(i), i.name), i])));
 
   const act = (fn: () => void) => withFlip(root, fn);
 

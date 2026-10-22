@@ -6,13 +6,18 @@
 //   GET    /v1/shopping/catalog?lang=it|en|da
 //   GET    /v1/shopping/lists                 POST /v1/shopping/lists {name, theme}
 //   GET    /v1/shopping/lists/{id}            PATCH/DELETE /v1/shopping/lists/{id}
-//   POST   /v1/shopping/lists/{id}/ops {expectedRevision, ops}
+//   POST   /v1/shopping/lists/{id}/ops {expectedRevision, lang?, ops}   (list GET and ops take ?lang=it|en|da)
+//   GET    /v1/shopping/items                 the custom item objects
+// Every row points to an item object (a catalog item or a custom object with
+// names in it/en/da); unknown text becomes a custom object (the mock names
+// every language with the typed text and marks it needsTranslation).
 // Test hooks (session + CSRF):
 //   POST /v1/shopping/_mock/bump {listId?}     touches the first needed item, so a stale op on it gets 409
 //   POST /v1/shopping/_mock/external {listId?, name, spec?, via?}  adds an item as if from Telegram
 //   POST /v1/shopping/_mock/down {down: true}  v2 endpoints answer 503 until {down: false}
 //
-// Contract extension (reported to the backend): `add` accepts an optional client `itemId`.
+// `add` takes `itemId` (an object id) or `text`; a client row id may come as `rowId`
+// (or, from old outboxes, as a UUID in `itemId`).
 
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -139,10 +144,57 @@ function fold(text) {
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
-// Same rule as sameRow() in src/lib/shoppingOps.ts.
-function sameRow(item, catalogId, name) {
-  if (catalogId && item.catalogId === catalogId) return true;
-  if (catalogId && item.catalogId && item.catalogId !== catalogId) return false;
+// ---------- Item objects ----------
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/** @type {Map<string, {id, kind: "custom", names, aliases: string[], section, icon, needsTranslation: boolean}>} */
+const customs = new Map();
+
+function newCustomId() {
+  let id = "u_";
+  for (let i = 0; i < 26; i++) id += CROCKFORD[Math.floor(Math.random() * 32)];
+  return id;
+}
+
+function catalogObject(cat) {
+  const names = { it: cat.names?.it ?? cat.name, en: cat.names?.en ?? cat.name, da: cat.names?.da ?? cat.name };
+  return { id: cat.id, kind: "catalog", names, section: cat.section ?? null, icon: cat.icon ?? null };
+}
+
+function objectFor(id) {
+  if (!id) return null;
+  if (customs.has(id)) return customs.get(id);
+  const cat = catalogItem(id);
+  return cat ? catalogObject(cat) : null;
+}
+
+/** Typed text in any language to an object id (catalog names and aliases, then custom objects). */
+function resolveText(text) {
+  const q = fold(text);
+  if (!q) return null;
+  for (const cat of catalogFor("it").items) {
+    if (!cat) continue;
+    const terms = [cat.name, ...Object.values(cat.names ?? {}), ...(Array.isArray(cat.aliases) ? cat.aliases : [])];
+    if (terms.some((t) => typeof t === "string" && fold(t) === q)) return cat.id;
+  }
+  for (const o of customs.values()) {
+    if ([...Object.values(o.names), ...o.aliases].some((t) => fold(t) === q)) return o.id;
+  }
+  return null;
+}
+
+function createCustom(text) {
+  const name = clip(text);
+  const o = { id: newCustomId(), kind: "custom", names: { it: name, en: name, da: name }, aliases: [name], section: "other", icon: null, needsTranslation: true };
+  customs.set(o.id, o);
+  return o;
+}
+
+// Same rule as sameRow() in src/lib/shoppingOps.ts: one active row per object.
+function sameRow(item, objectId, name) {
+  if (objectId && item.objectId === objectId) return true;
+  if (objectId && item.objectId) return false;
   return name !== "" && fold(item.name) === fold(name);
 }
 
@@ -163,10 +215,14 @@ function seedItem(list, sampleId, spec, status, updatedBy, minutesAgo) {
   const real = catalogItem(sampleId);
   const cat = real ?? sampleCatalog("it").items.find((i) => i.id === sampleId);
   const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  const objectId = real ? sampleId : createCustom(cat?.name ?? sampleId).id;
+  if (!real && cat) Object.assign(customs.get(objectId), { names: { it: cat.names.it, en: cat.names.en, da: cat.names.da }, section: cat.section, icon: cat.icon, needsTranslation: false });
   list.items.push({
     id: randomUUID(),
+    objectId,
     catalogId: real ? sampleId : null,
     name: cat?.name ?? sampleId,
+    typedName: cat?.name ?? sampleId,
     spec,
     quantity: null,
     unit: null,
@@ -189,8 +245,10 @@ function seed() {
   seedItem(casa, "bread", "", "recent", "telegram", 1500);
   seedItem(casa, "basil", "", "recent", "discord", 2900);
   seedItem(casa, "parmesan", "24 mesi", "recent", "web", 4400);
+  const candles = createCustom("Candele profumate");
+  Object.assign(candles, { names: { it: "Candele profumate", en: "Scented candles", da: "Duftlys" }, section: "household", icon: "🕯️", needsTranslation: false });
   casa.items.push({
-    id: randomUUID(), catalogId: null, name: "Candele profumate", spec: "", quantity: 2, unit: "pz",
+    id: randomUUID(), objectId: candles.id, catalogId: null, name: "Candele profumate", typedName: "candele profumate", spec: "", quantity: 2, unit: "pz",
     section: null, icon: null, status: "needed", position: casa.items.length + 1, updatedAt: iso(),
     updatedBy: "alexa", rev: 1,
   });
@@ -200,8 +258,14 @@ function seed() {
 }
 seed();
 
-const visible = (list) =>
-  list.items.filter((i) => i.status !== "removed").map(({ rev: _rev, ...rest }) => rest);
+/** Rows as the server sends them: the object, and `name` in `lang`. */
+const visible = (list, lang = "it") =>
+  list.items
+    .filter((i) => i.status !== "removed")
+    .map(({ rev: _rev, objectId, ...rest }) => {
+      const item = objectFor(objectId);
+      return { ...rest, itemId: objectId, item, name: item?.names?.[lang] ?? rest.name, section: rest.section ?? item?.section ?? null, icon: rest.icon ?? item?.icon ?? null };
+    });
 
 function summary(list) {
   const active = list.items.filter((i) => i.status !== "removed");
@@ -215,10 +279,11 @@ function summary(list) {
   };
 }
 
-const listState = (list) => ({
+const listState = (list, lang) => ({
   list: { id: list.id, name: list.name, theme: list.theme },
   revision: list.revision,
-  items: visible(list),
+  lang,
+  items: visible(list, lang),
 });
 
 // ---------- Ops (same semantics as src/lib/shoppingOps.ts) ----------
@@ -228,24 +293,33 @@ const qty = (q) => (typeof q === "number" && Number.isFinite(q) && q > 0 ? q : n
 const nextPos = (list) => list.items.reduce((m, i) => (i.status === "needed" && i.position > m ? i.position : m), 0) + 1;
 const active = (list, id) => list.items.find((i) => i.id === id && i.status !== "removed");
 const TARGETED = new Set(["need", "purchase", "remove", "set_spec", "set_quantity", "set_section", "rename", "move", "reorder"]);
-const TYPES = new Set([...TARGETED, "add", "clear_recent"]);
+const TYPES = new Set([...TARGETED, "add", "clear_recent", "edit_item"]);
 
 function validateOp(op) {
   if (!op || typeof op !== "object") return "op must be an object";
   if (typeof op.opId !== "string" || !op.opId || op.opId.length > 100) return "opId must be a non-empty string";
   if (!TYPES.has(op.type)) return `unknown op type ${JSON.stringify(op.type)}`;
   if (TARGETED.has(op.type) && typeof op.itemId !== "string") return `${op.type} needs itemId`;
-  if (op.type === "add" && !clip(op.name) && !op.catalogId) return "add needs name or catalogId";
+  if (op.type === "add" && !clip(op.text ?? op.name) && !op.catalogId && !(op.itemId && !UUID_RE.test(op.itemId))) {
+    return "add needs itemId or text";
+  }
+  if (op.type === "edit_item" && !customs.has(op.itemId)) return "edit_item needs a custom object id";
   if (op.type === "move" && (typeof op.toListId !== "string" || !lists.has(op.toListId))) return "move needs an existing toListId";
   return null;
 }
 
 function addToList(list, op, by, rev) {
-  const cat = catalogItem(op.catalogId);
-  const name = clip(op.name) || cat?.name || op.catalogId;
+  const text = clip(op.text ?? op.name);
+  const rowId = op.rowId ?? (op.itemId && UUID_RE.test(op.itemId) ? op.itemId : undefined);
+  const explicit = (op.itemId && !UUID_RE.test(op.itemId) ? op.itemId : undefined) ?? op.catalogId;
+  const objectId = (explicit && objectFor(explicit) ? explicit : null) ?? resolveText(text) ?? createCustom(text).id;
+  const object = objectFor(objectId);
+  const cat = object?.kind === "catalog" ? object : null;
+  const name = object?.names?.it ?? text;
+  if (object?.kind === "custom" && text && !object.aliases.some((a) => fold(a) === fold(text))) object.aliases.push(text);
   const existing =
-    (op.itemId ? active(list, op.itemId) : undefined) ??
-    list.items.find((i) => i.status !== "removed" && sameRow(i, op.catalogId, name));
+    (rowId ? active(list, rowId) : undefined) ??
+    list.items.find((i) => i.status !== "removed" && sameRow(i, objectId, name));
   const touch = (i) => Object.assign(i, { updatedAt: iso(), updatedBy: by, rev });
   if (existing) {
     if (existing.status === "recent") {
@@ -259,16 +333,18 @@ function addToList(list, op, by, rev) {
     touch(existing);
     return existing;
   }
-  const id = typeof op.itemId === "string" && op.itemId && !list.items.some((i) => i.id === op.itemId) ? op.itemId : randomUUID();
+  const id = rowId && !list.items.some((i) => i.id === rowId) ? rowId : randomUUID();
   const item = {
     id,
-    catalogId: op.catalogId ?? null,
+    objectId,
+    catalogId: cat ? objectId : null,
     name,
+    typedName: text || name,
     spec: op.spec ? clip(op.spec) : "",
     quantity: qty(op.quantity),
     unit: op.unit ? clip(op.unit) : null,
-    section: op.section ?? cat?.section ?? null,
-    icon: cat?.icon ?? null,
+    section: op.section ?? null,
+    icon: null,
     status: "needed",
     position: nextPos(list),
     updatedAt: iso(),
@@ -279,9 +355,18 @@ function addToList(list, op, by, rev) {
   return item;
 }
 
-function applyOne(list, op, by, rev) {
+function applyOne(list, op, by, rev, lang) {
   const touch = (i) => Object.assign(i, { updatedAt: iso(), updatedBy: by, rev });
   if (op.type === "add") return void addToList(list, op, by, rev);
+  if (op.type === "edit_item") {
+    const o = customs.get(op.itemId);
+    if (op.names) for (const [l, v] of Object.entries(op.names)) if (clip(v)) o.names[l] = clip(v);
+    if (op.names) o.needsTranslation = false;
+    if (typeof op.section === "string") o.section = op.section;
+    if (typeof op.icon === "string") o.icon = op.icon || null;
+    for (const l of lists.values()) for (const i of l.items) if (i.objectId === o.id && i.status !== "removed") touch(i);
+    return;
+  }
   if (op.type === "clear_recent") {
     for (const i of list.items) if (i.status === "recent") touch(Object.assign(i, { status: "removed" }));
     return;
@@ -309,9 +394,16 @@ function applyOne(list, op, by, rev) {
     case "set_section":
       touch(Object.assign(item, { section: typeof op.section === "string" ? op.section : null }));
       break;
-    case "rename":
-      if (clip(op.name)) touch(Object.assign(item, { name: clip(op.name) }));
+    case "rename": {
+      const name = clip(op.name);
+      if (!name) break;
+      const target = resolveText(name);
+      const own = customs.get(item.objectId);
+      if (!target && own) own.names[lang] = name;
+      else Object.assign(item, { objectId: target ?? createCustom(name).id, catalogId: target && !customs.has(target) ? target : null, name, typedName: name, section: null, icon: null });
+      touch(item);
       break;
+    }
     case "reorder":
       if (Number.isFinite(op.position)) touch(Object.assign(item, { position: op.position }));
       break;
@@ -323,7 +415,7 @@ function applyOne(list, op, by, rev) {
       target.updatedAt = iso();
       addToList(
         target,
-        { catalogId: item.catalogId ?? undefined, name: item.name, spec: item.spec, quantity: item.quantity, unit: item.unit, section: item.section },
+        { itemId: item.objectId, text: item.typedName, spec: item.spec, quantity: item.quantity, unit: item.unit, section: item.section },
         by,
         target.revision,
       );
@@ -339,6 +431,7 @@ function sourceOf(req) {
 
 async function handleOps(req, res, ctx, list) {
   const body = await ctx.readJson(req);
+  const lang = ["it", "en", "da"].includes(body.lang) ? body.lang : ["it", "en", "da"].includes(ctx.url.searchParams.get("lang")) ? ctx.url.searchParams.get("lang") : "it";
   const ops = body.ops;
   if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_OPS) {
     return ctx.fail(res, 400, "bad_request", `ops must be an array of 1-${MAX_OPS} ops`);
@@ -375,14 +468,14 @@ async function handleOps(req, res, ctx, list) {
     }
     if (applied.length === 0) rev = list.revision + 1;
     list.seen.add(op.opId);
-    applyOne(list, op, by, rev);
+    applyOne(list, op, by, rev, lang);
     applied.push(op.opId);
   }
   if (applied.length) {
     list.revision = rev;
     list.updatedAt = iso();
   }
-  return ctx.send(res, 200, { revision: list.revision, applied, duplicates, items: visible(list) });
+  return ctx.send(res, 200, { revision: list.revision, applied, duplicates, lang, items: visible(list, lang) });
 }
 
 /**
@@ -418,7 +511,7 @@ export async function handleShoppingV2(req, res, ctx) {
     const by = SOURCES.includes(body.via) ? body.via : "telegram";
     const cat = catalogFor("it").items.find((i) => fold(i.name) === fold(name) || (i.aliases ?? []).some((a) => fold(a) === fold(name)));
     list.revision += 1;
-    const item = addToList(list, { catalogId: cat?.id, name: cat ? cat.name : name, spec: body.spec }, by, list.revision);
+    const item = addToList(list, { itemId: cat?.id, text: name, spec: body.spec }, by, list.revision);
     send(res, 201, item);
     return true;
   }
@@ -432,6 +525,12 @@ export async function handleShoppingV2(req, res, ctx) {
     if (method !== "GET") return fail(res, 405, "method_not_allowed", "Method not allowed."), true;
     const lang = ["it", "en", "da"].includes(url.searchParams.get("lang")) ? url.searchParams.get("lang") : "it";
     send(res, 200, catalogFor(lang), { "Cache-Control": "public, max-age=300" });
+    return true;
+  }
+
+  if (path === "/v1/shopping/items") {
+    if (method !== "GET") return fail(res, 405, "method_not_allowed", "Method not allowed."), true;
+    send(res, 200, [...customs.values()]);
     return true;
   }
 
@@ -470,7 +569,8 @@ export async function handleShoppingV2(req, res, ctx) {
     if (!list) return fail(res, 404, "list_not_found", "No such list."), true;
     if (method === "GET") {
       await sleep(100);
-      send(res, 200, listState(list));
+      const lang = ["it", "en", "da"].includes(url.searchParams.get("lang")) ? url.searchParams.get("lang") : "it";
+      send(res, 200, listState(list, lang));
       return true;
     }
     if (method === "PATCH") {

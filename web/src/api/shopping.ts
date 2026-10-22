@@ -3,11 +3,13 @@
 
 import { parseCatalog, type Catalog, type Lang } from "../lib/shoppingCatalog";
 import {
+  parseCustomObjects,
   parseList,
   parseLists,
   parseListState,
   parseOpsResponse,
   type ListState,
+  type CustomObject,
   type ListTheme,
   type Op,
   type OpsResponse,
@@ -34,13 +36,16 @@ export const shoppingApi = {
     mustList(await request<unknown>("PATCH", `/v1/shopping/lists/${enc(id)}`, { body: patch, headers: CLIENT })),
   deleteList: (id: string): Promise<unknown> =>
     request<unknown>("DELETE", `/v1/shopping/lists/${enc(id)}`, { headers: CLIENT }),
-  listState: async (id: string): Promise<ListState> =>
-    parseListState(await request<unknown>("GET", `/v1/shopping/lists/${enc(id)}`), id),
-  postOps: async (id: string, expectedRevision: number, ops: Op[]): Promise<OpsResponse> =>
+  /** `lang`: item names come back in the UI language. */
+  listState: async (id: string, lang?: Lang): Promise<ListState> =>
+    parseListState(await request<unknown>("GET", `/v1/shopping/lists/${enc(id)}${lang ? `?lang=${enc(lang)}` : ""}`), id),
+  postOps: async (id: string, expectedRevision: number, ops: Op[], lang?: Lang): Promise<OpsResponse> =>
     parseOpsResponse(
       await request<unknown>("POST", `/v1/shopping/lists/${enc(id)}/ops`, {
-        body: { expectedRevision, ops },
+        body: { expectedRevision, ...(lang ? { lang } : {}), ops },
         headers: CLIENT,
       }),
     ),
+  /** The owner's custom item objects. */
+  customItems: async (): Promise<CustomObject[]> => parseCustomObjects(await request<unknown>("GET", "/v1/shopping/items")),
 };

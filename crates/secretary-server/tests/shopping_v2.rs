@@ -21,6 +21,7 @@ const U3: &str = "8f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
 #[derive(Default)]
 struct Mock {
     seen: Mutex<Vec<(String, String, Value)>>,
+    queries: Mutex<Vec<String>>,
     applied: Mutex<HashSet<String>>,
     revision: Mutex<u64>,
 }
@@ -38,7 +39,10 @@ fn fail(status: StatusCode, code: &str) -> Response {
 }
 
 fn banana() -> Value {
-    json!({"id": "it-1", "catalogId": "banana", "name": "Banane", "spec": "6", "quantity": null,
+    json!({"id": "it-1", "itemId": "banana", "catalogId": "banana", "name": "Banane", "typedName": "banana",
+           "item": {"id": "banana", "kind": "catalog", "names": {"it": "Banane", "en": "Bananas", "da": "Bananer"},
+                    "section": "produce", "icon": "🍌"},
+           "spec": "6", "quantity": null,
            "unit": null, "section": "produce", "icon": "🍌", "status": "needed", "position": 0,
            "updatedAt": "2026-10-21T10:00:00.000Z", "updatedBy": "web", "priceHint": 1.2})
 }
@@ -56,10 +60,22 @@ async fn mock_handler(
 ) -> Response {
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let path = uri.path().to_owned();
+    m.queries
+        .lock()
+        .unwrap()
+        .push(uri.query().unwrap_or("").to_owned());
     m.seen
         .lock()
         .unwrap()
         .push((method.to_string(), path.clone(), body.clone()));
+    if path == "/api/secretary/shopping/items" {
+        return ok(
+            StatusCode::OK,
+            json!({"items": [{"id": "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A", "kind": "custom",
+                              "names": {"it": "Spugne", "en": "Sponges", "da": "Svampe"},
+                              "section": "household", "icon": "🧽", "aliases": ["spugne"], "needsTranslation": false}]}),
+        );
+    }
     let p = path
         .strip_prefix("/api/secretary/shopping/lists")
         .unwrap_or("?");
@@ -501,4 +517,59 @@ async fn ops_are_validated_before_lucina() {
         )
         .await;
     assert_eq!((s, code(&b)), (403, "csrf"));
+}
+
+#[tokio::test]
+async fn item_objects_lang_and_custom_items_pass_through() {
+    let h = harness().await;
+    let (s, b) = h
+        .send(h.req(Method::GET, "/v1/shopping/lists/default?lang=da"))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(h.mock.queries.lock().unwrap().last().unwrap(), "lang=da");
+    assert_eq!(b["items"][0]["itemId"], "banana");
+    assert_eq!(b["items"][0]["typedName"], "banana");
+    assert_eq!(b["items"][0]["item"]["names"]["da"], "Bananer");
+    assert_eq!(b["items"][0]["item"]["kind"], "catalog");
+
+    let calls = h.lucina_calls();
+    let (s, b) = h
+        .send(h.req(Method::GET, "/v1/shopping/lists/default?lang=fr"))
+        .await;
+    assert_eq!((s, code(&b)), (400, "bad_request"));
+    assert_eq!(h.lucina_calls(), calls, "refused before Lucina");
+
+    let (s, _) = h.send(h.req(Method::GET, "/v1/shopping?lang=en")).await;
+    assert_ne!(s, 400);
+    assert_eq!(h.mock.queries.lock().unwrap().last().unwrap(), "lang=en");
+
+    let (s, b) = h
+        .send(h.req(Method::POST, "/v1/shopping/lists/default/ops?lang=en").json(&json!({
+            "ops": [{"opId": U1, "type": "add", "text": "spugne"},
+                    {"opId": U2, "type": "edit_item", "itemId": "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A",
+                     "names": {"en": "Sponges"}, "icon": "🧽"}]
+        })))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let body = h.last_body();
+    assert_eq!(body["lang"], "en", "the query lang goes into the body");
+    assert_eq!(body["ops"][0]["text"], "spugne");
+    assert_eq!(body["ops"][1]["type"], "edit_item");
+    assert_eq!(body["ops"][1]["names"]["en"], "Sponges");
+
+    let (s, _) = h
+        .send(
+            h.req(Method::POST, "/v1/shopping/lists/default/ops?lang=en")
+                .json(&json!({
+                    "lang": "da", "ops": [{"opId": U3, "type": "add", "itemId": "milk"}]
+                })),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(h.last_body()["lang"], "da", "the body lang wins");
+
+    let (s, b) = h.send(h.req(Method::GET, "/v1/shopping/items")).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b[0]["names"]["en"], "Sponges");
+    assert_eq!(b[0]["aliases"][0], "spugne", "unknown fields pass");
 }

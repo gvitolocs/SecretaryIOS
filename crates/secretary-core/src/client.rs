@@ -16,9 +16,10 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
-    CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
-    OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
-    ShoppingListData, ShoppingListsData, ShoppingOp, TimelinePage, TimelineQuery, UpdateList,
+    CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, ItemObject, Job,
+    ListState, OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem,
+    ShoppingList, ShoppingListData, ShoppingListsData, ShoppingOp, TimelinePage, TimelineQuery,
+    UpdateList,
 };
 use crate::validate;
 
@@ -90,6 +91,16 @@ impl Call {
     fn with_body(mut self, body: Value) -> Self {
         self.body = Some(body);
         self
+    }
+
+    /// Adds `?lang=it|en|da` (the language of shopping item names); `None` keeps
+    /// Lucina's default (the owner's language).
+    pub fn with_lang(mut self, lang: Option<&str>) -> Result<Self> {
+        if let Some(lang) = lang {
+            validate::lang("lang", lang)?;
+            self.query.push(("lang", lang.to_owned()));
+        }
+        Ok(self)
     }
 
     /// `GET /health`.
@@ -194,6 +205,11 @@ impl Call {
             .extracting("item"))
     }
 
+    /// `GET /shopping/items`: the owner's custom item objects; `{items}` is unwrapped.
+    pub fn shopping_items() -> Self {
+        Self::new(Method::GET, &["shopping", "items"]).extracting("items")
+    }
+
     /// `GET /shopping/lists`.
     pub fn shopping_lists() -> Self {
         Self::new(Method::GET, &["shopping", "lists"])
@@ -249,6 +265,9 @@ impl Call {
                 field: "ops",
                 message: format!("must hold 1..={} ops", validate::MAX_OPS_PER_BATCH),
             });
+        }
+        if let Some(lang) = batch.lang.as_deref() {
+            validate::lang("lang", lang)?;
         }
         let mut seen = std::collections::HashSet::new();
         for (i, op) in batch.ops.iter().enumerate() {
@@ -383,6 +402,8 @@ fn validate_op(op: &ShoppingOp) -> Result<()> {
     validate::uuid("opId", op.op_id())?;
     match op {
         O::Add {
+            item_id,
+            text,
             catalog_id,
             name,
             spec,
@@ -391,13 +412,17 @@ fn validate_op(op: &ShoppingOp) -> Result<()> {
             section,
             ..
         } => {
-            if catalog_id.is_none() && name.is_none() {
+            if item_id.is_none() && text.is_none() && catalog_id.is_none() && name.is_none() {
                 return Err(Error::Invalid {
-                    field: "catalogId",
-                    message: "add needs catalogId or name".into(),
+                    field: "itemId",
+                    message: "add needs itemId or text (or the legacy catalogId or name)".into(),
                 });
             }
+            validate::opt_id("itemId", item_id.as_deref())?;
             validate::opt_id("catalogId", catalog_id.as_deref())?;
+            if let Some(t) = text.as_deref() {
+                validate::text("text", t, validate::MAX_SHOPPING_NAME_CHARS)?;
+            }
             if let Some(n) = name.as_deref() {
                 validate::text("name", n, validate::MAX_SHOPPING_NAME_CHARS)?;
             }
@@ -446,6 +471,29 @@ fn validate_op(op: &ShoppingOp) -> Result<()> {
             validate::id("toListId", to_list_id)?;
         }
         O::ClearRecent { .. } => {}
+        O::EditItem {
+            item_id,
+            names,
+            section,
+            icon,
+            ..
+        } => {
+            validate::id("itemId", item_id)?;
+            if names.is_none() && section.is_none() && icon.is_none() {
+                return Err(Error::Invalid {
+                    field: "names",
+                    message: "edit_item needs names, section or icon".into(),
+                });
+            }
+            for (lang, name) in names.iter().flatten() {
+                validate::lang("names", lang)?;
+                validate::text("names", name, validate::MAX_ITEM_NAME_CHARS)?;
+            }
+            validate::opt_id("section", section.as_deref())?;
+            if let Some(i) = icon.as_deref() {
+                validate::icon("icon", i)?;
+            }
+        }
         O::Reorder {
             item_id, position, ..
         } => {
@@ -644,6 +692,11 @@ impl LucinaClient {
         self.call(&Call::shopping_ops(id, batch)?).await
     }
 
+    /// The owner's custom item objects (search shows them next to the catalog).
+    pub async fn shopping_items(&self) -> Result<Vec<ItemObject>> {
+        self.call(&Call::shopping_items()).await
+    }
+
     pub async fn timeline(&self, q: &TimelineQuery) -> Result<TimelinePage> {
         self.call(&Call::timeline(q)?).await
     }
@@ -813,6 +866,63 @@ mod tests {
     }
 
     #[test]
+    fn shopping_item_objects() {
+        const U1: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        let batch = |body: Value| -> Result<Call> {
+            let b: OpsBatch =
+                serde_json::from_value(body).map_err(|e| Error::Decode(e.to_string()))?;
+            Call::shopping_ops("default", &b)
+        };
+        let call = batch(json!({"lang": "da", "ops": [
+            {"opId": U1, "type": "add", "itemId": "milk", "text": "mælk"},
+        ]}))
+        .unwrap();
+        let body = call.body().unwrap();
+        assert_eq!(body["lang"], "da");
+        assert_eq!(body["ops"][0]["itemId"], "milk");
+        assert_eq!(body["ops"][0]["text"], "mælk");
+        let edit = batch(json!({"ops": [{"opId": U1, "type": "edit_item", "itemId": "u_01JB8Z6Q3W4E5R6T7Y8U9I0P1A",
+            "names": {"en": "Dish soap"}, "section": "household", "icon": "🧴"}]}))
+        .unwrap();
+        assert_eq!(edit.body().unwrap()["ops"][0]["names"]["en"], "Dish soap");
+        assert!(batch(
+            json!({"ops": [{"opId": U1, "type": "edit_item", "itemId": "u_1", "icon": ""}]})
+        )
+        .is_ok());
+        let bad = |body: Value| match batch(body) {
+            Err(Error::Invalid { message, field }) => format!("{field}: {message}"),
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            bad(json!({"lang": "fr", "ops": [{"opId": U1, "type": "add", "text": "x"}]}))
+                .starts_with("lang")
+        );
+        assert!(
+            bad(json!({"ops": [{"opId": U1, "type": "edit_item", "itemId": "u_1"}]}))
+                .contains("names, section or icon")
+        );
+        assert!(bad(json!({"ops": [{"opId": U1, "type": "edit_item", "itemId": "u_1", "names": {"fr": "x"}}]})).contains("names"));
+        assert!(bad(
+            json!({"ops": [{"opId": U1, "type": "edit_item", "itemId": "u_1", "icon": "soap"}]})
+        )
+        .contains("icon"));
+        assert!(
+            bad(json!({"ops": [{"opId": U1, "type": "add", "itemId": "../x"}]})).contains("itemId")
+        );
+
+        let list = Call::shopping_list("default")
+            .unwrap()
+            .with_lang(Some("en"))
+            .unwrap();
+        assert_eq!(list.path(), "/api/secretary/shopping/lists/default");
+        assert!(Call::shopping().with_lang(Some("xx")).is_err());
+        assert_eq!(
+            Call::shopping_items().path(),
+            "/api/secretary/shopping/items"
+        );
+    }
+
+    #[test]
     fn shopping_ops_validation() {
         const U1: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
         const U2: &str = "7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
@@ -849,7 +959,7 @@ mod tests {
         assert!(bad(json!([])).contains("1..=200"));
         assert!(bad(json!([{"opId": "nope", "type": "remove", "itemId": "x"}])).contains("opId"));
         assert!(bad(json!([{"opId": U1, "type": "explode"}])).starts_with("decode"));
-        assert!(bad(json!([{"opId": U1, "type": "add"}])).contains("catalogId or name"));
+        assert!(bad(json!([{"opId": U1, "type": "add"}])).contains("itemId or text"));
         assert!(
             bad(json!([{"opId": U1, "type": "add", "name": "x".repeat(201)}])).contains("name")
         );

@@ -1,7 +1,7 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { catalogName, exactMatch, itemKey, searchCatalog, type CatalogItem } from "../../lib/shoppingCatalog";
 import type { ShopItem } from "../../lib/shoppingOps";
-import { addCatalogItem, addText, catalogIndex, itemIcon, shop, t, tapItem } from "../../state/shopping";
+import { addCatalogItem, addText, catalogIndex, itemIcon, rowKeyId, shop, t, tapItem } from "../../state/shopping";
 import { onTileKeyDown, Tile } from "./Tile";
 
 /**
@@ -16,7 +16,7 @@ export function SearchSheet(props: { act: (fn: () => void) => void }) {
   let input: HTMLInputElement | undefined;
   let grid: HTMLDivElement | undefined;
 
-  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(i.catalogId, i.name), i])));
+  const rowByKey = createMemo(() => new Map(shop.items.map((i) => [itemKey(rowKeyId(i), i.name), i])));
   const recent = createMemo(() =>
     shop.items.filter((i) => i.status === "recent").sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
   );

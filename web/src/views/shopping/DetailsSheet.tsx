@@ -1,12 +1,15 @@
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
 import { createStore } from "solid-js/store";
-import { OTHER_SECTION } from "../../lib/shoppingCatalog";
-import { relativeTime, sourceName, SPEC_CHIPS } from "../../lib/shoppingI18n";
+import { LANGS, OTHER_SECTION, type Lang } from "../../lib/shoppingCatalog";
+import { LANG_LABEL, relativeTime, sourceName, SPEC_CHIPS } from "../../lib/shoppingI18n";
 import { THEME_ICON } from "../../lib/shoppingOps";
 import { deleteItem, editItem, itemIcon, itemSection, moveItem, shop, t } from "../../state/shopping";
 
 interface Form {
   name: string;
+  /** A custom object's names (edited for every list). */
+  names: Record<Lang, string>;
+  icon: string;
   spec: string;
   quantity: string;
   unit: string;
@@ -40,7 +43,16 @@ export function toggleChip(spec: string, chip: string): string {
  */
 export function DetailsSheet(props: { itemId: string | null; onClose: () => void }) {
   const item = createMemo(() => (props.itemId ? shop.items.find((i) => i.id === props.itemId) : undefined));
-  const [form, setForm] = createStore<Form>({ name: "", spec: "", quantity: "", unit: "", section: OTHER_SECTION });
+  const [form, setForm] = createStore<Form>({
+    name: "",
+    names: { it: "", en: "", da: "" },
+    icon: "",
+    spec: "",
+    quantity: "",
+    unit: "",
+    section: OTHER_SECTION,
+  });
+  const isCustom = () => item()?.kind === "custom" && !!item()?.objectId;
   const [panel, setPanel] = createSignal<Panel>(null);
   let specInput: HTMLInputElement | undefined;
   let lastFocus: HTMLElement | null = null;
@@ -55,6 +67,8 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
         lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setForm({
           name: it.name,
+          names: { it: it.names.it ?? it.name, en: it.names.en ?? it.name, da: it.names.da ?? it.name },
+          icon: it.icon ?? "",
           spec: it.spec,
           quantity: it.quantity === null ? "" : String(it.quantity),
           unit: it.unit ?? "",
@@ -76,8 +90,9 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
     if (save && it) {
       const q = form.quantity.trim().replace(",", ".");
       const n = q === "" ? null : Number(q);
+      const custom = it.kind === "custom" && !!it.objectId;
       editItem(it.id, {
-        name: form.name,
+        ...(custom ? { names: { ...form.names }, icon: form.icon } : { name: form.name }),
         spec: form.spec,
         quantity: n !== null && Number.isFinite(n) && n > 0 ? n : null,
         unit: form.unit.trim() || null,
@@ -120,7 +135,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 {itemIcon(it()) ?? "🛒"}
               </span>
               <h2 id="bring-details-title" class="bring-details-name">
-                {form.name || it().name}
+                {(isCustom() ? form.names[shop.lang] : form.name) || it().name}
               </h2>
               <button type="button" class="bring-text-btn" onClick={() => finish(true)}>
                 {t("done")}
@@ -203,7 +218,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                   <span class="bring-control-icon" aria-hidden="true">
                     ✏️
                   </span>
-                  <span>{t("rename")}</span>
+                  <span>{isCustom() ? t("editNames") : t("rename")}</span>
                 </button>
                 <button
                   type="button"
@@ -231,7 +246,41 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                 </Show>
               </div>
 
-              <Show when={panel() === "rename"}>
+              <Show when={panel() === "rename" && isCustom()}>
+                <div class="bring-panel bring-names">
+                  <Show when={it().needsTranslation}>
+                    <p class="bring-hint">{t("needsTranslation")}</p>
+                  </Show>
+                  <For each={LANGS}>
+                    {(lang) => (
+                      <label class="bring-qty">
+                        <span>{LANG_LABEL[lang]}</span>
+                        <input
+                          class="bring-field"
+                          type="text"
+                          maxlength="100"
+                          lang={lang}
+                          value={form.names[lang]}
+                          onInput={(e) => setForm("names", lang, e.currentTarget.value)}
+                        />
+                      </label>
+                    )}
+                  </For>
+                  <label class="bring-qty">
+                    <span>{t("itemIcon")}</span>
+                    <input
+                      class="bring-field"
+                      type="text"
+                      maxlength="16"
+                      placeholder="🛒"
+                      value={form.icon}
+                      onInput={(e) => setForm("icon", e.currentTarget.value)}
+                    />
+                  </label>
+                  <p class="bring-hint">{t("namesHint")}</p>
+                </div>
+              </Show>
+              <Show when={panel() === "rename" && !isCustom()}>
                 <div class="bring-panel">
                   <label class="sr-only" for="bring-rename">
                     {t("rename")}

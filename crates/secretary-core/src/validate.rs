@@ -22,6 +22,12 @@ pub const MAX_MESSAGE_CHARS: usize = 12_100;
 pub const MAX_TEXT_CHARS: usize = 500;
 /// Max characters of a shopping `rawName` / `product`.
 pub const MAX_SHOPPING_NAME_CHARS: usize = 200;
+/// Max characters of an item object's name in one language.
+pub const MAX_ITEM_NAME_CHARS: usize = 100;
+/// Max characters of an item object's icon (one emoji, ZWJ sequences included).
+pub const MAX_ICON_CHARS: usize = 16;
+/// Languages of item object names and of `?lang=`.
+pub const SHOPPING_LANGS: &[&str] = &["it", "en", "da"];
 /// Max length of a chat `sessionId` (`[A-Za-z0-9_-]`).
 pub const MAX_SESSION_ID_LEN: usize = 64;
 /// Max length of any id (job, reminder, shopping item, session, client message).
@@ -66,6 +72,32 @@ pub fn session_id(field: &'static str, s: &str) -> Result<()> {
             field,
             format!("must be 1..={MAX_SESSION_ID_LEN} characters of A-Z a-z 0-9 _ -"),
         ));
+    }
+    Ok(())
+}
+
+/// A shopping language: `it`, `en` or `da`.
+pub fn lang(field: &'static str, s: &str) -> Result<()> {
+    if SHOPPING_LANGS.contains(&s) {
+        Ok(())
+    } else {
+        Err(invalid(
+            field,
+            format!("must be one of {}", SHOPPING_LANGS.join(", ")),
+        ))
+    }
+}
+
+/// An item icon: empty (clears it) or one short emoji (no letters, digits or spaces).
+pub fn icon(field: &'static str, s: &str) -> Result<()> {
+    if s.is_empty() {
+        return Ok(());
+    }
+    if s.chars().count() > MAX_ICON_CHARS
+        || s.chars()
+            .any(|c| c.is_alphanumeric() || c.is_whitespace() || c.is_control())
+    {
+        return Err(invalid(field, "must be one emoji"));
     }
     Ok(())
 }

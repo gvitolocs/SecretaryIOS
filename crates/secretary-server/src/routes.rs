@@ -111,8 +111,11 @@ async fn agenda(State(st): State<AppState>, QueryArgs(q): QueryArgs<AgendaQuery>
     Ok((status, Json(data)))
 }
 
-async fn shopping(State(st): State<AppState>) -> ApiResult {
-    forward(&st, Call::shopping()).await
+async fn shopping(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<crate::shopping::LangQuery>,
+) -> ApiResult {
+    forward(&st, Call::shopping().with_lang(q.lang.as_deref())?).await
 }
 
 async fn shopping_add(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {

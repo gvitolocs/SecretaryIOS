@@ -1,5 +1,6 @@
 // Test-only in-memory Shopping v2 server for stubFetch (never imported by the app).
 
+import { fold } from "../../lib/shoppingCatalog";
 import { applyOps, isActive, type ListTheme, type Op, type ShopItem } from "../../lib/shoppingOps";
 import type { Call, Handler } from "../../test/fetch";
 
@@ -25,7 +26,12 @@ export function testItem(p: Partial<ShopItem> & { name: string }): ShopItem {
   seq += 1;
   return {
     id: `i${seq}`,
+    objectId: p.catalogId ?? null,
+    kind: p.catalogId ? "catalog" : null,
+    names: {},
     catalogId: null,
+    typedName: p.name,
+    needsTranslation: false,
     spec: "",
     quantity: null,
     unit: null,
@@ -73,11 +79,41 @@ export function fakeShoppingServer(init: Record<string, { name: string; theme: L
     recent: l.items.filter((i) => i.status === "recent").length,
     updatedAt: "2026-10-21T10:00:00.000Z",
   });
-  const state = (l: FakeList) => ({
+  // Like Lucina: every row gets an object; unknown text becomes a custom object named in every language.
+  let customSeq = 0;
+  const nameObjects = (l: FakeList) => {
+    for (const row of l.items) {
+      if (row.objectId) continue;
+      const known = [...lists.values()].flatMap((x) => x.items).find((r) => r.kind === "custom" && r.objectId && fold(r.name) === fold(row.name));
+      row.objectId = known?.objectId ?? `u_FAKE${String(++customSeq).padStart(22, "0")}`;
+      row.kind = "custom";
+      row.names = known?.names ?? { it: row.name, en: row.name, da: row.name };
+      row.section = row.section ?? "other";
+    }
+  };
+  const wire = (row: ShopItem, lang: string | null) => ({
+    ...row,
+    name: (lang ? row.names[lang] : undefined) ?? row.name,
+    itemId: row.objectId,
+    item: { id: row.objectId, kind: row.kind, names: row.names, section: row.section, icon: row.icon },
+  });
+  const state = (l: FakeList, lang: string | null) => ({
     list: { id: l.id, name: l.name, theme: l.theme },
     revision: l.revision,
-    items: l.items.filter(isActive),
+    items: l.items.filter(isActive).map((r) => wire(r, lang)),
   });
+  const catalogHint = (id: string) => {
+    const c = TEST_CATALOG.items.find((i) => i.id === id);
+    if (c) return { name: c.name, names: { it: c.name, ...c.names }, kind: "catalog" as const, section: c.section, icon: c.icon };
+    const custom = [...lists.values()].flatMap((x) => x.items).find((r) => r.objectId === id && r.kind === "custom");
+    return custom ? { name: custom.name, names: custom.names, kind: "custom" as const, section: custom.section, icon: custom.icon ?? "🛒" } : undefined;
+  };
+  const resolve = (text: string) => {
+    const q = fold(text);
+    const c = TEST_CATALOG.items.find((i) => [i.name, ...Object.values(i.names), ...i.aliases].some((n) => fold(n) === q));
+    if (c) return c.id;
+    return [...lists.values()].flatMap((x) => x.items).find((r) => r.kind === "custom" && Object.values(r.names).some((n) => n && fold(n) === q))?.objectId ?? undefined;
+  };
 
   const server: FakeServer = {
     lists,
@@ -95,6 +131,13 @@ export function fakeShoppingServer(init: Record<string, { name: string; theme: L
       const url = new URL(call.url, "http://test.local");
       const parts = url.pathname.split("/").filter(Boolean); // v1 shopping lists {id} ops
       if (url.pathname === "/v1/shopping/catalog") return { body: { ...TEST_CATALOG, lang: url.searchParams.get("lang") ?? "it" } };
+      if (url.pathname === "/v1/shopping/items") {
+        const seen = new Map<string, ShopItem>();
+        for (const r of [...lists.values()].flatMap((x) => x.items)) if (r.kind === "custom" && r.objectId) seen.set(r.objectId, r);
+        return {
+          body: [...seen.values()].map((r) => ({ id: r.objectId, kind: "custom", names: r.names, aliases: [r.typedName], section: r.section, icon: r.icon })),
+        };
+      }
       if (url.pathname === "/v1/shopping/lists") {
         if (call.method === "GET") return { body: [...lists.values()].map(summary) };
         const b = call.body as { name: string; theme: ListTheme };
@@ -105,7 +148,7 @@ export function fakeShoppingServer(init: Record<string, { name: string; theme: L
       const list = lists.get(decodeURIComponent(parts[3] ?? ""));
       if (!list) return { status: 404, body: { error: { code: "list_not_found", message: "No such list." } } };
       if (parts.length === 4) {
-        if (call.method === "GET") return { body: state(list) };
+        if (call.method === "GET") return { body: state(list, url.searchParams.get("lang")) };
         if (call.method === "PATCH") {
           Object.assign(list, call.body as object);
           return { body: summary(list) };
@@ -116,7 +159,7 @@ export function fakeShoppingServer(init: Record<string, { name: string; theme: L
         }
       }
       if (parts[4] === "ops" && call.method === "POST") {
-        const body = call.body as { expectedRevision: number; ops: Op[] };
+        const body = call.body as { expectedRevision: number; ops: Op[]; lang?: string };
         if (server.conflictNext) {
           server.conflictNext = false;
           server.beforeConflict?.();
@@ -129,14 +172,21 @@ export function fakeShoppingServer(init: Record<string, { name: string; theme: L
           by: (call.headers["x-secretary-client"] as string) ?? "web",
           newId: () => `srv-${++newIds}`,
           seen: list.seen,
-          catalog: (id) => {
-            const c = TEST_CATALOG.items.find((i) => i.id === id);
-            return c ? { name: c.name, section: c.section, icon: c.icon } : undefined;
-          },
+          catalog: catalogHint,
+          resolve,
+          lang: body.lang ?? "it",
         });
         list.items = res.items;
+        nameObjects(list);
         if (res.applied.length) list.revision += 1;
-        return { body: { revision: list.revision, applied: res.applied, duplicates: res.duplicates, items: list.items.filter(isActive) } };
+        return {
+          body: {
+            revision: list.revision,
+            applied: res.applied,
+            duplicates: res.duplicates,
+            items: list.items.filter(isActive).map((r) => wire(r, body.lang ?? null)),
+          },
+        };
       }
       return { status: 404, body: { error: { code: "not_found", message: "Not found." } } };
     },

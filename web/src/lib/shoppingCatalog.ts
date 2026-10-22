@@ -18,6 +18,8 @@ export interface CatalogItem {
   aliases: string[];
   section: string | null;
   icon: string;
+  /** A custom item object of the owner (GET /v1/shopping/items), not a catalog entry. */
+  custom?: boolean;
 }
 
 export interface Catalog {
@@ -105,7 +107,7 @@ export function fold(text: string): string {
     .trim();
 }
 
-/** Stable identity of an active row: the catalog id, else the folded name. */
+/** Stable identity of an active row: its item object id (catalog or custom), else the folded name. */
 export function itemKey(catalogId: string | null | undefined, name: string): string {
   return catalogId ? `c:${catalogId}` : `n:${fold(name)}`;
 }
