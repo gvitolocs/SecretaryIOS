@@ -28,7 +28,9 @@ pub mod secrets;
 pub mod service;
 pub mod sessions;
 pub mod shopping;
+pub mod tasks;
 pub mod timeline;
+pub mod todoist;
 pub mod tts;
 pub mod upstream;
 pub mod web;
@@ -111,6 +113,8 @@ pub struct Inner {
     pub notify: Arc<notify::Notifier>,
     /// Links and calendar (`links.json`, `calendar.json`).
     pub links: links::Hub,
+    /// Tasks engine (`tasks.json`) and the Todoist client.
+    pub tasks: Arc<tasks::TasksHub>,
 }
 
 #[derive(Clone)]
@@ -157,6 +161,7 @@ impl AppState {
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
             links: links::Hub::open(cfg)?,
+            tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
         })))
     }
 
@@ -228,7 +233,8 @@ pub fn app(state: AppState) -> Router {
         .merge(shopping::routes())
         .merge(device::routes())
         .merge(notify::routes::routes())
-        .merge(links::routes());
+        .merge(links::routes())
+        .merge(todoist::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -250,6 +256,8 @@ pub fn app(state: AppState) -> Router {
     let api = Router::new()
         .merge(routes::public())
         .merge(links::public_routes())
+        .merge(todoist::public_routes())
+        .merge(tasks::routes(state.clone()))
         .merge(calendar)
         .merge(device_events)
         .merge(auth::session_routes())
@@ -349,6 +357,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }
+    tasks::spawn_sync_loop(state.clone());
     let st = state.clone();
     let shutdown = async move {
         shutdown_signal().await;

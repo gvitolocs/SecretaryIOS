@@ -140,6 +140,9 @@ pub struct LinksState {
     pub ics: Vec<IcsSub>,
     #[serde(default)]
     pub custom: Vec<CustomLink>,
+    /// Tasks (see [`crate::todoist`]).
+    #[serde(default)]
+    pub todoist: Option<crate::todoist::TodoistConn>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -747,6 +750,7 @@ async fn overview(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     let hub = &st.links;
     let mcp = hub.mcp_clients().await;
     let activity = channel_activity(&st).await;
+    let (open_tasks, pending_edits) = crate::tasks::link_counts(&st).await;
     let d = hub.data.lock().await;
     let configured = hub.google.is_some();
 
@@ -939,6 +943,7 @@ async fn overview(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
         "google": {"configured": configured, "status": g_status, "account": g_account, "services": g_services},
         "groups": [
             {"id": "calendars", "cards": calendars},
+            {"id": "tasks", "cards": [crate::todoist::card(d.links.todoist.as_ref(), st.tasks.client.cfg.oauth.is_some(), open_tasks, pending_edits)]},
             {"id": "channels", "cards": channels},
             {"id": "ai", "cards": ai},
             {"id": "google", "cards": services},
@@ -1400,7 +1405,7 @@ fn owner_only(ident: &Identity) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn guard(
+pub(crate) async fn guard(
     Extension(ident): Extension<Identity>,
     req: axum::extract::Request,
     next: axum::middleware::Next,

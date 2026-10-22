@@ -2134,6 +2134,7 @@ dependencies = [
  "secretary-calendar",
  "secretary-core",
  "secretary-gym",
+ "secretary-tasks",
  "serde",
  "serde_json",
  "sha2 0.10.9",
