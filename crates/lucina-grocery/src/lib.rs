@@ -374,19 +374,57 @@ impl GroceryRepo {
         Ok(())
     }
 
-    fn public_item(&self, row: &ItemRow) -> Value {
+    /// `itemCatalogFields`: `(catalogId, section, icon)`. A row without a
+    /// catalog id (free text, or added before the catalog existed) is
+    /// resolved by its name on read: a catalog name in any language fills
+    /// all three, an alias only section and icon; unknown text stays null.
+    pub fn catalog_fields(
+        &self,
+        catalog_item_id: &Option<String>,
+        raw_name: &str,
+        section_override: &Option<String>,
+        icon_key: &Option<String>,
+    ) -> (Option<String>, Option<String>, Option<String>) {
         let idx = self.catalog.index();
-        let entry = row.catalog_item_id.as_deref().and_then(|id| idx.item(id));
+        let id = catalog_item_id.clone().filter(|s| !s.is_empty());
+        let (catalog_id, entry) = match &id {
+            Some(id) => (Some(id.clone()), idx.item(id).cloned()),
+            None => match idx.resolve(raw_name) {
+                Some((item, true)) => (Some(item.id.clone()), Some(item.clone())),
+                Some((item, false)) => (None, Some(item.clone())),
+                None => (None, None),
+            },
+        };
+        let pick = |own: &Option<String>, from: Option<String>| {
+            own.clone().filter(|s| !s.is_empty()).or(from)
+        };
+        (
+            catalog_id,
+            pick(
+                section_override,
+                entry.as_ref().and_then(|e| e.section.clone()),
+            ),
+            pick(icon_key, entry.as_ref().and_then(|e| e.icon.clone())),
+        )
+    }
+
+    fn public_item(&self, row: &ItemRow) -> Value {
+        let (catalog_id, section, icon) = self.catalog_fields(
+            &row.catalog_item_id,
+            &row.raw_name,
+            &row.section_override,
+            &row.icon_key,
+        );
         json!({
             "id": row.id.to_string(),
             "listId": row.list_id.to_string(),
-            "catalogId": opt_str(&row.catalog_item_id),
+            "catalogId": catalog_id,
             "name": row.raw_name,
             "spec": opt_str(&row.specification),
             "quantity": row.quantity.map(js_number).unwrap_or(Value::Null),
             "unit": opt_str(&row.unit),
-            "section": opt_str(&row.section_override.clone().or_else(|| entry.and_then(|e| e.section.clone()))),
-            "icon": opt_str(&row.icon_key.clone().or_else(|| entry.and_then(|e| e.icon.clone()))),
+            "section": section,
+            "icon": icon,
             "status": row.status,
             "position": row.position,
             "purchasedAt": row.purchased_at.map(iso),
@@ -1353,7 +1391,8 @@ impl GroceryRepo {
         let mut conn = self.pool.acquire().await?;
         let list = Self::ensure_default_list(&mut conn, user_id).await?;
         let rows = sqlx::query(
-            "SELECT i.id, i.raw_name, i.status, i.created_at, i.updated_at, p.display_name AS product, p.category \
+            "SELECT i.id, i.raw_name, i.status, i.created_at, i.updated_at, i.catalog_item_id, i.section_override, i.icon_key, \
+                    p.display_name AS product, p.category \
                FROM grocery.shopping_list_items i LEFT JOIN grocery.canonical_products p ON p.id = i.product_id \
               WHERE i.list_id = $1 AND i.status IN ('needed', 'recent') \
               ORDER BY CASE WHEN i.status = 'needed' THEN 0 ELSE 1 END, i.position NULLS LAST, i.created_at ASC",
@@ -1367,11 +1406,20 @@ impl GroceryRepo {
                 let raw: String = r.get("raw_name");
                 let product: Option<String> = r.get("product");
                 let category: Option<String> = r.get("category");
+                let (catalog_id, section, icon) = self.catalog_fields(
+                    &r.get("catalog_item_id"),
+                    &raw,
+                    &r.get("section_override"),
+                    &r.get("icon_key"),
+                );
                 json!({
                     "id": r.get::<Uuid, _>("id").to_string(),
                     "product": product.filter(|p| !p.is_empty()).unwrap_or_else(|| raw.clone()),
                     "rawName": raw,
                     "category": category.filter(|c| !c.is_empty()).unwrap_or_else(|| "other".into()),
+                    "catalogId": catalog_id,
+                    "section": section,
+                    "icon": icon,
                     "status": legacy_status(&r.get::<String, _>("status")),
                     "createdAt": iso(r.get("created_at")),
                     "updatedAt": iso(r.get("updated_at")),

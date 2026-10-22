@@ -55,6 +55,11 @@ pub struct Config {
     /// Node's `recent-telegram-chat.json`: secretary sessions seed the Rust
     /// recent-turn buffer (read only).
     pub recent_seed_path: Option<PathBuf>,
+    /// The flags behind the "Runtime capabilities" self-description.
+    pub caps: crate::capabilities::Capabilities,
+    /// `LUCINA_OPERATOR_BRIEF_MAX_CHARS` (2800) and `LUCINA_POKOIN_HANDOFF_PATH`.
+    pub operator_brief_max_chars: usize,
+    pub pokoin_handoff_path: PathBuf,
     pub data_dir: PathBuf,
     pub persona: String,
     pub host_label: String,
@@ -272,6 +277,9 @@ impl Config {
                 "LUCINA_RECENT_SEED_PATH",
                 "recent-telegram-chat.json",
             )),
+            caps: crate::capabilities::Capabilities::from_lookup(&get),
+            operator_brief_max_chars: num("LUCINA_OPERATOR_BRIEF_MAX_CHARS", 2800) as usize,
+            pokoin_handoff_path: path_or("LUCINA_POKOIN_HANDOFF_PATH", "pokoin-handoff.md"),
             persona: get("LUCINA_PERSONA_NAME")
                 .or_else(|| get("TELEGRAM_PERSONA"))
                 .unwrap_or_else(|| "Lucina".into()),

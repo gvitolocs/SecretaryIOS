@@ -1,58 +1,727 @@
-{"note": "Synthetic phrases (no owner data) for lucina parity-parsers. sessionId only where the MCP marker matters.",
+{
+ "note": "Synthetic phrases (no owner data) for lucina parity-parsers. sessionId only where the MCP marker matters.",
  "cases": [
- {"text": "ciao"}, {"text": "Ciao Lucina!"}, {"text": "buongiorno ☀️"}, {"text": "hej"}, {"text": "godmorgen Lucina"}, {"text": "hello"}, {"text": "hey hey"},
- {"text": "come stai?"}, {"text": "ciao, come va?"}, {"text": "how are you"}, {"text": "what's up"}, {"text": "tutto bene?"},
- {"text": "ci sei?"}, {"text": "sei online"}, {"text": "ping"}, {"text": "er du der?"}, {"text": "er du vågen"}, {"text": "are you there?"},
- {"text": "ricordami alle 18:30 di chiamare la mamma"}, {"text": "Ricordami domani alle 9 di pagare la bolletta"}, {"text": "remind me at 21:30 to take the pills"},
- {"text": "Remind me in 2 hours to stretch"}, {"text": "Timer 20 minutes"}, {"text": "timer 1 hour and an half"}, {"text": "tra mezz'ora ricordami di girare il bucato"},
- {"text": "avvisami tra 10 minuti"}, {"text": "28 August 2026 — unsubscribe from Google AI Plus"}, {"text": "2026-11-03 — rinnovare il passaporto"},
- {"text": "promemoria per domani: dentista"}, {"text": "mandami un promemoria alle 7:15"}, {"text": "mi ricordi alle 8 di uscire?"}, {"text": "mi ricordi cosa avevamo deciso?"},
- {"text": "remind me what we decided"}, {"text": "quali promemoria ho oggi?"}, {"text": "che promemoria ci sono?"}, {"text": "list my reminders"}, {"text": "show reminders"},
- {"text": "my reminders?"}, {"text": "reminders"}, {"text": "promemoria di oggi"}, {"text": "cosa ho in programma oggi"}, {"text": "anything scheduled for today?"},
- {"text": "quanti promemoria futuri ho?"}, {"text": "non tutti i promemoria, solo quelli di oggi"},
- {"text": "aggiungi il latte alla lista della spesa"}, {"text": "aggiungi uova e pane alla lista"}, {"text": "metti il prosciutto nella lista"}, {"text": "add eggs to my shopping list"},
- {"text": "put milk on the list"}, {"text": "add chicken breast to the grocery list"}, {"text": "tilføj mælk til listen"}, {"text": "tilføj æg til indkøbslisten"},
- {"text": "cosa c'è nella lista della spesa?"}, {"text": "cosa c è nella lista"}, {"text": "che c’è sulla lista?"}, {"text": "mostra la lista"}, {"text": "lista della spesa"}, {"text": "la mia lista"},
- {"text": "what's on my shopping list?"}, {"text": "shopping list"}, {"text": "show the grocery list"}, {"text": "hvad står på min indkøbsliste"}, {"text": "indkøbsliste?"},
- {"text": "togli il pane dalla lista"}, {"text": "rimuovi il latte dalla lista della spesa"}, {"text": "remove eggs from my shopping list"}, {"text": "take milk off the list"},
- {"text": "ho comprato il latte"}, {"text": "ho comprato 2 kg di riso da Netto"}, {"text": "I bought chicken at Føtex yesterday"}, {"text": "jeg købte mælk i går"}, {"text": "abbiamo preso la mozzarella da Lidl"},
- {"text": "abbiamo finito il latte"}, {"text": "siamo senza uova"}, {"text": "we're out of rice"}, {"text": "we finished the pasta"}, {"text": "løb tør for kaffe"},
- {"text": "we ate the yogurt"}, {"text": "I used 500 g of pasta"}, {"text": "mi servono le uova"}, {"text": "ci serve il detersivo"}, {"text": "devo comprare il pane"}, {"text": "I need to buy toothpaste"},
- {"text": "we need milk"}, {"text": "I need help with my essay"}, {"text": "restock coffee"}, {"text": "stock up on pasta"}, {"text": "vi mangler smør"}, {"text": "skal købe rugbrød"},
- {"text": "dove posso comprare il prosciutto?"}, {"text": "where can I buy parma ham"}, {"text": "hvor kan man købe skinke"}, {"text": "No where I can buy prosciutto"},
- {"text": "qualche offerta interessante?"}, {"text": "any good deals this week?"}, {"text": "offerte sul prosciutto?"}, {"text": "tilbud på kylling"}, {"text": "is milk on sale at Netto?"},
- {"text": "the cityhop offers we discussed last week were interesting for the channel growth"},
- {"text": "quanto ho speso questo mese?"}, {"text": "how much did I spend on groceries?"}, {"text": "what do we have in the pantry?"}, {"text": "quanto costa il latte?"}, {"text": "price of eggs at Lidl"},
- {"text": "how much is the rye bread"}, {"text": "average spending analytics"}, {"text": "ti ricordi quando abbiamo preso il pane?"}, {"text": "sto andando da Føtex"},
- {"text": "salva questo come nota spesa-casa: latte, pane, uova"}, {"text": "Memorizza il briefing nel contesto 'craftit-meeting'\n# CRAFT meeting\npunto 1\npunto 2"},
- {"text": "save this as note trip-plan: Rome in December"}, {"text": "gem dette som note indkøb: mælk og brød"}, {"text": "salva questa nota: comprare un bollitore nuovo"},
- {"text": "save this note: call the bank on Monday"}, {"text": "ricordati del briefing craftit-meeting"}, {"text": "cosa c'è nella nota craftit-meeting?"},
- {"text": "what's in the note trip-plan"}, {"text": "hvad står der i noten indkøb"}, {"text": "mostrami le note"}, {"text": "show my notes"}, {"text": "vis mine noter"},
- {"text": "quali note ho?"}, {"text": "salva come nota \"Viaggio a Roma\": hotel, treno"}, {"text": "Memorizza il briefing nel contesto 'x' (parte 1 di 2)\nTesto della prima parte"},
- {"text": "Seconda parte del briefing: altro testo"}, {"text": "part 2 of 2: more text"}, {"text": "metti nella nota spesa: sapone"},
- {"text": "Mettiti il vestito da cameriera"}, {"text": "mettiti la tuta da palestra"}, {"text": "indossa il vestito da chef"}, {"text": "cambiati in qualcosa di comodo"}, {"text": "torna in automatico"},
- {"text": "put on your gym clothes"}, {"text": "change into your maid outfit"}, {"text": "go back to automatic"}, {"text": "wear your uniform"}, {"text": "tag træningstøjet på"},
- {"text": "skift til kokketøj"}, {"text": "skift tøj automatisk"}, {"text": "fatti la coda"}, {"text": "raccogli i capelli in uno chignon"}, {"text": "fatti due codini"}, {"text": "sciogliti i capelli"},
- {"text": "put your hair in a bun"}, {"text": "let your hair down"}, {"text": "do a braid"}, {"text": "sæt håret i en hestehale"}, {"text": "slå håret ud"},
- {"text": "put on some workout music"}, {"text": "metti il latte nella lista"}, {"text": "what should I wear to the gym?"},
- {"text": "cosa ho in calendario domani?"}, {"text": "che impegni ho oggi?"}, {"text": "cosa ho venerdì?"}, {"text": "what's on my calendar this week?"}, {"text": "what do I have tomorrow?"},
- {"text": "do I have any meetings on 30/10?"}, {"text": "hvad har jeg i kalenderen i morgen"}, {"text": "hvad skal jeg lave i dag"}, {"text": "agenda di lunedì?"}, {"text": "appuntamenti del 5 novembre?"},
- {"text": "aggiungi in calendario dentista domani alle 9:30"}, {"text": "metti in agenda palestra il 27.10 alle 18"}, {"text": "add dentist to my calendar on 30/10"},
- {"text": "add lunch with Marco to my calendar tomorrow at 1pm"}, {"text": "sæt tandlæge i kalenderen i morgen kl. 9.30"}, {"text": "aggiungi in calendario"}, {"text": "add to my calendar tomorrow"},
- {"text": "schedule a call to my calendar at 23:59"},
- {"text": "[via Lucina MCP, from chatgpt] aggiungi il latte alla lista", "sessionId": "mcp-chatgpt-1"}, {"text": "[via Lucina MCP, from Claude Code] pubblica la news sul canale", "sessionId": "app"},
- {"text": "ciao", "sessionId": "mcp-grok"}, {"text": "[via Lucina MCP] what's on my list?", "sessionId": "ios-123"}, {"text": "[via Lucina MCP, from chatgpt]", "sessionId": "x"},
- {"text": "sono online su discord?"}, {"text": "cosa sto ascoltando?"}, {"text": "what am I listening to"}, {"text": "a cosa sto giocando"}, {"text": "che canzone è?"},
- {"text": "voli per Roma a dicembre"}, {"text": "orari dei treni per Aarhus"}, {"text": "real estate prices in Copenhagen"}, {"text": "quest'estate vado in Italia"}, {"text": "trip to Milan next week, plan it"},
- {"text": "fix the lucina build bug"}, {"text": "deploy the marketplace"}, {"text": "controlla i log di lucina"}, {"text": "check the docker logs for errors"}, {"text": "use harness to fix the CI"},
- {"text": "pubblica la news sul canale telegram"}, {"text": "poko didn't post the news, retry"}, {"text": "fai postare news a Poko"}, {"text": "genera un'immagine di un drago"},
- {"text": "draw a picture of a cat"}, {"text": "fammi un grafico del patrimonio"}, {"text": "registra 82 kg"}, {"text": "aggiorna il foglio del peso"}, {"text": "riassumi https://example.com/articolo"},
- {"text": "https://example.com/page"}, {"text": "cerca sul sito di Netto il prezzo del latte"}, {"text": "which model are you using?"}, {"text": "riporta Qwen sulla GPU"},
- {"text": "quanto pesavo prima?"}, {"text": "a che ora è il volo?"}, {"text": "quanto manca all'appuntamento?"}, {"text": "e poi?"}, {"text": "continuiamo"},
- {"text": "mi sento solo e ho ansia"}, {"text": "I feel so tired"}, {"text": "how can I study better?"}, {"text": "I'm doing a master in computer science in Aarhus"},
- {"text": "che bella giornata"}, {"text": "raccontami una barzelletta"}, {"text": "what's the capital of Australia?"}, {"text": "mi spieghi la differenza tra TCP e UDP?"},
- {"text": "puoi aiutarmi a fare un grafico del patrimonio?"}, {"text": "can you send an email to Marco?"}, {"text": "crea un file sul drive"},
- {"text": "sì"}, {"text": "Sì, grazie!"}, {"text": "ok procedi"}, {"text": "no grazie"}, {"text": "nej tak"}, {"text": "yes please"}, {"text": "go ahead"}, {"text": "domani invece"},
- {"text": "Lucina, ricordami di comprare il latte domani alle 8"}, {"text": "Ciao, ricordami alle 21 di chiamare papà"}, {"text": "ricordami di comprare il latte"},
- {"text": "stasera palestra"}, {"text": "remind me tomorrow to call the bank"}, {"text": "husk mig på tandlægen i morgen kl 9"}
-]}
+  {
+   "text": "ciao"
+  },
+  {
+   "text": "Ciao Lucina!"
+  },
+  {
+   "text": "buongiorno ☀️"
+  },
+  {
+   "text": "hej"
+  },
+  {
+   "text": "godmorgen Lucina"
+  },
+  {
+   "text": "hello"
+  },
+  {
+   "text": "hey hey"
+  },
+  {
+   "text": "come stai?"
+  },
+  {
+   "text": "ciao, come va?"
+  },
+  {
+   "text": "how are you"
+  },
+  {
+   "text": "what's up"
+  },
+  {
+   "text": "tutto bene?"
+  },
+  {
+   "text": "ci sei?"
+  },
+  {
+   "text": "sei online"
+  },
+  {
+   "text": "ping"
+  },
+  {
+   "text": "er du der?"
+  },
+  {
+   "text": "er du vågen"
+  },
+  {
+   "text": "are you there?"
+  },
+  {
+   "text": "ricordami alle 18:30 di chiamare la mamma"
+  },
+  {
+   "text": "Ricordami domani alle 9 di pagare la bolletta"
+  },
+  {
+   "text": "remind me at 21:30 to take the pills"
+  },
+  {
+   "text": "Remind me in 2 hours to stretch"
+  },
+  {
+   "text": "Timer 20 minutes"
+  },
+  {
+   "text": "timer 1 hour and an half"
+  },
+  {
+   "text": "tra mezz'ora ricordami di girare il bucato"
+  },
+  {
+   "text": "avvisami tra 10 minuti"
+  },
+  {
+   "text": "28 August 2026 — unsubscribe from Google AI Plus"
+  },
+  {
+   "text": "2026-11-03 — rinnovare il passaporto"
+  },
+  {
+   "text": "promemoria per domani: dentista"
+  },
+  {
+   "text": "mandami un promemoria alle 7:15"
+  },
+  {
+   "text": "mi ricordi alle 8 di uscire?"
+  },
+  {
+   "text": "mi ricordi cosa avevamo deciso?"
+  },
+  {
+   "text": "remind me what we decided"
+  },
+  {
+   "text": "quali promemoria ho oggi?"
+  },
+  {
+   "text": "che promemoria ci sono?"
+  },
+  {
+   "text": "list my reminders"
+  },
+  {
+   "text": "show reminders"
+  },
+  {
+   "text": "my reminders?"
+  },
+  {
+   "text": "reminders"
+  },
+  {
+   "text": "promemoria di oggi"
+  },
+  {
+   "text": "cosa ho in programma oggi"
+  },
+  {
+   "text": "anything scheduled for today?"
+  },
+  {
+   "text": "quanti promemoria futuri ho?"
+  },
+  {
+   "text": "non tutti i promemoria, solo quelli di oggi"
+  },
+  {
+   "text": "aggiungi il latte alla lista della spesa"
+  },
+  {
+   "text": "aggiungi uova e pane alla lista"
+  },
+  {
+   "text": "metti il prosciutto nella lista"
+  },
+  {
+   "text": "add eggs to my shopping list"
+  },
+  {
+   "text": "put milk on the list"
+  },
+  {
+   "text": "add chicken breast to the grocery list"
+  },
+  {
+   "text": "tilføj mælk til listen"
+  },
+  {
+   "text": "tilføj æg til indkøbslisten"
+  },
+  {
+   "text": "cosa c'è nella lista della spesa?"
+  },
+  {
+   "text": "cosa c è nella lista"
+  },
+  {
+   "text": "che c’è sulla lista?"
+  },
+  {
+   "text": "mostra la lista"
+  },
+  {
+   "text": "lista della spesa"
+  },
+  {
+   "text": "la mia lista"
+  },
+  {
+   "text": "what's on my shopping list?"
+  },
+  {
+   "text": "shopping list"
+  },
+  {
+   "text": "show the grocery list"
+  },
+  {
+   "text": "hvad står på min indkøbsliste"
+  },
+  {
+   "text": "indkøbsliste?"
+  },
+  {
+   "text": "togli il pane dalla lista"
+  },
+  {
+   "text": "rimuovi il latte dalla lista della spesa"
+  },
+  {
+   "text": "remove eggs from my shopping list"
+  },
+  {
+   "text": "take milk off the list"
+  },
+  {
+   "text": "ho comprato il latte"
+  },
+  {
+   "text": "ho comprato 2 kg di riso da Netto"
+  },
+  {
+   "text": "I bought chicken at Føtex yesterday"
+  },
+  {
+   "text": "jeg købte mælk i går"
+  },
+  {
+   "text": "abbiamo preso la mozzarella da Lidl"
+  },
+  {
+   "text": "abbiamo finito il latte"
+  },
+  {
+   "text": "siamo senza uova"
+  },
+  {
+   "text": "we're out of rice"
+  },
+  {
+   "text": "we finished the pasta"
+  },
+  {
+   "text": "løb tør for kaffe"
+  },
+  {
+   "text": "we ate the yogurt"
+  },
+  {
+   "text": "I used 500 g of pasta"
+  },
+  {
+   "text": "mi servono le uova"
+  },
+  {
+   "text": "ci serve il detersivo"
+  },
+  {
+   "text": "devo comprare il pane"
+  },
+  {
+   "text": "I need to buy toothpaste"
+  },
+  {
+   "text": "we need milk"
+  },
+  {
+   "text": "I need help with my essay"
+  },
+  {
+   "text": "restock coffee"
+  },
+  {
+   "text": "stock up on pasta"
+  },
+  {
+   "text": "vi mangler smør"
+  },
+  {
+   "text": "skal købe rugbrød"
+  },
+  {
+   "text": "dove posso comprare il prosciutto?"
+  },
+  {
+   "text": "where can I buy parma ham"
+  },
+  {
+   "text": "hvor kan man købe skinke"
+  },
+  {
+   "text": "No where I can buy prosciutto"
+  },
+  {
+   "text": "qualche offerta interessante?"
+  },
+  {
+   "text": "any good deals this week?"
+  },
+  {
+   "text": "offerte sul prosciutto?"
+  },
+  {
+   "text": "tilbud på kylling"
+  },
+  {
+   "text": "is milk on sale at Netto?"
+  },
+  {
+   "text": "the cityhop offers we discussed last week were interesting for the channel growth"
+  },
+  {
+   "text": "quanto ho speso questo mese?"
+  },
+  {
+   "text": "how much did I spend on groceries?"
+  },
+  {
+   "text": "what do we have in the pantry?"
+  },
+  {
+   "text": "quanto costa il latte?"
+  },
+  {
+   "text": "price of eggs at Lidl"
+  },
+  {
+   "text": "how much is the rye bread"
+  },
+  {
+   "text": "average spending analytics"
+  },
+  {
+   "text": "ti ricordi quando abbiamo preso il pane?"
+  },
+  {
+   "text": "sto andando da Føtex"
+  },
+  {
+   "text": "salva questo come nota spesa-casa: latte, pane, uova"
+  },
+  {
+   "text": "Memorizza il briefing nel contesto 'craftit-meeting'\n# CRAFT meeting\npunto 1\npunto 2"
+  },
+  {
+   "text": "save this as note trip-plan: Rome in December"
+  },
+  {
+   "text": "gem dette som note indkøb: mælk og brød"
+  },
+  {
+   "text": "salva questa nota: comprare un bollitore nuovo"
+  },
+  {
+   "text": "save this note: call the bank on Monday"
+  },
+  {
+   "text": "ricordati del briefing craftit-meeting"
+  },
+  {
+   "text": "cosa c'è nella nota craftit-meeting?"
+  },
+  {
+   "text": "what's in the note trip-plan"
+  },
+  {
+   "text": "hvad står der i noten indkøb"
+  },
+  {
+   "text": "mostrami le note"
+  },
+  {
+   "text": "show my notes"
+  },
+  {
+   "text": "vis mine noter"
+  },
+  {
+   "text": "quali note ho?"
+  },
+  {
+   "text": "salva come nota \"Viaggio a Roma\": hotel, treno"
+  },
+  {
+   "text": "Memorizza il briefing nel contesto 'x' (parte 1 di 2)\nTesto della prima parte"
+  },
+  {
+   "text": "Seconda parte del briefing: altro testo"
+  },
+  {
+   "text": "part 2 of 2: more text"
+  },
+  {
+   "text": "metti nella nota spesa: sapone"
+  },
+  {
+   "text": "Mettiti il vestito da cameriera"
+  },
+  {
+   "text": "mettiti la tuta da palestra"
+  },
+  {
+   "text": "indossa il vestito da chef"
+  },
+  {
+   "text": "cambiati in qualcosa di comodo"
+  },
+  {
+   "text": "torna in automatico"
+  },
+  {
+   "text": "put on your gym clothes"
+  },
+  {
+   "text": "change into your maid outfit"
+  },
+  {
+   "text": "go back to automatic"
+  },
+  {
+   "text": "wear your uniform"
+  },
+  {
+   "text": "tag træningstøjet på"
+  },
+  {
+   "text": "skift til kokketøj"
+  },
+  {
+   "text": "skift tøj automatisk"
+  },
+  {
+   "text": "fatti la coda"
+  },
+  {
+   "text": "raccogli i capelli in uno chignon"
+  },
+  {
+   "text": "fatti due codini"
+  },
+  {
+   "text": "sciogliti i capelli"
+  },
+  {
+   "text": "put your hair in a bun"
+  },
+  {
+   "text": "let your hair down"
+  },
+  {
+   "text": "do a braid"
+  },
+  {
+   "text": "sæt håret i en hestehale"
+  },
+  {
+   "text": "slå håret ud"
+  },
+  {
+   "text": "put on some workout music"
+  },
+  {
+   "text": "metti il latte nella lista"
+  },
+  {
+   "text": "what should I wear to the gym?"
+  },
+  {
+   "text": "cosa ho in calendario domani?"
+  },
+  {
+   "text": "che impegni ho oggi?"
+  },
+  {
+   "text": "cosa ho venerdì?"
+  },
+  {
+   "text": "what's on my calendar this week?"
+  },
+  {
+   "text": "what do I have tomorrow?"
+  },
+  {
+   "text": "do I have any meetings on 30/10?"
+  },
+  {
+   "text": "hvad har jeg i kalenderen i morgen"
+  },
+  {
+   "text": "hvad skal jeg lave i dag"
+  },
+  {
+   "text": "agenda di lunedì?"
+  },
+  {
+   "text": "appuntamenti del 5 novembre?"
+  },
+  {
+   "text": "aggiungi in calendario dentista domani alle 9:30"
+  },
+  {
+   "text": "metti in agenda palestra il 27.10 alle 18"
+  },
+  {
+   "text": "add dentist to my calendar on 30/10"
+  },
+  {
+   "text": "add lunch with Marco to my calendar tomorrow at 1pm"
+  },
+  {
+   "text": "sæt tandlæge i kalenderen i morgen kl. 9.30"
+  },
+  {
+   "text": "aggiungi in calendario"
+  },
+  {
+   "text": "add to my calendar tomorrow"
+  },
+  {
+   "text": "schedule a call to my calendar at 23:59"
+  },
+  {
+   "text": "[via Lucina MCP, from chatgpt] aggiungi il latte alla lista",
+   "sessionId": "mcp-chatgpt-1"
+  },
+  {
+   "text": "[via Lucina MCP, from Claude Code] pubblica la news sul canale",
+   "sessionId": "app"
+  },
+  {
+   "text": "ciao",
+   "sessionId": "mcp-grok"
+  },
+  {
+   "text": "[via Lucina MCP] what's on my list?",
+   "sessionId": "ios-123"
+  },
+  {
+   "text": "[via Lucina MCP, from chatgpt]",
+   "sessionId": "x"
+  },
+  {
+   "text": "sono online su discord?"
+  },
+  {
+   "text": "cosa sto ascoltando?"
+  },
+  {
+   "text": "what am I listening to"
+  },
+  {
+   "text": "a cosa sto giocando"
+  },
+  {
+   "text": "che canzone è?"
+  },
+  {
+   "text": "voli per Roma a dicembre"
+  },
+  {
+   "text": "orari dei treni per Aarhus"
+  },
+  {
+   "text": "real estate prices in Copenhagen"
+  },
+  {
+   "text": "quest'estate vado in Italia"
+  },
+  {
+   "text": "trip to Milan next week, plan it"
+  },
+  {
+   "text": "fix the lucina build bug"
+  },
+  {
+   "text": "deploy the marketplace"
+  },
+  {
+   "text": "controlla i log di lucina"
+  },
+  {
+   "text": "check the docker logs for errors"
+  },
+  {
+   "text": "use harness to fix the CI"
+  },
+  {
+   "text": "pubblica la news sul canale telegram"
+  },
+  {
+   "text": "poko didn't post the news, retry"
+  },
+  {
+   "text": "fai postare news a Poko"
+  },
+  {
+   "text": "genera un'immagine di un drago"
+  },
+  {
+   "text": "draw a picture of a cat"
+  },
+  {
+   "text": "fammi un grafico del patrimonio"
+  },
+  {
+   "text": "registra 82 kg"
+  },
+  {
+   "text": "aggiorna il foglio del peso"
+  },
+  {
+   "text": "riassumi https://example.com/articolo"
+  },
+  {
+   "text": "https://example.com/page"
+  },
+  {
+   "text": "cerca sul sito di Netto il prezzo del latte"
+  },
+  {
+   "text": "which model are you using?"
+  },
+  {
+   "text": "riporta Qwen sulla GPU"
+  },
+  {
+   "text": "quanto pesavo prima?"
+  },
+  {
+   "text": "a che ora è il volo?"
+  },
+  {
+   "text": "quanto manca all'appuntamento?"
+  },
+  {
+   "text": "e poi?"
+  },
+  {
+   "text": "continuiamo"
+  },
+  {
+   "text": "mi sento solo e ho ansia"
+  },
+  {
+   "text": "I feel so tired"
+  },
+  {
+   "text": "how can I study better?"
+  },
+  {
+   "text": "I'm doing a master in computer science in Aarhus"
+  },
+  {
+   "text": "che bella giornata"
+  },
+  {
+   "text": "raccontami una barzelletta"
+  },
+  {
+   "text": "what's the capital of Australia?"
+  },
+  {
+   "text": "mi spieghi la differenza tra TCP e UDP?"
+  },
+  {
+   "text": "puoi aiutarmi a fare un grafico del patrimonio?"
+  },
+  {
+   "text": "can you send an email to Marco?"
+  },
+  {
+   "text": "crea un file sul drive"
+  },
+  {
+   "text": "sì"
+  },
+  {
+   "text": "Sì, grazie!"
+  },
+  {
+   "text": "ok procedi"
+  },
+  {
+   "text": "no grazie"
+  },
+  {
+   "text": "nej tak"
+  },
+  {
+   "text": "yes please"
+  },
+  {
+   "text": "go ahead"
+  },
+  {
+   "text": "domani invece"
+  },
+  {
+   "text": "Lucina, ricordami di comprare il latte domani alle 8"
+  },
+  {
+   "text": "Ciao, ricordami alle 21 di chiamare papà"
+  },
+  {
+   "text": "ricordami di comprare il latte"
+  },
+  {
+   "text": "stasera palestra"
+  },
+  {
+   "text": "remind me tomorrow to call the bank"
+  },
+  {
+   "text": "husk mig på tandlægen i morgen kl 9"
+  },
+  {
+   "text": "cosa sai fare?"
+  },
+  {
+   "text": "che modello usi?"
+  },
+  {
+   "text": "le tue capacità"
+  },
+  {
+   "text": "what can you do"
+  },
+  {
+   "text": "fammi l'inventario delle tue funzioni"
+  },
+  {
+   "text": "hvad kan du?"
+  },
+  {
+   "text": "which model are you on?"
+  }
+ ]
+}

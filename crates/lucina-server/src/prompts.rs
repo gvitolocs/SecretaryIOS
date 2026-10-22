@@ -20,6 +20,10 @@ pub struct Prompts {
     pub operator_brief: String,
     pub host_label: String,
     pub oracle_monitor_enabled: bool,
+    /// `LUCINA_DEEPSEEK_ONLY` (the runtime line).
+    pub deepseek_only: bool,
+    /// The "Runtime capabilities" block (from the runtime's flags).
+    pub capability_block: String,
 }
 
 fn read_clip(path: &Path, max: usize, marker: &str) -> String {
@@ -54,23 +58,49 @@ impl Prompts {
             operator_brief: String::new(),
             host_label: cfg.host_label.clone(),
             oracle_monitor_enabled: cfg.oracle_monitor_enabled,
+            deepseek_only: cfg.caps.deepseek_only,
+            capability_block: cfg.caps.block(),
         };
-        let brief = [
-            p.runtime_context_line(),
-            read_clip(&cfg.operator_brief_path, usize::MAX, ""),
-        ]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-        p.operator_brief = if brief.chars().count() > 2800 {
+        // `loadLucinaOperatorBrief`: the runtime line and the capability block
+        // first and never truncated, then the brief file and the Pokoin
+        // hand-off summary, truncated at LUCINA_OPERATOR_BRIEF_MAX_CHARS.
+        let head = [p.runtime_context_line(), p.capability_block.clone()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let handoff = std::fs::read_to_string(&cfg.pokoin_handoff_path)
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default();
+        let handoff = if handoff.is_empty() {
+            String::new()
+        } else if lucina_store::timeutil::utf16_len(&handoff) > 800 {
+            format!(
+                "Pokoin handoff (summary): {}\n[handoff truncated]",
+                handoff.chars().take(800).collect::<String>()
+            )
+        } else {
+            format!("Pokoin handoff (summary): {handoff}")
+        };
+        let brief = [read_clip(&cfg.operator_brief_path, usize::MAX, ""), handoff]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let max = cfg.operator_brief_max_chars;
+        let brief = if lucina_store::timeutil::utf16_len(&brief) > max {
             format!(
                 "{}\n\n[operator brief truncated]",
-                brief.chars().take(2800).collect::<String>()
+                brief.chars().take(max).collect::<String>()
             )
         } else {
             brief
         };
+        p.operator_brief = [head, brief]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         p
     }
 
@@ -83,6 +113,8 @@ impl Prompts {
             operator_brief: String::new(),
             host_label: "nezopt".into(),
             oracle_monitor_enabled: false,
+            deepseek_only: false,
+            capability_block: String::new(),
         }
     }
 
@@ -111,8 +143,12 @@ impl Prompts {
         match self.host_label.as_str() {
             "nezopt" => [
                 "Lucina primary runtime: nezopt AI server (Hermes Docker :8788).",
-                "Primary heavy model is local qwen3.6-heretic:35b-a3b-q3_k_m through Ollama (131072 context), loaded on the GPU when Harness or Lucina request it. Default idle path is CPU Gemma. Qwen is not kept resident by a timer.",
-                "DeepSeek Harness and Honcho run on nezopt; project work and planning use the same local Qwen route through Harness.",
+                if self.deepseek_only {
+                    "Lucina reasons only through the DeepSeek API (LUCINA_DEEPSEEK_ONLY=true); local Ollama models do not answer her chat."
+                } else {
+                    "Lucina reasons through the planner chain (hosted providers first, local Ollama fallbacks, DeepSeek last)."
+                },
+                "DeepSeek Harness (project work) and Honcho run on nezopt.",
                 "The old nespc and pi-home Lucina runtimes are disabled; Oracle peer1 runs Poko only.",
             ]
             .join(" "),
@@ -185,8 +221,16 @@ impl Prompts {
         }
         if !casual && recovery.is_empty() {
             parts.push(format!(
-                "{p} can use skills through Hermes: DeepSeek Harness project work (local Qwen 3.8 27B on nezopt; not Cursor CLI), OpenAI image recognition, ComfyUI image generation, Google Drive spreadsheet graphs, Discord/Telegram, Gemini CLI, and the Poko API. When a skill or tool result is used, reply as {p} and briefly state the result in first person when natural."
+                "{p} can use skills through Hermes (DeepSeek Harness project work on nezopt, not Cursor CLI; image generation; Google Drive spreadsheets; Discord/Telegram; the Poko API). What is live right now is in the runtime capability block; never describe yourself from memory or older chat turns. When a skill or tool result is used, reply as {p} and briefly state the result in first person when natural."
             ));
+        }
+        // Chat style rules come only with LUCINA_RICH_REPLIES (off; not ported).
+        // Self-description questions get the live capability block, casual chat included.
+        if is_lucina
+            && crate::capabilities::looks_like_self_description(user_text)
+            && !knowledge.contains("Runtime capabilities")
+        {
+            parts.push(self.capability_block.clone());
         }
         if is_lucina {
             parts.push(format!("{p} has no email access: the Gmail integration was removed on 2026-09-20. If asked about email or Gmail, say plainly that you cannot read, search, or send email — even if earlier chat turns claimed otherwise."));

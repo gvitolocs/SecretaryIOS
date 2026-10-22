@@ -478,13 +478,7 @@
     {
       "name": "shopping v2: default list",
       "method": "GET",
-      "path": "/shopping/lists/default",
-      "allow": [
-        "response.body.data.items.*.catalogId",
-        "response.body.data.items.*.icon",
-        "response.body.data.items.*.section"
-      ],
-      "why": "Node ignores the catalog v1 per-language aliases (an object in 389 of 395 items), so a chat/v1 add like \"basilico fresco\" gets no catalogId/icon/section; Rust matches them (Node bug, not copied)"
+      "path": "/shopping/lists/default"
     },
     {
       "name": "shopping v2: delete default refused",

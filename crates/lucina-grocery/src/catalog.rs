@@ -17,15 +17,27 @@ use unicode_normalization::UnicodeNormalization;
 
 const RECHECK: Duration = Duration::from_secs(30);
 
-/// NFD, strip marks, lowercase, non-letters/digits to single spaces, trim.
+/// The catalog `normalise()` (SecretaryIOS `docs/catalog.md`, Node
+/// `foldCatalogText`): lowercase, fold æ ø å œ ß ð þ ł, strip diacritics,
+/// every run of non-letters/digits becomes one space, trim.
 pub fn fold(text: &str) -> String {
+    let mut special = String::with_capacity(text.len());
+    for c in text.to_lowercase().chars() {
+        match c {
+            'æ' => special.push_str("ae"),
+            'ø' => special.push_str("oe"),
+            'å' => special.push_str("aa"),
+            'œ' => special.push_str("oe"),
+            'ß' => special.push_str("ss"),
+            'ð' => special.push('d'),
+            'þ' => special.push_str("th"),
+            'ł' => special.push('l'),
+            c => special.push(c),
+        }
+    }
     let mut out = String::new();
     let mut gap = false;
-    for c in text
-        .nfd()
-        .filter(|c| !is_combining_mark(*c))
-        .flat_map(char::to_lowercase)
-    {
+    for c in special.nfd().filter(|c| !is_combining_mark(*c)) {
         if c.is_alphanumeric() {
             if gap && !out.is_empty() {
                 out.push(' ');
@@ -63,17 +75,29 @@ impl CatalogItem {
 pub struct CatalogIndex {
     pub version: Option<Value>,
     items: HashMap<String, CatalogItem>,
-    by_term: HashMap<String, String>,
+    /// Folded id, name and per-language names; they win over aliases.
+    by_name: HashMap<String, String>,
+    by_alias: HashMap<String, String>,
 }
 
-fn strings(v: Option<&Value>) -> Vec<String> {
+/// Alias strings: an array, or the master's `{it, en, da, all}` object of arrays.
+fn alias_terms(v: Option<&Value>) -> Vec<String> {
+    let strs = |a: &Vec<Value>| -> Vec<String> {
+        a.iter()
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| x.to_string())
+            })
+            .collect()
+    };
     match v {
-        Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(a)) => a
-            .iter()
-            .filter_map(|x| x.as_str().map(str::to_owned))
+        Some(Value::Array(a)) => strs(a),
+        Some(Value::Object(o)) => o
+            .values()
+            .filter_map(Value::as_array)
+            .flat_map(strs)
             .collect(),
-        Some(Value::Object(o)) => o.values().flat_map(|x| strings(Some(x))).collect(),
         _ => Vec::new(),
     }
 }
@@ -84,6 +108,7 @@ impl CatalogIndex {
             version: data.get("version").cloned(),
             ..Default::default()
         };
+        let mut aliases: Vec<(String, Vec<String>)> = Vec::new();
         for item in data
             .get("items")
             .and_then(Value::as_array)
@@ -119,14 +144,24 @@ impl CatalogIndex {
             let mut terms = vec![id.clone()];
             terms.extend(entry.name.clone());
             terms.extend(names.values().cloned());
-            terms.extend(strings(item.get("aliases")));
             for term in terms {
                 let key = fold(&term);
                 if !key.is_empty() {
-                    idx.by_term.entry(key).or_insert_with(|| id.clone());
+                    idx.by_name.entry(key).or_insert_with(|| id.clone());
                 }
             }
+            aliases.push((id.clone(), alias_terms(item.get("aliases"))));
             idx.items.insert(id, entry);
+        }
+        // Names (any language, and the id) win over aliases: "latte" is
+        // Milk's Italian name before it is anybody's alias.
+        for (id, terms) in aliases {
+            for term in terms {
+                let key = fold(&term);
+                if !key.is_empty() {
+                    idx.by_alias.entry(key).or_insert_with(|| id.clone());
+                }
+            }
         }
         idx
     }
@@ -150,11 +185,25 @@ impl CatalogIndex {
         if key.is_empty() {
             return None;
         }
-        let id = self
-            .by_term
-            .get(&key)
-            .or_else(|| key.strip_suffix('s').and_then(|k| self.by_term.get(k)))?;
+        let term = |k: &str| self.by_name.get(k).or_else(|| self.by_alias.get(k));
+        let id = term(&key).or_else(|| key.strip_suffix('s').and_then(term))?;
         self.items.get(id)
+    }
+
+    /// Strict lookup for display: a name in any language (`exact: true`) or
+    /// an alias (`exact: false`) after folding; no plural guessing.
+    pub fn resolve(&self, text: &str) -> Option<(&CatalogItem, bool)> {
+        let key = fold(text);
+        if key.is_empty() {
+            return None;
+        }
+        if let Some(id) = self.by_name.get(&key) {
+            return self.items.get(id).map(|i| (i, true));
+        }
+        self.by_alias
+            .get(&key)
+            .and_then(|id| self.items.get(id))
+            .map(|i| (i, false))
     }
 }
 
@@ -261,7 +310,7 @@ mod tests {
     #[test]
     fn folds_and_matches_v1_and_legacy_shapes() {
         assert_eq!(fold("  Caffè  Latte! "), "caffe latte");
-        assert_eq!(fold("Æbler"), "æbler");
+        assert_eq!(fold("Æbler"), "aebler");
         let idx = CatalogIndex::build(&json!({"version": 1, "items": [
             {"id": "apple", "names": {"it": "Mele", "en": "Apples", "da": "Æbler"},
              "aliases": {"it": ["mela"], "en": ["apple"]}, "section": "produce", "icon": "🍎"},
@@ -275,5 +324,41 @@ mod tests {
             Some("Mele")
         );
         assert!(idx.find("kiwi").is_none());
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    #[test]
+    fn folds_like_node() {
+        assert_eq!(fold("Rugbrød"), "rugbroed");
+        assert_eq!(fold("Æble-grød!"), "aeble groed");
+        assert_eq!(fold("Blåbær"), "blaabaer");
+        assert_eq!(fold("Crème fraîche"), "creme fraiche");
+        assert_eq!(fold("  Straße  "), "strasse");
+        let idx = CatalogIndex::build(&serde_json::json!({"items": [
+            {"id": "milk", "names": {"it": "Latte", "en": "Milk"}, "section": "dairy", "icon": "🥛"},
+            {"id": "coffee", "names": {"it": "Caffè"}, "aliases": {"it": ["latte macchiato", "latte"]}}
+        ]}));
+        assert_eq!(
+            idx.find("latte").map(|i| i.id.as_str()),
+            Some("milk"),
+            "names win over aliases"
+        );
+        assert_eq!(
+            idx.resolve("latte macchiato")
+                .map(|(i, e)| (i.id.as_str(), e)),
+            Some(("coffee", false))
+        );
+        assert_eq!(
+            idx.resolve("Milk").map(|(i, e)| (i.id.as_str(), e)),
+            Some(("milk", true))
+        );
+        assert!(
+            idx.resolve("milks").is_none(),
+            "no plural guessing on display"
+        );
     }
 }

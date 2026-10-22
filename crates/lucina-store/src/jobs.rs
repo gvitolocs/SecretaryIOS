@@ -149,24 +149,29 @@ impl JobStore {
     /// The job; a queued/running job this process does not own is marked
     /// `error: "interrupted"` (Lucina restarted mid-job), like Node.
     pub fn find(&self, id: &str) -> Result<Option<Job>> {
-        let job = {
-            let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-            self.read()?.into_iter().find(|j| j.id == id)
+        // Read, decide and write under one lock: a job that has just finished
+        // (final write, then out of `active`) is never marked interrupted
+        // (Node fixed the same race in fee2ccf).
+        let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut jobs = self.read()?;
+        let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
+            return Ok(None);
         };
-        let Some(job) = job else { return Ok(None) };
         let owned = self
             .active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&job.id);
         if (job.status == "queued" || job.status == "running") && !owned {
-            return self.update(id, |j| {
-                j.status = "error".into();
-                j.error = Some("interrupted".into());
-                j.finished_at = Some(now_iso());
-            });
+            job.status = "error".into();
+            job.error = Some("interrupted".into());
+            job.finished_at = Some(now_iso());
+            job.updated_at = now_iso();
+            let out = job.clone();
+            self.write(jobs)?;
+            return Ok(Some(out));
         }
-        Ok(Some(job))
+        Ok(Some(job.clone()))
     }
 }
 

@@ -104,6 +104,12 @@ enum Cmd {
         bind: SocketAddr,
         #[arg(long)]
         record: Option<PathBuf>,
+        /// Read-through: forward GETs to this secretary-server (writes stay local).
+        #[arg(long)]
+        upstream: Option<String>,
+        /// The upstream service token file (read once, never printed).
+        #[arg(long)]
+        upstream_token_file: Option<PathBuf>,
     },
     /// Write the live Node Lucina's environment as an env file (values never printed).
     EnvFromNode {
@@ -120,6 +126,31 @@ enum Cmd {
     },
     /// The same /api/secretary requests against a Node reference and a Rust instance.
     Parity(Box<ParityArgs>),
+    /// Replay the last real app/web chat turns of a timeline (read only) against a
+    /// Rust Lucina and compare with what Node answered. Use a sandbox: turns write.
+    ShadowReplay {
+        /// The live timeline.jsonl (only read).
+        #[arg(long, default_value = "/home/nez/Projects/Lucina/data/timeline.jsonl")]
+        timeline: PathBuf,
+        #[arg(long, default_value_t = 40)]
+        last: usize,
+        #[arg(long, default_value = "web,ios")]
+        channels: String,
+        #[arg(long)]
+        rust_url: String,
+        #[arg(long)]
+        token_file: PathBuf,
+        /// Full report with texts (written 0600).
+        #[arg(long)]
+        out: PathBuf,
+        /// Print the messages and both replies on the console.
+        #[arg(long)]
+        show_text: bool,
+        #[arg(long, default_value_t = 1500)]
+        pause_ms: u64,
+    },
+    /// Print the "Runtime capabilities" block this environment produces.
+    CapabilityBlock,
     /// Append `count` items to a timeline file as fast as possible (shared-writer test).
     TimelineAppendTest {
         #[arg(long)]
@@ -385,10 +416,32 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::FakeSecretary { bind, record } => {
-            println!("fake secretary-server at http://{bind}");
-            lucina_server::parity::fake_secretary::serve(bind, record, chrono_tz::Europe::Rome)
-                .await?;
+        Cmd::FakeSecretary {
+            bind,
+            record,
+            upstream,
+            upstream_token_file,
+        } => {
+            let upstream = match (upstream, upstream_token_file) {
+                (Some(u), Some(f)) => Some((u, std::fs::read_to_string(f)?.trim().to_owned())),
+                (Some(_), None) => anyhow::bail!("--upstream needs --upstream-token-file"),
+                _ => None,
+            };
+            println!(
+                "fake secretary-server at http://{bind}{}",
+                if upstream.is_some() {
+                    " (GETs read through)"
+                } else {
+                    ""
+                }
+            );
+            lucina_server::parity::fake_secretary::serve(
+                bind,
+                record,
+                chrono_tz::Europe::Rome,
+                upstream,
+            )
+            .await?;
         }
         Cmd::EnvFromNode {
             container,
@@ -462,6 +515,46 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             if !ok {
                 std::process::exit(1);
             }
+        }
+        Cmd::ShadowReplay {
+            timeline,
+            last,
+            channels,
+            rust_url,
+            token_file,
+            out,
+            show_text,
+            pause_ms,
+        } => {
+            use lucina_server::parity::replay;
+            let channels: Vec<String> = channels.split(',').map(|c| c.trim().to_owned()).collect();
+            let turns = replay::turns(&timeline, &channels, last)?;
+            let token = std::fs::read_to_string(&token_file)?.trim().to_owned();
+            let report = replay::run(
+                &turns,
+                &rust_url,
+                &token,
+                "Lucina",
+                std::time::Duration::from_millis(pause_ms),
+            )
+            .await;
+            {
+                use std::io::Write;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.create(true).write(true).truncate(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(0o600);
+                }
+                opts.open(&out)?
+                    .write_all(serde_json::to_string_pretty(&report)?.as_bytes())?;
+            }
+            println!("{}", replay::summary(&report, show_text));
+            println!("report (with texts): {}", out.display());
+        }
+        Cmd::CapabilityBlock => {
+            println!("{}", Config::from_env()?.caps.block());
         }
         Cmd::TimelineAppendTest { path, count } => {
             let store = lucina_store::TimelineStore::new(&path, u64::MAX / 2, true);

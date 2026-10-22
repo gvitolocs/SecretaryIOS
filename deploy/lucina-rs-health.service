@@ -1,0 +1,7 @@
+[Unit]
+Description=Lucina (Rust) health check: restart lucina-rs when /health stops answering
+After=lucina-rs.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'systemctl --user is-active --quiet lucina-rs.service || exit 0; curl -fsS -m 10 -o /dev/null http://127.0.0.1:8790/health || { echo "lucina-rs: /health failed, restarting" >&2; systemctl --user restart lucina-rs.service; }'

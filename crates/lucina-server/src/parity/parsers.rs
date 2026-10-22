@@ -79,6 +79,7 @@ pub fn rust_case(text: &str, session: &str, now: DateTime<Utc>, s: &Settings) ->
         "storeNote": notes::looks_like_store_note(text),
         "logInspect": tier0::looks_like_direct_log_inspect(text),
         "yesno": cal::classify_yes_no(text),
+        "selfDesc": crate::capabilities::looks_like_self_description(text),
         "lang": hints::detect_language(text),
         "hints": hints::append_capability_hints("Ok, ci penso io.", text, true),
     })

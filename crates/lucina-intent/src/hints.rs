@@ -48,9 +48,9 @@ fn hint(id: &str, lang: &str) -> &'static str {
     match id {
         "reminder" => {
             if en {
-                "Telegram reminders — e.g. \"remind me at 21:30 to …\""
+                "Reminders — e.g. \"remind me at 21:30 to …\""
             } else {
-                "Promemoria Telegram — es. «avvisami alle 21:30 di …»"
+                "Promemoria — es. «avvisami alle 21:30 di …»"
             }
         }
         "list-reminders" => {

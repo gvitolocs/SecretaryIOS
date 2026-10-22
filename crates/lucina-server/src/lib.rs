@@ -10,6 +10,7 @@
 
 pub mod api;
 pub mod bridges;
+pub mod capabilities;
 pub mod chat;
 pub mod config;
 pub mod context;

@@ -33,6 +33,10 @@ pub struct Fake {
     spaces: Mutex<HashMap<String, Space>>,
     record: Option<PathBuf>,
     tz: chrono_tz::Tz,
+    /// Read-through mode (shadow replays): GETs go to the real
+    /// secretary-server with its token; writes stay here.
+    upstream: Option<(String, String)>,
+    http: reqwest::Client,
 }
 
 fn seed(tz: chrono_tz::Tz) -> Space {
@@ -100,7 +104,19 @@ fn err(status: u16, code: &str) -> Response {
 impl Fake {
     fn with<R>(&self, space: &str, f: impl FnOnce(&mut Space) -> R) -> R {
         let mut m = self.spaces.lock().unwrap_or_else(|e| e.into_inner());
-        let s = m.entry(space.to_owned()).or_insert_with(|| seed(self.tz));
+        // Read-through: the real notes and events come from upstream; local
+        // writes start from nothing.
+        let read_through = self.upstream.is_some();
+        let s = m.entry(space.to_owned()).or_insert_with(|| {
+            if read_through {
+                Space {
+                    avatar: json!({"outfit": null, "hair": null, "auto": true}),
+                    ..Space::default()
+                }
+            } else {
+                seed(self.tz)
+            }
+        });
         f(s)
     }
 
@@ -130,6 +146,37 @@ async fn handle(
         return err(401, "unauthorized");
     };
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    if let (Some((url, token)), true) = (&st.upstream, method == Method::GET) {
+        let target = format!(
+            "{}{}",
+            url.trim_end_matches('/'),
+            uri.path_and_query().map(|p| p.as_str()).unwrap_or("/")
+        );
+        let resp = match st
+            .http
+            .get(target)
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(r) => {
+                let status =
+                    StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                let v: Value = r.json().await.unwrap_or(Value::Null);
+                (status, Json(v)).into_response()
+            }
+            Err(_) => err(502, "upstream_unreachable"),
+        };
+        st.rec(
+            &space,
+            &method,
+            &uri,
+            &json!({"proxied": true}),
+            resp.status().as_u16(),
+        );
+        return resp;
+    }
     let resp = route(&st, &space, &method, &uri, &body);
     st.rec(&space, &method, &uri, &body, resp.status().as_u16());
     resp
@@ -279,11 +326,14 @@ pub async fn serve(
     bind: SocketAddr,
     record: Option<PathBuf>,
     tz: chrono_tz::Tz,
+    upstream: Option<(String, String)>,
 ) -> anyhow::Result<()> {
     let st = Arc::new(Fake {
         spaces: Mutex::new(HashMap::new()),
         record,
         tz,
+        upstream,
+        http: reqwest::Client::new(),
     });
     let app = Router::new()
         .route(

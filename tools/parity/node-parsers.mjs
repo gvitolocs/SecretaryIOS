@@ -19,6 +19,7 @@ const presence = await import('/app/src/discord-presence-context.js');
 const hints = await import('/app/src/lucina-capability-hints.js');
 const lang = await import('/app/src/reply-language.js');
 const logInspect = await import('/app/src/lucina-log-inspect.js');
+const caps = await import('/app/src/lucina-capabilities.js');
 
 // A parser that throws is reported as {"throws": message} (Node would answer 500).
 const safe = (fn) => { try { return fn(); } catch (e) { return { __throws: String(e?.message || e) }; } };
@@ -62,6 +63,7 @@ const out = input.cases.map(({ text, sessionId = '' }) => {
     storeNote: notes.looksLikeStoreNoteRequest(text),
     logInspect: logInspect.looksLikeDirectLogInspectRequest(text),
     yesno: cal.classifyYesNo(text),
+    selfDesc: caps.looksLikeSelfDescriptionRequest(text),
     lang: lang.detectReplyLanguage(text),
     hints: hints.appendCapabilityHints('Ok, ci penso io.', text, { action: 'reply' }),
   };
