@@ -49,7 +49,8 @@ running finishes, but nothing new starts until the Rust Lucina is live.
 - [ ] Physics (spring bones) on G chains
 - [ ] Character editor (Custom Cast SceneEdit parity): body/face sliders, eyes/skin/makeup, hair colours, accessory slots, outfit mix & match, saved looks — branch avatar-editor
 - [ ] Studio extras: hand shapes, IK posing, face sliders, props, photo decorations, flick shortcuts, filters, gaze, image backgrounds — branch studio-extras
-- [ ] AR (RealityKit place-in-room) + face tracking (ARKit / MediaPipe) — branches ar-facetrack, ios-ar
+- [ ] AR + face tracking: web Mirror me (MediaPipe, self-hosted) + stage face drive + .usdz assets merged into main bd720eb and LIVE on p1 2026-10-22 19:09; iOS AR (ios-ar 31b4305) merged into ios-app 29ff62f, not built yet. lucina.usdz + lucina-ar.json NOT on p1 yet (held for the G neck fix pack)
+- [x] Per-model idle clip pools from the manifest state_clips (g-idle 86f8d1e) merged into main bc58870, LIVE on web 2026-10-22 19:09
 - [x] Wardrobe UI LIVE (outfit/hair/colour tabs, rules per tab, remembered); LUCINA_AVATAR_OUTFIT not yet on
 - [ ] Outfit + hairstyle GLBs (Custom Cast first, then free assets) on the FIXED B
 - [x] Owner picked B (flower removed, tiara restored)
