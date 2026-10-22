@@ -68,6 +68,9 @@ export function LucinaStudio(props: {
   fetchInit: RequestInit;
   onClose: () => void;
   onPhoto: () => void;
+  /** Face tracking state (absent: no camera API here). */
+  face?: () => "off" | "starting" | "on";
+  onFace?: () => void;
 }) {
   const [tab, setTab] = createSignal<Tab>("view");
   const [expr, setExpr] = createSignal<string | null>(null);
@@ -231,6 +234,13 @@ export function LucinaStudio(props: {
         <button type="button" class="studio-action" aria-pressed={dancing() ? "true" : "false"} onClick={() => void toggleDance()}>
           {dancing() ? t("studio.danceStop") : t("studio.dance")}
         </button>
+        <Show when={props.face}>
+          {(face) => (
+            <button type="button" class="studio-action" aria-pressed={face()() !== "off" ? "true" : "false"} onClick={() => props.onFace?.()}>
+              {face()() !== "off" ? t("studio.faceStop") : t("studio.face")}
+            </button>
+          )}
+        </Show>
         <Show when={gyroAvailable}>
           <button type="button" class="studio-action" aria-pressed={gyro() ? "true" : "false"} onClick={() => void toggleGyro()}>
             {t("studio.gyro")}

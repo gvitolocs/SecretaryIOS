@@ -3,6 +3,7 @@ import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch
 import { speechLang, t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
 import { loadStage, type StageModule } from "../lib/stageLoader";
+import { isFaceTrackingSupported, startFaceTracking, type FaceTracker, type FaceTrackError } from "../lib/faceTrack";
 import { effectiveTheme, stageQuality } from "../state/appearance";
 import { onLucinaReply } from "../state/chat";
 import { lucinaActivity, setLucinaActivity, type LucinaActivity } from "../state/stage";
@@ -93,6 +94,9 @@ export function LucinaPanel(props: {
   const [studioOpen, setStudioOpen] = createSignal(false);
   const [photo, setPhoto] = createSignal(false);
   const [stageRef, setStageRef] = createSignal<WardrobeStage | null>(null);
+  /** Face tracking (F1): off, asking for the camera / loading the model, or mirroring. */
+  const [face, setFace] = createSignal<"off" | "starting" | "on">("off");
+  let tracker: FaceTracker | null = null;
   let canvas: HTMLCanvasElement | undefined;
   let mod: StageModule | null = null;
   let stage: WardrobeStage | null = null;
@@ -167,6 +171,7 @@ export function LucinaPanel(props: {
 
   onCleanup(() => {
     disposed = true;
+    stopFace();
     clearTimeout(hintTimer);
     listenCtrl?.abort();
     ttsCtrl?.abort();
@@ -283,6 +288,57 @@ export function LucinaPanel(props: {
     } catch {
       // The frame could not be read back: nothing to save.
     }
+  }
+
+  const FACE_NOTES: Record<FaceTrackError, Parameters<typeof t>[0]> = {
+    unsupported: "studio.faceUnsupported",
+    denied: "studio.faceDenied",
+    "no-camera": "studio.faceNoCamera",
+    failed: "studio.faceFailed",
+  };
+
+  /**
+   * Face tracking: only from a tap (the browser asks for the camera then). The frames stay in this
+   * tab (MediaPipe runs here); it stops on Stop, when the page is hidden, or when she is closed.
+   */
+  async function toggleFace() {
+    if (face() !== "off") {
+      stopFace();
+      return;
+    }
+    const s = stage;
+    if (!s || !mod) return;
+    setFace("starting");
+    setNote(null);
+    try {
+      const started = await startFaceTracking({
+        solver: new mod.FaceSolver(),
+        onDrive: (d) => stage?.setFaceDrive(d),
+        onStop: (reason) => {
+          tracker = null;
+          setFace("off");
+          if (reason !== "ended" && reason !== "hidden") setNote(t(FACE_NOTES[reason]));
+        },
+      });
+      if (disposed || stage !== s || face() !== "starting") {
+        started.stop();
+        return;
+      }
+      tracker = started;
+      setFace("on");
+      s.cameraPreset("face");
+    } catch (e) {
+      if (face() === "starting") setFace("off");
+      setNote(t(FACE_NOTES[(typeof e === "string" && e in FACE_NOTES ? e : "failed") as FaceTrackError]));
+    }
+  }
+
+  function stopFace() {
+    if (face() === "off" && !tracker) return;
+    tracker?.stop();
+    tracker = null;
+    setFace("off");
+    stage?.setFaceDrive(null);
   }
 
   async function talk() {
@@ -407,7 +463,10 @@ export function LucinaPanel(props: {
             <button
               type="button"
               class="icon-btn stage-btn"
-              onClick={() => minimize()()}
+              onClick={() => {
+                stopFace();
+                minimize()();
+              }}
               aria-label={t("shell.lucinaMinimize")}
               title={t("shell.lucinaMinimize")}
             >
@@ -418,7 +477,10 @@ export function LucinaPanel(props: {
         <button
           type="button"
           class="icon-btn stage-btn"
-          onClick={() => props.onCollapse()}
+          onClick={() => {
+            stopFace();
+            props.onCollapse();
+          }}
           aria-label={t("shell.lucinaHide")}
           title={t("shell.lucinaHideTitle")}
         >
@@ -432,7 +494,21 @@ export function LucinaPanel(props: {
           fetchInit={AUTH}
           onClose={() => setStudioOpen(false)}
           onPhoto={() => setPhoto(true)}
+          face={isFaceTrackingSupported() ? face : undefined}
+          onFace={() => void toggleFace()}
         />
+      </Show>
+      <Show when={face() !== "off"}>
+        <div class="stage-face" role="status">
+          <span class="stage-face-dot" aria-hidden="true" />
+          <span class="stage-face-label">{face() === "starting" ? t("studio.faceStarting") : t("studio.faceOn")}</span>
+          <button type="button" class="studio-chip" onClick={() => tracker?.recenter()} disabled={face() !== "on"}>
+            {t("studio.faceRecenter")}
+          </button>
+          <button type="button" class="studio-chip" onClick={stopFace}>
+            {t("studio.faceStop")}
+          </button>
+        </div>
       </Show>
       <Show when={photo()}>
         <div class="stage-photo-bar">

@@ -1543,6 +1543,50 @@ select.text-input option {
   animation: rise-in var(--dur-3) var(--ease-spring) both;
 }
 
+/* Face tracking is on: a clear camera indicator with Recenter and Stop (top, under the HUD). */
+.stage-face {
+  position: absolute;
+  z-index: 3;
+  top: 52px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  padding: 6px 8px 6px 12px;
+  border-radius: 18px;
+  background: rgb(40 6 12 / 0.62);
+  border: 1px solid rgb(255 90 110 / 0.55);
+  color: #ffe9ec;
+  font-size: var(--fs-xs);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.stage-face-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b55;
+  box-shadow: 0 0 10px rgb(255 59 85 / 0.8);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.stage-face-label {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-face-dot {
+    animation: none;
+  }
+}
+
 .stage-pill--note {
   border-color: rgb(160 200 255 / 0.3);
   color: #e3e8ff;
