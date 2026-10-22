@@ -137,15 +137,15 @@ BgChange, BgTransform, Object, ObjectAdd, CameraControll, FaceToObjectControl an
 
 | # | Interaction | Custom Cast | Lucina | Status |
 | --- | --- | --- | --- | --- |
-| A1 | Place her in the room | `SceneOutSideAR`, ARKit (`UnityARCameraManager`, `CMARHit`): scan the floor, tap inside the blue frame to place. Deploy modes Move, Rot, Scaling, Live. | iOS: export her current pose as USDZ and open AR Quick Look (no new runtime), or a RealityKit view with the GLB converted at build time. Web: WebXR `immersive-ar` where supported (Android Chrome). | later |
-| A2 | AR rotate and scale | `FlickObjRotate` (horizontal flick, speed 5), `FlickObjScaling` (vertical flick, 0.01–3×), two-finger tap resets | Covered by Quick Look's own gestures. | later |
-| A3 | 3-DoF AR | `AR3DOFCameraManager` | — | later |
+| A1 | Place her in the room | `SceneOutSideAR`, ARKit (`UnityARCameraManager`, `CMARHit`): scan the floor, tap inside the blue frame to place. Deploy modes Move, Rot, Scaling, Live. | iOS: a RealityKit view (`LucinaAR.swift`, studio menu, Place in your room). Coaching overlay finds the floor; a tap places her facing you; tapping the floor again moves her; people occlusion where supported. Her model is `lucina.usdz` plus the clip table `lucina-ar.json`, built from the live GLB and clip library by `tools/lucina-usdz/run.sh` (Blender on nezopt) and fetched from `/v1/assets` with the device token. Toon look: unlit materials and an inverted-hull outline. She plays her idle clip, reacts to taps with a clip and a line, and speaks replies (TTS) with her mouth moving. AR Quick Look of the same file is the fallback. Web: not built (no WebXR on iOS Safari). | now |
+| A2 | AR rotate and scale | `FlickObjRotate` (horizontal flick, speed 5), `FlickObjScaling` (vertical flick, 0.01–3×), two-finger tap resets | RealityKit gestures: pinch scales (clamped 0.05–3×), two-finger twist turns, drag moves; a two-finger tap resets to life size facing you. | now |
+| A3 | 3-DoF AR | `AR3DOFCameraManager` | `AROrientationTrackingConfiguration`: she stands 1.7 m in front of where the phone pointed. Automatic without world tracking; otherwise a switch in the AR menu. | now |
 
 ## 9. Face tracking
 
 | # | Interaction | Custom Cast | Lucina | Status |
 | --- | --- | --- | --- | --- |
-| F1 | Face tracking drives her head and mouth | `SceneFaceSetting` plus `CMDlibFaceTracking` (dlib 68 landmarks on the front camera, low-pass on position and rotation, `mouthOpenVal`). Neck-bone driven; a calibration screen with OK and Back. | iOS: ARKit `ARFaceTrackingConfiguration` (TrueDepth) blend shapes → JS `setFaceDrive({yaw, pitch, roll, jawOpen, blink…})`; the rig already has logical morphs for the mouth, blink and smile. Web: MediaPipe Face Landmarker. Camera frames stay on the device. | later |
+| F1 | Face tracking drives her head and mouth | `SceneFaceSetting` plus `CMDlibFaceTracking` (dlib 68 landmarks on the front camera, low-pass on position and rotation, `mouthOpenVal`). Neck-bone driven; a calibration screen with OK and Back. | Studio, Mirror me. iOS: ARKit `ARFaceTrackingConfiguration` (TrueDepth) sends its 52 blend shapes and the face transform to `lucina.faceFrame`; web: MediaPipe Face Landmarker (WASM and model served from our origin). One solver (`facedrive/`) for both: the head pose relative to the pose at start (Recenter recalibrates), mirrored, smoothed, mapped to head and neck, eyes, blinks, mouth, smile and brows; `stage.setFaceDrive()`. Camera frames stay on the device; it starts from a tap, shows a camera indicator, and stops when her view closes or the app is hidden. | now |
 
 ## 10. Device gestures
 
@@ -168,8 +168,8 @@ Counting every row in the tables (section 11 counted as one):
 
 | Status | Count |
 | --- | --- |
-| now | 30 |
-| later | 17 |
+| now | 34 |
+| later | 13 |
 | n/a | 10 |
 
 ## Implementation notes

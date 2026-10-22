@@ -43,6 +43,8 @@ pub fn content_type(name: &str) -> Option<&'static str> {
         "webp" => Some("image/webp"),
         "mp3" => Some("audio/mpeg"),
         "vmd" => Some("application/octet-stream"),
+        // The AR model for the iOS app (RealityKit / AR Quick Look).
+        "usdz" => Some("model/vnd.usdz+zip"),
         _ => None,
     }
 }
@@ -122,6 +124,7 @@ mod tests {
             Some("application/octet-stream")
         );
         assert_eq!(content_type("face_2.webp"), Some("image/webp"));
+        assert_eq!(content_type("lucina.usdz"), Some("model/vnd.usdz+zip"));
         assert_eq!(content_type("v1.0.json"), Some("application/json"));
         for bad in [
             "", ".glb", "..glb", "a..glb", "../x.glb", "a/b.glb", "A.glb", "x.exe", "x", "x.GLB",
