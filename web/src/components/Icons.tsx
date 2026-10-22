@@ -429,3 +429,111 @@ export function PlugIcon() {
     </svg>
   );
 }
+
+// ---- Tasks ----
+
+export function CheckCircleIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="m8.5 12.2 2.4 2.4 4.6-5" />
+    </svg>
+  );
+}
+
+export function InboxIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 13.5 6.3 5.6A1.5 1.5 0 0 1 7.7 4.5h8.6a1.5 1.5 0 0 1 1.4 1.1L20 13.5v4A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z" />
+      <path d="M4 13.5h4.5l1.2 2h4.6l1.2-2H20" />
+    </svg>
+  );
+}
+
+export function TodayIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="15" rx="2.5" />
+      <path d="M4 9.5h16M8.5 3v4M15.5 3v4" />
+      <path d="M10 13.2h2.2v4.3" />
+    </svg>
+  );
+}
+
+export function UpcomingIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="15" rx="2.5" />
+      <path d="M4 9.5h16M8.5 3v4M15.5 3v4M8 13h2M12 13h2M16 13h0M8 16.5h2M12 16.5h2" />
+    </svg>
+  );
+}
+
+export function FiltersIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" rx="1.8" />
+      <rect x="13" y="4" width="7" height="7" rx="1.8" />
+      <rect x="4" y="13" width="7" height="7" rx="1.8" />
+      <path d="M13 16.5h7M16.5 13v7" />
+    </svg>
+  );
+}
+
+export function TagIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 12.6V5a1.5 1.5 0 0 1 1.5-1.5h7.6l8 8a1.5 1.5 0 0 1 0 2.1l-7.1 7.1a1.5 1.5 0 0 1-2.1 0z" />
+      <circle cx="8" cy="8" r="1.3" />
+    </svg>
+  );
+}
+
+export function FlagIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5.5 21V4.5M5.5 4.5h11l-2.2 4 2.2 4h-11" />
+    </svg>
+  );
+}
+
+export function RepeatIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M17 3.5 20 6.5l-3 3M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20M7 20.5 4 17.5l3-3M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4" />
+    </svg>
+  );
+}
+
+export function HashIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9.5 4 7.5 20M16.5 4l-2 16M5 9h15M4 15h15" />
+    </svg>
+  );
+}
+
+export function MenuIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  );
+}
+
+export function SubtaskIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 4v10.5A2.5 2.5 0 0 0 8.5 17H18M15 14l3 3-3 3" />
+    </svg>
+  );
+}
+
+export function EditIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 19.5 5.3 15.8 15.6 5.5a2 2 0 0 1 2.9 0l0 0a2 2 0 0 1 0 2.9L8.2 18.7z" />
+      <path d="M13.8 7.3l2.9 2.9" />
+    </svg>
+  );
+}

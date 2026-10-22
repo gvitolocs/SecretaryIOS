@@ -1,7 +1,7 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
-import { AvatarIcon, ChatIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon } from "../components/Icons";
+import { AvatarIcon, ChatIcon, CheckCircleIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
@@ -23,6 +23,10 @@ function NavLinks(props: { class: string }) {
       <A href="/" end class="tab" activeClass="tab--active">
         <ChatIcon />
         <span>{t("shell.navChat")}</span>
+      </A>
+      <A href="/tasks" class="tab" activeClass="tab--active">
+        <CheckCircleIcon />
+        <span>{t("shell.navTasks")}</span>
       </A>
       <A href="/shopping" class="tab" activeClass="tab--active">
         <ListIcon />
@@ -62,7 +66,7 @@ function useRouteTransition(target: () => HTMLElement | undefined) {
   const location = useLocation();
   createEffect(
     on(
-      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname),
+      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname.startsWith("/tasks") ? "/tasks" : location.pathname),
       () => {
         const el = target();
         if (!el || reducedMotion() || typeof el.animate !== "function") return;
