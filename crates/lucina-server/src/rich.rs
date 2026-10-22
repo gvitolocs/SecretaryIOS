@@ -45,7 +45,7 @@ pub fn guess_language(reply: &str, user: &str) -> &'static str {
 
 /// The turn left an action waiting for the owner's yes or no.
 pub fn is_pending_confirmation(action: &str, action_result: &str) -> bool {
-    action == "calendar_confirm"
+    (action == "calendar_confirm" || action == "meshy")
         && action_result
             .to_lowercase()
             .contains("awaiting confirmation")

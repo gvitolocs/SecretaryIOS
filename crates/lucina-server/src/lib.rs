@@ -53,7 +53,7 @@ pub struct Inner {
     pub timeline: Arc<TimelineStore>,
     pub reminders: Arc<ReminderStore>,
     pub writer: Arc<dyn ReminderWriter>,
-    pub jobs: JobStore,
+    pub jobs: Arc<JobStore>,
     pub device: DeviceStore,
     pub memory: Arc<Memory>,
     pub model: Arc<dyn ChatModel>,
@@ -66,6 +66,9 @@ pub struct Inner {
     pub mcp_registry: Arc<Registry>,
     /// Infisical secrets (`LUCINA_SECRETS_CONFIG`), for tools only.
     pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
+    /// Meshy 3D (`LUCINA_MESHY=true`) and its one-tool registry.
+    pub meshy: Option<Arc<lucina_meshy::MeshyService>>,
+    pub meshy_registry: Option<Arc<Registry>>,
     pub pending: Arc<PendingStore>,
     pub recent: Arc<RecentChat>,
     pub planner: planner::Planner,
@@ -176,14 +179,48 @@ impl AppState {
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
         let env_http = env.http.clone();
-        let registry = Arc::new(Registry::builtin(&cfg.tools));
+        let jobs = Arc::new(JobStore::new(&cfg.jobs_path));
+        let meshy = cfg.meshy.enabled.then(|| {
+            // The key: a secret reference (`meshy.api_key` in secrets.toml) when the
+            // secrets skill has one, else MESHY_API_KEY_FILE.
+            let key: Arc<dyn lucina_meshy::key::KeySource> = match secret_store
+                .as_ref()
+                .and_then(|s| s.reference("meshy.api_key").map(|r| (s.clone(), r)))
+            {
+                Some((store, reference)) => {
+                    Arc::new(lucina_meshy::key::SecretRefKey::new(store, reference))
+                }
+                None => Arc::new(lucina_meshy::key::FileKey::new(cfg.meshy.key_file.clone())),
+            };
+            Arc::new(lucina_meshy::MeshyService::new(
+                cfg.meshy.clone(),
+                key,
+                jobs.clone(),
+                timeline.clone(),
+            ))
+        });
+        let mut registry = Registry::builtin(&cfg.tools);
+        let meshy_registry = meshy.as_ref().map(|svc| {
+            let tool = Arc::new(lucina_tools::tools::meshy::MeshyTool::new(svc.clone()));
+            if cfg.tools.allows("meshy") {
+                registry
+                    .register(tool.clone())
+                    .expect("meshy tool registers");
+            }
+            let mut only = Registry::new();
+            only.register(tool).expect("meshy tool registers");
+            Arc::new(only)
+        });
+        let registry = Arc::new(registry);
         let mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {
             timeline,
             reminders,
             writer,
-            jobs: JobStore::new(&cfg.jobs_path),
+            jobs,
+            meshy,
+            meshy_registry,
             device: DeviceStore::new(
                 &cfg.data_dir,
                 cfg.device_retention_days,

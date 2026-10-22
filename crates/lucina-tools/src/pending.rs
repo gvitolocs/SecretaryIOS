@@ -132,6 +132,14 @@ impl PendingStore {
         })
     }
 
+    /// A live pending action by id, without taking it.
+    pub fn peek(&self, id: &str, now: DateTime<Utc>) -> Option<PendingAction> {
+        self.with(|list| {
+            list.retain(|p| !p.expired(now));
+            list.iter().find(|p| p.id == id).cloned()
+        })
+    }
+
     /// Remove and return it (it runs at most once).
     pub fn take(&self, id: &str) -> Option<PendingAction> {
         self.with(|list| {

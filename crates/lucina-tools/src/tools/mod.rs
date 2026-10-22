@@ -3,6 +3,7 @@
 pub mod avatar;
 pub mod calculator;
 pub mod calendar;
+pub mod meshy;
 pub mod notes;
 pub mod notify;
 pub mod places;

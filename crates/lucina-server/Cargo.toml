@@ -19,6 +19,7 @@ lucina-store = { path = "../lucina-store" }
 lucina-memory = { path = "../lucina-memory" }
 lucina-grocery = { path = "../lucina-grocery" }
 lucina-tools = { path = "../lucina-tools" }
+lucina-meshy = { path = "../lucina-meshy" }
 lucina-intent = { path = "../lucina-intent" }
 lucina-discord = { path = "../lucina-discord", features = ["gateway"] }
 axum = "0.8"

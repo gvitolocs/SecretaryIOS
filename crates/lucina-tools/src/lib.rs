@@ -15,7 +15,8 @@
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
 //!   `notes`, `reminders`, `calendar`, `shopping`, `presence`, `avatar_outfit`, `notify`,
 //!   and the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]:
-//!   never offered on Lucina MCP turns).
+//!   never offered on Lucina MCP turns); `meshy` (3D models, registered by the
+//!   server when `LUCINA_MESHY=true`).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
 //!   (`weather.api_key` -> `secret://lucina/prod/lucina#OPEN_METEO_API_KEY`),
 //!   uses the value for its own outbound call only, and every tool result is
@@ -258,6 +259,8 @@ pub struct Ctx {
     pub session_id: String,
     pub now: DateTime<Utc>,
     pub origin: Origin,
+    /// True only while running a pending action the owner confirmed.
+    pub confirmed: bool,
     effects: Mutex<Vec<Effect>>,
 }
 
@@ -269,8 +272,15 @@ impl Ctx {
             session_id: session_id.into(),
             now: Utc::now(),
             origin: Origin::Owner,
+            confirmed: false,
             effects: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Running an action the owner confirmed.
+    pub fn confirmed(mut self) -> Self {
+        self.confirmed = true;
+        self
     }
 
     pub fn with_origin(mut self, origin: Origin) -> Self {

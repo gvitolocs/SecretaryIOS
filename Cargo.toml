@@ -15,6 +15,7 @@ members = [
     "crates/lucina-discord",
     "crates/lucina-intent",
     "crates/lucina-server",
+    "crates/lucina-meshy",
     "crates/secretary-mcp",
     "crates/secretary-calendar",
 ]

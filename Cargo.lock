@@ -1776,6 +1776,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-meshy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "lucina-secrets",
+ "lucina-store",
+ "reqwest 0.12.28",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "lucina-secrets"
 version = "0.1.0"
 dependencies = [
@@ -1816,6 +1842,7 @@ dependencies = [
  "lucina-intent",
  "lucina-llm",
  "lucina-memory",
+ "lucina-meshy",
  "lucina-secrets",
  "lucina-store",
  "lucina-tools",
@@ -1866,6 +1893,7 @@ dependencies = [
  "lucina-discord",
  "lucina-grocery",
  "lucina-llm",
+ "lucina-meshy",
  "lucina-secrets",
  "lucina-store",
  "proptest",
