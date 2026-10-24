@@ -75,7 +75,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/summary", get(summary))
         .route("/v1/media/albums", get(list_albums).post(create_album))
         .route("/v1/media/albums/{id}", get(get_album).patch(patch_album).delete(delete_album))
-        .route("/v1/media/albums/{id}/items", post(album_add).delete(album_remove))
+        .route("/v1/media/albums/{id}/items", post(album_add).put(album_replace).delete(album_remove))
         .route("/v1/media/uploads", post(create_upload))
         .route("/v1/media/uploads/{id}/finish", post(finish_upload))
         .route("/v1/media/devices/{device}/assets", get(device_assets))
@@ -521,6 +521,45 @@ async fn album_add(
         .await?
         .ok_or_else(not_found)?;
     Ok(Json(json!({ "added": added })))
+}
+
+/// Replace an album's items (Lucina's picks). Items themselves are untouched.
+async fn album_replace(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    Json(r): Json<ItemIds>,
+) -> ApiResult<Json<Value>> {
+    let n = lib
+        .db
+        .call(move |c| {
+            let tx = c.transaction()?;
+            if db::get_album(&tx, &id)?.is_none() {
+                return Ok(None);
+            }
+            let old: Vec<String> = {
+                let mut st = tx.prepare("SELECT item_id FROM album_items WHERE album_id = ?1")?;
+                let rows = st.query_map([&id], |r| r.get(0))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            tx.execute("DELETE FROM album_items WHERE album_id = ?1", [&id])?;
+            tx.execute("UPDATE albums SET cover_item = NULL WHERE id = ?1", [&id])?;
+            let mut n = 0;
+            for item in r.item_ids.iter().take(500) {
+                if tx.query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(())).optional()?.is_some()
+                    && db::add_to_album(&tx, &id, item)?
+                {
+                    n += 1;
+                }
+            }
+            for item in old.iter().chain(r.item_ids.iter()) {
+                db::reindex(&tx, item)?;
+            }
+            tx.commit()?;
+            Ok(Some(n))
+        })
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(Json(json!({ "items": n })))
 }
 
 async fn album_remove(

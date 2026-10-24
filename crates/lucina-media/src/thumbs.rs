@@ -7,7 +7,7 @@
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
@@ -150,6 +150,7 @@ fn video_poster(cfg: &Config, src: &Path, dst: &Path) -> anyhow::Result<()> {
             .arg(src)
             .args(["-frames:v", "1", "-vf", "scale='min(1600,iw)':-2", "-q:v", "3"])
             .arg(&tmp)
+            .stderr(Stdio::null())
             .status()?;
         if status.success() && tmp.is_file() && std::fs::metadata(&tmp)?.len() > 0 {
             std::fs::rename(&tmp, dst)?;
@@ -167,6 +168,7 @@ fn cover_art(cfg: &Config, src: &Path, dst: &Path) -> anyhow::Result<()> {
         .arg(src)
         .args(["-an", "-frames:v", "1"])
         .arg(&tmp)
+        .stderr(Stdio::null())
         .status()?;
     if status.success() && tmp.is_file() {
         std::fs::rename(&tmp, dst)?;

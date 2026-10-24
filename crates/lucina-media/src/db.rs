@@ -106,6 +106,8 @@ pub const SYSTEM_ALBUMS: &[(&str, &str)] = &[
     ("screenshots", "Screenshots"),
     ("voice-memos", "Voice memos"),
     ("favorites", "Favourites"),
+    // What Lucina last found for the owner in chat (replaced on every search she shows).
+    ("lucina", "Lucina's picks"),
 ];
 
 #[derive(Clone)]

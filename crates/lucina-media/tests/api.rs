@@ -200,6 +200,11 @@ async fn phone_backup_flow() {
     assert!(p["albums"].as_array().unwrap().iter().any(|a| a == "Copenhagen summer"));
     let (_, p) = get_json(&app, "/v1/media/items?q=summer").await;
     assert_eq!(p["items"][0]["id"], item_id.as_str());
+    let (s, r) = json_call(&app, "PUT", "/v1/media/albums/sys-lucina/items", json!({"item_ids": [other_id, "itm_missing"]})).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(r["items"], 1);
+    let (_, p) = get_json(&app, "/v1/media/items?album=sys-lucina").await;
+    assert_eq!(p["items"][0]["id"], other_id.as_str());
     let (_, albums) = get_json(&app, "/v1/media/albums").await;
     let camera = albums["albums"].as_array().unwrap().iter().find(|a| a["system_key"] == "camera").unwrap();
     assert_eq!(camera["count"], 2);
