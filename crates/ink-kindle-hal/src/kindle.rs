@@ -22,7 +22,7 @@
 use crate::display::{check_regions, Display, FrameMut, RefreshPolicy, UpdateRecord, WaveformMode};
 use crate::evdev::{MtDecoder, TouchTransform};
 use crate::geom::{Rect, Size};
-use crate::input::{Gesture, GestureConfig, GestureRecognizer, Input, TouchEvent};
+use crate::input::{Gesture, GestureConfig, GestureRecognizer, Input, PowerEvent, TouchEvent};
 use crate::{Error, Result};
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -610,8 +610,16 @@ impl Input for EvdevInput {
             if deadline.is_some_and(|d| now >= d) {
                 return Ok(None);
             }
-            // Wake at least every 50 ms so a held finger turns into a long-press without new events.
-            let wait = deadline.map_or(50, |d| (d - now).min(50)) as libc::c_int;
+            // Sleep until the caller's deadline (the reader's idle deadline) or until a resting finger can
+            // become a long-press, whichever is first. With neither, block until the touch screen has data:
+            // no periodic wake-ups while the reader is idle.
+            let until = match (deadline, self.recognizer.long_press_deadline()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let wait: libc::c_int = until.map_or(-1, |u| {
+                u.saturating_sub(now).min(libc::c_int::MAX as u64) as libc::c_int
+            });
             let mut pfd = libc::pollfd {
                 fd: self.file.as_raw_fd(),
                 events: libc::POLLIN,
@@ -628,5 +636,38 @@ impl Input for EvdevInput {
                 self.read_available()?;
             }
         }
+    }
+}
+
+/// Power-button / suspend events from the stock framework. **Not implemented: TODO stubs only.**
+///
+/// On firmware 5.x the power button and suspend/resume are owned by `powerd`, which announces state
+/// changes as LIPC events (`lipc-wait-event` on the `com.lab126.powerd` publisher is how community tools
+/// observe them). The event names, their order relative to the actual suspend, and whether an app can
+/// delay the suspend long enough to draw a GC16 sleep frame have **not** been inspected on this PW3, so no
+/// LIPC property or event name is used here as working code. Until they are measured on the device:
+///
+/// * TODO(device): list the powerd events around a power-button press and an idle suspend
+///   (`lipc-wait-event -m com.lab126.powerd '*'`, read-only) and record them in
+///   `docs/emulator-validation.md`.
+/// * TODO(device): decide whether to subscribe through `liblipc` (dynamically linked, glibc) or a helper
+///   process piping `lipc-wait-event` output, given this binary is static musl.
+/// * TODO(device): find out how the stock screensaver is suppressed while Lucina Ink owns the screen,
+///   without changing the system partition.
+pub struct PowerdEvents {
+    _private: (),
+}
+
+impl PowerdEvents {
+    /// Always fails: the real event source is not implemented (see the type docs).
+    pub fn open() -> Result<Self> {
+        Err(Error::Device(
+            "powerd power events are not implemented yet (LIPC events not inspected on the device)"
+                .into(),
+        ))
+    }
+    /// Next power event, if any. Unreachable until [`PowerdEvents::open`] is implemented.
+    pub fn poll(&mut self) -> Result<Option<PowerEvent>> {
+        Ok(None)
     }
 }

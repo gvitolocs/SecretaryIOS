@@ -10,7 +10,9 @@
 //! power use and the controller's update queue/collisions.
 use crate::display::{check_regions, Display, FrameMut, RefreshPolicy, UpdateRecord, WaveformMode};
 use crate::geom::{GrayImage, Rect, Size};
-use crate::input::{Gesture, GestureConfig, GestureRecognizer, Input, TouchEvent};
+use crate::input::{
+    Gesture, GestureConfig, GestureRecognizer, Input, InputEvent, PowerEvent, TouchEvent, Wait,
+};
 use crate::Result;
 use std::collections::VecDeque;
 
@@ -121,29 +123,61 @@ impl Display for SimDisplay {
     }
 }
 
-/// Replays raw touch events through a [`GestureRecognizer`] (emulated touch screen).
+/// One scripted input: a raw touch event or an emulated power event (power button / wake).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimEvent {
+    Touch(TouchEvent),
+    Power(PowerEvent),
+}
+
+/// Replays raw touch events through a [`GestureRecognizer`] (emulated touch screen), interleaved with
+/// emulated [`PowerEvent`]s. Timeouts are not emulated: the script is consumed in order and the input
+/// reports [`Wait::Closed`] once it is exhausted.
 pub struct ScriptedInput {
-    events: VecDeque<TouchEvent>,
+    events: VecDeque<SimEvent>,
     recognizer: GestureRecognizer,
 }
 
 impl ScriptedInput {
     pub fn new(events: impl IntoIterator<Item = TouchEvent>, config: GestureConfig) -> Self {
+        Self::with_events(events.into_iter().map(SimEvent::Touch), config)
+    }
+    pub fn with_events(events: impl IntoIterator<Item = SimEvent>, config: GestureConfig) -> Self {
         Self {
             events: events.into_iter().collect(),
             recognizer: GestureRecognizer::new(config),
         }
     }
+    /// Append an emulated power event (`sleep` / `wake` in a preview script).
+    pub fn push_power(&mut self, ev: PowerEvent) {
+        self.events.push_back(SimEvent::Power(ev));
+    }
 }
 
 impl Input for ScriptedInput {
+    /// Gestures only; power events in the script are skipped (use [`Input::next_event`] to see them).
     fn next_gesture(&mut self, _timeout_ms: Option<u32>) -> Result<Option<Gesture>> {
         while let Some(ev) = self.events.pop_front() {
-            if let Some(g) = self.recognizer.feed(ev) {
-                return Ok(Some(g));
+            if let SimEvent::Touch(t) = ev {
+                if let Some(g) = self.recognizer.feed(t) {
+                    return Ok(Some(g));
+                }
             }
         }
         Ok(None)
+    }
+    fn next_event(&mut self, _timeout_ms: Option<u32>) -> Result<Wait> {
+        while let Some(ev) = self.events.pop_front() {
+            match ev {
+                SimEvent::Power(p) => return Ok(Wait::Event(InputEvent::Power(p))),
+                SimEvent::Touch(t) => {
+                    if let Some(g) = self.recognizer.feed(t) {
+                        return Ok(Wait::Event(InputEvent::Gesture(g)));
+                    }
+                }
+            }
+        }
+        Ok(Wait::Closed)
     }
 }
 
@@ -375,5 +409,41 @@ mod tests {
         );
         assert!(inp.next_gesture(None).unwrap().is_some());
         assert_eq!(inp.next_gesture(None).unwrap(), None);
+    }
+
+    #[test]
+    fn scripted_power_events_are_interleaved_with_gestures() {
+        let tap = |t: u64| {
+            [
+                SimEvent::Touch(TouchEvent::Down {
+                    id: 0,
+                    pos: Point::new(900, 700),
+                    t_ms: t,
+                }),
+                SimEvent::Touch(TouchEvent::Up {
+                    id: 0,
+                    t_ms: t + 50,
+                }),
+            ]
+        };
+        let mut events = tap(0).to_vec();
+        events.push(SimEvent::Power(PowerEvent::SleepRequested));
+        events.extend(tap(1000));
+        let mut inp = ScriptedInput::with_events(events, GestureConfig::default());
+        inp.push_power(PowerEvent::Wake);
+        let g = Gesture::Tap {
+            pos: Point::new(900, 700),
+        };
+        let seen: Vec<Wait> = (0..5).map(|_| inp.next_event(Some(10)).unwrap()).collect();
+        assert_eq!(
+            seen,
+            vec![
+                Wait::Event(InputEvent::Gesture(g)),
+                Wait::Event(InputEvent::Power(PowerEvent::SleepRequested)),
+                Wait::Event(InputEvent::Gesture(g)),
+                Wait::Event(InputEvent::Power(PowerEvent::Wake)),
+                Wait::Closed,
+            ]
+        );
     }
 }

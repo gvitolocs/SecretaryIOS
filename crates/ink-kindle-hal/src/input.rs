@@ -100,6 +100,18 @@ impl GestureRecognizer {
         }
     }
 
+    /// When [`GestureRecognizer::tick`] could next fire a long-press (a single finger is resting), so an
+    /// input loop can sleep until then instead of waking periodically. `None`: nothing can fire without a
+    /// new event.
+    pub fn long_press_deadline(&self) -> Option<u64> {
+        match self.contacts.as_slice() {
+            [c] if !self.cancelled && !self.moved && !self.long_fired => {
+                Some(c.start_t + self.config.long_press_ms)
+            }
+            _ => None,
+        }
+    }
+
     /// Fire a long-press while the finger is still down. Call with the current time when no event arrived.
     pub fn tick(&mut self, now_ms: u64) -> Option<Gesture> {
         let c = match self.contacts.as_slice() {
@@ -205,10 +217,52 @@ impl GestureRecognizer {
     }
 }
 
+/// Power-state requests that reach the reader through the input stream.
+///
+/// In the emulator they are scripted. On the Kindle they would come from the power button / `powerd`
+/// (see the TODO stubs in the `kindle` module); that source is **not implemented** yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerEvent {
+    /// The power button was pressed (or the system is about to suspend): show the sleep screen.
+    SleepRequested,
+    /// The device woke up: go back to the page.
+    Wake,
+}
+
+/// Anything the reader's main loop reacts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputEvent {
+    Gesture(Gesture),
+    Power(PowerEvent),
+}
+
+/// Result of waiting for input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    Event(InputEvent),
+    /// The timeout elapsed without an event.
+    TimedOut,
+    /// The source has no more events (end of a script). A real device never closes.
+    Closed,
+}
+
 /// A source of gestures (the Kindle touch screen, or a scripted sequence in the emulator).
 pub trait Input {
     /// Wait up to `timeout_ms` (`None` = forever) for the next gesture; `Ok(None)` on timeout / end of input.
     fn next_gesture(&mut self, timeout_ms: Option<u32>) -> Result<Option<Gesture>>;
+
+    /// Wait up to `timeout_ms` (`None` = forever) for the next gesture or power event. The main loop passes
+    /// the time left until the idle deadline, so it blocks instead of polling.
+    ///
+    /// The default implementation only yields gestures: `None` from [`Input::next_gesture`] is a timeout when
+    /// a timeout was given and the end of input otherwise.
+    fn next_event(&mut self, timeout_ms: Option<u32>) -> Result<Wait> {
+        Ok(match self.next_gesture(timeout_ms)? {
+            Some(g) => Wait::Event(InputEvent::Gesture(g)),
+            None if timeout_ms.is_some() => Wait::TimedOut,
+            None => Wait::Closed,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +317,38 @@ mod tests {
         assert_eq!(r.tick(1600), Some(Gesture::LongPress { pos: p(10, 20) }));
         assert_eq!(r.tick(1700), None, "fires once");
         assert_eq!(r.feed(up(1, 2000)), None, "no tap after a long-press");
+    }
+
+    #[test]
+    fn long_press_deadline_only_while_one_finger_rests() {
+        let mut r = GestureRecognizer::default();
+        assert_eq!(r.long_press_deadline(), None, "idle: no wake-up needed");
+        r.feed(down(1, 10, 20, 1000));
+        assert_eq!(r.long_press_deadline(), Some(1600));
+        r.feed(mv(1, 400, 20, 1100));
+        assert_eq!(r.long_press_deadline(), None, "moved: cannot long-press");
+        r.feed(up(1, 1200));
+        r.feed(down(1, 10, 20, 2000));
+        assert_eq!(r.tick(2600), Some(Gesture::LongPress { pos: p(10, 20) }));
+        assert_eq!(r.long_press_deadline(), None, "already fired");
+    }
+
+    #[test]
+    fn default_next_event_maps_gestures_and_timeouts() {
+        struct Once(Option<Gesture>);
+        impl Input for Once {
+            fn next_gesture(&mut self, _t: Option<u32>) -> Result<Option<Gesture>> {
+                Ok(self.0.take())
+            }
+        }
+        let g = Gesture::Tap { pos: p(1, 2) };
+        let mut i = Once(Some(g));
+        assert_eq!(
+            i.next_event(Some(5)).unwrap(),
+            Wait::Event(InputEvent::Gesture(g))
+        );
+        assert_eq!(i.next_event(Some(5)).unwrap(), Wait::TimedOut);
+        assert_eq!(i.next_event(None).unwrap(), Wait::Closed);
     }
 
     #[test]

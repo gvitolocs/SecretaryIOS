@@ -20,7 +20,10 @@ pub mod kindle;
 
 pub use display::{Display, FrameMut, RefreshPolicy, UpdateRecord, WaveformMode};
 pub use geom::{GrayImage, Point, Rect, Size};
-pub use input::{Direction, Gesture, GestureConfig, GestureRecognizer, Input, TouchEvent};
+pub use input::{
+    Direction, Gesture, GestureConfig, GestureRecognizer, Input, InputEvent, PowerEvent,
+    TouchEvent, Wait,
+};
 pub use power::{Frontlight, Power};
 
 /// Panel of the Kindle Paperwhite 3 (KOReader device table / community docs; not yet measured on the device).

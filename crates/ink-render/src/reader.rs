@@ -50,23 +50,32 @@ fn ms(t: Instant) -> f64 {
 
 impl<D: Display> Reader<D> {
     /// Paginate the book and show the first page with a full refresh.
-    pub fn open(
+    pub fn open(book: Book, fonts: Fonts, style: Style, display: D) -> Result<(Self, StepReport)> {
+        Self::open_at(book, fonts, style, display, None)
+    }
+
+    /// Paginate the book and show the page holding `anchor` (a saved reading position; `None` = the
+    /// start) with a full refresh. An anchor past the end of the book lands on the last page.
+    pub fn open_at(
         book: Book,
         mut fonts: Fonts,
         style: Style,
         display: D,
+        anchor: Option<Anchor>,
     ) -> Result<(Self, StepReport)> {
         let size = display.size();
         let t = Instant::now();
         let pagination = paginate(&mut fonts, &style, size, &book);
         let layout_ms = ms(t);
+        let anchor = anchor.unwrap_or_default();
+        let page = pagination.page_for(anchor);
         let mut r = Self {
             book,
             fonts,
             style,
             pagination,
-            page: 0,
-            anchor: Anchor::default(),
+            page,
+            anchor,
             display,
             front: GrayImage::new(size, 0xff),
             back: GrayImage::new(size, 0xff),
@@ -148,6 +157,17 @@ impl<D: Display> Reader<D> {
         std::mem::swap(&mut self.front, &mut self.back);
         let update_ms = ms(t);
         Ok(self.report(updates, render_ms, update_ms))
+    }
+
+    /// Redraw the current page with a full-screen GC16 flash, keeping page and anchor. Used after something
+    /// else (a sleep screen) took over the panel: the page is re-rendered, not diffed against a stale mirror.
+    pub fn redraw_full(&mut self) -> Result<StepReport> {
+        self.show(true)
+    }
+
+    /// The fonts and the display at once (to draw a system screen with the reader's fonts).
+    pub fn fonts_and_display(&mut self) -> (&mut Fonts, &mut D) {
+        (&mut self.fonts, &mut self.display)
     }
 
     /// Go to `page` with a partial (dirty-region) update.

@@ -15,7 +15,9 @@ partial refreshes are allowed between flashes (`--full-every`, default 6).
 ```
 ink-preview <book.epub|txt|md> --out DIR [--font PATH] [--font-bold PATH] [--font-italic PATH]
             [--pages N] [--size 1072x1448] [--font-px 40] [--format png|pgm] [--full-every 6]
-            [--script "next,next,prev,font+,next,font-,goto:3,full"]
+            [--script "next,next,prev,font+,next,font-,goto:3,full,sleep,wake,idle 700"]
+            [--splash PNG] [--sleep-image PNG]... [--screen-bg white|black] [--screen-text]
+            [--idle SECS] [--state FILE]
 ```
 
 The JSON report on stdout contains:
@@ -30,6 +32,71 @@ The exit status is 2 when a check fails. A deterministic test book comes from
 `cargo run --release -p ink-preview --example gen_synthetic -- OUT.txt BYTES`. It is English-like prose from a
 fixed vocabulary with a `CHAPTER N` heading every 60 paragraphs and lines wrapped at 70 columns, like a
 Gutenberg text file.
+
+## System screens: splash, sleep and resume
+
+Lucina Ink draws its own system screens while it runs (`crates/ink-render/src/screens.rs` and
+`session.rs`). This is app-level only: no firmware or system-partition changes.
+
+- **Splash.** Shown at start-up, before the book is opened and paginated, and replaced by the first page.
+- **Sleep screen.** Shown on a power event or after the idle timeout (default 10 min, `--idle SECS`).
+  - The reading anchor is written first, with an atomic write (temp file, `fsync`, `rename`) behind the
+    `AnchorStore` trait. Only then is the picture drawn.
+  - With several sleep pictures, sleep `n` shows picture `n mod count`.
+- **Resume.** On wake, the same page is redrawn, with the same anchor.
+- **Updates.** Splash, sleep screen and resume are each one full-screen GC16 flash.
+- **Pictures.**
+  - The default for both the splash and the sleep screen is `/mnt/us/screensaver/lucina.png`.
+  - PNG in any colour type is accepted and converted to luminance: RGB with Rec. 601 weights, alpha
+    composited over the background.
+  - A picture larger than the panel is scaled down with a box filter. A smaller one is scaled up only by an
+    integer factor, with nearest neighbour. The aspect ratio is kept and the picture is centred on white
+    (or black) margins.
+- **Quantisation.** The result is quantised to the 16 levels `k·17` that GC16 can show, and nothing is
+  dithered.
+  - The EPDC uses the top 4 bits of each pixel. Rounding in software avoids the darker cast that
+    truncation would give, and the 16 levels survive `v >> 4` unchanged.
+  - The owner's picture has 250 gray levels from anti-aliasing. After quantisation the sleep frame equals
+    `quantize16(source)` pixel for pixel, with 16 levels.
+- **Fallback.** A missing, unreadable or corrupt picture never crashes the app. A generated "Lucina Ink"
+  text screen is shown instead, and the report says why.
+- **Idle timeout.** It is a deadline, not a poll. The main loop (`session::run`) blocks in
+  `Input::next_event` for exactly the time left. While asleep it waits with no timeout.
+  - The evdev reader now also sleeps until the caller's deadline or a possible long-press, instead of
+    waking every 50 ms.
+
+The emulator renders these screens with `ink-preview --sleep-image PNG --script "next,sleep,wake,next,idle 700"`.
+- `splash.png` is the splash frame, and each sleep step also writes `sleep-frame.png`.
+- The JSON report gives:
+  - which picture was used, or why the fallback was shown;
+  - the anchor saved before each sleep;
+  - the wait the main loop would block for before an `idle` step (`main_loop_wait_ms`);
+  - a check that each wake returned to the same page and anchor with one GC16 flash.
+
+**Emulated:**
+- the state machine (splash → reading ⇄ sleeping → resuming);
+- power events, scripted in `ScriptedInput` or in the preview script;
+- the idle deadline on an emulated clock;
+- the order "save the anchor, then draw";
+- picture loading, fitting and quantisation;
+- the updates issued.
+
+**Needs the device:**
+- **Real power-button and suspend events.** On the Kindle they come from `powerd`. `kindle::PowerdEvents`
+  is a documented stub that always fails: the LIPC event names and their timing have not been inspected,
+  so none are used as working code.
+- **The stock framework's own screensaver fighting ours.** When the device suspends, the Amazon framework
+  draws its own screensaver (ads or the stock pictures) on the same panel. It is not known yet whether
+  Lucina Ink's frame survives, gets overdrawn, or can be drawn after the framework's. Suppressing the stock
+  screensaver without changing the system partition is still open.
+- **Suspend timing.** Whether there is time between the power event and the actual suspend to write the
+  anchor and finish a GC16 flash (hundreds of ms). The same goes for whether the EPDC finishes the update
+  before the clocks stop, and what the panel shows after a long suspend.
+- **Real idle detection beside the stock UI.** The stock UI has its own idle timer and may suspend first.
+
+**Not changed by this.** The stock Kindle boot splash (bootloader and framework start-up) and the Amazon UI's
+own lock screen and screensaver are not touched. Lucina Ink's splash, sleep and resume screens apply only
+while Lucina Ink is running.
 
 ## Benchmarks (nezopt, x86_64)
 
@@ -102,7 +169,7 @@ Time to write the PGM files is not included. All timings are CPU time on this ho
 - The touch device: which `/dev/input/eventN`, the axis ranges, the orientation (swap/mirror), and whether
   `EVIOCGRAB` is needed or safe beside the stock UI.
 - Frontlight and battery sysfs paths (only the `Power` and `Frontlight` traits exist), suspend and screensaver
-  interplay.
+  interplay (see "System screens" above).
 - Speed and memory on the Cortex-A9, glyph-cache growth, and font rendering quality on the 300 dpi panel.
 
 ## Cross-compilation
