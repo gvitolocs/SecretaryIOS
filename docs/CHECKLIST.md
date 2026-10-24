@@ -29,6 +29,16 @@ running finishes, but nothing new starts until the Rust Lucina is live.
       (`delegate.xai_api_key`); until then research goes to ChatGPT (Codex)
 - [ ] Proactive engine: call `/api/secretary/delegate` (dry run) for research once `lucina-proactive` merges
 - [ ] Telegram/Discord (Node Lucina): thin bridge to `/api/secretary/delegate`-style delegation, behind a flag
+- Verification findings (docs/verification.md on main), merged into lucina-rs 2026-10-24 (93a023b, 6fb355c); workspace
+  fmt/clippy clean, lucina-* tests 339 passed with Postgres; lucina-rs binary LIVE 2026-10-24 12:43:
+  - [x] T1: timeline stream resumes by arrival order (fix-verification-lucina 845b04b)
+  - [x] P1a/P1b: lucina-rs keeps its own jobs file (`data/lucina-rs/secretary-jobs.json`), Node's read only (cad62c5)
+  - [x] P2a/P2b: reminders claimed before they are sent; phase-2 handover order in PORT_PLAN (4b395cb)
+  - [x] S1: the 409 names the batch's duplicates (390c0e5)
+  - [x] S2: client row ids kept (390c0e5); migration 004 (`grocery.shopping_row_aliases`) not yet applied to the live database
+  - [x] G4: Meshy per-step credit guard, worst-case reservation (5c3b038); LUCINA_MESHY still off
+  - [x] Secrets redactor overlap: only well-formed patterns admitted (52f55e0)
+  - [x] G3: proactive tick lock (fix-verification-proactive 6ca0059); the running lucina-proactive binary is older (not redeployed)
 
 ## Waiting
 ### Web
