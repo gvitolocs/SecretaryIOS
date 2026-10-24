@@ -1,0 +1,28 @@
+[package]
+name = "lucina-deals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Grocery deals near home (Salling food waste + Tjek flyers): the Node Lucina's src/grocery/deals engine, ported 1:1"
+
+[dependencies]
+lucina-grocery = { path = "../lucina-grocery" }
+serde = { workspace = true }
+# Exact float parsing: coordinates and prices must be the doubles Node reads.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = "1"
+# fdlibm-derived atan2 (what V8's Math.atan2 is), so distances are the same doubles.
+libm = "0.2"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

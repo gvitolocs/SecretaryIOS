@@ -11,6 +11,7 @@ members = [
     "crates/lucina-store",
     "crates/lucina-memory",
     "crates/lucina-grocery",
+    "crates/lucina-deals",
     "crates/lucina-delegate",
     "crates/lucina-tools",
     "crates/lucina-discord",

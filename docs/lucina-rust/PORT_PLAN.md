@@ -263,6 +263,13 @@ Until then lucina-rs asks Node (`crates/lucina-server/src/node_deals.rs`, the re
 `GET /api/secretary/grocery/deals/map` unchanged, and chat turns classified `grocery.offer.search`,
 `grocery.deals.cheapest` or `grocery.deals.lunch` take their reply from Node `POST /api/secretary/grocery/deals/answer`,
 with the Rust grocery reply as the fallback when Node cannot answer.
+Ported 2026-10-24 (owner decision: deals are rewritten in Rust and the Node code is deleted): `crates/lucina-deals`
+(beside `lucina-grocery`, which it uses for canonical products and the shopping list) holds the sources, synonyms with
+hot reload, matcher, engine (list, cheapest, lunch, map data), formatters, and the watch run with its
+`deal-watch.json` state (byte-compatible). `tests/parity.rs` compares it with Node goldens from the recorded fixtures
+(digest/alerts/list/lunch/map text byte for byte, map/list/lunch/cheapest JSON value for value); `tests/node_suite.rs`
+ports `tests/grocery-deals.test.mjs`. Still to do: routes, chat intents, the scheduler and channel delivery, the deploy,
+then removing `node_deals.rs` and the Node code.
 
 Retirement: switch `lucina-nez` to a runtime without Lucina (`HERMES_RUNTIME` set to a value that disables
 `lucina`, for example `poko-routes`, after checking which OTHER-BOT pieces still need to run there), keep it on 8788
