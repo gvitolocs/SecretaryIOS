@@ -263,10 +263,6 @@ final class LucinaARCoordinator: NSObject {
     static func unlit(_ material: any RealityKit.Material) -> any RealityKit.Material {
         guard let pbr = material as? PhysicallyBasedMaterial else { return material }
         var flat = UnlitMaterial()
-        if #available(iOS 18.0, *) {
-            // Without the post-process tone map: it pulled her cream skin to a flat grey (owner, 2026-10-24).
-            flat = UnlitMaterial(applyPostProcessToneMap: false)
-        }
         flat.color = .init(tint: pbr.baseColor.tint, texture: pbr.baseColor.texture)
         flat.blending = pbr.blending
         flat.opacityThreshold = pbr.opacityThreshold
