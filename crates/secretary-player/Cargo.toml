@@ -1,0 +1,10 @@
+[package]
+name = "secretary-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Media player core: queue, resume positions, subtitles and playback plans (shared by the apps and the server)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

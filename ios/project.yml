@@ -38,8 +38,11 @@ targets:
           UIColorName: AccentColor
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Landscape is allowed for full-screen video only: AppDelegate returns OrientationLock.mask.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -66,9 +69,10 @@ targets:
         # The deals map's Directions button opens Google Maps when it is installed (canOpenURL).
         LSApplicationQueriesSchemes: [comgooglemaps]
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
-        # local schedules. APNs stays off on the free Personal Team; with a paid team set
-        # SecretaryAPNsEnabled to true and add aps-environment to Secretary.entitlements.
-        UIBackgroundModes: [fetch]
+        # local schedules; `audio` keeps the media player (and Picture in Picture) playing. APNs
+        # stays off on the free Personal Team; with a paid team set SecretaryAPNsEnabled to true
+        # and add aps-environment to Secretary.entitlements.
+        UIBackgroundModes: [fetch, audio]
         BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh]
         SecretaryAPNsEnabled: false
     dependencies:

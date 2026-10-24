@@ -46,7 +46,7 @@ fn gym_request_roundtrip_through_the_c_abi() {
     let version: Value =
         serde_json::from_str(&unsafe { take(secretary_ffi::secretary_version()) }).unwrap();
     assert_eq!(version["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(version["modules"], serde_json::json!(["gym", "body"]));
+    assert_eq!(version["modules"], serde_json::json!(["gym", "body", "player"]));
 
     unsafe { secretary_ffi::secretary_gym_close(handle) };
 }
@@ -125,4 +125,23 @@ fn body_module_uses_the_same_open_request_close_pattern() {
     let reopened = unsafe { secretary_ffi::secretary_body_open(path.as_ptr()) };
     assert!(!reopened.is_null());
     unsafe { secretary_ffi::secretary_body_close(reopened) };
+}
+
+#[test]
+fn player_queue_and_resume_through_the_c_abi() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = CString::new(dir.path().join("player.json").to_str().unwrap()).unwrap();
+    let handle = unsafe { secretary_ffi::secretary_player_open(path.as_ptr()) };
+    assert!(!handle.is_null());
+    let ask = |json: &str| -> Value {
+        let request = CString::new(json).unwrap();
+        let response = unsafe { secretary_ffi::secretary_player_request(handle, request.as_ptr()) };
+        serde_json::from_str(&unsafe { take(response) }).unwrap()
+    };
+    let json = ask(r#"{"cmd":"queue_set","items":[{"id":"v1","kind":"video","title":"Film"}]}"#);
+    assert_eq!(json["queue"]["item"]["id"], "v1");
+    let json = ask(r#"{"cmd":"position","id":"v1","position_ms":120000,"duration_ms":5400000,"playing":false}"#);
+    assert_eq!(json["sync"], true);
+    assert_eq!(ask(r#"{"cmd":"resume","id":"v1"}"#)["position_ms"], 118000);
+    unsafe { secretary_ffi::secretary_player_close(handle) };
 }

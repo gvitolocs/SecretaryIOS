@@ -6,6 +6,8 @@ members = [
     "crates/secretary-gym",
     "crates/secretary-body",
     "crates/secretary-ffi",
+    "crates/secretary-player",
+    "crates/secretary-media-stream",
 ]
 
 [workspace.package]

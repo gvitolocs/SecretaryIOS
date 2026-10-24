@@ -661,6 +661,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1513,6 +1522,7 @@ version = "0.1.0"
 dependencies = [
  "secretary-body",
  "secretary-gym",
+ "secretary-player",
  "serde_json",
  "tempfile",
 ]
@@ -1528,6 +1538,36 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "secretary-media-stream"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "getrandom 0.3.4",
+ "hmac",
+ "mime",
+ "secretary-player",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "secretary-player"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

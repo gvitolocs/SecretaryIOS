@@ -19,6 +19,7 @@ struct SecretaryApp: App {
                 .environment(app.health)
                 .environment(app.wardrobe)
                 .environment(app.notifications)
+                .environment(app.media)
                 .task {
                     // Hosted unit tests load the app; keep it off the network.
                     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }

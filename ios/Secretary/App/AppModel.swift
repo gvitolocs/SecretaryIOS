@@ -29,6 +29,8 @@ final class AppModel {
     var showTasks = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
+    /// The media library and player, on top of the chat like Notes.
+    var showMedia = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -53,6 +55,8 @@ final class AppModel {
     let device: DeviceHub
     /// Inbox, settings and local notifications.
     let notifications: NotificationCenterStore
+    /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
+    let media: MediaPlayer
     /// The scene is active (set by `MainTabs`): Lucina's messages alert only when the chat is not in view.
     @ObservationIgnored var isForeground = false
 
@@ -98,6 +102,7 @@ final class AppModel {
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
+        media = MediaPlayer(api: { MediaAPI(client: client) })
         if let tab = launch.initialTab { selectedTab = tab }
         if launch.openNotes {
             selectedTab = .chat

@@ -23,6 +23,7 @@ extern "C" {
 
 typedef struct SecretaryGymEngine SecretaryGymEngine;
 typedef struct SecretaryBodyEngine SecretaryBodyEngine;
+typedef struct SecretaryPlayerEngine SecretaryPlayerEngine;
 
 char *secretary_open_error(void);
 void secretary_string_free(char *value);
@@ -36,6 +37,11 @@ void secretary_gym_close(SecretaryGymEngine *handle);
 SecretaryBodyEngine *secretary_body_open(const char *path);
 char *secretary_body_request(SecretaryBodyEngine *handle, const char *json);
 void secretary_body_close(SecretaryBodyEngine *handle);
+
+/* Media player core (secretary-player): queue, resume positions, subtitles, playback plans. */
+SecretaryPlayerEngine *secretary_player_open(const char *path);
+char *secretary_player_request(SecretaryPlayerEngine *handle, const char *json);
+void secretary_player_close(SecretaryPlayerEngine *handle);
 
 /* Compatibility aliases for the SwiftUI port. */
 char *secretary_gym_open_error(void);
