@@ -1,0 +1,181 @@
+/*
+ * The shared Lucina look on top of the older web rules (imported last). The colours, fonts
+ * and radii already come from the tokens; this file only removes the old effects (aurora,
+ * grain, glows, holographic bars) and shapes the navigation like the iOS tab bar.
+ */
+
+body {
+  font-size: var(--lu-type-body);
+  line-height: 1.4;
+  letter-spacing: normal;
+}
+
+body::before,
+body::after {
+  display: none;
+}
+
+h1 {
+  font-size: var(--lu-type-large-title);
+  font-weight: var(--lu-type-large-title-weight);
+  letter-spacing: 0.01em;
+}
+
+h2 {
+  font-weight: var(--lu-type-title-2-weight);
+  letter-spacing: normal;
+}
+
+h3 {
+  font-weight: var(--lu-type-headline-weight);
+  letter-spacing: normal;
+}
+
+/* Small capitals labels: the iOS section-header voice (system font, not mono). */
+.hud,
+.eyebrow,
+.stat-label,
+.day-sep,
+.reminder-head {
+  font-family: var(--lu-font);
+  font-weight: 600;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--lu-font-mono);
+}
+
+/* Cards: flat dark grey, no borders or glass. */
+.glass {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* The floating tab bar: a glass capsule, the active tab in the accent on a soft pill. */
+.tabbar {
+  border-radius: var(--lu-radius-pill);
+  border-color: transparent;
+  background: var(--lu-tab-bar-bg);
+  -webkit-backdrop-filter: blur(var(--lu-tab-bar-blur)) saturate(1.8);
+  backdrop-filter: blur(var(--lu-tab-bar-blur)) saturate(1.8);
+}
+
+.tabbar .tab {
+  border-radius: var(--lu-radius-pill);
+}
+
+.tab {
+  color: var(--lu-tab-bar-inactive);
+}
+
+.tab--active {
+  color: var(--lu-tab-bar-active);
+  background: var(--lu-tab-bar-active-background);
+  box-shadow: none;
+}
+
+.tab--active .icon {
+  color: var(--lu-tab-bar-active);
+  transform: none;
+  filter: none;
+}
+
+.tabbar .tab--active::after,
+.tabs-top .tab--active::before {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .topbar {
+    border-color: transparent;
+    background: var(--lu-card);
+    box-shadow: none;
+  }
+
+  .tabs-top .tab {
+    border-radius: var(--lu-radius-tile);
+  }
+}
+
+/* ---------- Shopping: accent tiles to buy, card tiles for the rest (as on iOS) ---------- */
+
+:root .bring {
+  --b-red: var(--lu-accent-fill);
+  --b-red-hi: var(--lu-accent-fill);
+  --b-red-lo: var(--lu-accent-fill);
+  --b-teal: var(--lu-accent);
+  --b-teal-hi: var(--lu-accent);
+  --b-teal-lo: var(--lu-accent);
+  --b-slate: var(--lu-card-raised);
+  --b-slate-hi: var(--lu-card-raised);
+  --b-slate-lo: var(--lu-card-raised);
+  --b-green-700: var(--lu-accent);
+  --b-red-600: var(--lu-negative);
+  --b-section: var(--lu-card);
+  --b-action: var(--lu-card);
+  --b-field: var(--lu-card);
+  --b-sheet: var(--lu-bg);
+  --b-popup: var(--lu-card-raised);
+  --b-snackbar: var(--lu-card-raised);
+  --b-gap: 4px;
+}
+
+:root .bring .tile-main {
+  --b-tile-text: var(--lu-text);
+  border-radius: var(--lu-radius-tile);
+  background: var(--lu-card);
+  box-shadow: none;
+  text-shadow: none;
+  color: var(--lu-text);
+}
+
+:root .bring .tile--need .tile-main {
+  --b-tile-text: var(--lu-on-accent);
+  background: var(--lu-accent-fill);
+  color: var(--lu-on-accent);
+}
+
+:root .bring .tile--custom .tile-main {
+  background: var(--lu-card-raised);
+}
+
+:root .bring .tile--need .tile-main::before,
+:root .bring .bring-appbar::before {
+  display: none;
+}
+
+:root .bring .bring-chip--on {
+  background: var(--lu-accent-fill);
+  color: var(--lu-on-accent);
+  box-shadow: none;
+}
+
+:root .bring .bring-badge {
+  background: var(--lu-negative);
+  box-shadow: none;
+  font-family: var(--lu-font);
+}
+
+:root .bring .bring-card {
+  box-shadow: none;
+}
+
+/* ---------- Gym: the shared accent instead of indigo + neon lime ---------- */
+
+:root .gym-theme {
+  --gym-forest: var(--lu-accent-fill);
+  --gym-forest-strong: var(--lu-accent-fill);
+  --gym-lime: var(--lu-accent);
+  --gym-bar: var(--lu-accent);
+  --gym-on-forest: var(--lu-on-accent);
+  --gym-surface: var(--lu-card);
+  --gym-stroke: transparent;
+  --surface: var(--lu-card);
+  --accent: var(--lu-accent);
+  --accent-strong: var(--lu-accent);
+  --accent-contrast: var(--lu-bg);
+  --accent-soft: var(--lu-accent-soft);
+}

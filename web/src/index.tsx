@@ -3,10 +3,9 @@ import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
 import { registerServiceWorker } from "./lib/push";
-import "@fontsource-variable/sora";
-import "@fontsource-variable/jetbrains-mono";
 import "./state/appearance";
 import "./styles.css";
+import "./styles/lucina-look.css";
 import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
 
