@@ -1894,3 +1894,11 @@ body:has(.dock--float:not(.dock--open)) .bring-search-row {
   pointer-events: none;
   -webkit-user-drag: none;
 }
+
+/* An emoji kept for a custom item fills about the same box as the art (the glyph is narrower
+   than its font size), so a row of tiles keeps one icon size. */
+.item-emoji {
+  display: block;
+  font-size: 1.2em;
+  line-height: 1.1;
+}

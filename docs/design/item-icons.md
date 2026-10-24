@@ -191,8 +191,14 @@ tools/icons/target/release/icons contrast assets/icons/items assets/icons/sectio
 - **Web**: `web/src/lib/itemArt.ts` maps catalog ids (and `svg:<key>` icons) to the bundled files through
   `import.meta.glob(…, { query: "?no-inline" })`: each SVG becomes its own hashed file under `/assets/`, shown with a
   same-origin `<img>` (CSP `img-src 'self'`; an SVG in `<img>` cannot run script), cached cache-first by the service
-  worker. `ItemIcon` / `SectionIcon` (`web/src/views/shopping/ItemIcon.tsx`) fall back to the emoji. A row whose emoji
-  differs from its catalog entry's (picked by the user) keeps the emoji.
-- **iOS**: not wired yet. Plan: copy `assets/icons/` into the app bundle and render with an SVG-capable image view, or
-  pre-render PNG @2x/@3x with `icons render` at build time; keep the emoji fallback.
+  worker. `itemVisual()` picks what a tile shows, most specific first: an `svg:<key>` icon; the art of the row's
+  catalog item (a row whose emoji differs from its catalog entry's, picked by the user, keeps the emoji); for rows with
+  no catalog id (free text, Lucina's custom objects) the art of the catalog item the name names (`guessByName`: exact
+  name or alias, else the longest leading words, "Pane di segale danese" -> rye bread, else trailing English/Danish
+  words, "organic milk"), only when that item is in the row's section; a specific emoji of the row (not the cart, not
+  the section's own emoji); the section's art; else the first letter. `ItemIcon` / `SectionIcon`
+  (`web/src/views/shopping/ItemIcon.tsx`) render it.
+- **iOS** (branch `ios-shopping-icons`): `ios/scripts/sync-item-icons.sh` copies `assets/icons/{items,sections}` into
+  `ios/Secretary/Resources/ItemIcons.xcassets` (vector, `item-<id>` / `section-<id>`); `ItemVisual` mirrors the web
+  order.
 - The catalog's `icon` field stays an emoji, so clients without the set are unchanged.
