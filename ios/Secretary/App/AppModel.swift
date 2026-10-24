@@ -12,7 +12,19 @@ final class AppModel {
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
-    enum Tab: String, Hashable, CaseIterable { case chat, shopping, gym, weight, settings }
+    /// The owner's four tabs (2026-10-24): Chat, Shopping, Training + Weight, Plugins.
+    /// Settings opens as a sheet from the gear button; everything else is a plugin card.
+    enum Tab: String, Hashable, CaseIterable {
+        case chat, shopping, fitness, plugins
+
+        /// A launch argument or route name (`gym` and `weight` are the training tab).
+        init?(name: String) {
+            switch name {
+            case "gym", "weight", "fitness", "training": self = .fitness
+            default: self.init(rawValue: name)
+            }
+        }
+    }
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
@@ -23,17 +35,19 @@ final class AppModel {
     /// Shown above the chat when Lucina is unreachable or slow.
     var lucinaNotice: String?
     var selectedTab: Tab = .chat
-    /// Notes open on top of the chat (the tab bar has no room for a sixth tab on iPhone).
+    /// Settings, as a sheet from the gear button in every tab's toolbar.
+    var showSettings = false
+    /// Notes, a plugin (pushed on the Plugins tab).
     var showNotes = false
-    /// Tasks open on top of the chat, like Notes.
+    /// Tasks, a plugin like Notes.
     var showTasks = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
-    /// The media library and player, on top of the chat like Notes.
+    /// The media library and player, a plugin.
     var showMedia = false
-    /// The Gallery (a plugin: the Plugins tab opens it; until that tab exists, a button on the chat).
+    /// The Gallery, a plugin.
     var showGallery = false
-    /// Voice memos open on top of the chat, like Notes and Tasks.
+    /// Voice memos, a plugin.
     var showMemos = false
 
     @ObservationIgnored let client: APIClient
@@ -139,24 +153,25 @@ final class AppModel {
             case .stop: memoStore.finishRecording()
             }
         }
+        if launch.openSettings { showSettings = true }
         if launch.openNotes {
-            selectedTab = .chat
+            selectedTab = .plugins
             showNotes = true
         }
         if launch.openTasks {
-            selectedTab = .chat
+            selectedTab = .plugins
             showTasks = true
         }
         if launch.openMemos {
-            selectedTab = .chat
+            selectedTab = .plugins
             showMemos = true
         }
         if launch.openGallery {
-            selectedTab = .chat
+            selectedTab = .plugins
             showGallery = true
         }
         if launch.openMedia {
-            selectedTab = .chat
+            selectedTab = .plugins
             showMedia = true
         }
 
@@ -291,7 +306,7 @@ final class AppModel {
 
     /// `/memos/<id>` (the "memo ready" notification): the memo's detail screen.
     func openMemo(_ id: String?) {
-        selectedTab = .chat
+        selectedTab = .plugins
         showMemos = true
         if let id { memos.openMemoId = id }
     }
@@ -397,6 +412,8 @@ final class AppModel {
 struct LaunchOptions {
     var resetState = false
     var initialTab: AppModel.Tab?
+    /// `-SecretaryInitialTab settings`: start with the Settings sheet open.
+    var openSettings = false
     /// `-SecretaryInitialTab notes`: start on the Notes screen.
     var openNotes = false
     /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
@@ -411,7 +428,8 @@ struct LaunchOptions {
     init(defaults: UserDefaults) {
         #if DEBUG || SCREENSHOTS
         resetState = defaults.bool(forKey: "SecretaryResetState")
-        initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
+        initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(name:))
+        openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
         openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"

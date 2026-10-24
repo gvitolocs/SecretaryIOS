@@ -317,7 +317,7 @@ struct AvatarSettings: Codable, Equatable, Sendable {
 
         init(tab: AppModel.Tab) {
             switch tab {
-            case .gym: self = .gym
+            case .fitness: self = .gym
             case .shopping: self = .shopping
             default: self = .default
             }

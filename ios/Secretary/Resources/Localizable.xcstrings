@@ -193,16 +193,16 @@
     },
     "%lld backed up" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%lld salvate"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld sikkerhedskopieret"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld salvate"
           }
         }
       }
@@ -287,7 +287,6 @@
         }
       }
     },
-    "%lld image-based subtitle tracks can't be shown yet" : {},
     "%lld items synced" : {
       "localizations" : {
         "da" : {
@@ -407,6 +406,7 @@
         }
       }
     },
+    "%lld%%" : {},
     "%lld/%lld" : {
       "localizations" : {
         "da" : {
@@ -429,6 +429,7 @@
         }
       }
     },
+    "+ adds the item to your Tasks (Todoist)." : {},
     "+%lld more" : {
       "localizations" : {
         "da" : {
@@ -672,6 +673,7 @@
         }
       }
     },
+    "Action items" : {},
     "Active %@" : {
       "localizations" : {
         "da" : {
@@ -880,18 +882,19 @@
         }
       }
     },
+    "Add to Tasks" : {},
     "Add to album" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Aggiungi all'album"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Føj til album"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi all'album"
           }
         }
       }
@@ -1107,13 +1110,13 @@
     },
     "Albums" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Album"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Album"
@@ -1170,17 +1173,34 @@
       }
     },
     "All photos" : {
+      "extractionState" : "stale",
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alle billeder"
+          }
+        },
         "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tutte le foto"
           }
+        }
+      }
+    },
+    "All weigh-ins" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutte le pesate"
+          }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Alle billeder"
+            "value" : "Alle vejninger"
           }
         }
       }
@@ -1219,16 +1239,16 @@
     },
     "Allow photo access to back up" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Consenti l'accesso alle foto per il backup"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Giv adgang til billeder for at tage backup"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti l'accesso alle foto per il backup"
           }
         }
       }
@@ -1364,16 +1384,16 @@
     },
     "Audio" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Audio"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lyd"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio"
           }
         }
       }
@@ -1429,48 +1449,48 @@
     },
     "Back up now" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Esegui backup ora"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tag backup nu"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esegui backup ora"
           }
         }
       }
     },
     "Back up this iPhone" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Backup di questo iPhone"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tag backup af denne iPhone"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backup di questo iPhone"
           }
         }
       }
     },
     "Backed up" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Salvate"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sikkerhedskopieret"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Salvate"
           }
         }
       }
@@ -1478,6 +1498,12 @@
     "Background" : {},
     "Backing up %lld of %lld" : {
       "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sikkerhedskopierer %lld af %lld"
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "new",
@@ -1489,24 +1515,18 @@
             "state" : "translated",
             "value" : "Backup di %lld di %lld"
           }
-        },
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sikkerhedskopierer %lld af %lld"
-          }
         }
       }
     },
     "Backup" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Backup"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Backup"
@@ -1516,48 +1536,48 @@
     },
     "Backup is off" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Backup disattivato"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Backup er slået fra"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backup disattivato"
           }
         }
       }
     },
     "Backup is up to date" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Backup aggiornato"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Backup er opdateret"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backup aggiornato"
           }
         }
       }
     },
     "Backup paused: %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Backup in pausa: %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Backup sat på pause: %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backup in pausa: %@"
           }
         }
       }
@@ -1823,16 +1843,16 @@
     },
     "Camera" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fotocamera"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kamera"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotocamera"
           }
         }
       }
@@ -2594,16 +2614,16 @@
     },
     "Create" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Crea"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Opret"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Crea"
           }
         }
       }
@@ -2657,6 +2677,7 @@
       }
     },
     "Current" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -2794,6 +2815,7 @@
         }
       }
     },
+    "Decisions" : {},
     "Default" : {
       "localizations" : {
         "da" : {
@@ -3130,6 +3152,8 @@
         }
       }
     },
+    "Discard" : {},
+    "Discard this recording?" : {},
     "Discard this workout?" : {
       "localizations" : {
         "da" : {
@@ -3664,17 +3688,18 @@
       }
     },
     "Everything" : {
+      "extractionState" : "stale",
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tutto"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Alt"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutto"
           }
         }
       }
@@ -3873,6 +3898,7 @@
         }
       }
     },
+    "Failed" : {},
     "Failure" : {
       "localizations" : {
         "da" : {
@@ -3907,64 +3933,81 @@
     },
     "Favourite" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Preferito"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Favorit"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preferito"
           }
         }
       }
     },
     "Favourites" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Preferiti"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Favoritter"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preferiti"
           }
         }
       }
     },
     "File" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "File"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fil"
           }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File"
+          }
         }
       }
     },
-    "Filter" : {
+    "Films, music and audio" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Filtro"
+            "value" : "Film, musica e audio"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Film, musik og lyd"
+          }
+        }
+      }
+    },
+    "Filter" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Filter"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Filtro"
           }
         }
       }
@@ -4187,16 +4230,16 @@
     "Full body" : {},
     "Gallery" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Galleria"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Galleri"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Galleria"
           }
         }
       }
@@ -4233,6 +4276,7 @@
         }
       }
     },
+    "Get the PDF" : {},
     "Giggle" : {},
     "Give the note a title." : {
       "localizations" : {
@@ -4704,6 +4748,22 @@
         }
       }
     },
+    "How is the Pokémon game going?" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Come va la partita a Pokémon?"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvordan går det med Pokémon-spillet?"
+          }
+        }
+      }
+    },
     "How much do you weigh?" : {
       "localizations" : {
         "da" : {
@@ -4821,29 +4881,29 @@
     },
     "Include videos" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Includi i video"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Medtag videoer"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Includi i video"
           }
         }
       }
     },
     "Info" : {
       "localizations" : {
-        "it" : {
+        "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Info"
           }
         },
-        "da" : {
+        "it" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Info"
@@ -4853,16 +4913,16 @@
     },
     "It stays on this iPhone. The server keeps it in the trash for 30 days." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Resta su questo iPhone. Il server lo tiene nel cestino per 30 giorni."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Den bliver på denne iPhone. Serveren gemmer den i papirkurven i 30 dage."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resta su questo iPhone. Il server lo tiene nel cestino per 30 giorni."
           }
         }
       }
@@ -4918,6 +4978,7 @@
         }
       }
     },
+    "Key points" : {},
     "Kilograms" : {
       "localizations" : {
         "da" : {
@@ -4984,16 +5045,16 @@
     },
     "Last backup" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ultimo backup"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Seneste backup"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ultimo backup"
           }
         }
       }
@@ -5331,16 +5392,16 @@
     },
     "Looking for new photos…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cerco nuove foto…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Leder efter nye billeder…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerco nuove foto…"
           }
         }
       }
@@ -5349,6 +5410,7 @@
       "shouldTranslate" : false
     },
     "Lucina / Gym" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -5575,6 +5637,7 @@
         }
       }
     },
+    "Lucina is summarising" : {},
     "Lucina is thinking" : {
       "localizations" : {
         "da" : {
@@ -5849,6 +5912,7 @@
         }
       }
     },
+    "Lucina writes the summary, PDF and Obsidian note again and tells you when it's done." : {},
     "Lucina's AR model isn't on the server yet." : {
       "localizations" : {
         "da" : {
@@ -5897,6 +5961,22 @@
         }
       }
     },
+    "Lucina's game" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La partita di Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas spil"
+          }
+        }
+      }
+    },
     "Lucina's messages, reminders and upcoming events will show up here." : {
       "localizations" : {
         "da" : {
@@ -5909,6 +5989,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Qui trovi i messaggi di Lucina, i promemoria e gli impegni in arrivo."
+          }
+        }
+      }
+    },
+    "Lucina's outfits" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gli abiti di Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas tøj"
           }
         }
       }
@@ -6026,6 +6122,7 @@
         }
       }
     },
+    "Making the PDF" : {},
     "Mark all read" : {
       "localizations" : {
         "da" : {
@@ -6106,7 +6203,24 @@
         }
       }
     },
-    "Media" : {},
+    "Media" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Media"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Medier"
+          }
+        }
+      }
+    },
+    "Memo" : {},
+    "Memos" : {},
     "Message" : {
       "localizations" : {
         "da" : {
@@ -6238,48 +6352,48 @@
     },
     "Move to the server's trash" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sposta nel cestino del server"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Flyt til serverens papirkurv"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sposta nel cestino del server"
           }
         }
       }
     },
     "Move to the server's trash?" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Spostare nel cestino del server?"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Flyt til serverens papirkurv?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spostare nel cestino del server?"
           }
         }
       }
     },
     "Move to trash" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sposta nel cestino"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Flyt til papirkurv"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sposta nel cestino"
           }
         }
       }
@@ -6481,16 +6595,16 @@
     },
     "New album" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nuovo album"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nyt album"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nuovo album"
           }
         }
       }
@@ -6575,6 +6689,7 @@
         }
       }
     },
+    "New recording" : {},
     "New routine" : {
       "localizations" : {
         "da" : {
@@ -6607,6 +6722,7 @@
         }
       }
     },
+    "New summary" : {},
     "Next" : {},
     "Next 7 days" : {
       "localizations" : {
@@ -6676,16 +6792,16 @@
     },
     "No date" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Senza data"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ingen dato"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Senza data"
           }
         }
       }
@@ -6706,6 +6822,7 @@
         }
       }
     },
+    "No memos yet" : {},
     "No notes yet" : {
       "localizations" : {
         "da" : {
@@ -6740,16 +6857,16 @@
     },
     "No photos yet" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ancora nessuna foto"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ingen billeder endnu"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ancora nessuna foto"
           }
         }
       }
@@ -6772,16 +6889,16 @@
     },
     "No results" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nessun risultato"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ingen resultater"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun risultato"
           }
         }
       }
@@ -7322,32 +7439,32 @@
     },
     "Only on Wi-Fi" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Solo con Wi-Fi"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kun på Wi-Fi"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solo con Wi-Fi"
           }
         }
       }
     },
     "Only while charging" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Solo in carica"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kun under opladning"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Solo in carica"
           }
         }
       }
@@ -7480,6 +7597,7 @@
         }
       }
     },
+    "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it." : {},
     "Other" : {
       "localizations" : {
         "da" : {
@@ -7610,6 +7728,10 @@
       }
     },
     "Pause" : {},
+    "Pause recording" : {},
+    "Paused" : {},
+    "Paused by a call" : {},
+    "Paused by another app or a call" : {},
     "Personal records" : {
       "localizations" : {
         "da" : {
@@ -7629,48 +7751,48 @@
     "Photo" : {},
     "Photo backup" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Backup delle foto"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Backup af billeder"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Backup delle foto"
           }
         }
       }
     },
     "Photos" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foto"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Billeder"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foto"
           }
         }
       }
     },
     "Photos and videos go to your own server (nezopt), in full quality. Nothing is ever deleted from this iPhone." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Foto e video vanno sul tuo server (nezopt), in qualità piena. Da questo iPhone non viene mai cancellato nulla."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Billeder og videoer sendes til din egen server (nezopt) i fuld kvalitet. Intet bliver nogensinde slettet fra denne iPhone."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Foto e video vanno sul tuo server (nezopt), in qualità piena. Da questo iPhone non viene mai cancellato nulla."
           }
         }
       }
@@ -7726,16 +7848,16 @@
     },
     "Place" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Luogo"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Sted"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Luogo"
           }
         }
       }
@@ -7774,16 +7896,16 @@
     },
     "Places, months, albums" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Luoghi, mesi, album"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Steder, måneder, album"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Luoghi, mesi, album"
           }
         }
       }
@@ -7805,6 +7927,38 @@
       }
     },
     "Play" : {},
+    "Plugins" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plugin"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plugins"
+          }
+        }
+      }
+    },
+    "Pokémon" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokémon"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokémon"
+          }
+        }
+      }
+    },
     "Poses" : {},
     "Pounds" : {
       "localizations" : {
@@ -7952,6 +8106,7 @@
       }
     },
     "Reading the subtitles…" : {},
+    "Ready" : {},
     "Recent commands from Lucina" : {
       "localizations" : {
         "da" : {
@@ -8016,18 +8171,40 @@
         }
       }
     },
-    "Remaining" : {
+    "Record" : {},
+    "Record a memo" : {},
+    "Record memo" : {},
+    "Recording" : {
       "localizations" : {
         "it" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Rimanenti"
+            "value" : "Registrazione in corso"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
+            "value" : "Optager"
+          }
+        }
+      }
+    },
+    "Recording could not resume." : {},
+    "Recording did not start." : {},
+    "Recording memo" : {},
+    "Remaining" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
             "value" : "Tilbage"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimanenti"
           }
         }
       }
@@ -8208,6 +8385,8 @@
         }
       }
     },
+    "Rename" : {},
+    "Rename memo" : {},
     "Rename workout" : {
       "localizations" : {
         "da" : {
@@ -8497,6 +8676,8 @@
         }
       }
     },
+    "Resume" : {},
+    "Resume recording" : {},
     "Retry" : {
       "localizations" : {
         "da" : {
@@ -8659,6 +8840,7 @@
         }
       }
     },
+    "Saving to Obsidian" : {},
     "Screen Time" : {
       "localizations" : {
         "da" : {
@@ -8711,6 +8893,7 @@
     "Secretary" : {
       "shouldTranslate" : false
     },
+    "Secretary can't use the microphone. Allow it in Settings › Privacy › Microphone." : {},
     "Secretary is the owner's personal assistant. Lucina keeps the long-term memory; gym and weight data stay on your own server." : {
       "localizations" : {
         "da" : {
@@ -8727,6 +8910,7 @@
         }
       }
     },
+    "Secretary · Lucina" : {},
     "Section" : {
       "localizations" : {
         "da" : {
@@ -9037,6 +9221,7 @@
         }
       }
     },
+    "Share PDF" : {},
     "She always wears the default outfit." : {
       "localizations" : {
         "da" : {
@@ -9085,7 +9270,6 @@
         }
       }
     },
-    "Show" : {},
     "Show %lld more" : {},
     "Show Lucina" : {
       "localizations" : {
@@ -9218,16 +9402,16 @@
     },
     "Size" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dimensioni"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Størrelse"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dimensioni"
           }
         }
       }
@@ -9460,6 +9644,8 @@
         }
       }
     },
+    "Stop and save" : {},
+    "Stop and save recording" : {},
     "Stop dancing" : {},
     "Stop listening" : {
       "localizations" : {
@@ -9593,6 +9779,9 @@
     "Subtitles" : {},
     "Subtitles and speed" : {},
     "Subtitles are unavailable." : {},
+    "Summarise again" : {},
+    "Summary" : {},
+    "Summary and transcript" : {},
     "Sunset" : {},
     "Surprised" : {},
     "Sync" : {
@@ -9677,16 +9866,16 @@
     },
     "Taken" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Scattata"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Taget"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scattata"
           }
         }
       }
@@ -9771,6 +9960,7 @@
         }
       }
     },
+    "Tap the red button and talk. Lucina transcribes it, writes the summary, makes a PDF and puts the note in Obsidian." : {},
     "Task deleted" : {
       "localizations" : {
         "da" : {
@@ -9980,6 +10170,7 @@
         }
       }
     },
+    "The audio system restarted. The recording so far was kept." : {},
     "The change could not be saved." : {
       "localizations" : {
         "da" : {
@@ -10092,6 +10283,7 @@
         }
       }
     },
+    "The microphone is busy: %@" : {},
     "The new passwords don't match." : {
       "localizations" : {
         "da" : {
@@ -10301,6 +10493,7 @@
         }
       }
     },
+    "The upload is not moving forward." : {},
     "Theme" : {
       "localizations" : {
         "da" : {
@@ -10644,6 +10837,7 @@
     },
     "To do" : {},
     "To goal" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -11027,6 +11221,22 @@
         }
       }
     },
+    "Training settings" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impostazioni allenamento"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Træningsindstillinger"
+          }
+        }
+      }
+    },
     "Training volume" : {
       "localizations" : {
         "da" : {
@@ -11043,6 +11253,10 @@
         }
       }
     },
+    "Transcribed on Lucina's server with %@. Names and technical words may be wrong." : {},
+    "Transcribing" : {},
+    "Transcribing on the iPhone…" : {},
+    "Transcript" : {},
     "Trash" : {
       "localizations" : {
         "da" : {
@@ -11093,16 +11307,16 @@
     },
     "Try a place, a month or an album name." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Prova un luogo, un mese o il nome di un album."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Prøv et sted, en måned eller et albumnavn."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prova un luogo, un mese o il nome di un album."
           }
         }
       }
@@ -11157,16 +11371,16 @@
     },
     "Turn on backup and your iPhone's photos appear here." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Attiva il backup e le foto del tuo iPhone compariranno qui."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Slå backup til, så vises din iPhones billeder her."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attiva il backup e le foto del tuo iPhone compariranno qui."
           }
         }
       }
@@ -11443,6 +11657,7 @@
         }
       }
     },
+    "Upload pending" : {},
     "Upload this iPhone to the server" : {
       "localizations" : {
         "da" : {
@@ -11475,6 +11690,7 @@
         }
       }
     },
+    "Uploading" : {},
     "Use at least 8 characters." : {
       "localizations" : {
         "da" : {
@@ -11557,16 +11773,16 @@
     },
     "Videos" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Video"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Videoer"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Video"
           }
         }
       }
@@ -11583,6 +11799,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Vista"
+          }
+        }
+      }
+    },
+    "Voice memos" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memo vocali"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Talememoer"
           }
         }
       }
@@ -11652,34 +11884,35 @@
         }
       }
     },
+    "Waiting" : {},
     "Waiting for Wi-Fi" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In attesa del Wi-Fi"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Venter på Wi-Fi"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa del Wi-Fi"
           }
         }
       }
     },
     "Waiting for a network" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In attesa di una rete"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Venter på netværk"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa di una rete"
           }
         }
       }
@@ -11702,20 +11935,21 @@
     },
     "Waiting for the charger" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "In attesa del caricabatterie"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Venter på opladeren"
           }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "In attesa del caricabatterie"
+          }
         }
       }
     },
+    "Waiting for the network" : {},
     "Waiting for your OK" : {
       "localizations" : {
         "da" : {
@@ -11991,6 +12225,7 @@
         }
       }
     },
+    "What should Lucina focus on? (optional)" : {},
     "What to notify" : {
       "localizations" : {
         "da" : {
@@ -12025,16 +12260,16 @@
     },
     "When" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quando"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hvornår"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando"
           }
         }
       }

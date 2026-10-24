@@ -314,7 +314,7 @@ final class SecretaryFlowTests: XCTestCase {
     func testWeightLogEntry() {
         let app = launch()
         signIn(app)
-        app.tabBars.buttons["Weight"].tap()
+        app.tabBars.buttons["Training"].tap()
         let add = app.buttons["weightQuickAdd"]
         XCTAssertTrue(add.waitForExistence(timeout: 10))
         add.tap()
@@ -323,6 +323,7 @@ final class SecretaryFlowTests: XCTestCase {
         let value = "7\(Int.random(in: 1...8)).\(Int.random(in: 1...9))"
         field.typeText(value)  // focused when the sheet opens
         app.buttons["weightSaveButton"].tap()
+        app.buttons["weightAll"].tap()  // the entries are on the weight page
         let entry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "\(value) kg")).firstMatch
         XCTAssertTrue(entry.waitForExistence(timeout: 10), "logged entry \(value) kg")
         attach(app, "Weight")

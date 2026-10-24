@@ -320,9 +320,8 @@ enum NotificationRoute {
         let first = route.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": return .shopping
-        case "gym": return .gym
-        case "weight": return .weight
-        case "settings": return .settings
+        case "gym", "weight": return .fitness
+        case "plugins", "notes", "tasks", "memos", "media", "gallery": return .plugins
         default: return .chat
         }
     }

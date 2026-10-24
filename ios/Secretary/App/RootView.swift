@@ -78,22 +78,30 @@ struct MainTabs: View {
     private var tabs: some View {
         @Bindable var app = app
         return TabView(selection: $app.selectedTab) {
-            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry().memosEntry().mediaEntry().galleryEntry() }
+            NavigationStack { ChatView().lucinaStatusToolbar() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
             NavigationStack { ShoppingTab().lucinaStatusToolbar() }
                 .tabItem { Label("Shopping", systemImage: "cart") }
                 .tag(AppModel.Tab.shopping)
-            NavigationStack { GymScreen() }
-                .tabItem { Label("Gym", systemImage: "dumbbell") }
-                .tag(AppModel.Tab.gym)
-            NavigationStack { WeightView().lucinaStatusToolbar() }
-                .tabItem { Label("Weight", systemImage: "scalemass") }
-                .tag(AppModel.Tab.weight)
-
-            NavigationStack { SettingsView().lucinaStatusToolbar() }
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(AppModel.Tab.settings)
+            NavigationStack { FitnessView().lucinaStatusToolbar() }
+                .tabItem { Label("Training", systemImage: "figure.strengthtraining.traditional") }
+                .tag(AppModel.Tab.fitness)
+            NavigationStack { PluginsView().lucinaStatusToolbar() }
+                .tabItem { Label("Plugins", systemImage: "square.grid.2x2") }
+                .tag(AppModel.Tab.plugins)
+        }
+        // Settings: a sheet from the gear button in every tab's toolbar.
+        .sheet(isPresented: $app.showSettings) {
+            NavigationStack {
+                SettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { app.showSettings = false }.accessibilityIdentifier("settingsDone")
+                        }
+                    }
+            }
+            .lucinaSheet()
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in

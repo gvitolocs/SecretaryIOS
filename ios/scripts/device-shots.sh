@@ -16,11 +16,15 @@ echo "device-shots ($out)" > /tmp/iphone16e.lock/owner
 trap 'rm -f /tmp/iphone16e.lock/owner; rmdir /tmp/iphone16e.lock 2>/dev/null' EXIT
 xcrun devicectl device install app --device "$dev" "$app" > "$out/install.log" 2>&1 || { echo "install failed: $out/install.log"; exit 1; }
 i=0
-for tab in chat notes tasks shopping gym weight settings; do
+# name:launch arguments (after `--`, so devicectl passes them to the app instead of parsing them)
+for shot in "chat:-SecretaryInitialTab chat" "shopping:-SecretaryInitialTab shopping" \
+            "training:-SecretaryInitialTab fitness" "training-lower:-SecretaryInitialTab fitness -SecretaryScrollTo training" \
+            "plugins:-SecretaryInitialTab plugins" "settings:-SecretaryInitialTab settings" \
+            "notes:-SecretaryInitialTab notes" "tasks:-SecretaryInitialTab tasks"; do
   i=$((i+1))
-  # `--` so devicectl passes -SecretaryInitialTab to the app instead of parsing it.
-  xcrun devicectl device process launch --device "$dev" --terminate-existing tech.getsecretary.app -- -SecretaryInitialTab $tab > /dev/null 2>&1
+  tab=${shot%%:*}
+  xcrun devicectl device process launch --device "$dev" --terminate-existing tech.getsecretary.app -- ${=shot#*:} > /dev/null 2>&1
   sleep 7
-  pymobiledevice3 developer dvt screenshot "$out/0$i-$tab.png" > /dev/null 2>&1 || echo "$tab: screenshot failed"
+  pymobiledevice3 developer dvt screenshot "$out/$(printf %02d $i)-$tab.png" > /dev/null 2>&1 || echo "$tab: screenshot failed"
 done
 echo "$(ls "$out"/*.png 2>/dev/null | wc -l | tr -d ' ') screenshots in $out"

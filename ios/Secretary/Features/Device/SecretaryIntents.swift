@@ -55,7 +55,7 @@ struct StartWorkoutIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         let app = AppModel.shared
-        app.selectedTab = .gym
+        app.selectedTab = .fitness
         if app.gym.view == nil { await app.gym.refresh() }
         if app.gym.view?.state.active == nil {
             _ = await app.gym.run(.startWorkout(title: String(localized: "Workout"), routineId: nil))
