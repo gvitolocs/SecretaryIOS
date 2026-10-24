@@ -7,13 +7,15 @@ use crate::jsre::group;
 use crate::re;
 
 /// Planner actions an MCP turn may run (`notes` is the notes bridge,
-/// `tasks` the tasks bridge: read, add, complete; never delete).
+/// `tasks` the tasks bridge: read, add, complete; never delete; `game` the status of Lucina's Pokémon
+/// run, never starting or pausing it).
 pub const ALLOWED_ACTIONS: &[&str] = &[
     "reply",
     "list_reminders",
     "schedule_reminder",
     "notes",
     "tasks",
+    "game",
 ];
 
 /// Grocery intents an MCP turn may run.

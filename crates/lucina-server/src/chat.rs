@@ -726,6 +726,16 @@ async fn json_turn(
         }
     }
 
+    // Lucina's Pokémon Red run (status, start, pause); MCP turns may read the status only.
+    match crate::bridges::game_turn(&st.secretary.http, &t.message, t.mcp.is_some()).await {
+        Some(Err(blocked)) => {
+            tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
+            return Finish::refusal(&persona, blocked);
+        }
+        Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
+        None => {}
+    }
+
     // Tasks (LUCINA_TASKS=true): what to do today, add, done, reschedule
     // overdue. MCP turns may read, add and complete; deleting is refused.
     // Before the calendar: "cosa devo fare oggi?" answers with the tasks and

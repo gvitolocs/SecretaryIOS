@@ -91,6 +91,9 @@ impl Capabilities {
                 "schedule_reminder" => "create reminders".to_owned(),
                 "notes" => "save and read notes".to_owned(),
                 "tasks" => "read tasks, add them and mark them done (never delete)".to_owned(),
+                "game" => {
+                    "ask how Lucina's Pokémon game is going (never start or pause it)".to_owned()
+                }
                 other => other.replace('_', " "),
             })
             .collect();
@@ -249,7 +252,7 @@ mod tests {
         assert!(b.starts_with("Runtime capabilities (generated from this runtime's flags just now"));
         assert!(b.contains("- Reasoning: My reasoning (planning and every reply) runs only on the DeepSeek API (model deepseek-flash)."));
         assert!(b.contains("- Timed reminders (persisted), delivered on Telegram and as Secretary app notifications."));
-        assert!(b.contains("MCP guard: they may only answer questions; list reminders; create reminders; save and read notes; read tasks, add them and mark them done (never delete); read, add to and mark bought on the shopping list; look up offers, prices and grocery spending;"));
+        assert!(b.contains("MCP guard: they may only answer questions; list reminders; create reminders; save and read notes; read tasks, add them and mark them done (never delete); ask how Lucina's Pokémon game is going (never start or pause it); read, add to and mark bought on the shopping list; look up offers, prices and grocery spending;"));
         assert!(b.contains("- Calendar from chat is off (LUCINA_CALENDAR)."));
         assert!(b.contains("- Tasks from chat are off (LUCINA_TASKS)."));
         assert!(looks_like_self_description("cosa sai fare?"));

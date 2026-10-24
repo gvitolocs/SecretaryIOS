@@ -19,6 +19,7 @@ pub mod jsre;
 
 pub mod calendar;
 pub mod domains;
+pub mod game;
 pub mod grocery;
 pub mod heuristics;
 pub mod hints;

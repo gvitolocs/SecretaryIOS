@@ -702,6 +702,85 @@ fn tasks_outcome(reply: String, action: &str, action_result: String) -> Outcome 
     }
 }
 
+/// `handleGameTurn`: Lucina's Pokémon Red run on `LUCINA_GAME_URL` (default the local lucina-pokemon server):
+/// status, start, pause. `None`: not about the game, or `LUCINA_GAME=false`. `Err(blocked)`: an MCP caller asked
+/// to start or pause (MCP may read the status only).
+pub async fn game_turn(
+    http: &reqwest::Client,
+    message: &str,
+    mcp: bool,
+) -> Option<Result<Outcome, &'static str>> {
+    use lucina_intent::game::{self as gm, Kind};
+    if std::env::var("LUCINA_GAME")
+        .map(|v| v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let intent = gm::parse_game_intent(message)?;
+    if intent.kind != Kind::Status && mcp {
+        return Some(Err("game.control"));
+    }
+    let lang = intent.lang;
+    let base = std::env::var("LUCINA_GAME_URL").unwrap_or_else(|_| "http://127.0.0.1:18767".into());
+    let base = base.trim_end_matches('/');
+    let out = |reply: String, ok: bool| Outcome {
+        reply,
+        action: "game".into(),
+        action_result: format!(
+            "[game {:?} {}]",
+            intent.kind,
+            if ok { "ok" } else { "failed" }
+        ),
+        meta: Some(lucina_store::timeline::Meta::kind("game")),
+        ..Outcome::default()
+    };
+    let state: Value = match http
+        .get(format!("{base}/state"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json().await {
+            Ok(v) => v,
+            Err(_) => return Some(Ok(out(gm::off(lang).into(), false))),
+        },
+        _ => return Some(Ok(out(gm::off(lang).into(), false))),
+    };
+    if intent.kind == Kind::Status {
+        return Some(Ok(out(gm::status_reply(&state, lang), true)));
+    }
+    let running = intent.kind == Kind::Start;
+    if state["running"].as_bool() == Some(running) {
+        return Some(Ok(out(
+            gm::control_reply(lang, running, false).into(),
+            true,
+        )));
+    }
+    let reason = if running {
+        "Started by the owner from chat"
+    } else {
+        "Paused by the owner from chat"
+    };
+    let ok = http
+        .post(format!("{base}/control"))
+        .header("X-Lucina-Game", "1")
+        .json(&json!({"running": running, "reason": reason}))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false);
+    Some(Ok(out(
+        if ok {
+            gm::control_reply(lang, running, true).into()
+        } else {
+            gm::off(lang).into()
+        },
+        ok,
+    )))
+}
+
 /// `handleTasksTurn` (`LUCINA_TASKS=true`): what to do today, add, done,
 /// reschedule overdue. `None`: not a tasks turn. `Err(blocked)`: an MCP
 /// caller asked to delete (MCP may read, add and complete). Nothing here
