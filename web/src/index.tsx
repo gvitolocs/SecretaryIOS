@@ -23,6 +23,7 @@ const NotesView = lazy(() => import("./views/Notes"));
 const LinksView = lazy(() => import("./views/Links"));
 const TasksView = lazy(() => import("./views/Tasks"));
 const ModelsView = lazy(() => import("./views/Models"));
+const MemosView = lazy(() => import("./views/Memos"));
 
 // The service worker (Web Push, static asset cache). It never caches /v1.
 void registerServiceWorker();
@@ -55,6 +56,7 @@ render(
       <Route path="/notes/:key?" component={NotesView} />
       <Route path="/tasks/:section?/:id?" component={TasksView} />
       <Route path="/models/:id?" component={ModelsView} />
+      <Route path="/memos/:id?" component={MemosView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),
