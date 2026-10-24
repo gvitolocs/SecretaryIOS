@@ -113,6 +113,26 @@ pub const REDACTED: &str = "[otp]";
 /// token within [`MAX_DISTANCE`] bytes of a context word goes. Unicode digits
 /// are not normalized here, so redaction never changes other text.
 pub fn redact_otps(text: &str) -> Cow<'_, str> {
+    let spans = otp_spans(text);
+    if spans.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for (start, end) in spans {
+        out.push_str(&text[at..start]);
+        out.push_str(REDACTED);
+        at = end;
+    }
+    out.push_str(&text[at..]);
+    Cow::Owned(out)
+}
+
+/// The byte ranges [`redact_otps`] replaces: sorted, non-overlapping
+/// (overlapping candidates are merged) and on `char` boundaries.
+///
+/// For redactors that write their own placeholder (`lucina-secrets`).
+pub fn otp_spans(text: &str) -> Vec<(usize, usize)> {
     let contexts: Vec<(usize, usize)> = CONTEXT
         .find_iter(text)
         .map(|m| (m.start(), m.end()))
@@ -139,23 +159,15 @@ pub fn redact_otps(text: &str) -> Cow<'_, str> {
             }
         }
     }
-    if spans.is_empty() {
-        return Cow::Borrowed(text);
-    }
     spans.sort_unstable();
-    let mut out = String::with_capacity(text.len());
-    let mut at = 0;
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
     for (start, end) in spans {
-        if start < at {
-            at = at.max(end);
-            continue;
+        match merged.last_mut() {
+            Some(last) if start < last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
         }
-        out.push_str(&text[at..start]);
-        out.push_str(REDACTED);
-        at = end;
     }
-    out.push_str(&text[at..]);
-    Cow::Owned(out)
+    merged
 }
 
 #[cfg(test)]
@@ -216,5 +228,24 @@ mod tests {
             redact_otps("Call +4512345678 to verify"),
             "Call +4512345678 to verify"
         );
+    }
+
+    #[test]
+    fn spans_match_redaction() {
+        let text = "Your security code is 682149 (or G-123456). Order 123456 shipped.";
+        let spans = otp_spans(text);
+        assert_eq!(spans.len(), 3, "{spans:?}");
+        assert!(spans.windows(2).all(|w| w[0].1 <= w[1].0));
+        assert_eq!(&text[spans[0].0..spans[0].1], "682149");
+        let mut rebuilt = String::new();
+        let mut at = 0;
+        for (s, e) in &spans {
+            rebuilt.push_str(&text[at..*s]);
+            rebuilt.push_str(REDACTED);
+            at = *e;
+        }
+        rebuilt.push_str(&text[at..]);
+        assert_eq!(redact_otps(text), rebuilt);
+        assert!(otp_spans("Battery 87%, nothing secret.").is_empty());
     }
 }

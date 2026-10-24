@@ -19,4 +19,4 @@ pub mod proto;
 pub mod reply;
 
 pub use intent::{otp_intent, OtpAction};
-pub use otp::{parse_otp, redact_otps};
+pub use otp::{otp_spans, parse_otp, redact_otps};
