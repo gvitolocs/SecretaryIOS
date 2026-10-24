@@ -142,8 +142,7 @@ pub fn status_reply(state: &Value, lang: &str) -> String {
         .and_then(|e| {
             e.iter()
                 .filter_map(|x| x.as_str())
-                .filter(|x| !re!(r"^(Game server restarted|Lucina is playing|Paused by owner|New objective:)", "u").test(x))
-                .last()
+                .rfind(|x| !re!(r"^(Game server restarted|Lucina is playing|Paused by owner|New objective:)", "u").test(x))
                 .map(String::from)
         })
         .unwrap_or_default();
