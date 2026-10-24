@@ -520,13 +520,16 @@ pub fn sweep_uploads(lib: &Library) -> anyhow::Result<usize> {
 /// indexed with the same size are skipped, so rescans are cheap.
 pub fn index_folder(lib: &Library, label: &str, root: &Path) -> anyhow::Result<(usize, usize)> {
     let (mut added, mut kept) = (0, 0);
-    for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
+    // Symlinks are followed: the player's library folders are links to files elsewhere.
+    for entry in walkdir::WalkDir::new(root).follow_links(true).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        let lower = name.to_ascii_lowercase();
+        // DVD rips: the .VOB pieces are not separate videos.
+        if name.starts_with('.') || [".vob", ".ifo", ".bup"].iter().any(|e| lower.ends_with(e)) {
             continue;
         }
         let mime = meta::mime_for(path, None);
