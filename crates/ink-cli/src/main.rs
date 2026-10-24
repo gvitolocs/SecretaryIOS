@@ -7,23 +7,31 @@ use ink_library::{
 };
 use std::{collections::BTreeMap, path::PathBuf};
 #[derive(Parser)]
+#[command(about = "Read-only Kindle USB metadata scanner and Library importer")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Scan books and clippings without writing to the Kindle.
     Scan {
+        /// Kindle USB mount directory containing documents/.
         mount: PathBuf,
+        /// Print the complete ImportBatch JSON for a later import.
         #[arg(long)]
         json: bool,
     },
+    /// Scan a Kindle and send the batch to the Library API.
     Import {
+        /// Kindle USB mount directory containing documents/.
         mount: PathBuf,
         #[command(flatten)]
         target: Target,
     },
+    /// Import a previously saved scan batch without accessing a Kindle.
     ImportJson {
+        /// Path to the saved ImportBatch JSON (at most 32 MiB).
         batch: PathBuf,
         #[command(flatten)]
         target: Target,
@@ -31,10 +39,13 @@ enum Command {
 }
 #[derive(Args)]
 struct Target {
+    /// Secretary API base URL, for example http://localhost:8080.
     #[arg(long)]
     server: String,
+    /// Read the authentication token from this file; never pass the token itself.
     #[arg(long)]
     token_file: PathBuf,
+    /// Merge against an empty state and print counts without sending a request.
     #[arg(long)]
     dry_run: bool,
 }
@@ -84,11 +95,13 @@ fn main() -> anyhow::Result<()> {
             } else {
                 let mut formats = BTreeMap::new();
                 let mut drm = BTreeMap::new();
+                let mut kinds = BTreeMap::new();
                 for b in &scan.batch.books {
+                    *kinds.entry(format!("{:?}", b.kind)).or_insert(0) += 1;
                     *formats.entry(format!("{:?}", b.format)).or_insert(0) += 1;
                     *drm.entry(format!("{:?}", b.metadata.drm)).or_insert(0) += 1;
                 }
-                println!("Books: {}\nFormats: {formats:?}\nDRM: {drm:?}\nClippings: {}\nIndicators: {:?}\nFirmware: {}\nWarnings: {:?}",scan.batch.books.len(),scan.batch.clippings.len(),scan.indicators,scan.version,scan.warnings);
+                println!("Books: {}\nFormats: {formats:?}\nDRM: {drm:?}\nKinds: {kinds:?}\nClippings: {}\nIndicators: {:?}\nMarkers: {:?}\nFirmware: {}\nWarnings: {:?}",scan.batch.books.len(),scan.batch.clippings.len(),scan.indicators,scan.markers,scan.version,scan.warnings);
             }
         }
         Command::Import { mount, target } => {

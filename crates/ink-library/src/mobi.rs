@@ -16,11 +16,17 @@ fn u32be(b: &[u8], o: usize) -> Result<usize> {
     let a = bytes(b, o, 4)?;
     Ok(u32::from_be_bytes([a[0], a[1], a[2], a[3]]) as usize)
 }
-fn text(b: &[u8]) -> String {
-    String::from_utf8_lossy(b)
-        .trim_matches('\0')
-        .trim()
-        .to_owned()
+fn text(b: &[u8], encoding: usize) -> Result<String> {
+    let decoded = match encoding {
+        1252 => encoding_rs::WINDOWS_1252.decode_without_bom_handling(b).0,
+        65001 => std::borrow::Cow::Borrowed(std::str::from_utf8(b).map_err(|_| bad())?),
+        _ => {
+            return Err(crate::Error::Invalid(
+                "unsupported MOBI text encoding".into(),
+            ))
+        }
+    };
+    Ok(decoded.trim_matches('\0').trim().to_owned())
 }
 pub fn read(reader: impl Read) -> Result<Metadata> {
     let mut b = Vec::new();
@@ -62,10 +68,11 @@ pub fn parse(b: &[u8]) -> Result<Metadata> {
         },
         ..Metadata::default()
     };
+    let encoding = u32be(r, 16 + 0x0c)?;
     let off = u32be(r, 16 + 0x44)?;
     let size = u32be(r, 16 + 0x48)?;
     if size > 0 {
-        m.title = Some(text(bytes(r, off, size)?));
+        m.title = Some(text(bytes(r, off, size)?, encoding)?);
     }
     let language = u32be(r, 16 + 0x4c)?;
     if language != 0 {
@@ -92,7 +99,15 @@ pub fn parse(b: &[u8]) -> Result<Metadata> {
             if length < 8 {
                 return Err(bad());
             }
-            let val = text(bytes(e, p + 8, length - 8)?);
+            let payload = bytes(e, p + 8, length - 8)?;
+            if matches!(kind, 531 | 532) {
+                m.dictionary = true;
+            }
+            let val = if matches!(kind, 100 | 101 | 104 | 113 | 504 | 501 | 503) {
+                text(payload, encoding)?
+            } else {
+                String::new()
+            };
             match kind {
                 100 => m.authors.push(val),
                 101 => m.publisher = Some(val),

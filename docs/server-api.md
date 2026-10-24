@@ -1613,8 +1613,13 @@ next request.
 Books and clippings imported from a read-only Kindle USB scan. Ownership,
 device presence, mentions and reading status are independent: importing a book
 never sets it to started or completed. DRM-protected files contribute only
-unencrypted header metadata and a fingerprint; text is never decrypted. KFX and
-undocumented sidecars are not parsed. Sidecar extensions appear in scan JSON.
+unencrypted header metadata and a fingerprint; text is never decrypted.
+**KFX CONT/ION entity decoding is deferred**: no container/symbol-table reader
+is implemented. KFX stays `drm: unknown`, using filename metadata only; no DRM
+wrappers are decoded. Undocumented sidecars are not parsed. Sidecar extensions
+appear in scan JSON. Topaz (`azw1`, `tpz`) likewise uses filename metadata and
+unknown DRM. MOBI names and EXTH strings honor header encoding 1252 or 65001;
+unsupported encodings produce a scan warning and filename fallback.
 
 Auth: a device (Bearer, or session cookie plus `X-Secretary-CSRF: 1` for writes)
 **or** Lucina's service token. Writes log the caller, never book/highlight content.
@@ -1631,6 +1636,7 @@ A book has `id` (`bk_` + 16 lowercase hex digits), `title`, `authors`, nullable
 `isbn`/`doi`/`asin`, `fingerprints` (SHA-256), `formats`, `sources`, `drm`
 (`none|protected|unknown`), `owned`, nullable `onKindle`
 (`{path,sizeBytes,lastSeenAt}`), nullable `removedFromKindleAt`, `mentionedOnly`,
+`kind` (`book|dictionary|document`, default `book` for older records),
 `status` (`unknown|not_started|reading|completed|abandoned`), `statusSource`,
 nullable `progress` (`{percent,location,page,source,at}`), `lastOpenedAt`, `tags`,
 `briefs`, `relatedNotes`, `memoryRefs`, `createdAt` and `updatedAt`.
@@ -1641,13 +1647,16 @@ parsed `addedAt` is an ISO local datetime, and `addedAtRaw` always preserves the
 original. Unparseable dates remain null. No serial numbers are collected;
 `device` is an optional user-supplied friendly label.
 
-### `GET /v1/library/books?q=&status=&onKindle=&limit=200`
+### `GET /v1/library/books?q=&status=&onKindle=&kind=book,document&limit=200`
 
 `{"books":[BookSummary]}`, newest updated first, ties by id. `q` searches
 case/diacritic-insensitive terms in titles, authors, tags, highlight text and
 notes. `status` takes one of the values above; `onKindle=true|false` filters
-presence. `limit` is clamped to 1–500; queries have at most 200 characters.
-A summary contains `id,title,authors,status,progress,onKindle,owned,formats,drm,
+presence. `kind` is a comma-separated list of `book`, `document`, `dictionary`;
+omitting it defaults to `book,document`. Invalid kinds return 400. Dictionaries
+remain addressable by id and with `kind=dictionary`.
+`limit` is clamped to 1–500; queries have at most 200 characters.
+A summary contains `id,kind,title,authors,status,progress,onKindle,owned,formats,drm,
 highlightCount,lastHighlightAt,updatedAt`.
 
 ### `GET /v1/library/books/{id}`
@@ -1677,7 +1686,9 @@ Same query and limit bounds as the book list.
 
 `{"results":[{bookId,title,authors,highlightId,snippet,location,page,source}]}`.
 Title/author/tag matches rank before highlight matches. Nullable reference
-fields are null on book hits. Sources are explicit (`library`,
+fields are null on book hits. Optional `kind` filters results with the same
+comma-separated values as the list; search includes dictionaries when omitted.
+Sources are explicit (`library`,
 `kindle-clippings`, …); page and location are never invented.
 
 ### `GET /v1/library/recent?days=7&limit=200`
@@ -1693,15 +1704,22 @@ reading time and last-opened time remain unknown.
 
 ### `GET /v1/library/stats`
 
-`{byStatus,byFormat,byDrm,highlights,booksOnKindle,lastImport}`; count maps use
-the canonical enum values. `lastImport` is the latest import log record or null.
+`{books,dictionaries,byStatus,byFormat,byDrm,highlights,booksOnKindle,lastImport}`;
+`books`, `booksOnKindle` and the status/format/DRM maps exclude dictionaries
+(documents are included). `dictionaries` reports their separate count. Highlights
+count all records. Count maps use canonical enum values. `lastImport` is the
+latest import log record or null.
 
 ### `POST /v1/library/import`
 
 Body: `{source,device,scannedAt,books:[ScannedBook],clippings:[ClippingEntry]}`.
 `lucina-ink scan <mount> --json` produces this JSON. A scanned book contains
-`path,sizeBytes,fingerprint,format,metadata,sidecarPresent,sidecarExtensions`; metadata contains
-`title,authors,publisher,isbn,asin,cdetype,language,drm`. A clipping entry contains
+`path,sizeBytes,fingerprint,format,kind,metadata,sidecarPresent,sidecarExtensions`;
+metadata contains `title,authors,publisher,isbn,asin,cdetype,language,drm,dictionary`.
+The scanner sets `dictionary` when EXTH 531/532 is present and classifies the
+scanned book as `kind:dictionary`; files under `documents/dictionaries/` also
+have dictionary kind. PDOC personal documents and PDF/TXT/MD files are documents;
+other files are books. Older batches without `kind` default to book. A clipping entry contains
 `title,authors,highlight` (the Highlight shape above; ids and dedup keys are
 recomputed). Titles are bounded to 1000 bytes, highlight/note text to 256 KiB;
 paths must be relative without `..`, fingerprints 64 lowercase hex digits,
@@ -1709,10 +1727,30 @@ sources `[a-z0-9][a-z0-9-]*` up to 32 bytes. Capacity: 50k books, 200k highlight
 
 Returns `{booksAdded,booksUpdated,booksUnchanged,highlightsAdded,
 highlightsSkipped,removedFromKindle,conflicts,warnings}`. Identity priority:
-fingerprint, ISBN, ASIN, normalized title + first author. Existing ids never
+fingerprint, ISBN, ASIN. A file can also promote an unowned clipping-only record
+using the matching rules below. Distinct files are **never** merged merely because
+their titles match; collisions are reported in `conflicts`. Existing ids never
 change; conflicting identifiers keep the existing value and are reported.
-Exact clippings deduplicate by book key, kind, location and whitespace-normalized
-text. Replaying a saved batch leaves records and `updatedAt` unchanged.
+
+Clipping matches use a dedicated title key, without altering display titles:
+strip balanced trailing parenthesized edition/series groups, cut at the first
+`:` / `_ ` / ` - ` separator, then lowercase, remove diacritics and punctuation,
+collapse spaces and remove a leading article (including `L'`/`L’`). A period is
+not a subtitle separator. Author keys lowercase, remove diacritics/punctuation
+and collapse spaces, using the first author. A unique title-key + author-key
+candidate wins; otherwise a title-key candidate wins only when exactly one
+exists. Ambiguity creates an unowned clipping-only record.
+
+Canonical `dedupKey` (UTF-8, no Rust Debug output):
+`<titleKey>|<authorKey>|<kind lowercase>|<start>-<end or start>|<normalised text>`.
+Unknown author/location segments are empty; a known single location repeats
+start as end. Quoted text retains case, accents and punctuation and collapses
+whitespace only. Highlight id = `hl_` + the first 16 lowercase SHA-256 hex digits
+of this exact key. For example,
+`great gatsby|fitzgerald f scott|highlight|170-172|A thought.` has the pinned id
+`hl_8c6f78e9e5e5c21e`. This replaces the initial experimental Debug-based keys before
+real-data storage; no migration of old highlight ids is provided.
+Replaying a saved batch leaves records and `updatedAt` unchanged.
 A complete `kindle-usb` inventory clears missing Kindle presence and sets
 `removedFromKindleAt`; books and highlights are never deleted. This slice models
 one Kindle inventory, not independent per-device inventories.
@@ -1737,6 +1775,17 @@ The `lucina-ink` CLI also supports `import <mount> --server <url> --token-file
 sending or reading a token. Tokens are read from files, never passed as argv
 values. Scans never write to the device, follow symlinks, or parse sidecars;
 they cap depth at 8, total entries at 50k, and clippings at 64 MiB/200k entries.
+Filename fallback removes trailing `_B0…` ASINs or ISBN-10-style ids (stored as
+ASIN when header metadata lacks one), removes 32-character base32 personal ids
+without making them ASINs, and reverses `_ ` to `: `. Every clipping title drops
+invisible formatting characters, including repeated per-entry BOMs.
+
+The human scan summary reports marker names and booleans `jailbreak`, `kual`,
+`mrpi`, `otaBlocker`, `koreader`. Detection checks names only, including
+`winterbreak.log`, `jb.sh`, `patchedUks.sqsh`, `mkk/`, `developer.keystore`,
+`documents/KUAL.kual`, `extensions/KUAL.cfg`, `extensions/MRInstaller/`,
+`extensions/renameotabin/`, `koreader/`, `libkh/`. macOS litter is ignored
+throughout: `._*`, `.DS_Store`, `.Spotlight-V100/`, `.fseventsd/`, `.Trashes/`.
 
 Lucina MCP exposes `library_list_books`, `library_search`, `library_get_book`,
 `library_get_progress`, `library_get_highlights`, `library_get_recent_reading`,

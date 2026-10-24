@@ -14,6 +14,7 @@ fn batch() -> ImportBatch {
         device: Some("Paperwhite".into()),
         scanned_at: NOW.into(),
         books: vec![ScannedBook {
+            kind: ink_library::model::BookKind::Book,
             path: "documents/Book.azw3".into(),
             size_bytes: 100,
             fingerprint: "a".repeat(64),
@@ -53,6 +54,7 @@ fn mobi_fixture(enc: u16) -> Vec<u8> {
     r[12..14].copy_from_slice(&enc.to_be_bytes());
     r[16..20].copy_from_slice(b"MOBI");
     put(r, 20, 116);
+    put(r, 16 + 0x0c, 65001);
     put(r, 16 + 0x70, 0x40);
     put(r, 16 + 0x4c, 9);
     let ex = &mut r[132..];

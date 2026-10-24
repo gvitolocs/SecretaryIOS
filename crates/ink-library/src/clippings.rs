@@ -1,4 +1,11 @@
 //! Bounded English/Italian My Clippings parser; unknown metadata remains visible.
+//!
+//! Canonical dedup keys are `<titleKey>|<authorKey>|<kind>|<start>-<end>|<text>`.
+//! Title/author keys use the matching normalization in `search`; kind is lowercase;
+//! unknown location is an empty segment (a single location repeats start as end).
+//! Quoted text retains case, accents and punctuation, collapsing whitespace only.
+//! Highlight ids are `hl_` plus the first 16 SHA-256 hex digits of this UTF-8 key.
+//! No Rust Debug representations participate in identity.
 use crate::{model::*, search::book_key, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,14 +26,27 @@ pub struct ClippingsParse {
     pub warnings: Vec<String>,
 }
 pub fn dedup_key(title: &str, authors: &[String], h: &Highlight) -> String {
-    // Preserve punctuation/case in quoted text; normalize only whitespace.
+    let kind = match h.kind {
+        HighlightKind::Highlight => "highlight",
+        HighlightKind::Note => "note",
+        HighlightKind::Bookmark => "bookmark",
+    };
+    let location = h
+        .location
+        .as_ref()
+        .map(|l| format!("{}-{}", l.start, l.end))
+        .unwrap_or_default();
     format!(
-        "{}|{:?}|{:?}|{}",
+        "{}|{kind}|{location}|{}",
         book_key(title, authors),
-        h.kind,
-        h.location,
         h.text.split_whitespace().collect::<Vec<_>>().join(" ")
     )
+}
+fn title_annotation(s: &str) -> bool {
+    let s = crate::search::fold(s);
+    s.contains("edition")
+        || s.contains("edizione")
+        || ["super et", "classici", "enewton classici"].contains(&s.trim())
 }
 fn number_after(s: &str, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
@@ -101,9 +121,13 @@ pub fn parse(bytes: &[u8]) -> Result<ClippingsParse> {
         if count > MAX_ENTRIES {
             return Err(Error::Invalid("too many clippings".into()));
         }
-        let heading = chunk[0].trim();
+        let heading = crate::search::clean_title(chunk[0]);
+        let heading = heading.as_str();
         let (title, authors) = if heading.ends_with(')') {
-            if let Some(i) = heading.rfind(" (") {
+            if let Some(i) = heading
+                .rfind(" (")
+                .filter(|i| !title_annotation(&heading[*i + 2..heading.len() - 1]))
+            {
                 (
                     heading[..i].to_owned(),
                     heading[i + 2..heading.len() - 1]

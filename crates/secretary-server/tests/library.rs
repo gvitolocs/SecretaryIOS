@@ -92,6 +92,7 @@ fn batch() -> Value {
         device: Some("Paperwhite".into()),
         scanned_at: chrono::Utc::now().to_rfc3339(),
         books: vec![ScannedBook {
+            kind: ink_library::model::BookKind::Book,
             path: "documents/Book.azw3".into(),
             size_bytes: 20,
             fingerprint: "a".repeat(64),
@@ -367,4 +368,85 @@ async fn library_body_limit_overrides_default_and_logs_keep_twenty() {
     assert_eq!(sync["imports"].as_array().unwrap().len(), 20);
     let (status,_)=h.call(Method::PATCH,"/v1/library/books/bk_0000000000000000",Some(json!({"progress":{"percent":101.0,"location":null,"page":null,"source":"owner","at":"now"}}))).await;
     assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn dictionaries_import_but_default_lists_and_book_stats_exclude_them() {
+    let h = H::new().await;
+    let mut b = batch();
+    let original = b["books"][0].clone();
+    let mut dictionary = original.clone();
+    dictionary["kind"] = json!("dictionary");
+    dictionary["metadata"]["title"] = json!("Synthetic glossary");
+    dictionary["fingerprint"] = json!("b".repeat(64));
+    dictionary["path"] = json!("documents/dictionaries/test.mobi");
+    dictionary["format"] = json!("mobi");
+    let mut document = original;
+    document["kind"] = json!("document");
+    document["metadata"]["title"] = json!("Synthetic document");
+    document["fingerprint"] = json!("c".repeat(64));
+    document["path"] = json!("documents/test.txt");
+    document["format"] = json!("txt");
+    b["books"]
+        .as_array_mut()
+        .unwrap()
+        .extend([dictionary, document]);
+    let (status, o) = h
+        .call(Method::POST, "/v1/library/import", Some(b.clone()))
+        .await;
+    assert_eq!(status, 200, "{o}");
+    assert_eq!(o["booksAdded"], 3);
+    let (_, list) = h.call(Method::GET, "/v1/library/books", None).await;
+    let books = list["books"].as_array().unwrap();
+    assert_eq!(books.len(), 2);
+    assert!(books.iter().all(|b| b["kind"] != "dictionary"));
+    for (filter, count) in [
+        ("dictionary", 1),
+        ("book", 1),
+        ("document", 1),
+        ("book,document,dictionary", 3),
+    ] {
+        let (status, list) = h
+            .call(
+                Method::GET,
+                &format!("/v1/library/books?kind={filter}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, 200);
+        assert_eq!(list["books"].as_array().unwrap().len(), count);
+    }
+    let (_, list) = h
+        .call(Method::GET, "/v1/library/books?kind=dictionary", None)
+        .await;
+    let id = list["books"][0]["id"].as_str().unwrap();
+    let (_, detail) = h
+        .call(Method::GET, &format!("/v1/library/books/{id}"), None)
+        .await;
+    assert_eq!(detail["book"]["kind"], "dictionary");
+    let (status, hits) = h
+        .call(
+            Method::GET,
+            "/v1/library/search?q=synthetic&kind=dictionary",
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(hits["results"].as_array().unwrap().len(), 1);
+    assert_eq!(hits["results"][0]["bookId"], id);
+
+    let (_, stats) = h.call(Method::GET, "/v1/library/stats", None).await;
+    assert_eq!(stats["books"], 2);
+    assert_eq!(stats["dictionaries"], 1);
+    assert_eq!(stats["booksOnKindle"], 2);
+    assert!(stats["byFormat"]["mobi"].is_null());
+    assert_eq!(stats["byDrm"]["protected"], 2);
+    assert_eq!(
+        h.call(Method::GET, "/v1/library/books?kind=invalid", None)
+            .await
+            .0,
+        400
+    );
+    let (_, outcome) = h.call(Method::POST, "/v1/library/import", Some(b)).await;
+    assert_eq!(outcome["booksUnchanged"], 3);
 }

@@ -9,26 +9,72 @@ pub fn fold(s: &str) -> String {
         .filter(|c| !is_combining_mark(*c))
         .collect()
 }
-pub fn normalize(s: &str) -> String {
-    let s: String = fold(s)
+/// Remove invisible formatting marks that Kindle sometimes prefixes to titles.
+pub fn clean_title(s: &str) -> String {
+    s.chars().filter(|c| !matches!(c, '\u{feff}' | '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{202a}'..='\u{202e}')).collect::<String>().trim().to_owned()
+}
+fn words(s: &str) -> String {
+    fold(s)
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect();
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+pub fn normalize(s: &str) -> String {
+    let s = fold(s);
+    let s = s
+        .strip_prefix("l'")
+        .or_else(|| s.strip_prefix("l’"))
+        .unwrap_or(&s);
+    let s = words(s);
     let mut words: Vec<_> = s.split_whitespace().collect();
     if words
         .first()
-        .is_some_and(|w| ["the", "a", "il", "la", "lo", "gli", "le"].contains(w))
+        .is_some_and(|w| ["the", "a", "il", "la", "lo", "gli", "le", "i"].contains(w))
     {
         words.remove(0);
     }
     words.join(" ")
 }
+/// A lossy matching key, never a replacement for the display title. Strip
+/// balanced trailing edition/series parentheses, then the first subtitle
+/// separator (`:`, `_ `, ` - `). A period is deliberately not a separator.
+pub fn title_key(title: &str) -> String {
+    let clean = clean_title(title);
+    let mut title = clean.as_str();
+    while title.ends_with(')') {
+        let mut depth = 0usize;
+        let mut start = None;
+        for (i, c) in title.char_indices().rev() {
+            match c {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        start = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(start) = start else { break };
+        title = title[..start].trim_end();
+    }
+    let end = [":", "_ ", " - "]
+        .iter()
+        .filter_map(|sep| title.find(sep))
+        .min()
+        .unwrap_or(title.len());
+    normalize(&title[..end])
+}
+pub fn author_key(authors: &[String]) -> String {
+    words(authors.first().map(String::as_str).unwrap_or(""))
+}
 pub fn book_key(title: &str, authors: &[String]) -> String {
-    format!(
-        "{}|{}",
-        normalize(title),
-        normalize(authors.first().map(String::as_str).unwrap_or(""))
-    )
+    format!("{}|{}", title_key(title), author_key(authors))
 }
 pub fn matches(text: &str, query: &str) -> bool {
     let text = fold(text);

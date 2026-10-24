@@ -2,7 +2,7 @@
 use crate::{
     clippings::{self, ClippingEntry},
     model::*,
-    search::book_key,
+    search::{author_key, book_key, title_key},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScannedBook {
+    #[serde(default)]
+    pub kind: BookKind,
     pub path: String,
     pub size_bytes: u64,
     pub fingerprint: String,
@@ -72,6 +74,7 @@ fn identity(s: &ScannedBook) -> String {
 }
 fn new_book(id: String, title: String, authors: Vec<String>, now: &str) -> Book {
     Book {
+        kind: BookKind::Book,
         id,
         title,
         authors,
@@ -125,7 +128,7 @@ struct IdentityIndex {
     fingerprints: BTreeMap<String, String>,
     isbns: BTreeMap<String, String>,
     asins: BTreeMap<String, String>,
-    titles: BTreeMap<String, String>,
+    titles: BTreeMap<String, BTreeSet<String>>,
 }
 impl IdentityIndex {
     fn insert(&mut self, b: &Book) {
@@ -143,8 +146,41 @@ impl IdentityIndex {
                 .or_insert_with(|| b.id.clone());
         }
         self.titles
-            .entry(book_key(&b.title, &b.authors))
-            .or_insert_with(|| b.id.clone());
+            .entry(title_key(&b.title))
+            .or_default()
+            .insert(b.id.clone());
+    }
+}
+/// Only an unambiguous author match or a unique title candidate is usable.
+fn title_match(
+    index: &IdentityIndex,
+    state: &LibraryState,
+    title: &str,
+    authors: &[String],
+    stub_only: bool,
+) -> Option<String> {
+    let key = title_key(title);
+    if key.is_empty() {
+        return None;
+    }
+    let candidates: Vec<_> = index
+        .titles
+        .get(&key)?
+        .iter()
+        .filter_map(|id| state.books.get(id))
+        .filter(|b| !stub_only || b.fingerprints.is_empty())
+        .collect();
+    let author = author_key(authors);
+    let exact: Vec<_> = candidates
+        .iter()
+        .filter(|b| author_key(&b.authors) == author)
+        .collect();
+    if exact.len() == 1 {
+        Some(exact[0].id.clone())
+    } else if exact.is_empty() && candidates.len() == 1 {
+        Some(candidates[0].id.clone())
+    } else {
+        None
     }
 }
 fn not_older(a: &str, b: &str) -> bool {
@@ -188,14 +224,15 @@ pub fn merge(
                     .as_ref()
                     .and_then(|a| index.asins.get(&a.to_uppercase()))
             })
-            .or_else(|| index.titles.get(&book_key(title, &s.metadata.authors)))
-            .cloned();
+            .cloned()
+            .or_else(|| title_match(&index, &state, title, &s.metadata.authors, true));
         let id = found.unwrap_or_else(|| stable_id("bk_", &identity(s)));
         seen.insert(id.clone());
         let b = state
             .books
             .entry(id.clone())
             .or_insert_with(|| new_book(id.clone(), title.into(), s.metadata.authors.clone(), now));
+        b.kind = s.kind;
         metadata_value(&mut b.isbn, &s.metadata.isbn, "ISBN", &id, &mut outcome);
         metadata_value(&mut b.asin, &s.metadata.asin, "ASIN", &id, &mut outcome);
         if b.authors.is_empty() {
@@ -241,6 +278,25 @@ pub fn merge(
         }
         index.insert(b);
     }
+    // Lossy title keys are never evidence that two files are the same book.
+    for ids in index.titles.values() {
+        let files: Vec<_> = ids
+            .iter()
+            .filter(|id| {
+                state
+                    .books
+                    .get(*id)
+                    .is_some_and(|b| !b.fingerprints.is_empty())
+            })
+            .collect();
+        if files.len() > 1 {
+            for id in files {
+                outcome.conflicts.push(format!(
+                    "{id}: title key collision between distinct files; kept separate"
+                ));
+            }
+        }
+    }
     let mut clips = batch.clippings.clone();
     clippings::attach_notes(&mut clips);
     clips.sort_by_key(|e| clippings::dedup_key(&e.title, &e.authors, &e.highlight));
@@ -259,10 +315,7 @@ pub fn merge(
         .collect();
     for e in clips {
         let key = book_key(&e.title, &e.authors);
-        let id = index
-            .titles
-            .get(&key)
-            .cloned()
+        let id = title_match(&index, &state, &e.title, &e.authors, false)
             .unwrap_or_else(|| stable_id("bk_", &format!("title:{key}")));
         let b = state
             .books

@@ -25,10 +25,19 @@ use crate::App;
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LibraryListArgs {
+    /// Content kinds to list; default book and document (dictionaries excluded).
+    pub kind: Option<LibraryKind>,
     pub q: Option<String>,
     pub status: Option<LibraryStatus>,
     pub on_kindle: Option<bool>,
     pub limit: Option<u32>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryKind {
+    Book,
+    Dictionary,
+    Document,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1283,6 +1292,17 @@ impl Tools<'_> {
                 let mut q = vec![("limit", library_limit(a.limit)?.to_string())];
                 if let Some(words) = a.q {
                     q.push(("q", check_text("q", &words, 200)?));
+                }
+                if let Some(kind) = a.kind {
+                    q.push((
+                        "kind",
+                        match kind {
+                            LibraryKind::Book => "book",
+                            LibraryKind::Dictionary => "dictionary",
+                            LibraryKind::Document => "document",
+                        }
+                        .into(),
+                    ));
                 }
                 if let Some(status) = a.status {
                     q.push((

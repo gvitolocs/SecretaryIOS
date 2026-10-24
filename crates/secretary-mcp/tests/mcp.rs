@@ -1001,7 +1001,7 @@ async fn library_tools_refs_scopes_and_backend_calls() {
     for (name, args, expected) in [
         (
             "library_list_books",
-            json!({"q":"book","onKindle":true}),
+            json!({"q":"book","onKindle":true,"kind":"dictionary"}),
             "[bk_0123456789abcdef, library]",
         ),
         (
@@ -1045,6 +1045,11 @@ async fn library_tools_refs_scopes_and_backend_calls() {
         assert!(!err, "{name}: {text}");
         assert!(text.contains(expected), "{name}: {text}");
     }
+    assert!(h
+        .mock
+        .requests("/v1/library/books")
+        .iter()
+        .any(|r| r.query.contains("kind=dictionary")));
     let args = json!({"id":"bk_0123456789abcdef"});
     assert!(
         h.call(&read, "library_generate_brief", args.clone())

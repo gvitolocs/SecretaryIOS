@@ -20,22 +20,112 @@ pub struct ScanOptions {
 pub struct KindleScan {
     pub batch: ImportBatch,
     pub indicators: BTreeMap<String, bool>,
+    pub markers: Vec<String>,
     pub version: String,
     pub warnings: Vec<String>,
 }
 fn safe(path: &Path, root: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| !m.file_type().is_symlink())
-        && path.canonicalize().is_ok_and(|p| p.starts_with(root))
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        current.push(part);
+        if !fs::symlink_metadata(&current).is_ok_and(|m| !m.file_type().is_symlink()) {
+            return false;
+        }
+    }
+    path.canonicalize().is_ok_and(|p| p.starts_with(root))
 }
 fn ignored(path: &Path) -> bool {
-    path.file_name().is_some_and(|n| {
-        let s = n.to_string_lossy();
-        s.starts_with("._") || s == ".DS_Store"
+    path.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy();
+        name.starts_with("._")
+            || [".DS_Store", ".Spotlight-V100", ".fseventsd", ".Trashes"].contains(&name.as_ref())
     })
+}
+/// Kindle file-name substitutions are only used when no header title is known.
+/// Store ASINs separately; personal document ids are never treated as ASINs.
+pub fn filename_metadata(stem: &str) -> Metadata {
+    let mut title = stem;
+    let mut asin = None;
+    let mut personal = false;
+    if let Some((prefix, suffix)) = stem.rsplit_once('_') {
+        let id = suffix.to_ascii_uppercase();
+        let isbn10 = id.len() == 10
+            && id.as_bytes()[..9].iter().all(u8::is_ascii_digit)
+            && id
+                .as_bytes()
+                .last()
+                .is_some_and(|c| c.is_ascii_digit() || *c == b'X');
+        let amazon =
+            id.len() == 10 && id.starts_with("B0") && id.bytes().all(|b| b.is_ascii_alphanumeric());
+        personal = id.len() == 32
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b));
+        if amazon || isbn10 {
+            title = prefix;
+            asin = Some(id);
+        } else if personal {
+            title = prefix;
+        }
+    }
+    Metadata {
+        title: Some(title.replace("_ ", ": ")),
+        asin,
+        cdetype: personal.then(|| "PDOC".into()),
+        ..Metadata::default()
+    }
+}
+fn homebrew(root: &Path, scan: &mut KindleScan) {
+    let groups: &[(&str, &[&str])] = &[
+        (
+            "jailbreak",
+            &[
+                "winterbreak.log",
+                "jb.sh",
+                "patchedUks.sqsh",
+                "mkk",
+                "MKK",
+                "developer.keystore",
+                "system/developer.keystore",
+                "jailbreak",
+            ],
+        ),
+        (
+            "kual",
+            &["documents/KUAL.kual", "extensions/KUAL.cfg", "kual", "KUAL"],
+        ),
+        ("mrpi", &["extensions/MRInstaller", "mrpackages"]),
+        ("otaBlocker", &["extensions/renameotabin"]),
+        ("koreader", &["koreader"]),
+    ];
+    for (group, paths) in groups {
+        let mut found = false;
+        for path in *paths {
+            if !ignored(Path::new(path)) && safe(&root.join(path), root) {
+                scan.markers.push((*path).into());
+                found = true;
+            }
+        }
+        scan.indicators.insert((*group).into(), found);
+    }
+    for path in ["libkh", "system", ".active_content_sandbox", "extensions"] {
+        let present = safe(&root.join(path), root);
+        if present && path == "libkh" {
+            scan.markers.push(path.into());
+        }
+        scan.indicators.insert(path.into(), present);
+    }
+    scan.markers.sort();
+    scan.markers.dedup();
 }
 fn format(path: &Path) -> Option<Format> {
     Some(match path.extension()?.to_str()?.to_lowercase().as_str() {
         "azw3" => Format::Azw3,
+        "azw1" => Format::Azw1,
+        "tpz" => Format::Tpz,
         "azw" => Format::Azw,
         "mobi" => Format::Mobi,
         "kfx" => Format::Kfx,
@@ -117,22 +207,11 @@ pub fn scan_kindle(root: &Path, opts: ScanOptions) -> Result<KindleScan> {
             clippings: vec![],
         },
         indicators: BTreeMap::new(),
+        markers: vec![],
         version: "unknown".into(),
         warnings: vec![],
     };
-    for name in [
-        "system",
-        ".active_content_sandbox",
-        "extensions",
-        "mrpackages",
-        "koreader",
-        "jailbreak",
-        "MKK",
-        "kual",
-    ] {
-        scan.indicators
-            .insert(name.into(), safe(&root.join(name), &root));
-    }
+    homebrew(&root, &mut scan);
     let version = root.join("system/version.txt");
     if safe(&root.join("system"), &root) && safe(&version, &root) && version.is_file() {
         scan.version = String::from_utf8_lossy(&prefix(&version, 4096)?)
@@ -191,7 +270,7 @@ pub fn scan_kindle(root: &Path, opts: ScanOptions) -> Result<KindleScan> {
                     ..Metadata::default()
                 })
             }
-            Format::Kfx => Ok(Metadata::default()),
+            Format::Kfx | Format::Azw1 | Format::Tpz => Ok(Metadata::default()),
         };
         let mut metadata = match parsed {
             Ok(m) => m,
@@ -203,9 +282,32 @@ pub fn scan_kindle(root: &Path, opts: ScanOptions) -> Result<KindleScan> {
                 Metadata::default()
             }
         };
+        let filename = filename_metadata(&p.file_stem().unwrap_or_default().to_string_lossy());
         if metadata.title.as_ref().is_none_or(|t| t.is_empty()) {
-            metadata.title = Some(p.file_stem().unwrap_or_default().to_string_lossy().into());
+            metadata.title = filename.title;
         }
+        if metadata.asin.is_none() {
+            metadata.asin = filename.asin;
+        }
+        if metadata.cdetype.is_none() {
+            metadata.cdetype = filename.cdetype;
+        }
+        let dictionary_path = p.strip_prefix(&docs).is_ok_and(|relative| {
+            relative.components().next().is_some_and(|c| {
+                c.as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case("dictionaries")
+            })
+        });
+        let kind = if metadata.dictionary || dictionary_path {
+            BookKind::Dictionary
+        } else if metadata.cdetype.as_deref() == Some("PDOC")
+            || matches!(fmt, Format::Txt | Format::Md | Format::Pdf)
+        {
+            BookKind::Document
+        } else {
+            BookKind::Book
+        };
         let mut extensions = Vec::new();
         let side = p.with_extension("sdr");
         let sidecar_present = safe(&side, &root) && side.is_dir();
@@ -228,6 +330,7 @@ pub fn scan_kindle(root: &Path, opts: ScanOptions) -> Result<KindleScan> {
         }
         extensions.sort();
         scan.batch.books.push(ScannedBook {
+            kind,
             path: p
                 .strip_prefix(&root)
                 .map_err(|_| Error::Invalid("path outside mount".into()))?

@@ -264,6 +264,7 @@ impl LibraryStore {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Query {
+    kind: Option<String>,
     q: Option<String>,
     status: Option<ReadingStatus>,
     on_kindle: Option<bool>,
@@ -306,7 +307,7 @@ fn book<'a>(s: &'a LibraryState, id: &str) -> Result<&'a Book, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "book_not_found", "no such book"))
 }
 fn summary(b: &Book, hs: &[Highlight]) -> Value {
-    json!({"id":b.id,"title":b.title,"authors":b.authors,"status":b.status,"progress":b.progress,"onKindle":b.on_kindle,"owned":b.owned,"formats":b.formats,"drm":b.drm,"highlightCount":hs.len(),"lastHighlightAt":hs.iter().filter_map(|h|h.added_at.as_ref()).max(),"updatedAt":b.updated_at})
+    json!({"id":b.id,"kind":b.kind,"title":b.title,"authors":b.authors,"status":b.status,"progress":b.progress,"onKindle":b.on_kindle,"owned":b.owned,"formats":b.formats,"drm":b.drm,"highlightCount":hs.len(),"lastHighlightAt":hs.iter().filter_map(|h|h.added_at.as_ref()).max(),"updatedAt":b.updated_at})
 }
 fn recent_time(s: &str, cutoff: chrono::DateTime<chrono::Utc>) -> bool {
     chrono::DateTime::parse_from_rfc3339(s)
@@ -316,7 +317,21 @@ fn recent_time(s: &str, cutoff: chrono::DateTime<chrono::Utc>) -> bool {
                 .is_ok_and(|t| t >= cutoff.naive_utc())
         })
 }
-fn list_books(s: &LibraryState, q: &Query, limit: usize) -> Value {
+fn kind_filter(raw: Option<&str>) -> Result<Vec<BookKind>, ApiError> {
+    raw.unwrap_or("book,document")
+        .split(',')
+        .map(|s| match s.trim() {
+            "book" => Ok(BookKind::Book),
+            "dictionary" => Ok(BookKind::Dictionary),
+            "document" => Ok(BookKind::Document),
+            _ => Err(bad(
+                "kind must contain book, dictionary or document (comma-separated)",
+            )),
+        })
+        .collect()
+}
+fn list_books(s: &LibraryState, q: &Query, limit: usize) -> Result<Value, ApiError> {
+    let kinds = kind_filter(q.kind.as_deref())?;
     let ids: std::collections::BTreeSet<_> =
         search::search(s, q.q.as_deref().unwrap_or(""), usize::MAX)
             .into_iter()
@@ -326,15 +341,16 @@ fn list_books(s: &LibraryState, q: &Query, limit: usize) -> Value {
         .books
         .values()
         .filter(|b| {
-            ids.contains(&b.id)
+            kinds.contains(&b.kind)
+                && ids.contains(&b.id)
                 && q.status.is_none_or(|v| b.status == v)
                 && q.on_kindle.is_none_or(|v| b.on_kindle.is_some() == v)
         })
         .collect();
     books.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
-    json!({"books": books.into_iter().take(limit).map(|b| {
+    Ok(json!({"books": books.into_iter().take(limit).map(|b| {
         summary(b, s.highlights.get(&b.id).map(Vec::as_slice).unwrap_or(&[]))
-    }).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>()}))
 }
 fn stats(s: &LibraryState, last_import: Option<Value>) -> Value {
     fn count<T: serde::Serialize>(map: &mut std::collections::BTreeMap<String, usize>, v: T) {
@@ -348,16 +364,18 @@ fn stats(s: &LibraryState, last_import: Option<Value>) -> Value {
     let mut statuses = std::collections::BTreeMap::new();
     let mut formats = std::collections::BTreeMap::new();
     let mut drm = std::collections::BTreeMap::new();
-    for b in s.books.values() {
+    for b in s.books.values().filter(|b| b.kind != BookKind::Dictionary) {
         count(&mut statuses, b.status);
         count(&mut drm, b.drm);
         for f in &b.formats {
             count(&mut formats, f);
         }
     }
-    json!({"byStatus":statuses,"byFormat":formats,"byDrm":drm,
+    json!({"books":s.books.values().filter(|b|b.kind!=BookKind::Dictionary).count(),
+        "dictionaries":s.books.values().filter(|b|b.kind==BookKind::Dictionary).count(),
+        "byStatus":statuses,"byFormat":formats,"byDrm":drm,
         "highlights":s.highlights.values().map(Vec::len).sum::<usize>(),
-        "booksOnKindle":s.books.values().filter(|b|b.on_kindle.is_some()).count(),
+        "booksOnKindle":s.books.values().filter(|b|b.kind!=BookKind::Dictionary&&b.on_kindle.is_some()).count(),
         "lastImport":last_import})
 }
 fn recent(s: &LibraryState, days: i64, limit: usize) -> Value {
@@ -407,8 +425,26 @@ async fn read(
             let query = q.q.as_deref().unwrap_or("");
             let tail = path.trim_start_matches("/v1/library/");
             match tail {
-                "books" => Ok(list_books(s, &q, limit)),
-                "search" => Ok(json!({"results":search::search(s,query,limit)})),
+                "books" => list_books(s, &q, limit),
+                "search" => {
+                    let kinds = q
+                        .kind
+                        .as_deref()
+                        .map(|k| kind_filter(Some(k)))
+                        .transpose()?;
+                    let results: Vec<_> = search::search(s, query, usize::MAX)
+                        .into_iter()
+                        .filter(|r| {
+                            kinds.as_ref().is_none_or(|kinds| {
+                                s.books
+                                    .get(&r.book_id)
+                                    .is_some_and(|b| kinds.contains(&b.kind))
+                            })
+                        })
+                        .take(limit)
+                        .collect();
+                    Ok(json!({"results":results}))
+                }
                 "sync" => Ok(json!({"imports":st.logs()?,"books":s.books.len(),
                 "highlights":s.highlights.values().map(Vec::len).sum::<usize>()})),
                 "stats" => Ok(stats(s, st.logs()?.pop())),

@@ -24,6 +24,8 @@ pub enum ReadingStatus {
 #[serde(rename_all = "lowercase")]
 pub enum Format {
     Azw3,
+    Azw1,
+    Tpz,
     Azw,
     Mobi,
     Kfx,
@@ -33,6 +35,15 @@ pub enum Format {
     Prc,
     Pobi,
     Epub,
+}
+/// Content classification is separate from ownership and reading status.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BookKind {
+    #[default]
+    Book,
+    Dictionary,
+    Document,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,6 +103,8 @@ pub struct Brief {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Book {
+    #[serde(default)]
+    pub kind: BookKind,
     pub id: String,
     pub title: String,
     pub authors: Vec<String>,
@@ -188,6 +201,9 @@ pub struct LibraryState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Metadata {
+    /// EXTH 531/532 dictionary language record presence, without interpreting it.
+    #[serde(default)]
+    pub dictionary: bool,
     pub title: Option<String>,
     pub authors: Vec<String>,
     pub publisher: Option<String>,

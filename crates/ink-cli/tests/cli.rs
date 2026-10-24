@@ -102,3 +102,33 @@ fn saved_batch_posts_with_file_token() {
     assert!(!String::from_utf8_lossy(&out.stdout).contains("secret-test-token"));
     assert!(!String::from_utf8_lossy(&out.stderr).contains("secret-test-token"));
 }
+
+#[test]
+fn command_help_explains_subcommands_and_flags() {
+    let output = cli().arg("--help").output().unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    for phrase in [
+        "Scan books and clippings",
+        "Scan a Kindle and send",
+        "Import a previously saved",
+    ] {
+        assert!(text.contains(phrase), "{text}");
+    }
+    let output = cli().args(["scan", "--help"]).output().unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Print the complete ImportBatch JSON"));
+    assert!(text.contains("mount directory"));
+    for name in ["import", "import-json"] {
+        let output = cli().args([name, "--help"]).output().unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        for phrase in [
+            "Secretary API base URL",
+            "Read the authentication token",
+            "Merge against an empty state",
+        ] {
+            assert!(text.contains(phrase), "{text}");
+        }
+    }
+}
