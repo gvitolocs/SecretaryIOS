@@ -4,6 +4,8 @@ import type { FeatureDictionary } from "../types";
 
 const en = {
   title: "Plugins",
+  memos: "Voice memos",
+  memosDetail: "Recorded, transcribed, summarised",
   notes: "Notes",
   notesDetail: "Briefings and documents",
   tasks: "Tasks",
@@ -23,6 +25,8 @@ export const plugins: FeatureDictionary<typeof en> = {
   en,
   it: {
     title: "Plugin",
+    memos: "Memo vocali",
+    memosDetail: "Registrati, trascritti, riassunti",
     notes: "Note",
     notesDetail: "Briefing e documenti",
     tasks: "Attività",
@@ -39,6 +43,8 @@ export const plugins: FeatureDictionary<typeof en> = {
   },
   da: {
     title: "Plugins",
+    memos: "Talememoer",
+    memosDetail: "Optaget, transskriberet, opsummeret",
     notes: "Noter",
     notesDetail: "Briefinger og dokumenter",
     tasks: "Opgaver",

@@ -20,7 +20,7 @@ const Wardrobe = lazy(() => import("../components/Wardrobe"));
 // The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
 // Training + Weight, Plugins. Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const PLUGIN_PATHS = ["/plugins", "/notes", "/tasks", "/links", "/models"];
+const PLUGIN_PATHS = ["/plugins", "/notes", "/tasks", "/links", "/models", "/memos"];
 
 function NavLinks(props: { class: string }) {
   const location = useLocation();
