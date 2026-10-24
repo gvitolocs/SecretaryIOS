@@ -108,6 +108,7 @@ struct MainTabs: View {
                         ToolbarItem(placement: .confirmationAction) { Button("Done") { app.showSettings = false } }
                     }
             }
+            .lucinaSheet()
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
