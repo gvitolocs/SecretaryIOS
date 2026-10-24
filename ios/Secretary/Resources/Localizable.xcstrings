@@ -2656,6 +2656,22 @@
         }
       }
     },
+    "Current" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nuværende"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attuale"
+          }
+        }
+      }
+    },
     "Current list" : {
       "localizations" : {
         "da" : {
@@ -10627,6 +10643,22 @@
       }
     },
     "To do" : {},
+    "To goal" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Til mål"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "All'obiettivo"
+          }
+        }
+      }
+    },
     "Today" : {
       "localizations" : {
         "da" : {

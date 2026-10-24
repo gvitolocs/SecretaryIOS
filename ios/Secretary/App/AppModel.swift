@@ -391,7 +391,9 @@ final class AppModel {
 
 /// Debug-only launch arguments (read from the UserDefaults argument domain):
 /// `-SecretaryResetState YES` wipes the token and the local chat (UI tests),
-/// `-SecretaryInitialTab gym` opens a tab (screenshots).
+/// `-SecretaryInitialTab gym` opens a tab (screenshots). Release builds read them only when
+/// compiled with the SCREENSHOTS condition (the device screenshots: Debug apps do not start on
+/// iOS 27 from Xcode 26.6).
 struct LaunchOptions {
     var resetState = false
     var initialTab: AppModel.Tab?
@@ -407,7 +409,7 @@ struct LaunchOptions {
     var openMemos = false
 
     init(defaults: UserDefaults) {
-        #if DEBUG
+        #if DEBUG || SCREENSHOTS
         resetState = defaults.bool(forKey: "SecretaryResetState")
         initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
