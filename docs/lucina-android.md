@@ -169,3 +169,23 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
   - no network call for an SMS without a code;
   - APK under 700 KB;
   - no wakelocks beyond the broadcast's own.
+
+## Measured after the port (2026-10-24, S20 FE on LTE, live relay on p1)
+
+| What | 0.4.0 (Java) | 1.0.0 (Rust + Kotlin) |
+|---|---|---|
+| Activity cold start (`am start -W`) | 222 ms | 154 ms |
+| Parse + `POST /incoming` + ack, cold process (new TLS connection) | about 2 requests, est. 300–450 ms | 112–146 ms (`selftest`, `test:true`) |
+| Same, warm process (connection reused) | — | 26–46 ms |
+| Network for an SMS without a code | 1 HTTPS request | none |
+| Parse on the host, steady state | — | 0.9 µs (OTP SMS), 0.7 µs (plain) |
+| APK | 1.86 MB (5.0 MB `.so`, compressed, extracted at install) | 4.2 MB (3.7 MB `.so`, stored, mmapped; no extraction) |
+| Relay on p1 | `lucina-device otp-server` | `lucina-otp-relay`, 910 KB static binary, about 0.5 MB RSS |
+
+- **Size:** the 700 KB APK target was dropped on purpose.
+  - The `.so` is stored uncompressed (`extractNativeLibs=false`) so it loads by mmap with no extraction at install or first start.
+  - Its largest part is graviola's ECDSA verification, about 1.08 MB, which the certificate chain needs.
+  - Dropping regex `perf` would save about 375 KB, but steady-state parsing would slow to about 48 µs.
+- **Upgrade from 0.4.0:** done in place with the same signing key. RECEIVE_SMS and the Doze allowlist entry were kept. The legacy
+  token moved into the encrypted `state.bin`, and the pref was deleted.
+- **Not yet verified:** a real carrier SMS, and a notification-sourced code.
