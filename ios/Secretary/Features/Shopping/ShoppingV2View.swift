@@ -33,7 +33,7 @@ enum ShoppingLanguage {
 
 /// The original Bring! layout (decompiled resources): a 3-column grid of 108 pt tiles with
 /// 58 pt icons, red to buy (#f16a6f), teal for recent and the catalog (#6eb8ae), white text;
-/// home order: list chooser, to-buy grid, Recently, catalog sections. Emoji icons.
+/// home order: list chooser, to-buy grid, Recently, catalog sections. Icons: ItemVisual.
 enum Bring {
     static let red = Color("BringRed")
     static let teal = Color("BringTeal")
@@ -177,7 +177,7 @@ struct ShoppingV2View: View {
         } else {
             LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                 ForEach(store.needed) { item in
-                    BringTile(icon: store.icon(for: item), name: item.name, detail: detailText(item), color: Bring.red)
+                    BringTile(visual: store.visual(for: item), name: item.name, detail: detailText(item), color: Bring.red)
                         .matchedGeometryEffect(id: item.id, in: tiles)
                         .onTapGesture { tap(item) }
                         .onLongPressGesture(minimumDuration: 0.4) { detail = item }
@@ -195,7 +195,7 @@ struct ShoppingV2View: View {
             ))
             LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                 ForEach(store.recent.prefix(18)) { item in
-                    BringTile(icon: store.icon(for: item), name: item.name, detail: detailText(item), color: Bring.teal)
+                    BringTile(visual: store.visual(for: item), name: item.name, detail: detailText(item), color: Bring.teal)
                         .matchedGeometryEffect(id: item.id, in: tiles)
                         .onTapGesture { tap(item) }
                         .onLongPressGesture(minimumDuration: 0.4) { detail = item }
@@ -227,7 +227,7 @@ struct ShoppingV2View: View {
                     withAnimation(.easeInOut(duration: 0.2)) { toggleSection(section.id) }
                 } label: {
                     HStack(spacing: 10) {
-                        Text(section.icon).font(.title3).accessibilityHidden(true)
+                        ItemVisualView(visual: .section(section, hasArt: ItemVisual.bundled), size: 30).accessibilityHidden(true)
                         Text(section.name).font(.system(.headline, design: .rounded).weight(.bold))
                         Spacer()
                         Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0)).accessibilityHidden(true)
@@ -247,7 +247,7 @@ struct ShoppingV2View: View {
                 if open {
                     LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                         ForEach(items) { item in
-                            BringTile(icon: item.icon, name: item.displayName(store.search.lang), detail: nil, color: Bring.teal)
+                            BringTile(visual: store.visual(for: item), name: item.displayName(store.search.lang), detail: nil, color: Bring.teal)
                                 .onTapGesture {
                                     tapCount += 1
                                     withAnimation(.spring(duration: 0.35)) { store.add(item.displayName(store.search.lang), catalogItem: item) }
@@ -317,15 +317,14 @@ struct ShoppingV2View: View {
 /// One Bring! tile: 108 pt high, 58 pt icon 8 pt from the top, name 14 pt bold (shrinks to
 /// 12), specification 12 pt, white on the tile colour, 8 pt corners.
 struct BringTile: View {
-    let icon: String
+    let visual: ItemVisual
     let name: String
     let detail: String?
     let color: Color
 
     var body: some View {
         VStack(spacing: 2) {
-            Text(icon)
-                .font(.system(size: 46))
+            ItemVisualView(visual: visual)
                 .frame(height: Bring.iconHeight)
                 .padding(.top, 8)
                 .accessibilityHidden(true)
@@ -381,7 +380,7 @@ private struct SearchSheet: View {
                     let needed = Set(store.needed.compactMap(\.objectKey))
                     LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                         if !trimmed.isEmpty, store.search.exactMatch(trimmed) == nil {
-                            BringTile(icon: "✏️", name: trimmed, detail: "Add", color: Bring.teal)
+                            BringTile(visual: .emoji("✏️"), name: trimmed, detail: "Add", color: Bring.teal)
                                 .onTapGesture { add(trimmed, nil) }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("Add \(trimmed)")
@@ -390,7 +389,7 @@ private struct SearchSheet: View {
                         }
                         ForEach(results) { item in
                             let onList = needed.contains(item.id)
-                            BringTile(icon: item.icon, name: item.displayName(store.search.lang), detail: nil, color: onList ? Bring.red : Bring.teal)
+                            BringTile(visual: store.visual(for: item), name: item.displayName(store.search.lang), detail: nil, color: onList ? Bring.red : Bring.teal)
                                 .onTapGesture { add(item.displayName(store.search.lang), item) }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel(item.displayName(store.search.lang))
@@ -546,7 +545,10 @@ private struct ItemDetail: View {
                     if item.isCustom {
                         Section {
                             HStack(spacing: 12) {
-                                Text(icon.isEmpty ? store.icon(for: item) : icon).font(.system(size: 44)).accessibilityHidden(true)
+                                Group {
+                                    if icon.isEmpty { ItemVisualView(visual: store.visual(for: item), size: 52) } else { Text(icon).font(.system(size: 44)) }
+                                }
+                                .accessibilityHidden(true)
                                 Text(names[store.search.lang] ?? item.name).font(.title3.weight(.semibold))
                             }
                             ForEach(ShoppingLanguage.all, id: \.self) { lang in
@@ -568,7 +570,7 @@ private struct ItemDetail: View {
                     } else {
                         Section {
                             HStack(spacing: 12) {
-                                Text(store.icon(for: item)).font(.system(size: 44)).accessibilityHidden(true)
+                                ItemVisualView(visual: store.visual(for: item), size: 52).accessibilityHidden(true)
                                 TextField("Name", text: $name).font(.title3.weight(.semibold))
                                     .onSubmit { store.rename(item, name) }
                             }
