@@ -76,7 +76,12 @@ pub struct Config {
     pub default_session: String,
     pub grocery_user_id: String,
     pub briefing_cache: Duration,
+    /// This runtime's own jobs file (`SECRETARY_JOBS_PATH`, default
+    /// `lucina-rs/secretary-jobs.json`): never Node's (verification P1).
     pub jobs_path: PathBuf,
+    /// Node's jobs file, read-only (`LUCINA_NODE_JOBS_PATH`, default
+    /// `secretary-jobs.json`).
+    pub node_jobs_path: PathBuf,
     // timeline
     pub timeline_enabled: bool,
     pub timeline_path: PathBuf,
@@ -173,6 +178,27 @@ impl std::fmt::Debug for Config {
     }
 }
 
+/// This runtime's jobs file. Node's file is never shared (verification P1:
+/// a shared file gave false `interrupted` and lost job updates), so a
+/// `SECRETARY_JOBS_PATH` naming Node's file is replaced by the default.
+pub fn own_jobs_path(configured: PathBuf, node: &Path, data_dir: &Path) -> PathBuf {
+    let same = configured == node
+        || matches!(
+            (configured.canonicalize(), node.canonicalize()),
+            (Ok(a), Ok(b)) if a == b
+        );
+    if !same {
+        return configured;
+    }
+    let own = data_dir.join("lucina-rs").join("secretary-jobs.json");
+    tracing::warn!(
+        configured = %configured.display(),
+        using = %own.display(),
+        "SECRETARY_JOBS_PATH names Node's jobs file; lucina-rs keeps its own"
+    );
+    own
+}
+
 fn read_secret_file(path: &str) -> Option<String> {
     std::fs::read_to_string(path.trim())
         .ok()
@@ -216,6 +242,12 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| data_dir.join(file))
         };
+        let node_jobs_path = path_or("LUCINA_NODE_JOBS_PATH", "secretary-jobs.json");
+        let jobs_path = own_jobs_path(
+            path_or("SECRETARY_JOBS_PATH", "lucina-rs/secretary-jobs.json"),
+            &node_jobs_path,
+            &data_dir,
+        );
         let owner_peer_id = get("LUCINA_OWNER_USER_PEER_ID")
             .or_else(|| get("LUCINA_GMAIL_LEARN_USER_PEER_ID"))
             .unwrap_or_else(|| "giuseppe".into());
@@ -327,7 +359,8 @@ impl Config {
             grocery_user_id: get("SECRETARY_GROCERY_USER_ID")
                 .unwrap_or_else(|| owner_peer_id.clone()),
             briefing_cache: Duration::from_millis(num("SECRETARY_BRIEFING_CACHE_MS", 900_000)),
-            jobs_path: path_or("SECRETARY_JOBS_PATH", "secretary-jobs.json"),
+            jobs_path,
+            node_jobs_path,
             timeline_enabled: get("LUCINA_TIMELINE_ENABLED").as_deref() != Some("false"),
             timeline_path: path_or("LUCINA_TIMELINE_PATH", "timeline.jsonl"),
             timeline_max_bytes: num("LUCINA_TIMELINE_MAX_BYTES", 50 * 1024 * 1024),
@@ -408,6 +441,37 @@ impl Config {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// P1: the live cutover.env set SECRETARY_JOBS_PATH to Node's file.
+    #[test]
+    fn jobs_file_is_never_nodes() {
+        let cfg = Config::from_lookup(|k| match k {
+            "LUCINA_DATA_DIR" => Some("/srv/lucina/data".into()),
+            "SECRETARY_JOBS_PATH" => Some("/srv/lucina/data/secretary-jobs.json".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(
+            cfg.jobs_path,
+            PathBuf::from("/srv/lucina/data/lucina-rs/secretary-jobs.json")
+        );
+        assert_eq!(
+            cfg.node_jobs_path,
+            PathBuf::from("/srv/lucina/data/secretary-jobs.json")
+        );
+        let d = Config::for_data_dir(Path::new("/d"));
+        assert_eq!(
+            d.jobs_path,
+            PathBuf::from("/d/lucina-rs/secretary-jobs.json")
+        );
+        let own = Config::from_lookup(|k| match k {
+            "LUCINA_DATA_DIR" => Some("/d".into()),
+            "SECRETARY_JOBS_PATH" => Some("/elsewhere/jobs.json".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(own.jobs_path, PathBuf::from("/elsewhere/jobs.json"));
+    }
 
     #[test]
     fn defaults_and_node_names() {

@@ -22,6 +22,32 @@ use serde::{Deserialize, Serialize};
 
 /// No setting can raise the daily spend above this.
 pub const HARD_CAP_PER_DAY: u32 = 300;
+
+/// What Meshy may charge above a step's estimate (percent, at least one
+/// credit): the bound on drift between `pricing.rs` and Meshy's real
+/// prices. A plan reserves the worst case of every step (verification G4).
+pub const STEP_MARGIN_PCT: u32 = 10;
+
+/// The most a step estimated at `estimate` may cost (pure; Verus K5's
+/// `worst`). Zero stays zero.
+pub fn worst_case(estimate: u32) -> u32 {
+    if estimate == 0 {
+        return 0;
+    }
+    let margin = estimate
+        .saturating_mul(STEP_MARGIN_PCT)
+        .div_ceil(100)
+        .max(1);
+    estimate.saturating_add(margin)
+}
+
+/// The per-step guard (pure; Verus K5 `step`): run the next step only if
+/// its worst case still fits in what is left of the reservation. With
+/// Meshy charging at most the worst case per step, what a job is charged
+/// never passes its reservation, so the day never passes its budget.
+pub fn step_fits(consumed: u32, worst: u32, reserved: u32) -> bool {
+    consumed <= reserved && worst <= reserved - consumed
+}
 const KEEP_DAYS: i64 = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +241,21 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worst_case_and_step_guard() {
+        assert_eq!(worst_case(0), 0);
+        assert_eq!(worst_case(1), 2);
+        assert_eq!(worst_case(20), 22);
+        assert_eq!(worst_case(25), 28);
+        assert!(step_fits(0, 22, 22));
+        assert!(!step_fits(1, 22, 22));
+        assert!(!step_fits(30, 0, 22), "already over: nothing fits");
+        // Every estimate's worst case is above it: the margin is real.
+        for e in 1..500 {
+            assert!(worst_case(e) > e);
+        }
+    }
 
     #[test]
     fn caps_and_daily_budget() {

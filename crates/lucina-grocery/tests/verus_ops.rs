@@ -351,6 +351,10 @@ async fn repo() -> Option<GroceryRepo> {
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/004_shopping_row_aliases.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
     pool.close().await;
     let pool = PgPoolOptions::new()
         .max_connections(4)

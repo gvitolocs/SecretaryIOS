@@ -17,6 +17,46 @@ use crate::atomic::write_atomic;
 use crate::timeutil::{iso_ms, now_iso, parse_js_date, ymd_in_tz};
 use crate::{Result, StoreError};
 
+/// A scheduler tick claimed the reminder and is sending it (P2b).
+pub const STATUS_SENDING: &str = "sending";
+/// A claim found after a restart: maybe delivered, never resent.
+pub const STATUS_FAILED: &str = "failed";
+/// `lastError` of a reminder whose tick died mid-send.
+pub const INTERRUPTED: &str = "interrupted; not resent";
+
+/// The next status of a reminder at the start of a tick (pure; the P2b
+/// rule, Verus `reminder_claims.rs`): a claim nobody is sending any more
+/// becomes `failed`, never `pending` again, so it cannot be sent twice.
+/// Ticks run one at a time under the store lock, so at the start of a tick
+/// every `sending` claim belongs to a tick that died.
+pub fn status_at_tick_start(status: &str) -> &str {
+    if status == STATUS_SENDING {
+        STATUS_FAILED
+    } else {
+        status
+    }
+}
+
+/// Apply [`status_at_tick_start`]; returns how many claims failed.
+fn fail_stale_claims(reminders: &mut [Reminder]) -> usize {
+    let mut n = 0;
+    for r in reminders.iter_mut() {
+        if status_at_tick_start(&r.status) != r.status {
+            r.status = STATUS_FAILED.into();
+            r.last_error = Some(INTERRUPTED.into());
+            r.extra.remove("claimedAt");
+            n += 1;
+        }
+    }
+    if n > 0 {
+        tracing::warn!(
+            count = n,
+            "reminders claimed by an interrupted tick: marked failed, not resent"
+        );
+    }
+    n
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Reminder {
@@ -220,7 +260,14 @@ impl ReminderStore {
         let kept: Vec<Reminder> = store
             .reminders
             .into_iter()
-            .filter(|r| r.status == "pending" || r.sent_at.is_some() || r.cancelled_at.is_some())
+            .filter(|r| {
+                // A claim in flight or a visible failure is kept too (P2b).
+                r.status == "pending"
+                    || r.status == STATUS_SENDING
+                    || r.status == STATUS_FAILED
+                    || r.sent_at.is_some()
+                    || r.cancelled_at.is_some()
+            })
             .collect();
         let skip = kept.len().saturating_sub(self.max_stored);
         self.write(kept.into_iter().skip(skip).collect())?;
@@ -253,32 +300,68 @@ impl ReminderStore {
         Ok(CancelOutcome::Cancelled(out))
     }
 
-    /// Deliver every pending reminder due at `now` through `send`, marking
-    /// it `sent` (or recording `lastError`). Returns the due reminders.
+    /// Deliver every pending reminder due at `now` through `send`, at most
+    /// once (docs/verification.md, P2b: a restart in the middle of a tick
+    /// used to send the whole batch again):
+    ///
+    /// 1. a `sending` claim left by a tick that never finished (the process
+    ///    died mid-send) becomes `failed` with `lastError` "interrupted; not
+    ///    resent": it may or may not have reached the owner, and it shows in
+    ///    the reminder list instead of being sent twice;
+    /// 2. the due reminders are claimed (`sending`) and the claim is written
+    ///    **before** the first send;
+    /// 3. each one is sent; `sent`, or back to `pending` with `lastError`
+    ///    when the sink says it was not delivered (retried next tick).
+    ///
+    /// Returns the due reminders with their outcome.
     pub fn process_due<F>(&self, now: DateTime<Utc>, mut send: F) -> Result<Vec<Reminder>>
     where
         F: FnMut(&Reminder) -> std::result::Result<(), String>,
     {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut store = self.read()?;
-        let mut due = Vec::new();
-        for reminder in store.reminders.iter_mut() {
-            if reminder.status != "pending" || reminder.due().is_none_or(|d| d > now) {
-                continue;
+        let recovered = fail_stale_claims(&mut store.reminders);
+        let claimed: Vec<usize> = store
+            .reminders
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.status == "pending" && r.due().is_some_and(|d| d <= now))
+            .map(|(i, _)| i)
+            .collect();
+        if claimed.is_empty() {
+            if recovered > 0 {
+                self.write(store.reminders)?;
             }
-            match send(reminder) {
+            return Ok(Vec::new());
+        }
+        let claimed_at = now_iso();
+        for &i in &claimed {
+            let r = &mut store.reminders[i];
+            r.status = STATUS_SENDING.into();
+            r.extra
+                .insert("claimedAt".into(), Value::String(claimed_at.clone()));
+        }
+        // The claim is on disk before anything is sent.
+        self.write(store.reminders.clone())?;
+        let mut due = Vec::new();
+        for &i in &claimed {
+            let reminder = &mut store.reminders[i];
+            let outcome = send(reminder);
+            reminder.extra.remove("claimedAt");
+            match outcome {
                 Ok(()) => {
                     reminder.status = "sent".into();
                     reminder.sent_at = Some(now_iso());
                     reminder.last_error = None;
                 }
-                Err(e) => reminder.last_error = Some(e.chars().take(500).collect()),
+                Err(e) => {
+                    reminder.status = "pending".into();
+                    reminder.last_error = Some(e.chars().take(500).collect());
+                }
             }
             due.push(reminder.clone());
         }
-        if !due.is_empty() {
-            self.write(store.reminders)?;
-        }
+        self.write(store.reminders)?;
         Ok(due)
     }
 
@@ -417,6 +500,93 @@ pub fn delivered_context(
 /// `⏰ Reminder\n\n<text>`
 pub fn format_delivery(reminder: &Reminder) -> String {
     format!("⏰ Reminder\n\n{}", reminder.text)
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+
+    fn due_input(text: &str) -> CreateReminder {
+        CreateReminder {
+            text: text.into(),
+            due_at: "2020-01-01T00:00:00.000Z".into(),
+            chat_id: "42".into(),
+            user_peer_id: "giuseppe".into(),
+            user_label: String::new(),
+            persona: "Lucina".into(),
+            time_zone: "Europe/Rome".into(),
+            dedupe_key: None,
+            source: "secretary".into(),
+        }
+    }
+
+    /// P2b (docs/verification.md): the scheduler sent the whole batch and
+    /// wrote `sent` once at the end, so a restart mid-tick sent it again.
+    /// Now: claim, then send; a claim found after the restart fails visibly.
+    #[test]
+    fn a_restart_mid_tick_never_resends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reminders.json");
+        let store = ReminderStore::new(&path, 100);
+        store.create(due_input("first")).unwrap();
+        store.create(due_input("second")).unwrap();
+        let sends = std::sync::atomic::AtomicUsize::new(0);
+        // The process dies while sending the first one (after it went out).
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.process_due(Utc::now(), |_| {
+                // The claim reached the disk before this send.
+                let on_disk = ReminderStore::new(&path, 100).list(true).unwrap();
+                assert!(on_disk.iter().all(|r| r.status == STATUS_SENDING));
+                sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("SIGKILL mid-send");
+            })
+        }));
+        assert!(crashed.is_err());
+        // The restarted scheduler's first tick.
+        let restarted = ReminderStore::new(&path, 100);
+        let due = restarted
+            .process_due(Utc::now(), |_| {
+                sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap();
+        assert!(due.is_empty(), "nothing is due again");
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let all = restarted.list(true).unwrap();
+        assert!(all
+            .iter()
+            .all(|r| r.status == STATUS_FAILED && r.last_error.as_deref() == Some(INTERRUPTED)));
+        assert!(all.iter().all(|r| !r.extra.contains_key("claimedAt")));
+        // Still listed after the next create (kept, visible).
+        restarted.create(due_input("third")).unwrap();
+        assert_eq!(restarted.list(true).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_failed_send_stays_pending_and_is_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReminderStore::new(dir.path().join("r.json"), 100);
+        store.create(due_input("x")).unwrap();
+        let due = store
+            .process_due(Utc::now(), |_| Err("telegram down".into()))
+            .unwrap();
+        assert_eq!(due[0].status, "pending");
+        assert_eq!(due[0].last_error.as_deref(), Some("telegram down"));
+        let due = store.process_due(Utc::now(), |_| Ok(())).unwrap();
+        assert_eq!(due[0].status, "sent");
+        assert!(store
+            .process_due(Utc::now(), |_| Ok(()))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn tick_start_rule() {
+        assert_eq!(status_at_tick_start(STATUS_SENDING), STATUS_FAILED);
+        for s in ["pending", "sent", "cancelled", STATUS_FAILED] {
+            assert_eq!(status_at_tick_start(s), s);
+        }
+    }
 }
 
 #[cfg(test)]

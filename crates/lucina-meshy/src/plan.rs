@@ -607,6 +607,15 @@ impl Plan {
         )
     }
 
+    /// What the budget reserves for this plan: every step's worst case
+    /// (`budget::worst_case`), not the estimate (verification G4).
+    pub fn reservation(&self) -> u32 {
+        self.steps
+            .iter()
+            .map(|s| crate::budget::worst_case(s.credits))
+            .fold(0u32, u32::saturating_add)
+    }
+
     /// For the model and the app.
     pub fn to_json(&self) -> Value {
         json!({
@@ -616,6 +625,7 @@ impl Plan {
             "clips": self.spec.clips.iter().map(|c| json!({"actionId": c.id, "name": c.name, "inPlace": c.in_place})).collect::<Vec<_>>(),
             "formats": self.spec.formats,
             "totalCredits": self.total,
+            "reservedCredits": self.reservation(),
             "notes": self.notes,
             "pricesAsOf": pricing::PRICES_AS_OF,
         })

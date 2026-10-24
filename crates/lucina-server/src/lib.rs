@@ -182,7 +182,9 @@ impl AppState {
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
         let env_http = env.http.clone();
-        let jobs = Arc::new(JobStore::new(&cfg.jobs_path));
+        let jobs = Arc::new(
+            JobStore::new(&cfg.jobs_path).with_node_file(Some(cfg.node_jobs_path.clone())),
+        );
         let meshy = cfg.meshy.enabled.then(|| {
             // The key: a secret reference (`meshy.api_key` in secrets.toml) when the
             // secrets skill has one, else MESHY_API_KEY_FILE.

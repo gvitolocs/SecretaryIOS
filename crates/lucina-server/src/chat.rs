@@ -976,6 +976,8 @@ async fn json_turn(
             finished_at: None,
             updated_at: now,
             timeline_item_id: None,
+            owner: None,
+            boot_id: None,
             extra: Default::default(),
         };
         match st.jobs.insert(job) {

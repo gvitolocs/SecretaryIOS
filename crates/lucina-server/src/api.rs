@@ -917,6 +917,7 @@ fn grocery_error(e: GroceryError) -> ApiError {
             message,
             revision,
             conflicts,
+            duplicates,
         } => {
             let status = match code {
                 "list_not_found" | "item_not_found" => 404,
@@ -925,7 +926,9 @@ fn grocery_error(e: GroceryError) -> ApiError {
             };
             let mut err = ApiError::new(status, code, message);
             if code == "revision_conflict" {
-                err.extra = Some(json!({"revision": revision, "conflicts": conflicts}));
+                err.extra = Some(
+                    json!({"revision": revision, "conflicts": conflicts, "duplicates": duplicates}),
+                );
             }
             err
         }
@@ -1242,10 +1245,16 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
         {
             return;
         }
-        let replayed_ids_open = last.is_none();
-        let mut cursor: String = match &last {
+        // Resume by arrival (file) order, not by id (docs/verification.md, T1
+        // fix A): a line another writer committed late can carry a smaller id
+        // than the client's Last-Event-ID and still be new to it. The cursor
+        // is the last item sent, in arrival order; replayed and live items
+        // both go into `seen`, so nothing is sent twice.
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen_order: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        let mut cursor: Option<String> = match &last {
             Some(id) => {
-                let Ok(items) = store.after(id, TIMELINE_REPLAY_MAX) else {
+                let Ok(items) = store.after_arrival(Some(id), TIMELINE_REPLAY_MAX) else {
                     return;
                 };
                 let mut cur = id.clone();
@@ -1254,18 +1263,13 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                         return;
                     }
                     cur = it.id.clone();
+                    seen.insert(it.id.clone());
+                    seen_order.push_back(it.id.clone());
                 }
-                cur
+                Some(cur)
             }
-            None => store
-                .list(None, 1)
-                .ok()
-                .and_then(|(i, _)| i.first().map(|x| x.id.clone()))
-                .unwrap_or_default(),
+            None => store.newest_arrival().ok().flatten(),
         };
-        let replay_end = cursor.clone();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut seen_order: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         let mut ping_tick = tokio::time::interval_at(tokio::time::Instant::now() + ping, ping);
         let mut follow = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs(1),
@@ -1275,14 +1279,14 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
             let batch: Vec<lucina_store::timeline::StoredItem> = tokio::select! {
                 msg = live.recv() => match msg {
                     Ok(it) => vec![it],
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => store.after(&cursor, TIMELINE_REPLAY_MAX).unwrap_or_default(),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => store.after_arrival(cursor.as_deref(), TIMELINE_REPLAY_MAX).unwrap_or_default(),
                     Err(_) => return,
                 },
                 _ = follow.tick() => {
                     // Publishes other writers' new lines (they arrive on `live`), then
-                    // catches up on anything newer than the cursor that was missed.
+                    // catches up on anything that arrived after the cursor and was missed.
                     let _ = store.poll();
-                    store.after(&cursor, TIMELINE_REPLAY_MAX).unwrap_or_default()
+                    store.after_arrival(cursor.as_deref(), TIMELINE_REPLAY_MAX).unwrap_or_default()
                 }
                 _ = ping_tick.tick() => {
                     if tx.send(Bytes::from_static(b": ping\n\n")).await.is_err() { return; }
@@ -1291,17 +1295,15 @@ fn timeline_stream(st: &AppState, uri: &Uri, headers: &HeaderMap) -> ApiResult {
                 _ = tx.closed() => return,
             };
             for it in batch {
-                // Replayed or already sent; a line another process wrote late (a
-                // smaller id than the cursor) is still new to this client.
-                if seen.contains(&it.id) || (!replayed_ids_open && it.id <= replay_end) {
+                // Replayed or already sent. Live items and the follow batch both
+                // come in arrival order, so the last one sent is the cursor.
+                if seen.contains(&it.id) {
                     continue;
                 }
                 if tx.send(sse_item(&it)).await.is_err() {
                     return;
                 }
-                if it.id > cursor {
-                    cursor = it.id.clone();
-                }
+                cursor = Some(it.id.clone());
                 seen.insert(it.id.clone());
                 seen_order.push_back(it.id.clone());
                 if seen_order.len() > 4096 {

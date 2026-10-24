@@ -42,6 +42,10 @@ async fn repo() -> Option<GroceryRepo> {
                 .execute(&pool)
                 .await
                 .unwrap();
+            sqlx::raw_sql(include_str!("../migrations/004_shopping_row_aliases.sql"))
+                .execute(&pool)
+                .await
+                .unwrap();
             pool.close().await;
             url
         })
@@ -833,4 +837,157 @@ async fn new_items_are_named_by_one_model_call() {
         1,
         "one call; known names never call again"
     );
+}
+
+/// S1 (docs/verification.md): the response to a batch was lost after the
+/// server applied it; the client resends the same ops (same op ids) with its
+/// old revision while another client changed the item. The 409 names the
+/// ops that were already applied, so the client drops them instead of
+/// rebasing them into new ops that would apply twice.
+#[tokio::test]
+async fn a_conflict_names_the_batchs_duplicates() {
+    let Some(r) = repo().await else { return };
+    let u = user();
+    let add = op("add", json!({"name": "kiwi", "spec": "bio"}));
+    let out = r
+        .apply_ops(&u, "default", &json!([add]), Some(0), "web")
+        .await
+        .unwrap();
+    let kiwi = out.item_ids[add["opId"].as_str().unwrap()].clone();
+    // (the ack is lost) another client buys the kiwi: revision 2
+    r.apply_ops(
+        &u,
+        "default",
+        &json!([op("purchase", json!({"itemId": kiwi}))]),
+        Some(1),
+        "ios",
+    )
+    .await
+    .unwrap();
+    // the retry: the add again (a duplicate) and a new op on the kiwi
+    let spec = op("set_spec", json!({"itemId": kiwi, "spec": "2"}));
+    match r
+        .apply_ops(&u, "default", &json!([add, spec]), Some(0), "web")
+        .await
+        .unwrap_err()
+    {
+        GroceryError::Shopping {
+            code,
+            conflicts,
+            duplicates,
+            ..
+        } => {
+            assert_eq!(code, "revision_conflict");
+            assert_eq!(conflicts, vec![spec["opId"].as_str().unwrap().to_owned()]);
+            assert_eq!(duplicates, vec![add["opId"].as_str().unwrap().to_owned()]);
+        }
+        e => panic!("{e:?}"),
+    }
+    let state = r.list_state(&u, "default").await.unwrap();
+    assert_eq!(state["revision"], 2);
+    assert_eq!(
+        state["items"][0]["status"], "recent",
+        "the add did not apply again"
+    );
+}
+
+/// S2: offline "add, then undo" goes out as one batch. The server used to
+/// create its own row id, so the remove (on the client's optimistic row id)
+/// was rejected `item_not_found` and dropped: the item stayed on the list.
+#[tokio::test]
+async fn ops_on_the_clients_optimistic_row_land() {
+    let Some(r) = repo().await else { return };
+    let u = user();
+    let row = Uuid::new_v4().to_string();
+    let out = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([
+                op("add", json!({"name": "pane", "itemId": row})),
+                op("remove", json!({"itemId": row}))
+            ]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    assert!(out.rejected.is_empty(), "{:?}", out.rejected);
+    assert_eq!(out.applied.len(), 2);
+    assert_eq!(
+        out.item_ids.values().next().unwrap(),
+        &row,
+        "the client's id"
+    );
+    let state = r.list_state(&u, "default").await.unwrap();
+    assert!(
+        state["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["id"] != row.as_str()),
+        "removed: {state}"
+    );
+
+    // An add that merges into the object's existing row: the client's row id
+    // becomes an alias of that row, in this batch and in later ones.
+    let add_milk = op("add", json!({"name": "latte"}));
+    let first = r
+        .apply_ops(&u, "default", &json!([add_milk]), None, "ios")
+        .await
+        .unwrap();
+    let milk = first.item_ids[add_milk["opId"].as_str().unwrap()].clone();
+    let mine = Uuid::new_v4().to_string();
+    let out = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([
+                op("add", json!({"name": "latte", "rowId": mine})),
+                op("set_spec", json!({"itemId": mine, "spec": "intero"}))
+            ]),
+            None,
+            "web",
+        )
+        .await
+        .unwrap();
+    assert!(out.rejected.is_empty(), "{:?}", out.rejected);
+    let later = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([op("purchase", json!({"itemId": mine}))]),
+            Some(out.revision),
+            "web",
+        )
+        .await
+        .unwrap();
+    assert!(later.rejected.is_empty(), "{:?}", later.rejected);
+    let item = later
+        .items
+        .iter()
+        .find(|i| i["id"] == milk.as_str())
+        .unwrap();
+    assert_eq!(item["status"], "recent", "{item}");
+    // A stale op through the alias conflicts like one on the row itself.
+    r.apply_ops(
+        &u,
+        "default",
+        &json!([op("need", json!({"itemId": milk}))]),
+        None,
+        "ios",
+    )
+    .await
+    .unwrap();
+    let err = r
+        .apply_ops(
+            &u,
+            "default",
+            &json!([op("purchase", json!({"itemId": mine}))]),
+            Some(later.revision),
+            "web",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), "revision_conflict");
 }
