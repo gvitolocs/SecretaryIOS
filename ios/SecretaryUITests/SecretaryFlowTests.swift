@@ -315,12 +315,14 @@ final class SecretaryFlowTests: XCTestCase {
         let app = launch()
         signIn(app)
         app.tabBars.buttons["Weight"].tap()
-        let field = app.textFields["weightQuickField"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        let add = app.buttons["weightQuickAdd"]
+        XCTAssertTrue(add.waitForExistence(timeout: 10))
+        add.tap()
+        let field = app.textFields["weightSheetField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
         let value = "7\(Int.random(in: 1...8)).\(Int.random(in: 1...9))"
-        field.tap()
-        field.typeText(value)
-        app.buttons["weightLogButton"].tap()
+        field.typeText(value)  // focused when the sheet opens
+        app.buttons["weightSaveButton"].tap()
         let entry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "\(value) kg")).firstMatch
         XCTAssertTrue(entry.waitForExistence(timeout: 10), "logged entry \(value) kg")
         attach(app, "Weight")
