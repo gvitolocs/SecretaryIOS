@@ -19,6 +19,7 @@ members = [
     "crates/lucina-meshy",
     "crates/secretary-mcp",
     "crates/secretary-calendar",
+    "crates/lucina-proactive",
 ]
 
 [workspace.package]
