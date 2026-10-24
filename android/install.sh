@@ -3,6 +3,7 @@
 #   android/install.sh            # both apps
 #   android/install.sh otp        # Lucina OTP only
 #   android/install.sh secretary  # Secretary only
+#   android/install.sh status     # installed versions and the OTP app's status, installs nothing
 # The phone is LUCINA_PHONE_ADB (default 192.168.178.27:5555). Wi-Fi adb must be on (`adb tcpip 5555` once over USB
 # after a reboot). From the Mac over USB instead: copy the APK and run `adb -s RF8T31C33FW install -r <apk>`.
 # In-place upgrades only (same signing keys), so permissions, the Doze allowlist entry and the pairing are kept.
@@ -26,6 +27,13 @@ install() { # $1 = apk, $2 = package
 }
 
 case "${1:-all}" in
+  status)
+    for p in tech.getsecretary.lucinaotp tech.getsecretary.secretary; do
+      echo "$p:"
+      "$adb" -s "$phone" shell dumpsys package "$p" | grep -m2 -E "versionName|versionCode" | sed 's/^ */  /'
+    done
+    "$adb" -s "$phone" shell content call --uri content://tech.getsecretary.lucinaotp.pair --method status
+    ;;
   otp | all)
     install "$otp_apk" tech.getsecretary.lucinaotp
     "$adb" -s "$phone" shell content call --uri content://tech.getsecretary.lucinaotp.pair --method status
@@ -34,5 +42,5 @@ case "${1:-all}" in
     install "$secretary_apk" tech.getsecretary.secretary
     ;;
   otp) ;;
-  *) echo "usage: $0 [otp|secretary|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [otp|secretary|all|status]" >&2; exit 2 ;;
 esac
