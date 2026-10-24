@@ -10,8 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 ink-library = { path = "../ink-library" }
+ink-obsidian = { path = "../ink-obsidian" }
 clap = { version = "4", features = ["derive"] }
 reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 anyhow = "1"

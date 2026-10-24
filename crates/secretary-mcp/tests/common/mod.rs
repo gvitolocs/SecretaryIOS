@@ -135,6 +135,11 @@ async fn handle(
         ("GET", ["v1", "library", "recent"]) => Json(json!({"highlights":[library_highlight()],"changes":[],"sessions":[],"readingSessions":"unavailable_on_stock_kindle"})).into_response(),
         ("GET", ["v1", "library", "sync"]) => Json(json!({"imports":[],"books":1,"highlights":1})).into_response(),
         ("GET", ["v1", "library", "books", id]) => Json(json!({"book":{"id":id,"title":"Book","authors":["Writer"],"status":"unknown","progress":null,"relatedNotes":[],"briefs":[library_brief()]},"highlights":[library_highlight()],"sessions":[]})).into_response(),
+        ("GET", ["v1", "library", "books", id, "notes"]) => Json(if *id == "bk_0123456789abcdef" {
+            json!({"bookId":id,"total":1,"notes":[{"vault":"Vault","bookId":id,"notePath":"Reading/Book.md","noteTitle":"Book","how":"frontmatter","excerpt":"title: Book","line":2}],"indexedVaults":[{"vault":"Vault","generatedAt":"2026-10-24T10:00:00Z"}]})
+        } else {
+            json!({"bookId":id,"total":0,"notes":[],"indexedVaults":[]})
+        }).into_response(),
         ("GET", ["v1", "library", "books", _, "highlights"]) => Json(json!({"highlights":[library_highlight()]})).into_response(),
         ("POST", ["v1", "library", "books", _, "brief"]) => Json(library_brief()).into_response(),
         ("GET", ["v1", "session"]) => Json(json!({"authenticated": true, "deviceName": "lucina-mcp"})).into_response(),

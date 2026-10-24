@@ -1037,7 +1037,12 @@ async fn library_tools_refs_scopes_and_backend_calls() {
         (
             "library_find_related_notes",
             json!({"id":"bk_0123456789abcdef"}),
-            "unknown",
+            "[obsidian:Vault/Reading/Book.md#L2]",
+        ),
+        (
+            "library_find_related_notes",
+            json!({"id":"bk_fedcba9876543210"}),
+            "no Obsidian vault has been indexed",
         ),
         ("library_sync_status", json!({}), "imports log"),
     ] {
@@ -1050,6 +1055,15 @@ async fn library_tools_refs_scopes_and_backend_calls() {
         .requests("/v1/library/books")
         .iter()
         .any(|r| r.query.contains("kind=dictionary")));
+    let notes = h
+        .mock
+        .requests("/v1/library/books/bk_0123456789abcdef/notes");
+    assert!(
+        !notes.is_empty()
+            && notes
+                .iter()
+                .all(|r| r.method == "GET" && r.query == "limit=20")
+    );
     let args = json!({"id":"bk_0123456789abcdef"});
     assert!(
         h.call(&read, "library_generate_brief", args.clone())

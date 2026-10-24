@@ -436,7 +436,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("library_get_highlights", "Library get highlights", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read highlights, notes and bookmarks with page/location references."),
         spec!("library_get_recent_reading", "Library get recent reading", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryRecentArgs, "Recent highlights and owner reading changes. Stock Kindle sessions are unavailable."),
         spec!("library_get_brief", "Library get brief", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read generated briefs and their highlight references; never attribute them to the owner."),
-        spec!("library_find_related_notes", "Library find related notes", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read stored note references. Obsidian indexing is not connected."),
+        spec!("library_find_related_notes", "Library find related notes", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read Obsidian notes indexed as referring to a book, cited as [obsidian:<vault>/<path>#L<line>]. Mentions are relations, not reading evidence."),
         spec!("library_sync_status", "Library sync status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs, "Show the last imports and library counts."),
         spec!("library_generate_brief", "Library generate brief", Scope::Write, ro = false, destructive = false, idempotent = true, LibraryBookArgs, "Generate an extractive brief from highlights, with citations. Model briefs are not implemented."),
 
@@ -1363,6 +1363,14 @@ impl Tools<'_> {
                     let book = self.app.backend.library_get(&path, &[]).await?;
                     return Ok(format_library_brief(&a.id, &generated, &book));
                 }
+                if name == "library_find_related_notes" {
+                    let v = self
+                        .app
+                        .backend
+                        .library_get(&format!("{path}/notes"), &[("limit", q[0].1.clone())])
+                        .await?;
+                    return Ok(format_related_notes(&a.id, &v));
+                }
                 if name == "library_get_highlights" {
                     let mut value = self
                         .app
@@ -1464,6 +1472,60 @@ fn format_library_brief(id: &str, brief: &Value, book: &Value) -> String {
     }
     out
 }
+/// Indexed Obsidian references with one citation each; says plainly when none exist.
+fn format_related_notes(id: &str, v: &Value) -> String {
+    let notes = v["notes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let vaults = v["indexedVaults"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if notes.is_empty() {
+        if vaults.is_empty() {
+            return format!("No related notes: no Obsidian vault has been indexed, so relationships are unknown. [{id}, library]");
+        }
+        let names: Vec<String> = vaults
+            .iter()
+            .map(|x| {
+                format!(
+                    "{} at {}",
+                    library_str(x, "vault"),
+                    library_str(x, "generatedAt")
+                )
+            })
+            .collect();
+        return format!(
+            "No indexed Obsidian note refers to this book (indexed: {}). [{id}, library]",
+            names.join(", ")
+        );
+    }
+    let mut out = String::from(
+        "Obsidian notes that refer to this book (relations from the owner's notes; a mention is not evidence of reading):\n",
+    );
+    for n in notes.iter().take(20) {
+        out.push_str(&format!(
+            "- {} ({}): \"{}\" [obsidian:{}/{}#L{}]\n",
+            library_str(n, "noteTitle"),
+            library_str(n, "how"),
+            n["excerpt"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(240)
+                .collect::<String>(),
+            library_str(n, "vault"),
+            library_str(n, "notePath"),
+            n["line"].as_u64().unwrap_or(0)
+        ));
+    }
+    let total = v["total"].as_u64().unwrap_or(notes.len() as u64);
+    if total > notes.len().min(20) as u64 {
+        out.push_str(&format!(
+            "Showing {} of {total} references.\n",
+            notes.len().min(20)
+        ));
+    }
+    out
+}
 fn format_library(name: &str, v: &Value) -> String {
     let mut out = String::new();
     if name == "library_sync_status" {
@@ -1479,14 +1541,6 @@ fn format_library(name: &str, v: &Value) -> String {
                     b["progress"].to_string()
                 };
                 return format!("{}: progress {progress}; status {}. Reading sessions unavailable on stock Kindle. [{id}, library]",library_str(b,"title"),library_str(b,"status"));
-            }
-            "library_find_related_notes" => {
-                let related = if b["relatedNotes"].as_array().is_none_or(Vec::is_empty) {
-                    "unknown (no stored links)".into()
-                } else {
-                    b["relatedNotes"].to_string()
-                };
-                return format!("Stored related notes: {related}. Obsidian index is not connected; other relationships are unknown. [{id}, library]");
             }
             "library_get_brief" => {
                 if let Some(briefs) = b["briefs"].as_array() {
@@ -1604,6 +1658,24 @@ mod library_tests {
             ),
             "[bk_a p.12 loc 170-172, kindle-clippings]"
         );
+        assert!(
+            format_related_notes("bk_a", &json!({"notes":[],"indexedVaults":[]}))
+                .contains("no Obsidian vault has been indexed")
+        );
+        assert!(format_related_notes(
+            "bk_a",
+            &json!({"notes":[],"indexedVaults":[{"vault":"Vault","generatedAt":"t"}]})
+        )
+        .contains("No indexed Obsidian note refers to this book (indexed: Vault at t)"));
+        let text = format_related_notes(
+            "bk_a",
+            &json!({"total":1,"notes":[{"vault":"Vault","notePath":"Ideas/A note.md","noteTitle":"A note","how":"mention","excerpt":"the book","line":7}],"indexedVaults":[]}),
+        );
+        assert!(
+            text.contains("- A note (mention): \"the book\" [obsidian:Vault/Ideas/A note.md#L7]"),
+            "{text}"
+        );
+        assert!(text.contains("not evidence of reading"));
         assert!(format_library(
             "library_get_progress",
             &json!({"book":{"id":"bk_a","title":"Book","status":"unknown","progress":null}})

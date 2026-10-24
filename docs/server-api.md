@@ -1628,7 +1628,9 @@ Library request bodies may be up to **32 MiB**. Invalid JSON or metadata returns
 
 Storage under `$SECRETARY_DATA_DIR/library/`: `books/<id>.json`,
 `highlights/<bookId>.json` (array), `activity.json` (explicit owner changes and
-sessions), and `imports.jsonl` (time, caller, source, counts only). JSON writes
+sessions), `notes/<bookId>.json` (Obsidian note references, only for books that
+have some), `notes-index.json` (last index per vault), and `imports.jsonl`
+(time, caller, source, counts only). JSON writes
 are atomic with mode 0600; a temporary `pending.json` snapshot allows recovery
 of interrupted multi-file writes. Records load lazily under a mutex.
 
@@ -1766,8 +1768,41 @@ Creates and returns `{id,kind:"extractive",text,generatedAt,model:null,basedOn}`
 Uses the first ten highlights by position (unknown positions last), with
 highlight ids as references. Repeating against the same highlight set returns
 the stored brief. Briefs are always generated, never the owner's words.
-**Model briefs are not implemented.** Related Obsidian notes and memory refs
-have no automatic producer yet; empty references mean unknown/unconnected.
+**Model briefs are not implemented.** Memory refs have no automatic producer
+yet. `relatedNotes` is filled only by the Obsidian notes index below; empty
+means none indexed, not "no relationship".
+
+### `POST /v1/library/notes-index`
+
+Body: `{vault,generatedAt,refs:[BookRef]}`, produced by
+`lucina-ink obsidian-index <vault> --library <file> --json` (or posted directly
+with `--server … --token-file …`). A BookRef is
+`{bookId,notePath,noteTitle,how,excerpt,line}`: `how` is one of
+`frontmatter|wikilink|mention|isbn|asin`, `excerpt` at most 240 characters of
+the matching line, `line` 1-based. `vault` is 1–64 ASCII letters, digits,
+spaces, `.`, `_` or `-` (first character alphanumeric); `notePath` a relative
+`.md` path without `..`; titles at most 1000 bytes; at most 200k refs.
+Invalid input returns 400.
+
+The index **replaces** every reference of that vault (other vaults are kept),
+so posting the same refs again is idempotent: books and their `updatedAt` do
+not change, and `relatedNotes[].linkedAt` keeps the first time a note was
+linked. References to unknown book ids are counted and dropped. Each book's
+`relatedNotes` holds one `{vault,path,title,linkedAt,how}` per note, with the
+strongest kind (frontmatter > isbn > asin > wikilink > mention). Returns
+`{vault,refsStored,booksLinked,booksUpdated,unknownBooks,changed}`; the import
+log records caller, `source:"obsidian"` and the counts, never paths or text.
+
+A reference is a relation found in the owner's notes. A `mention` (a title in
+plain text) is never evidence that a book was read and never changes status
+or progress.
+
+### `GET /v1/library/books/{id}/notes?limit=200`
+
+`{"bookId","total","notes":[NoteLink],"indexedVaults":[{vault,generatedAt,indexedAt,refs,books}]}`.
+A NoteLink is `{vault,bookId,notePath,noteTitle,how,excerpt,line}`, sorted by
+vault, path, kind and line. Unknown ids return 404. Empty `indexedVaults` means
+no vault has been indexed yet, so relationships are unknown.
 
 The `lucina-ink` CLI also supports `import <mount> --server <url> --token-file
 <path>` and `import-json <batch.json> --server <url> --token-file <path>`.
@@ -1787,11 +1822,59 @@ The human scan summary reports marker names and booleans `jailbreak`, `kual`,
 `extensions/renameotabin/`, `koreader/`, `libkh/`. macOS litter is ignored
 throughout: `._*`, `.DS_Store`, `.Spotlight-V100/`, `.fseventsd/`, `.Trashes/`.
 
+`lucina-ink obsidian-index <vault> --library <file>` indexes an Obsidian vault
+**read-only**. `--library` takes a saved ImportBatch (ids as an empty server
+would assign them), a library state snapshot, or a `{"books":[…]}` listing such
+as `GET /v1/library/books`. Default output: counts, then one
+`<bookId> <how> <path>#L<line>` per reference (warnings on stderr); `--summary`
+prints counts only; `--json` prints the notes-index body with excerpts.
+`--vault-name` sets the citation name (default: the folder name),
+`--include`/`--exclude` take patterns, `--no-default-excludes` drops the
+privacy defaults, and `--state <file>` (outside the vault) keeps a manifest of
+`path → (mtime, size, sha256)` so only changed notes are read again.
+
+The walk never follows symlinks, rejects paths whose canonical form leaves the
+vault, caps 20k files, 2 MiB per note and depth 32, and skips non-UTF-8 notes
+with a warning. Excluded by default: `.obsidian/`, `.trash/`, `.backups/`,
+`.git/`, `Templates/`, `_tmp*` folders and files, `._*`, `.DS_Store`, and any
+folder named `Private`, `private`, `Journal`, `journal`, `Diary` or `diary`.
+Patterns: `name/` is a folder at any depth, `a/b/` a folder path from the root,
+`name` a file name, `a/*.md` a path; `*` stays within a segment, `**` crosses.
+
+Parsing: frontmatter `key: value`, flow `[a, b]` and block `- item` lists (nested
+maps and block scalars are ignored); title from frontmatter `title`, the first
+`# ` heading, or the file name; tags from frontmatter and inline `#tag`; links
+`[[T]]`, `[[T|alias]]`, `[[T#Heading]]`, embeds `![[…]]`, and Markdown links to
+`.md` files, outside code. Links resolve like Obsidian: exact path, then a
+unique path-suffix or basename match, else unresolved/ambiguous. Book
+references: frontmatter `lucina_book_id`, `isbn`, `asin`, `book`/`books`, and
+`title` + `author`/`authors` (a note about the book; links to it count as
+wikilinks to the book); wikilink targets or aliases naming a title; plain-text
+title mentions; checksum-valid ISBN-10 (after an `ISBN` label) or ISBN-13, and
+`B0…` ASINs, matched against library identifiers. Titles use the clipping
+title and author keys above. A title needs a key with at least two significant
+words (3+ letters, not a function word), or must equal the main or full title
+for frontmatter/wikilinks; plain-text mentions of single-word titles are never
+matched, and weak multi-word titles must appear exactly as written. Ambiguous
+titles match nothing. A mention is dropped when the same note refers to the
+book more strongly.
+
+`ink_obsidian::render` can render an opt-in generated book note
+(`Books/<Title>.md`, frontmatter `lucina_book_id,title,authors,status,source,
+progress,generated_by: lucina-ink`, highlights with Kindle locations) and plan
+a write: create when absent; otherwise replace only the region between
+`<!-- lucina-ink:begin -->` and `<!-- lucina-ink:end -->` of a note we generated;
+anything else needs the owner's approval. **No code path writes to a vault
+yet.**
+
 Lucina MCP exposes `library_list_books`, `library_search`, `library_get_book`,
 `library_get_progress`, `library_get_highlights`, `library_get_recent_reading`,
 `library_get_brief`, `library_find_related_notes`, `library_sync_status` (read
 scope), and `library_generate_brief` (write scope). Results cite book/page/
 location/source and say when progress, sessions or relationships are unknown.
+`library_find_related_notes` reads `/v1/library/books/{id}/notes` and cites each
+note as `[obsidian:<vault>/<path>#L<line>]`, stating that mentions are not
+reading evidence and saying plainly when no vault has been indexed.
 
 ## Models
 

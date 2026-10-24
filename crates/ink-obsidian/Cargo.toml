@@ -1,0 +1,17 @@
+[package]
+name = "ink-obsidian"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ink-library = { path = "../ink-library" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"
