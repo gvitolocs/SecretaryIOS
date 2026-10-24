@@ -1,0 +1,11 @@
+[package]
+name = "lucina-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lucina-phone-core = { path = "../lucina-phone-core" }
+
+[lib]
+crate-type = ["cdylib", "rlib"]

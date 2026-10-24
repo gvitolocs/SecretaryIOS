@@ -1698,6 +1698,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
+name = "lucina-android"
+version = "0.1.0"
+dependencies = [
+ "lucina-phone-core",
+]
+
+[[package]]
+name = "lucina-android-calls"
+version = "0.1.0"
+dependencies = [
+ "lucina-phone-core",
+]
+
+[[package]]
 name = "lucina-delegate"
 version = "0.1.0"
 dependencies = [
@@ -1821,6 +1835,22 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "lucina-otp-relay"
+version = "0.1.0"
+dependencies = [
+ "lucina-phone-core",
+]
+
+[[package]]
+name = "lucina-phone-core"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
