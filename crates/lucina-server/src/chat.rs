@@ -726,16 +726,6 @@ async fn json_turn(
         }
     }
 
-    // Lucina's Pokémon Red run (status, start, pause); MCP turns may read the status only.
-    match crate::bridges::game_turn(&st.secretary.http, &t.message, t.mcp.is_some()).await {
-        Some(Err(blocked)) => {
-            tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
-            return Finish::refusal(&persona, blocked);
-        }
-        Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
-        None => {}
-    }
-
     // Tasks (LUCINA_TASKS=true): what to do today, add, done, reschedule
     // overdue. MCP turns may read, add and complete; deleting is refused.
     // Before the calendar: "cosa devo fare oggi?" answers with the tasks and
@@ -865,6 +855,44 @@ async fn json_turn(
     if t.mcp.is_some() && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
         tracing::warn!(session_id = %t.session, blocked = %action, "secretary mcp turn refused");
         return Finish::refusal(&persona, &action);
+    }
+
+    // Her Pokémon Red run (planner-chosen, never keyword shortcuts; MCP callers are refused above because these
+    // actions are not in mcp::ALLOWED_ACTIONS). Advice is text for her playing self only.
+    if action == "game_hint" {
+        let text = plan["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&t.message)
+            .to_owned();
+        let ack = plan["ack"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        return match crate::bridges::game_hint(&st.secretary.http, &text).await {
+            Ok(_) => Finish::reply(
+                ack.unwrap_or("Passed it to my playing self: I'll act on it in the game.").to_owned(),
+                "game",
+            )
+            .with(format!("[game hint queued] {text}"), Some(Meta::kind("game"))),
+            Err(e) => {
+                tracing::warn!(error = %e, "game hint failed");
+                Finish::reply("I couldn't reach my game right now, so the advice didn't get through.", "game")
+                    .with("[game hint failed]", Some(Meta::kind("game")))
+            }
+        };
+    }
+    if action == "game_start" || action == "game_pause" {
+        let running = action == "game_start";
+        let ok = crate::bridges::game_control(&st.secretary.http, running).await.is_ok();
+        let lang = lucina_intent::tasks::guess_lang(&t.message);
+        let text = if ok {
+            lucina_intent::game::control_reply(lang, running, true).to_owned()
+        } else {
+            lucina_intent::game::off(lang).to_owned()
+        };
+        return Finish::reply(text, "game").with(
+            format!("[game {} {}]", if running { "start" } else { "pause" }, if ok { "ok" } else { "failed" }),
+            Some(Meta::kind("game")),
+        );
     }
 
     // Lucina decided herself that another agent should do it.

@@ -702,83 +702,115 @@ fn tasks_outcome(reply: String, action: &str, action_result: String) -> Outcome 
     }
 }
 
-/// `handleGameTurn`: Lucina's Pokémon Red run on `LUCINA_GAME_URL` (default the local lucina-pokemon server):
-/// status, start, pause. `None`: not about the game, or `LUCINA_GAME=false`. `Err(blocked)`: an MCP caller asked
-/// to start or pause (MCP may read the status only).
-pub async fn game_turn(
-    http: &reqwest::Client,
-    message: &str,
-    mcp: bool,
-) -> Option<Result<Outcome, &'static str>> {
-    use lucina_intent::game::{self as gm, Kind};
+fn game_base() -> Option<String> {
     if std::env::var("LUCINA_GAME")
         .map(|v| v.eq_ignore_ascii_case("false"))
         .unwrap_or(false)
     {
         return None;
     }
-    let intent = gm::parse_game_intent(message)?;
-    if intent.kind != Kind::Status && mcp {
-        return Some(Err("game.control"));
-    }
-    let lang = intent.lang;
     let base = std::env::var("LUCINA_GAME_URL").unwrap_or_else(|_| "http://127.0.0.1:18767".into());
-    let base = base.trim_end_matches('/');
-    let out = |reply: String, ok: bool| Outcome {
-        reply,
-        action: "game".into(),
-        action_result: format!(
-            "[game {:?} {}]",
-            intent.kind,
-            if ok { "ok" } else { "failed" }
-        ),
-        meta: Some(lucina_store::timeline::Meta::kind("game")),
-        ..Outcome::default()
+    Some(base.trim_end_matches('/').to_owned())
+}
+
+/// What the chat brain is told about her own playing self: identity, the actions, and the live game state.
+pub const GAME_IDENTITY: &str = "This Pokémon Red run is YOU: your own playing self (the same Lucina) playing on nezopt through the game tools while Giuseppe watches. Never deny being the player and never say you cannot see the game: the state below is live. From chat you do not press buttons yourself; your playing self acts in its own turn loop, and you can pass it advice. When Giuseppe gives in-game advice or an instruction for the run (even without saying Pokémon, e.g. \"that was a tree to cut, go back there\"), choose {\"action\":\"game_hint\",\"text\":\"<his advice as one clear instruction to your playing self, in English>\",\"ack\":\"<short reply in his language saying you passed it to your playing self>\"}. To start or resume the run choose {\"action\":\"game_start\"}; to pause it {\"action\":\"game_pause\"} (only when he asks). Questions about the game (where are you, how is it going, why did you do that) are a normal reply from this state, in your own words.";
+
+/// Live summary of Lucina's Pokémon Red run for the turn context ("" when the game server is off or not
+/// answering). Built from `/state` and the head of `/observe` (place, team, bag, plan, objective, notes).
+pub async fn game_context(http: &reqwest::Client) -> String {
+    let Some(base) = game_base() else {
+        return String::new();
     };
-    let state: Value = match http
-        .get(format!("{base}/state"))
+    let get = |p: &str| {
+        http.get(format!("{base}{p}"))
+            .timeout(Duration::from_millis(1500))
+            .send()
+    };
+    let Ok(r) = get("/state").await else {
+        return String::new();
+    };
+    let Ok(state) = r.json::<Value>().await else {
+        return String::new();
+    };
+    let running = state["running"].as_bool().unwrap_or(false);
+    let obs = match get("/observe").await {
+        Ok(r) => r.text().await.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+    game_block(&state, &obs, running)
+}
+
+/// The context block from `/state` and `/observe` (pure, for tests).
+pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
+    let head: String = obs
+        .split("\nSCREEN TEXT:")
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(3000)
+        .collect();
+    let tail: Vec<&str> = obs
+        .lines()
+        .filter(|l| l.starts_with("RECENT NOTES:") || l.starts_with("LAST RESULT:"))
+        .collect();
+    let events: Vec<&str> = state["events"]
+        .as_array()
+        .map(|a| a.iter().rev().take(6).rev().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let mut s = format!(
+        "Lucina's Pokémon Red run (live, {}; {} actions so far):\n{GAME_IDENTITY}",
+        if running { "playing now" } else { "paused" },
+        state["actions"].as_u64().unwrap_or(0)
+    );
+    if !head.trim().is_empty() {
+        s += &format!("\nGame state:\n{}", head.trim_end());
+    }
+    if !events.is_empty() {
+        s += &format!("\nYour last moves: {}", events.join(" / "));
+    }
+    for l in tail {
+        if l.starts_with("LAST RESULT:") {
+            s += &format!("\n{l}");
+        }
+    }
+    s
+}
+
+async fn game_post(http: &reqwest::Client, path: &str, body: Value) -> Result<Value, String> {
+    let base = game_base().ok_or("game off")?;
+    let r = http
+        .post(format!("{base}{path}"))
+        .header("X-Lucina-Game", "1")
+        .json(&body)
         .timeout(Duration::from_secs(5))
         .send()
         .await
-    {
-        Ok(r) if r.status().is_success() => match r.json().await {
-            Ok(v) => v,
-            Err(_) => return Some(Ok(out(gm::off(lang).into(), false))),
-        },
-        _ => return Some(Ok(out(gm::off(lang).into(), false))),
-    };
-    if intent.kind == Kind::Status {
-        return Some(Ok(out(gm::status_reply(&state, lang), true)));
+        .map_err(|e| e.to_string())?;
+    if !r.status().is_success() {
+        return Err(format!("game server {}", r.status()));
     }
-    let running = intent.kind == Kind::Start;
-    if state["running"].as_bool() == Some(running) {
-        return Some(Ok(out(
-            gm::control_reply(lang, running, false).into(),
-            true,
-        )));
+    r.json().await.map_err(|e| e.to_string())
+}
+
+/// Owner advice for the playing self (text only: no buttons, no save edits). The player sees it at the top of its
+/// next observation as "OWNER'S ADVICE (new):".
+pub async fn game_hint(http: &reqwest::Client, text: &str) -> Result<Value, String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Err("empty advice".into());
     }
+    game_post(http, "/hint", json!({"text": t.chars().take(300).collect::<String>()})).await
+}
+
+/// Start (`true`) or pause the run.
+pub async fn game_control(http: &reqwest::Client, running: bool) -> Result<Value, String> {
     let reason = if running {
         "Started by the owner from chat"
     } else {
         "Paused by the owner from chat"
     };
-    let ok = http
-        .post(format!("{base}/control"))
-        .header("X-Lucina-Game", "1")
-        .json(&json!({"running": running, "reason": reason}))
-        .timeout(Duration::from_secs(5))
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
-    Some(Ok(out(
-        if ok {
-            gm::control_reply(lang, running, true).into()
-        } else {
-            gm::off(lang).into()
-        },
-        ok,
-    )))
+    game_post(http, "/control", json!({"running": running, "reason": reason})).await
 }
 
 /// `handleTasksTurn` (`LUCINA_TASKS=true`): what to do today, add, done,
@@ -938,5 +970,25 @@ pub async fn tasks_for_briefing(s: &Secretary, tz: Tz) -> Vec<String> {
         tk::task_lines(&r.data["view"], "en")
     } else {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod game_tests {
+    use super::*;
+
+    #[test]
+    fn game_block_is_live_state_with_identity() {
+        let state = json!({"running": true, "actions": 2908, "events": ["Healing the team", "Heal tool found no route"]});
+        let obs = "OWNER'S ADVICE (new): Giuseppe is watching you play and told you in chat:\n  1. (0 min ago) Use Cut\nMODE: Overworld\nLOCATION: VERMILION_CITY (map 5) x=12 y=22, facing down\nSCREEN TEXT:\n  (no text on screen)\nRECENT NOTES: a / b\nLAST RESULT: No known walking route";
+        let b = game_block(&state, obs, true);
+        assert!(b.contains("playing now"));
+        assert!(b.contains("This Pokémon Red run is YOU"));
+        assert!(b.contains("VERMILION_CITY"));
+        assert!(b.contains("OWNER'S ADVICE"));
+        assert!(b.contains("Heal tool found no route"));
+        assert!(b.contains("LAST RESULT: No known walking route"));
+        assert!(!b.contains("no text on screen"));
+        assert!(game_block(&json!({"running": false}), "", false).contains("paused"));
     }
 }

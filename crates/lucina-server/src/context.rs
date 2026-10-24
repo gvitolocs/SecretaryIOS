@@ -157,6 +157,8 @@ pub async fn prepare_with(
     let budgets = policy.budgets();
 
     let presence = presence_block(st, user_text);
+    // Her own Pokémon Red run, live, so she answers as the player and can pass it advice (game_hint).
+    let game = crate::bridges::game_context(&st.secretary.http).await;
     let calendar = if st.cfg.calendar_enabled {
         crate::bridges::calendar_context(&st.secretary, user_text, now, tz).await
     } else {
@@ -216,7 +218,7 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, calendar, notes, tasks, shopping, recent, reminders, honcho,
+        metadata, presence, game, calendar, notes, tasks, shopping, recent, reminders, honcho,
     ]
     .into_iter()
     .filter(|s| !s.is_empty())
