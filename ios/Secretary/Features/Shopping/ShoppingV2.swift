@@ -146,6 +146,8 @@ struct CatalogSearch: Sendable {
     private let byName: [String: CatalogItem]
     private let byAlias: [String: CatalogItem]
     private let byId: [String: CatalogItem]
+    /// Folded English and Danish catalog names -> item, for `guess` (head nouns come last there).
+    private let byTail: [String: CatalogItem]
     let lang: String
 
     /// The catalog plus the owner's custom objects (`custom`), in `lang`.
@@ -172,6 +174,15 @@ struct CatalogSearch: Sendable {
         }
         self.byName = byName
         self.byAlias = byAlias
+        var byTail: [String: CatalogItem] = [:]
+        for item in catalog.items where !item.isCustom {
+            for lang in ["en", "da"] {
+                guard let name = item.names[lang] else { continue }
+                let key = TextFold.fold(name)
+                if !key.isEmpty, byTail[key] == nil { byTail[key] = item }
+            }
+        }
+        self.byTail = byTail
         entries = catalog.items.map { item in
             let primary = TextFold.fold(item.displayName(lang))
             var aliases = item.aliases.map(TextFold.fold)
@@ -241,6 +252,35 @@ struct CatalogSearch: Sendable {
         guard !query.isEmpty else { return nil }
         if let item = byName[query] { return (item, true) }
         if let item = byAlias[query] { return (item, false) }
+        return nil
+    }
+
+    /// Shortest folded run of words a picture match may rest on ("te" or "is" alone never match).
+    static let minGuessCharacters = 3
+
+    /// The catalog item (never a custom object) a free-text name most likely shows, for its
+    /// picture only, never to link a row: an exact name or alias, else the longest run of
+    /// leading words that is one ("Pane di segale danese" -> rye bread), else the longest run
+    /// of trailing words that is an English or Danish name ("organic milk"). Mirrors
+    /// guessByName in web/src/lib/shoppingCatalog.ts.
+    func guess(_ name: String) -> CatalogItem? {
+        let query = TextFold.fold(name)
+        guard !query.isEmpty else { return nil }
+        let catalogOnly = { (item: CatalogItem?) -> CatalogItem? in item.flatMap { $0.isCustom ? nil : $0 } }
+        if let hit = catalogOnly(byName[query]) ?? catalogOnly(byAlias[query]) { return hit }
+        let words = Self.words(query).map(String.init)
+        if words.count > 1 {
+            for count in stride(from: words.count - 1, through: 1, by: -1) {
+                let head = words.prefix(count).joined(separator: " ")
+                guard head.count >= Self.minGuessCharacters else { continue }
+                if let hit = catalogOnly(byName[head]) ?? catalogOnly(byAlias[head]) { return hit }
+            }
+            for start in 1..<words.count {
+                let tail = words.suffix(from: start).joined(separator: " ")
+                guard tail.count >= Self.minGuessCharacters else { continue }
+                if let hit = byTail[tail] { return hit }
+            }
+        }
         return nil
     }
 }

@@ -171,6 +171,24 @@ final class ShoppingV2Store {
         item.icon ?? catalogItem(for: item)?.icon ?? ShoppingCatalog.defaultIcon
     }
 
+    /// The row's picture (ItemVisual): its illustration, the one its name or section points to,
+    /// a specific emoji, else its first letter.
+    func visual(for item: ShopItem) -> ItemVisual {
+        let catalogId = item.isCustom ? nil : (item.catalogId ?? item.objectId.flatMap { catalog.item($0)?.id })
+        return ItemVisual.resolve(icon: item.icon, catalogId: catalogId, name: item.name, section: item.section,
+                                  catalog: catalog, search: search, hasArt: ItemVisual.bundled)
+    }
+
+    /// A catalog item's (or custom object's) picture, for catalog and search tiles.
+    func visual(for entry: CatalogItem) -> ItemVisual {
+        if entry.isCustom {
+            return ItemVisual.resolve(icon: entry.icon, catalogId: nil, name: entry.displayName(search.lang), section: entry.section,
+                                      catalog: catalog, search: search, hasArt: ItemVisual.bundled)
+        }
+        return ItemVisual.resolve(icon: entry.icon, catalogId: entry.id, name: entry.name, section: entry.section,
+                                  catalog: catalog, search: search, hasArt: ItemVisual.bundled)
+    }
+
     func section(for item: ShopItem) -> String? {
         item.section ?? catalogItem(for: item)?.section
     }
