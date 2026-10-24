@@ -83,6 +83,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let app = AppModel.shared
             Task { @MainActor in
                 app.selectedTab = await app.notifications.openFromSystem(userInfo: payload)
+                if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
             }
         }
     }

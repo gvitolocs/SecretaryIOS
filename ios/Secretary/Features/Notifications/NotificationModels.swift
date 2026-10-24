@@ -326,6 +326,14 @@ enum NotificationRoute {
         default: return .chat
         }
     }
+
+    /// `/shopping/map` (grocery deal alerts): the deals map on the Shopping tab.
+    static func opensDealsMap(_ route: String) -> Bool {
+        guard isSafe(route) else { return false }
+        let path = route.split(separator: "?", maxSplits: 1).first.map(String.init) ?? route
+        let parts = path.split(separator: "/").map(String.init)
+        return parts.count >= 2 && parts[0] == "shopping" && parts[1] == "map"
+    }
 }
 
 extension AppLanguage {

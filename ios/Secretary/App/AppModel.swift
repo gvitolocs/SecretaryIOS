@@ -27,6 +27,8 @@ final class AppModel {
     var showNotes = false
     /// Tasks open on top of the chat, like Notes.
     var showTasks = false
+    /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
+    var showDealsMap = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
