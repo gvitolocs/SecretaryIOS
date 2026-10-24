@@ -551,7 +551,7 @@ impl Tools<'_> {
             "sessionId": session,
             "clientMessageId": uuid::Uuid::new_v4().to_string(),
             "channel": "web",
-            // Ignored by secretary-server today (see the TODO in backend::chat).
+            // Lucina derives these timeline tags from the session id and message prefix.
             "meta": { "via": "mcp", "caller": self.caller.name },
         });
         let r = self.app.backend.chat(&body).await?;

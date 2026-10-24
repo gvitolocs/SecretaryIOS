@@ -36,6 +36,7 @@ import {
   dayLabel,
   fullTimeLabel,
   matchesFilter,
+  mcpSource,
   SOURCE_FILTERS,
   timeLabel,
   type SourceFilter,
@@ -342,11 +343,16 @@ function ChannelGlyph(props: { channel: Channel }) {
 
 /** "via Telegram · Family" badge: glyph plus a text label, read as one phrase. */
 export function SourceBadge(props: { message: ChatMessage }) {
-  const label = () => channelLabel(props.message.channel);
-  const context = () => contextCaption(props.message.channel, props.message.meta);
+  const source = () => mcpSource(props.message.role, props.message.text, props.message.meta);
+  const label = () => source()?.label ?? channelLabel(props.message.channel);
+  const context = () => (source() ? "" : contextCaption(props.message.channel, props.message.meta));
   return (
-    <span class="src-badge" data-channel={props.message.channel}>
-      <ChannelGlyph channel={props.message.channel} />
+    <span class="src-badge" data-channel={source() ? "mcp" : props.message.channel}>
+      <Show when={source()} fallback={<ChannelGlyph channel={props.message.channel} />}>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 3h6v4h1a3 3 0 1 1 0 6h-1v8H9v-4H8a3 3 0 1 1 0-6h1V3z" />
+        </svg>
+      </Show>
       <span class="sr-only">{t("chat.via")} </span>
       <span class="src-label">{label()}</span>
       <Show when={context()}>
@@ -384,7 +390,8 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
     props.message.role === "lucina" && props.message.meta?.kind === "proactive" ? props.message.meta.proactive : undefined;
   // Lucina message format v1: bubbles, widgets and buttons (not for reminders or proactive cards).
   const rich = () => (!isUser() && !isReminder() && !proactive() ? richOf(props.message) : undefined);
-  const hasBody = () => !rich() && (!!props.message.text || !!props.message.attachments?.length);
+  const text = () => mcpSource(props.message.role, props.message.text, props.message.meta)?.text ?? props.message.text;
+  const hasBody = () => !rich() && (!!text() || !!props.message.attachments?.length);
 
   function toggleTime(e: MouseEvent) {
     // Taps on links open the link; everything else reveals the time.
@@ -434,10 +441,10 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
               {t("chat.reminder")}
             </span>
           </Show>
-          <Show when={props.message.text}>
+          <Show when={text()}>
             {/* Her plain replies are markdown too (safe renderer from Notes): no more literal "**". */}
             <Show when={isUser()} fallback={<Markdown text={props.message.text} class="md--chat" />}>
-              <LinkifiedText text={props.message.text} />
+              <LinkifiedText text={text()} />
             </Show>
           </Show>
           <Show when={props.message.attachments?.length ? props.message.attachments : null}>
@@ -499,12 +506,8 @@ export default function ChatView() {
   const canSend = createMemo(() => draft().trim().length > 0 && !tooLong() && !sending());
   const visible = createMemo(() => {
     const f = filter();
-    // Lucina's proactive messages are written for the app, whatever their channel.
-    return f === "all"
-      ? chat.messages
-      : chat.messages.filter(
-          (m) => matchesFilter(m.channel, f) || (f === "app" && m.meta?.kind === "proactive"),
-        );
+    // Filter by the derived source while preserving the stored channel.
+    return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m, f));
   });
   const filterLabel = () => {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;

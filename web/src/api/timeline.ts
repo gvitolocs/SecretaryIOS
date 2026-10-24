@@ -16,6 +16,8 @@ export interface Attachment {
 }
 
 export interface ItemMeta {
+  via?: string;
+  caller?: string;
   chatTitle?: string;
   guildName?: string;
   channelName?: string;
@@ -140,6 +142,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (!v || typeof v !== "object") return undefined;
   const m = v as Record<string, unknown>;
   const out: ItemMeta = {};
+  if (typeof m.via === "string") out.via = m.via;
+  if (typeof m.caller === "string") out.caller = m.caller;
   const chatTitle = str(m.chatTitle);
   const guildName = str(m.guildName);
   const channelName = str(m.channelName);

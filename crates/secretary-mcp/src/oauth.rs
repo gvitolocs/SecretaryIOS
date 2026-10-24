@@ -581,6 +581,9 @@ pub fn caller_for_host(host: &str) -> String {
     if is("x.ai") || is("grok.com") {
         return "grok".into();
     }
+    if is("cursor.com") || is("cursor.sh") {
+        return "cursor".into();
+    }
     let label: String = h
         .split('.')
         .next()
@@ -1543,6 +1546,8 @@ mod tests {
         assert_eq!(caller_for_host("chatgpt.com"), "chatgpt");
         assert_eq!(caller_for_host("platform.openai.com"), "chatgpt");
         assert_eq!(caller_for_host("example.org"), "example");
+        assert_eq!(caller_for_host("www.cursor.com"), "cursor");
+        assert_eq!(caller_for_host("cursor.sh"), "cursor");
     }
 
     // -- token endpoint races (docs/verification.md, bugs O1 and O2) ---------

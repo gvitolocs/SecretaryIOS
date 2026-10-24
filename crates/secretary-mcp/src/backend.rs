@@ -218,9 +218,9 @@ impl Backend {
     }
 
     /// `POST /v1/chat` as the web channel.
-    // TODO(secretary-server): whitelist channel `mcp` in `X-Secretary-Client`
-    // (and Lucina's `channel`), then send `X-Secretary-Client: mcp` here and
-    // drop the `meta` note; today only `web|ios` are accepted.
+    // The turn enters as channel `web`. Lucina recognises the `mcp-<caller>`
+    // session id and `[via Lucina MCP, from …]` prefix, tagging both timeline
+    // items with meta.via = "mcp" and meta.caller; clients label them by caller.
     pub async fn chat(&self, body: &Value) -> BResult<Value> {
         let mut h = HeaderMap::new();
         h.insert("x-secretary-client", HeaderValue::from_static("web"));
