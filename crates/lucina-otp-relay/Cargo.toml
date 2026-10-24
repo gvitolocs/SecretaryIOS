@@ -1,8 +1,17 @@
 [package]
 name = "lucina-otp-relay"
+description = "Lucina's OTP relay on p1 (Caddy /v1/phone/otp/*): takes codes from the phone and hands each one once to the owner. Speaks relay protocols 1 and 2."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 lucina-phone-core = { path = "../lucina-phone-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tiny_http = { version = "=0.12.0", default-features = false }
+getrandom = "0.3"
+
+[dev-dependencies]
+# TLA+-style model of the store (tests/model.rs), checked by `cargo test`.
+stateright = { version = "=0.31.0", default-features = false }
