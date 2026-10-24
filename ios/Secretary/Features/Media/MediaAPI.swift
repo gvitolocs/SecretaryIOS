@@ -55,12 +55,49 @@ struct SubtitleTrack: Decodable, Identifiable, Hashable, Sendable {
     let lang: String?
     let label: String
     let forced: Bool
+    /// `text`, or `image`: DVD/Blu-ray pictures the server reads with OCR.
+    let kind: String
+    /// `srt`, `ass`, `vobsub`, `pgs`, `subrip`, `dvd_subtitle`...
+    let format: String
+    /// `file` (next to the video) or `embedded`.
+    let source: String
     let url: String
 
+    private enum CodingKeys: String, CodingKey { case id, lang, label, forced, kind, format, source, url }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        lang = try c.decodeIfPresent(String.self, forKey: .lang)
+        label = try c.decode(String.self, forKey: .label)
+        forced = (try? c.decodeIfPresent(Bool.self, forKey: .forced)) ?? false
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "text"
+        format = (try? c.decodeIfPresent(String.self, forKey: .format)) ?? ""
+        source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? "embedded"
+        url = try c.decode(String.self, forKey: .url)
+    }
+
+    var isImage: Bool { kind == "image" }
+
+    /// The language in the owner's language ("Danish", "dansk"), when known.
+    var languageName: String? {
+        guard let lang, let name = Locale.current.localizedString(forLanguageCode: lang) else { return nil }
+        return name.prefix(1).uppercased() + name.dropFirst()
+    }
+
+    /// Menu title: the language, or the label when it says more.
     var displayName: String {
-        guard let lang, let name = Locale.current.localizedString(forLanguageCode: lang), !label.localizedCaseInsensitiveContains(name)
-        else { return label }
-        return label == lang ? name.capitalized : "\(label) (\(name.capitalized))"
+        guard let name = languageName else { return label }
+        return label.localizedCaseInsensitiveContains(name) || label.count <= 3 ? name : "\(name) · \(label)"
+    }
+
+    /// Menu subtitle: where the track comes from.
+    var detail: String {
+        var parts: [String] = []
+        parts.append(source == "file" ? String(localized: "File") : String(localized: "In the video"))
+        if isImage { parts.append(String(localized: "picture, read by OCR")) }
+        if forced { parts.append(String(localized: "forced")) }
+        return parts.joined(separator: " · ")
     }
 }
 

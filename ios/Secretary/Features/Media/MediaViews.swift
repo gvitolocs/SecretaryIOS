@@ -293,18 +293,25 @@ private struct SubtitleMenu: View {
 
     var body: some View {
         Menu {
-            Button { media.selectSubtitle(nil) } label: {
-                if media.subtitle == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
-            }
-            ForEach(media.subtitleTracks) { track in
-                Button { media.selectSubtitle(track) } label: {
-                    if media.subtitle?.id == track.id { Label(track.displayName, systemImage: "checkmark") } else { Text(track.displayName) }
+            Section("Subtitles") {
+                Button { media.selectSubtitle(nil) } label: {
+                    if media.subtitle == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
+                }
+                ForEach(media.subtitleTracks) { track in
+                    Button { media.selectSubtitle(track) } label: {
+                        if media.subtitle?.id == track.id {
+                            Label(track.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(track.displayName)
+                        }
+                        Text(track.detail)
+                    }
+                    .accessibilityIdentifier("subtitle-\(track.id)")
+                }
+                if let hidden = media.info?.bitmapSubtitles, hidden > 0 {
+                    Text("\(hidden) picture subtitle tracks need OCR on the server")
                 }
             }
-            if let bitmap = media.info?.bitmapSubtitles, bitmap > 0 {
-                Text("\(bitmap) image-based subtitle tracks can't be shown yet")
-            }
-            Divider()
             Menu("Speed") {
                 ForEach([Float(0.75), 1, 1.25, 1.5, 2], id: \.self) { r in
                     Button { media.setRate(r) } label: {
@@ -317,6 +324,7 @@ private struct SubtitleMenu: View {
             Image(systemName: media.subtitle == nil ? "captions.bubble" : "captions.bubble.fill").font(.body.weight(.semibold)).padding(10)
         }
         .accessibilityLabel("Subtitles and speed")
+        .accessibilityIdentifier("subtitleMenu")
     }
 }
 
@@ -354,6 +362,15 @@ private struct SubtitleOverlay: View {
     var body: some View {
         VStack {
             Spacer()
+            if media.cueText == nil, let status = media.subtitleStatus {
+                Label(status, systemImage: "captions.bubble")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .padding(.bottom, 64)
+            }
             if let text = media.cueText {
                 Text(text)
                     .font(.system(size: 20, weight: .semibold))

@@ -172,6 +172,22 @@ final class PlayerCore: @unchecked Sendable {
 
     // MARK: Subtitles
 
+    /// The track to show for an item: the owner's choice for this file, else the language
+    /// they last turned on, else a forced track. nil = off.
+    func pickSubtitle(id: String, tracks: [SubtitleTrack]) -> String? {
+        struct Answer: Decodable { let track: String? }
+        let list = tracks.map { ["id": $0.id, "lang": $0.lang ?? NSNull(), "forced": $0.forced, "kind": $0.kind] as [String: Any] }
+        return (try? call(["cmd": "subtitle_pick", "id": id, "tracks": list], as: Answer.self))?.track
+    }
+
+    /// Remembers the owner's pick (nil = off) for this file.
+    func chooseSubtitle(id: String, track: SubtitleTrack?) {
+        struct Answer: Decodable { let ok: Bool }
+        var command: [String: Any] = ["cmd": "subtitle_choose", "id": id, "track": track?.id ?? NSNull()]
+        if let lang = track?.lang { command["lang"] = lang }
+        _ = try? call(command, as: Answer.self)
+    }
+
     struct Cue: Decodable, Sendable {
         let startMs: Int
         let endMs: Int
