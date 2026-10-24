@@ -4,30 +4,6 @@ import SwiftUI
 // (docs/server-api.md, "Notes"). List with search, tag chips and pinned notes; a note rendered
 // as markdown with its source; an editor with a preview; the trash.
 
-/// Notes open from a button next to the chat title: the iPhone tab bar shows five tabs,
-/// and a sixth would push Settings and Notes behind "More".
-private struct NotesEntry: ViewModifier {
-    @Environment(AppModel.self) private var app
-
-    func body(content: Content) -> some View {
-        @Bindable var app = app
-        content
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { app.showNotes = true } label: { Image(systemName: "doc.text") }
-                        .accessibilityLabel("Notes")
-                        .accessibilityIdentifier("notesButton")
-                }
-            }
-            .navigationDestination(isPresented: $app.showNotes) { NotesView() }
-    }
-}
-
-extension View {
-    /// The Notes button and screen, on the chat.
-    func notesEntry() -> some View { modifier(NotesEntry()) }
-}
-
 struct NotesView: View {
     @Environment(NotesStore.self) private var store
     @State private var creating = false

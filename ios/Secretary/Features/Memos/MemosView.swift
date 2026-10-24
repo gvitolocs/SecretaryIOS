@@ -5,32 +5,6 @@ import SwiftUI
 // finishes, lucina-memo on nezopt transcribes it (Whisper), Lucina writes the summary, a
 // PDF and an Obsidian note, and notifies the owner.
 
-/// Memos open from a button next to the chat title (like Notes and Tasks).
-private struct MemosEntry: ViewModifier {
-    @Environment(AppModel.self) private var app
-
-    func body(content: Content) -> some View {
-        @Bindable var app = app
-        content
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { app.showMemos = true } label: {
-                        Image(systemName: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform")
-                            .foregroundStyle(app.memos.recorder.isActive ? Theme.negative : Theme.accent)
-                    }
-                    .accessibilityLabel("Voice memos")
-                    .accessibilityIdentifier("memosButton")
-                }
-            }
-            .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
-    }
-}
-
-extension View {
-    /// The Memos button and screen, on the chat.
-    func memosEntry() -> some View { modifier(MemosEntry()) }
-}
-
 struct MemosView: View {
     @Environment(MemosStore.self) private var store
     @Environment(AppModel.self) private var app
