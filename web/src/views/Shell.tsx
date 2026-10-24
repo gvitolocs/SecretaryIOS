@@ -1,7 +1,7 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
-import { AvatarIcon, ChatIcon, CheckCircleIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon } from "../components/Icons";
+import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
@@ -17,36 +17,31 @@ import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe"
 // The Wardrobe panel is only fetched the first time it opens.
 const Wardrobe = lazy(() => import("../components/Wardrobe"));
 
+// The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
+// Training + Weight, Plugins. Everything else is a plugin card on /plugins.
+const TRAINING_PATHS = ["/training", "/gym", "/weight"];
+const PLUGIN_PATHS = ["/plugins", "/notes", "/tasks", "/links", "/models"];
+
 function NavLinks(props: { class: string }) {
+  const location = useLocation();
+  const under = (paths: string[]) => paths.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`));
   return (
     <nav class={props.class} aria-label={t("shell.sections")}>
       <A href="/" end class="tab" activeClass="tab--active">
         <ChatIcon />
         <span>{t("shell.navChat")}</span>
       </A>
-      <A href="/tasks" class="tab" activeClass="tab--active">
-        <CheckCircleIcon />
-        <span>{t("shell.navTasks")}</span>
-      </A>
       <A href="/shopping" class="tab" activeClass="tab--active">
         <ListIcon />
         <span>{t("shell.navShopping")}</span>
       </A>
-      <A href="/gym" class="tab" activeClass="tab--active">
+      <A href="/training" class="tab" classList={{ "tab--active": under(TRAINING_PATHS) }} aria-current={under(TRAINING_PATHS) ? "page" : undefined}>
         <DumbbellIcon />
-        <span>{t("shell.navGym")}</span>
+        <span>{t("shell.navTraining")}</span>
       </A>
-      <A href="/weight" class="tab" activeClass="tab--active">
-        <ScaleIcon />
-        <span>{t("shell.navWeight")}</span>
-      </A>
-      <A href="/links" class="tab" activeClass="tab--active">
-        <LinkIcon />
-        <span>{t("shell.navLinks")}</span>
-      </A>
-      <A href="/notes" class="tab" activeClass="tab--active">
-        <NoteIcon />
-        <span>{t("shell.navNotes")}</span>
+      <A href="/plugins" class="tab" classList={{ "tab--active": under(PLUGIN_PATHS) }} aria-current={under(PLUGIN_PATHS) ? "page" : undefined}>
+        <GridIcon />
+        <span>{t("shell.navPlugins")}</span>
       </A>
     </nav>
   );

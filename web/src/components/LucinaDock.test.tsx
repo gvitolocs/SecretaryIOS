@@ -52,8 +52,8 @@ function renderShell(path = "/") {
     <MemoryRouter history={history} root={(p) => <Shell>{p.children}</Shell>}>
       <Route path="/" component={ChatView} />
       <Route path="/shopping" component={() => <p>Shopping page</p>} />
-      <Route path="/gym" component={() => <p>Gym page</p>} />
-      <Route path="/weight" component={() => <p>Weight page</p>} />
+      <Route path="/training" component={() => <p>Training page</p>} />
+      <Route path="/plugins" component={() => <p>Plugins page</p>} />
     </MemoryRouter>
   ));
 }
@@ -87,11 +87,11 @@ describe("Lucina in the shell", () => {
     viewport(true);
     serve();
     const stage = await mounted();
-    for (const page of ["Shopping", "Gym", "Weight", "Chat", "Gym"]) {
+    for (const page of ["Shopping", "Training", "Plugins", "Chat", "Training"]) {
       go(page);
       await waitFor(() => expect(dock()).not.toBeNull());
     }
-    expect(await screen.findByText("Gym page")).toBeInTheDocument();
+    expect(await screen.findByText("Training page")).toBeInTheDocument();
     expect(loadStage).toHaveBeenCalledTimes(1);
     expect(fake.stages).toHaveLength(1);
     expect(stage.dispose).not.toHaveBeenCalled();

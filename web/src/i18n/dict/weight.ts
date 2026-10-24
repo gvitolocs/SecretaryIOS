@@ -1,6 +1,7 @@
 import type { FeatureDictionary } from "../types";
 
 const en = {
+  allEntries: "All weigh-ins",
   title: "Weight",
   loading: "Loading your weigh-ins…",
   staleCopy: "{message} Showing the last copy.",
@@ -38,6 +39,7 @@ const en = {
 export const weight: FeatureDictionary<typeof en> = {
   en,
   it: {
+    allEntries: "Tutte le pesate",
     title: "Peso",
     loading: "Caricamento delle pesate…",
     staleCopy: "{message} Mostro l'ultima copia.",
@@ -72,6 +74,7 @@ export const weight: FeatureDictionary<typeof en> = {
     invalidDate: "Inserisci data e ora valide.",
   },
   da: {
+    allEntries: "Alle vejninger",
     title: "Vægt",
     loading: "Indlæser dine vejninger…",
     staleCopy: "{message} Viser den seneste kopi.",

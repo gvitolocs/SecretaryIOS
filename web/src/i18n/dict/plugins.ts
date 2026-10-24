@@ -1,0 +1,56 @@
+import type { FeatureDictionary } from "../types";
+
+// Plugins: everything that is not Chat, Shopping or Training + Weight (owner, 2026-10-24).
+
+const en = {
+  title: "Plugins",
+  notes: "Notes",
+  notesDetail: "Briefings and documents",
+  tasks: "Tasks",
+  tasksDetail: "Synced with Todoist",
+  links: "Connections",
+  linksDetail: "Calendars, chats and AI clients",
+  models: "3D models",
+  modelsDetail: "Lucina's studio",
+  wardrobe: "Wardrobe",
+  wardrobeDetail: "Lucina's outfits",
+  pokemon: "Pokémon",
+  pokemonDetail: "Lucina's game",
+  pokemonAsk: "How is the Pokémon game going?",
+};
+
+export const plugins: FeatureDictionary<typeof en> = {
+  en,
+  it: {
+    title: "Plugin",
+    notes: "Note",
+    notesDetail: "Briefing e documenti",
+    tasks: "Attività",
+    tasksDetail: "Sincronizzate con Todoist",
+    links: "Connessioni",
+    linksDetail: "Calendari, chat e client AI",
+    models: "Modelli 3D",
+    modelsDetail: "Lo studio di Lucina",
+    wardrobe: "Guardaroba",
+    wardrobeDetail: "Gli abiti di Lucina",
+    pokemon: "Pokémon",
+    pokemonDetail: "La partita di Lucina",
+    pokemonAsk: "Come va la partita a Pokémon?",
+  },
+  da: {
+    title: "Plugins",
+    notes: "Noter",
+    notesDetail: "Briefinger og dokumenter",
+    tasks: "Opgaver",
+    tasksDetail: "Synkroniseret med Todoist",
+    links: "Forbindelser",
+    linksDetail: "Kalendere, chats og AI-klienter",
+    models: "3D-modeller",
+    modelsDetail: "Lucinas studie",
+    wardrobe: "Garderobe",
+    wardrobeDetail: "Lucinas tøj",
+    pokemon: "Pokémon",
+    pokemonDetail: "Lucinas spil",
+    pokemonAsk: "Hvordan går det med Pokémon-spillet?",
+  },
+};
