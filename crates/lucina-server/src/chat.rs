@@ -820,17 +820,23 @@ async fn json_turn(
         }
     }
 
-    // The JSON-action planner, with the turn's classification.
-    let plan = match st
-        .planner
-        .route_classified(
-            &t.input(memory, PLANNER_PLATFORM),
-            &prepared.classification,
-            &st.cfg.intent,
-            st.cfg.capability_hints,
-        )
-        .await
-    {
+    // The JSON-action planner, with the turn's classification. While her game is live, owner turns skip the
+    // casual chat shortcut (which clips the context and cannot choose actions) so she reasons over the game
+    // state and can pass advice to her playing self (game_hint).
+    let game_live = t.mcp.is_none() && !prepared.game.is_empty();
+    let routed = if game_live {
+        st.planner.plan_response(&t.input(memory, PLANNER_PLATFORM)).await
+    } else {
+        st.planner
+            .route_classified(
+                &t.input(memory, PLANNER_PLATFORM),
+                &prepared.classification,
+                &st.cfg.intent,
+                st.cfg.capability_hints,
+            )
+            .await
+    };
+    let plan = match routed {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(surface = "secretary", error = %e, "response planning failed");

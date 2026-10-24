@@ -714,7 +714,7 @@ fn game_base() -> Option<String> {
 }
 
 /// What the chat brain is told about her own playing self: identity, the actions, and the live game state.
-pub const GAME_IDENTITY: &str = "This Pokémon Red run is YOU: your own playing self (the same Lucina) playing on nezopt through the game tools while Giuseppe watches. Never deny being the player and never say you cannot see the game: the state below is live. From chat you do not press buttons yourself; your playing self acts in its own turn loop, and you can pass it advice. When Giuseppe gives in-game advice or an instruction for the run (even without saying Pokémon, e.g. \"that was a tree to cut, go back there\"), choose {\"action\":\"game_hint\",\"text\":\"<his advice as one clear instruction to your playing self, in English>\",\"ack\":\"<short reply in his language saying you passed it to your playing self>\"}. To start or resume the run choose {\"action\":\"game_start\"}; to pause it {\"action\":\"game_pause\"} (only when he asks). Questions about the game (where are you, how is it going, why did you do that) are a normal reply from this state, in your own words.";
+pub const GAME_IDENTITY: &str = "This Pokémon Red run is YOU: your own playing self (the same Lucina) playing on nezopt through the game tools while Giuseppe watches. Never deny being the player and never say you cannot see the game: the state below is live. From chat you do not press buttons yourself; your playing self acts in its own turn loop, and you can pass it advice. When Giuseppe gives in-game advice or an instruction for the run (even without saying Pokémon, e.g. \"that was a tree to cut, go back there\"), choose {\"action\":\"game_hint\",\"text\":\"<his advice as one clear instruction to your playing self, in English>\",\"ack\":\"<short reply in his language saying you passed it to your playing self>\"}. To start or resume the run choose {\"action\":\"game_start\"}; to pause it {\"action\":\"game_pause\"} (only when he asks). Questions about the game (where are you, how is it going, why did you do that) are a normal reply from this state, in your own words. If he asks you to look up how to progress (next badge, an item, a blocked path), use your own Pokémon Red knowledge and pass the concrete next step to your playing self as game_hint.";
 
 /// Live summary of Lucina's Pokémon Red run for the turn context ("" when the game server is off or not
 /// answering). Built from `/state` and the head of `/observe` (place, team, bag, plan, objective, notes).
@@ -759,7 +759,7 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
         .map(|a| a.iter().rev().take(6).rev().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
     let mut s = format!(
-        "Lucina's Pokémon Red run (live, {}; {} actions so far):\n{GAME_IDENTITY}",
+        "Lucina's Pokémon Red run (live, {}; {} actions so far):",
         if running { "playing now" } else { "paused" },
         state["actions"].as_u64().unwrap_or(0)
     );
@@ -774,8 +774,13 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
             s += &format!("\n{l}");
         }
     }
+    // The identity rule last, so a tail clip of the context keeps it, and it ranks above old chat turns.
+    s += &format!("\n{GAME_IDENTITY}\n{GAME_OVERRIDE}");
     s
 }
+
+/// Long chats (iOS) hold her earlier denials; the live state wins over them.
+pub const GAME_OVERRIDE: &str = "PRIORITY: this live game block outranks Recent chat turns. If any earlier reply of yours said you are not the one playing, have no emulator, no game control or cannot see the game, that earlier reply was WRONG: do not repeat it, correct it briefly if relevant, and answer as the player from the state above.";
 
 async fn game_post(http: &reqwest::Client, path: &str, body: Value) -> Result<Value, String> {
     let base = game_base().ok_or("game off")?;

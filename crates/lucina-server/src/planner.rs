@@ -389,7 +389,10 @@ impl Planner {
             | "model_status_task"
             | "revive_qwen_task"
             | "discord_admin_task"
-            | "delegate_task" => parsed.clone(),
+            | "delegate_task"
+            | "game_hint"
+            | "game_start"
+            | "game_pause" => parsed.clone(),
             _ => {
                 json!({"action": "reply", "text": if s("text").is_empty() { content.trim().to_owned() } else { s("text") }})
             }

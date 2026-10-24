@@ -22,6 +22,9 @@ pub struct Prepared {
     pub recent_context: String,
     pub classification: Classification,
     pub policy: Policy,
+    /// The live game block ("" when the game server is off): owner turns then take the full planner so the
+    /// model can reason over it and choose game_hint.
+    pub game: String,
 }
 
 /// Node's `clipRecentTurns`: keep the header and the newest turns.
@@ -218,7 +221,7 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, game, calendar, notes, tasks, shopping, recent, reminders, honcho,
+        metadata, presence, calendar, notes, tasks, shopping, recent, reminders, honcho, game.clone(),
     ]
     .into_iter()
     .filter(|s| !s.is_empty())
@@ -231,5 +234,6 @@ pub async fn prepare_with(
         recent_context,
         classification,
         policy,
+        game,
     }
 }
