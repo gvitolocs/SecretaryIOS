@@ -109,7 +109,7 @@ final class MediaLiveTests: XCTestCase {
         video.tap()
         XCTAssertTrue(app.buttons["closePlayer"].waitForExistence(timeout: 10), "player opened")
         sleep(4)
-        app.buttons["subtitleMenu"].tap()
+        app.buttons["Subtitles and speed"].tap()
         sleep(1)
         attach(app, "1-subtitle-menu")
         let danish = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Danish'")).firstMatch
@@ -127,10 +127,9 @@ final class MediaLiveTests: XCTestCase {
         attach(app, "3-ocr-subtitles-remembered")
         sleep(10)
         attach(app, "4-ocr-subtitles-later")
-        app.buttons["subtitleMenu"].tap()
+        app.buttons["Subtitles and speed"].tap()
         sleep(1)
         attach(app, "5-picker-on-dvd-film")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
-        app.buttons["closePlayer"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Danish'")).count >= 2, "both DVD tracks listed")
     }
 }
