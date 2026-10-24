@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
+import { A } from "@solidjs/router";
 import { catalogName, itemKey, LANGS, OTHER_SECTION, type CatalogItem, type Lang } from "../lib/shoppingCatalog";
 import { LANG_LABEL } from "../lib/shoppingI18n";
 import { THEME_ICON, type ShopItem } from "../lib/shoppingOps";
@@ -241,6 +242,9 @@ export default function ShoppingView() {
                   {shop.online ? t("syncing") : t("offline", { n: shop.pending })}
                 </span>
               </Show>
+              <A href="/shopping/map" class="bring-round-btn" aria-label={t("mapBtn")} title={t("mapBtn")}>
+                <span aria-hidden="true">🗺️</span>
+              </A>
               <button
                 type="button"
                 class="bring-round-btn"

@@ -349,6 +349,26 @@ impl Call {
         Ok(call)
     }
 
+    /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
+    /// The optional radius is in meters, 500..=15 000.
+    pub fn deals_map(radius_m: Option<u32>) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["grocery", "deals", "map"]);
+        if let Some(r) = radius_m {
+            if !(validate::DEALS_RADIUS_MIN..=validate::DEALS_RADIUS_MAX).contains(&r) {
+                return Err(Error::Invalid {
+                    field: "radiusM",
+                    message: format!(
+                        "must be an integer {}..={}",
+                        validate::DEALS_RADIUS_MIN,
+                        validate::DEALS_RADIUS_MAX
+                    ),
+                });
+            }
+            call.query.push(("radiusM", r.to_string()));
+        }
+        Ok(call)
+    }
+
     pub fn method(&self) -> &Method {
         &self.method
     }
@@ -758,6 +778,37 @@ mod tests {
             c.url(&Call::timeline(&q).unwrap()).as_str(),
             "http://h:1/prefix/api/secretary/timeline?before=tl_9&limit=50"
         );
+        assert_eq!(
+            c.url(&Call::deals_map(Some(2026)).unwrap()).as_str(),
+            "http://h:1/prefix/api/secretary/grocery/deals/map?radiusM=2026"
+        );
+        assert!(
+            !c.url(&Call::deals_map(None).unwrap())
+                .as_str()
+                .contains('?'),
+            "no query without a radius"
+        );
+    }
+
+    #[test]
+    fn deals_map_radius_is_500_to_15000() {
+        assert!(Call::deals_map(None).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MIN)).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MAX)).is_ok());
+        for bad in [
+            Some(validate::DEALS_RADIUS_MIN - 1),
+            Some(validate::DEALS_RADIUS_MAX + 1),
+            Some(0),
+            Some(u32::MAX),
+        ] {
+            match Call::deals_map(bad) {
+                Err(Error::Invalid { field, message }) => {
+                    assert_eq!(field, "radiusM");
+                    assert!(message.contains("500..=15000"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
