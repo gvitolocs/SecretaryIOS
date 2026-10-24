@@ -66,6 +66,9 @@ pub struct Progress {
     pub page: Option<u32>,
     pub source: String,
     pub at: String,
+    /// Reader position (e.g. an EPUB CFI) from a synced device; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -22,6 +22,10 @@ use ink_library::{
     search,
 };
 use ink_obsidian::{books::How, NotesIndexBatch};
+use ink_sync::{
+    state::{self as sync_state, SyncState},
+    transport::{check_request, serve, SyncRequest, SyncResponse},
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -274,10 +278,16 @@ fn validate(batch: &ImportBatch) -> Result<(), ApiError> {
     }
     Ok(())
 }
+/// Records plus the device-sync registers (`sync.json`, the source of truth for
+/// device-originated data; [`sync_state::project`] writes it into the records).
+struct Loaded {
+    lib: LibraryState,
+    sync: SyncState,
+}
 /// Lazily loaded records and a write-ahead snapshot for crash recovery across files.
 pub struct LibraryStore {
     dir: PathBuf,
-    cache: Mutex<Option<LibraryState>>,
+    cache: Mutex<Option<Loaded>>,
 }
 pub fn store(data: &Path) -> Arc<LibraryStore> {
     Arc::new(LibraryStore {
@@ -324,7 +334,21 @@ impl LibraryStore {
         }
         Ok(())
     }
-    fn load(&self) -> Result<LibraryState, ApiError> {
+    /// Records, then the sync registers projected onto them: a crash between
+    /// writing `sync.json` and the records is healed here.
+    fn load(&self) -> Result<Loaded, ApiError> {
+        let mut lib = self.load_records()?;
+        let path = self.dir.join("sync.json");
+        let sync: SyncState = if path.exists() {
+            serde_json::from_reader(fs::File::open(&path).map_err(io_err)?)
+                .map_err(|_| ApiError::internal("invalid library sync state"))?
+        } else {
+            SyncState::default()
+        };
+        sync_state::project(&sync, &mut lib, None, &timestamp());
+        Ok(Loaded { lib, sync })
+    }
+    fn load_records(&self) -> Result<LibraryState, ApiError> {
         let pending = self.dir.join("pending.json");
         if pending.exists() {
             let s: LibraryState =
@@ -393,6 +417,14 @@ impl LibraryStore {
         &self,
         f: impl FnOnce(&Self, &mut LibraryState) -> Result<R, ApiError>,
     ) -> Result<R, ApiError> {
+        self.with_sync(|st, lib, _| f(st, lib))
+    }
+    /// Like `with`, plus the sync registers. After a failed write the cache is
+    /// dropped, so the next request reloads what reached the disk.
+    fn with_sync<R>(
+        &self,
+        f: impl FnOnce(&Self, &mut LibraryState, &mut SyncState) -> Result<R, ApiError>,
+    ) -> Result<R, ApiError> {
         let mut lock = self
             .cache
             .lock()
@@ -400,15 +432,68 @@ impl LibraryStore {
         if lock.is_none() {
             *lock = Some(self.load()?);
         }
-        let result = f(
-            self,
-            lock.as_mut()
-                .ok_or_else(|| ApiError::internal("library cache unavailable"))?,
-        );
-        if result.is_err() && self.dir.join("pending.json").exists() {
+        let loaded = lock
+            .as_mut()
+            .ok_or_else(|| ApiError::internal("library cache unavailable"))?;
+        let result = f(self, &mut loaded.lib, &mut loaded.sync);
+        if result.is_err()
+            && (self.dir.join("pending.json").exists() || self.dir.join(".sync.json.tmp").exists())
+        {
             *lock = None;
         }
         result
+    }
+    fn persist_sync(&self, s: &SyncState) -> Result<(), ApiError> {
+        ensure_dir(&self.dir).map_err(io_err)?;
+        save_json_atomic(&self.dir, "sync.json", s).map_err(io_err)
+    }
+    /// `POST /v1/library/sync`: apply the ops (pure, idempotent), then write
+    /// `sync.json` before the records it projects onto.
+    fn sync(&self, req: &SyncRequest) -> Result<SyncResponse, ApiError> {
+        self.with_sync(|st, lib, sync| {
+            let mut next_sync = sync.clone();
+            let resp = serve(&mut next_sync, req).map_err(|e| bad(&e))?;
+            if next_sync.clock == sync.clock {
+                return Ok(resp); // only duplicates or deferred ops
+            }
+            let books: std::collections::BTreeSet<String> = req
+                .ops
+                .iter()
+                .map(|o| o.kind.book_id().to_owned())
+                .collect();
+            let mut next = lib.clone();
+            let changed = sync_state::project(&next_sync, &mut next, Some(&books), &timestamp());
+            st.persist_sync(&next_sync)?;
+            *sync = next_sync;
+            if changed {
+                st.persist(&next)?;
+                *lib = next;
+            }
+            Ok(resp)
+        })
+    }
+    /// The owner confirms a device's deletion request.
+    fn confirm_tombstone(&self, op_id: &str) -> Result<Value, ApiError> {
+        self.with_sync(|st, lib, sync| {
+            let mut next_sync = sync.clone();
+            let t = sync_state::confirm_tombstone(&mut next_sync, op_id).ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "tombstone_not_found",
+                    "no such deletion request",
+                )
+            })?;
+            let mut next = lib.clone();
+            let books = [t.book_id.clone()].into_iter().collect();
+            let changed = sync_state::project(&next_sync, &mut next, Some(&books), &timestamp());
+            st.persist_sync(&next_sync)?;
+            *sync = next_sync;
+            if changed {
+                st.persist(&next)?;
+                *lib = next;
+            }
+            Ok(json!({"tombstone":t}))
+        })
     }
     fn persist(&self, s: &LibraryState) -> Result<(), ApiError> {
         ensure_dir(&self.dir).map_err(io_err)?;
@@ -468,7 +553,7 @@ impl LibraryStore {
     }
     fn import(&self, batch: ImportBatch, caller: &str) -> Result<ImportOutcome, ApiError> {
         validate(&batch)?;
-        self.with(|st,s|{let (next,o)=merge(s,&batch,&timestamp());if next.books.len()>MAX_BOOKS||next.highlights.values().map(Vec::len).sum::<usize>()>MAX_HIGHLIGHTS{return Err(bad("library capacity exceeded"));}st.persist(&next)?;*s=next;
+        self.with_sync(|st,s,sync|{let now=timestamp();let (mut next,o)=merge(s,&batch,&now);sync_state::project(sync,&mut next,None,&now);if next.books.len()>MAX_BOOKS||next.highlights.values().map(Vec::len).sum::<usize>()>MAX_HIGHLIGHTS{return Err(bad("library capacity exceeded"));}st.persist(&next)?;*s=next;
         let mut options=OpenOptions::new();options.create(true).append(true);#[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}let mut f=options.open(st.dir.join("imports.jsonl")).map_err(io_err)?;
         let log=json!({"time":timestamp(),"caller":caller,"source":batch.source,"booksAdded":o.books_added,"booksUpdated":o.books_updated,"booksUnchanged":o.books_unchanged,"highlightsAdded":o.highlights_added,"highlightsSkipped":o.highlights_skipped,"removedFromKindle":o.removed_from_kindle,"conflictCount":o.conflicts.len(),"warningCount":o.warnings.len()});writeln!(f,"{log}").map_err(io_err)?;f.sync_all().map_err(io_err)?;Ok(o)})
     }
@@ -632,7 +717,7 @@ async fn read(
     let path = uri.path().to_owned();
     let store = st.library.clone();
     blocking(move || {
-        store.with(|st, s| {
+        store.with_sync(|st, s, sync| {
             let limit = q.limit.unwrap_or(200).clamp(1, MAX_LIST_LIMIT);
             let query = q.q.as_deref().unwrap_or("");
             let tail = path.trim_start_matches("/v1/library/");
@@ -658,7 +743,11 @@ async fn read(
                     Ok(json!({"results":results}))
                 }
                 "sync" => Ok(json!({"imports":st.logs()?,"books":s.books.len(),
-                "highlights":s.highlights.values().map(Vec::len).sum::<usize>()})),
+                "highlights":s.highlights.values().map(Vec::len).sum::<usize>(),
+                "serverClock":sync.clock,
+                "devices":sync.devices.iter().map(|(d,w)|(d.clone(),w.contiguous)).collect::<std::collections::BTreeMap<_,_>>(),
+                "pendingTombstones":sync.pending_tombstones().collect::<Vec<_>>(),
+                "recentConflicts":sync.conflicts.iter().rev().take(20).collect::<Vec<_>>()})),
                 "stats" => Ok(stats(s, st.logs()?.pop())),
                 "recent" => Ok(recent(s, q.days.unwrap_or(7), limit)),
                 _ => {
@@ -732,7 +821,7 @@ async fn patch(
     }
     let store = st.library.clone();
     let result = blocking(move || {
-        store.with(|st, s| {
+        store.with_sync(|st, s, sync| {
             let mut b = book(s, &id)?.clone();
             if req
                 .base_updated_at
@@ -745,9 +834,14 @@ async fn patch(
                     "book changed; reload before editing",
                 ));
             }
+            // Owner edits set the sync floors: older device ops lose, and an
+            // owner `completed` is never reverted by a device.
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let mut next_sync = sync.clone();
             if let Some(v) = req.status {
                 b.status = v;
                 b.status_source = Some("owner".into());
+                sync_state::owner_set_status(&mut next_sync, &id, v, now_ms);
             }
             if let Some(v) = tags {
                 b.tags = v;
@@ -756,8 +850,13 @@ async fn patch(
                 v.source = "owner".into();
                 v.at = timestamp();
                 b.progress = Some(v);
+                sync_state::owner_set_progress(&mut next_sync, &id, now_ms);
             }
             b.updated_at = timestamp();
+            if next_sync != *sync {
+                st.persist_sync(&next_sync)?;
+                *sync = next_sync;
+            }
             let mut next = s.clone();
             if req.status.is_some() || b.progress != book(s, &id)?.progress {
                 next.changes.push(ReadingChange {
@@ -776,6 +875,42 @@ async fn patch(
     })
     .await?;
     tracing::info!(by = caller.0, "library owner edit");
+    Ok(result)
+}
+async fn sync_ops(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    JsonBody(req): JsonBody<SyncRequest>,
+) -> Result<Json<SyncResponse>, ApiError> {
+    check_request(&req).map_err(|e| bad(&e))?;
+    let store = st.library.clone();
+    let ops = req.ops.len();
+    let result = blocking(move || store.sync(&req)).await?;
+    tracing::info!(
+        by = caller.0,
+        ops,
+        acked = result.0.acked.len(),
+        conflicts = result.0.conflicts.len(),
+        "library sync"
+    );
+    Ok(result)
+}
+async fn confirm_tombstone(
+    State(st): State<AppState>,
+    UrlPath(op_id): UrlPath<String>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<Value>, ApiError> {
+    // Deletions need the owner: Lucina's service token cannot confirm them.
+    if caller.0 != "device" {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "owner_required",
+            "only the owner's device can confirm a deletion",
+        ));
+    }
+    let store = st.library.clone();
+    let result = blocking(move || store.confirm_tombstone(&op_id)).await?;
+    tracing::info!(by = caller.0, "library deletion confirmed");
     Ok(result)
 }
 async fn brief(
@@ -842,7 +977,11 @@ pub fn routes(st: AppState) -> Router<AppState> {
         .route("/v1/library/search", get(read))
         .route("/v1/library/recent", get(read))
         .route("/v1/library/stats", get(read))
-        .route("/v1/library/sync", get(read))
+        .route("/v1/library/sync", get(read).post(sync_ops))
+        .route(
+            "/v1/library/sync/tombstones/{op_id}/confirm",
+            post(confirm_tombstone),
+        )
         .route("/v1/library/import", post(import_batch))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .route_layer(middleware::from_fn_with_state(st, auth))

@@ -1453,6 +1453,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ink-sync"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ink-library",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2404,6 +2417,7 @@ dependencies = [
  "getrandom 0.3.4",
  "ink-library",
  "ink-obsidian",
+ "ink-sync",
  "mime",
  "p256",
  "proptest",

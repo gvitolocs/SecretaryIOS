@@ -51,3 +51,8 @@ fn oauth() {
 fn gates() {
     run("gates");
 }
+
+#[test]
+fn ink_sync() {
+    run("ink-sync");
+}
