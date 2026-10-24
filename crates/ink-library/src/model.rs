@@ -194,6 +194,25 @@ pub struct Highlight {
     pub provenance: Provenance,
     pub dedup_key: String,
 }
+/// Sorts highlights the way they appear in the book: by Kindle location, then page, then the
+/// time they were added; positions that are unknown go last. Ties keep a stable order by id.
+pub fn sort_reading_order(highlights: &mut [Highlight]) {
+    highlights.sort_by(|a, b| {
+        let key = |h: &Highlight| {
+            (
+                h.location.as_ref().map_or(u32::MAX, |l| l.start),
+                h.page
+                    .as_deref()
+                    .and_then(|p| p.trim().parse::<u32>().ok())
+                    .unwrap_or(u32::MAX),
+            )
+        };
+        key(a)
+            .cmp(&key(b))
+            .then_with(|| a.added_at.cmp(&b.added_at))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingSession {

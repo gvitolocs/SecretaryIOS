@@ -773,7 +773,8 @@ async fn read(
                     let parts: Vec<_> = tail.split('/').collect();
                     let id = parts.get(1).copied().unwrap_or("");
                     let b = book(s, id)?;
-                    let hs = s.highlights.get(id).cloned().unwrap_or_default();
+                    let mut hs = s.highlights.get(id).cloned().unwrap_or_default();
+                    sort_reading_order(&mut hs);
                     if parts.get(2) == Some(&"notes") {
                         let all = s.note_links.get(id).map(Vec::as_slice).unwrap_or(&[]);
                         Ok(json!({"bookId":id,"total":all.len(),

@@ -78,6 +78,14 @@ pub fn parse(b: &[u8]) -> Result<Metadata> {
     if language != 0 {
         m.language = Some(format!("mobi-lcid:{language}"));
     }
+    // Orthographic and inflection indexes (record 0 offsets 0x28 and 0x2C in the MobileRead MOBI
+    // header table) are set only in dictionaries. Older Kindle dictionaries (Duden, Zingarelli,
+    // Progressive) have no EXTH 531/532, so this is how they are recognised. Index 0 would be the
+    // header record itself, so 0 counts as absent like 0xFFFFFFFF. A KF8 book can set 0x28 alone.
+    let index = |at| u32be(r, at).map(|v| v != 0 && v != u32::MAX as usize);
+    if index(0x28)? && index(0x2C)? {
+        m.dictionary = true;
+    }
     let ex = 16 + len;
     if len >= 116 && u32be(r, 16 + 0x70)? & 0x40 != 0 {
         if bytes(r, ex, 4)? != b"EXTH" {

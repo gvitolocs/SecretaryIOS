@@ -321,6 +321,10 @@ pub fn merge(
             .books
             .entry(id.clone())
             .or_insert_with(|| new_book(id.clone(), e.title.clone(), e.authors.clone(), now));
+        // KFX files expose no author; the clippings name one for the same book.
+        if b.authors.is_empty() && !e.authors.is_empty() {
+            b.authors = e.authors.clone();
+        }
         add(
             &mut b.sources,
             Source {

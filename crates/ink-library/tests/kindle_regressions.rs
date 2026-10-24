@@ -150,6 +150,7 @@ fn edition_and_subtitle_keys_match_without_changing_display_titles() {
         let book = s.books.values().next().unwrap();
         assert!(book.owned);
         assert_eq!(book.title, display);
+        assert_eq!(book.authors, [author], "authors come from the clipping");
         assert_eq!(s.highlights[&book.id].len(), 1);
         assert_eq!(merge(&s, &b, NOW).0, s);
     }
@@ -528,4 +529,49 @@ fn marker_checks_do_not_follow_directory_symlinks() {
     assert_eq!(scan.indicators.get("kual"), Some(&false));
     assert_eq!(scan.indicators.get("jailbreak"), Some(&false));
     assert!(scan.markers.is_empty());
+}
+
+#[test]
+fn mobi_orthographic_and_inflection_indexes_mark_old_dictionaries() {
+    // Values seen in a Duden dictionary on the owner's Kindle (no EXTH 531/532).
+    let mut dict = mobi(1252, b"Duden", &[]);
+    put(&mut dict[86..], 0x28, 0x3d0a);
+    put(&mut dict[86..], 0x2C, 0x3d6c);
+    assert!(ink_library::mobi::parse(&dict).unwrap().dictionary);
+    // A KF8 book can carry the first index alone; absent is 0xFFFFFFFF (or 0).
+    let mut book = mobi(1252, b"Book", &[]);
+    put(&mut book[86..], 0x28, 0xfb);
+    put(&mut book[86..], 0x2C, u32::MAX);
+    assert!(!ink_library::mobi::parse(&book).unwrap().dictionary);
+    assert!(
+        !ink_library::mobi::parse(&mobi(1252, b"Plain", &[]))
+            .unwrap()
+            .dictionary
+    );
+}
+
+#[test]
+fn highlights_sort_in_reading_order() {
+    let entry = |loc: &str, page: &str, text: &str| {
+        format!(
+            "Book (Writer)\n- Your Highlight on page {page} | Location {loc} | Added on Sunday, 4 October 2020 15:12:01\n\n{text}\n==========\n"
+        )
+    };
+    let input = [
+        entry("920-922", "93", "c"),
+        entry("506-508", "53", "a"),
+        entry("561-563", "58", "b"),
+        "Book (Writer)\n- Your Bookmark | Added on Sunday, 4 October 2020 15:12:01\n\nz\n==========\n".to_string(),
+    ]
+    .concat();
+    let mut hs: Vec<_> = clippings::parse(input.as_bytes())
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|e| e.highlight)
+        .collect();
+    ink_library::model::sort_reading_order(&mut hs);
+    let order: Vec<_> = hs.iter().map(|h| h.text.as_str()).collect();
+    assert_eq!(order[..3], ["a", "b", "c"]);
+    assert_eq!(hs.len(), 4, "an entry without a position is kept, last");
 }
