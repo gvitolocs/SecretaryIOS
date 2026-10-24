@@ -1335,6 +1335,7 @@ dependencies = [
  "nom-exif",
  "reverse_geocoder",
  "rusqlite",
+ "secretary-media-stream",
  "serde",
  "serde_json",
  "subtle",

@@ -30,6 +30,8 @@ enum Cmd {
     FlushSpool,
     /// Mark every item's thumbnails for regeneration.
     Rethumb,
+    /// Index a folder in place (no copy) as album LABEL.
+    IndexFolder { label: String, path: PathBuf },
 }
 
 #[tokio::main]
@@ -62,6 +64,11 @@ async fn main() -> anyhow::Result<()> {
             let n = lib.db.with(|c| c.execute("UPDATE items SET thumb_state = 'pending'", []))?;
             println!("{n} items queued");
         }
+        Cmd::IndexFolder { label, path } => {
+            let lib = Library::open(cfg)?;
+            let r = tokio::task::spawn_blocking(move || ingest::index_folder(&lib, &label, &path)).await??;
+            println!("added {}, unchanged {}", r.0, r.1);
+        }
         Cmd::Serve => serve(cfg).await?,
     }
     Ok(())
@@ -87,7 +94,40 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             }
         });
     }
-    let public = http::router(lib.clone());
+    if !cfg.folders.is_empty() {
+        let l = lib.clone();
+        tokio::spawn(async move {
+            loop {
+                for (label, path) in l.cfg.folders.clone() {
+                    let l2 = l.clone();
+                    match tokio::task::spawn_blocking(move || ingest::index_folder(&l2, &label, &path)).await {
+                        Ok(Ok((a, _))) if a > 0 => tracing::info!(added = a, "folder indexed"),
+                        Ok(Err(e)) => tracing::warn!(error = %e, "folder index failed"),
+                        _ => {}
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+            }
+        });
+    }
+    let stream = match &cfg.play_secret {
+        Some(secret) => {
+            let mut sc = secretary_media_stream::StreamConfig::new(
+                secret.clone(),
+                cfg.stream_cache_dir.clone(),
+                cfg.progress_path.clone(),
+            );
+            sc.ffmpeg = cfg.ffmpeg.clone();
+            sc.ffprobe = cfg.ffprobe.clone();
+            let src = std::sync::Arc::new(lucina_media::source::CatalogSource(lib.clone()));
+            Some(secretary_media_stream::router(src, sc).map_err(anyhow::Error::msg)?)
+        }
+        None => {
+            tracing::warn!("no play secret: /play and /v1/media/s/* are off");
+            None
+        }
+    };
+    let public = http::router(lib.clone(), stream);
     let internal = http::internal_router(lib.clone());
     if cfg.listen == cfg.internal_listen {
         let listener = tokio::net::TcpListener::bind(cfg.listen).await?;

@@ -29,6 +29,8 @@ pub struct Library {
     pub cfg: Arc<Config>,
     pub db: Db,
     pub events: broadcast::Sender<Event>,
+    /// Mints the player's tokenised URLs for listings (poster_url, thumb_url).
+    pub signer: Option<Arc<secretary_media_stream::Signer>>,
 }
 
 impl Library {
@@ -38,7 +40,11 @@ impl Library {
         }
         let db = Db::open(&cfg.db_path())?;
         let (events, _) = broadcast::channel(256);
-        Ok(Self { cfg: Arc::new(cfg), db, events })
+        let signer = cfg
+            .play_secret
+            .as_deref()
+            .map(|s| Arc::new(secretary_media_stream::Signer::new(s, Duration::from_secs(12 * 3600))));
+        Ok(Self { cfg: Arc::new(cfg), db, events, signer })
     }
 
     pub fn emit(&self, kind: &'static str, item_id: &str) {
@@ -333,6 +339,8 @@ pub struct ExternalReq {
     pub path: String,
     #[serde(default)]
     pub links: serde_json::Value,
+    /// Album title to put the item in (created if missing).
+    pub album: Option<String>,
 }
 
 pub fn register_external(lib: &Library, source: &str, ext_id: &str, req: &ExternalReq) -> anyhow::Result<IngestResult> {
@@ -348,6 +356,7 @@ pub fn register_external(lib: &Library, source: &str, ext_id: &str, req: &Extern
         source: Some(source.to_string()),
         title: req.title.clone(),
         caption: req.caption.clone(),
+        album: req.album.clone(),
         ..Default::default()
     };
     let mut x = meta::extract(&path, &mime, &client, lib.cfg.tz, &lib.cfg.ffprobe);
@@ -505,4 +514,58 @@ pub fn sweep_uploads(lib: &Library) -> anyhow::Result<usize> {
         lib.db.with(|c| c.execute("DELETE FROM uploads WHERE id = ?1", [id]))?;
     }
     Ok(stale.len())
+}
+
+/// Index every media file under `root` in place (no copy), in the album `label`. Files already
+/// indexed with the same size are skipped, so rescans are cheap.
+pub fn index_folder(lib: &Library, label: &str, root: &Path) -> anyhow::Result<(usize, usize)> {
+    let (mut added, mut kept) = (0, 0);
+    for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let mime = meta::mime_for(path, None);
+        let kind = meta::kind_for_mime(&mime);
+        if kind == "file" {
+            continue;
+        }
+        let ext_id = blake3::hash(path.to_string_lossy().as_bytes()).to_hex()[..32].to_string();
+        let size = entry.metadata().map(|m| m.len() as i64).unwrap_or(-1);
+        let same: bool = lib.db.with(|c| {
+            c.query_row(
+                "SELECT 1 FROM externals e JOIN items i ON i.id = e.item_id JOIN blobs b ON b.hash = i.hash
+                 WHERE e.source = 'folder' AND e.ext_id = ?1 AND b.path = ?2 AND i.bytes = ?3 AND i.trashed_at IS NULL",
+                params![ext_id, path.to_string_lossy(), size],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|o| o.is_some())
+        })?;
+        if same {
+            kept += 1;
+            continue;
+        }
+        let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&name).replace(['.', '_'], " ");
+        let req = ExternalReq {
+            kind: Some(kind.to_string()),
+            title: Some(title),
+            caption: None,
+            created_at: None,
+            duration_ms: None,
+            mime: Some(mime),
+            path: path.to_string_lossy().to_string(),
+            links: serde_json::Value::Null,
+            album: Some(label.to_string()),
+        };
+        match register_external(lib, "folder", &ext_id, &req) {
+            Ok(_) => added += 1,
+            Err(e) => tracing::warn!(path = %path.display(), error = %e, "index failed"),
+        }
+    }
+    Ok((added, kept))
 }

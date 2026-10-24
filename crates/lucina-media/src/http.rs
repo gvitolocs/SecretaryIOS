@@ -28,7 +28,8 @@ use crate::meta::ClientMeta;
 use crate::protocol::{self, ChunkOutcome, UploadState};
 use crate::thumbs::{self, ThumbSize};
 
-pub const UPSTREAM_KEY_HEADER: &str = "x-lucina-upstream-key";
+/// Sent by p1's Caddy (`header_up X-Media-Upstream-Key {file./etc/caddy/media-upstream.key}`).
+pub const UPSTREAM_KEY_HEADER: &str = "x-media-upstream-key";
 pub const MAX_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -56,8 +57,9 @@ fn not_found() -> ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-/// The public (tailnet) API.
-pub fn router(lib: Library) -> Router {
+/// The public (tailnet) API. `extra` is the player's streaming router (play, `/s/…`, progress);
+/// it sits behind the same guard.
+pub fn router(lib: Library, extra: Option<Router>) -> Router {
     let uploads = Router::new()
         .route("/v1/media/uploads/{id}", put(put_chunk).get(get_upload))
         .route("/v1/media/uploads/{id}/preview", put(put_preview))
@@ -79,8 +81,9 @@ pub fn router(lib: Library) -> Router {
         .route("/v1/media/devices/{device}/assets", get(device_assets))
         .route("/v1/media/events", get(events))
         .merge(uploads)
-        .layer(middleware::from_fn_with_state(lib.clone(), upstream_guard))
-        .with_state(lib)
+        .with_state(lib.clone())
+        .merge(extra.unwrap_or_default())
+        .layer(middleware::from_fn_with_state(lib, upstream_guard))
 }
 
 /// Loopback-only routes for services on nezopt (voice memos, imports).
@@ -113,9 +116,22 @@ pub struct ItemOut {
     #[serde(flatten)]
     pub item: Item,
     pub urls: Value,
+    /// Tokenised URLs (no header needed), as the player apps expect.
+    pub poster_url: Option<String>,
+    pub thumb_url: Option<String>,
+    /// First album title, for the player's grouping.
+    pub album: Option<String>,
 }
 
-pub fn item_out(it: Item) -> ItemOut {
+pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
+    let (poster_url, thumb_url) = match &lib.signer {
+        Some(s) => {
+            let (base, _) = s.base(&it.id);
+            let has_visual = it.thumb_state == "ready" || matches!(it.kind.as_str(), "video" | "audio");
+            (has_visual.then(|| format!("{base}/poster.jpg")), has_visual.then(|| format!("{base}/thumb.jpg")))
+        }
+        None => (None, None),
+    };
     let id = &it.id;
     let v = it.version;
     let has_thumb = it.thumb_state == "ready";
@@ -126,21 +142,48 @@ pub fn item_out(it: Item) -> ItemOut {
         "poster": (has_thumb && matches!(it.kind.as_str(), "video" | "audio")).then(|| format!("/v1/media/items/{id}/poster?v={v}")),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
-    ItemOut { item: it, urls }
+    ItemOut { item: it, urls, poster_url, thumb_url, album }
+}
+
+/// Album titles for items, user albums first, for `ItemOut.album`.
+fn first_album_titles(c: &rusqlite::Connection, items: &[Item]) -> rusqlite::Result<Vec<Option<String>>> {
+    let mut st = c.prepare_cached(
+        "SELECT a.title FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.item_id = ?1
+         ORDER BY a.system_key IS NOT NULL, ai.added_at LIMIT 1",
+    )?;
+    items.iter().map(|it| st.query_row([&it.id], |r| r.get(0)).optional()).collect()
 }
 
 async fn list_items(State(lib): State<Library>, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
-    let page = lib.db.call(move |c| db::list_items(c, &q)).await?;
+    let (page, titles, albums) = lib
+        .db
+        .call(move |c| {
+            let page = db::list_items(c, &q)?;
+            let titles = first_album_titles(c, &page.items)?;
+            let albums: Vec<String> = db::list_albums(c)?.into_iter().filter(|a| a.count > 0).map(|a| a.title).collect();
+            Ok((page, titles, albums))
+        })
+        .await?;
     Ok(Json(json!({
-        "items": page.items.into_iter().map(item_out).collect::<Vec<_>>(),
+        "ok": true,
+        "items": page.items.into_iter().zip(titles).map(|(it, a)| item_out(&lib, it, a)).collect::<Vec<_>>(),
         "next_cursor": page.next_cursor,
         "total": page.total,
+        "albums": albums,
     })))
 }
 
 async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<ItemOut>> {
-    let it = lib.db.call(move |c| db::get_item(c, &id)).await?.ok_or_else(not_found)?;
-    Ok(Json(item_out(it)))
+    let (it, album) = lib
+        .db
+        .call(move |c| {
+            let Some(it) = db::get_item(c, &id)? else { return Ok(None) };
+            let a = first_album_titles(c, std::slice::from_ref(&it))?.pop().flatten();
+            Ok(Some((it, a)))
+        })
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(Json(item_out(&lib, it, album)))
 }
 
 #[derive(Deserialize)]
@@ -192,7 +235,7 @@ async fn patch_item(
         .await?
         .ok_or_else(not_found)?;
     lib.emit("item.updated", &id);
-    Ok(Json(item_out(it)))
+    Ok(Json(item_out(&lib, it, None)))
 }
 
 /// Soft delete: the original stays on disk; the item leaves the timeline. Never touches phones.
@@ -225,7 +268,7 @@ async fn restore_item(State(lib): State<Library>, Path(id): Path<String>) -> Api
         .await?
         .ok_or_else(not_found)?;
     lib.emit("item.updated", &id);
-    Ok(Json(item_out(it)))
+    Ok(Json(item_out(&lib, it, None)))
 }
 
 async fn serve_file(req_headers: HeaderMap, path: PathBuf, mime: &str, etag: &str, cache: &str) -> ApiResult<Response> {

@@ -23,25 +23,55 @@ pub struct Config {
     pub tz: Tz,
     pub ffmpeg: PathBuf,
     pub ffprobe: PathBuf,
+    /// HMAC key for the player's tokenised `/v1/media/s/…` URLs.
+    pub play_secret: Option<Vec<u8>>,
+    /// HLS output, probe cache, converted subtitles (NVMe).
+    pub stream_cache_dir: PathBuf,
+    pub progress_path: PathBuf,
+    /// Folders indexed in place, `(album label, path)`.
+    pub folders: Vec<(String, PathBuf)>,
 }
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let home = PathBuf::from(var("HOME").unwrap_or_else(|| "/home/nez".into()));
+        let default_key = home.join(".config/secretary-media/upstream.key");
         let upstream_key = match var("LUCINA_MEDIA_UPSTREAM_KEY_FILE") {
             Some(path) => Some(std::fs::read_to_string(&path)?.trim().to_string()),
-            None => var("LUCINA_MEDIA_UPSTREAM_KEY"),
+            None => match var("LUCINA_MEDIA_UPSTREAM_KEY") {
+                Some(k) => Some(k),
+                None if default_key.is_file() => Some(std::fs::read_to_string(&default_key)?.trim().to_string()),
+                None => None,
+            },
         };
-        if upstream_key.as_deref().is_some_and(|k| k.len() < 32) {
-            anyhow::bail!("upstream key must be at least 32 characters");
+        let secret_file = var("LUCINA_MEDIA_PLAY_SECRET_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config/secretary-media/play-token.key"));
+        let play_secret = if secret_file.is_file() { Some(std::fs::read(&secret_file)?) } else { None };
+        let folders = var("LUCINA_MEDIA_FOLDERS")
+            .map(|v| {
+                v.split(';')
+                    .filter_map(|p| p.split_once('='))
+                    .map(|(l, p)| (l.trim().to_string(), PathBuf::from(p.trim())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if upstream_key.as_deref().is_some_and(|k| k.len() < 16) {
+            anyhow::bail!("upstream key must be at least 16 characters");
         }
+        let data_dir: PathBuf =
+            var("LUCINA_MEDIA_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home.join("data/lucina-media"));
         Ok(Self {
             listen: var("LUCINA_MEDIA_LISTEN").unwrap_or_else(|| "127.0.0.1:8830".into()).parse()?,
             internal_listen: var("LUCINA_MEDIA_INTERNAL_LISTEN")
                 .unwrap_or_else(|| "127.0.0.1:8830".into())
                 .parse()?,
-            data_dir: var("LUCINA_MEDIA_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home.join("data/lucina-media")),
+            stream_cache_dir: var("LUCINA_MEDIA_STREAM_CACHE").map(PathBuf::from).unwrap_or_else(|| data_dir.join("stream")),
+            progress_path: var("LUCINA_MEDIA_PROGRESS").map(PathBuf::from).unwrap_or_else(|| data_dir.join("progress.json")),
+            data_dir,
+            play_secret,
+            folders,
             store_dir: var("LUCINA_MEDIA_STORE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("mnt/mybook/lucina-media")),
@@ -59,6 +89,8 @@ impl Config {
         Self {
             listen: "127.0.0.1:0".parse().unwrap(),
             internal_listen: "127.0.0.1:0".parse().unwrap(),
+            stream_cache_dir: data_dir.join("stream"),
+            progress_path: data_dir.join("progress.json"),
             data_dir,
             store_dir,
             upstream_key: None,
@@ -67,6 +99,8 @@ impl Config {
             tz: chrono_tz::Europe::Copenhagen,
             ffmpeg: "ffmpeg".into(),
             ffprobe: "ffprobe".into(),
+            play_secret: None,
+            folders: Vec::new(),
         }
     }
 

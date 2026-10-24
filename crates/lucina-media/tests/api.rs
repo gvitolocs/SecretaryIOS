@@ -22,7 +22,7 @@ fn setup() -> (tempfile::TempDir, Library, Router) {
     cfg.upstream_key = Some(KEY.into());
     store::init_store(&cfg).unwrap();
     let lib = Library::open(cfg).unwrap();
-    let app = http::router(lib.clone()).merge(http::internal_router(lib.clone()));
+    let app = http::router(lib.clone(), None).merge(http::internal_router(lib.clone()));
     (tmp, lib, app)
 }
 
@@ -32,7 +32,7 @@ async fn put_bytes(app: &Router, uri: &str, data: &[u8]) -> (StatusCode, Vec<u8>
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Body>, headers: &[(&str, &str)]) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
-    let mut b = Request::builder().method(method).uri(uri).header("x-lucina-upstream-key", KEY);
+    let mut b = Request::builder().method(method).uri(uri).header("x-media-upstream-key", KEY);
     for (k, v) in headers {
         b = b.header(*k, *v);
     }
@@ -116,7 +116,7 @@ async fn upstream_key_is_required() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     let res = app
         .clone()
-        .oneshot(Request::builder().uri("/v1/media/items").header("x-lucina-upstream-key", "wrong").body(Body::empty()).unwrap())
+        .oneshot(Request::builder().uri("/v1/media/items").header("x-media-upstream-key", "wrong").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
@@ -195,6 +195,9 @@ async fn phone_backup_flow() {
     let (s, album) = json_call(&app, "POST", "/v1/media/albums", json!({"title": "Copenhagen summer", "item_ids": [item_id]})).await;
     assert_eq!(s, StatusCode::CREATED);
     assert_eq!(album["count"], 1);
+    let (_, p) = get_json(&app, "/v1/media/items?album=copenhagen%20summer").await;
+    assert_eq!(p["items"].as_array().unwrap().len(), 1);
+    assert!(p["albums"].as_array().unwrap().iter().any(|a| a == "Copenhagen summer"));
     let (_, p) = get_json(&app, "/v1/media/items?q=summer").await;
     assert_eq!(p["items"][0]["id"], item_id.as_str());
     let (_, albums) = get_json(&app, "/v1/media/albums").await;

@@ -441,7 +441,13 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         add(&mut wh, &mut args, "i.sort_at < ?", t.into());
     }
     if let Some(a) = &q.album {
-        add(&mut wh, &mut args, "i.id IN (SELECT item_id FROM album_items WHERE album_id = ?)", a.clone().into());
+        // An album id, or a title (the player apps filter by title).
+        args.push(a.clone().into());
+        let n = args.len();
+        wh.push(format!(
+            "i.id IN (SELECT ai.item_id FROM album_items ai JOIN albums al ON al.id = ai.album_id \
+             WHERE al.id = ?{n} OR al.title = ?{n} COLLATE NOCASE)"
+        ));
     }
     if let Some(fq) = q.q.as_deref().and_then(fts_query) {
         add(&mut wh, &mut args, "i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?)", fq.into());
