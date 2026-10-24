@@ -447,6 +447,7 @@ struct GalleryViewer: View {
         } message: {
             Text("It stays on this iPhone. The server keeps it in the trash for 30 days.")
         }
+        .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
     }
 
     @ViewBuilder
