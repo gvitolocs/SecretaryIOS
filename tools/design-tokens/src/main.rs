@@ -11,6 +11,8 @@
 //! - `ios/Secretary/Shared/LucinaTokens.swift`: SwiftUI (iOS, and macOS through AppKit)
 //! - `web/src/styles/lucina-tokens.css`: CSS custom properties `--lu-*`
 //! - `design/generated/compose/LucinaTokens.kt`: Jetpack Compose (Android; Compose Desktop for Windows)
+//! - `design/generated/android/LucinaTokens.kt`: framework-only Kotlin (ARGB Ints, no Compose);
+//!   also written to `android/common/LucinaTokens.kt` where that folder exists
 
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
@@ -389,6 +391,43 @@ fn compose(t: &Tokens) -> String {
     s
 }
 
+/// Framework-only Kotlin (no Compose, no AndroidX): ARGB Ints, dp/sp Floats, weights as Ints.
+fn kotlin_plain(t: &Tokens) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "// {HEADER}\n");
+    s.push_str("package tech.getsecretary.design\n\n");
+    s.push_str("/** The Lucina design tokens for framework-only Android views. Colours are ARGB; sizes are dp, text sizes sp. */\nobject LucinaTokens {\n");
+    for (name, light) in [("Dark", false), ("Light", true)] {
+        let _ = writeln!(s, "    object {name} {{");
+        for c in &t.colors {
+            let v = if light { c.light } else { c.dark };
+            let _ = writeln!(s, "        const val {}: Int = 0x{:08X}.toInt()", c.name, v.argb());
+        }
+        s.push_str("    }\n\n");
+    }
+    for (object, list) in [("Radius", &t.radius), ("Space", &t.space)] {
+        let _ = writeln!(s, "    object {object} {{");
+        for (k, v) in list {
+            let _ = writeln!(s, "        const val {k}: Float = {}f", num(*v));
+        }
+        s.push_str("    }\n\n");
+    }
+    s.push_str("    object TextSize {\n");
+    for f in &t.scale {
+        let _ = writeln!(s, "        const val {}: Float = {}f", f.name, num(f.size));
+    }
+    s.push_str("    }\n\n    object TextWeight {\n");
+    for f in &t.scale {
+        let _ = writeln!(s, "        const val {}: Int = {}", f.name, f.weight);
+    }
+    s.push_str("    }\n\n    object LineHeight {\n");
+    for f in &t.scale {
+        let _ = writeln!(s, "        const val {}: Float = {}f", f.name, num(f.line));
+    }
+    s.push_str("    }\n}\n");
+    s
+}
+
 fn main() -> ExitCode {
     let check = std::env::args().any(|a| a == "--check");
     let root = repo_root();
@@ -404,11 +443,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let outputs = [
+    let plain = kotlin_plain(&tokens);
+    let mut outputs = vec![
         ("ios/Secretary/Shared/LucinaTokens.swift", swift(&tokens)),
         ("web/src/styles/lucina-tokens.css", css(&tokens)),
         ("design/generated/compose/LucinaTokens.kt", compose(&tokens)),
+        ("design/generated/android/LucinaTokens.kt", plain.clone()),
     ];
+    // The framework-only Android apps (branch lucina-android) build android/common into each app.
+    if root.join("android/common").is_dir() {
+        outputs.push(("android/common/LucinaTokens.kt", plain));
+    }
     let mut stale = false;
     for (path, content) in outputs {
         let file = root.join(path);
@@ -455,6 +500,15 @@ mod tests {
         assert_eq!(Rgba::parse("#7F8FE0").unwrap().css(), "#7f8fe0");
         assert!(Rgba::parse("7F8FE0").is_err());
         assert!(Rgba::parse("#7F8").is_err());
+    }
+
+    #[test]
+    fn plain_kotlin_has_no_imports() {
+        let raw = std::fs::read_to_string(repo_root().join("design/tokens.json")).unwrap();
+        let out = kotlin_plain(&load(&serde_json::from_str(&raw).unwrap()).unwrap());
+        assert!(!out.contains("import "));
+        assert!(out.contains("const val card: Int = 0xFF1C1C1E.toInt()"));
+        assert!(out.contains("const val card: Float = 18f"));
     }
 
     #[test]

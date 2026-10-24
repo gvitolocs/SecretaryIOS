@@ -19,7 +19,8 @@ iOS **Weight**, **Settings** and **Chat** tabs, picked by the owner on 2026-10-2
 | `tools/design-tokens/` | The generator (Rust, standalone crate). |
 | `ios/Secretary/Shared/LucinaTokens.swift` | Generated: SwiftUI (iOS; macOS through AppKit). |
 | `web/src/styles/lucina-tokens.css` | Generated: CSS custom properties `--lu-*`. |
-| `design/generated/compose/LucinaTokens.kt` | Generated: Jetpack Compose (Android; Compose Desktop on Windows). |
+| `design/generated/compose/LucinaTokens.kt` | Generated: Jetpack Compose (Compose Desktop on Windows; Android if it moves to Compose). |
+| `design/generated/android/LucinaTokens.kt` | Generated: framework-only Kotlin (ARGB `Int`s, dp/sp `Float`s, no imports); also written to `android/common/LucinaTokens.kt` where that folder exists (branch lucina-android). |
 
 ```sh
 cargo run --manifest-path tools/design-tokens/Cargo.toml             # regenerate
@@ -39,8 +40,9 @@ system `TabView` (it is the floating glass bar) and `NavigationStack` large titl
 (`--bg`, `--surface`, `--accent`, …) onto the `--lu-*` values, so new rules should use
 `--lu-*` directly.
 
-**Android (Compose).** Copy or reference `LucinaTokens.kt`: `LucinaColors.dark` /
-`LucinaColors.light`, `LucinaType`, `LucinaRadius`, `LucinaSpace`.
+**Android.** The apps are framework-only Kotlin: `android/common/LucinaTokens.kt` gives
+`LucinaTokens.Dark` / `.Light` colours, `Radius`, `Space`, `TextSize`, `TextWeight`, `LineHeight`.
+A Compose app would use `design/generated/compose/LucinaTokens.kt` instead.
 
 Semantic colours: `positive` (gains you want, done), `negative` (errors, destructive,
 overdue), `warning` (goal rules, due soon, clearance), `info` (secondary series).
