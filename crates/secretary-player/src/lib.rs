@@ -10,6 +10,7 @@
 //! in, one `{"ok": ...}` object out. Its state (queue and positions) lives in
 //! one JSON file, written after every change.
 pub mod playback;
+pub mod prefs;
 pub mod progress;
 pub mod queue;
 pub mod subtitles;
@@ -28,6 +29,8 @@ struct State {
     queue: queue::Queue,
     #[serde(default)]
     progress: progress::Book,
+    #[serde(default)]
+    subtitles: prefs::SubtitlePrefs,
 }
 
 pub struct Engine {
@@ -103,6 +106,17 @@ enum Command {
     Plan {
         probe: playback::Probe,
         client: playback::Client,
+    },
+    /// The track to show for an item (`tracks` as `/play` lists them).
+    SubtitlePick {
+        id: String,
+        tracks: Vec<prefs::TrackInfo>,
+    },
+    /// The owner picked a track (`track` null = off) for this item.
+    SubtitleChoose {
+        id: String,
+        track: Option<String>,
+        lang: Option<String>,
     },
 }
 
@@ -238,6 +252,14 @@ impl Engine {
             Command::Recent { limit } => (json!({"ok": true, "entries": self.state.progress.recent(limit)}), false),
             Command::Subtitles { text } => (json!({"ok": true, "cues": subtitles::parse(&text)}), false),
             Command::Plan { probe, client } => (json!({"ok": true, "plan": playback::plan(&probe, client)}), false),
+            Command::SubtitlePick { id, tracks } => {
+                let pick = self.state.subtitles.pick(&id, &tracks);
+                (json!({"ok": true, "track": pick.track, "reason": pick.reason}), false)
+            }
+            Command::SubtitleChoose { id, track, lang } => {
+                self.state.subtitles.choose(&id, track.as_deref(), lang.as_deref());
+                (json!({"ok": true}), true)
+            }
         }
     }
 
@@ -284,6 +306,15 @@ mod tests {
         let r = e.handle(r#"{"cmd":"subtitles","text":"1\n00:00:01,000 --> 00:00:02,000\nHi\n"}"#);
         assert_eq!(r["cues"][0]["text"], "Hi");
         assert_eq!(e.handle(r#"{"cmd":"nope"}"#)["code"], "invalid_command");
+        let tracks = r#"[{"id":"e2","lang":"dan","forced":false,"kind":"image"},{"id":"x0","lang":"da","kind":"text"}]"#;
+        let pick = format!(r#"{{"cmd":"subtitle_pick","id":"a","tracks":{tracks}}}"#);
+        assert_eq!(e.handle(&pick)["track"], Value::Null);
+        e.handle(r#"{"cmd":"subtitle_choose","id":"a","track":"e2","lang":"dan"}"#);
+        drop(e);
+        let mut e = Engine::open(&path).unwrap();
+        assert_eq!(e.handle(&pick)["track"], "e2");
+        let other = format!(r#"{{"cmd":"subtitle_pick","id":"b","tracks":{tracks}}}"#);
+        assert_eq!(e.handle(&other)["track"], "x0");
         let _ = fs::remove_dir_all(dir);
     }
 

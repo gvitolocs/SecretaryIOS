@@ -97,7 +97,10 @@ final class MediaLiveTests: XCTestCase {
         app.buttons["closePlayer"].tap()
     }
 
-    func testSubtitlesShowOverVideo() throws {
+    /// The owner's report: subtitles VLC finds were missing. `SECRETARY_MEDIA_SUBTITLED_ID` has
+    /// only a loose `whisper-da.srt` in its folder; `SECRETARY_MEDIA_IMAGE_SUB_ID` has DVD picture
+    /// subtitles (OCR'd on the server). Picking Danish on the first must turn it on for the second.
+    func testSubtitlesFoundAndRemembered() throws {
         let app = try launchLibrary()
         guard let subtitledId else { throw XCTSkip("no subtitled video id") }
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'media-'")).firstMatch.waitForExistence(timeout: 30), "library loaded")
@@ -105,15 +108,28 @@ final class MediaLiveTests: XCTestCase {
         XCTAssertTrue(video.exists, "video row")
         video.tap()
         XCTAssertTrue(app.buttons["closePlayer"].waitForExistence(timeout: 10), "player opened")
-        sleep(6)
+        sleep(4)
         app.buttons["Subtitles and speed"].tap()
-        let track = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Dansk'")).firstMatch
-        XCTAssertTrue(track.waitForExistence(timeout: 5), "subtitle track listed")
-        track.tap()
-        sleep(12)
-        attach(app, "1-subtitles")
-        sleep(8)
-        attach(app, "2-subtitles-later")
+        sleep(1)
+        attach(app, "1-subtitle-menu")
+        let danish = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Danish'")).firstMatch
+        XCTAssertTrue(danish.waitForExistence(timeout: 5), "the folder's whisper-da.srt is listed")
+        danish.tap()
+        sleep(20)
+        attach(app, "2-sidecar-subtitles")
         app.buttons["closePlayer"].tap()
+        guard let imageId = ProcessInfo.processInfo.environment["SECRETARY_MEDIA_IMAGE_SUB_ID"] else { return }
+        let film = row(imageId, in: app)
+        XCTAssertTrue(film.exists, "image-subtitle film row")
+        film.tap()
+        XCTAssertTrue(app.buttons["closePlayer"].waitForExistence(timeout: 10), "player opened")
+        sleep(25)
+        attach(app, "3-ocr-subtitles-remembered")
+        sleep(10)
+        attach(app, "4-ocr-subtitles-later")
+        app.buttons["Subtitles and speed"].tap()
+        sleep(1)
+        attach(app, "5-picker-on-dvd-film")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Danish'")).count >= 2, "both DVD tracks listed")
     }
 }

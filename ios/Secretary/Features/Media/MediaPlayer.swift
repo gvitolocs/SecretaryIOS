@@ -28,6 +28,8 @@ final class MediaPlayer {
     private(set) var seekableEnd: TimeInterval = 0
     private(set) var subtitle: SubtitleTrack?
     private(set) var cueText: String?
+    /// Shown while a track loads: "Reading subtitles…" (an OCR run can take minutes).
+    private(set) var subtitleStatus: String?
     private(set) var rate: Float = 1
     /// The full-screen player is up.
     var presented = false
@@ -41,6 +43,7 @@ final class MediaPlayer {
     @ObservationIgnored let api: () -> MediaAPI
     @ObservationIgnored private let core: PlayerCore?
     @ObservationIgnored private var cues: [PlayerCore.Cue] = []
+    @ObservationIgnored private var subtitleTask: Task<Void, Never>?
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var statusObservation: NSKeyValueObservation?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
@@ -147,6 +150,8 @@ final class MediaPlayer {
         cues = []
         subtitle = nil
         cueText = nil
+        subtitleStatus = nil
+        subtitleTask?.cancel()
         position = 0
         seekableEnd = 0
         duration = item.duration ?? 0
@@ -176,7 +181,10 @@ final class MediaPlayer {
             if resumeMs > 0 { await seekWhenAvailable(TimeInterval(resumeMs) / 1000, in: avItem) }
             guard !Task.isCancelled, current?.id == item.id else { return }
             player.playImmediately(atRate: rate)
-            if let forced = info.subtitles.first(where: \.forced) { selectSubtitle(forced) }
+            if let pick = core?.pickSubtitle(id: item.id, tracks: info.subtitles),
+               let track = info.subtitles.first(where: { $0.id == pick }) {
+                selectSubtitle(track, remember: false)
+            }
             updateNowPlaying()
             await loadArtwork(info.posterUrl, for: item.id)
         } catch is CancellationError {
@@ -260,24 +268,60 @@ final class MediaPlayer {
         updateNowPlaying()
     }
 
-    func selectSubtitle(_ track: SubtitleTrack?) {
+    /// Shows `track` (nil = off). A choice from the menu is remembered for this file and
+    /// its language becomes the default for others (`remember`).
+    func selectSubtitle(_ track: SubtitleTrack?, remember: Bool = true) {
+        if remember, let id = current?.id { core?.chooseSubtitle(id: id, track: track) }
         subtitle = track
         cues = []
         cueText = nil
+        subtitleStatus = nil
+        subtitleTask?.cancel()
         guard let track, let url = api().absolute(track.url) else { return }
-        Task {
+        subtitleStatus = track.isImage ? String(localized: "Reading the subtitles…") : String(localized: "Loading subtitles…")
+        subtitleTask = Task { [weak self] in await self?.loadSubtitles(track, from: url) }
+    }
+
+    /// Fetches the track. The server answers 202 while it converts, and a partial file
+    /// (`X-Subtitles-Partial`) while OCR is still reading: keep asking until it is whole.
+    private func loadSubtitles(_ track: SubtitleTrack, from url: URL) async {
+        var failures = 0
+        while !Task.isCancelled, subtitle?.id == track.id {
             do {
-                // The server may first have to read the whole file for an embedded track.
                 var request = URLRequest(url: url)
-                request.timeoutInterval = 240
+                request.timeoutInterval = 60
+                request.cachePolicy = .reloadIgnoringLocalCacheData
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.network(message: String(localized: "Subtitles are unavailable.")) }
-                let parsed = try core?.parseSubtitles(String(decoding: data, as: UTF8.self)) ?? []
+                guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                 guard subtitle?.id == track.id else { return }
-                cues = parsed
-                updateCue()
+                switch http.statusCode {
+                case 200:
+                    cues = try core?.parseSubtitles(String(decoding: data, as: UTF8.self)) ?? []
+                    updateCue()
+                    guard http.value(forHTTPHeaderField: "X-Subtitles-Partial") != nil else {
+                        subtitleStatus = nil
+                        return
+                    }
+                    subtitleStatus = cues.isEmpty ? String(localized: "Reading the subtitles…") : nil
+                    try await Task.sleep(for: .seconds(15))
+                case 202:
+                    try await Task.sleep(for: .seconds(5))
+                default:
+                    throw APIError.network(message: String(localized: "Subtitles are unavailable."))
+                }
+                failures = 0
+            } catch is CancellationError {
+                return
             } catch {
-                self.error = error.localizedDescription
+                failures += 1
+                if failures >= 3 {
+                    if subtitle?.id == track.id {
+                        subtitleStatus = nil
+                        self.error = error.localizedDescription
+                    }
+                    return
+                }
+                try? await Task.sleep(for: .seconds(5))
             }
         }
     }

@@ -39,6 +39,13 @@ struct MediaLibraryView: View {
             case .photo: "Photos"
             }
         }
+        var icon: String {
+            switch self {
+            case .video: "film"
+            case .audio: "waveform"
+            case .photo: "photo"
+            }
+        }
     }
 
     @Environment(MediaPlayer.self) private var media
@@ -62,13 +69,16 @@ struct MediaLibraryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: Text("Search"))
         .safeAreaInset(edge: .top, spacing: 0) {
-            Picker("Kind", selection: $kind) {
-                ForEach(Kind.allCases) { Text($0.label).tag($0) }
+            HStack(spacing: 8) {
+                ForEach(Kind.allCases) { k in
+                    ChipButton(title: k.label, icon: k.icon, isOn: kind == k) { kind = k }
+                        .accessibilityIdentifier("kind-\(k.rawValue)")
+                }
+                Spacer(minLength: 0)
             }
-            .pickerStyle(.segmented)
             .padding(.horizontal)
-            .padding(.vertical, 6)
-            .background(.bar)
+            .padding(.vertical, 8)
+            .background(Theme.page)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if media.current != nil, !media.presented { MiniPlayer() }
@@ -120,8 +130,10 @@ struct MediaLibraryView: View {
             }
             if items.isEmpty, !loading, loadError == nil {
                 ContentUnavailableView(kind == .video ? "No videos yet" : "No audio yet", systemImage: kind == .video ? "film" : "waveform")
+                    .listRowBackground(Color.clear)
             }
         }
+        .lucinaList()
         .overlay { if loading && items.isEmpty { ProgressView() } }
     }
 
@@ -133,18 +145,18 @@ struct MediaLibraryView: View {
             HStack(spacing: 12) {
                 Poster(path: item.posterUrl, kind: item.kind)
                     .frame(width: item.isVideo ? 96 : 54, height: 54)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(2).foregroundStyle(.primary)
+                    Text(item.title).font(LucinaTokens.Fonts.subheadline.weight(.medium)).lineLimit(2).foregroundStyle(Theme.text)
                     HStack(spacing: 6) {
                         if let d = item.duration { Text(MediaFormat.time(d)) }
                         if media.isFinished(item) { Image(systemName: "checkmark.circle.fill").accessibilityLabel("Watched") }
                         if media.current?.id == item.id { Image(systemName: media.isPlaying ? "speaker.wave.2.fill" : "pause.fill") }
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(LucinaTokens.Fonts.caption2)
+                    .foregroundStyle(Theme.textSecondary)
                     if let p = media.progress(of: item) {
-                        ProgressView(value: p).tint(.accentColor).frame(maxWidth: 160)
+                        ProgressView(value: p).tint(Theme.accent).frame(maxWidth: 160)
                     }
                 }
             }
@@ -167,6 +179,7 @@ struct MediaLibraryView: View {
                 ContentUnavailableView("No photos yet", systemImage: "photo")
             }
         }
+        .lucinaScreen()
     }
 
     private func load() async {
@@ -201,9 +214,9 @@ struct Poster: View {
                 image.resizable().scaledToFill()
             } else {
                 ZStack {
-                    Rectangle().fill(.quaternary)
+                    Rectangle().fill(Theme.field)
                     Image(systemName: kind == "audio" ? "waveform" : kind == "photo" ? "photo" : "film")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
         }
@@ -219,26 +232,28 @@ private struct MiniPlayer: View {
             HStack(spacing: 12) {
                 Poster(path: item.posterUrl, kind: item.kind)
                     .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                    Text(item.title).font(LucinaTokens.Fonts.subheadline.weight(.medium)).foregroundStyle(Theme.text).lineLimit(1)
                     Text("\(MediaFormat.time(media.position)) / \(MediaFormat.time(media.duration))")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .font(LucinaTokens.Fonts.caption2.monospacedDigit()).foregroundStyle(Theme.textSecondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture { media.presented = true }
                 Button { media.togglePlay() } label: {
-                    Image(systemName: media.isPlaying ? "pause.fill" : "play.fill").font(.title3)
+                    Image(systemName: media.isPlaying ? "pause.fill" : "play.fill").font(.title3).foregroundStyle(Theme.accent)
                 }
                 .accessibilityLabel(media.isPlaying ? "Pause" : "Play")
                 Button { media.stop() } label: { Image(systemName: "xmark").font(.body.weight(.semibold)) }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                     .accessibilityLabel("Close")
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(.bar)
+            .background(Theme.cardRaised, in: RoundedRectangle(cornerRadius: Theme.cornerRadius))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
         }
     }
 }
@@ -293,18 +308,25 @@ private struct SubtitleMenu: View {
 
     var body: some View {
         Menu {
-            Button { media.selectSubtitle(nil) } label: {
-                if media.subtitle == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
-            }
-            ForEach(media.subtitleTracks) { track in
-                Button { media.selectSubtitle(track) } label: {
-                    if media.subtitle?.id == track.id { Label(track.displayName, systemImage: "checkmark") } else { Text(track.displayName) }
+            Section("Subtitles") {
+                Button { media.selectSubtitle(nil) } label: {
+                    if media.subtitle == nil { Label("Off", systemImage: "checkmark") } else { Text("Off") }
+                }
+                ForEach(media.subtitleTracks) { track in
+                    Button { media.selectSubtitle(track) } label: {
+                        if media.subtitle?.id == track.id {
+                            Label(track.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(track.displayName)
+                        }
+                        Text(track.detail)
+                    }
+                    .accessibilityIdentifier("subtitle-\(track.id)")
+                }
+                if let hidden = media.info?.bitmapSubtitles, hidden > 0 {
+                    Text("\(hidden) picture subtitle tracks need OCR on the server")
                 }
             }
-            if let bitmap = media.info?.bitmapSubtitles, bitmap > 0 {
-                Text("\(bitmap) image-based subtitle tracks can't be shown yet")
-            }
-            Divider()
             Menu("Speed") {
                 ForEach([Float(0.75), 1, 1.25, 1.5, 2], id: \.self) { r in
                     Button { media.setRate(r) } label: {
@@ -317,6 +339,7 @@ private struct SubtitleMenu: View {
             Image(systemName: media.subtitle == nil ? "captions.bubble" : "captions.bubble.fill").font(.body.weight(.semibold)).padding(10)
         }
         .accessibilityLabel("Subtitles and speed")
+        .accessibilityIdentifier("subtitleMenu")
     }
 }
 
@@ -354,6 +377,15 @@ private struct SubtitleOverlay: View {
     var body: some View {
         VStack {
             Spacer()
+            if media.cueText == nil, let status = media.subtitleStatus {
+                Label(status, systemImage: "captions.bubble")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .padding(.bottom, 64)
+            }
             if let text = media.cueText {
                 Text(text)
                     .font(.system(size: 20, weight: .semibold))
@@ -389,16 +421,16 @@ private struct AudioPlayerScreen: View {
             if let item = media.current {
                 Poster(path: item.posterUrl, kind: item.kind)
                     .aspectRatio(1, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile))
                     .shadow(radius: 12, y: 6)
                     .frame(maxWidth: 320)
                 VStack(spacing: 4) {
-                    Text(item.title).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
-                    if let album = item.album { Text(album).font(.subheadline).foregroundStyle(.secondary) }
+                    Text(item.title).font(LucinaTokens.Fonts.title3).foregroundStyle(Theme.text).multilineTextAlignment(.center)
+                    if let album = item.album { Text(album).font(LucinaTokens.Fonts.subheadline).foregroundStyle(Theme.textSecondary) }
                 }
             }
             if let error = media.error {
-                Text(error).font(.callout).foregroundStyle(.red).multilineTextAlignment(.center)
+                Text(error).font(LucinaTokens.Fonts.callout).foregroundStyle(Theme.negative).multilineTextAlignment(.center)
             }
             VStack(spacing: 4) {
                 Slider(value: Binding(get: { scrubbing ?? media.position }, set: { scrubbing = $0 }),
@@ -414,8 +446,8 @@ private struct AudioPlayerScreen: View {
                     Spacer()
                     Text("-" + MediaFormat.time(max(0, media.duration - (scrubbing ?? media.position))))
                 }
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .font(LucinaTokens.Fonts.caption2.monospacedDigit())
+                .foregroundStyle(Theme.textSecondary)
             }
             HStack(spacing: 28) {
                 Button { media.previous() } label: { Image(systemName: "backward.end.fill") }
@@ -440,11 +472,18 @@ private struct AudioPlayerScreen: View {
                     Button(r == 1 ? "1×" : "\(r.formatted())×") { media.setRate(r) }
                 }
             } label: {
-                Text(media.rate == 1 ? "1×" : "\(media.rate.formatted())×").font(.callout.weight(.semibold).monospacedDigit())
+                Text(media.rate == 1 ? "1×" : "\(media.rate.formatted())×")
+                    .font(LucinaTokens.Fonts.subheadline.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(Theme.text)
+                    .padding(.horizontal, 14)
+                    .frame(height: 34)
+                    .background(Theme.field, in: Capsule())
             }
             Spacer(minLength: 0)
         }
         .padding(24)
+        .background(Theme.page.ignoresSafeArea())
+        .tint(Theme.accent)
     }
 }
 
