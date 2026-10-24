@@ -199,6 +199,7 @@ export default function ShoppingView() {
         kind={p.item.status === "needed" ? "need" : "recent"}
         icon={itemIcon(p.item)}
         catalogId={p.item.catalogId}
+        section={p.item.section}
         name={p.item.name}
         spec={specOf(p.item)}
         label={itemLabel(p.item)}

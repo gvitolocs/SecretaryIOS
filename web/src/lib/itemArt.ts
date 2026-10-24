@@ -7,6 +7,15 @@
  * caches cache-first like every other /assets/ file.
  */
 
+import {
+  DEFAULT_ICON,
+  guessByName,
+  OTHER_SECTION,
+  type CatalogItem,
+  type CatalogSection,
+  type SearchIndex,
+} from "./shoppingCatalog";
+
 const itemFiles = import.meta.glob<string>("../../../assets/icons/items/*.svg", {
   query: "?no-inline",
   import: "default",
@@ -49,4 +58,55 @@ export function itemArtUrl(icon: string | null | undefined, catalogId: string | 
 /** Illustration for a catalog section, or null. */
 export function sectionArtUrl(sectionId: string, icon?: string | null): string | null {
   return svgIconUrl(icon) ?? SECTION_ART.get(sectionId) ?? null;
+}
+
+/** What a tile shows: a bundled illustration, an emoji, or the name's first letter. */
+export type ItemVisual = { kind: "art"; url: string } | { kind: "emoji"; emoji: string } | { kind: "initial"; letter: string };
+
+export interface VisualRow {
+  /** The row's icon: an emoji, `svg:<key>`, or none. */
+  icon: string | null | undefined;
+  catalogId?: string | null | undefined;
+  name: string;
+  /** The row's own section (a custom item's, or a section override). */
+  section?: string | null | undefined;
+}
+
+function initialOf(name: string): string {
+  return Array.from(name.trim())[0]?.toUpperCase() ?? "?";
+}
+
+/**
+ * The picture of a row, most specific first, so a list never mixes illustrations with stray
+ * platform emoji when art exists:
+ * 1. an explicit `svg:<key>` icon;
+ * 2. the art of its catalog item, unless the owner gave the row an emoji of its own;
+ * 3. no catalog id (free text, a custom object): the art of the catalog item its name names
+ *    (guessByName), when that item belongs to the row's section, if the row has one;
+ * 4. a specific emoji of the row (not the cart and not just its section's emoji);
+ * 5. the art of its section ("other" excluded);
+ * 6. any remaining emoji other than the cart, else the first letter of the name.
+ */
+export function itemVisual(row: VisualRow, index: SearchIndex | null, sections: readonly CatalogSection[]): ItemVisual {
+  const explicit = svgIconUrl(row.icon);
+  if (explicit) return { kind: "art", url: explicit };
+  const icon = row.icon && !row.icon.startsWith("svg:") ? row.icon : null;
+  let item: CatalogItem | null = null;
+  if (row.catalogId) {
+    item = index?.byId.get(row.catalogId) ?? null;
+    const url = ITEM_ART.get(row.catalogId);
+    if (url && (!icon || !item || icon === item.icon)) return { kind: "art", url };
+  } else if (index) {
+    const guess = guessByName(index, row.name);
+    const fits = !row.section || row.section === OTHER_SECTION || !guess?.section || guess.section === row.section;
+    const url = guess && fits ? ITEM_ART.get(guess.id) : undefined;
+    if (url) return { kind: "art", url };
+  }
+  const section = row.section ?? item?.section ?? null;
+  const sectionEmoji = section ? sections.find((s) => s.id === section)?.icon : undefined;
+  if (icon && icon !== DEFAULT_ICON && icon !== sectionEmoji) return { kind: "emoji", emoji: icon };
+  const sectionUrl = section && section !== OTHER_SECTION ? SECTION_ART.get(section) : undefined;
+  if (sectionUrl) return { kind: "art", url: sectionUrl };
+  if (icon && icon !== DEFAULT_ICON) return { kind: "emoji", emoji: icon };
+  return { kind: "initial", letter: initialOf(row.name) };
 }
