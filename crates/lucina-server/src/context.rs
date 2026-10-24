@@ -22,8 +22,9 @@ pub struct Prepared {
     pub recent_context: String,
     pub classification: Classification,
     pub policy: Policy,
-    /// The live game block ("" when the game server is off): owner turns then take the full planner so the
-    /// model can reason over it and choose game_hint.
+    /// The live game block ("" when the game server is off). Not in `memory_context`: it goes into the system
+    /// part of every model call of the turn (`planner::TURN_SYSTEM`), so trimming never drops it; owner turns
+    /// also take the full planner so the model can choose game_hint.
     pub game: String,
 }
 
@@ -221,7 +222,7 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, calendar, notes, tasks, shopping, recent, reminders, honcho, game.clone(),
+        metadata, presence, calendar, notes, tasks, shopping, recent, reminders, honcho,
     ]
     .into_iter()
     .filter(|s| !s.is_empty())

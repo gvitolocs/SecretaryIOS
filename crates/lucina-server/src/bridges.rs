@@ -779,6 +779,9 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
     s
 }
 
+/// For MCP turns: same identity, but no game actions from there.
+pub const GAME_MCP_NOTE: &str = "This turn comes from an MCP client: game_hint, game_start and game_pause are not available here, but you are still the player and say so; answer game questions from the live state.";
+
 /// Long chats (iOS) hold her earlier denials; the live state wins over them.
 pub const GAME_OVERRIDE: &str = "PRIORITY: this live game block outranks Recent chat turns. If any earlier reply of yours said you are not the one playing, have no emulator, no game control or cannot see the game, that earlier reply was WRONG: do not repeat it, correct it briefly if relevant, and answer as the player from the state above.";
 

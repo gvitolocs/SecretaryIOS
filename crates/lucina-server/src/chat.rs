@@ -306,7 +306,14 @@ async fn run_turn(
             )
             .await;
             st.recent.append(&t.session, "user", &t.message, Utc::now());
-            let finish = json_turn(&t, &prepared, cmid.as_deref()).await;
+            let game_system = if prepared.game.is_empty() || t.mcp.is_none() {
+                prepared.game.clone()
+            } else {
+                format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
+            };
+            let finish = crate::planner::TURN_SYSTEM
+                .scope(game_system, json_turn(&t, &prepared, cmid.as_deref()))
+                .await;
             (finish, Some(prepared))
         }
     };
@@ -1448,12 +1455,17 @@ async fn tools_turn(
         st.registry.clone()
     };
     let secrets = secrets_finish(&st, &message, mcp).await;
-    let memory_context = if secrets.is_some() {
-        String::new()
+    let (memory_context, game_system) = if secrets.is_some() {
+        (String::new(), String::new())
     } else {
-        crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true)
-            .await
-            .memory_context
+        let p =
+            crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true).await;
+        let game = if p.game.is_empty() || !mcp {
+            p.game
+        } else {
+            format!("{}\n{}", p.game, crate::bridges::GAME_MCP_NOTE)
+        };
+        (p.memory_context, game)
     };
     st.recent.append(&session, "user", &message, now);
     let ctx = Ctx::new(st.tool_env.clone(), &channel, &session).with_origin(origin);
@@ -1545,6 +1557,11 @@ async fn tools_turn(
             now,
             tz,
         );
+        let system = if game_system.is_empty() {
+            system
+        } else {
+            format!("{system}\n\n{game_system}")
+        };
         let msgs = vec![
             Message::system(system),
             Message::user(Prompts::user_block(USER_LABEL, &memory_context, &message)),

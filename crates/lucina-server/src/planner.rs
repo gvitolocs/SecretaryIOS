@@ -120,6 +120,23 @@ pub fn parse_plan_output(content: &str) -> Option<Value> {
     (!decoded.trim().is_empty()).then(|| json!({"action": "reply", "text": decoded.trim()}))
 }
 
+tokio::task_local! {
+    /// Fixed system text for every model call of the current chat turn (her live game: state, identity and
+    /// priority rule). Lives in the system part, so no context trimming (casual shortcut, budgets) can drop it.
+    pub static TURN_SYSTEM: String;
+}
+
+/// `system` plus the turn's fixed system text (none for the intent classifier, or outside a chat turn).
+pub fn with_turn_system(system: String, purpose: &str) -> String {
+    if purpose == "intent" {
+        return system;
+    }
+    match TURN_SYSTEM.try_with(|g| g.trim().to_owned()) {
+        Ok(g) if !g.is_empty() => format!("{system}\n\n{g}"),
+        _ => system,
+    }
+}
+
 pub struct Planner {
     pub model: Arc<dyn ChatModel>,
     pub prompts: Prompts,
@@ -143,7 +160,7 @@ impl Planner {
         let r = self
             .model
             .complete(ChatRequest {
-                messages: vec![Message::system(system), Message::user(user)],
+                messages: vec![Message::system(with_turn_system(system, purpose)), Message::user(user)],
                 temperature: Some(temperature),
                 purpose,
                 ..ChatRequest::default()
