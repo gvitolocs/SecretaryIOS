@@ -73,6 +73,13 @@ fn device_ok(h: &HeaderMap) -> bool {
     h.get("authorization").and_then(|v| v.to_str().ok()) == Some(&format!("Bearer {DEVICE_TOKEN}"))
 }
 
+fn library_highlight() -> Value {
+    json!({"id":"hl_0123456789abcdef","bookId":"bk_0123456789abcdef","text":"A thought","note":null,"page":"12","location":{"start":170,"end":172},"source":"kindle-clippings"})
+}
+fn library_brief() -> Value {
+    json!({"id":"br_a","kind":"extractive","text":"A thought","basedOn":["hl_0123456789abcdef"]})
+}
+
 async fn handle(
     State(m): State<Mock>,
     method: Method,
@@ -123,6 +130,13 @@ async fn handle(
             .into_response()
         }
         _ if !device_ok(&headers) => err(StatusCode::UNAUTHORIZED, "unauthorized"),
+        ("GET", ["v1", "library", "books"]) => Json(json!({"books":[{"id":"bk_0123456789abcdef","title":"Book","authors":["Writer"],"status":"unknown"}]})).into_response(),
+        ("GET", ["v1", "library", "search"]) => Json(json!({"results":[{"bookId":"bk_0123456789abcdef","title":"Book","authors":["Writer"],"highlightId":"hl_0123456789abcdef","snippet":"A thought","page":"12","location":{"start":170,"end":172},"source":"kindle-clippings"}]})).into_response(),
+        ("GET", ["v1", "library", "recent"]) => Json(json!({"highlights":[library_highlight()],"changes":[],"sessions":[],"readingSessions":"unavailable_on_stock_kindle"})).into_response(),
+        ("GET", ["v1", "library", "sync"]) => Json(json!({"imports":[],"books":1,"highlights":1})).into_response(),
+        ("GET", ["v1", "library", "books", id]) => Json(json!({"book":{"id":id,"title":"Book","authors":["Writer"],"status":"unknown","progress":null,"relatedNotes":[],"briefs":[library_brief()]},"highlights":[library_highlight()],"sessions":[]})).into_response(),
+        ("GET", ["v1", "library", "books", _, "highlights"]) => Json(json!({"highlights":[library_highlight()]})).into_response(),
+        ("POST", ["v1", "library", "books", _, "brief"]) => Json(library_brief()).into_response(),
         ("GET", ["v1", "session"]) => Json(json!({"authenticated": true, "deviceName": "lucina-mcp"})).into_response(),
         ("POST", ["v1", "chat"]) => {
             let msg = body["message"].as_str().unwrap_or("");

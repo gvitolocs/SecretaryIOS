@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` and `GET /v1/notify/settings` (see [Notifications](#notifications)), `GET /v1/proactive/feedback` (see [Proactive outreach](#proactive-outreach)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` and `GET /v1/notify/settings` (see [Notifications](#notifications)), `GET /v1/proactive/feedback` (see [Proactive outreach](#proactive-outreach)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)) and `/v1/library/*` (see [Library](#library)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -1607,6 +1607,142 @@ block (`slug`, `title`, `tags: a, b`, `source`, `pinned`) or `.json` files
 kept unless `--replace`. `secretary-server notes list` prints id, slug,
 size, source and title. The running server picks imported notes up on its
 next request.
+
+## Library
+
+Books and clippings imported from a read-only Kindle USB scan. Ownership,
+device presence, mentions and reading status are independent: importing a book
+never sets it to started or completed. DRM-protected files contribute only
+unencrypted header metadata and a fingerprint; text is never decrypted. KFX and
+undocumented sidecars are not parsed. Sidecar extensions appear in scan JSON.
+
+Auth: a device (Bearer, or session cookie plus `X-Secretary-CSRF: 1` for writes)
+**or** Lucina's service token. Writes log the caller, never book/highlight content.
+Library request bodies may be up to **32 MiB**. Invalid JSON or metadata returns
+`400 bad_request` (syntax errors: `invalid_json`); oversized bodies return 413.
+
+Storage under `$SECRETARY_DATA_DIR/library/`: `books/<id>.json`,
+`highlights/<bookId>.json` (array), `activity.json` (explicit owner changes and
+sessions), and `imports.jsonl` (time, caller, source, counts only). JSON writes
+are atomic with mode 0600; a temporary `pending.json` snapshot allows recovery
+of interrupted multi-file writes. Records load lazily under a mutex.
+
+A book has `id` (`bk_` + 16 lowercase hex digits), `title`, `authors`, nullable
+`isbn`/`doi`/`asin`, `fingerprints` (SHA-256), `formats`, `sources`, `drm`
+(`none|protected|unknown`), `owned`, nullable `onKindle`
+(`{path,sizeBytes,lastSeenAt}`), nullable `removedFromKindleAt`, `mentionedOnly`,
+`status` (`unknown|not_started|reading|completed|abandoned`), `statusSource`,
+nullable `progress` (`{percent,location,page,source,at}`), `lastOpenedAt`, `tags`,
+`briefs`, `relatedNotes`, `memoryRefs`, `createdAt` and `updatedAt`.
+
+Unknown values stay null/unknown. A clipping without a matching file creates
+an unowned book with no Kindle presence. Dates from clippings lack a timezone:
+parsed `addedAt` is an ISO local datetime, and `addedAtRaw` always preserves the
+original. Unparseable dates remain null. No serial numbers are collected;
+`device` is an optional user-supplied friendly label.
+
+### `GET /v1/library/books?q=&status=&onKindle=&limit=200`
+
+`{"books":[BookSummary]}`, newest updated first, ties by id. `q` searches
+case/diacritic-insensitive terms in titles, authors, tags, highlight text and
+notes. `status` takes one of the values above; `onKindle=true|false` filters
+presence. `limit` is clamped to 1–500; queries have at most 200 characters.
+A summary contains `id,title,authors,status,progress,onKindle,owned,formats,drm,
+highlightCount,lastHighlightAt,updatedAt`.
+
+### `GET /v1/library/books/{id}`
+
+`{"book":Book,"highlights":[Highlight],"sessions":[ReadingSession]}`.
+Unknown ids return `404 book_not_found`. Highlights contain `id`, `bookId`,
+`kind` (`highlight|note|bookmark`), `text`, nullable attached `note`, `location`
+(`{start,end}`), `page`, `addedAt`, `addedAtRaw`, `source`, `provenance`
+(`{file,entryIndex,device}`), and `dedupKey`. Notes remain separate records even
+when attached to a highlight ending at the same location.
+
+### `PATCH /v1/library/books/{id}`
+
+Any of `{status,tags,progress,baseUpdatedAt}`. Absent fields keep their value.
+Status edits set `statusSource:"owner"`; progress edits set `source:"owner"`
+and a server timestamp. Percent must be 0–100. Tags use the Notes limits
+(16 tags, 32 characters each). A stale `baseUpdatedAt` returns `409 conflict`.
+Imports preserve owner status, progress and tags. Explicit status/progress
+edits are retained for recent-reading reports.
+
+### `GET /v1/library/books/{id}/highlights?q=&limit=200`
+
+`{"highlights":[Highlight]}`, filtered by terms in text and attached notes.
+Same query and limit bounds as the book list.
+
+### `GET /v1/library/search?q=&limit=200`
+
+`{"results":[{bookId,title,authors,highlightId,snippet,location,page,source}]}`.
+Title/author/tag matches rank before highlight matches. Nullable reference
+fields are null on book hits. Sources are explicit (`library`,
+`kindle-clippings`, …); page and location are never invented.
+
+### `GET /v1/library/recent?days=7&limit=200`
+
+`{"highlights":[Highlight],"changes":[{bookId,status,progress,at,source}],
+"sessions":[],"readingSessions":"unavailable_on_stock_kindle",
+"unknownDateHighlightsExcluded":true,"kindleDatesHaveNoTimezone":true}`.
+`days` is 1–3650. Highlights use `addedAt` when known, newest first; unknown
+dates are excluded. Local Kindle dates are compared against the window's UTC
+wall-clock boundary without claiming a timezone. Changes are explicit owner
+edits, newest first. Stock Kindle USB storage provides no session producer:
+reading time and last-opened time remain unknown.
+
+### `GET /v1/library/stats`
+
+`{byStatus,byFormat,byDrm,highlights,booksOnKindle,lastImport}`; count maps use
+the canonical enum values. `lastImport` is the latest import log record or null.
+
+### `POST /v1/library/import`
+
+Body: `{source,device,scannedAt,books:[ScannedBook],clippings:[ClippingEntry]}`.
+`lucina-ink scan <mount> --json` produces this JSON. A scanned book contains
+`path,sizeBytes,fingerprint,format,metadata,sidecarPresent,sidecarExtensions`; metadata contains
+`title,authors,publisher,isbn,asin,cdetype,language,drm`. A clipping entry contains
+`title,authors,highlight` (the Highlight shape above; ids and dedup keys are
+recomputed). Titles are bounded to 1000 bytes, highlight/note text to 256 KiB;
+paths must be relative without `..`, fingerprints 64 lowercase hex digits,
+sources `[a-z0-9][a-z0-9-]*` up to 32 bytes. Capacity: 50k books, 200k highlights.
+
+Returns `{booksAdded,booksUpdated,booksUnchanged,highlightsAdded,
+highlightsSkipped,removedFromKindle,conflicts,warnings}`. Identity priority:
+fingerprint, ISBN, ASIN, normalized title + first author. Existing ids never
+change; conflicting identifiers keep the existing value and are reported.
+Exact clippings deduplicate by book key, kind, location and whitespace-normalized
+text. Replaying a saved batch leaves records and `updatedAt` unchanged.
+A complete `kindle-usb` inventory clears missing Kindle presence and sets
+`removedFromKindleAt`; books and highlights are never deleted. This slice models
+one Kindle inventory, not independent per-device inventories.
+
+### `GET /v1/library/sync`
+
+`{"imports":[…],"books":N,"highlights":N}`. Last 20 import log records,
+oldest first; logs contain counts and caller/source, never content.
+
+### `POST /v1/library/books/{id}/brief`
+
+Creates and returns `{id,kind:"extractive",text,generatedAt,model:null,basedOn}`.
+Uses the first ten highlights by position (unknown positions last), with
+highlight ids as references. Repeating against the same highlight set returns
+the stored brief. Briefs are always generated, never the owner's words.
+**Model briefs are not implemented.** Related Obsidian notes and memory refs
+have no automatic producer yet; empty references mean unknown/unconnected.
+
+The `lucina-ink` CLI also supports `import <mount> --server <url> --token-file
+<path>` and `import-json <batch.json> --server <url> --token-file <path>`.
+`--dry-run` merges against an empty local state and prints the outcome without
+sending or reading a token. Tokens are read from files, never passed as argv
+values. Scans never write to the device, follow symlinks, or parse sidecars;
+they cap depth at 8, total entries at 50k, and clippings at 64 MiB/200k entries.
+
+Lucina MCP exposes `library_list_books`, `library_search`, `library_get_book`,
+`library_get_progress`, `library_get_highlights`, `library_get_recent_reading`,
+`library_get_brief`, `library_find_related_notes`, `library_sync_status` (read
+scope), and `library_generate_brief` (write scope). Results cite book/page/
+location/source and say when progress, sessions or relationships are unknown.
 
 ## Models
 

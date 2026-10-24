@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ink-library",
+    "crates/ink-cli",
     "crates/secretary-core",
     "crates/secretary-server",
     "crates/secretary-gym",
