@@ -31,9 +31,7 @@ struct GymScreen: View {
 
     var body: some View {
         @Bindable var store = store
-        VStack(spacing: 0) {
-            sectionBar
-            Group {
+        Group {
                 if let view = store.view {
                     switch section {
                     case .training: TrainingView(view: view)
@@ -54,10 +52,9 @@ struct GymScreen: View {
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            }
         }
-        .background(GymPalette.background)
-        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) { sectionBar }
+        .lucinaScreen(section == .training ? "Gym" : section.title)
         .gymStyle()
         .sheet(isPresented: $store.isPresentingWorkout) { WorkoutScreen().gymStyle() }
         .task { if store.view == nil { await store.refresh() } }
@@ -76,20 +73,20 @@ struct GymScreen: View {
 
     /// The original app's four tabs, as a bar at the top of the Gym tab.
     private var sectionBar: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             ForEach(Section.allCases) { item in
                 Button {
                     section = item
                 } label: {
                     VStack(spacing: 3) {
                         Image(systemName: item.icon).font(.system(size: 15, weight: .semibold))
-                        Text(item.title).font(.system(size: 11, weight: .semibold, design: .rounded))
+                        Text(item.title).font(LucinaTokens.Fonts.caption2.weight(.semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
-                    .foregroundStyle(section == item ? Color.white : GymPalette.muted)
-                    .background(section == item ? GymPalette.forest : Color.clear, in: RoundedRectangle(cornerRadius: 12))
-                    .contentShape(Rectangle())
+                    .foregroundStyle(section == item ? Theme.accent : GymPalette.muted)
+                    .background(section == item ? Theme.accentSoft : Color.clear, in: Capsule())
+                    .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(item.title)
@@ -97,12 +94,11 @@ struct GymScreen: View {
                 .accessibilityIdentifier("gymSection-\(item.rawValue)")
             }
         }
-        .padding(5)
-        .background(.white, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(GymPalette.ink.opacity(0.04)))
-        .padding(.horizontal, 22)
-        .padding(.top, 6)
-        .padding(.bottom, 4)
+        .padding(4)
+        .background(Theme.card, in: Capsule())
+        .padding(.horizontal, LucinaTokens.Space.gutter)
+        .padding(.bottom, LucinaTokens.Space.sm)
+        .background(Theme.page)
     }
 }
 
@@ -113,30 +109,28 @@ struct TrainingView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack {
-                    GymEyebrow(text: "Lucina / Gym")
-                    Spacer()
-                    Image(systemName: "sparkle").foregroundStyle(GymPalette.forest).accessibilityHidden(true)
-                }
+            VStack(alignment: .leading, spacing: LucinaTokens.Space.lg) {
                 Text("Make time\nfor strength.")
-                    .font(.system(size: 40, weight: .semibold, design: .rounded))
-                    .tracking(-1.5)
+                    .font(LucinaTokens.Fonts.title3)
+                    .foregroundStyle(GymPalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityAddTraits(.isHeader)
-                HStack(alignment: .bottom) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        GymEyebrow(text: "This week")
-                        Text("\(view.summary.weeklyWorkouts) / \(view.summary.weeklyGoal) workouts").font(.headline)
+                Card(spacing: 10) {
+                    HStack(alignment: .bottom) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("This week", systemImage: "calendar")
+                                .font(LucinaTokens.Fonts.caption)
+                                .foregroundStyle(GymPalette.muted)
+                            Text("\(view.summary.weeklyWorkouts) / \(view.summary.weeklyGoal) workouts")
+                                .font(LucinaTokens.Fonts.title2.monospacedDigit())
+                        }
+                        Spacer()
                     }
-                    Spacer()
-                    Image(systemName: "calendar").font(.title2).foregroundStyle(GymPalette.forest).accessibilityHidden(true)
+                    .accessibilityElement(children: .combine)
+                    ProgressView(value: Double(min(view.summary.weeklyWorkouts, max(view.summary.weeklyGoal, 1))),
+                                 total: Double(max(view.summary.weeklyGoal, 1)))
+                        .tint(Theme.accent)
+                        .accessibilityLabel("Weekly goal")
                 }
-                .accessibilityElement(children: .combine)
-                ProgressView(value: Double(min(view.summary.weeklyWorkouts, max(view.summary.weeklyGoal, 1))),
-                             total: Double(max(view.summary.weeklyGoal, 1)))
-                    .tint(GymPalette.forest)
-                    .accessibilityLabel("Weekly goal")
                 if let active = view.state.active {
                     activeCard(active)
                 } else {
@@ -145,9 +139,7 @@ struct TrainingView: View {
                     }
                     .accessibilityIdentifier("startWorkout")
                 }
-                HStack {
-                    Text("Your routines").font(.title2.bold())
-                    Spacer()
+                SectionHeader("Your routines") {
                     Button { showRoutine = true } label: { Image(systemName: "plus.circle.fill").font(.title2) }
                         .accessibilityLabel("Create routine")
                 }
@@ -155,13 +147,13 @@ struct TrainingView: View {
                     GymCard {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text(routine.name).font(.title3.bold())
+                                Text(routine.name).font(LucinaTokens.Fonts.headline)
                                 Text(routine.exercises.compactMap { view.exercise($0.exerciseId)?.name }.joined(separator: " · "))
                                     .font(.subheadline).foregroundStyle(GymPalette.muted).lineLimit(2)
                             }
                             Spacer()
                             Button { Task { await start(routine) } } label: {
-                                Image(systemName: "play.fill").padding(13).background(GymPalette.background, in: Circle())
+                                Image(systemName: "play.fill").padding(13).foregroundStyle(Theme.onAccent).background(GymPalette.forestFill, in: Circle())
                             }
                             .disabled(view.state.active != nil)
                             .accessibilityLabel("Start \(routine.name)")
@@ -174,18 +166,18 @@ struct TrainingView: View {
                         }
                     }
                 }
-                HStack(alignment: .top) {
-                    GymMetric(value: "\(view.summary.workouts)", label: "Sessions")
-                    GymMetric(value: "\(view.summary.completedSets)", label: "Sets logged")
-                    GymMetric(value: view.summary.volume, label: "Total volume")
+                StatGrid {
+                    StatCard(title: "Sessions", icon: "figure.strengthtraining.traditional", value: "\(view.summary.workouts)")
+                    StatCard(title: "Sets logged", icon: "checkmark.circle", value: "\(view.summary.completedSets)")
+                    StatCard(title: "Total volume", icon: "scalemass", value: view.summary.volume)
                 }
-                .padding(.vertical, 12)
                 Text("A little stronger, one session at a time.")
                     .font(.footnote)
                     .foregroundStyle(GymPalette.muted)
                     .padding(.bottom, 16)
             }
-            .padding(22)
+            .padding(.horizontal, LucinaTokens.Space.gutter)
+            .padding(.top, LucinaTokens.Space.sm)
         }
         .refreshable { await store.refresh() }
         .sheet(isPresented: $showRoutine) { RoutineBuilder().gymStyle() }
@@ -193,12 +185,12 @@ struct TrainingView: View {
 
     private func activeCard(_ active: Workout) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("IN PROGRESS").font(.caption2.bold()).tracking(2).foregroundStyle(GymPalette.lime)
-            Text(active.title).font(.title.bold())
+            Text("IN PROGRESS").font(LucinaTokens.Fonts.caption2.weight(.bold)).tracking(1.2).foregroundStyle(GymPalette.lime.opacity(0.8))
+            Text(active.title).font(LucinaTokens.Fonts.title)
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text("\(store.activeDuration(at: context.date)) · \(view.summary.activeCompletedSets) sets · \(view.summary.activeVolume)")
                     .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.75))
+                    .foregroundStyle(Theme.onAccent.opacity(0.75))
             }
             Button { store.isPresentingWorkout = true } label: {
                 HStack {
@@ -208,15 +200,15 @@ struct TrainingView: View {
                 }
                 .font(.headline)
                 .padding(14)
-                .foregroundStyle(GymPalette.forest)
-                .background(GymPalette.lime, in: RoundedRectangle(cornerRadius: 12))
+                .foregroundStyle(GymPalette.forestFill)
+                .background(GymPalette.lime, in: Capsule())
             }
             .accessibilityIdentifier("continueWorkout")
         }
-        .padding(22)
+        .padding(LucinaTokens.Space.xl)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .foregroundStyle(.white)
-        .background(GymPalette.forest, in: RoundedRectangle(cornerRadius: 24))
+        .foregroundStyle(Theme.onAccent)
+        .background(GymPalette.forestFill, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
     }
 
     private func start(_ routine: Routine?) async {

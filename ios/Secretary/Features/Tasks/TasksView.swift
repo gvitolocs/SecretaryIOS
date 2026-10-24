@@ -30,20 +30,20 @@ extension View {
 enum TaskColors {
     static func priority(_ p: Int) -> Color {
         switch p {
-        case 1: Color(red: 1.0, green: 0.35, blue: 0.43)
-        case 2: Color(red: 1.0, green: 0.65, blue: 0.24)
-        case 3: Color(red: 0.29, green: 0.66, blue: 1.0)
-        default: Color.secondary
+        case 1: Theme.negative
+        case 2: Theme.warning
+        case 3: Theme.accent
+        default: Theme.textSecondary
         }
     }
 
     static func due(_ rel: Int) -> Color {
         switch rel {
-        case ..<0: Color(red: 1.0, green: 0.42, blue: 0.5)
-        case 0: Color(red: 0.24, green: 0.78, blue: 0.53)
-        case 1: Color(red: 1.0, green: 0.62, blue: 0.3)
-        case 2...6: Color(red: 0.62, green: 0.48, blue: 1.0)
-        default: Color.secondary
+        case ..<0: Theme.negative
+        case 0: Theme.positive
+        case 1: Theme.warning
+        case 2...6: Theme.accent
+        default: Theme.textSecondary
         }
     }
 }
@@ -176,14 +176,14 @@ struct TasksView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .navigationTitle(Text(title))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let g = store.state?.goal {
                     Text(verbatim: "\(g.completedToday)/\(g.dailyGoal)")
                         .font(.footnote.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(g.reached ? Color.green : Color.secondary)
+                        .foregroundStyle(g.reached ? Theme.positive : Theme.textSecondary)
                         .accessibilityLabel(Text("Daily goal: \(g.completedToday) of \(g.dailyGoal)"))
                 }
             }
@@ -316,12 +316,23 @@ struct TasksView: View {
                 .onSubmit(addTask)
                 .accessibilityIdentifier("tasksQuickAdd")
             if !quickAdd.trimmingCharacters(in: .whitespaces).isEmpty {
-                Button("Add", action: addTask).bold().disabled(adding)
+                Button(action: addTask) {
+                    Text("Add")
+                        .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.onAccent)
+                        .padding(.horizontal, 16)
+                        .frame(height: 34)
+                        .background(Theme.accentFill, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(adding)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(.regularMaterial, in: Capsule())
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .frame(minHeight: 46)
+        .background(Theme.card, in: Capsule())
+        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
     }
@@ -346,8 +357,9 @@ struct TasksView: View {
                 Button { store.undo = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).foregroundStyle(.secondary)
                     .accessibilityLabel("Dismiss")
             }
-            .padding(14)
-            .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Theme.cardRaised, in: Capsule())
             .padding(.horizontal, 16)
             .padding(.bottom, 64)
             .task(id: u.text + "\(Date().timeIntervalSince1970)") {

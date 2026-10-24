@@ -87,7 +87,7 @@ struct LinksView: View {
                 Section { ProgressView() }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .refreshable { await store.load() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

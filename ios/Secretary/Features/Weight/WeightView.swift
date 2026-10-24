@@ -52,7 +52,7 @@ struct WeightView: View {
                 Section { ProgressView().frame(maxWidth: .infinity) }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .refreshable { await store.refresh() }
         .navigationTitle("Weight")
         .toolbar {
@@ -102,26 +102,17 @@ struct WeightView: View {
             ("This week", "weekly_change", "arrow.up.arrow.down"),
             ("To goal", "goal_distance", "flag.checkered"),
         ]
-        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+        return StatGrid {
             ForEach(tiles, id: \.1) { title, key, icon in
-                Card(spacing: 6) {
-                    Label(title, systemImage: icon)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Text(view.statLabel(key) ?? "—")
-                        .font(.title2.weight(.semibold).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    if key == "goal_distance", let goal = view.statLabel("goal") {
-                        Text(view.stats.goalReached == true ? "Goal \(goal) reached" : "Goal \(goal)")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                .accessibilityElement(children: .combine)
+                StatCard(title: LocalizedStringKey(title), icon: icon, value: view.statLabel(key) ?? "—",
+                         detail: key == "goal_distance" ? goalLine(view) : nil)
             }
         }
+    }
+
+    private func goalLine(_ view: BodyView) -> String? {
+        guard let goal = view.statLabel("goal") else { return nil }
+        return view.stats.goalReached == true ? String(localized: "Goal \(goal) reached") : String(localized: "Goal \(goal)")
     }
 
     private func trendChart(_ view: BodyView, series: [BodySeriesPoint]) -> some View {
@@ -132,19 +123,19 @@ struct WeightView: View {
         return Chart {
             ForEach(series) { point in
                 PointMark(x: .value("Date", point.date), y: .value("Weight", unit.value(grams: point.weightGrams)))
-                    .foregroundStyle(Color.secondary.opacity(0.5))
-                    .symbolSize(18)
+                    .foregroundStyle(LucinaChartStyle.pointColor)
+                    .symbolSize(LucinaChartStyle.pointSize)
             }
             ForEach(series.filter { $0.avg7Grams != nil }) { point in
                 LineMark(x: .value("Date", point.date), y: .value("7-day average", unit.value(grams: point.avg7Grams ?? 0)))
                     .foregroundStyle(Theme.accent)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .lineStyle(LucinaChartStyle.line)
                     .interpolationMethod(.monotone)
             }
             if let goal = view.settings.goalGrams {
                 RuleMark(y: .value("Goal", unit.value(grams: goal)))
-                    .foregroundStyle(.orange.opacity(0.7))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .foregroundStyle(LucinaChartStyle.goalColor)
+                    .lineStyle(LucinaChartStyle.goal)
             }
         }
         .chartYScale(domain: low...high)
@@ -155,7 +146,7 @@ struct WeightView: View {
                 AxisValueLabel(format: .dateTime.day().month(.abbreviated), collisionResolution: .greedy)
             }
         }
-        .frame(height: 200)
+        .lucinaChart()
         .padding(.vertical, 8)
         .accessibilityLabel("Weight trend with the 7-day average")
         .accessibilityValue(view.statLabel("avg7").map { "Latest 7-day average \($0)" } ?? "")
