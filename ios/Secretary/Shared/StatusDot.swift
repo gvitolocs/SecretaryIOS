@@ -42,19 +42,7 @@ extension View {
     func lucinaStatusToolbar() -> some View {
         toolbar {
             ToolbarItem(placement: .topBarLeading) { StatusDot() }
-            ToolbarItem(placement: .topBarLeading) { SettingsButton() }
             ToolbarItem(placement: .topBarTrailing) { NotificationBell() }
         }
-    }
-}
-
-/// Opens Settings (a sheet since Gallery took its tab).
-struct SettingsButton: View {
-    @Environment(AppModel.self) private var app
-
-    var body: some View {
-        Button { app.showSettings = true } label: { Image(systemName: "gearshape") }
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("settingsButton")
     }
 }

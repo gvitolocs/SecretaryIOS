@@ -78,12 +78,9 @@ struct MainTabs: View {
     private var tabs: some View {
         @Bindable var app = app
         return TabView(selection: $app.selectedTab) {
-            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry().mediaEntry() }
+            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry().mediaEntry().galleryEntry() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
-            NavigationStack { GalleryTab() }
-                .tabItem { Label("Gallery", systemImage: "photo.on.rectangle.angled") }
-                .tag(AppModel.Tab.gallery)
             NavigationStack { ShoppingTab().lucinaStatusToolbar() }
                 .tabItem { Label("Shopping", systemImage: "cart") }
                 .tag(AppModel.Tab.shopping)
@@ -93,22 +90,10 @@ struct MainTabs: View {
             NavigationStack { WeightView().lucinaStatusToolbar() }
                 .tabItem { Label("Weight", systemImage: "scalemass") }
                 .tag(AppModel.Tab.weight)
-        }
-        // Settings left the tab bar for Gallery: the gear (and `.settings` routes) open it here.
-        .onChange(of: app.selectedTab) { old, new in
-            if new == .settings {
-                app.selectedTab = old == .settings ? .chat : old
-                app.showSettings = true
-            }
-        }
-        .sheet(isPresented: $app.showSettings) {
-            NavigationStack {
-                SettingsView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) { Button("Done") { app.showSettings = false } }
-                    }
-            }
-            .lucinaSheet()
+
+            NavigationStack { SettingsView().lucinaStatusToolbar() }
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppModel.Tab.settings)
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in

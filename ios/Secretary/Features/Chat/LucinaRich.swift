@@ -523,7 +523,8 @@ extension AppModel {
         if parts.count >= 3, parts[1] == "album" { filter.album = parts[2] }
         if parts.count >= 3, parts[1] == "search" { filter.query = parts[2...].joined(separator: " ") }
         gallery.filter = filter
-        selectedTab = .gallery
+        selectedTab = .chat
+        showGallery = true
     }
 }
 

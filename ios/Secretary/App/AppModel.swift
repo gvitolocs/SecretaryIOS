@@ -12,8 +12,7 @@ final class AppModel {
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
-    /// `settings` is not in the tab bar (Gallery took its place): selecting it opens Settings as a sheet.
-    enum Tab: String, Hashable, CaseIterable { case chat, gallery, shopping, gym, weight, settings }
+    enum Tab: String, Hashable, CaseIterable { case chat, shopping, gym, weight, settings }
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
@@ -32,8 +31,8 @@ final class AppModel {
     var showDealsMap = false
     /// The media library and player, on top of the chat like Notes.
     var showMedia = false
-    /// Settings, as a sheet from the gear button (the tab bar holds Gallery instead).
-    var showSettings = false
+    /// The Gallery (a plugin: the Plugins tab opens it; until that tab exists, a button on the chat).
+    var showGallery = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -60,7 +59,7 @@ final class AppModel {
     let notifications: NotificationCenterStore
     /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
     let media: MediaPlayer
-    /// The photo library on the server (/v1/media), the Gallery tab.
+    /// The photo library on the server (/v1/media), shown by the Gallery plugin.
     let gallery: GalleryStore
     /// Automatic backup of this iPhone's photos and videos to the server.
     let backup: PhotoBackup
@@ -112,9 +111,7 @@ final class AppModel {
         media = MediaPlayer(api: { MediaAPI(client: client) })
         gallery = GalleryStore(api: { GalleryAPI(client: client) })
         backup = PhotoBackup(api: { GalleryAPI(client: client) })
-        if let tab = launch.initialTab {
-            if tab == .settings { showSettings = true } else { selectedTab = tab }
-        }
+        if let tab = launch.initialTab { selectedTab = tab }
         if launch.openNotes {
             selectedTab = .chat
             showNotes = true
@@ -122,6 +119,10 @@ final class AppModel {
         if launch.openTasks {
             selectedTab = .chat
             showTasks = true
+        }
+        if launch.openGallery {
+            selectedTab = .chat
+            showGallery = true
         }
         if launch.openMedia {
             selectedTab = .chat
@@ -360,6 +361,8 @@ struct LaunchOptions {
     var openTasks = false
     /// `-SecretaryInitialTab media`: start on the media library.
     var openMedia = false
+    /// `-SecretaryInitialTab gallery`: start on the Gallery.
+    var openGallery = false
 
     init(defaults: UserDefaults) {
         #if DEBUG
@@ -368,6 +371,7 @@ struct LaunchOptions {
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
         openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
+        openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         #endif
     }
 }

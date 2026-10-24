@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The Gallery tab: the owner's photos, videos and audio on their server, newest first and
+// The Gallery plugin: the owner's photos, videos and audio on their server, newest first and
 // grouped by month like Google Photos; albums; search ("Copenhagen", "July 2025"); a viewer
 // that pages through the timeline and hands videos and audio to the media player.
 
@@ -69,7 +69,8 @@ final class GalleryStore {
     }
 }
 
-struct GalleryTab: View {
+/// The Gallery screen. A plugin: the Plugins tab (or, until it exists, `galleryEntry()`) pushes it.
+struct GalleryScreen: View {
     @Environment(GalleryStore.self) private var store
     @Environment(PhotoBackup.self) private var backup
     @State private var viewing: GalleryItem?
@@ -549,4 +550,27 @@ private struct FilterChips: View {
             .padding(.horizontal)
         }
     }
+}
+
+/// The Gallery button on the chat, until the Plugins tab has its card.
+private struct GalleryEntry: ViewModifier {
+    @Environment(AppModel.self) private var app
+
+    func body(content: Content) -> some View {
+        @Bindable var app = app
+        content
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { app.showGallery = true } label: { Image(systemName: "photo.on.rectangle.angled") }
+                        .accessibilityLabel("Gallery")
+                        .accessibilityIdentifier("galleryButton")
+                }
+            }
+            .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
+    }
+}
+
+extension View {
+    /// The Gallery button and screen, on the chat.
+    func galleryEntry() -> some View { modifier(GalleryEntry()) }
 }
