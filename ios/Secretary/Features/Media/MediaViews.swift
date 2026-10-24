@@ -145,7 +145,7 @@ struct MediaLibraryView: View {
             HStack(spacing: 12) {
                 Poster(path: item.posterUrl, kind: item.kind)
                     .frame(width: item.isVideo ? 96 : 54, height: 54)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title).font(LucinaTokens.Fonts.subheadline.weight(.medium)).lineLimit(2).foregroundStyle(Theme.text)
                     HStack(spacing: 6) {
@@ -232,7 +232,7 @@ private struct MiniPlayer: View {
             HStack(spacing: 12) {
                 Poster(path: item.posterUrl, kind: item.kind)
                     .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.field))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title).font(LucinaTokens.Fonts.subheadline.weight(.medium)).foregroundStyle(Theme.text).lineLimit(1)
                     Text("\(MediaFormat.time(media.position)) / \(MediaFormat.time(media.duration))")
@@ -421,7 +421,7 @@ private struct AudioPlayerScreen: View {
             if let item = media.current {
                 Poster(path: item.posterUrl, kind: item.kind)
                     .aspectRatio(1, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile))
                     .shadow(radius: 12, y: 6)
                     .frame(maxWidth: 320)
                 VStack(spacing: 4) {
