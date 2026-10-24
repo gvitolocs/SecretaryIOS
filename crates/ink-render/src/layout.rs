@@ -57,7 +57,8 @@ impl Default for Style {
             paragraph_spacing: 0.0,
             indent_em: 1.5,
             justify: true,
-            max_gap_ratio: 3.0,
+            // Without hyphenation, long Italian words leave big gaps; a ragged line mid-paragraph looks worse.
+            max_gap_ratio: 8.0,
             footer_px: 26,
         }
     }
