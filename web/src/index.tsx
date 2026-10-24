@@ -17,6 +17,7 @@ const HistoryDetailView = lazy(() => import("./views/gym/HistoryDetail"));
 const ProgressView = lazy(() => import("./views/gym/Progress"));
 const ProgressDetailView = lazy(() => import("./views/gym/ProgressDetail"));
 const WeightView = lazy(() => import("./views/Weight"));
+const LibraryView = lazy(() => import("./views/Library"));
 const NotesView = lazy(() => import("./views/Notes"));
 const LinksView = lazy(() => import("./views/Links"));
 const TasksView = lazy(() => import("./views/Tasks"));
@@ -47,6 +48,7 @@ render(
       </Route>
       <Route path="/weight" component={WeightView} />
       <Route path="/links" component={LinksView} />
+      <Route path="/library/:id?" component={LibraryView} />
       <Route path="/notes/:key?" component={NotesView} />
       <Route path="/tasks/:section?/:id?" component={TasksView} />
       <Route path="/models/:id?" component={ModelsView} />
