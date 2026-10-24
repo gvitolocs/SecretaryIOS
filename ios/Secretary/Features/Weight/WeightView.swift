@@ -3,11 +3,9 @@ import SwiftUI
 
 struct WeightView: View {
     @Environment(WeightStore.self) private var store
-    @State private var quickValue = ""
     @State private var editing: BodyEntry?
     @State private var showSettings = false
-    @State private var logging = false
-    @FocusState private var quickFocused: Bool
+    @State private var adding = false
 
     var body: some View {
         List {
@@ -54,10 +52,15 @@ struct WeightView: View {
                 Section { ProgressView().frame(maxWidth: .infinity) }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .refreshable { await store.refresh() }
         .navigationTitle("Weight")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { adding = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add measurement")
+                    .accessibilityIdentifier("weightAddButton")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showSettings = true } label: { Image(systemName: "target") }
                     .accessibilityLabel("Goal and unit")
@@ -66,43 +69,30 @@ struct WeightView: View {
         }
         .sheet(item: $editing) { entry in EntryEditor(entry: entry) }
         .sheet(isPresented: $showSettings) { WeightSettings() }
+        .sheet(isPresented: $adding) { QuickWeightSheet() }
         .task { if store.view == nil { await store.refresh() } }
     }
 
+    /// One tap opens the quick-entry sheet (weight focused, date and time set to now).
     private var quickLog: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "scalemass.fill").foregroundStyle(Theme.accent).accessibilityHidden(true)
-            TextField("Today's weight", text: $quickValue)
-                .keyboardType(.decimalPad)
-                .focused($quickFocused)
-                .font(.title3.monospacedDigit())
-                .accessibilityIdentifier("weightQuickField")
-            Text(store.unit.rawValue).foregroundStyle(.secondary)
-            Button {
-                Task { await log() }
-            } label: {
-                if logging { ProgressView() } else { Text("Log").bold() }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accentFill)
-            .disabled(quickValue.trimmingCharacters(in: .whitespaces).isEmpty || logging)
-            .accessibilityIdentifier("weightLogButton")
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
+        Button { adding = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "scalemass.fill").foregroundStyle(Theme.accent).accessibilityHidden(true)
+                Text("Today's weight")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { quickFocused = false }
+                Text(store.unit.rawValue).foregroundStyle(.secondary)
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
             }
+            .contentShape(Rectangle())
         }
-    }
-
-    private func log() async {
-        logging = true
-        defer { logging = false }
-        if await store.log(quickValue) {
-            quickValue = ""
-            quickFocused = false
-        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add measurement")
+        .accessibilityIdentifier("weightQuickAdd")
     }
 
     private func statsGrid(_ view: BodyView) -> some View {
@@ -112,26 +102,17 @@ struct WeightView: View {
             ("This week", "weekly_change", "arrow.up.arrow.down"),
             ("To goal", "goal_distance", "flag.checkered"),
         ]
-        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+        return StatGrid {
             ForEach(tiles, id: \.1) { title, key, icon in
-                Card(spacing: 6) {
-                    Label(title, systemImage: icon)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Text(view.statLabel(key) ?? "—")
-                        .font(.title2.weight(.semibold).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    if key == "goal_distance", let goal = view.statLabel("goal") {
-                        Text(view.stats.goalReached == true ? "Goal \(goal) reached" : "Goal \(goal)")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                .accessibilityElement(children: .combine)
+                StatCard(title: LocalizedStringKey(title), icon: icon, value: view.statLabel(key) ?? "—",
+                         detail: key == "goal_distance" ? goalLine(view) : nil)
             }
         }
+    }
+
+    private func goalLine(_ view: BodyView) -> String? {
+        guard let goal = view.statLabel("goal") else { return nil }
+        return view.stats.goalReached == true ? String(localized: "Goal \(goal) reached") : String(localized: "Goal \(goal)")
     }
 
     private func trendChart(_ view: BodyView, series: [BodySeriesPoint]) -> some View {
@@ -142,19 +123,19 @@ struct WeightView: View {
         return Chart {
             ForEach(series) { point in
                 PointMark(x: .value("Date", point.date), y: .value("Weight", unit.value(grams: point.weightGrams)))
-                    .foregroundStyle(Color.secondary.opacity(0.5))
-                    .symbolSize(18)
+                    .foregroundStyle(LucinaChartStyle.pointColor)
+                    .symbolSize(LucinaChartStyle.pointSize)
             }
             ForEach(series.filter { $0.avg7Grams != nil }) { point in
                 LineMark(x: .value("Date", point.date), y: .value("7-day average", unit.value(grams: point.avg7Grams ?? 0)))
                     .foregroundStyle(Theme.accent)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    .lineStyle(LucinaChartStyle.line)
                     .interpolationMethod(.monotone)
             }
             if let goal = view.settings.goalGrams {
                 RuleMark(y: .value("Goal", unit.value(grams: goal)))
-                    .foregroundStyle(.orange.opacity(0.7))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .foregroundStyle(LucinaChartStyle.goalColor)
+                    .lineStyle(LucinaChartStyle.goal)
             }
         }
         .chartYScale(domain: low...high)
@@ -165,7 +146,7 @@ struct WeightView: View {
                 AxisValueLabel(format: .dateTime.day().month(.abbreviated), collisionResolution: .greedy)
             }
         }
-        .frame(height: 200)
+        .lucinaChart()
         .padding(.vertical, 8)
         .accessibilityLabel("Weight trend with the 7-day average")
         .accessibilityValue(view.statLabel("avg7").map { "Latest 7-day average \($0)" } ?? "")
@@ -186,6 +167,71 @@ struct WeightView: View {
         .accessibilityElement(children: .combine)
         .accessibilityHint("Double-tap to edit, swipe to delete")
         .accessibilityIdentifier("weightEntry")
+    }
+}
+
+/// Strong-style "Add measurement": the weight field is focused with the decimal pad up,
+/// date and time start at now and can be moved back to log an earlier weigh-in.
+private struct QuickWeightSheet: View {
+    @Environment(WeightStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var value = ""
+    @State private var date = Date()
+    @State private var saving = false
+    @FocusState private var focused: Bool
+
+    /// The latest weigh-in as the placeholder, with the locale's decimal separator ("75,1").
+    private var lastValue: String? {
+        guard let grams = store.view?.entries.max(by: { $0.measuredMs < $1.measuredMs })?.weightGrams else { return nil }
+        return store.unit.number(grams: grams).replacingOccurrences(of: ".", with: Locale.current.decimalSeparator ?? ".")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Weight (\(store.unit.rawValue))") {
+                    TextField(text: $value, prompt: lastValue.map { Text(verbatim: $0) }) { Text("Weight") }
+                        .keyboardType(.decimalPad)
+                        .focused($focused)
+                        .font(.title2.monospacedDigit())
+                        .accessibilityIdentifier("weightSheetField")
+                }
+                Section {
+                    DatePicker("Date", selection: $date, in: ...Date(), displayedComponents: .date)
+                    DatePicker("Time of day", selection: $date, in: ...Date(), displayedComponents: .hourAndMinute)
+                        .accessibilityIdentifier("weightSheetTime")
+                }
+                if let error = store.actionError {
+                    Text(error).font(.footnote).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Add measurement")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Close")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saving = true
+                        Task {
+                            defer { saving = false }
+                            if await store.log(value, at: date) { dismiss() }
+                        }
+                    }
+                    .bold()
+                    .disabled(value.trimmingCharacters(in: .whitespaces).isEmpty || saving)
+                    .accessibilityIdentifier("weightSaveButton")
+                }
+            }
+            .onAppear {
+                store.actionError = nil
+                date = Date()
+                focused = true
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

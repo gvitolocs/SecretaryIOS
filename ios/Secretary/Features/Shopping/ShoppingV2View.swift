@@ -34,21 +34,25 @@ enum ShoppingLanguage {
     }
 }
 
-/// The original Bring! layout (decompiled resources): a 3-column grid of 108 pt tiles with
-/// 58 pt icons, red to buy (#f16a6f), teal for recent and the catalog (#6eb8ae), white text;
-/// home order: list chooser, to-buy grid, Recently, catalog sections. Icons: ItemVisual.
+/// The Bring!-style layout (a 3-column grid of 108 pt tiles with 58 pt icons; home order:
+/// list chooser, to-buy grid, Recently, catalog sections) in the shared Lucina colours:
+/// accent-filled tiles to buy, card tiles for recent and the catalog. Icons: ItemVisual.
 enum Bring {
-    static let red = Color("BringRed")
-    static let teal = Color("BringTeal")
-    static let background = Color("BringBackground")
-    static let section = Color("BringSection")
-    static let text = Color("BringText")
-    static let field = Color("BringField")
+    /// Tiles to buy (white text).
+    static let red = Theme.accentFill
+    /// Accents: the undo action, the selected list.
+    static let teal = Theme.accent
+    static let background = Theme.page
+    static let section = Theme.card
+    static let text = Theme.text
+    static let field = Theme.card
     static let tileHeight: CGFloat = 108
     static let iconHeight: CGFloat = 58
-    static let corner: CGFloat = 8
-    static let gap: CGFloat = 4
-    static let margin: CGFloat = 16
+    static let corner = LucinaTokens.Radius.tile
+    static let gap: CGFloat = 8
+    static let margin = LucinaTokens.Space.gutter
+
+    enum Tone { case toBuy, other }
     static let columns = Array(repeating: GridItem(.flexible(), spacing: gap), count: 3)
 }
 
@@ -125,7 +129,7 @@ struct ShoppingV2View: View {
                 Text(store.currentList?.theme.emoji ?? "🛒").font(.system(size: 34)).accessibilityHidden(true)
                 HStack(spacing: 6) {
                     Text(store.currentList?.name ?? "Shopping")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(LucinaTokens.Fonts.largeTitle)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
                     Image(systemName: "chevron.down").font(.headline.weight(.bold)).accessibilityHidden(true)
@@ -154,10 +158,10 @@ struct ShoppingV2View: View {
                 Spacer()
             }
             .font(.body.weight(.medium))
-            .foregroundStyle(Bring.text.opacity(0.7))
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            .background(Bring.field, in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.horizontal, 16)
+            .frame(height: 46)
+            .background(Bring.field, in: Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Add an item")
@@ -170,7 +174,7 @@ struct ShoppingV2View: View {
         if store.needed.isEmpty {
             VStack(spacing: 8) {
                 Text("🧺").font(.system(size: 52)).accessibilityHidden(true)
-                Text("Your list is empty").font(.system(.title3, design: .rounded).weight(.bold))
+                Text("Your list is empty").font(LucinaTokens.Fonts.title3)
                 Text("Tap something below, or search to add it.").font(.subheadline).opacity(0.7)
             }
             .foregroundStyle(Bring.text)
@@ -180,7 +184,7 @@ struct ShoppingV2View: View {
         } else {
             LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                 ForEach(store.needed) { item in
-                    BringTile(visual: store.visual(for: item), name: item.name, detail: detailText(item), color: Bring.red)
+                    BringTile(visual: store.visual(for: item), name: item.name, detail: detailText(item), tone: .toBuy)
                         .matchedGeometryEffect(id: item.id, in: tiles)
                         .onTapGesture { tap(item) }
                         .onLongPressGesture(minimumDuration: 0.4) { detail = item }
@@ -198,7 +202,7 @@ struct ShoppingV2View: View {
             ))
             LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                 ForEach(store.recent.prefix(18)) { item in
-                    BringTile(visual: store.visual(for: item), name: item.name, detail: detailText(item), color: Bring.teal)
+                    BringTile(visual: store.visual(for: item), name: item.name, detail: detailText(item), tone: .other)
                         .matchedGeometryEffect(id: item.id, in: tiles)
                         .onTapGesture { tap(item) }
                         .onLongPressGesture(minimumDuration: 0.4) { detail = item }
@@ -231,14 +235,14 @@ struct ShoppingV2View: View {
                 } label: {
                     HStack(spacing: 10) {
                         ItemVisualView(visual: .section(section, hasArt: ItemVisual.bundled), size: 30).accessibilityHidden(true)
-                        Text(section.name).font(.system(.headline, design: .rounded).weight(.bold))
+                        Text(section.name).font(LucinaTokens.Fonts.headline)
                         Spacer()
                         Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0)).accessibilityHidden(true)
                     }
                     .foregroundStyle(Bring.text)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 16)
                     .frame(height: 52)
-                    .background(Bring.section, in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
+                    .background(Bring.section, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -250,7 +254,7 @@ struct ShoppingV2View: View {
                 if open {
                     LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                         ForEach(items) { item in
-                            BringTile(visual: store.visual(for: item), name: item.displayName(store.search.lang), detail: nil, color: Bring.teal)
+                            BringTile(visual: store.visual(for: item), name: item.displayName(store.search.lang), detail: nil, tone: .other)
                                 .onTapGesture {
                                     tapCount += 1
                                     withAnimation(.spring(duration: 0.35)) { store.add(item.displayName(store.search.lang), catalogItem: item) }
@@ -272,7 +276,7 @@ struct ShoppingV2View: View {
     private func sectionHeader(icon: String, title: String, trailing: AnyView? = nil) -> some View {
         HStack(spacing: 8) {
             Text(icon).accessibilityHidden(true)
-            Text(title).font(.system(.headline, design: .rounded).weight(.bold))
+            Text(title).font(LucinaTokens.Fonts.headline)
             Spacer()
             trailing
         }
@@ -302,10 +306,10 @@ struct ShoppingV2View: View {
                     .foregroundStyle(Bring.teal)
                     .accessibilityIdentifier("undo")
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Theme.text)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(Color(white: 0.15).opacity(0.95), in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
+            .background(Theme.cardRaised, in: Capsule())
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -317,13 +321,13 @@ struct ShoppingV2View: View {
     }
 }
 
-/// One Bring! tile: 108 pt high, 58 pt icon 8 pt from the top, name 14 pt bold (shrinks to
-/// 12), specification 12 pt, white on the tile colour, 8 pt corners.
+/// One tile: 108 pt high, 58 pt icon 8 pt from the top, name 14 pt bold (shrinks to 12),
+/// specification 12 pt; white on the accent fill to buy, the text colour on a card otherwise.
 struct BringTile: View {
     let visual: ItemVisual
     let name: String
     let detail: String?
-    let color: Color
+    let tone: Bring.Tone
 
     var body: some View {
         VStack(spacing: 2) {
@@ -332,23 +336,24 @@ struct BringTile: View {
                 .padding(.top, 8)
                 .accessibilityHidden(true)
             Text(name)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .font(.system(size: 14, weight: .semibold))
                 .lineLimit(2)
                 .minimumScaleFactor(12.0 / 14.0)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 2)
             if let detail {
                 Text(detail)
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.system(size: 12, weight: .medium))
+                    .opacity(0.75)
                     .lineLimit(1)
                     .padding(.horizontal, 2)
             }
             Spacer(minLength: 4)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(tone == .toBuy ? Theme.onAccent : Theme.text)
         .frame(maxWidth: .infinity)
         .frame(height: Bring.tileHeight)
-        .background(color, in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
+        .background(tone == .toBuy ? Bring.red : Theme.card, in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
         // Fixed geometry like the original: large text sizes don't reflow the grid.
         .dynamicTypeSize(...DynamicTypeSize.xLarge)
@@ -383,7 +388,7 @@ private struct SearchSheet: View {
                     let needed = Set(store.needed.compactMap(\.objectKey))
                     LazyVGrid(columns: Bring.columns, spacing: Bring.gap) {
                         if !trimmed.isEmpty, store.search.exactMatch(trimmed) == nil {
-                            BringTile(visual: .emoji("✏️"), name: trimmed, detail: "Add", color: Bring.teal)
+                            BringTile(visual: .emoji("✏️"), name: trimmed, detail: "Add", tone: .other)
                                 .onTapGesture { add(trimmed, nil) }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("Add \(trimmed)")
@@ -392,7 +397,7 @@ private struct SearchSheet: View {
                         }
                         ForEach(results) { item in
                             let onList = needed.contains(item.id)
-                            BringTile(visual: store.visual(for: item), name: item.displayName(store.search.lang), detail: nil, color: onList ? Bring.red : Bring.teal)
+                            BringTile(visual: store.visual(for: item), name: item.displayName(store.search.lang), detail: nil, tone: onList ? .toBuy : .other)
                                 .onTapGesture { add(item.displayName(store.search.lang), item) }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel(item.displayName(store.search.lang))
@@ -404,7 +409,7 @@ private struct SearchSheet: View {
                     if trimmed.isEmpty {
                         Text("Type a product: \u{201C}latte\u{201D}, \u{201C}bananas\u{201D}, \u{201C}mælk\u{201D}…")
                             .font(.subheadline)
-                            .foregroundStyle(Bring.text.opacity(0.6))
+                            .foregroundStyle(Theme.textSecondary)
                             .padding(.top, 20)
                     }
                 }
@@ -413,7 +418,7 @@ private struct SearchSheet: View {
             .background(Bring.background.ignoresSafeArea())
             .safeAreaInset(edge: .top) {
                 HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Bring.text.opacity(0.6)).accessibilityHidden(true)
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.textSecondary).accessibilityHidden(true)
                     TextField("What would you like to buy?", text: $query)
                         .focused($focused)
                         .submitLabel(.done)
@@ -422,13 +427,13 @@ private struct SearchSheet: View {
                         .accessibilityIdentifier("shoppingSearchField")
                     if !query.isEmpty {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .foregroundStyle(Bring.text.opacity(0.5))
+                            .foregroundStyle(Theme.textTertiary)
                             .accessibilityLabel("Clear")
                     }
                 }
                 .padding(.horizontal, 14)
                 .frame(height: 44)
-                .background(Bring.field, in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
+                .background(Bring.field, in: Capsule())
                 .padding(.horizontal, Bring.margin)
                 .padding(.vertical, 8)
                 .background(Bring.background)
@@ -481,9 +486,9 @@ private struct ListChooser: View {
                                 Text(list.theme.emoji)
                                     .font(.title2)
                                     .frame(width: 48, height: 48)
-                                    .background(Bring.teal.opacity(0.25), in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
+                                    .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Bring.corner, style: .continuous))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(list.name).font(.system(.body, design: .rounded).weight(.bold))
+                                    Text(list.name).font(LucinaTokens.Fonts.headline)
                                     Text(list.needed == 1 ? "1 item to buy" : "\(list.needed) items to buy").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()

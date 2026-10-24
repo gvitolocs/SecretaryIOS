@@ -82,8 +82,7 @@ struct GymSettingsScreen: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(GymPalette.background)
+        .lucinaList()
         .onAppear(perform: loadPreferences)
         .onChange(of: store.view?.state.settings) { _, _ in loadPreferences() }
         .fileExporter(isPresented: $showExport, document: exportDocument, contentType: exportType, defaultFilename: exportName) { result in

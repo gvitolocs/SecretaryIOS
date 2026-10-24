@@ -223,7 +223,7 @@ struct DealsMapView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .scrollContentBackground(.hidden)
         .refreshable { await load() }
     }
@@ -356,7 +356,7 @@ private struct DealsStoreSheet: View {
                     .accessibilityIdentifier("dealsDirections")
                 }
             }
-            .listStyle(.insetGrouped)
+            .lucinaList()
             .navigationTitle(store.chainName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -589,7 +589,7 @@ struct DealsGoogleMap: UIViewRepresentable {
 
 /// Marker images: a coloured pill with the label and a pointer (stores), a house (home).
 enum DealsMarkerImage {
-    static var listColor: UIColor { UIColor(named: "BringRed") ?? .systemRed }
+    static var listColor: UIColor { UIColor(named: "AccentColor") ?? .systemIndigo }
     static var clearanceColor: UIColor { .systemOrange }
     static var selectedColor: UIColor { UIColor(named: "AccentFill") ?? .systemIndigo }
 

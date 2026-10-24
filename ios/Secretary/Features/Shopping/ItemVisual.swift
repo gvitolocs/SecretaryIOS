@@ -81,10 +81,10 @@ struct ItemVisualView: View {
                 .frame(width: size, height: size)
         case let .initial(letter):
             Text(letter)
-                .font(.system(size: size * 0.42, weight: .bold, design: .rounded))
+                .font(.system(size: size * 0.42, weight: .bold))
                 .frame(width: size * 0.8, height: size * 0.8)
-                .background(Circle().fill(.white.opacity(0.22)))
-                .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
+                .background(Circle().fill(.quaternary))
+                .overlay(Circle().strokeBorder(.tertiary, lineWidth: 1))
                 .frame(width: size, height: size)
         }
     }

@@ -10,11 +10,10 @@ struct ProgressScreen: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                Text("Progress").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
                 GymCard {
                     GymEyebrow(text: "Training volume")
                     Text(view.summary.volume)
-                        .font(.system(size: 34, weight: .semibold, design: .rounded))
+                        .font(LucinaTokens.Fonts.largeTitle.monospacedDigit())
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
                     if !view.exerciseCharts.isEmpty {
@@ -44,7 +43,7 @@ struct ProgressScreen: View {
                     GymEyebrow(text: "Warmup sets excluded")
                 }
 
-                Text("Personal records").font(.title2.bold())
+                SectionHeader("Personal records")
                 if view.records.isEmpty {
                     GymEmptyCard(icon: "trophy", title: "Make your first mark",
                                  detail: "Complete working sets to establish your personal records.")
@@ -76,7 +75,7 @@ struct ProgressScreen: View {
                 }
 
                 HStack {
-                    Text("Body measurements").font(.title2.bold())
+                    Text("Body measurements").font(LucinaTokens.Fonts.title3)
                     Spacer()
                     Button { showMeasurement = true } label: { Image(systemName: "plus.circle.fill").font(.title2) }
                         .accessibilityLabel("Add measurement")
@@ -94,7 +93,7 @@ struct ProgressScreen: View {
                                 Text(dateLabel(measurement.timestampMs)).font(.caption).foregroundStyle(GymPalette.muted)
                             }
                             Spacer()
-                            Text(view.measurementLabels[measurement.id] ?? "").font(.title3.bold())
+                            Text(view.measurementLabels[measurement.id] ?? "").font(LucinaTokens.Fonts.headline)
                         }
                     }
                     .contextMenu {
@@ -135,7 +134,7 @@ struct MeasurementScreen: View {
                 if let error = store.actionError { Text(error).font(.footnote).foregroundStyle(.red) }
             }
             .scrollContentBackground(.hidden)
-            .background(GymPalette.background)
+            .lucinaSheet()
             .navigationTitle("New measurement")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

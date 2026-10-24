@@ -77,7 +77,7 @@ struct ShoppingView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .overlay {
             if !store.loaded && store.isLoading {
                 ProgressView("Loading the list…")

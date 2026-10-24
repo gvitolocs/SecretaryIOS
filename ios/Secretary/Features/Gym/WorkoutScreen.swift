@@ -32,7 +32,7 @@ struct WorkoutScreen: View {
                                         Button("Skip") { Task { await store.run(.stopRest) } }
                                     }
                                     .padding(16)
-                                    .background(GymPalette.lime.opacity(0.45), in: RoundedRectangle(cornerRadius: 16))
+                                    .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile, style: .continuous))
                                     .accessibilityElement(children: .contain)
                                     .accessibilityIdentifier("restTimer")
                                 }
@@ -41,7 +41,7 @@ struct WorkoutScreen: View {
                         TextField("Workout notes", text: $notes, axis: .vertical)
                             .font(.subheadline)
                             .padding(14)
-                            .background(.white, in: RoundedRectangle(cornerRadius: 14))
+                            .background(Theme.card, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile, style: .continuous))
                             .onSubmit { saveNotes() }
                         ForEach(workout.exercises) { exercise in
                             ExerciseCard(exercise: exercise, view: view)
@@ -194,7 +194,7 @@ struct ExerciseCard: View {
                     .font(.subheadline.bold())
                     .frame(maxWidth: .infinity)
                     .padding(10)
-                    .background(GymPalette.background, in: RoundedRectangle(cornerRadius: 10))
+                    .background(Theme.field, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.field, style: .continuous))
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("addSet-\(exercise.exerciseId)")
@@ -236,7 +236,7 @@ struct SetRow: View {
                 Text(setKind == "normal" ? "\(number)" : String(setKind.prefix(1)).uppercased())
                     .font(.caption.bold())
                     .frame(width: 28, height: 36)
-                    .background(GymPalette.background, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Theme.field, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.field, style: .continuous))
             }
             .disabled(set.completed)
             .accessibilityLabel("Set \(number) type")
@@ -299,7 +299,7 @@ struct SetRow: View {
             .gymFieldFont()
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity)
-            .background(set.completed ? GymPalette.lime.opacity(0.35) : GymPalette.background, in: RoundedRectangle(cornerRadius: 9))
+            .background(set.completed ? Theme.positive.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.field, style: .continuous))
             .disabled(set.completed)
             .focused($focused)
             .accessibilityLabel(title)
