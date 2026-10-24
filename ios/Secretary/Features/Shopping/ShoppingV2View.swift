@@ -5,10 +5,13 @@ struct ShoppingTab: View {
     @Environment(ShoppingV2Store.self) private var store
 
     var body: some View {
-        switch store.availability {
-        case .unavailable: ShoppingView()
-        default: ShoppingV2View()
+        Group {
+            switch store.availability {
+            case .unavailable: ShoppingView()
+            default: ShoppingV2View()
+            }
         }
+        .dealsMapEntry(inToolbar: store.availability == .unavailable)
     }
 }
 

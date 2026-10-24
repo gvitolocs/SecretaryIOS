@@ -512,6 +512,7 @@ extension AppModel {
         case "notes", "links", "settings", "tasks": selectedTab = .settings
         default: selectedTab = .chat
         }
+        if NotificationRoute.opensDealsMap(path) { showDealsMap = true }
     }
 }
 

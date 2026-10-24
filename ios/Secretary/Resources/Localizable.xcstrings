@@ -56,6 +56,22 @@
         }
       }
     },
+    "%@ left" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ne restano %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ tilbage"
+          }
+        }
+      }
+    },
     "%@ · %@" : {
       "localizations" : {
         "en" : {
@@ -225,6 +241,22 @@
         }
       }
     },
+    "%lld from your list" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld dalla tua lista"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld fra din liste"
+          }
+        }
+      }
+    },
     "%lld items synced" : {
       "localizations" : {
         "da" : {
@@ -269,6 +301,44 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld min"
+          }
+        }
+      }
+    },
+    "%lld on clearance" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antispreco: %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Madspild: %lld"
+          }
+        }
+      }
+    },
+    "%lld on clearance, up to %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld on clearance, up to %2$@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antispreco: %lld, fino a %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Madspild: %lld, op til %@"
           }
         }
       }
@@ -505,32 +575,32 @@
     },
     "AR options" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Opzioni AR"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "AR-indstillinger"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opzioni AR"
           }
         }
       }
     },
     "AR stopped: %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "AR interrotta: %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "AR stoppede: %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AR interrotta: %@"
           }
         }
       }
@@ -1066,32 +1136,32 @@
     },
     "Allow the camera for Secretary in Settings to let Lucina mirror your face." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Consenti la fotocamera a Secretary in Impostazioni per farti imitare da Lucina."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Giv Secretary adgang til kameraet i Indstillinger, så Lucina kan spejle dit ansigt."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti la fotocamera a Secretary in Impostazioni per farti imitare da Lucina."
           }
         }
       }
     },
     "Allow the camera for Secretary in Settings to place Lucina in your room." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Consenti la fotocamera a Secretary in Impostazioni per mettere Lucina nella tua stanza."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Giv Secretary adgang til kameraet i Indstillinger for at stille Lucina ind i dit rum."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti la fotocamera a Secretary in Impostazioni per mettere Lucina nella tua stanza."
           }
         }
       }
@@ -1503,16 +1573,16 @@
     },
     "Camera on: she mirrors your face. Nothing leaves this phone." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Fotocamera attiva: ti imita il viso. Nulla lascia questo telefono."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kamera tændt: hun spejler dit ansigt. Intet forlader telefonen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fotocamera attiva: ti imita il viso. Nulla lascia questo telefono."
           }
         }
       }
@@ -1757,6 +1827,54 @@
         }
       }
     },
+    "Clear filters" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Azzera i filtri"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ryd filtre"
+          }
+        }
+      }
+    },
+    "Clearance" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antispreco"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Madspild"
+          }
+        }
+      }
+    },
+    "Clearance deals couldn't be loaded this time." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le offerte antispreco non si sono caricate questa volta."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Madspildstilbuddene kunne ikke hentes denne gang."
+          }
+        }
+      }
+    },
     "Close" : {
       "localizations" : {
         "da" : {
@@ -1775,16 +1893,16 @@
     },
     "Close AR" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Chiudi AR"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Luk AR"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiudi AR"
           }
         }
       }
@@ -2329,6 +2447,38 @@
         }
       }
     },
+    "Deals map" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mappa delle offerte"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilbudskort"
+          }
+        }
+      }
+    },
+    "Deals nearby" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offerte vicino a te"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilbud i nærheden"
+          }
+        }
+      }
+    },
     "Debug builds only. Changing the server signs you out." : {
       "localizations" : {
         "da" : {
@@ -2345,7 +2495,22 @@
         }
       }
     },
-    "Default" : {},
+    "Default" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Predefinito"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standard"
+          }
+        }
+      }
+    },
     "Delete" : {
       "localizations" : {
         "da" : {
@@ -2646,6 +2811,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nome del dispositivo"
+          }
+        }
+      }
+    },
+    "Directions" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indicazioni"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rutevejledning"
           }
         }
       }
@@ -3331,48 +3512,48 @@
     "Face" : {},
     "Face tracking is on" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tracciamento del viso attivo"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ansigtssporing er slået til"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tracciamento del viso attivo"
           }
         }
       }
     },
     "Face tracking needs the front TrueDepth camera." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il tracciamento del viso richiede la fotocamera frontale TrueDepth."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ansigtssporing kræver det forreste TrueDepth-kamera."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il tracciamento del viso richiede la fotocamera frontale TrueDepth."
           }
         }
       }
     },
     "Face tracking stopped: %@" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tracciamento del viso interrotto: %@"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ansigtssporingen stoppede: %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tracciamento del viso interrotto: %@"
           }
         }
       }
@@ -3457,6 +3638,38 @@
         }
       }
     },
+    "Flyer" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Volantino"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilbudsavis"
+          }
+        }
+      }
+    },
+    "Flyer offers couldn't be loaded this time." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le offerte del volantino non si sono caricate questa volta."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilbudsavisens tilbud kunne ikke hentes denne gang."
+          }
+        }
+      }
+    },
     "Focus" : {
       "localizations" : {
         "da" : {
@@ -3537,6 +3750,22 @@
         }
       }
     },
+    "From %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dal %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fra %@"
+          }
+        }
+      }
+    },
     "From %@, %@" : {
       "localizations" : {
         "da" : {
@@ -3588,6 +3817,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Giardino"
+          }
+        }
+      }
+    },
+    "Get directions" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ottieni indicazioni stradali"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Få rutevejledning"
           }
         }
       }
@@ -4147,16 +4392,16 @@
     },
     "In front of me (3-DoF)" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Davanti a me (3-DoF)"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Foran mig (3-DoF)"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Davanti a me (3-DoF)"
           }
         }
       }
@@ -4397,16 +4642,16 @@
     },
     "Listening…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ti ascolto…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lytter…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ti ascolto…"
           }
         }
       }
@@ -4463,16 +4708,16 @@
     },
     "Loading Lucina…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Carico Lucina…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Indlæser Lucina…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Carico Lucina…"
           }
         }
       }
@@ -4757,16 +5002,16 @@
     },
     "Lucina in your room" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lucina nella tua stanza"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucina i dit rum"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina nella tua stanza"
           }
         }
       }
@@ -5127,16 +5372,16 @@
     },
     "Lucina's AR model isn't on the server yet." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Il modello AR di Lucina non è ancora sul server."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lucinas AR-model er ikke på serveren endnu."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il modello AR di Lucina non è ancora sul server."
           }
         }
       }
@@ -5432,16 +5677,16 @@
     },
     "Mirror me" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Imitami"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Spejl mig"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Imitami"
           }
         }
       }
@@ -5513,16 +5758,16 @@
     },
     "Move your phone slowly to find the floor." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Muovi piano il telefono per trovare il pavimento."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Bevæg telefonen langsomt for at finde gulvet."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Muovi piano il telefono per trovare il pavimento."
           }
         }
       }
@@ -5571,6 +5816,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silenziata"
+          }
+        }
+      }
+    },
+    "My list" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La mia lista"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Min liste"
           }
         }
       }
@@ -5851,6 +6112,22 @@
         }
       }
     },
+    "No clearance deals here right now." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Al momento qui non ci sono offerte antispreco."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen madspildstilbud her lige nu."
+          }
+        }
+      }
+    },
     "No entries yet. Log your first weigh-in above." : {
       "localizations" : {
         "da" : {
@@ -5911,6 +6188,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nessuna quantità"
+          }
+        }
+      }
+    },
+    "No store matches these filters." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun negozio corrisponde a questi filtri."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen butikker passer til disse filtre."
+          }
+        }
+      }
+    },
+    "No supermarkets nearby" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun supermercato qui vicino"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen supermarkeder i nærheden"
           }
         }
       }
@@ -6062,6 +6371,22 @@
         }
       }
     },
+    "Nothing from your list here right now." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Al momento qui non c'è niente della tua lista."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet fra din liste her lige nu."
+          }
+        }
+      }
+    },
     "Nothing matches “%@”." : {
       "localizations" : {
         "da" : {
@@ -6090,6 +6415,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Niente di nuovo"
+          }
+        }
+      }
+    },
+    "Nothing on offer right now" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessuna offerta al momento"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen tilbud lige nu"
           }
         }
       }
@@ -6306,16 +6647,16 @@
     },
     "On the floor (room tracking)" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sul pavimento (tracciamento della stanza)"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "På gulvet (rumsporing)"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sul pavimento (tracciamento della stanza)"
           }
         }
       }
@@ -6482,16 +6823,16 @@
     },
     "Open in AR Quick Look" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apri in AR Quick Look"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Åbn i AR Quick Look"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri in AR Quick Look"
           }
         }
       }
@@ -6709,16 +7050,16 @@
     },
     "Place in your room (AR)" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mettila nella tua stanza (AR)"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stil hende i dit rum (AR)"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mettila nella tua stanza (AR)"
           }
         }
       }
@@ -6884,6 +7225,22 @@
         }
       }
     },
+    "Radius" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Raggio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Radius"
+          }
+        }
+      }
+    },
     "Recent commands from Lucina" : {
       "localizations" : {
         "da" : {
@@ -6902,16 +7259,16 @@
     },
     "Recenter" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ricentra"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Centrér"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ricentra"
           }
         }
       }
@@ -7318,16 +7675,16 @@
     },
     "Reset size and turn" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ripristina dimensione e rotazione"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nulstil størrelse og drejning"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ripristina dimensione e rotazione"
           }
         }
       }
@@ -8295,16 +8652,16 @@
     },
     "Starting the camera…" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Avvio della fotocamera…"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Starter kameraet…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvio della fotocamera…"
           }
         }
       }
@@ -8376,16 +8733,16 @@
     },
     "Stop mirroring" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Smetti di imitarmi"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Stop spejling"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smetti di imitarmi"
           }
         }
       }
@@ -8402,6 +8759,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Smetti di osservare"
+          }
+        }
+      }
+    },
+    "Stores by distance" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Negozi per distanza"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Butikker efter afstand"
           }
         }
       }
@@ -8571,32 +8944,32 @@
     },
     "Tap her to say hi. Pinch to resize, twist to turn." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Toccala per salutarla. Pizzica per ridimensionarla, ruota con due dita per girarla."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryk på hende for at sige hej. Knib for at ændre størrelse, drej for at vende hende."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toccala per salutarla. Pizzica per ridimensionarla, ruota con due dita per girarla."
           }
         }
       }
     },
     "Tap her to say hi. Pinch, twist or drag her; tap the floor to move her; two fingers reset." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Toccala per salutarla. Pizzica, ruota o trascinala; tocca il pavimento per spostarla; due dita per ripristinare."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryk på hende for at sige hej. Knib, drej eller træk hende; tryk på gulvet for at flytte hende; to fingre nulstiller."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Toccala per salutarla. Pizzica, ruota o trascinala; tocca il pavimento per spostarla; due dita per ripristinare."
           }
         }
       }
@@ -8619,16 +8992,16 @@
     },
     "Tap the floor to place Lucina." : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Tocca il pavimento per mettere Lucina."
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Tryk på gulvet for at stille Lucina."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca il pavimento per mettere Lucina."
           }
         }
       }
@@ -8874,6 +9247,22 @@
         }
       }
     },
+    "The deals map isn't available on the server yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La mappa delle offerte non è ancora disponibile sul server."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilbudskortet er ikke tilgængeligt på serveren endnu."
+          }
+        }
+      }
+    },
     "The device token is deleted from this iPhone. The local chat history is cleared too." : {
       "localizations" : {
         "da" : {
@@ -8918,6 +9307,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Il motore della palestra non ha inviato dati."
+          }
+        }
+      }
+    },
+    "The map needs a Google Maps key on the server. Here are the stores as a list." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La mappa ha bisogno di una chiave Google Maps sul server. Ecco i negozi in elenco."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kortet kræver en Google Maps-nøgle på serveren. Her er butikkerne som en liste."
           }
         }
       }
@@ -9871,6 +10276,22 @@
         }
       }
     },
+    "Try a larger radius." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prova un raggio più ampio."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prøv en større radius."
+          }
+        }
+      }
+    },
     "Try again" : {
       "localizations" : {
         "da" : {
@@ -10107,6 +10528,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Fino a"
+          }
+        }
+      }
+    },
+    "Until %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fino al %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Til %@"
           }
         }
       }
@@ -11087,6 +11524,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "I tuoi link"
+          }
+        }
+      }
+    },
+    "Your list" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La tua lista"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Din liste"
           }
         }
       }
