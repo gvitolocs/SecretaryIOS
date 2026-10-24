@@ -18,6 +18,7 @@ pub mod delegation;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod otp;
 pub mod parity;
 pub mod planner;
 pub mod prompts;

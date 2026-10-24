@@ -85,6 +85,19 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
     if utf16_len(&text) > MAX_MESSAGE_CHARS {
         return Err(too_long());
     }
+    // OTP requests: answered here, never seen by the model, the timeline,
+    // memory or the replay cache (Node `handleChat`).
+    if let Some(out) = crate::otp::secretary_chat(
+        &st.cfg.otp,
+        &text,
+        mcp_turn.is_some(),
+        &session,
+        &client_message_id,
+    )
+    .await
+    {
+        return Ok(out);
+    }
     tracing::info!(session_id = %session, %channel, mcp = mcp_turn.as_ref().map(|m| m.caller.as_str()), chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {

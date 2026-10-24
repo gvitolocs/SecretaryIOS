@@ -74,6 +74,25 @@ them from `$LUCINA_OTP_STATE_DIR/{phone,owner}.token`.
 `/otp` returns the newest code that has not expired. Codes live only in memory. When `LUCINA_OTP_CONTINUOUS=true`, the relay starts
 armed and continuous unless `$LUCINA_OTP_STATE_DIR/paused` exists. `/disarm` writes that file and `/arm` removes it.
 
+## Rust Lucina (`crates/lucina-server/src/otp.rs`)
+
+`/api/secretary/chat` answers an OTP request (`otp_intent`) before anything else. The request never reaches the model, the timeline,
+the recent turns, Honcho or the `clientMessageId` replay cache.
+
+- **Lucina MCP turns** (`[via Lucina MCP…]` prefix or an `mcp-…` session) get `reply::NOT_PRIVATE` and `action: "reply"`.
+- **Otherwise** Lucina calls the relay with the owner token. The take logic is the same as `tools/lucina-device` `otp::chat`: on a 204
+  she checks `/status`, arms the relay (300 s) if it is not armed, and answers `reply::waiting(continuous)`.
+- **Response:** `{reply, action: "private_otp", sensitive: true, expiresAt?, sessionId, clientMessageId, job: null, userItemId: null,
+  lucinaItemId: null}`. `expiresAt` is set only when the reply carries a code.
+- **Config:** `LUCINA_OTP_OWNER_TOKEN_FILE` is the relay's owner token file (mode 0600), read on every request. It is unset by
+  default, and then every OTP request answers `reply::UNAVAILABLE`. The relay URL is `proto::ORIGIN` and has no variable.
+- **Relay calls:** 5 s timeout, no redirects, responses of at most 8 KiB. Any error answers `reply::UNAVAILABLE`.
+- **Telegram:** the Rust Lucina has no Telegram transport yet. A future one calls `otp::respond` with its `reply::Asker`, which applies
+  `private_owner`.
+- **Defence in depth:** prompts to the model and log lines get `lucina_secrets::otp` (`Redactor::redact_outbound`), which masks codes
+  near an OTP context word as `[otp]`. The plain redactor used by the API reply, the timeline and memory does not mask codes, because
+  the owner's own delivery passes through the API sink.
+
 ## Lucina OTP app (`tech.getsecretary.lucinaotp`, 1.0.0, versionCode 5)
 
 - **Manifest:**

@@ -6,7 +6,7 @@
 //!
 //! | sink | where |
 //! |---|---|
-//! | model prompts and replies (DeepSeek) | [`RedactingModel`] wraps every `ChatModel` |
+//! | model prompts and replies (DeepSeek) | [`RedactingModel`] wraps every `ChatModel`; prompts also lose OTP codes |
 //! | tool results | `lucina_tools::agent::execute` |
 //! | API replies (app, web, Lucina MCP) | `chat::handle_chat` output |
 //! | timeline (file and live stream) | `TimelineStore::append` |
@@ -28,19 +28,28 @@ use lucina_secrets::{redactor, SecretStore, SecretsConfig};
 use crate::Config;
 
 /// Every prompt to the model and every reply from it goes through the
-/// redactor (message text, reasoning, tool-call arguments).
+/// redactor (message text, reasoning, tool-call arguments). Prompts also get
+/// the OTP pass (`lucina_secrets::otp`): a one-time code never reaches the
+/// external model, whatever brought it into the context.
 pub struct RedactingModel(pub Arc<dyn ChatModel>);
 
-fn scrub_message(m: &mut Message) {
+fn scrub_message(m: &mut Message, outbound: bool) {
     let r = redactor();
+    let scrub = |t: &mut String| {
+        if outbound {
+            r.redact_outbound_string(t)
+        } else {
+            r.redact_string(t)
+        }
+    };
     for t in [m.content.as_mut(), m.reasoning_content.as_mut()]
         .into_iter()
         .flatten()
     {
-        r.redact_string(t);
+        scrub(t);
     }
     for c in m.tool_calls.iter_mut().flatten() {
-        r.redact_string(&mut c.function.arguments);
+        scrub(&mut c.function.arguments);
     }
 }
 
@@ -48,10 +57,10 @@ fn scrub_message(m: &mut Message) {
 impl ChatModel for RedactingModel {
     async fn complete(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
         for m in &mut request.messages {
-            scrub_message(m);
+            scrub_message(m, true);
         }
         let mut response = self.0.complete(request).await?;
-        scrub_message(&mut response.message);
+        scrub_message(&mut response.message, false);
         Ok(response)
     }
 }

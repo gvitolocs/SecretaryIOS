@@ -21,6 +21,7 @@ client = [
 ]
 
 [dependencies]
+lucina-phone-core = { path = "../lucina-phone-core" }
 regex = "1.13.1"
 sha2 = { workspace = true }
 base64 = "=0.22.1"

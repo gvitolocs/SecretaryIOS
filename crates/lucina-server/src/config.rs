@@ -150,6 +150,9 @@ pub struct Config {
     /// `LUCINA_DELEGATE_CONFIG`: the delegation policy (`delegate.toml`;
     /// unset or missing: the defaults).
     pub delegate_config: Option<PathBuf>,
+    /// OTP requests in chat (`LUCINA_OTP_OWNER_TOKEN_FILE`, unset by default:
+    /// "the OTP bridge is unavailable"), see [`crate::otp`].
+    pub otp: crate::otp::OtpConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -174,6 +177,7 @@ impl std::fmt::Debug for Config {
             .field("secrets_config", &self.secrets_config)
             .field("meshy", &self.meshy.enabled)
             .field("delegate", &self.delegate_enabled)
+            .field("otp_owner_token_file", &self.otp.owner_token_file)
             .finish_non_exhaustive()
     }
 }
@@ -432,6 +436,7 @@ impl Config {
             meshy,
             delegate_enabled: flag("LUCINA_DELEGATE", false),
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
+            otp: crate::otp::OtpConfig::from_lookup(&get),
             data_dir,
         })
     }

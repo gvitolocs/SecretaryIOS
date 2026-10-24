@@ -21,6 +21,8 @@
 //!   `[secret:<NAME>]` and keeps only salted digests of them, never the
 //!   values; a detector masks token shapes (`sk-`, `ghp_`, `mcp_`, `sec_`,
 //!   `svc_`, JWTs, PEM blocks, `password=…`, high-entropy strings).
+//!   Model prompts and logs also get the OTP pass ([`otp`]): one-time codes
+//!   near an OTP context word become `[otp]`.
 //! - Values live in memory only: a short TTL cache ([`cache`], 10 minutes by
 //!   default), zeroized on eviction; never written to disk.
 //! - Least privilege: one Infisical folder (read-only machine identity) and
@@ -34,6 +36,7 @@
 //! (`default-features = false`).
 
 pub mod cache;
+pub mod otp;
 pub mod policy;
 pub mod redact;
 pub mod reference;

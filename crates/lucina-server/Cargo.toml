@@ -22,6 +22,7 @@ lucina-tools = { path = "../lucina-tools" }
 lucina-meshy = { path = "../lucina-meshy" }
 lucina-delegate = { path = "../lucina-delegate" }
 lucina-intent = { path = "../lucina-intent" }
+lucina-phone-core = { path = "../lucina-phone-core" }
 lucina-discord = { path = "../lucina-discord", features = ["gateway"] }
 axum = "0.8"
 tokio = { workspace = true }
