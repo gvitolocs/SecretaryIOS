@@ -12,7 +12,8 @@ final class AppModel {
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
-    enum Tab: String, Hashable, CaseIterable { case chat, shopping, gym, weight, settings }
+    /// `settings` is not in the tab bar (Gallery took its place): selecting it opens Settings as a sheet.
+    enum Tab: String, Hashable, CaseIterable { case chat, gallery, shopping, gym, weight, settings }
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
@@ -31,6 +32,8 @@ final class AppModel {
     var showDealsMap = false
     /// The media library and player, on top of the chat like Notes.
     var showMedia = false
+    /// Settings, as a sheet from the gear button (the tab bar holds Gallery instead).
+    var showSettings = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -57,6 +60,10 @@ final class AppModel {
     let notifications: NotificationCenterStore
     /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
     let media: MediaPlayer
+    /// The photo library on the server (/v1/media), the Gallery tab.
+    let gallery: GalleryStore
+    /// Automatic backup of this iPhone's photos and videos to the server.
+    let backup: PhotoBackup
     /// The scene is active (set by `MainTabs`): Lucina's messages alert only when the chat is not in view.
     @ObservationIgnored var isForeground = false
 
@@ -103,7 +110,11 @@ final class AppModel {
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
         media = MediaPlayer(api: { MediaAPI(client: client) })
-        if let tab = launch.initialTab { selectedTab = tab }
+        gallery = GalleryStore(api: { GalleryAPI(client: client) })
+        backup = PhotoBackup(api: { GalleryAPI(client: client) })
+        if let tab = launch.initialTab {
+            if tab == .settings { showSettings = true } else { selectedTab = tab }
+        }
         if launch.openNotes {
             selectedTab = .chat
             showNotes = true
@@ -157,6 +168,7 @@ final class AppModel {
             return
         }
         phase = .signedIn
+        if backup.settings.enabled { Task { await backup.requestAccessAndRun() } }
         await health.refresh()
         do {
             let session = try await api.session()

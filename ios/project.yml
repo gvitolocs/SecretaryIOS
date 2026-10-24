@@ -59,6 +59,7 @@ targets:
         NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
         NSSupportsLiveActivities: true
         SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSPhotoLibraryUsageDescription: "Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone."
         NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing."
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         # Face tracking (Lucina mirrors your face) and AR (Lucina in your room); localized in
@@ -72,8 +73,9 @@ targets:
         # local schedules; `audio` keeps the media player (and Picture in Picture) playing. APNs
         # stays off on the free Personal Team; with a paid team set SecretaryAPNsEnabled to true
         # and add aps-environment to Secretary.entitlements.
-        UIBackgroundModes: [fetch, audio]
-        BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh]
+        # `processing`: the photo backup pass (Features/Gallery/PhotoBackup.swift).
+        UIBackgroundModes: [fetch, audio, processing]
+        BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh, tech.getsecretary.app.photobackup]
         SecretaryAPNsEnabled: false
     dependencies:
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.

@@ -150,15 +150,18 @@ final class PhotoBackup {
         kick()
     }
 
-    /// The BGProcessingTask / app refresh entry point: work until `deadline` or cancellation.
-    func runInBackground() async {
+    /// The BGProcessingTask / app refresh entry point. With a budget, returns after it (the pass
+    /// goes on while iOS lets the app run, and transfers continue in the background session).
+    func runInBackground(budget: Duration?) async {
         guard settings.enabled else { return }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized || status == .limited else { return }
-        if let running {
-            await running.value
+        kick()
+        guard let task = running else { return }
+        if let budget {
+            try? await Task.sleep(for: budget)
         } else {
-            await run()
+            await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
         }
     }
 

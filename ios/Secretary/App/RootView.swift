@@ -81,6 +81,9 @@ struct MainTabs: View {
             NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry().mediaEntry() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
+            NavigationStack { GalleryTab() }
+                .tabItem { Label("Gallery", systemImage: "photo.on.rectangle.angled") }
+                .tag(AppModel.Tab.gallery)
             NavigationStack { ShoppingTab().lucinaStatusToolbar() }
                 .tabItem { Label("Shopping", systemImage: "cart") }
                 .tag(AppModel.Tab.shopping)
@@ -90,10 +93,21 @@ struct MainTabs: View {
             NavigationStack { WeightView().lucinaStatusToolbar() }
                 .tabItem { Label("Weight", systemImage: "scalemass") }
                 .tag(AppModel.Tab.weight)
-
-            NavigationStack { SettingsView().lucinaStatusToolbar() }
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(AppModel.Tab.settings)
+        }
+        // Settings left the tab bar for Gallery: the gear (and `.settings` routes) open it here.
+        .onChange(of: app.selectedTab) { old, new in
+            if new == .settings {
+                app.selectedTab = old == .settings ? .chat : old
+                app.showSettings = true
+            }
+        }
+        .sheet(isPresented: $app.showSettings) {
+            NavigationStack {
+                SettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { app.showSettings = false } }
+                    }
+            }
         }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
@@ -101,6 +115,7 @@ struct MainTabs: View {
             app.isForeground = phase == .active
             if phase == .background {
                 BackgroundRefresh.schedule()
+                if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
                 Task { await app.notifications.reschedule() }
             }
         }
@@ -111,6 +126,7 @@ struct MainTabs: View {
                 group.addTask { await app.watchPrimary() }
                 group.addTask { await app.wardrobe.load() }
                 group.addTask { await app.notifications.foregroundLoop() }
+                group.addTask { @MainActor in if app.backup.settings.enabled { await app.backup.requestAccessAndRun() } }
             }
         }
     }
