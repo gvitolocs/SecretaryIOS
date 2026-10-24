@@ -27,7 +27,7 @@ Status words used below:
 | Obsidian adapter (`ink-obsidian`) | Verified read-only on the real vault | 1,211 notes indexed; 0 book references, confirmed by grep (the vault mentions none of the books) |
 | Sync engine, Mode B (`ink-sync` + `POST /v1/library/sync`) | Verified in tests and models; no device client yet | 5 Stateright cases, 25 Verus proofs, TLC specs, fault-injection tests |
 | Native reader core (`ink-epub`, `ink-render`, `ink-kindle-hal`) | Mock-only | Desktop E Ink emulator; static ARMv7 build links but has never run on the Kindle |
-| Reader sleep, idle and splash screens with the Lucina picture | In progress | Branch `ink-screens` (subagent) |
+| Reader sleep, idle and splash screens with the Lucina picture | Mock-only | `a36796f`: splash, sleep (power event or 10 min idle, anchor saved first), resume to the same page, full GC16 flashes, 16-level fit of the owner picture (verified visually in the emulator); real power-button events are a stub |
 | KOReader sleep screen with the Lucina picture | Implemented, unverified | Files written to the Kindle; the owner has not yet confirmed it on the device |
 | Stock lock screen and boot splash | Not implemented by choice | Needs a third-party hack (lock screen) or a system-partition change (boot); both need explicit approval |
 | Lucina memory (Honcho) references to books | Not implemented | The design is in §6; Honcho MCP was offline this session |
@@ -50,6 +50,7 @@ All work is on branch `lucina-ink`, based on `main` at `a371fd6`: 15 commits, 13
 | `453d23b` | Merge `ink-sync`, `7f06349` and `6bb878b`: sync engine, Stateright/Verus/TLA+ (subagent) |
 | `9e94204` | Library writes rewrite only changed books |
 | `141d546` | Highlights in reading order, authors from clippings, old-format dictionaries |
+| `a36796f` | Merge `ink-screens`, `5cf543d`: reader splash, sleep, idle and resume screens (subagent) |
 
 New crates:
 - `crates/ink-library`
@@ -78,7 +79,7 @@ Results on nezopt (AMD Ryzen 5 7600, Linux), last run at commit `141d546`:
 cargo fmt --all --check                                   → clean
 cargo clippy -p ink-library -p ink-cli -p ink-obsidian -p ink-sync -p ink-kindle-hal -p ink-render \
   -p ink-epub -p ink-preview -p secretary-server -p secretary-mcp --all-targets -- -D warnings → clean
-cargo test  (same packages)                               → 354 passed, 0 failed
+cargo test  (same packages)                               → 377 passed, 0 failed (at a36796f)
 ```
 
 From the `ink-sync` branch run (subagent), re-checked through the merged test suite:
