@@ -55,7 +55,7 @@ struct StartWorkoutIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         let app = AppModel.shared
-        app.selectedTab = .gym
+        app.selectedTab = .fitness
         if app.gym.view == nil { await app.gym.refresh() }
         if app.gym.view?.state.active == nil {
             _ = await app.gym.run(.startWorkout(title: String(localized: "Workout"), routineId: nil))
@@ -96,6 +96,21 @@ enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
     }
 }
 
+struct RecordMemoIntent: AppIntent {
+    static let title: LocalizedStringResource = "Record a memo"
+    static let description = IntentDescription("Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.")
+    static let openAppWhenRun = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult {
+        let app = AppModel.shared
+        guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+        app.openMemo(nil)
+        if !app.memos.recorder.isActive { await app.memos.record() }
+        return .result()
+    }
+}
+
 struct SecretaryShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: AskLucinaIntent(), phrases: ["Ask \(.applicationName)", "Ask Lucina in \(.applicationName)"],
@@ -106,6 +121,8 @@ struct SecretaryShortcuts: AppShortcutsProvider {
                     shortTitle: "Start workout", systemImageName: "dumbbell")
         AppShortcut(intent: LogWeightIntent(), phrases: ["Log my weight in \(.applicationName)"],
                     shortTitle: "Log weight", systemImageName: "scalemass")
+        AppShortcut(intent: RecordMemoIntent(), phrases: ["Record a memo in \(.applicationName)", "New voice memo in \(.applicationName)"],
+                    shortTitle: "Record memo", systemImageName: "waveform")
     }
 }
 

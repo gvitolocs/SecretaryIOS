@@ -12,7 +12,19 @@ final class AppModel {
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
-    enum Tab: String, Hashable, CaseIterable { case chat, shopping, gym, weight, settings }
+    /// The owner's four tabs (2026-10-24): Chat, Shopping, Training + Weight, Plugins.
+    /// Settings opens as a sheet from the gear button; everything else is a plugin card.
+    enum Tab: String, Hashable, CaseIterable {
+        case chat, shopping, fitness, plugins
+
+        /// A launch argument or route name (`gym` and `weight` are the training tab).
+        init?(name: String) {
+            switch name {
+            case "gym", "weight", "fitness", "training": self = .fitness
+            default: self.init(rawValue: name)
+            }
+        }
+    }
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
@@ -23,14 +35,20 @@ final class AppModel {
     /// Shown above the chat when Lucina is unreachable or slow.
     var lucinaNotice: String?
     var selectedTab: Tab = .chat
-    /// Notes open on top of the chat (the tab bar has no room for a sixth tab on iPhone).
+    /// Settings, as a sheet from the gear button in every tab's toolbar.
+    var showSettings = false
+    /// Notes, a plugin (pushed on the Plugins tab).
     var showNotes = false
-    /// Tasks open on top of the chat, like Notes.
+    /// Tasks, a plugin like Notes.
     var showTasks = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
-    /// The media library and player, on top of the chat like Notes.
+    /// The media library and player, a plugin.
     var showMedia = false
+    /// The Gallery, a plugin.
+    var showGallery = false
+    /// Voice memos, a plugin.
+    var showMemos = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -57,6 +75,15 @@ final class AppModel {
     let notifications: NotificationCenterStore
     /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
     let media: MediaPlayer
+    /// The photo library on the server (/v1/media), shown by the Gallery plugin.
+    let gallery: GalleryStore
+    /// Automatic backup of this iPhone's photos and videos to the server.
+    let backup: PhotoBackup
+    /// Voice memos: recorder, upload queue, list (/v1/memos on lucina-memo).
+    let memos: MemosStore
+    /// Memo requests go to the primary URL only: the tailnet fallback reaches secretary-server
+    /// directly, and the /v1/memos route lives in p1's Caddy.
+    @ObservationIgnored let memoClient: APIClient
     /// The scene is active (set by `MainTabs`): Lucina's messages alert only when the chat is not in view.
     @ObservationIgnored var isForeground = false
 
@@ -103,17 +130,48 @@ final class AppModel {
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
         media = MediaPlayer(api: { MediaAPI(client: client) })
+        gallery = GalleryStore(api: { GalleryAPI(client: client) })
+        backup = PhotoBackup(api: { GalleryAPI(client: client) })
+        let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
+        self.memoClient = memoClient
+        memos = MemosStore(api: {
+            guard let key = client.accessKey, !key.isEmpty else { return nil }
+            memoClient.accessKey = key
+            return MemosAPI(client: memoClient)
+        })
         if let tab = launch.initialTab { selectedTab = tab }
+        #if DEBUG
+        MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
+        #endif
+        // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
+        MemoRecorder.endStaleActivities()
+        let memoStore = memos
+        MemoRecordingCommands.handle = { command in
+            switch command {
+            case .pause: memoStore.recorder.pause()
+            case .resume: memoStore.recorder.resume()
+            case .stop: memoStore.finishRecording()
+            }
+        }
+        if launch.openSettings { showSettings = true }
         if launch.openNotes {
-            selectedTab = .chat
+            selectedTab = .plugins
             showNotes = true
         }
         if launch.openTasks {
-            selectedTab = .chat
+            selectedTab = .plugins
             showTasks = true
         }
+        if launch.openMemos {
+            selectedTab = .plugins
+            showMemos = true
+        }
+        if launch.openGallery {
+            selectedTab = .plugins
+            showGallery = true
+        }
         if launch.openMedia {
-            selectedTab = .chat
+            selectedTab = .plugins
             showMedia = true
         }
 
@@ -157,6 +215,7 @@ final class AppModel {
             return
         }
         phase = .signedIn
+        if backup.settings.enabled { Task { await backup.requestAccessAndRun() } }
         await health.refresh()
         do {
             let session = try await api.session()
@@ -224,6 +283,8 @@ final class AppModel {
         gym.reset()
         weight.reset()
         notifications.reset()
+        memos.reset()
+        showMemos = false
         lucinaNotice = nil
         signedOutReason = reason
         selectedTab = .chat
@@ -241,6 +302,13 @@ final class AppModel {
                 ? String(localized: "Lucina took too long to answer. She may be busy; try again in a moment.")
                 : String(localized: "Lucina is offline right now. Your messages stay here, so you can retry once she's back.")
         }
+    }
+
+    /// `/memos/<id>` (the "memo ready" notification): the memo's detail screen.
+    func openMemo(_ id: String?) {
+        selectedTab = .plugins
+        showMemos = true
+        if let id { memos.openMemoId = id }
     }
 
     // MARK: - Gym engine
@@ -338,24 +406,35 @@ final class AppModel {
 
 /// Debug-only launch arguments (read from the UserDefaults argument domain):
 /// `-SecretaryResetState YES` wipes the token and the local chat (UI tests),
-/// `-SecretaryInitialTab gym` opens a tab (screenshots).
+/// `-SecretaryInitialTab gym` opens a tab (screenshots). Release builds read them only when
+/// compiled with the SCREENSHOTS condition (the device screenshots: Debug apps do not start on
+/// iOS 27 from Xcode 26.6).
 struct LaunchOptions {
     var resetState = false
     var initialTab: AppModel.Tab?
+    /// `-SecretaryInitialTab settings`: start with the Settings sheet open.
+    var openSettings = false
     /// `-SecretaryInitialTab notes`: start on the Notes screen.
     var openNotes = false
     /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
     var openTasks = false
     /// `-SecretaryInitialTab media`: start on the media library.
     var openMedia = false
+    /// `-SecretaryInitialTab gallery`: start on the Gallery.
+    var openGallery = false
+    /// `-SecretaryInitialTab memos`: start on the voice memos.
+    var openMemos = false
 
     init(defaults: UserDefaults) {
-        #if DEBUG
+        #if DEBUG || SCREENSHOTS
         resetState = defaults.bool(forKey: "SecretaryResetState")
-        initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
+        initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(name:))
+        openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
         openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
+        openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
+        openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         #endif
     }
 }

@@ -507,12 +507,34 @@ extension AppModel {
         let first = path.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": selectedTab = .shopping
-        case "gym": selectedTab = .gym
-        case "weight": selectedTab = .weight
-        case "notes", "links", "settings", "tasks": selectedTab = .settings
+        case "gym", "weight": selectedTab = .fitness
+        case "settings", "links": showSettings = true
+        case "notes":
+            selectedTab = .plugins
+            showNotes = true
+        case "tasks":
+            selectedTab = .plugins
+            showTasks = true
+        case "memos": openMemo(nil)
+        case "media":
+            selectedTab = .plugins
+            showMedia = true
+        case "plugins": selectedTab = .plugins
+        case "gallery": openGallery(path)
         default: selectedTab = .chat
         }
         if NotificationRoute.opensDealsMap(path) { showDealsMap = true }
+    }
+
+    /// `/gallery`, `/gallery/album/<id>` (what Lucina found is in `sys-lucina`), `/gallery/search/<words>`.
+    private func openGallery(_ path: String) {
+        let parts = path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
+        var filter = GalleryAPI.Filter()
+        if parts.count >= 3, parts[1] == "album" { filter.album = parts[2] }
+        if parts.count >= 3, parts[1] == "search" { filter.query = parts[2...].joined(separator: " ") }
+        gallery.filter = filter
+        selectedTab = .plugins
+        showGallery = true
     }
 }
 

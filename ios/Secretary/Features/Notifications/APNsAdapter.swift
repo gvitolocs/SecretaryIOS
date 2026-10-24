@@ -51,7 +51,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
+        // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
+            let work = Task { @MainActor in
+                let backup = AppModel.shared.backup
+                await backup.runInBackground(budget: nil)
+                PhotoBackup.scheduleProcessing(chargingOnly: backup.settings.chargingOnly)
+                task.setTaskCompleted(success: true)
+            }
+            task.expirationHandler = { work.cancel() }
+        }
         return true
+    }
+
+    /// iOS relaunched the app because background photo uploads finished.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        BackgroundUploader.shared.systemCompletion[identifier] = completionHandler
+        BackgroundUploader.shared.reattach(identifier)
     }
 
     /// Portrait on iPhone, except while a video plays full screen (`OrientationLock`).
@@ -89,6 +106,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 app.selectedTab = await app.notifications.openFromSystem(userInfo: payload)
                 if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
+                if let route, let memo = NotificationRoute.memo(route) { app.openMemo(memo.isEmpty ? nil : memo) }
             }
         }
     }
@@ -101,6 +119,7 @@ extension BackgroundRefresh {
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { return }
         await app.notifications.backgroundRefresh()
+        app.memos.queue.kick()
     }
 }
 

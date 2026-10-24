@@ -5,6 +5,7 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>tech.getsecretary.app.refresh</string>
+		<string>tech.getsecretary.app.photobackup</string>
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
@@ -55,8 +56,10 @@
 	<string>To notice when you arrive at or leave a place, even when Secretary is closed.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing.</string>
+	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Lucina adds, completes and reads your reminders when you ask.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -76,6 +79,7 @@
 	<array>
 		<string>fetch</string>
 		<string>audio</string>
+		<string>processing</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>

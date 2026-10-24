@@ -320,11 +320,19 @@ enum NotificationRoute {
         let first = route.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": return .shopping
-        case "gym": return .gym
-        case "weight": return .weight
-        case "settings": return .settings
+        case "gym", "weight": return .fitness
+        case "plugins", "notes", "tasks", "memos", "media", "gallery": return .plugins
         default: return .chat
         }
+    }
+
+    /// `/memos` or `/memos/<id>` (a memo is ready): the memo screen. Returns the id ("" for the list).
+    static func memo(_ route: String) -> String? {
+        guard isSafe(route) else { return nil }
+        let path = route.split(separator: "?", maxSplits: 1).first.map(String.init) ?? route
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.first == "memos" else { return nil }
+        return parts.count >= 2 ? parts[1] : ""
     }
 
     /// `/shopping/map` (grocery deal alerts): the deals map on the Shopping tab.

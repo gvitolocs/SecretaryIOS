@@ -1,10 +1,39 @@
 import SwiftUI
 
+/// What every screen showing the gym needs: the workout sheet, loading, refresh on foreground and
+/// the error alert (GymScreen and the Training + Weight tab).
+private struct GymHost: ViewModifier {
+    @Environment(GymStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
+
+    func body(content: Content) -> some View {
+        @Bindable var store = store
+        content
+            .gymStyle()
+            .sheet(isPresented: $store.isPresentingWorkout) { WorkoutScreen().gymStyle() }
+            .task { if store.view == nil { await store.refresh() } }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await store.refresh() } }
+            }
+            .alert("Couldn\u{2019}t save that change", isPresented: Binding(
+                get: { store.actionError != nil && !store.isPresentingWorkout },
+                set: { if !$0 { store.actionError = nil } }
+            )) {
+                Button("OK") { store.actionError = nil }
+            } message: {
+                Text(store.actionError ?? "")
+            }
+    }
+}
+
+extension View {
+    func gymHost() -> some View { modifier(GymHost()) }
+}
+
 /// The Gym tab: the LucinaGym app (Training, Journal, Progress, Settings) with its
 /// original look. Everything shown comes from the engine view.
 struct GymScreen: View {
     @Environment(GymStore.self) private var store
-    @Environment(\.scenePhase) private var scenePhase
 
     enum Section: String, CaseIterable, Identifiable {
         case training = "Training", journal = "Journal", progress = "Progress", settings = "Settings"
@@ -30,7 +59,6 @@ struct GymScreen: View {
     @State private var section: Section = .training
 
     var body: some View {
-        @Bindable var store = store
         Group {
                 if let view = store.view {
                     switch section {
@@ -55,20 +83,7 @@ struct GymScreen: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) { sectionBar }
         .lucinaScreen(section == .training ? "Gym" : section.title)
-        .gymStyle()
-        .sheet(isPresented: $store.isPresentingWorkout) { WorkoutScreen().gymStyle() }
-        .task { if store.view == nil { await store.refresh() } }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await store.refresh() } }
-        }
-        .alert("Couldn\u{2019}t save that change", isPresented: Binding(
-            get: { store.actionError != nil && !store.isPresentingWorkout },
-            set: { if !$0 { store.actionError = nil } }
-        )) {
-            Button("OK") { store.actionError = nil }
-        } message: {
-            Text(store.actionError ?? "")
-        }
+        .gymHost()
     }
 
     /// The original app's four tabs, as a bar at the top of the Gym tab.
@@ -105,15 +120,33 @@ struct GymScreen: View {
 struct TrainingView: View {
     @Environment(GymStore.self) private var store
     let view: GymView
-    @State private var showRoutine = false
 
     var body: some View {
         ScrollView {
+            TrainingContent(view: view)
+                .padding(.horizontal, LucinaTokens.Space.gutter)
+                .padding(.top, LucinaTokens.Space.sm)
+        }
+        .refreshable { await store.refresh() }
+    }
+}
+
+/// The training overview (week, start, routines, totals), without its own scroll view, so the
+/// Training + Weight tab can put it under the weight.
+struct TrainingContent: View {
+    @Environment(GymStore.self) private var store
+    let view: GymView
+    var showsMotto = true
+    @State private var showRoutine = false
+
+    var body: some View {
             VStack(alignment: .leading, spacing: LucinaTokens.Space.lg) {
-                Text("Make time\nfor strength.")
-                    .font(LucinaTokens.Fonts.title3)
-                    .foregroundStyle(GymPalette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                if showsMotto {
+                    Text("Make time\nfor strength.")
+                        .font(LucinaTokens.Fonts.title3)
+                        .foregroundStyle(GymPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Card(spacing: 10) {
                     HStack(alignment: .bottom) {
                         VStack(alignment: .leading, spacing: 6) {
@@ -171,16 +204,14 @@ struct TrainingView: View {
                     StatCard(title: "Sets logged", icon: "checkmark.circle", value: "\(view.summary.completedSets)")
                     StatCard(title: "Total volume", icon: "scalemass", value: view.summary.volume)
                 }
-                Text("A little stronger, one session at a time.")
-                    .font(.footnote)
-                    .foregroundStyle(GymPalette.muted)
-                    .padding(.bottom, 16)
+                if showsMotto {
+                    Text("A little stronger, one session at a time.")
+                        .font(.footnote)
+                        .foregroundStyle(GymPalette.muted)
+                        .padding(.bottom, 16)
+                }
             }
-            .padding(.horizontal, LucinaTokens.Space.gutter)
-            .padding(.top, LucinaTokens.Space.sm)
-        }
-        .refreshable { await store.refresh() }
-        .sheet(isPresented: $showRoutine) { RoutineBuilder().gymStyle() }
+            .sheet(isPresented: $showRoutine) { RoutineBuilder().gymStyle() }
     }
 
     private func activeCard(_ active: Workout) -> some View {

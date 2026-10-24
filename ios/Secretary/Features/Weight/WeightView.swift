@@ -20,11 +20,11 @@ struct WeightView: View {
                 }
             }
             if let view = store.view {
-                Section { statsGrid(view) }
+                Section { Self.statsGrid(view) }
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                 if let series = view.series, series.count >= 2 {
-                    Section("Trend") { trendChart(view, series: series) }
+                    Section("Trend") { Self.trendChart(view, series: series) }
                 }
                 Section("Entries") {
                     if view.entries.isEmpty {
@@ -95,7 +95,8 @@ struct WeightView: View {
         .accessibilityIdentifier("weightQuickAdd")
     }
 
-    private func statsGrid(_ view: BodyView) -> some View {
+    /// The four stat cards (also on the Training + Weight tab).
+    static func statsGrid(_ view: BodyView) -> some View {
         let tiles: [(String, String, String)] = [
             ("Current", "current", "scalemass"),
             ("7-day average", "avg7", "waveform.path.ecg"),
@@ -110,12 +111,13 @@ struct WeightView: View {
         }
     }
 
-    private func goalLine(_ view: BodyView) -> String? {
+    private static func goalLine(_ view: BodyView) -> String? {
         guard let goal = view.statLabel("goal") else { return nil }
         return view.stats.goalReached == true ? String(localized: "Goal \(goal) reached") : String(localized: "Goal \(goal)")
     }
 
-    private func trendChart(_ view: BodyView, series: [BodySeriesPoint]) -> some View {
+    /// The trend chart: weigh-ins, the 7-day average and the goal.
+    static func trendChart(_ view: BodyView, series: [BodySeriesPoint]) -> some View {
         let unit = view.unit
         let values = series.map { unit.value(grams: $0.weightGrams) } + series.compactMap { $0.avg7Grams.map { unit.value(grams: $0) } }
         let low = (values.min() ?? 0).rounded(.down) - 1
@@ -172,7 +174,7 @@ struct WeightView: View {
 
 /// Strong-style "Add measurement": the weight field is focused with the decimal pad up,
 /// date and time start at now and can be moved back to log an earlier weigh-in.
-private struct QuickWeightSheet: View {
+struct QuickWeightSheet: View {
     @Environment(WeightStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var value = ""
@@ -291,7 +293,7 @@ private struct EntryEditor: View {
     }
 }
 
-private struct WeightSettings: View {
+struct WeightSettings: View {
     @Environment(WeightStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var unit: BodyUnit = .kg

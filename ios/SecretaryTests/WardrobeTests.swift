@@ -49,8 +49,8 @@ final class WardrobeTests: XCTestCase {
         s.hair = "bun"
         XCTAssertEqual(s.wanted(in: .default), "maid")
         XCTAssertEqual(s.wantedHair(in: .shopping), "bun")
-        XCTAssertEqual(AvatarSettings.Section(tab: .gym), .gym)
-        XCTAssertEqual(AvatarSettings.Section(tab: .weight), .default)
+        XCTAssertEqual(AvatarSettings.Section(tab: .fitness), .gym)
+        XCTAssertEqual(AvatarSettings.Section(tab: .plugins), .default)
     }
 
     func testPatchEncodingKeepsNullAndAbsentApart() throws {

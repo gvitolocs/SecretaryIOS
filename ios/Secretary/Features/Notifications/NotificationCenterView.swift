@@ -85,6 +85,7 @@ struct NotificationCenterView: View {
                     let tab = await store.open(n)
                     app.selectedTab = tab
                     if NotificationRoute.opensDealsMap(n.route) { app.showDealsMap = true }
+                    if let memo = NotificationRoute.memo(n.route) { app.openMemo(memo.isEmpty ? nil : memo) }
                     dismiss()
                 }
             } label: {

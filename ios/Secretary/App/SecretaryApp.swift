@@ -16,10 +16,13 @@ struct SecretaryApp: App {
                 .environment(app.weight)
                 .environment(app.notes)
                 .environment(app.tasks)
+                .environment(app.memos)
                 .environment(app.health)
                 .environment(app.wardrobe)
                 .environment(app.notifications)
                 .environment(app.media)
+                .environment(app.gallery)
+                .environment(app.backup)
                 .task {
                     // Hosted unit tests load the app; keep it off the network.
                     guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
@@ -29,6 +32,8 @@ struct SecretaryApp: App {
         // Inbox sync and local schedules while the app is closed (no APNs on a free team).
         .backgroundTask(.appRefresh(BackgroundRefresh.identifier)) {
             await BackgroundRefresh.run()
+            // Start the next photo uploads; the background URLSession carries them on.
+            await AppModel.shared.backup.runInBackground(budget: .seconds(20))
         }
     }
 }

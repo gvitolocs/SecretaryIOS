@@ -37,12 +37,25 @@ struct StatusDot: View {
     }
 }
 
+/// Opens Settings (a sheet since the owner's four-tab layout, 2026-10-24).
+struct SettingsButton: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        Button { app.showSettings = true } label: { Image(systemName: "gearshape") }
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("settingsButton")
+    }
+}
+
 extension View {
-    /// Adds the Lucina status dot to the leading side of the navigation bar.
+    /// The Lucina status dot on the leading side of the navigation bar; the notification bell
+    /// and the Settings gear on the trailing side.
     func lucinaStatusToolbar() -> some View {
         toolbar {
             ToolbarItem(placement: .topBarLeading) { StatusDot() }
             ToolbarItem(placement: .topBarTrailing) { NotificationBell() }
+            ToolbarItem(placement: .topBarTrailing) { SettingsButton() }
         }
     }
 }

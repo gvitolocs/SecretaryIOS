@@ -5,29 +5,7 @@ import SwiftUI
 // Video plays in AVPlayerViewController (AirPlay, Picture in Picture, native scrubbing);
 // audio gets its own screen; both continue in the background and on the lock screen.
 
-/// Media opens from a button next to the chat title, like Notes and Tasks.
-private struct MediaEntry: ViewModifier {
-    @Environment(AppModel.self) private var app
-
-    func body(content: Content) -> some View {
-        @Bindable var app = app
-        content
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { app.showMedia = true } label: { Image(systemName: "play.rectangle") }
-                        .accessibilityLabel("Media")
-                        .accessibilityIdentifier("mediaButton")
-                }
-            }
-            .navigationDestination(isPresented: $app.showMedia) { MediaLibraryView() }
-    }
-}
-
-extension View {
-    /// The Media button and library, on the chat.
-    func mediaEntry() -> some View { modifier(MediaEntry()) }
-}
-
+/// The media library opens from the Media card in Plugins (`PluginsView`).
 struct MediaLibraryView: View {
     enum Kind: String, CaseIterable, Identifiable {
         case video, audio, photo

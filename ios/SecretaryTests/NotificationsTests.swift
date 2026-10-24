@@ -68,8 +68,9 @@ final class NotificationModelTests: XCTestCase {
     func testRoutesMapToTabs() {
         XCTAssertEqual(NotificationRoute.tab(for: "/"), .chat)
         XCTAssertEqual(NotificationRoute.tab(for: "/shopping"), .shopping)
-        XCTAssertEqual(NotificationRoute.tab(for: "/gym/history/w-1"), .gym)
-        XCTAssertEqual(NotificationRoute.tab(for: "/weight"), .weight)
+        XCTAssertEqual(NotificationRoute.tab(for: "/gym/history/w-1"), .fitness)
+        XCTAssertEqual(NotificationRoute.tab(for: "/weight"), .fitness)
+        XCTAssertEqual(NotificationRoute.tab(for: "/memos/mm_1"), .plugins)
         XCTAssertEqual(NotificationRoute.tab(for: "//evil.example/shopping"), .chat)
         XCTAssertEqual(NotificationRoute.tab(for: "https://evil.example"), .chat)
     }

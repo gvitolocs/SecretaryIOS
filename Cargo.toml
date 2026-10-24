@@ -8,6 +8,7 @@ members = [
     "crates/secretary-ffi",
     "crates/secretary-player",
     "crates/secretary-media-stream",
+    "crates/lucina-media",
 ]
 
 [workspace.package]
