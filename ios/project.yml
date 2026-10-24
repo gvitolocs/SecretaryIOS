@@ -56,7 +56,7 @@ targets:
         NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
         NSSupportsLiveActivities: true
         SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
-        NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing."
+        NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos."
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         # Face tracking (Lucina mirrors your face) and AR (Lucina in your room); localized in
         # Secretary/Resources/InfoPlist.xcstrings.
@@ -68,7 +68,8 @@ targets:
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
         # local schedules. APNs stays off on the free Personal Team; with a paid team set
         # SecretaryAPNsEnabled to true and add aps-environment to Secretary.entitlements.
-        UIBackgroundModes: [fetch]
+        # audio: voice memos keep recording with the screen locked or the app in the background.
+        UIBackgroundModes: [fetch, audio]
         BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh]
         SecretaryAPNsEnabled: false
     dependencies:
@@ -78,6 +79,7 @@ targets:
       - target: SecretarySafari
       - target: SecretaryScreenTimeReport
       - target: SecretaryScreenTimeMonitor
+      - target: SecretaryWidgets
       - sdk: Security.framework
       - package: GoogleMaps
         product: GoogleMaps
@@ -180,6 +182,35 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryScreenTimeMonitor/SecretaryScreenTimeMonitor.entitlements
+  # The voice-memo recording Live Activity (Lock Screen, Dynamic Island) with pause/stop buttons.
+  SecretaryWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/SecretaryWidgets
+        excludes: ["Info.plist"]
+      - path: Secretary/Shared/MemoRecordingActivity.swift
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: ActivityKit.framework
+      - sdk: AppIntents.framework
+    info:
+      path: Extensions/SecretaryWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Secretary
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.widgets
+        PRODUCT_NAME: SecretaryWidgets
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_EMIT_LOC_STRINGS: YES
   SecretaryTests:
     type: bundle.unit-test
     platform: iOS

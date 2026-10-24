@@ -327,6 +327,15 @@ enum NotificationRoute {
         }
     }
 
+    /// `/memos` or `/memos/<id>` (a memo is ready): the memo screen. Returns the id ("" for the list).
+    static func memo(_ route: String) -> String? {
+        guard isSafe(route) else { return nil }
+        let path = route.split(separator: "?", maxSplits: 1).first.map(String.init) ?? route
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.first == "memos" else { return nil }
+        return parts.count >= 2 ? parts[1] : ""
+    }
+
     /// `/shopping/map` (grocery deal alerts): the deals map on the Shopping tab.
     static func opensDealsMap(_ route: String) -> Bool {
         guard isSafe(route) else { return false }

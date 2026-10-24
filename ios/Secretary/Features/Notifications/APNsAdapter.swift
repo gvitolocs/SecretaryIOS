@@ -84,6 +84,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 app.selectedTab = await app.notifications.openFromSystem(userInfo: payload)
                 if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
+                if let route, let memo = NotificationRoute.memo(route) { app.openMemo(memo.isEmpty ? nil : memo) }
             }
         }
     }
@@ -96,6 +97,7 @@ extension BackgroundRefresh {
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { return }
         await app.notifications.backgroundRefresh()
+        app.memos.queue.kick()
     }
 }
 

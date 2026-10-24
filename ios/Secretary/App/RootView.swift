@@ -78,7 +78,7 @@ struct MainTabs: View {
     private var tabs: some View {
         @Bindable var app = app
         return TabView(selection: $app.selectedTab) {
-            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry() }
+            NavigationStack { ChatView().lucinaStatusToolbar().notesEntry().tasksEntry().memosEntry() }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 .tag(AppModel.Tab.chat)
             NavigationStack { ShoppingTab().lucinaStatusToolbar() }
@@ -111,6 +111,7 @@ struct MainTabs: View {
                 group.addTask { await app.watchPrimary() }
                 group.addTask { await app.wardrobe.load() }
                 group.addTask { await app.notifications.foregroundLoop() }
+                group.addTask { await MainActor.run { app.memos.queue.kick() } }
             }
         }
     }

@@ -29,6 +29,8 @@ final class AppModel {
     var showTasks = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
+    /// Voice memos open on top of the chat, like Notes and Tasks.
+    var showMemos = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore
@@ -53,6 +55,11 @@ final class AppModel {
     let device: DeviceHub
     /// Inbox, settings and local notifications.
     let notifications: NotificationCenterStore
+    /// Voice memos: recorder, upload queue, list (/v1/memos on lucina-memo).
+    let memos: MemosStore
+    /// Memo requests go to the primary URL only: the tailnet fallback reaches secretary-server
+    /// directly, and the /v1/memos route lives in p1's Caddy.
+    @ObservationIgnored let memoClient: APIClient
     /// The scene is active (set by `MainTabs`): Lucina's messages alert only when the chat is not in view.
     @ObservationIgnored var isForeground = false
 
@@ -98,7 +105,27 @@ final class AppModel {
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
+        let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
+        self.memoClient = memoClient
+        memos = MemosStore(api: {
+            guard let key = client.accessKey, !key.isEmpty else { return nil }
+            memoClient.accessKey = key
+            return MemosAPI(client: memoClient)
+        })
         if let tab = launch.initialTab { selectedTab = tab }
+        #if DEBUG
+        MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
+        #endif
+        // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
+        MemoRecorder.endStaleActivities()
+        let memoStore = memos
+        MemoRecordingCommands.handle = { command in
+            switch command {
+            case .pause: memoStore.recorder.pause()
+            case .resume: memoStore.recorder.resume()
+            case .stop: memoStore.finishRecording()
+            }
+        }
         if launch.openNotes {
             selectedTab = .chat
             showNotes = true
@@ -215,6 +242,8 @@ final class AppModel {
         gym.reset()
         weight.reset()
         notifications.reset()
+        memos.reset()
+        showMemos = false
         lucinaNotice = nil
         signedOutReason = reason
         selectedTab = .chat
@@ -232,6 +261,13 @@ final class AppModel {
                 ? String(localized: "Lucina took too long to answer. She may be busy; try again in a moment.")
                 : String(localized: "Lucina is offline right now. Your messages stay here, so you can retry once she's back.")
         }
+    }
+
+    /// `/memos/<id>` (the "memo ready" notification): the memo's detail screen.
+    func openMemo(_ id: String?) {
+        selectedTab = .chat
+        showMemos = true
+        if let id { memos.openMemoId = id }
     }
 
     // MARK: - Gym engine

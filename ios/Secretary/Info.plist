@@ -56,7 +56,7 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing.</string>
+	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Lucina adds, completes and reads your reminders when you ask.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -75,6 +75,7 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>audio</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>
