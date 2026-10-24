@@ -15,8 +15,11 @@
 //! secretary-server) authenticates them. `/s/...` URLs carry their own token.
 pub mod dir;
 pub mod hls;
+pub mod ocr;
 pub mod probe;
 pub mod progress;
+pub mod sidecar;
+pub mod subs;
 pub mod token;
 
 use axum::{
@@ -30,7 +33,6 @@ use axum::{
 use secretary_player::{
     playback::{self, Client, Mode},
     progress::{resume_point, Entry},
-    subtitles,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -81,6 +83,8 @@ pub struct StreamConfig {
     pub ffprobe: PathBuf,
     /// ffmpeg HLS jobs at once.
     pub max_jobs: usize,
+    /// tesseract for image subtitles (DVD, Blu-ray); None hides those tracks.
+    pub ocr: Option<ocr::OcrConfig>,
 }
 
 impl StreamConfig {
@@ -93,6 +97,13 @@ impl StreamConfig {
             ffmpeg: "ffmpeg".into(),
             ffprobe: "ffprobe".into(),
             max_jobs: 2,
+            ocr: Some(ocr::OcrConfig {
+                tesseract: "tesseract".into(),
+                // tessdata_fast languages installed for the user (dan, eng, ita...), else tesseract's own.
+                tessdata: std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share/tessdata"))
+                    .filter(|d| d.is_dir()),
+            }),
         }
     }
 }
@@ -143,8 +154,7 @@ struct App<S> {
     signer: Signer,
     jobs: Arc<hls::Jobs>,
     progress: progress::Store,
-    /// One conversion per subtitle track at a time (keyed by its cache path).
-    sub_locks: std::sync::Mutex<std::collections::HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    subs: Arc<subs::Jobs>,
 }
 
 pub fn router<S: MediaSource>(src: Arc<S>, cfg: StreamConfig) -> Result<Router, String> {
@@ -152,7 +162,14 @@ pub fn router<S: MediaSource>(src: Arc<S>, cfg: StreamConfig) -> Result<Router, 
         signer: Signer::new(&cfg.secret, cfg.token_ttl),
         jobs: Arc::new(hls::Jobs::new(cfg.ffmpeg.clone(), cfg.max_jobs)),
         progress: progress::Store::open(cfg.progress_path.clone())?,
-        sub_locks: Default::default(),
+        subs: Arc::new(subs::Jobs::new(subs::Converter {
+            ffmpeg: cfg.ffmpeg.clone(),
+            // Image subtitles only when tesseract actually runs here.
+            ocr: cfg.ocr.clone().filter(|o| {
+                std::process::Command::new(&o.tesseract).arg("--version").output().is_ok_and(|out| out.status.success())
+            }),
+            cache_dir: cfg.cache_dir.clone(),
+        })),
         src,
         cfg,
     });
@@ -201,6 +218,12 @@ struct SubtitleOut {
     lang: Option<String>,
     label: String,
     forced: bool,
+    /// `text`, or `image` for DVD/Blu-ray pictures read by OCR.
+    kind: &'static str,
+    /// `srt`, `ass`, `vobsub`, `pgs`, `subrip`, `dvd_subtitle`...
+    format: String,
+    /// `file` (next to the video) or `embedded`.
+    source: &'static str,
     url: String,
 }
 
@@ -221,7 +244,7 @@ struct PlayResponse {
     hls_url: Option<String>,
     poster_url: Option<String>,
     subtitles: Vec<SubtitleOut>,
-    /// Embedded bitmap subtitle tracks (DVD/Blu-ray) that cannot be shown yet.
+    /// Image subtitle tracks left out because OCR is not available.
     bitmap_subtitles: usize,
     expires_at: u64,
     progress: Option<Entry>,
@@ -295,32 +318,27 @@ async fn play<S: MediaSource>(
         }
         Some(format!("{base}/hls/{variant}/index.m3u8"))
     };
-    let mut subs: Vec<SubtitleOut> = item
-        .subtitles
+    let (tracks, hidden) = subs::tracks(&item, &info, app.subs.ocr_available());
+    let subs: Vec<SubtitleOut> = tracks
         .iter()
-        .enumerate()
-        .map(|(i, s)| SubtitleOut {
-            id: format!("x{i}"),
-            lang: s.lang.clone(),
-            label: s.label.clone(),
-            forced: false,
-            url: format!("{base}/subs/x{i}.vtt"),
+        .map(|t| SubtitleOut {
+            id: t.id.clone(),
+            lang: t.lang.clone(),
+            label: t.label.clone(),
+            forced: t.forced,
+            kind: if t.image { "image" } else { "text" },
+            format: t.format.clone(),
+            source: if matches!(t.origin, subs::Origin::File(_)) { "file" } else { "embedded" },
+            url: format!("{base}/subs/{}.vtt", t.id),
         })
         .collect();
-    subs.extend(info.subtitles.iter().filter(|s| s.text).map(|s| SubtitleOut {
-        id: format!("e{}", s.index),
-        lang: s.lang.clone(),
-        label: s.title.clone().or_else(|| s.lang.clone()).unwrap_or_else(|| format!("Track {}", s.index)),
-        forced: s.forced,
-        url: format!("{base}/subs/e{}.vtt", s.index),
-    }));
-    // Embedded tracks take a full read of the file: start converting them now.
-    for sub in info.subtitles.iter().filter(|s| s.text) {
-        let (app, item, sid) = (Arc::clone(&app), item.clone(), format!("e{}", sub.index));
+    // Embedded text tracks take a full read of the file: start them now. Image
+    // tracks (OCR, minutes of CPU) start when a player asks for one.
+    for track in tracks.into_iter().filter(|t| !t.image && matches!(t.origin, subs::Origin::Embedded(_))) {
+        let (jobs, item, info) = (Arc::clone(&app.subs), item.clone(), info.clone());
         tokio::spawn(async move {
-            if let Err(e) = subtitle_vtt(&app, &item, &sid).await {
-                tracing::warn!(id = %item.id, %sid, "subtitle prefetch failed: {}", e.1);
-            }
+            let size = info.width.zip(info.height);
+            let _ = jobs.get(&item, &track, size, info.duration_ms.unwrap_or(0), Duration::ZERO).await;
         });
     }
     let resume_ms = resume_point(progress.as_ref(), info.duration_ms);
@@ -342,7 +360,7 @@ async fn play<S: MediaSource>(
         hls_url,
         poster_url: Some(format!("{base}/poster.jpg")),
         subtitles: subs,
-        bitmap_subtitles: info.subtitles.iter().filter(|s| !s.text).count(),
+        bitmap_subtitles: hidden,
         expires_at,
         progress,
         resume_ms,
@@ -457,94 +475,39 @@ async fn poster_path<S: MediaSource>(app: &App<S>, item: &SourceItem) -> Result<
     Ok(out)
 }
 
-/// Decodes subtitle bytes: UTF-8 (with or without BOM), else Windows-1252,
-/// which is what most European .srt files without a BOM are.
-fn decode_text(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => bytes
-            .iter()
-            .map(|&b| match b {
-                0x80 => '€',
-                0x8a => 'Š',
-                0x8c => 'Œ',
-                0x8e => 'Ž',
-                0x91 | 0x92 => '\'',
-                0x93 | 0x94 => '"',
-                0x96 | 0x97 => '-',
-                0x9a => 'š',
-                0x9c => 'œ',
-                0x9e => 'ž',
-                0x9f => 'Ÿ',
-                b => b as char,
-            })
-            .collect(),
-    }
-}
-
 async fn subtitle<S: MediaSource>(
     State(app): State<Arc<App<S>>>,
     UrlPath((token, id, sub)): UrlPath<(String, String, String)>,
 ) -> Result<Response> {
     let item = app.authorised(&token, &id).await?;
     let sid = sub.strip_suffix(".vtt").ok_or_else(not_found)?;
-    let vtt = subtitle_vtt(&app, &item, sid).await?;
-    Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::CACHE_CONTROL, IMMUTABLE)], vtt).into_response())
-}
-
-/// One subtitle track as WebVTT, converted once and cached. Embedded tracks
-/// need ffmpeg to read the whole file (a minute or more for a film on a
-/// spinning disk), so `/play` starts them in the background and a request
-/// arriving meanwhile waits for that run instead of starting another.
-async fn subtitle_vtt<S: MediaSource>(app: &App<S>, item: &SourceItem, sid: &str) -> Result<String> {
-    let key = probe::file_key(&item.path).map_err(internal)?;
-    let cached = app.cfg.cache_dir.join("subs").join(format!("{key}-{sid}.vtt"));
-    let lock = {
-        let mut locks = app.sub_locks.lock().expect("subtitle locks");
-        Arc::clone(locks.entry(cached.clone()).or_default())
-    };
-    let _running = lock.lock().await;
-    if let Ok(text) = tokio::fs::read_to_string(&cached).await {
-        return Ok(text);
-    }
-    let text = if let Some(n) = sid.strip_prefix('x') {
-        let n: usize = n.parse().map_err(|_| not_found())?;
-        let s = item.subtitles.get(n).ok_or_else(not_found)?;
-        let ext = s.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-        if ext == "srt" || ext == "vtt" {
-            let bytes = tokio::fs::read(&s.path).await.map_err(internal)?;
-            subtitles::to_vtt(&subtitles::parse(&decode_text(&bytes)))
-        } else {
-            ffmpeg_vtt(&app.cfg.ffmpeg, &s.path, None).await?
+    let info = app.probe(&item).await?;
+    let (tracks, _) = subs::tracks(&item, &info, app.subs.ocr_available());
+    let track = tracks.into_iter().find(|t| t.id == sid).ok_or_else(not_found)?;
+    let size = info.width.zip(info.height);
+    match app.subs.get(&item, &track, size, info.duration_ms.unwrap_or(0), Duration::from_secs(15)).await {
+        Ok(Some(subs::Vtt::Complete(vtt))) => {
+            Ok(([(header::CONTENT_TYPE, "text/vtt; charset=utf-8"), (header::CACHE_CONTROL, IMMUTABLE)], vtt).into_response())
         }
-    } else if let Some(n) = sid.strip_prefix('e') {
-        let index: u32 = n.parse().map_err(|_| not_found())?;
-        let info = app.probe(item).await?;
-        if !info.subtitles.iter().any(|s| s.index == index && s.text) {
-            return Err(not_found());
-        }
-        ffmpeg_vtt(&app.cfg.ffmpeg, &item.path, Some(index)).await?
-    } else {
-        return Err(not_found());
-    };
-    let _ = tokio::fs::create_dir_all(cached.parent().expect("has parent")).await;
-    let _ = tokio::fs::write(&cached, &text).await;
-    Ok(text)
-}
-
-async fn ffmpeg_vtt(ffmpeg: &Path, path: &Path, stream: Option<u32>) -> Result<String> {
-    let mut cmd = tokio::process::Command::new(ffmpeg);
-    cmd.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i"]).arg(path);
-    if let Some(i) = stream {
-        cmd.arg("-map").arg(format!("0:{i}"));
+        // OCR still running: what it has read so far; the player asks again for the rest.
+        Ok(Some(subs::Vtt::Partial(vtt))) => Ok((
+            [
+                (header::CONTENT_TYPE, "text/vtt; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::HeaderName::from_static("x-subtitles-partial"), "1"),
+            ],
+            vtt,
+        )
+            .into_response()),
+        // Still converting (a film read from disk, OCR): the player asks again.
+        Ok(None) => Ok((
+            StatusCode::ACCEPTED,
+            [(header::RETRY_AFTER, "5"), (header::CACHE_CONTROL, "no-store")],
+            Json(serde_json::json!({"ok": false, "preparing": true})),
+        )
+            .into_response()),
+        Err(e) => Err(internal(e)),
     }
-    cmd.args(["-f", "webvtt", "pipe:1"]);
-    let out = cmd.kill_on_drop(true).output().await.map_err(internal)?;
-    if !out.status.success() {
-        return Err(internal(String::from_utf8_lossy(&out.stderr).trim().to_string()));
-    }
-    // Re-parse to drop ASS styling ffmpeg leaves in.
-    Ok(subtitles::to_vtt(&subtitles::parse(&String::from_utf8_lossy(&out.stdout))))
 }
 
 #[derive(Deserialize)]

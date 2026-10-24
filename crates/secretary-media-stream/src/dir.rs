@@ -3,7 +3,7 @@
 //!
 //! This is the provisional library until `lucina-media` (catalog, uploads,
 //! albums, search) replaces it; the routes and JSON match its contract.
-use crate::{probe, MediaSource, Signer, SourceItem, SourceSub, StreamConfig};
+use crate::{probe, MediaSource, Signer, SourceItem, StreamConfig};
 use axum::{
     extract::{Path as UrlPath, Query, State},
     http::StatusCode,
@@ -70,28 +70,6 @@ fn ext_of(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
 }
 
-/// `Film.srt`, `Film.da.srt`, `Film.Danish.forced.srt` next to `Film.mkv`.
-fn find_subtitles(video: &Path, siblings: &[PathBuf]) -> Vec<SourceSub> {
-    let Some(stem) = video.file_stem().and_then(|s| s.to_str()) else { return vec![] };
-    let mut subs: Vec<SourceSub> = siblings
-        .iter()
-        .filter(|p| matches!(ext_of(p).as_str(), "srt" | "vtt" | "ass" | "ssa"))
-        .filter_map(|p| {
-            let sub_stem = p.file_stem()?.to_str()?;
-            let rest = sub_stem.strip_prefix(stem)?;
-            if !(rest.is_empty() || rest.starts_with('.')) {
-                return None;
-            }
-            let tags: Vec<&str> = rest.split('.').filter(|t| !t.is_empty()).collect();
-            let lang = tags.iter().find(|t| (2..=3).contains(&t.len()) && t.chars().all(|c| c.is_ascii_alphabetic())).map(|t| t.to_ascii_lowercase());
-            let label = if tags.is_empty() { "Subtitles".to_string() } else { tags.join(" ") };
-            Some(SourceSub { path: p.clone(), lang, label })
-        })
-        .collect();
-    subs.sort_by(|a, b| a.path.cmp(&b.path));
-    subs
-}
-
 pub fn item_id(label: &str, rel: &Path) -> String {
     let mut h = Sha256::new();
     h.update(label.as_bytes());
@@ -150,7 +128,8 @@ impl DirSource {
                             mime: mime.into(),
                             poster: None,
                             thumb: None,
-                            subtitles: if kind == "video" { find_subtitles(p, &files) } else { vec![] },
+                            // The router finds subtitle files next to the video itself.
+                            subtitles: vec![],
                         },
                         album: root.label.clone(),
                         size: meta.len(),
@@ -284,25 +263,6 @@ async fn one(State(state): State<Arc<ListState>>, UrlPath(id): UrlPath<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn subtitle_discovery() {
-        let v = PathBuf::from("/m/Film (1963).mkv");
-        let sibs: Vec<PathBuf> = ["Film (1963).srt", "Film (1963).da.srt", "Film (1963).Danish.forced.ass", "Film (1963) 2.srt", "Other.srt", "Film (1963).mkv"]
-            .iter()
-            .map(|n| PathBuf::from("/m").join(n))
-            .collect();
-        let subs = find_subtitles(&v, &sibs);
-        let got: Vec<(String, Option<String>)> = subs.iter().map(|s| (s.label.clone(), s.lang.clone())).collect();
-        assert_eq!(
-            got,
-            vec![
-                ("Danish forced".to_string(), None),
-                ("da".to_string(), Some("da".to_string())),
-                ("Subtitles".to_string(), None),
-            ]
-        );
-    }
 
     #[test]
     fn ids_are_stable_and_distinct() {
