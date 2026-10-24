@@ -198,10 +198,10 @@ struct SourceBadge: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: item.channel.symbol)
+            Image(systemName: item.source.symbol)
                 .imageScale(.small)
                 .accessibilityHidden(true)
-            Text(text)
+            Text(item.source.label)
             Text("·").accessibilityHidden(true)
             Text(item.ts.formatted(date: .omitted, time: .shortened))
         }
@@ -209,20 +209,7 @@ struct SourceBadge: View {
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("From \(text), \(item.ts.formatted(date: .omitted, time: .shortened))")
-    }
-
-    private var text: String {
-        guard let meta = item.meta else { return item.channel.label }
-        if item.channel == .discord {
-            if meta.isDm == true { return "Discord DM" }
-            let place = [meta.guildName, meta.channelName.map { "#\($0)" }].compactMap { $0 }.joined(separator: " ")
-            return place.isEmpty ? "Discord" : String(localized: "Discord · \(place)")
-        }
-        if item.channel == .telegram, let title = meta.chatTitle, meta.isDm != true {
-            return "Telegram · \(title)"
-        }
-        return item.channel.label
+        .accessibilityLabel("From \(item.source.label), \(item.ts.formatted(date: .omitted, time: .shortened))")
     }
 }
 
@@ -260,12 +247,14 @@ private struct MessageRow: View {
 
     private var bubbleRow: some View {
         let isUser = item.role == .user
+        let speaker = isUser && item.isMcp ? item.source.label : (isUser ? "You" : "Lucina")
+        let source = isUser && item.isMcp ? "MCP" : item.source.label
         return HStack {
             if isUser { Spacer(minLength: 48) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-                if !item.text.isEmpty {
+                if !item.displayText.isEmpty {
                     // Her plain replies are markdown too (the Notes renderer): no literal "**".
-                    Text(isUser ? LinkText.attributed(item.text) : ChatMarkdown.inline(item.text))
+                    Text(isUser ? LinkText.attributed(item.displayText) : ChatMarkdown.inline(item.displayText))
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
@@ -274,7 +263,7 @@ private struct MessageRow: View {
                         .background(isUser ? AnyShapeStyle(Theme.accentFill) : AnyShapeStyle(Theme.card),
                                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .opacity(item.localStatus == .sending ? 0.7 : 1)
-                        .accessibilityLabel(Text("\(isUser ? "You" : "Lucina"), via \(item.channel.label): \(item.text)"))
+                        .accessibilityLabel(Text("\(speaker), via \(source): \(item.displayText)"))
                         .accessibilityIdentifier(isUser ? "userMessage" : "lucinaMessage")
                 }
                 if !item.attachments.isEmpty {
@@ -329,7 +318,7 @@ private struct ReminderCard: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Reminder").font(.caption.weight(.semibold)).foregroundStyle(.orange)
-                Text(LinkText.attributed(item.text)).font(.subheadline).textSelection(.enabled)
+                Text(LinkText.attributed(item.displayText)).font(.subheadline).textSelection(.enabled)
                 SourceBadge(item: item)
             }
             Spacer(minLength: 0)
@@ -387,7 +376,7 @@ private struct ProactiveCard: View {
                     .background(tint.opacity(0.15), in: Capsule())
                     .accessibilityIdentifier("proactivePriority")
             }
-            Text(LinkText.attributed(item.text)).font(.subheadline).textSelection(.enabled)
+            Text(LinkText.attributed(item.displayText)).font(.subheadline).textSelection(.enabled)
             HStack(spacing: 6) {
                 ForEach(buttons, id: \.id) { b in
                     Button(b.label) { tap(b.id) }

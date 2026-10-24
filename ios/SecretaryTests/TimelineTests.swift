@@ -121,6 +121,120 @@ final class TimelineMergeTests: XCTestCase {
     }
 }
 
+final class MessageSourceTests: XCTestCase {
+    private func decode(_ json: String) throws -> TimelineItem {
+        try JSONDecoder().decode(TimelineItem.self, from: Data(json.utf8))
+    }
+
+    func testMcpCallerLabelsAndSymbols() throws {
+        let cases: [(caller: String, label: String, symbol: String)] = [
+            ("  CLAUDE-CODE-cli  ", "Claude Code", "sparkle"),
+            ("claude code", "Claude Code", "sparkle"),
+            ("claude-desktop", "Claude Desktop", "sparkle"),
+            ("claude-api", "Claude", "sparkle"),
+            ("chatgpt-desktop", "ChatGPT", "bubble.left.and.bubble.right"),
+            ("openai-api", "ChatGPT", "bubble.left.and.bubble.right"),
+            ("grok-bot", "Grok", "bolt"),
+            ("xai-api", "Grok", "bolt"),
+            ("codex-cli", "Codex", "chevron.left.forwardslash.chevron.right"),
+            ("cursor-editor", "Cursor", "cursorarrow.rays"),
+            ("www", "Cursor", "cursorarrow.rays"),
+            ("gemini-cli", "Gemini", "star"),
+            ("foo", "MCP · foo", "puzzlepiece.extension"),
+            ("  Custom Client  ", "MCP ·   Custom Client  ", "puzzlepiece.extension"),
+            ("", "MCP", "puzzlepiece.extension"),
+            ("   ", "MCP", "puzzlepiece.extension")
+        ]
+        for test in cases {
+            for role in ["user", "lucina"] {
+                let item = try decode("""
+                {"id":"mcp","channel":"web","role":"\(role)","text":"Hello",
+                 "meta":{"via":"mcp","caller":"\(test.caller)"}}
+                """)
+                XCTAssertTrue(item.isMcp, test.caller)
+                XCTAssertEqual(item.channel, .web)
+                XCTAssertEqual(item.source.label, test.label, test.caller)
+                XCTAssertEqual(item.source.symbol, test.symbol, test.caller)
+                XCTAssertEqual(item.displayText, "Hello")
+            }
+        }
+    }
+
+    func testMcpWithMissingOrMalformedCaller() throws {
+        for meta in [#"{"via":"mcp"}"#, #"{"via":"mcp","caller":null}"#, #"{"via":"mcp","caller":42}"#] {
+            let item = try decode("""
+            {"id":"mcp","channel":"web","role":"user","text":"Hello","meta":\(meta)}
+            """)
+            XCTAssertTrue(item.isMcp)
+            XCTAssertNil(item.meta?.caller)
+            XCTAssertEqual(item.source, MessageSource(label: "MCP", symbol: "puzzlepiece.extension"))
+        }
+        let malformed = try decode(#"{"id":"bad","channel":"web","role":"user","text":"Hello","meta":{"via":42,"caller":false}}"#)
+        XCTAssertNil(malformed.meta?.via)
+        XCTAssertNil(malformed.meta?.caller)
+        XCTAssertFalse(malformed.isMcp)
+    }
+
+    func testLegacyMcpPrefix() throws {
+        let item = try decode(#"{"id":"legacy","channel":"web","role":"user","text":"[via Lucina MCP, from   claude-code  ] Ciao Lucina, …"}"#)
+        XCTAssertTrue(item.isMcp)
+        XCTAssertEqual(item.source, MessageSource(label: "Claude Code", symbol: "sparkle"))
+        XCTAssertEqual(item.displayText, "Ciao Lucina, …")
+        XCTAssertEqual(item.text, "[via Lucina MCP, from   claude-code  ] Ciao Lucina, …")
+
+        let unknown = try decode(#"{"id":"legacy","channel":"web","role":"user","text":"[via Lucina MCP, from   Foo  ] Hello"}"#)
+        XCTAssertEqual(unknown.source.label, "MCP · Foo", "legacy callers are trimmed when parsed")
+    }
+
+    func testLegacyFallbackRequiresUserPrefixAndAbsentVia() throws {
+        for json in [
+            #"{"id":"a","channel":"web","role":"lucina","text":"[via Lucina MCP, from claude-code] Hello"}"#,
+            #"{"id":"b","channel":"web","role":"user","text":"[via Lucina MCP, from claude-code] Hello","meta":{"via":"web"}}"#,
+            #"{"id":"c","channel":"web","role":"user","text":"[via Lucina MCP, from claude-code]Hello"}"#,
+            #"{"id":"d","channel":"web","role":"user","text":"Hello [via Lucina MCP, from claude-code] there"}"#
+        ] {
+            let item = try decode(json)
+            XCTAssertFalse(item.isMcp)
+            XCTAssertEqual(item.source.label, "Web")
+            XCTAssertEqual(item.displayText, item.text)
+        }
+        let explicit = try decode(#"{"id":"e","channel":"web","role":"user","text":"[via Lucina MCP, from claude-code] Hello","meta":{"via":"mcp","caller":"chatgpt"}}"#)
+        XCTAssertEqual(explicit.source.label, "ChatGPT")
+        XCTAssertEqual(explicit.displayText, explicit.text, "explicit MCP metadata takes precedence over the legacy fallback")
+    }
+
+    func testNonMcpSourcesKeepChannelContext() throws {
+        let web = try decode(#"{"id":"web","channel":"web","role":"user","text":"Hello"}"#)
+        XCTAssertFalse(web.isMcp)
+        XCTAssertEqual(web.source, MessageSource(label: "Web", symbol: "globe"))
+        XCTAssertEqual(web.displayText, web.text)
+        let callerOnly = try decode(#"{"id":"web","channel":"web","role":"user","text":"Hello","meta":{"caller":"claude-code"}}"#)
+        XCTAssertFalse(callerOnly.isMcp)
+        XCTAssertEqual(callerOnly.source, web.source)
+
+        let discord = try decode(#"{"id":"discord","channel":"discord","role":"user","text":"Hello","meta":{"guildName":"Home","channelName":"general","isDm":false}}"#)
+        XCTAssertEqual(discord.source, MessageSource(label: "Discord · Home #general", symbol: "gamecontroller"))
+        var dm = discord
+        dm.meta?.isDm = true
+        XCTAssertEqual(dm.source.label, "Discord DM")
+
+        let telegram = try decode(#"{"id":"telegram","channel":"telegram","role":"user","text":"Hello","meta":{"chatTitle":"Family","isDm":false}}"#)
+        XCTAssertEqual(telegram.source, MessageSource(label: "Telegram · Family", symbol: "paperplane"))
+        dm = telegram
+        dm.meta?.isDm = true
+        XCTAssertEqual(dm.source.label, "Telegram")
+    }
+
+    func testMcpMetadataSurvivesCacheRoundTrip() throws {
+        let item = try decode(#"{"id":"cache","channel":"web","role":"lucina","text":"Hello","meta":{"via":"mcp","caller":"www"}}"#)
+        let cached = try JSONDecoder().decode(TimelineItem.self, from: JSONEncoder().encode(item))
+        XCTAssertEqual(cached.meta?.via, "mcp")
+        XCTAssertEqual(cached.meta?.caller, "www")
+        XCTAssertEqual(cached, item)
+        XCTAssertEqual(cached.source, MessageSource(label: "Cursor", symbol: "cursorarrow.rays"))
+    }
+}
+
 final class SSEParserTests: XCTestCase {
     private func parse(_ text: String) -> (events: [SSEEvent], lastId: String?) {
         var parser = SSEParser()

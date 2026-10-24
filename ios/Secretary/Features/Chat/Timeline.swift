@@ -51,6 +51,8 @@ struct ProactiveAction: Codable, Equatable, Hashable, Sendable {
 }
 
 struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
+    var via: String?
+    var caller: String?
     var chatTitle: String?
     var guildName: String?
     var channelName: String?
@@ -89,6 +91,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        via = c.lenientOptional(String.self, .via)
+        caller = c.lenientOptional(String.self, .caller)
         chatTitle = c.lenientOptional(String.self, .chatTitle)
         guildName = c.lenientOptional(String.self, .guildName)
         channelName = c.lenientOptional(String.self, .channelName)
@@ -106,7 +110,7 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
+        case via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
         case outreachId, priority, topic, why, actions
     }
 }
@@ -208,6 +212,76 @@ struct TimelineItem: Codable, Identifiable, Equatable, Sendable {
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = fractional.date(from: text) { return date }
         return ISO8601DateFormatter().date(from: text)
+    }
+}
+
+/// The client or channel shown beneath a message; the stored channel stays unchanged.
+struct MessageSource: Equatable, Sendable {
+    let label: String
+    let symbol: String
+
+    static func mcp(caller: String?) -> MessageSource {
+        let normalized = caller?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if normalized.hasPrefix("claude-code") || normalized == "claude code" {
+            return MessageSource(label: "Claude Code", symbol: "sparkle")
+        }
+        if normalized == "claude-desktop" {
+            return MessageSource(label: "Claude Desktop", symbol: "sparkle")
+        }
+        if normalized.hasPrefix("claude") {
+            return MessageSource(label: "Claude", symbol: "sparkle")
+        }
+        if normalized.hasPrefix("chatgpt") || normalized.hasPrefix("openai") {
+            return MessageSource(label: "ChatGPT", symbol: "bubble.left.and.bubble.right")
+        }
+        if normalized.hasPrefix("grok") || normalized.hasPrefix("xai") {
+            return MessageSource(label: "Grok", symbol: "bolt")
+        }
+        if normalized.hasPrefix("codex") {
+            return MessageSource(label: "Codex", symbol: "chevron.left.forwardslash.chevron.right")
+        }
+        if normalized.hasPrefix("cursor") || normalized == "www" {
+            return MessageSource(label: "Cursor", symbol: "cursorarrow.rays")
+        }
+        if normalized.hasPrefix("gemini") {
+            return MessageSource(label: "Gemini", symbol: "star")
+        }
+        return MessageSource(label: normalized.isEmpty ? "MCP" : "MCP · \(caller ?? "")", symbol: "puzzlepiece.extension")
+    }
+}
+
+extension TimelineItem {
+    var isMcp: Bool { meta?.via == "mcp" || legacyMcp != nil }
+
+    var source: MessageSource {
+        if meta?.via == "mcp" { return .mcp(caller: meta?.caller) }
+        if let legacyMcp { return .mcp(caller: legacyMcp.caller) }
+
+        var label = channel.label
+        if let meta {
+            if channel == .discord {
+                if meta.isDm == true {
+                    label = "Discord DM"
+                } else {
+                    let place = [meta.guildName, meta.channelName.map { "#\($0)" }].compactMap { $0 }.joined(separator: " ")
+                    label = place.isEmpty ? "Discord" : String(localized: "Discord · \(place)")
+                }
+            } else if channel == .telegram, let title = meta.chatTitle, meta.isDm != true {
+                label = "Telegram · \(title)"
+            }
+        }
+        return MessageSource(label: label, symbol: channel.symbol)
+    }
+
+    var displayText: String { legacyMcp?.text ?? text }
+
+    private var legacyMcp: (caller: String, text: String)? {
+        let prefix = "[via Lucina MCP, from "
+        guard meta?.via == nil, role == .user, text.hasPrefix(prefix) else { return nil }
+        let remainder = text.dropFirst(prefix.count)
+        guard let closing = remainder.range(of: "] ") else { return nil }
+        let caller = String(remainder[..<closing.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (caller, String(remainder[closing.upperBound...]))
     }
 }
 
