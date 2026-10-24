@@ -126,6 +126,7 @@ final class MemoUploadQueue {
                 return
             } catch {
                 let message = (error as? APIError)?.userMessage ?? error.localizedDescription
+                MemoLog.write("upload \(next.clientId) failed: \(message)")
                 update(next.clientId) { m in
                     m.phase = .pending
                     m.attempts += 1
@@ -162,6 +163,7 @@ final class MemoUploadQueue {
                                                      mime: "audio/mp4", sizeBytes: m.sizeBytes, source: "ios"))
             serverId = created.id
             offset = created.receivedBytes
+            MemoLog.write("created \(created.id) for \(m.clientId) title=\(m.title ?? "nil")")
             update(m.clientId) { $0.serverId = created.id; $0.uploadedBytes = created.receivedBytes }
             if created.status != .uploading { return finish(m.clientId, serverId: created.id) }
         } else if let id = serverId {
@@ -194,8 +196,10 @@ final class MemoUploadQueue {
         do {
             try await api.deviceTranscript(serverId, t)
             update(clientId) { $0.deviceTranscriptSent = true }
+            MemoLog.write("device transcript sent for \(serverId)")
         } catch {
             // Retried on the next run; the server's Whisper transcript doesn't need it.
+            MemoLog.write("device transcript for \(serverId) failed: \(error)")
         }
     }
 

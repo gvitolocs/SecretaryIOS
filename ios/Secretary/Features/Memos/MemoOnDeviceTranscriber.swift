@@ -10,11 +10,21 @@ enum MemoOnDeviceTranscriber {
     /// Memos up to this length are transcribed here.
     static let maxSeconds: Double = 600
 
-    /// The language to transcribe in: the app's language (it, en or da).
-    static var preferredLocale: Locale {
-        switch AppLanguage.effectiveCode {
+    /// The language to transcribe in (ISO 639-1): the one most of the owner's recent memos are
+    /// in (Whisper detects it on the server), else the app's language. A memo in another language
+    /// gets a poor transcript here; the server's Whisper replaces it.
+    static func language(recent: [String]) -> String {
+        let counts = Dictionary(recent.prefix(8).map { ($0, 1) }, uniquingKeysWith: +)
+        return counts.max { $0.value < $1.value || ($0.value == $1.value && $0.key > $1.key) }?.key ?? AppLanguage.effectiveCode
+    }
+
+    static func locale(for language: String) -> Locale {
+        switch language {
         case "it": Locale(identifier: "it-IT")
         case "da": Locale(identifier: "da-DK")
+        case "de": Locale(identifier: "de-DE")
+        case "es": Locale(identifier: "es-ES")
+        case "fr": Locale(identifier: "fr-FR")
         default: Locale(identifier: "en-US")
         }
     }
@@ -30,35 +40,53 @@ enum MemoOnDeviceTranscriber {
 
     /// Transcribes `url` and saves the result next to the recording. Nil when the device
     /// can't (iOS < 26, unsupported language, no speech).
-    static func transcribe(_ url: URL, clientId: String) async -> MemoDeviceTranscript? {
-        guard #available(iOS 26.0, *) else { return nil }
+    static func transcribe(_ url: URL, clientId: String, language: String) async -> MemoDeviceTranscript? {
+        guard #available(iOS 26.0, *) else { MemoLog.write("transcribe: iOS < 26"); return nil }
         do {
-            guard let t = try await run(url) else { return nil }
+            guard let t = try await run(url, locale: locale(for: language)) else { MemoLog.write("transcribe \(clientId): no transcript"); return nil }
+            MemoLog.write("transcribe \(clientId): \(t.segments.count) segments, \(t.text.count) chars, \(t.language)")
             if let data = try? MemoTime.encoder.encode(t) { try? data.write(to: file(for: clientId), options: .atomic) }
             return t
         } catch {
-            print("on-device transcription failed: \(error)")
+            MemoLog.write("transcribe \(clientId) failed: \(error)")
             return nil
         }
     }
 
     @available(iOS 26.0, *)
-    private static func run(_ url: URL) async throws -> MemoDeviceTranscript? {
-        guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: preferredLocale) else { return nil }
-        let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [],
-                                            attributeOptions: [.audioTimeRange])
-        if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+    private static func run(_ url: URL, locale wanted: Locale) async throws -> MemoDeviceTranscript? {
+        // SpeechTranscriber (long-form) first; DictationTranscriber covers more languages.
+        if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: wanted) {
+            let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
+            let segments = try await analyze(url, modules: [module], results: module.results.map { ($0.text, $0.range, $0.isFinal) })
+            return transcript(segments, url: url, locale: locale, engine: "Apple SpeechTranscriber (iPhone)")
+        }
+        if let locale = await DictationTranscriber.supportedLocale(equivalentTo: wanted) {
+            let module = DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [],
+                                              attributeOptions: [.audioTimeRange])
+            let segments = try await analyze(url, modules: [module], results: module.results.map { ($0.text, $0.range, $0.isFinal) })
+            return transcript(segments, url: url, locale: locale, engine: "Apple DictationTranscriber (iPhone)")
+        }
+        MemoLog.write("transcribe: no on-device model for \(wanted.identifier)")
+        return nil
+    }
+
+    @available(iOS 26.0, *)
+    private static func analyze<S: AsyncSequence>(_ url: URL, modules: [any SpeechModule], results: S) async throws -> [MemoSegment]
+    where S.Element == (AttributedString, CMTimeRange, Bool) {
+        if let install = try await AssetInventory.assetInstallationRequest(supporting: modules) {
+            MemoLog.write("transcribe: installing the speech model")
             try await install.downloadAndInstall()
         }
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let analyzer = SpeechAnalyzer(modules: modules)
         let collect = Task { () throws -> [MemoSegment] in
             var segments: [MemoSegment] = []
-            for try await result in transcriber.results where result.isFinal {
-                let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                let start = result.range.start.seconds
-                let end = result.range.end.seconds
-                segments.append(MemoSegment(start: start.isFinite ? start : 0, end: end.isFinite ? end : 0, text: text, speaker: nil))
+            for try await (text, range, final) in results where final {
+                let t = String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { continue }
+                let start = range.start.seconds
+                let end = range.end.seconds
+                segments.append(MemoSegment(start: start.isFinite ? start : 0, end: end.isFinite ? end : 0, text: t, speaker: nil))
             }
             return segments
         }
@@ -68,11 +96,13 @@ enum MemoOnDeviceTranscriber {
         } else {
             await analyzer.cancelAndFinishNow()
         }
-        let segments = try await collect.value
-        guard !segments.isEmpty else { return nil }
+        return try await collect.value
+    }
+
+    private static func transcript(_ segments: [MemoSegment], url: URL, locale: Locale, engine: String) -> MemoDeviceTranscript? {
+        guard !segments.isEmpty, let audio = try? AVAudioFile(forReading: url) else { return nil }
         let duration = Double(audio.length) / audio.processingFormat.sampleRate
-        return MemoDeviceTranscript(language: String(locale.identifier.prefix(2)), engine: "Apple SpeechTranscriber (iPhone)",
-                                    durationSec: duration, segments: segments)
+        return MemoDeviceTranscript(language: String(locale.identifier.prefix(2)), engine: engine, durationSec: duration, segments: segments)
     }
 }
 

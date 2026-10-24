@@ -128,7 +128,9 @@ final class MemosStore {
         guard r.duration <= MemoOnDeviceTranscriber.maxSeconds else { return }
         transcribing.insert(r.clientId)
         Task {
-            let t = await MemoOnDeviceTranscriber.transcribe(r.url, clientId: r.clientId)
+            if !loaded { await refresh() }
+            let language = MemoOnDeviceTranscriber.language(recent: memos.compactMap(\.language))
+            let t = await MemoOnDeviceTranscriber.transcribe(r.url, clientId: r.clientId, language: language)
             transcribing.remove(r.clientId)
             if let t { localTranscripts[r.clientId] = t }
             queue.kick()

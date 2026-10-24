@@ -28,6 +28,19 @@ enum MemoFiles {
     }
 }
 
+/// A short diagnostic log next to the recordings (Memos/memo-log.txt, last 300 lines): what
+/// on-device transcription and the upload queue did, for when something goes wrong on the phone.
+enum MemoLog {
+    static func write(_ line: String) {
+        let url = MemoFiles.directory.appendingPathComponent("memo-log.txt")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        var lines = ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        lines.append("\(stamp) \(line)")
+        if lines.count > 300 { lines.removeFirst(lines.count - 300) }
+        try? (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
 /// A finished recording, ready for the upload queue.
 struct FinishedRecording: Sendable {
     let clientId: String

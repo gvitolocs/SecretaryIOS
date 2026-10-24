@@ -20,7 +20,7 @@ final class MemoDeviceTests: XCTestCase {
             "-SecretaryMemoSynthetic",
             "Questo è un memo di prova registrato dall'iPhone. Domani alle dieci devo mandare a Laura il resoconto della riunione e prenotare la sala per giovedì.",
             "-SecretaryMemoSyntheticLang", "it-IT",
-            "-SecretaryMemoSyntheticTitle", "TEST iPhone memo (voce sintetica)",
+            "-SecretaryMemoSyntheticTitle", "TEST iPhone memo voce sintetica",
         ]
         addUIInterruptionMonitor(withDescription: "Microphone") { alert in
             for label in ["Allow", "OK", "Tillad", "Consenti"] where alert.buttons[label].exists {
@@ -46,10 +46,28 @@ final class MemoDeviceTests: XCTestCase {
         XCTAssertTrue(stop.waitForExistence(timeout: 10))
         sleep(3)
         shot(app, "2-recording")
-        app.buttons["memoPauseButton"].tap()
+
+        // The Live Activity: Notification Center shows it as on the Lock Screen. Pause from there.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        XCUIDevice.shared.press(.home)
         sleep(1)
-        shot(app, "3-paused")
-        app.buttons["memoPauseButton"].tap()
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.005))
+            .press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.7)))
+        sleep(2)
+        shot(springboard, "3-live-activity")
+        let laPause = springboard.buttons["Pause"]
+        XCTAssertTrue(laPause.waitForExistence(timeout: 8), "the Live Activity's Pause button is not shown")
+        laPause.tap()
+        sleep(2)
+        shot(springboard, "4-live-activity-paused")
+        XCTAssertTrue(springboard.buttons["Resume"].waitForExistence(timeout: 5), "the Live Activity did not switch to Resume")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        let pauseButton = app.buttons["memoPauseButton"]
+        XCTAssertTrue(pauseButton.waitForExistence(timeout: 5))
+        XCTAssertEqual(pauseButton.label, "Resume", "the app is not paused after the Live Activity's Pause")
+        shot(app, "5-paused-in-app")
+        pauseButton.tap()
         sleep(1)
         app.buttons["Discard"].tap()
         let confirm = app.buttons.matching(identifier: "Discard").element(boundBy: 1)
@@ -59,14 +77,14 @@ final class MemoDeviceTests: XCTestCase {
         // The synthetic memo: uploaded, transcribed, summarised (the list polls every few seconds).
         let cell = app.cells.containing(NSPredicate(format: "label CONTAINS[c] 'TEST iPhone memo'")).firstMatch
         XCTAssertTrue(cell.waitForExistence(timeout: 60), "the synthetic memo never showed up")
-        shot(app, "4-uploading")
+        shot(app, "6-uploading")
         let deadline = Date().addingTimeInterval(600)
         var ready = false
         while Date() < deadline {
             if cell.images["Ready"].exists { ready = true; break }
             sleep(5)
         }
-        shot(app, "5-after-pipeline")
+        shot(app, "7-after-pipeline")
         XCTAssertTrue(ready, "the synthetic memo did not become ready")
         if ready {
             cell.staticTexts.firstMatch.tap()
@@ -74,10 +92,10 @@ final class MemoDeviceTests: XCTestCase {
             if details.waitForExistence(timeout: 5) {
                 details.tap()
                 sleep(6)
-                shot(app, "6-detail")
+                shot(app, "8-detail")
                 app.swipeUp()
                 sleep(1)
-                shot(app, "7-detail-scrolled")
+                shot(app, "9-detail-scrolled")
             }
         }
     }

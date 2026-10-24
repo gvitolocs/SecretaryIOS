@@ -55,12 +55,15 @@ enum MemoSynthetic {
     static func runIfRequested(into store: MemosStore, defaults: UserDefaults = .standard) {
         guard let text = defaults.string(forKey: "SecretaryMemoSynthetic"), !text.isEmpty else { return }
         let lang = defaults.string(forKey: "SecretaryMemoSyntheticLang") ?? "it-IT"
+        let title = defaults.object(forKey: "SecretaryMemoSyntheticTitle").map { ($0 as? String) ?? "\($0)" }
+        MemoLog.write("synthetic: requested (\(text.count) chars, \(lang), title=\(title ?? "nil"))")
         Task { @MainActor in
             do {
                 let r = try await make(text: text, language: lang)
-                store.add(r, title: defaults.string(forKey: "SecretaryMemoSyntheticTitle"))
+                MemoLog.write("synthetic: \(String(format: "%.1f", r.duration)) s recorded")
+                store.add(r, title: title)
             } catch {
-                print("synthetic memo failed: \(error)")
+                MemoLog.write("synthetic failed: \(error)")
             }
         }
     }
