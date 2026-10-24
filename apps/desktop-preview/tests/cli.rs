@@ -139,3 +139,126 @@ fn drm_and_unknown_inputs_fail_cleanly() {
     assert_eq!(out.status.code(), Some(1));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A synthetic black-and-white picture, half the panel size (never the owner's picture).
+fn picture(dir: &Path) -> PathBuf {
+    use ink_kindle_hal::{GrayImage, Rect, Size};
+    let mut img = GrayImage::new(Size { w: 536, h: 724 }, 0xff);
+    img.fill_rect(Rect::new(100, 150, 336, 424), 0);
+    let p = dir.join("sleep.png");
+    let f = std::fs::File::create(&p).unwrap();
+    ink_kindle_hal::sim::dump::write_png(std::io::BufWriter::new(f), &img).unwrap();
+    p
+}
+
+#[test]
+fn sleep_wake_and_idle_script_renders_the_sleep_frame() {
+    let dir = tmp("sleep");
+    let b = book(&dir);
+    let pic = picture(&dir);
+    let out = dir.join("out");
+    let state = dir.join("position");
+    let (code, r) = run(&[
+        b.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+        "--font",
+        FONT,
+        "--sleep-image",
+        pic.to_str().unwrap(),
+        "--state",
+        state.to_str().unwrap(),
+        "--script",
+        "next,sleep,wake,next,idle 700,next,wake",
+    ]);
+    assert_eq!(code, 0, "{r}");
+    assert_eq!(r["ok"], true);
+    // splash defaults to the sleep picture and is one full GC16 flash
+    assert_eq!(r["splash"]["image"], pic.to_str().unwrap());
+    assert_eq!(r["splash"]["updates"][0]["mode"], "GC16");
+    assert_eq!(r["splash"]["updates"][0]["full"], true);
+    assert!(out.join("splash.png").exists());
+    let steps = r["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 8, "{steps:?}");
+    let sleep = &steps[2];
+    assert_eq!(sleep["op"], "sleep");
+    assert_eq!(sleep["screen"], "sleep");
+    assert_eq!(sleep["reason"], "power");
+    assert_eq!(sleep["image"], pic.to_str().unwrap());
+    assert_eq!(sleep["updates"].as_array().unwrap().len(), 1);
+    assert_eq!(sleep["updates"][0]["mode"], "GC16");
+    assert_eq!(sleep["updates"][0]["full"], true);
+    assert_eq!(sleep["saved_anchor"], steps[1]["anchor"]);
+    assert_eq!(sleep["stale_pixels"], 0);
+    let wake = &steps[3];
+    assert_eq!(wake["screen"], "resume");
+    assert_eq!(wake["page"], steps[1]["page"]);
+    assert_eq!(wake["updates"][0]["full"], true);
+    let idle = &steps[5];
+    assert_eq!(idle["op"], "idle 700");
+    assert_eq!(idle["reason"], "idle");
+    assert_eq!(
+        idle["main_loop_wait_ms"], 600_000,
+        "the loop blocks for the whole remaining idle time"
+    );
+    assert_eq!(steps[6]["skipped"], "asleep (only wake works)");
+    assert_eq!(steps[7]["screen"], "resume");
+    let checks = r["script_checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 2);
+    assert!(checks
+        .iter()
+        .all(|c| c["same_page_and_anchor"] == true && c["full_gc16"] == true));
+    assert_eq!(r["sleeps"], 2);
+    assert_eq!(r["sleep_frames"].as_array().unwrap().len(), 2);
+    // the last sleep frame is also written as sleep-frame.png
+    let png = std::fs::read(out.join("sleep-frame.png")).unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert!(std::fs::read_to_string(&state)
+        .unwrap()
+        .starts_with("lucina-ink-anchor 1\n"));
+
+    // a second run with the same state file opens at the saved page
+    let out2 = dir.join("out2");
+    let (code, r2) = run(&[
+        b.to_str().unwrap(),
+        "--out",
+        out2.to_str().unwrap(),
+        "--font",
+        FONT,
+        "--sleep-image",
+        pic.to_str().unwrap(),
+        "--state",
+        state.to_str().unwrap(),
+        "--pages",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{r2}");
+    assert_eq!(r2["steps"][0]["page"], steps[4]["page"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn missing_device_picture_falls_back_to_the_text_screen() {
+    let dir = tmp("fallback");
+    let b = book(&dir);
+    let out = dir.join("out");
+    let (code, r) = run(&[
+        b.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+        "--font",
+        FONT,
+        "--screen-bg",
+        "black",
+        "--script",
+        "sleep",
+    ]);
+    assert_eq!(code, 0, "{r}");
+    if !Path::new("/mnt/us/screensaver/lucina.png").exists() {
+        assert_eq!(r["splash"]["tried"], "/mnt/us/screensaver/lucina.png");
+        assert!(r["splash"]["fallback"].as_str().unwrap().len() > 3);
+        assert!(r["steps"][1]["fallback"].is_string());
+    }
+    assert_eq!(r["screens"]["background"], "black");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

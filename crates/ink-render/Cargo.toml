@@ -11,3 +11,5 @@ ink-kindle-hal = { path = "../ink-kindle-hal" }
 ink-epub = { path = "../ink-epub" }
 # Pure-Rust TrueType/OpenType rasterizer, MIT OR Apache-2.0 OR Zlib.
 fontdue = "0.9.5"
+# PNG decoding for the splash / sleep pictures (MIT OR Apache-2.0).
+png = "0.18"
