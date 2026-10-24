@@ -1,7 +1,9 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
-import { AvatarIcon, ChatIcon, CheckCircleIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon } from "../components/Icons";
+import {
+  AvatarIcon, BookIcon, ChatIcon, CheckCircleIcon, DumbbellIcon, LinkIcon, ListIcon, LogoutIcon, NoteIcon, ScaleIcon, UserIcon,
+} from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
@@ -47,6 +49,10 @@ function NavLinks(props: { class: string }) {
       <A href="/notes" class="tab" activeClass="tab--active">
         <NoteIcon />
         <span>{t("shell.navNotes")}</span>
+      </A>
+      <A href="/library" class="tab" activeClass="tab--active">
+        <BookIcon />
+        <span>{t("library.title")}</span>
       </A>
     </nav>
   );

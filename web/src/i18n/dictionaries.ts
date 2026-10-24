@@ -8,6 +8,7 @@ import { links } from "./dict/links";
 import { login } from "./dict/login";
 import { models } from "./dict/models";
 import { notify } from "./dict/notify";
+import { library } from "./dict/library";
 import { notes } from "./dict/notes";
 import { shell } from "./dict/shell";
 import { studio } from "./dict/studio";
@@ -15,6 +16,6 @@ import { tasks } from "./dict/tasks";
 import { wardrobe } from "./dict/wardrobe";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { common, shell, chat, login, weight, gym, wardrobe, notify, links, notes, tasks, studio, models };
+export const dictionaries = { library, common, shell, chat, login, weight, gym, wardrobe, notify, links, notes, tasks, studio, models };
 
 export type Dictionaries = typeof dictionaries;
