@@ -106,6 +106,11 @@ pub enum Effect {
         outfit: Option<String>,
         hair: Option<String>,
     },
+    /// Photos to show: the reply gets a button that opens this Gallery path in the app.
+    Gallery {
+        path: String,
+        count: usize,
+    },
 }
 
 /// External endpoints (overridable for tests).
@@ -614,10 +619,10 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 20);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 18);
+        assert_eq!(all.names().len(), 21);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 19);
         let mcp = all.without(NO_MCP_TOOLS);
-        assert_eq!(mcp.names().len(), 14);
+        assert_eq!(mcp.names().len(), 15);
         assert!(mcp.get("memos").is_some());
         for t in tools::delegate::DELEGATION_TOOLS
             .iter()
