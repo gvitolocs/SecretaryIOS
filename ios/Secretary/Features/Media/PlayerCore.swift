@@ -21,7 +21,7 @@ final class PlayerCore: @unchecked Sendable {
     }
 
     private let handle: OpaquePointer
-    private let queue = DispatchQueue(label: "tech.getsecretary.player-core", qos: .userInitiated)
+    private let serial = DispatchQueue(label: "tech.getsecretary.player-core", qos: .userInitiated)
     private let decoder = JSONDecoder()
 
     init(fileURL: URL) throws {
@@ -49,7 +49,7 @@ final class PlayerCore: @unchecked Sendable {
 
     private func raw(_ command: [String: Any]) throws -> Data {
         let json = try JSONSerialization.data(withJSONObject: command)
-        return queue.sync {
+        return serial.sync {
             let text = String(decoding: json, as: UTF8.self)
             guard let out = text.withCString({ secretary_player_request(handle, $0) }) else { return Data() }
             defer { secretary_string_free(out) }
@@ -59,10 +59,14 @@ final class PlayerCore: @unchecked Sendable {
 
     private func call<T: Decodable>(_ command: [String: Any], as type: T.Type = T.self) throws -> T {
         let data = try raw(command)
-        struct Status: Decodable { let ok: Bool; let error: String? }
-        let status = try decoder.decode(Status.self, from: data)
+        let status = try decoder.decode(CoreStatus.self, from: data)
         guard status.ok else { throw CoreError.rejected(status.error ?? "The player core rejected a command.") }
         return try decoder.decode(T.self, from: data)
+    }
+
+    private struct CoreStatus: Decodable {
+        let ok: Bool
+        let error: String?
     }
 
     private static func json<T: Encodable>(_ value: T) -> Any {

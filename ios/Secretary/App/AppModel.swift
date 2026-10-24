@@ -112,6 +112,10 @@ final class AppModel {
             selectedTab = .chat
             showTasks = true
         }
+        if launch.openMedia {
+            selectedTab = .chat
+            showMedia = true
+        }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -342,6 +346,8 @@ struct LaunchOptions {
     var openNotes = false
     /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
     var openTasks = false
+    /// `-SecretaryInitialTab media`: start on the media library.
+    var openMedia = false
 
     init(defaults: UserDefaults) {
         #if DEBUG
@@ -349,6 +355,7 @@ struct LaunchOptions {
         initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
+        openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
         #endif
     }
 }

@@ -131,6 +131,8 @@ final class MediaPlayer {
         currentIndex = view.current
         hasNext = view.hasNext
         hasPrev = view.hasPrev
+        // A queue restored at launch shows its item before it is loaded again.
+        if info == nil { duration = current?.duration ?? 0 }
     }
 
     // MARK: Loading
@@ -160,7 +162,7 @@ final class MediaPlayer {
         do {
             let info = try await api().play(id: item.id)
             guard !Task.isCancelled, current?.id == item.id else { return }
-            if let saved = info.progress { try? core?.merge([saved]) }
+            if let saved = info.progress { _ = try? core?.merge([saved]) }
             let resumeMs = (try? core?.resume(id: item.id, durationMs: info.durationMs)) ?? info.resumeMs
             guard let url = api().absolute(info.url) else { throw APIError.invalidURL }
             self.info = info
@@ -265,7 +267,10 @@ final class MediaPlayer {
         guard let track, let url = api().absolute(track.url) else { return }
         Task {
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
+                // The server may first have to read the whole file for an embedded track.
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 240
+                let (data, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.network(message: String(localized: "Subtitles are unavailable.")) }
                 let parsed = try core?.parseSubtitles(String(decoding: data, as: UTF8.self)) ?? []
                 guard subtitle?.id == track.id else { return }
