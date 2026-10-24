@@ -19,6 +19,8 @@ const en = {
   pokemon: "Pokémon",
   pokemonDetail: "Lucina's game",
   pokemonAsk: "How is the Pokémon game going?",
+  phone: "Phone",
+  phoneDetail: "Calls, voice and transcripts",
 };
 
 export const plugins: FeatureDictionary<typeof en> = {
@@ -40,6 +42,8 @@ export const plugins: FeatureDictionary<typeof en> = {
     pokemon: "Pokémon",
     pokemonDetail: "La partita di Lucina",
     pokemonAsk: "Come va la partita a Pokémon?",
+    phone: "Telefono",
+    phoneDetail: "Chiamate, voce e trascrizioni",
   },
   da: {
     title: "Plugins",
@@ -58,5 +62,7 @@ export const plugins: FeatureDictionary<typeof en> = {
     pokemon: "Pokémon",
     pokemonDetail: "Lucinas spil",
     pokemonAsk: "Hvordan går det med Pokémon-spillet?",
+    phone: "Telefon",
+    phoneDetail: "Opkald, stemme og transskriptioner",
   },
 };

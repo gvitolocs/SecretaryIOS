@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { CheckCircleIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon } from "../components/Icons";
+import { CheckCircleIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { requestPrefill } from "../state/chat";
 import { openWardrobe } from "../state/wardrobe";
@@ -16,7 +16,14 @@ export type Plugin = {
   /** A route to open, or an action. */
   href?: string;
   run?: (navigate: (to: string) => void) => void;
+  /** Hidden where the plugin can't run (the native phone screens exist only in the Android app). */
+  visible?: () => boolean;
 };
+
+/** The Android Secretary app's WebView adds "SecretaryAndroid/<version>" to its user agent. */
+export function inAndroidApp(): boolean {
+  return typeof navigator !== "undefined" && /\bSecretaryAndroid\//.test(navigator.userAgent);
+}
 
 export const PLUGINS: Plugin[] = [
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
@@ -35,6 +42,17 @@ export const PLUGINS: Plugin[] = [
     },
   },
   { id: "wardrobe", icon: HangerIcon, title: () => t("plugins.wardrobe"), detail: () => t("plugins.wardrobeDetail"), run: () => openWardrobe() },
+  {
+    id: "phone",
+    icon: PhoneIcon,
+    title: () => t("plugins.phone"),
+    detail: () => t("plugins.phoneDetail"),
+    visible: inAndroidApp,
+    // The app handles secretary://calls and opens its native Calls screen.
+    run: () => {
+      window.location.href = "secretary://calls";
+    },
+  },
   { id: "models", icon: GridIcon, title: () => t("plugins.models"), detail: () => t("plugins.modelsDetail"), href: "/models" },
 ];
 
@@ -44,7 +62,7 @@ export default function PluginsView() {
     <section class="plugins-page" aria-labelledby="plugins-title">
       <h1 id="plugins-title">{t("plugins.title")}</h1>
       <div class="plugins-grid">
-        <For each={PLUGINS}>
+        <For each={PLUGINS.filter((plugin) => plugin.visible?.() ?? true)}>
           {(plugin) => (
             <button
               type="button"
