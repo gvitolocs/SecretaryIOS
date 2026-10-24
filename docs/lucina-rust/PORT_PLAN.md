@@ -237,6 +237,11 @@ Alexa turns (16 timeline items).
 Scope: proactive check-ins as a native scheduler job (Q5), `lucina_log_inspect` (own logs + journald), capability
 hints, `model_status` tool, grocery offers (`catalog.js`, `nearby.js`, `rapidapi-quota.js`), `/grocery/*` dashboard
 API (Q10), `backfill-timeline` and `grocery-migrate` subcommands, Hermes upstream tools from §7.
+Grocery deal watch (Lucina `src/grocery/deals/`, added 2026-10-24; Node is canonical, the Hermes grocery copy is not
+updated): Salling food-waste + Tjek flyer sources, the shopping-list matcher with its synonym rules and owner override
+file `data/grocery/deal-synonyms.json`, the `grocery.deals.cheapest`/`grocery.deals.lunch` intents, and the Telegram
+digest/alert scheduler whose state file `data/grocery/deal-watch.json` must stay byte-compatible (INVENTORY §3). Port
+it with its recorded fixtures (`tests/fixtures/grocery-deals/`) as parity tests; until then only Node runs the watcher.
 
 Retirement: switch `lucina-nez` to a runtime without Lucina (`HERMES_RUNTIME` set to a value that disables
 `lucina`, for example `poko-routes`, after checking which OTHER-BOT pieces still need to run there), keep it on 8788
