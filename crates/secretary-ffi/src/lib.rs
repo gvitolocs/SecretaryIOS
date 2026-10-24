@@ -163,7 +163,7 @@ macro_rules! module {
 }
 
 /// Module names reported by `secretary_version`.
-pub const MODULES: &[&str] = &["gym", "body"];
+pub const MODULES: &[&str] = &["gym", "body", "player"];
 
 module!(
     secretary_gym::Engine,
@@ -176,6 +176,12 @@ module!(
     secretary_body_open,
     secretary_body_request,
     secretary_body_close
+);
+module!(
+    secretary_player::Engine,
+    secretary_player_open,
+    secretary_player_request,
+    secretary_player_close
 );
 
 /// Alias of `secretary_open_error` for the SwiftUI port.
