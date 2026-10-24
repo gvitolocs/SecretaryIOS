@@ -58,7 +58,8 @@ impl ThumbState {
     }
 }
 
-pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path) -> anyhow::Result<ThumbState> {
+/// `duration_ms` picks the video frame: 10% in (at most 5 min), past the black opening of films.
+pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path, duration_ms: Option<i64>) -> anyhow::Result<ThumbState> {
     let dir = dir_for(cfg, item_id);
     std::fs::create_dir_all(&dir)?;
     let preview = dir.join("preview.jpg");
@@ -75,7 +76,7 @@ pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path) -> any
         }
         "video" => {
             if !poster.is_file() {
-                video_poster(cfg, original, &poster)?;
+                video_poster(cfg, original, &poster, duration_ms)?;
             }
             poster.is_file().then(|| poster.clone()).or_else(|| preview.is_file().then(|| preview.clone()))
         }
@@ -141,10 +142,13 @@ fn write_jpeg(img: &DynamicImage, dst: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A frame 1 s in (or the first frame of very short clips), scaled to 1600 px on the long side.
-fn video_poster(cfg: &Config, src: &Path, dst: &Path) -> anyhow::Result<()> {
+/// A frame 10% in (at most 5 min; 1 s when the length is unknown, then the first frame),
+/// scaled to 1600 px on the long side.
+fn video_poster(cfg: &Config, src: &Path, dst: &Path, duration_ms: Option<i64>) -> anyhow::Result<()> {
     let tmp = dst.with_extension("part.jpg");
-    for seek in ["1", "0"] {
+    let at = duration_ms.filter(|d| *d > 20_000).map(|d| (d / 10).min(300_000)).unwrap_or(1000);
+    let first = format!("{}.{:03}", at / 1000, at % 1000);
+    for seek in [first.as_str(), "0"] {
         let status = Command::new(&cfg.ffmpeg)
             .args(["-nostdin", "-v", "error", "-y", "-ss", seek, "-i"])
             .arg(src)
@@ -188,7 +192,7 @@ mod tests {
         let cfg = Config::for_dirs(tmp.path().join("data"), tmp.path().join("store"));
         let src = tmp.path().join("in.png");
         DynamicImage::new_rgb8(2000, 1000).save(&src).unwrap();
-        assert!(matches!(generate(&cfg, "itm_abcdef", "photo", &src).unwrap(), ThumbState::Ready));
+        assert!(matches!(generate(&cfg, "itm_abcdef", "photo", &src, None).unwrap(), ThumbState::Ready));
         let dir = dir_for(&cfg, "itm_abcdef");
         let s = image::image_dimensions(dir.join("s.jpg")).unwrap();
         let l = image::image_dimensions(dir.join("l.jpg")).unwrap();
@@ -196,6 +200,6 @@ mod tests {
         assert_eq!(l, (1600, 800));
         let bogus = tmp.path().join("x.heic");
         std::fs::write(&bogus, b"not an image").unwrap();
-        assert!(matches!(generate(&cfg, "itm_zz", "photo", &bogus).unwrap(), ThumbState::None));
+        assert!(matches!(generate(&cfg, "itm_zz", "photo", &bogus, None).unwrap(), ThumbState::None));
     }
 }

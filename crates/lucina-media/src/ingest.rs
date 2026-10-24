@@ -460,8 +460,8 @@ pub async fn thumb_worker(lib: Library) {
             let l = lib.clone();
             let tid = id.clone();
             let res = tokio::task::spawn_blocking(move || -> anyhow::Result<&'static str> {
-                let Some((path, _)) = original_path(&l, &tid)? else { return Ok("none") };
-                Ok(thumbs::generate(&l.cfg, &tid, &kind, &path)?.as_str())
+                let Some((path, item)) = original_path(&l, &tid)? else { return Ok("none") };
+                Ok(thumbs::generate(&l.cfg, &tid, &kind, &path, item.duration_ms)?.as_str())
             })
             .await;
             let state = match res {

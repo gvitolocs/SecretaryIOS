@@ -28,8 +28,11 @@ enum Cmd {
     },
     /// Move spooled originals to the store now (respects the quiet hours).
     FlushSpool,
-    /// Mark every item's thumbnails for regeneration.
-    Rethumb,
+    /// Regenerate thumbnails (all items, or only one kind: photo, video, audio).
+    Rethumb {
+        #[arg(long)]
+        kind: Option<String>,
+    },
     /// Index a folder in place (no copy) as album LABEL.
     IndexFolder { label: String, path: PathBuf },
 }
@@ -59,9 +62,20 @@ async fn main() -> anyhow::Result<()> {
             let lib = Library::open(cfg)?;
             println!("moved {}", store::flush_spool(&lib.cfg, &lib.db)?);
         }
-        Cmd::Rethumb => {
-            let lib = Library::open(cfg)?;
-            let n = lib.db.with(|c| c.execute("UPDATE items SET thumb_state = 'pending'", []))?;
+        Cmd::Rethumb { kind } => {
+            let lib = Library::open(cfg.clone())?;
+            let ids: Vec<String> = lib.db.with(|c| {
+                let mut st = c.prepare("SELECT id FROM items WHERE ?1 IS NULL OR kind = ?1")?;
+                let rows = st.query_map([&kind], |r| r.get(0))?;
+                rows.collect()
+            })?;
+            for id in &ids {
+                // The old poster would be reused; drop it so a new frame is picked.
+                let _ = std::fs::remove_file(lucina_media::thumbs::dir_for(&cfg, id).join("poster.jpg"));
+            }
+            let n = lib.db.with(|c| {
+                c.execute("UPDATE items SET thumb_state = 'pending' WHERE ?1 IS NULL OR kind = ?1", [&kind])
+            })?;
             println!("{n} items queued");
         }
         Cmd::IndexFolder { label, path } => {
