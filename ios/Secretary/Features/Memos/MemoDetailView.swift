@@ -34,14 +34,14 @@ struct MemoDetailView: View {
                             Text(MemoTime.clock(d.memo.durationSec))
                             if let lang = d.memo.language { Text("·"); Text(lang.uppercased()) }
                         }
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(Theme.textSecondary)
                         if d.memo.status != .done {
                             HStack(spacing: 6) {
                                 if d.memo.status.isProcessing { ProgressView().controlSize(.small) }
                                 Text(d.memo.status.label)
                                 if let e = d.memo.error, d.memo.status == .failed || d.memo.status.isProcessing { Text(e).lineLimit(2) }
                             }
-                            .font(.footnote).foregroundStyle(d.memo.status == .failed ? .orange : .accentColor)
+                            .font(.footnote).foregroundStyle(d.memo.status == .failed ? Theme.warning : Theme.accent)
                         }
                     }
                     if let row { InlinePlayer(row: row) }
@@ -50,7 +50,7 @@ struct MemoDetailView: View {
                     Section("Summary") {
                         Text(s.overview).font(.body)
                         if !s.tags.isEmpty {
-                            Text(s.tags.map { "#\($0)" }.joined(separator: "  ")).font(.footnote).foregroundStyle(Color.accentColor)
+                            Text(s.tags.map { "#\($0)" }.joined(separator: "  ")).font(.footnote).foregroundStyle(Theme.accent)
                         }
                     }
                     if !s.keyPoints.isEmpty {
@@ -87,11 +87,11 @@ struct MemoDetailView: View {
                         ForEach(t.segments) { seg in
                             Button { seek(seg.start) } label: {
                                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                                    Text(MemoTime.clock(seg.start)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    Text(MemoTime.clock(seg.start)).font(.caption.monospacedDigit()).foregroundStyle(Theme.textSecondary)
                                         .frame(width: 44, alignment: .leading)
                                     VStack(alignment: .leading) {
                                         if let sp = seg.speaker { Text(sp).font(.caption.bold()) }
-                                        Text(seg.text).foregroundStyle(current(seg) ? Color.accentColor : .primary)
+                                        Text(seg.text).foregroundStyle(current(seg) ? Theme.accent : Theme.text)
                                     }
                                 }
                             }
@@ -107,6 +107,7 @@ struct MemoDetailView: View {
                 Section { ProgressView().frame(maxWidth: .infinity) }
             }
         }
+        .lucinaList()
         .navigationTitle(detail?.memo.title ?? String(localized: "Memo"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -211,7 +212,7 @@ private struct ItemRow: View {
                 }
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Theme.textSecondary)
         }
     }
 }

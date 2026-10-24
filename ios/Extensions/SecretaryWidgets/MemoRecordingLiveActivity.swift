@@ -15,27 +15,27 @@ struct MemoRecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MemoRecordingAttributes.self) { context in
             LockScreenView(state: context.state)
-                .activityBackgroundTint(Color.black.opacity(0.75))
-                .activitySystemActionForegroundColor(.white)
+                .activityBackgroundTint(LucinaTokens.Colors.card.opacity(0.92))
+                .activitySystemActionForegroundColor(LucinaTokens.Colors.text)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Label(context.state.paused ? "Paused" : "Recording", systemImage: "waveform")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(context.state.paused ? .orange : .red)
+                        .foregroundStyle(context.state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    ElapsedText(state: context.state).font(.title3.monospacedDigit()).foregroundStyle(.white)
+                    ElapsedText(state: context.state).font(.title3.monospacedDigit()).foregroundStyle(LucinaTokens.Colors.text)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     Controls(state: context.state)
                 }
             } compactLeading: {
-                Image(systemName: "waveform").foregroundStyle(context.state.paused ? .orange : .red)
+                Image(systemName: "waveform").foregroundStyle(context.state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
             } compactTrailing: {
                 ElapsedText(state: context.state).monospacedDigit().frame(maxWidth: 52)
             } minimal: {
-                Image(systemName: context.state.paused ? "pause.fill" : "mic.fill").foregroundStyle(.red)
+                Image(systemName: context.state.paused ? "pause.fill" : "mic.fill").foregroundStyle(LucinaTokens.Colors.negative)
             }
         }
     }
@@ -67,17 +67,17 @@ private struct Controls: View {
                 Button(intent: ResumeMemoRecordingIntent()) {
                     Label("Resume", systemImage: "record.circle").frame(maxWidth: .infinity)
                 }
-                .tint(.red)
+                .tint(LucinaTokens.Colors.accentFill)
             } else {
                 Button(intent: PauseMemoRecordingIntent()) {
                     Label("Pause", systemImage: "pause.fill").frame(maxWidth: .infinity)
                 }
-                .tint(.gray)
+                .tint(LucinaTokens.Colors.accentFill)
             }
             Button(intent: StopMemoRecordingIntent()) {
                 Label("Done", systemImage: "stop.fill").frame(maxWidth: .infinity)
             }
-            .tint(.red)
+            .tint(LucinaTokens.Colors.negative)
         }
         .buttonStyle(.borderedProminent)
         .font(.subheadline.weight(.semibold))
@@ -91,15 +91,15 @@ private struct LockScreenView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: state.paused ? "pause.circle.fill" : "record.circle")
-                    .foregroundStyle(state.paused ? .orange : .red)
+                    .foregroundStyle(state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
                     .font(.title2)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(state.paused ? (state.interrupted ? "Paused by a call" : "Paused") : "Recording memo")
-                        .font(.headline).foregroundStyle(.white)
-                    Text("Secretary · Lucina").font(.caption).foregroundStyle(.white.opacity(0.7))
+                        .font(.headline).foregroundStyle(LucinaTokens.Colors.text)
+                    Text("Secretary · Lucina").font(.caption).foregroundStyle(LucinaTokens.Colors.textSecondary)
                 }
                 Spacer()
-                ElapsedText(state: state).font(.title.monospacedDigit().weight(.light)).foregroundStyle(.white)
+                ElapsedText(state: state).font(.title.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
             }
             Controls(state: state)
         }

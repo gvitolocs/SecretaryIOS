@@ -190,6 +190,7 @@ targets:
       - path: Extensions/SecretaryWidgets
         excludes: ["Info.plist"]
       - path: Secretary/Shared/MemoRecordingActivity.swift
+      - path: Secretary/Shared/LucinaTokens.swift
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework

@@ -16,7 +16,7 @@ private struct MemosEntry: ViewModifier {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { app.showMemos = true } label: {
                         Image(systemName: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform")
-                            .foregroundStyle(app.memos.recorder.isActive ? Color.red : Color.accentColor)
+                            .foregroundStyle(app.memos.recorder.isActive ? Theme.negative : Theme.accent)
                     }
                     .accessibilityLabel("Voice memos")
                     .accessibilityIdentifier("memosButton")
@@ -57,10 +57,10 @@ struct MemosView: View {
             if rows.isEmpty && store.loaded {
                 Section {
                     VStack(spacing: 8) {
-                        Image(systemName: "waveform").font(.largeTitle).foregroundStyle(.secondary)
+                        Image(systemName: "waveform").font(.largeTitle).foregroundStyle(Theme.accent)
                         Text("No memos yet").font(.headline)
                         Text("Tap the red button and talk. Lucina transcribes it, writes the summary, makes a PDF and puts the note in Obsidian.")
-                            .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            .font(.subheadline).foregroundStyle(Theme.textSecondary).multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
@@ -75,7 +75,9 @@ struct MemosView: View {
                 }
             }
         }
+        .lucinaList()
         .navigationTitle("Memos")
+        .navigationBarTitleDisplayMode(.large)
         .navigationDestination(item: $store.openMemoId) { id in
             MemoDetailView(memoId: id).environment(store)
         }
@@ -109,17 +111,17 @@ private struct MemoRowView: View {
                             PhaseLabel(phase: row.phase)
                         }
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                     }
                     Spacer(minLength: 8)
-                    Text(MemoTime.clock(row.duration)).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(MemoTime.clock(row.duration)).font(.footnote.monospacedDigit()).foregroundStyle(Theme.textSecondary)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             if expanded {
                 if let preview = row.preview {
-                    Text(preview).font(.subheadline).foregroundStyle(.secondary).lineLimit(4)
+                    Text(preview).font(.subheadline).foregroundStyle(Theme.textSecondary).lineLimit(4)
                 }
                 InlinePlayer(row: row)
                 if let id = row.serverId {
@@ -144,7 +146,7 @@ private struct PhaseLabel: View {
     var body: some View {
         switch phase {
         case let .uploading(p):
-            Label("\(Int(p * 100))%", systemImage: "icloud.and.arrow.up").labelStyle(.titleAndIcon).foregroundStyle(Color.accentColor)
+            Label("\(Int(p * 100))%", systemImage: "icloud.and.arrow.up").labelStyle(.titleAndIcon).foregroundStyle(Theme.accent)
         case let .waiting(reason):
             Label(reason ?? String(localized: "Upload pending"), systemImage: "clock.arrow.circlepath").lineLimit(1)
         case let .processing(status):
@@ -152,12 +154,12 @@ private struct PhaseLabel: View {
                 ProgressView().controlSize(.mini)
                 Text(status.label)
             }
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(Theme.accent)
         case .ready:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Ready")
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.positive).accessibilityLabel("Ready")
         case let .failed(reason):
             Label(reason.map { String($0.prefix(60)) } ?? String(localized: "Failed"), systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange).lineLimit(1)
+                .foregroundStyle(Theme.warning).lineLimit(1)
         }
     }
 }
@@ -212,7 +214,7 @@ private struct RecordPanel: View {
         let rec = store.recorder
         VStack(spacing: 12) {
             if let error = rec.error {
-                Text(error).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center)
+                Text(error).font(.footnote).foregroundStyle(Theme.negative).multilineTextAlignment(.center)
             }
             if rec.isActive {
                 LiveWaveform(levels: rec.levels, live: rec.state == .recording)
@@ -221,7 +223,7 @@ private struct RecordPanel: View {
                     .font(.system(size: 34, weight: .light).monospacedDigit())
                     .accessibilityIdentifier("memoTimer")
                 if rec.interrupted {
-                    Text("Paused by another app or a call").font(.footnote).foregroundStyle(.secondary)
+                    Text("Paused by another app or a call").font(.footnote).foregroundStyle(Theme.textSecondary)
                 }
                 HStack(spacing: 44) {
                     Button { confirmDiscard = true } label: {
@@ -230,15 +232,15 @@ private struct RecordPanel: View {
                     .accessibilityLabel("Discard")
                     Button { store.finishRecording() } label: {
                         ZStack {
-                            Circle().strokeBorder(.secondary, lineWidth: 3).frame(width: 72, height: 72)
-                            RoundedRectangle(cornerRadius: 6).fill(.red).frame(width: 30, height: 30)
+                            Circle().strokeBorder(Theme.textSecondary, lineWidth: 3).frame(width: 72, height: 72)
+                            RoundedRectangle(cornerRadius: 6).fill(Theme.negative).frame(width: 30, height: 30)
                         }
                     }
                     .accessibilityLabel("Stop and save")
                     .accessibilityIdentifier("memoStopButton")
                     Button { rec.state == .paused ? rec.resume() : rec.pause() } label: {
                         Image(systemName: rec.state == .paused ? "record.circle" : "pause.fill")
-                            .font(.title2).foregroundStyle(rec.state == .paused ? .red : .primary).frame(width: 52, height: 52)
+                            .font(.title2).foregroundStyle(rec.state == .paused ? Theme.negative : Theme.text).frame(width: 52, height: 52)
                     }
                     .accessibilityLabel(rec.state == .paused ? "Resume" : "Pause")
                     .accessibilityIdentifier("memoPauseButton")
@@ -246,8 +248,8 @@ private struct RecordPanel: View {
             } else {
                 Button { Task { await store.record() } } label: {
                     ZStack {
-                        Circle().strokeBorder(.secondary.opacity(0.6), lineWidth: 3).frame(width: 72, height: 72)
-                        Circle().fill(.red).frame(width: 58, height: 58)
+                        Circle().strokeBorder(Theme.textSecondary.opacity(0.6), lineWidth: 3).frame(width: 72, height: 72)
+                        Circle().fill(Theme.negative).frame(width: 58, height: 58)
                     }
                 }
                 .accessibilityLabel("Record")
@@ -280,7 +282,7 @@ struct LiveWaveform: View {
             for (i, level) in shown.enumerated() {
                 let h = max(2, CGFloat(level) * size.height)
                 let rect = CGRect(x: start + CGFloat(i) * (bar + gap), y: (size.height - h) / 2, width: bar, height: h)
-                ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(live ? .red : .secondary))
+                ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(live ? Theme.accent : Theme.textSecondary))
             }
         }
         .accessibilityHidden(true)
