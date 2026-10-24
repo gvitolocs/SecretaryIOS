@@ -173,7 +173,8 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 m.steps.summarized_at = Some(Utc::now());
                 m.steps.rendered_at = None;
                 m.steps.published_at = None;
-                m.steps.notified_at = None;
+                // notified_at stays: new memos start without one, and the owner's re-summary
+                // clears it in request_resummary; a Whisper upgrade must not notify twice.
             })?;
             s
         }
