@@ -262,4 +262,115 @@ class LucinaUi(private val ctx: Context) {
         chip.setTextColor(color)
         (chip.background as GradientDrawable).setColor(color and 0x00FFFFFF or 0x2E000000)
     }
+
+    /**
+     * Like [screen] but without the ScrollView: a full-height column inset from the system bars, with no side
+     * padding, for screens whose content scrolls itself (a WebView). Children use weights to fill it.
+     */
+    @Suppress("DEPRECATION")
+    fun frame(a: Activity): LinearLayout {
+        val w = a.window
+        w.setBackgroundDrawable(ColorDrawable(c.bg))
+        w.statusBarColor = c.bg
+        w.navigationBarColor = c.bg
+        var flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        if (!dark) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        w.decorView.systemUiVisibility = flags
+        val root = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(c.bg)
+        }
+        root.setOnApplyWindowInsetsListener { _, ins ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val i = ins.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
+                root.setPadding(i.left, i.top, i.right, i.bottom)
+            } else {
+                root.setPadding(ins.systemWindowInsetLeft, ins.systemWindowInsetTop, ins.systemWindowInsetRight, ins.systemWindowInsetBottom)
+            }
+            ins
+        }
+        a.setContentView(root)
+        return root
+    }
+
+    /** A capsule button in any fill (e.g. `c.positive` for Call, `c.negative` for Hang up), white text by default. */
+    fun filledButton(label: String, fill: Int, fg: Int = c.onAccent, onClick: () -> Unit) = pill(label, fill, fg, onClick)
+
+    /** A capsule text field on the `field` fill (the iOS PillInputRow field). */
+    fun pillInput(hint: String, inputType: Int = android.text.InputType.TYPE_CLASS_TEXT, size: Float = TextSize.body) =
+        android.widget.EditText(ctx).apply {
+            this.hint = hint
+            this.inputType = inputType
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
+            setTextColor(c.text)
+            setHintTextColor(c.textTertiary)
+            isSingleLine = true
+            background = shape(c.field, LucinaTokens.Radius.pill)
+            setPadding(dp(Space.xl), dp(Space.md), dp(Space.xl), dp(Space.md))
+            minimumHeight = dp(Space.tap)
+            layoutParams = lp()
+        }
+
+    /**
+     * A chat bubble: the owner's (`mine`) right-aligned in `accentFill` with white text, Lucina's left-aligned
+     * on `card`; at most 80% of the screen wide.
+     */
+    fun bubble(s: CharSequence, mine: Boolean) = text(s, TextSize.body, TextWeight.body, if (mine) c.onAccent else c.text, LineHeight.body).apply {
+        background = shape(if (mine) c.accentFill else c.card, LucinaTokens.Radius.card)
+        setPadding(dp(14f), dp(10f), dp(14f), dp(10f))
+        maxWidth = (dm.widthPixels * 0.8f).toInt()
+        layoutParams = lp(w = -2, top = Space.xs, bottom = Space.xs).apply { gravity = if (mine) Gravity.END else Gravity.START }
+    }
+
+    /** A round button of `size` dp in `fill` around `content` (a glyph, a label…), with a ripple. */
+    fun circle(content: View, size: Float, fill: Int = c.card, onClick: (() -> Unit)? = null) = android.widget.FrameLayout(ctx).apply {
+        background = ripple(shape(fill, 0f, oval = true), shape(-1, 0f, oval = true))
+        addView(content, android.widget.FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        if (onClick != null) {
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+        layoutParams = lp(w = dp(size), h = dp(size))
+    }
+
+    /** `button` (e.g. a [circle]) over a centred caption label, as in the iOS in-call controls. */
+    fun labeled(button: View, label: String) = LinearLayout(ctx).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        addView(button)
+        addView(text(label, TextSize.footnote, TextWeight.footnote, c.textSecondary).apply {
+            gravity = Gravity.CENTER
+            layoutParams = lp(w = -2, top = Space.sm)
+        })
+        layoutParams = lp(w = -2)
+    }
+
+    /** A dial-pad key: a [circle] on `card` with the digit over its letters; `onLong` for long presses (0 → +). */
+    fun keypadKey(digit: String, letters: String, size: Float = 76f, onLong: (() -> Unit)? = null, onClick: () -> Unit): View {
+        val face = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(text(digit, TextSize.title, 500, c.text).apply { gravity = Gravity.CENTER; includeFontPadding = false })
+            addView(text(letters.ifEmpty { " " }, TextSize.caption2, TextWeight.caption, c.textSecondary).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.15f
+            })
+        }
+        return circle(face, size, c.card, onClick).apply {
+            if (onLong != null) setOnLongClickListener { onLong(); true }
+        }
+    }
+
+    /** Views spread evenly across the width, each centred in an equal share (a row of round buttons). */
+    fun spread(vararg views: View) = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL
+        for (v in views) addView(android.widget.FrameLayout(ctx).apply {
+            val own = v.layoutParams // keep a fixed size (a circle), but not a match-parent width
+            val w = if (own != null && own.width > 0) own.width else -2
+            val h = if (own != null && own.height > 0) own.height else -2
+            addView(v, android.widget.FrameLayout.LayoutParams(w, h, Gravity.CENTER))
+        }, lp(w = 0, weight = 1f))
+        layoutParams = lp()
+    }
 }

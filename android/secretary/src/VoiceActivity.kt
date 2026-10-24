@@ -10,9 +10,15 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.telecom.TelecomManager
+import android.view.Gravity
+import android.view.View
+import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
 import org.json.JSONObject
+import tech.getsecretary.design.LucinaTokens.LineHeight
+import tech.getsecretary.design.LucinaTokens.TextSize
+import tech.getsecretary.design.LucinaTokens.TextWeight
 
 /**
  * A voice conversation with Lucina over the internet: SpeechRecognizer -> Rust `voiceTurn`
@@ -22,7 +28,8 @@ class VoiceActivity : Ui(), RecognitionListener {
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
     private lateinit var status: TextView
-    private lateinit var dialogue: TextView
+    private lateinit var dialogue: LinearLayout
+    private lateinit var mic: View
 
     /** The journal record, once Rust has created it. */
     private var id: String? = null
@@ -31,15 +38,29 @@ class VoiceActivity : Ui(), RecognitionListener {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        screen("Call Lucina · Internet")
-        status = text("Starting…", 18)
-        dialogue = text("", 16)
-        button("Hang up") { hangup() }
-        text(
+        screen("Talk to Lucina")
+        body.addView(ui.chip("Internet call", ui.c.accent).apply { layoutParams = ui.lp(w = -2, bottom = 16f) })
+        dialogue = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ui.lp()
+        }
+        body.addView(dialogue)
+        body.addView(View(this).apply { layoutParams = ui.lp(h = 0, weight = 1f).apply { topMargin = ui.dp(24f) } })
+        status = ui.text("Starting…", TextSize.subheadline, TextWeight.subheadline, ui.c.textSecondary, LineHeight.subheadline).apply {
+            gravity = Gravity.CENTER
+            layoutParams = ui.lp(bottom = 20f)
+        }
+        body.addView(status)
+        mic = ui.circle(icon(Glyph.Kind.MIC, ui.c.onAccent, 40f), 96f, ui.c.accentFill) { listen() }.apply {
+            isEnabled = false // until the conversation starts (converse)
+            alpha = 0.4f
+        }
+        body.addView(ui.labeled(mic, "Listen").apply { layoutParams = ui.lp(w = -2).apply { gravity = Gravity.CENTER_HORIZONTAL } })
+        body.addView(ui.filledButton("Hang up", ui.c.negative) { hangup() }.apply { layoutParams = ui.lp(top = 24f) })
+        body.addView(ui.footnote(
             "This is a voice conversation with Lucina over your internet connection. Speech recognition uses the " +
                 "phone’s configured speech service. Your transcript appears in Calls afterwards. This does not record a SIM call.",
-            13,
-        )
+        ).apply { layoutParams = ui.lp(top = 16f) })
         if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_PHONE_STATE), REQUEST_MIC)
             return
@@ -111,7 +132,8 @@ class VoiceActivity : Ui(), RecognitionListener {
             }
             listen()
         }
-        button("Listen") { listen() }
+        mic.isEnabled = true
+        mic.alpha = 1f
     }
 
     private fun listen() {
@@ -126,7 +148,8 @@ class VoiceActivity : Ui(), RecognitionListener {
     }
 
     private fun line(role: String, text: String) {
-        dialogue.append((if (role == "user") "You: " else "Lucina: ") + text + "\n\n")
+        dialogue.addView(ui.bubble(text, mine = role == "user"))
+        scrollToEnd()
     }
 
     override fun onResults(b: Bundle?) {

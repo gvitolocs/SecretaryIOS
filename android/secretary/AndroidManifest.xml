@@ -12,7 +12,7 @@
         <intent><action android:name="android.speech.RecognitionService"/></intent>
     </queries>
     <application android:label="Secretary · Lucina" android:allowBackup="false" android:usesCleartextTraffic="false"
-        android:extractNativeLibs="false" android:theme="@android:style/Theme.Material.NoActionBar" android:icon="@drawable/lucina">
+        android:extractNativeLibs="false" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:icon="@drawable/lucina">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

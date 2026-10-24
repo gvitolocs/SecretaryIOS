@@ -66,7 +66,7 @@ echo "native: exports only the 5 JNI functions"
 "$java" -Xmx1g -cp "$compiler_cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
   -no-stdlib -no-reflect -no-jdk -jvm-target 1.8 -cp "$android:$stdlib" \
   -Xno-call-assertions -Xno-param-assertions -Xno-receiver-assertions \
-  -d "$out/classes" "$app"/src/*.kt
+  -d "$out/classes" "$app"/src/*.kt "$repo"/android/common/*.kt
 "$JAVA_HOME/bin/jar" cf "$out/classes.jar" -C "$out/classes" .
 
 # 3. Manifest + icon -> base APK, plus keep rules for the manifest components.

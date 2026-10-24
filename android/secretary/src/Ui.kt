@@ -1,53 +1,36 @@
 package tech.getsecretary.secretary
 
 import android.app.Activity
-import android.graphics.Color
-import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
+import tech.getsecretary.design.LucinaUi
 
-/** Screens built in code: a scrolling column of text and buttons, no resources. */
+/** Screens built in code in the Lucina look (android/common/LucinaUi.kt): a scrolling column, no resources. */
 open class Ui : Activity() {
+    lateinit var ui: LucinaUi
     lateinit var body: LinearLayout
 
+    /** A fresh page with the large bold `title`; fills [body]. */
     fun screen(title: String) {
-        val scroll = ScrollView(this)
-        scroll.setBackgroundColor(NAVY)
-        body = LinearLayout(this)
-        body.orientation = LinearLayout.VERTICAL
-        body.setPadding(28, 38, 28, 40)
-        scroll.addView(body)
-        setContentView(scroll)
-        text(title, 28).setTextColor(CYAN)
+        ui = LucinaUi(this)
+        body = ui.screen(this)
+        body.addView(ui.largeTitle(title))
     }
 
-    fun text(value: String, size: Int): TextView {
-        val t = TextView(this)
-        t.text = value
-        t.textSize = size.toFloat()
-        t.setTextColor(Color.rgb(224, 231, 245))
-        t.setPadding(0, 12, 0, 12)
-        body.addView(t)
-        return t
+    /** Scrolls the page to its end (after a new chat bubble). */
+    fun scrollToEnd() {
+        val scroll = body.parent as? ScrollView ?: return
+        scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
-    fun button(title: String, action: Runnable): Button {
-        val b = Button(this)
-        b.text = title
-        b.isAllCaps = false
-        body.addView(b)
-        b.setOnClickListener { action.run() }
-        return b
+    /** A [Glyph] icon of `size` dp. */
+    fun icon(kind: Glyph.Kind, color: Int, size: Float = 28f) = ImageView(this).apply {
+        setImageDrawable(Glyph(kind, color, ui.dp(size)))
     }
 
     fun notice(text: String?) {
         Toast.makeText(this, text ?: "", Toast.LENGTH_LONG).show()
-    }
-
-    companion object {
-        val NAVY = Color.rgb(10, 14, 32)
-        val CYAN = Color.rgb(80, 223, 255)
     }
 }

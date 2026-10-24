@@ -34,7 +34,7 @@ class LucinaCallService : InCallService() {
 
     override fun onCallAdded(call: Call) {
         super.onCallAdded(call)
-        calls.add(call)
+        Companion.calls.add(call) // not InCallService.getCalls(), which is read-only
         val peer = try {
             view(listOf(call)).getJSONArray("calls").getJSONObject(0).getString("peer")
         } catch (e: Exception) {
@@ -63,7 +63,7 @@ class LucinaCallService : InCallService() {
                 }
             }
         }
-        calls.remove(call)
+        Companion.calls.remove(call)
         super.onCallRemoved(call)
         changed()
     }
@@ -81,7 +81,7 @@ class LucinaCallService : InCallService() {
 
     private fun notifyCall() {
         val nm = getSystemService(NotificationManager::class.java)
-        val snapshot = ArrayList(calls)
+        val snapshot = ArrayList(Companion.calls)
         val n = try {
             view(snapshot).optJSONObject("notification")
         } catch (e: Exception) {

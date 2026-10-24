@@ -3,16 +3,15 @@ package tech.getsecretary.secretary
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
-import android.graphics.Color
 import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.LinearLayout
 import org.json.JSONObject
+import tech.getsecretary.design.LucinaUi
 
 /** Secretary in a WebView, confined to getsecretary.tech by Rust's router, plus the Calls screen. */
 class MainActivity : Activity() {
@@ -20,26 +19,27 @@ class MainActivity : Activity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setBackgroundColor(Color.rgb(10, 14, 32))
-        setContentView(root)
+        val ui = LucinaUi(this)
+        val root = ui.frame(this)
+        val header = LinearLayout(this)
+        header.orientation = LinearLayout.VERTICAL
+        header.setPadding(ui.dp(16f), 0, ui.dp(16f), ui.dp(12f))
+        root.addView(header)
+        header.addView(ui.largeTitle("Secretary").apply { layoutParams = ui.lp(top = 12f, bottom = 12f) })
         val nav = LinearLayout(this)
-        root.addView(nav)
-        for (name in arrayOf("Lucina", "My desk", "Calls")) {
-            val button = Button(this)
-            button.text = name
-            button.isAllCaps = false
-            nav.addView(button, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            button.setOnClickListener {
+        header.addView(nav)
+        for ((i, name) in arrayOf("Lucina", "My desk", "Calls").withIndex()) {
+            val button = ui.secondaryButton(name) {
                 when (name) {
                     "Calls" -> startActivity(Intent(this, CallsActivity::class.java))
                     "My desk" -> web.loadUrl(Calls.SITE + "/desk")
                     else -> web.loadUrl(Calls.SITE + "/")
                 }
             }
+            nav.addView(button, ui.lp(w = 0, weight = 1f).apply { if (i > 0) leftMargin = ui.dp(8f) })
         }
         web = WebView(this)
+        web.setBackgroundColor(ui.c.bg)
         root.addView(web, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         val s = web.settings
         s.javaScriptEnabled = true
