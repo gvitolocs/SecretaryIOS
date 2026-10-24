@@ -47,6 +47,9 @@ class MainActivity : Activity() {
         s.allowFileAccess = false
         s.allowContentAccess = false
         s.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        // The web shows Android-only cards (Phone) when it sees this; matched by /\bSecretaryAndroid\//.
+        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+        s.userAgentString = s.userAgentString + " SecretaryAndroid/" + version
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
         web.webViewClient = object : WebViewClient() {
@@ -54,7 +57,10 @@ class MainActivity : Activity() {
                 val uri = request.url
                 when (route(uri.toString())) {
                     "web" -> return false
-                    "calls" -> startActivity(Intent(this@MainActivity, CallsActivity::class.java).setData(uri))
+                    // tel: carries a number; secretary://calls (the web Phone card) opens the screen empty.
+                    "calls" -> startActivity(
+                        Intent(this@MainActivity, CallsActivity::class.java).apply { if (uri.scheme == "tel") data = uri }
+                    )
                     "external" -> try {
                         startActivity(Intent(Intent.ACTION_VIEW, uri))
                     } catch (e: ActivityNotFoundException) {

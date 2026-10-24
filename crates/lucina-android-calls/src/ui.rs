@@ -170,7 +170,8 @@ pub fn dtmf(digits: &str) -> Value {
 pub enum Route {
     /// `https://getsecretary.tech/…`: stay in the WebView.
     Web,
-    /// `tel:…`: open the Calls screen with that number.
+    /// `tel:…`: open the Calls screen with that number; `secretary://calls`
+    /// (the web Plugins grid's Phone card): open it empty.
     Calls,
     /// Any other `https` URL: hand it to the browser.
     External,
@@ -203,6 +204,14 @@ pub fn route(url: &str) -> Route {
     };
     if scheme.eq_ignore_ascii_case("tel") {
         return Route::Calls;
+    }
+    if scheme.eq_ignore_ascii_case("secretary") {
+        let target = rest.trim_end_matches('/');
+        return if target.eq_ignore_ascii_case("//calls") {
+            Route::Calls
+        } else {
+            Route::Block
+        };
     }
     if !scheme.eq_ignore_ascii_case("https") {
         return Route::Block;
@@ -388,6 +397,16 @@ mod tests {
         assert_eq!(route("https://getsecretary.tech:443"), Route::Web);
         assert_eq!(route("HTTPS://GetSecretary.tech/"), Route::Web);
         assert_eq!(route("tel:+4512345678"), Route::Calls);
+        assert_eq!(route("secretary://calls"), Route::Calls);
+        assert_eq!(route("Secretary://Calls/"), Route::Calls);
+        for url in [
+            "secretary://settings",
+            "secretary://calls/../x",
+            "secretary:calls",
+            "secretary://calls?n=1",
+        ] {
+            assert_eq!(route(url), Route::Block, "{url}");
+        }
         assert_eq!(
             route("https://example.com/getsecretary.tech"),
             Route::External
