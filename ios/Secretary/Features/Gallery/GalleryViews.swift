@@ -167,9 +167,12 @@ struct GalleryGrid: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 2)], spacing: 2) {
             ForEach(items) { item in
                 Button { open(item) } label: {
-                    GalleryThumb(item: item)
-                        .aspectRatio(1, contentMode: .fill)
+                    // A square cell whatever the picture's shape: the thumb fills it and is cropped.
+                    Color.clear
+                        .aspectRatio(1, contentMode: .fit)
+                        .overlay { GalleryThumb(item: item) }
                         .clipped()
+                        .contentShape(Rectangle())
                         .overlay(alignment: .bottomTrailing) {
                             if item.isVideo || item.isAudio {
                                 HStack(spacing: 3) {
