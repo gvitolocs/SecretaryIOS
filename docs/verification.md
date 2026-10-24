@@ -112,7 +112,8 @@ TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
 (`--deep`): 1 053 488. `InkSync_status`: 35 800 and `InkSync_highlights`: 17 556 (both with the liveness
 property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` (`--deep`, the Stateright I2
-bounds): 501 634, the same space as I2.
+bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
+1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
 
 ## Invariants, models and mapping
 
