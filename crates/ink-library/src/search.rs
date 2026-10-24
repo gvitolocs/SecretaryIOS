@@ -13,7 +13,8 @@ pub fn fold(s: &str) -> String {
 pub fn clean_title(s: &str) -> String {
     s.chars().filter(|c| !matches!(c, '\u{feff}' | '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{202a}'..='\u{202e}')).collect::<String>().trim().to_owned()
 }
-fn words(s: &str) -> String {
+/// Folded alphanumeric words joined by single spaces (the token form of `title_key`).
+pub fn words(s: &str) -> String {
     fold(s)
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })

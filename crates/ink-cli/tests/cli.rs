@@ -112,6 +112,7 @@ fn command_help_explains_subcommands_and_flags() {
         "Scan books and clippings",
         "Scan a Kindle and send",
         "Import a previously saved",
+        "Index an Obsidian vault read-only",
     ] {
         assert!(text.contains(phrase), "{text}");
     }
@@ -131,4 +132,172 @@ fn command_help_explains_subcommands_and_flags() {
             assert!(text.contains(phrase), "{text}");
         }
     }
+}
+
+/// Accept one HTTP request on loopback, answer `body`, and return the raw request.
+fn one_request(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut b = [0; 4096];
+        loop {
+            let n = stream.read(&mut b).unwrap();
+            assert!(n > 0);
+            bytes.extend_from_slice(&b[..n]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                let length: usize = headers
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length: "))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                if bytes.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(reply.as_bytes()).unwrap();
+        String::from_utf8(bytes).unwrap()
+    });
+    (url, server)
+}
+fn synthetic_vault() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    fs::create_dir_all(vault.join("Reading")).unwrap();
+    fs::create_dir_all(vault.join("Private")).unwrap();
+    fs::write(
+        vault.join("Reading/Gatsby.md"),
+        "---\ntitle: The Great Gatsby\nauthor: F. Scott Fitzgerald\n---\nSynthetic body text.\n",
+    )
+    .unwrap();
+    fs::write(
+        vault.join("Private/Secret.md"),
+        "The Great Gatsby, privately.",
+    )
+    .unwrap();
+    let lib = dir.path().join("library.json");
+    fs::write(
+        &lib,
+        json!({"books":[{"id":"bk_0000000000000001","title":"The Great Gatsby","authors":["F. Scott Fitzgerald"],"status":"unknown"}]}).to_string(),
+    )
+    .unwrap();
+    (dir, vault, lib)
+}
+fn snapshot(dir: &std::path::Path) -> Vec<(std::path::PathBuf, std::time::SystemTime, Vec<u8>)> {
+    let mut out = Vec::new();
+    for e in fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            out.extend(snapshot(&p));
+        } else {
+            out.push((
+                p.clone(),
+                fs::metadata(&p).unwrap().modified().unwrap(),
+                fs::read(&p).unwrap(),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+#[test]
+fn obsidian_index_is_read_only_and_private_by_default() {
+    let (dir, vault, lib) = synthetic_vault();
+    let before = snapshot(&vault);
+    let run = |extra: &[&str]| {
+        cli()
+            .args([
+                "obsidian-index",
+                vault.to_str().unwrap(),
+                "--library",
+                lib.to_str().unwrap(),
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let out = run(&["--json"]);
+    assert!(out.status.success(), "{out:?}");
+    let batch: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(batch["vault"], "vault");
+    assert_eq!(batch["refs"].as_array().unwrap().len(), 1, "{batch}");
+    assert_eq!(batch["refs"][0]["notePath"], "Reading/Gatsby.md");
+    assert_eq!(batch["refs"][0]["how"], "frontmatter");
+    let out = run(&["--summary"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("Refs: 1 in 1 notes for 1 books"), "{text}");
+    assert!(text.contains("Excluded: 1 folders"), "{text}");
+    assert!(
+        !text.contains("Gatsby") && !text.contains("Reading/"),
+        "{text}"
+    );
+    let state = dir.path().join("state.json");
+    for read in ["read 1", "read 0"] {
+        let out = run(&["--summary", "--state", state.to_str().unwrap()]);
+        assert!(String::from_utf8(out.stdout).unwrap().contains(read));
+    }
+    let inside = vault.join("state.json");
+    assert!(!run(&["--state", inside.to_str().unwrap()]).status.success());
+    assert!(!inside.exists());
+    let out = run(&["--no-default-excludes", "--json"]);
+    let batch: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(batch["refs"].as_array().unwrap().len(), 2);
+    assert_eq!(snapshot(&vault), before);
+}
+#[test]
+fn obsidian_index_posts_refs_with_file_token() {
+    let (dir, vault, lib) = synthetic_vault();
+    let token = dir.path().join("token");
+    fs::write(&token, "secret-test-token\n").unwrap();
+    let (url, server) = one_request("{\"refsStored\":1}");
+    let out = cli()
+        .args([
+            "obsidian-index",
+            vault.to_str().unwrap(),
+            "--library",
+            lib.to_str().unwrap(),
+            "--vault-name",
+            "Notes",
+            "--summary",
+            "--server",
+            &url,
+            "--token-file",
+            token.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let request = server.join().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(request.starts_with("POST /v1/library/notes-index "));
+    assert!(request
+        .to_lowercase()
+        .contains("authorization: bearer secret-test-token"));
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["vault"], "Notes");
+    assert_eq!(body["refs"][0]["bookId"], "bk_0000000000000001");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("refsStored"));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("secret-test-token"));
+    let bad = cli()
+        .args([
+            "obsidian-index",
+            vault.to_str().unwrap(),
+            "--library",
+            lib.to_str().unwrap(),
+            "--server",
+            &url,
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
 }

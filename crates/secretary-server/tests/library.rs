@@ -450,3 +450,153 @@ async fn dictionaries_import_but_default_lists_and_book_stats_exclude_them() {
     let (_, outcome) = h.call(Method::POST, "/v1/library/import", Some(b)).await;
     assert_eq!(outcome["booksUnchanged"], 3);
 }
+#[tokio::test]
+async fn obsidian_notes_index_replaces_per_vault_idempotently() {
+    let mut h = H::new().await;
+    let (id, _) = h.import().await;
+    let notes = format!("/v1/library/books/{id}/notes");
+    let book = format!("/v1/library/books/{id}");
+    let (status, empty) = h.call(Method::GET, &notes, None).await;
+    assert_eq!(status, 200, "{empty}");
+    assert_eq!(empty["notes"], json!([]));
+    assert_eq!(empty["indexedVaults"], json!([]));
+    let r = |path: &str, how: &str, line: u32| json!({"bookId":id,"notePath":path,"noteTitle":"Synthetic","how":how,"excerpt":"about Café Book","line":line});
+    let mut body = json!({"vault":"Vault","generatedAt":"2026-10-24T10:00:00Z","refs":[
+        r("Reading/Cafe.md","frontmatter",2), r("Ideas/Talk.md","mention",7), r("Reading/Cafe.md","mention",9),
+        {"bookId":"bk_ffffffffffffffff","notePath":"x.md","noteTitle":"x","how":"wikilink","excerpt":"","line":1}]});
+    let (status, o) = h
+        .call(Method::POST, "/v1/library/notes-index", Some(body.clone()))
+        .await;
+    assert_eq!(status, 200, "{o}");
+    assert_eq!(
+        (
+            o["refsStored"].clone(),
+            o["booksLinked"].clone(),
+            o["unknownBooks"].clone(),
+            o["changed"].clone()
+        ),
+        (json!(3), json!(1), json!(1), json!(true))
+    );
+    let (_, got) = h.call(Method::GET, &notes, None).await;
+    assert_eq!(got["total"], 3);
+    assert_eq!(got["notes"][0]["vault"], "Vault");
+    assert_eq!(got["notes"][0]["line"], 7);
+    assert_eq!(got["indexedVaults"][0]["refs"], 3);
+    let (_, b1) = h.call(Method::GET, &book, None).await;
+    let related = &b1["book"]["relatedNotes"];
+    assert_eq!(related.as_array().unwrap().len(), 2, "{related}");
+    assert_eq!(related[0]["path"], "Ideas/Talk.md");
+    assert_eq!(related[0]["how"], "mention");
+    assert_eq!(related[1]["path"], "Reading/Cafe.md");
+    assert_eq!(related[1]["how"], "frontmatter");
+    assert_eq!(related[1]["linkedAt"], "2026-10-24T10:00:00Z");
+    // A later index with the same references changes nothing about the book.
+    body["generatedAt"] = json!("2026-10-25T10:00:00Z");
+    let (_, o) = h
+        .call(Method::POST, "/v1/library/notes-index", Some(body.clone()))
+        .await;
+    assert_eq!(o["changed"], false);
+    let (_, b2) = h.call(Method::GET, &book, None).await;
+    assert_eq!(b2["book"], b1["book"]);
+    // Vaults are independent; an empty index clears only its own vault.
+    let work = json!({"vault":"Work notes","generatedAt":"2026-10-25T10:00:00Z","refs":[r("Work/Note.md","wikilink",3)]});
+    assert_eq!(
+        h.call(Method::POST, "/v1/library/notes-index", Some(work))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(h.call(Method::GET, &notes, None).await.1["total"], 4);
+    let clear = json!({"vault":"Vault","generatedAt":"2026-10-26T10:00:00Z","refs":[]});
+    let (_, o) = h
+        .call(Method::POST, "/v1/library/notes-index", Some(clear))
+        .await;
+    assert_eq!(o["booksUpdated"], 1);
+    let (_, after) = h.call(Method::GET, &notes, None).await;
+    assert_eq!(after["total"], 1);
+    assert_eq!(after["notes"][0]["vault"], "Work notes");
+    assert_eq!(after["indexedVaults"].as_array().unwrap().len(), 2);
+    let (_, b3) = h.call(Method::GET, &book, None).await;
+    assert_eq!(b3["book"]["relatedNotes"].as_array().unwrap().len(), 1);
+    for (field, value) in [
+        ("notePath", json!("../x.md")),
+        ("notePath", json!("x.txt")),
+        ("notePath", json!("/abs.md")),
+        ("how", json!("bogus")),
+        ("excerpt", json!("x".repeat(241))),
+        ("line", json!(0)),
+        ("bookId", json!("bk_x")),
+        ("noteTitle", json!("")),
+    ] {
+        let mut bad = r("a.md", "mention", 1);
+        bad[field] = value;
+        let body = json!({"vault":"Vault","generatedAt":"2026-10-24T10:00:00Z","refs":[bad]});
+        assert_eq!(
+            h.call(Method::POST, "/v1/library/notes-index", Some(body))
+                .await
+                .0,
+            400,
+            "{field}"
+        );
+    }
+    for (field, value) in [
+        ("vault", json!("../v")),
+        ("vault", json!("")),
+        ("generatedAt", json!("yesterday")),
+    ] {
+        let mut body = json!({"vault":"Vault","generatedAt":"2026-10-24T10:00:00Z","refs":[]});
+        body[field] = value;
+        assert_eq!(
+            h.call(Method::POST, "/v1/library/notes-index", Some(body))
+                .await
+                .0,
+            400,
+            "{field}"
+        );
+    }
+    assert_eq!(
+        h.call(
+            Method::GET,
+            "/v1/library/books/bk_ffffffffffffffff/notes",
+            None
+        )
+        .await
+        .0,
+        404
+    );
+    let r = h
+        .http
+        .post(format!("{}/v1/library/notes-index", h.base))
+        .json(&json!({"vault":"Vault","generatedAt":"2026-10-24T10:00:00Z","refs":[]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    let (_, sync) = h.call(Method::GET, "/v1/library/sync", None).await;
+    assert!(sync["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l["source"] == "obsidian"));
+    assert!(!sync.to_string().contains("Reading/Cafe.md"));
+    let _ = h.stop.take().unwrap().send(());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let (base, stop) = start(&h.cfg).await;
+    h.base = base;
+    h.stop = Some(stop);
+    assert_eq!(h.call(Method::GET, &notes, None).await.1, after);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [
+            format!("library/notes/{id}.json"),
+            "library/notes-index.json".into(),
+        ] {
+            let mode = std::fs::metadata(h.cfg.data_dir.join(p))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+}

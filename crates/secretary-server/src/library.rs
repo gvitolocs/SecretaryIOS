@@ -1,6 +1,8 @@
 //! Library: authenticated, local JSON records backed by ink-library's pure merge.
-//! Kindle imports never delete data or infer reading time. Writes are serialized,
-//! atomic (0600), and recoverable through a write-ahead snapshot. Logs omit content.
+//! Kindle imports never delete data or infer reading time. Obsidian note indexes
+//! store references per book and vault; a mention is never reading evidence.
+//! Writes are serialized, atomic (0600), and recoverable through a write-ahead
+//! snapshot. Logs omit content.
 use crate::{
     devices::{ensure_dir, save_json_atomic},
     error::{ApiError, JsonBody, QueryArgs},
@@ -19,9 +21,11 @@ use ink_library::{
     model::*,
     search,
 };
+use ink_obsidian::{books::How, NotesIndexBatch};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -37,6 +41,8 @@ pub const MAX_QUERY_CHARS: usize = 200;
 pub const MAX_TITLE_CHARS: usize = 1000;
 pub const MAX_LOG_READ_BYTES: u64 = 1024 * 1024;
 pub const MAX_BRIEF_HIGHLIGHTS: usize = 10;
+pub const MAX_NOTE_REFS: usize = 200_000;
+pub const MAX_EXCERPT_CHARS: usize = 240;
 fn bad(s: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "bad_request", s)
 }
@@ -67,6 +73,156 @@ fn safe_relative(s: &str) -> bool {
         && Path::new(s)
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+/// Vault names appear in citations: 1-64 ASCII letters, digits, ' ', '.', '_', '-'.
+pub fn valid_vault(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.len() <= 64
+        && !s.ends_with(' ')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'))
+}
+fn validate_notes(batch: &NotesIndexBatch) -> Result<(), ApiError> {
+    if !valid_vault(&batch.vault)
+        || chrono::DateTime::parse_from_rfc3339(&batch.generated_at).is_err()
+        || batch.refs.len() > MAX_NOTE_REFS
+    {
+        return Err(bad("invalid vault name, generatedAt or reference count"));
+    }
+    for r in &batch.refs {
+        if !valid_id(&r.book_id)
+            || !safe_relative(&r.note_path)
+            || !ink_obsidian::walk::is_markdown(&r.note_path)
+            || r.note_title.trim().is_empty()
+            || !text(&r.note_title, MAX_TITLE_CHARS)
+            || r.excerpt.chars().count() > MAX_EXCERPT_CHARS
+            || !text(&r.excerpt, 4 * MAX_EXCERPT_CHARS)
+            || r.line == 0
+        {
+            return Err(bad("invalid note reference"));
+        }
+    }
+    Ok(())
+}
+const HOW_ORDER: [How; 5] = [
+    How::Frontmatter,
+    How::Isbn,
+    How::Asin,
+    How::Wikilink,
+    How::Mention,
+];
+fn how_rank(how: &str) -> usize {
+    HOW_ORDER
+        .iter()
+        .position(|h| h.as_str() == how)
+        .unwrap_or(HOW_ORDER.len())
+}
+/// One `relatedNotes` entry per (vault, note), with its strongest kind. An
+/// existing entry keeps its `linkedAt`, so re-indexing is idempotent.
+fn related_notes(old: &[NoteRef], links: &[NoteLink], at: &str) -> Vec<NoteRef> {
+    let mut best: BTreeMap<(&str, &str), &NoteLink> = BTreeMap::new();
+    for l in links {
+        let e = best.entry((&l.vault, &l.note_path)).or_insert(l);
+        if how_rank(&l.how) < how_rank(&e.how) {
+            *e = l;
+        }
+    }
+    best.into_values()
+        .map(|l| NoteRef {
+            vault: l.vault.clone(),
+            path: l.note_path.clone(),
+            title: l.note_title.clone(),
+            linked_at: old
+                .iter()
+                .find(|o| o.vault == l.vault && o.path == l.note_path)
+                .map(|o| o.linked_at.clone())
+                .unwrap_or_else(|| at.to_owned()),
+            how: l.how.clone(),
+        })
+        .collect()
+}
+/// Replace one vault's note references. Unknown book ids are counted, not stored.
+fn apply_notes_index(
+    s: &LibraryState,
+    batch: &NotesIndexBatch,
+    now: &str,
+) -> (LibraryState, Value) {
+    let mut next = s.clone();
+    let vault = &batch.vault;
+    let mut fresh: BTreeMap<String, Vec<NoteLink>> = BTreeMap::new();
+    let mut unknown = BTreeSet::new();
+    for r in &batch.refs {
+        if !next.books.contains_key(&r.book_id) {
+            unknown.insert(r.book_id.clone());
+            continue;
+        }
+        fresh.entry(r.book_id.clone()).or_default().push(NoteLink {
+            vault: vault.clone(),
+            book_id: r.book_id.clone(),
+            note_path: r.note_path.clone(),
+            note_title: r.note_title.clone(),
+            how: r.how.as_str().into(),
+            excerpt: r.excerpt.clone(),
+            line: r.line,
+        });
+    }
+    let linked = fresh.len();
+    let stored: usize = fresh.values().map(Vec::len).sum();
+    let ids: BTreeSet<String> = next
+        .note_links
+        .keys()
+        .chain(fresh.keys())
+        .cloned()
+        .collect();
+    let mut updated = 0;
+    for id in ids {
+        let mut links: Vec<NoteLink> = next
+            .note_links
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .filter(|l| l.vault != *vault)
+            .cloned()
+            .collect();
+        links.extend(fresh.remove(&id).unwrap_or_default());
+        links.sort_by(|a, b| {
+            (&a.vault, &a.note_path, how_rank(&a.how), a.line, &a.excerpt).cmp(&(
+                &b.vault,
+                &b.note_path,
+                how_rank(&b.how),
+                b.line,
+                &b.excerpt,
+            ))
+        });
+        links.dedup();
+        if let Some(b) = next.books.get_mut(&id) {
+            let related = related_notes(&b.related_notes, &links, &batch.generated_at);
+            if related != b.related_notes {
+                b.related_notes = related;
+                b.updated_at = now.into();
+                updated += 1;
+            }
+        }
+        if links.is_empty() {
+            next.note_links.remove(&id);
+        } else {
+            next.note_links.insert(id, links);
+        }
+    }
+    let changed = next.note_links != s.note_links || updated > 0;
+    next.note_indexes.insert(
+        vault.clone(),
+        NotesIndexInfo {
+            vault: vault.clone(),
+            generated_at: batch.generated_at.clone(),
+            indexed_at: now.into(),
+            refs: stored,
+            books: linked,
+        },
+    );
+    let outcome = json!({"vault":vault,"refsStored":stored,"booksLinked":linked,
+        "booksUpdated":updated,"unknownBooks":unknown.len(),"changed":changed});
+    (next, outcome)
 }
 fn validate(batch: &ImportBatch) -> Result<(), ApiError> {
     if !crate::notes::valid_source(&batch.source)
@@ -149,6 +305,23 @@ impl LibraryStore {
             &json!({"sessions":state.sessions,"changes":state.changes}),
         )
         .map_err(io_err)?;
+        let notes = self.dir.join("notes");
+        if !state.note_links.is_empty() || notes.exists() {
+            ensure_dir(&notes).map_err(io_err)?;
+            for id in state.books.keys() {
+                let name = format!("{id}.json");
+                match state.note_links.get(id) {
+                    Some(links) => save_json_atomic(&notes, &name, links).map_err(io_err)?,
+                    None if notes.join(&name).exists() => {
+                        fs::remove_file(notes.join(&name)).map_err(io_err)?
+                    }
+                    None => {}
+                }
+            }
+        }
+        if !state.note_indexes.is_empty() || self.dir.join("notes-index.json").exists() {
+            save_json_atomic(&self.dir, "notes-index.json", &state.note_indexes).map_err(io_err)?;
+        }
         Ok(())
     }
     fn load(&self) -> Result<LibraryState, ApiError> {
@@ -173,6 +346,11 @@ impl LibraryStore {
                 .map_err(|_| ApiError::internal("invalid library activity"))?;
             s.sessions = a.sessions;
             s.changes = a.changes;
+        }
+        let indexes = self.dir.join("notes-index.json");
+        if indexes.exists() {
+            s.note_indexes = serde_json::from_reader(fs::File::open(indexes).map_err(io_err)?)
+                .map_err(|_| ApiError::internal("invalid library notes index"))?;
         }
         let dir = self.dir.join("books");
         if !dir.exists() {
@@ -201,6 +379,12 @@ impl LibraryStore {
                 let h = serde_json::from_reader(fs::File::open(hp).map_err(io_err)?)
                     .map_err(|_| ApiError::internal("invalid library highlights"))?;
                 s.highlights.insert(id.into(), h);
+            }
+            let np = self.dir.join("notes").join(format!("{id}.json"));
+            if np.exists() {
+                let n = serde_json::from_reader(fs::File::open(np).map_err(io_err)?)
+                    .map_err(|_| ApiError::internal("invalid library note links"))?;
+                s.note_links.insert(id.into(), n);
             }
         }
         Ok(s)
@@ -253,6 +437,34 @@ impl LibraryStore {
             lines.drain(..lines.len() - 20);
         }
         Ok(lines)
+    }
+    fn append_log(&self, line: &Value) -> Result<(), ApiError> {
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut f = options
+            .open(self.dir.join("imports.jsonl"))
+            .map_err(io_err)?;
+        writeln!(f, "{line}").map_err(io_err)?;
+        f.sync_all().map_err(io_err)
+    }
+    fn index_notes(&self, batch: NotesIndexBatch, caller: &str) -> Result<Value, ApiError> {
+        validate_notes(&batch)?;
+        self.with(|st, s| {
+            let (next, outcome) = apply_notes_index(s, &batch, &timestamp());
+            st.persist(&next)?;
+            *s = next;
+            st.append_log(
+                &json!({"time":timestamp(),"caller":caller,"source":"obsidian",
+                "refsStored":outcome["refsStored"],"booksLinked":outcome["booksLinked"],
+                "booksUpdated":outcome["booksUpdated"],"unknownBooks":outcome["unknownBooks"]}),
+            )?;
+            Ok(outcome)
+        })
     }
     fn import(&self, batch: ImportBatch, caller: &str) -> Result<ImportOutcome, ApiError> {
         validate(&batch)?;
@@ -454,7 +666,12 @@ async fn read(
                     let id = parts.get(1).copied().unwrap_or("");
                     let b = book(s, id)?;
                     let hs = s.highlights.get(id).cloned().unwrap_or_default();
-                    if parts.get(2) == Some(&"highlights") {
+                    if parts.get(2) == Some(&"notes") {
+                        let all = s.note_links.get(id).map(Vec::as_slice).unwrap_or(&[]);
+                        Ok(json!({"bookId":id,"total":all.len(),
+                            "notes":all.iter().take(limit).collect::<Vec<_>>(),
+                            "indexedVaults":s.note_indexes.values().collect::<Vec<_>>()}))
+                    } else if parts.get(2) == Some(&"highlights") {
                         let highlights: Vec<_> = hs
                             .into_iter()
                             .filter(|h| {
@@ -484,6 +701,16 @@ async fn import_batch(
     let store = st.library.clone();
     let result = blocking(move || store.import(batch, caller.0)).await?;
     tracing::info!(by = caller.0, "library import");
+    Ok(result)
+}
+async fn notes_index(
+    State(st): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    JsonBody(batch): JsonBody<NotesIndexBatch>,
+) -> Result<Json<Value>, ApiError> {
+    let store = st.library.clone();
+    let result = blocking(move || store.index_notes(batch, caller.0)).await?;
+    tracing::info!(by = caller.0, "library notes index");
     Ok(result)
 }
 async fn patch(
@@ -610,6 +837,8 @@ pub fn routes(st: AppState) -> Router<AppState> {
         .route("/v1/library/books/{id}", get(read).patch(patch))
         .route("/v1/library/books/{id}/highlights", get(read))
         .route("/v1/library/books/{id}/brief", post(brief))
+        .route("/v1/library/books/{id}/notes", get(read))
+        .route("/v1/library/notes-index", post(notes_index))
         .route("/v1/library/search", get(read))
         .route("/v1/library/recent", get(read))
         .route("/v1/library/stats", get(read))

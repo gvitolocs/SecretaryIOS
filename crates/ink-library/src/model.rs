@@ -76,6 +76,30 @@ pub struct NoteRef {
     pub linked_at: String,
     pub how: String,
 }
+/// A stored reference from an external note (Obsidian) to a book. It is a
+/// relation found in the owner's notes, never evidence of reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteLink {
+    pub vault: String,
+    pub book_id: String,
+    pub note_path: String,
+    pub note_title: String,
+    /// `frontmatter`, `wikilink`, `mention`, `isbn` or `asin`.
+    pub how: String,
+    pub excerpt: String,
+    pub line: u32,
+}
+/// The last accepted notes index of one vault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesIndexInfo {
+    pub vault: String,
+    pub generated_at: String,
+    pub indexed_at: String,
+    pub refs: usize,
+    pub books: usize,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryRef {
@@ -197,6 +221,11 @@ pub struct LibraryState {
     pub sessions: Vec<ReadingSession>,
     #[serde(default)]
     pub changes: Vec<ReadingChange>,
+    /// Note references per book id, replaced per vault by each notes index.
+    #[serde(default)]
+    pub note_links: BTreeMap<String, Vec<NoteLink>>,
+    #[serde(default)]
+    pub note_indexes: BTreeMap<String, NotesIndexInfo>,
 }
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
