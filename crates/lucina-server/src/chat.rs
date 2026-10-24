@@ -33,6 +33,7 @@ use crate::planner::TurnInput;
 use crate::prompts::Prompts;
 use crate::{jobs, AppState, PlannerMode};
 
+pub mod media_turn;
 pub mod meshy_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
@@ -780,6 +781,11 @@ async fn json_turn(
             Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
             None => {}
         }
+    }
+
+    // The photo library: "fammi vedere le foto di Copenaghen" (a short tool loop, like Meshy).
+    if let Some(f) = media_turn::try_turn(t, memory).await {
+        return f;
     }
 
     // The deterministic grocery path (same as a Telegram text turn).
