@@ -4,29 +4,6 @@ import SwiftUI
 // Upcoming), round priority checkboxes, date chips with the repeat icon, swipe to complete or
 // reschedule, and quick add in Todoist's syntax (it/en/da). Synced with Todoist by the server.
 
-/// Tasks open from a button next to the chat title (like Notes: the tab bar has five tabs).
-private struct TasksEntry: ViewModifier {
-    @Environment(AppModel.self) private var app
-
-    func body(content: Content) -> some View {
-        @Bindable var app = app
-        content
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { app.showTasks = true } label: { Image(systemName: "checkmark.circle") }
-                        .accessibilityLabel("Tasks")
-                        .accessibilityIdentifier("tasksButton")
-                }
-            }
-            .navigationDestination(isPresented: $app.showTasks) { TasksView() }
-    }
-}
-
-extension View {
-    /// The Tasks button and screen, on the chat.
-    func tasksEntry() -> some View { modifier(TasksEntry()) }
-}
-
 enum TaskColors {
     static func priority(_ p: Int) -> Color {
         switch p {
