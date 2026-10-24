@@ -26,6 +26,11 @@ pub struct EmbeddedSub {
     pub title: Option<String>,
     pub text: bool,
     pub forced: bool,
+    /// Canvas of an image track (DVD 720x576, Blu-ray 1920x1080).
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
 }
 
 /// Text subtitle codecs ffmpeg converts to WebVTT. Bitmap ones (dvd_subtitle,
@@ -134,6 +139,8 @@ pub fn parse(json: &Value, path: &Path) -> Info {
                 lang: s(&st["tags"]["language"]).filter(|l| l != "und"),
                 title: s(&st["tags"]["title"]),
                 forced: st["disposition"]["forced"].as_i64() == Some(1),
+                width: st["width"].as_u64().filter(|w| *w > 0).map(|w| w as u32),
+                height: st["height"].as_u64().filter(|h| *h > 0).map(|h| h as u32),
             }
         })
         .collect();
