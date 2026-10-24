@@ -46,12 +46,11 @@ The upload protocol's decisions (chunk offsets, finish once, dedupe or version) 
 ## Clients
 
 - **iPhone** (`ios/Secretary/Features/Gallery`):
-  - The Gallery tab shows a timeline by month, search, albums, and a viewer that hands videos and audio to the media player.
+  - The Gallery (a plugin: the Plugins tab's card opens `GalleryScreen` via `app.showGallery`; until that tab exists, a button on the chat) shows a timeline by month, search, albums, and a viewer that hands videos and audio to the media player.
   - Photo backup (`PhotoBackup.swift`) reads PhotoKit newest first.
     - It sends originals (edited renderings as new versions, both halves of Live Photos) and a JPEG preview, because the server cannot decode HEIC.
     - Transfers go through a background URLSession. A BGProcessingTask and the app-refresh task continue the work.
     - Rules: Wi-Fi only, while charging, include videos. It never deletes on the phone.
-  - Settings moved from the tab bar to a gear button.
 - **Lucina** (`lucina-tools` `media` tool, `lucina-server` `chat/media_turn.rs`):
   - Requests about photos, videos or albums run a short tool loop.
   - Results go to "Lucina's picks", and the reply gets a "Show in Gallery" route button (`/gallery/album/<id>`).
