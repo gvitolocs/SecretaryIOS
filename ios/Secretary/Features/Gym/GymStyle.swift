@@ -1,30 +1,26 @@
 import SwiftUI
 
-// The original LucinaGym look (LucinaGym/Components.swift), used only inside the Gym tab.
-// The Gym tab renders in light mode, as the original did.
+// The Gym tab's names for the shared Lucina look (Theme, design/tokens.json). The tab used
+// to keep the original LucinaGym palette (cream, forest, lime) in light mode; it now matches
+// the Weight, Settings and Chat tabs.
 
 enum GymPalette {
-    /// #F5F4EE
-    static let background = Color(red: 0.96, green: 0.955, blue: 0.935)
-    /// #214D3D
-    static let forest = Color(red: 0.13, green: 0.30, blue: 0.24)
-    /// #1F2621
-    static let ink = Color(red: 0.12, green: 0.15, blue: 0.13)
-    /// #737A70
-    static let muted = Color(red: 0.45, green: 0.48, blue: 0.44)
-    /// #D4ED91
-    static let lime = Color(red: 0.83, green: 0.93, blue: 0.57)
+    static let background = Theme.page
+    /// Tints and icons (periwinkle).
+    static let forest = Theme.accent
+    /// Filled surfaces under white text (the primary button, the workout in progress).
+    static let forestFill = Theme.accentFill
+    static let ink = Theme.text
+    static let muted = Theme.textSecondary
+    /// Highlights on a filled accent surface.
+    static let lime = Theme.onAccent
 }
 
 struct GymCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) { content }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-            .background(.white, in: RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(GymPalette.ink.opacity(0.04)))
+        Card(spacing: 16) { content }
     }
 }
 
@@ -38,8 +34,8 @@ struct GymEyebrow: View {
     var body: some View {
         Text(text)
             .textCase(.uppercase)
-            .font(.system(size: 10, weight: .bold, design: .rounded))
-            .tracking(2)
+            .font(LucinaTokens.Fonts.caption2.weight(.semibold))
+            .tracking(1.2)
             .foregroundStyle(GymPalette.muted)
     }
 }
@@ -51,7 +47,7 @@ struct GymMetric: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(verbatim: value)
-                .font(.system(size: 23, weight: .semibold, design: .rounded))
+                .font(LucinaTokens.Fonts.title2.monospacedDigit())
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
             GymEyebrow(text: label)
@@ -74,8 +70,8 @@ struct GymPrimaryButton: View {
                 .padding(.vertical, 15)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        .background(GymPalette.forest, in: RoundedRectangle(cornerRadius: 16))
+        .foregroundStyle(Theme.onAccent)
+        .background(GymPalette.forestFill, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.button, style: .continuous))
     }
 }
 
@@ -87,7 +83,7 @@ struct GymEmptyCard: View {
     var body: some View {
         GymCard {
             Image(systemName: icon).font(.title).foregroundStyle(GymPalette.forest).accessibilityHidden(true)
-            Text(title).font(.title3.bold())
+            Text(title).font(LucinaTokens.Fonts.title3)
             Text(detail).font(.subheadline).foregroundStyle(GymPalette.muted)
         }
         .accessibilityElement(children: .combine)
@@ -95,15 +91,14 @@ struct GymEmptyCard: View {
 }
 
 extension View {
-    /// The Gym tab's environment: light mode, ink text, forest tint (as the original app root).
+    /// The Gym tab's environment: the shared text colour and accent tint (light and dark).
     func gymStyle() -> some View {
-        environment(\.colorScheme, .light)
-            .foregroundStyle(GymPalette.ink)
+        foregroundStyle(GymPalette.ink)
             .tint(GymPalette.forest)
     }
 
-    /// The original's rounded, monospaced-digit field font.
+    /// Monospaced digits in set fields.
     func gymFieldFont() -> some View {
-        font(.system(.body, design: .rounded).monospacedDigit())
+        font(.body.monospacedDigit())
     }
 }

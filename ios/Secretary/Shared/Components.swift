@@ -1,16 +1,30 @@
 import SwiftUI
 
-/// One accent (indigo #4A5BB5 from the Lucina icon, #7F8FE0 in dark mode) on
-/// system materials and grouped backgrounds, so light and dark mode come for free.
+/// The Lucina look (the Weight, Settings and Chat tabs), from the design tokens in
+/// design/tokens.json (generated into LucinaTokens.swift). Screens use these names and the
+/// components here and in DesignSystem.swift, never their own colours or corner radii.
 enum Theme {
-    static let accent = Color.accentColor
+    typealias Tokens = LucinaTokens
+    /// Periwinkle #7F8FE0 (dark) / indigo #4A5BB5 (light), from the Lucina icon.
+    static let accent = Tokens.Colors.accent
     /// Filled surfaces that carry white text (buttons, the user's bubbles): #4A5BB5 in
     /// both modes (6.1:1 under white), because #7F8FE0 is only 3:1 under white text.
-    static let accentFill = Color("AccentFill")
-    static let page = Color(uiColor: .systemGroupedBackground)
-    static let card = Color(uiColor: .secondarySystemGroupedBackground)
-    static let field = Color(uiColor: .tertiarySystemFill)
-    static let cornerRadius: CGFloat = 18
+    static let accentFill = Tokens.Colors.accentFill
+    static let accentSoft = Tokens.Colors.accentSoft
+    static let onAccent = Tokens.Colors.onAccent
+    static let page = Tokens.Colors.bg
+    static let card = Tokens.Colors.card
+    static let cardRaised = Tokens.Colors.cardRaised
+    static let field = Tokens.Colors.field
+    static let separator = Tokens.Colors.separator
+    static let text = Tokens.Colors.text
+    static let textSecondary = Tokens.Colors.textSecondary
+    static let textTertiary = Tokens.Colors.textTertiary
+    static let positive = Tokens.Colors.positive
+    static let negative = Tokens.Colors.negative
+    static let warning = Tokens.Colors.warning
+    static let info = Tokens.Colors.info
+    static let cornerRadius = Tokens.Radius.card
 }
 
 struct Card<Content: View>: View {
@@ -20,7 +34,7 @@ struct Card<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
+            .padding(LucinaTokens.Space.cardPadding)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
     }
 }
@@ -80,7 +94,7 @@ struct PrimaryButton: View {
             .padding(.vertical, 14)
         }
         .buttonStyle(.borderedProminent)
-        .buttonBorderShape(.roundedRectangle(radius: 14))
+        .buttonBorderShape(.roundedRectangle(radius: LucinaTokens.Radius.button))
         .tint(Theme.accentFill)
         .disabled(isBusy)
     }
@@ -113,7 +127,7 @@ struct ErrorBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: systemImage)
-                .foregroundStyle(.orange)
+                .foregroundStyle(Theme.warning)
                 .accessibilityHidden(true)
             Text(message)
                 .font(.subheadline)
@@ -130,7 +144,7 @@ struct ErrorBanner: View {
             }
         }
         .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("errorBanner")
     }

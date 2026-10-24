@@ -87,7 +87,7 @@ struct NotesView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .lucinaList()
         .searchable(text: $store.query, prompt: Text("Search notes"))
         .refreshable { await store.refresh() }
         .navigationTitle("Notes")

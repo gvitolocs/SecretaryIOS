@@ -721,7 +721,7 @@ struct WardrobeView: View {
         }
         .padding(12)
         .background(
-            LinearGradient(colors: [.cyan.opacity(0.14), .purple.opacity(0.12), .pink.opacity(0.1)], startPoint: .leading, endPoint: .trailing),
+            Theme.accentSoft,
             in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
         )
         .accessibilityElement(children: .combine)
@@ -740,9 +740,7 @@ struct WardrobeView: View {
                             .font(.title3)
                             .foregroundStyle(on ? .white : .primary)
                             .frame(width: 54, height: 54)
-                            .background(on ? AnyShapeStyle(LinearGradient(colors: [.cyan, .indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                        : AnyShapeStyle(Theme.card), in: Circle())
-                            .shadow(color: on ? .purple.opacity(0.35) : .clear, radius: 8, y: 3)
+                            .background(on ? Theme.accentFill : Theme.card, in: Circle())
                         Text(k.title).font(.caption2.weight(.semibold)).textCase(.uppercase).foregroundStyle(on ? Theme.accent : .secondary)
                     }
                 }
@@ -799,13 +797,11 @@ struct WardrobeView: View {
                             .padding(6)
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(on ? AnyShapeStyle(LinearGradient(colors: [.cyan, .purple, .pink], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                      : AnyShapeStyle(Color.primary.opacity(0.08)), lineWidth: on ? 3 : 1)
+                    RoundedRectangle(cornerRadius: LucinaTokens.Radius.tile, style: .continuous)
+                        .strokeBorder(on ? Theme.accent : Theme.separator, lineWidth: on ? 3 : 1)
                 )
-                .shadow(color: on ? .purple.opacity(0.3) : .clear, radius: 10)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

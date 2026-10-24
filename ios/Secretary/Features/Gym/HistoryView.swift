@@ -7,7 +7,6 @@ struct HistoryView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                Text("Journal").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
                 if view.state.history.isEmpty {
                     GymEmptyCard(icon: "book.closed", title: "Your story starts here",
                                  detail: "Finish a workout and it will be saved in your journal.")
@@ -22,7 +21,7 @@ struct HistoryView: View {
                                 Spacer()
                                 Image(systemName: "arrow.up.right").foregroundStyle(GymPalette.forest).accessibilityHidden(true)
                             }
-                            Text(workout.title).font(.title2.bold())
+                            Text(workout.title).font(LucinaTokens.Fonts.headline)
                             if let summary = view.workoutLabels[workout.id] {
                                 Text("\(summary.duration) · \(summary.sets) sets · \(summary.volume)")
                                     .font(.subheadline).foregroundStyle(GymPalette.muted)

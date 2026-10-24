@@ -1,0 +1,12 @@
+[package]
+name = "design-tokens"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Generates the Lucina design tokens (design/tokens.json) into SwiftUI, CSS variables and Jetpack Compose."
+
+# Standalone: not a member of the Rust workspace, so every branch can carry it unchanged.
+[workspace]
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
