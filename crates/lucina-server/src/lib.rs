@@ -24,6 +24,7 @@ pub mod planner;
 pub mod prompts;
 pub mod rich;
 pub mod secrets;
+pub mod surface;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;

@@ -123,7 +123,7 @@ cargo fmt --check
 
 formal/run-quint    # primary: Quint simulator, Rust backend (4 checks)
 formal/run-checks   # reference: exhaustive bounded TLC, pinned toolchain (4 checks)
-scripts/verify-verus.sh   # every verification/verus/*.rs (sync, gym kernel + lifecycle, body kernel)
+scripts/verify-verus.sh   # every verification/verus/*.rs (sync, gym kernel + lifecycle, body kernel, memory surfaces)
 bash -n scripts/build-ios-core.sh   # the iOS build itself runs on the Mac
 
 # static release binary for p1 (see deploy/README.md)

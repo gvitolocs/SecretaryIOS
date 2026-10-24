@@ -17,7 +17,7 @@ use futures_util::FutureExt;
 use lucina_intent::mcp::{self, McpTurn};
 use lucina_intent::{domains as dm, grocery as gi, notes as nt, outfit};
 use lucina_llm::Message;
-use lucina_memory::{secretary_session_id, MemoryMode};
+use lucina_memory::{secretary_session_id, MemoryMode, Surface, TurnSurface};
 use lucina_store::jobs::Job;
 use lucina_store::parser::{parse_at_time, parse_date_part, parse_reminder_message, ParseOptions};
 use lucina_store::reminders::{format_confirmation, format_list, CreateReminder};
@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use crate::api::{optional_string, owner_reminders, ApiError, PLATFORM_LABEL, USER_LABEL};
 use crate::planner::TurnInput;
 use crate::prompts::Prompts;
+use crate::surface::BearerVerified;
 use crate::{jobs, AppState, PlannerMode};
 
 pub mod meshy_turn;
@@ -42,8 +43,14 @@ const CLIENT_MESSAGE_KEEP: usize = 200;
 pub const PLANNER_PLATFORM: &str = "secretary";
 pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
-/// Validate the body, dedupe `clientMessageId` retries, run the turn.
-pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
+/// Validate the body, classify the turn's memory surface (once), dedupe
+/// `clientMessageId` retries, run the turn. `bearer`: the request passed the
+/// Secretary bearer check.
+pub async fn handle_chat(
+    st: AppState,
+    bearer: BearerVerified,
+    body: Value,
+) -> Result<Value, ApiError> {
     let message = match &body["message"] {
         Value::String(s) if !s.trim().is_empty() => lucina_store::timeutil::js_trim(s).to_owned(),
         _ => return Err(ApiError::bad_request("message is required")),
@@ -85,10 +92,20 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
     if utf16_len(&text) > MAX_MESSAGE_CHARS {
         return Err(too_long());
     }
-    tracing::info!(session_id = %session, %channel, mcp = mcp_turn.as_ref().map(|m| m.caller.as_str()), chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
+    let surface = crate::surface::chat_surface(&st.cfg, Some(bearer), &channel, mcp_turn.as_ref());
+    tracing::info!(session_id = %session, %channel, mcp = mcp_turn.as_ref().map(|m| m.caller.as_str()), surface = surface.class_name(), chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
+    // Only the owner and his MCP delegates chat here; anything else fails
+    // closed before any memory read or timeline write.
+    if !surface.is_owner() {
+        tracing::warn!(
+            surface = surface.class_name(),
+            "secretary chat refused by memory surface policy"
+        );
+        return Err(ApiError::new(403, "forbidden", ""));
+    }
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
-        return run_turn(st, text, session, None, channel, mcp_turn).await;
+        return run_turn(st, text, session, None, channel, mcp_turn, surface).await;
     };
     let key = format!("{session}:{cmid_value}");
     enum Slot {
@@ -111,7 +128,7 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
                         None => break,
                     };
                 }
-                let fut = run_turn(st.clone(), text, session, cmid, channel, mcp_turn)
+                let fut = run_turn(st.clone(), text, session, cmid, channel, mcp_turn, surface)
                     .boxed()
                     .shared();
                 map.insert(key.clone(), (Instant::now(), fut.clone()));
@@ -224,6 +241,8 @@ struct Turn<'a> {
     session: String,
     channel: String,
     mcp: Option<McpTurn>,
+    /// The turn's memory surface (classified once in `handle_chat`).
+    surface: TurnSurface,
     user_label: String,
     extra_system: String,
 }
@@ -250,14 +269,10 @@ async fn run_turn(
     cmid: Option<String>,
     channel: String,
     mcp_turn: Option<McpTurn>,
+    surface: TurnSurface,
 ) -> Result<Value, ApiError> {
     if st.cfg.planner == PlannerMode::Tools {
-        let origin = if mcp_turn.is_some() {
-            Origin::Mcp
-        } else {
-            Origin::Owner
-        };
-        return tools_turn(st, message, session, cmid, channel, origin).await;
+        return tools_turn(st, message, session, cmid, channel, surface).await;
     }
     // With rich replies the app turns structure into widgets and buttons.
     let base_system = if st.cfg.rich_replies {
@@ -286,6 +301,7 @@ async fn run_turn(
         session,
         channel,
         mcp: mcp_turn,
+        surface,
         user_label,
         extra_system,
     };
@@ -299,6 +315,7 @@ async fn run_turn(
         None => {
             let prepared = crate::context::prepare(
                 &st,
+                &t.surface,
                 &t.session,
                 &t.message,
                 &t.user_label,
@@ -355,6 +372,7 @@ async fn run_turn(
             t.session.clone(),
             timeline.user_item_id(),
             t.channel.clone(),
+            t.surface.clone(),
         );
     }
     let mut out = json!({
@@ -466,13 +484,17 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
     .filter(|s| !s.is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let (mem, peer, sid) = (
+    let (mem, peer, sid, surface) = (
         st.memory.clone(),
         st.cfg.owner_peer_id.clone(),
         t.session.clone(),
+        t.surface.clone(),
     );
     tokio::spawn(async move {
-        if let Err(e) = mem.remember(&peer, &sid, &label, &assistant).await {
+        if let Err(e) = mem
+            .remember(&surface, &peer, &sid, &label, &assistant)
+            .await
+        {
             tracing::warn!(error = %e, "secretary honcho remember failed");
         }
     });
@@ -695,7 +717,7 @@ async fn json_turn(
             )
             .await;
             if let Some(note) = &o.memory_note {
-                remember_note(st, &t.session, note, &source);
+                remember_note(st, &t.surface, &t.session, note, &source);
             }
             let mut reply = o.reply.clone();
             if let Some(note) = &o.read_note {
@@ -1214,7 +1236,7 @@ async fn delegated_finish(
 }
 
 /// Honcho: a saved note's summary (`rememberNote`).
-fn remember_note(st: &AppState, session: &str, note: &Value, source: &str) {
+fn remember_note(st: &AppState, surface: &TurnSurface, session: &str, note: &Value, source: &str) {
     if st.memory.mode() != MemoryMode::ReadWrite {
         return;
     }
@@ -1224,13 +1246,14 @@ fn remember_note(st: &AppState, session: &str, note: &Value, source: &str) {
         note["slug"].as_str().unwrap_or("")
     );
     let assistant = nt::summary_for_memory(note, source);
-    let (mem, peer, sid) = (
+    let (mem, peer, sid, surface) = (
         st.memory.clone(),
         st.cfg.owner_peer_id.clone(),
         session.to_owned(),
+        surface.clone(),
     );
     tokio::spawn(async move {
-        if let Err(e) = mem.remember(&peer, &sid, &user, &assistant).await {
+        if let Err(e) = mem.remember(&surface, &peer, &sid, &user, &assistant).await {
             tracing::warn!(error = %e, "note honcho remember failed");
         }
     });
@@ -1247,6 +1270,8 @@ fn spawn_job(
     session: String,
     user_item: Option<String>,
     channel: String,
+    // The job keeps the surface of the turn that started it.
+    surface: TurnSurface,
 ) {
     tokio::spawn(async move {
         let record = |text: String, rich: Option<&lucina_store::rich::RichMessage>| {
@@ -1313,7 +1338,15 @@ fn spawn_job(
                     j.finished_at = Some(now_iso());
                 });
                 st.recent.append(&session, "assistant", &result, Utc::now());
-                remember_job(&st, &session, &message, &action, &result, &action_result);
+                remember_job(
+                    &st,
+                    &surface,
+                    &session,
+                    &message,
+                    &action,
+                    &result,
+                    &action_result,
+                );
             }
             Err(reason) => {
                 let reason: String = reason.chars().take(500).collect();
@@ -1326,7 +1359,7 @@ fn spawn_job(
                     j.timeline_item_id = item.map(|i| i.id);
                     j.finished_at = Some(now_iso());
                 });
-                remember_job(&st, &session, &message, &action, &text, "");
+                remember_job(&st, &surface, &session, &message, &action, &text, "");
             }
         }
         st.jobs.finish(&job.id);
@@ -1335,6 +1368,7 @@ fn spawn_job(
 
 fn remember_job(
     st: &AppState,
+    surface: &TurnSurface,
     session: &str,
     message: &str,
     action: &str,
@@ -1361,13 +1395,14 @@ fn remember_job(
     .filter(|s| !s.is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let (mem, peer, sid) = (
+    let (mem, peer, sid, surface) = (
         st.memory.clone(),
         st.cfg.owner_peer_id.clone(),
         session.to_owned(),
+        surface.clone(),
     );
     tokio::spawn(async move {
-        if let Err(e) = mem.remember(&peer, &sid, &user, &assistant).await {
+        if let Err(e) = mem.remember(&surface, &peer, &sid, &user, &assistant).await {
             tracing::warn!(error = %e, "secretary honcho remember failed");
         }
     });
@@ -1440,8 +1475,13 @@ async fn tools_turn(
     session: String,
     cmid: Option<String>,
     channel: String,
-    origin: Origin,
+    surface: TurnSurface,
 ) -> Result<Value, ApiError> {
+    // The tools origin follows the turn's surface.
+    let origin = match surface.surface() {
+        Surface::OwnerDelegate { .. } => Origin::Mcp,
+        _ => Origin::Owner,
+    };
     let mcp = matches!(origin, Origin::Mcp);
     let now = Utc::now();
     let tz = st.cfg.time_zone;
@@ -1459,7 +1499,7 @@ async fn tools_turn(
         (String::new(), String::new())
     } else {
         let p =
-            crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true).await;
+            crate::context::prepare_with(&st, &surface, &session, &message, USER_LABEL, PLANNER_PLATFORM, true).await;
         let game = if p.game.is_empty() || !mcp {
             p.game
         } else {
@@ -1611,12 +1651,17 @@ async fn tools_turn(
     .await;
     st.recent
         .append(&session, "assistant", &remembered, Utc::now());
+    // MCP turns are remembered with their caller (label and metadata).
     let t2 = Turn {
         st: &st,
         message: message.clone(),
         session: session.clone(),
         channel: channel.clone(),
-        mcp: None,
+        mcp: surface.caller().map(|caller| McpTurn {
+            caller: caller.to_owned(),
+            text: message.clone(),
+        }),
+        surface: surface.clone(),
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
     };
