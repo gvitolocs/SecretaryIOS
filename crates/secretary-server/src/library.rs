@@ -296,29 +296,45 @@ pub fn store(data: &Path) -> Arc<LibraryStore> {
     })
 }
 impl LibraryStore {
-    fn project(&self, state: &LibraryState) -> Result<(), ApiError> {
+    /// Writes the per-book files from `state`. With `prev` (what is on disk) only the files whose
+    /// content changed are rewritten, so a write costs a few fsyncs instead of two per book;
+    /// recovery passes `None` and rewrites everything.
+    fn project(&self, prev: Option<&LibraryState>, state: &LibraryState) -> Result<(), ApiError> {
         ensure_dir(&self.dir.join("books")).map_err(io_err)?;
         ensure_dir(&self.dir.join("highlights")).map_err(io_err)?;
         for b in state.books.values() {
-            save_json_atomic(&self.dir.join("books"), &format!("{}.json", b.id), b)
+            let old = prev.and_then(|p| p.books.get(&b.id));
+            if old != Some(b) {
+                save_json_atomic(&self.dir.join("books"), &format!("{}.json", b.id), b)
+                    .map_err(io_err)?;
+            }
+            let highlights = state.highlights.get(&b.id);
+            if old.is_none() || prev.is_some_and(|p| p.highlights.get(&b.id) != highlights) {
+                save_json_atomic(
+                    &self.dir.join("highlights"),
+                    &format!("{}.json", b.id),
+                    &highlights.cloned().unwrap_or_default(),
+                )
                 .map_err(io_err)?;
+            }
+        }
+        if prev.is_none_or(|p| p.sessions != state.sessions || p.changes != state.changes) {
             save_json_atomic(
-                &self.dir.join("highlights"),
-                &format!("{}.json", b.id),
-                &state.highlights.get(&b.id).cloned().unwrap_or_default(),
+                &self.dir,
+                "activity.json",
+                &json!({"sessions":state.sessions,"changes":state.changes}),
             )
             .map_err(io_err)?;
         }
-        save_json_atomic(
-            &self.dir,
-            "activity.json",
-            &json!({"sessions":state.sessions,"changes":state.changes}),
-        )
-        .map_err(io_err)?;
         let notes = self.dir.join("notes");
         if !state.note_links.is_empty() || notes.exists() {
             ensure_dir(&notes).map_err(io_err)?;
             for id in state.books.keys() {
+                if prev.is_some_and(|p| {
+                    p.books.contains_key(id) && p.note_links.get(id) == state.note_links.get(id)
+                }) {
+                    continue;
+                }
                 let name = format!("{id}.json");
                 match state.note_links.get(id) {
                     Some(links) => save_json_atomic(&notes, &name, links).map_err(io_err)?,
@@ -329,7 +345,9 @@ impl LibraryStore {
                 }
             }
         }
-        if !state.note_indexes.is_empty() || self.dir.join("notes-index.json").exists() {
+        if (!state.note_indexes.is_empty() || self.dir.join("notes-index.json").exists())
+            && prev.is_none_or(|p| p.note_indexes != state.note_indexes)
+        {
             save_json_atomic(&self.dir, "notes-index.json", &state.note_indexes).map_err(io_err)?;
         }
         Ok(())
@@ -354,7 +372,7 @@ impl LibraryStore {
             let s: LibraryState =
                 serde_json::from_reader(fs::File::open(&pending).map_err(io_err)?)
                     .map_err(|_| ApiError::internal("invalid library recovery snapshot"))?;
-            self.project(&s)?;
+            self.project(None, &s)?;
             fs::remove_file(pending).map_err(io_err)?;
             return Ok(s);
         }
@@ -466,7 +484,7 @@ impl LibraryStore {
             st.persist_sync(&next_sync)?;
             *sync = next_sync;
             if changed {
-                st.persist(&next)?;
+                st.persist(lib, &next)?;
                 *lib = next;
             }
             Ok(resp)
@@ -489,16 +507,17 @@ impl LibraryStore {
             st.persist_sync(&next_sync)?;
             *sync = next_sync;
             if changed {
-                st.persist(&next)?;
+                st.persist(lib, &next)?;
                 *lib = next;
             }
             Ok(json!({"tombstone":t}))
         })
     }
-    fn persist(&self, s: &LibraryState) -> Result<(), ApiError> {
+    /// `prev` is the state the files on disk hold (the cache); only what differs is rewritten.
+    fn persist(&self, prev: &LibraryState, s: &LibraryState) -> Result<(), ApiError> {
         ensure_dir(&self.dir).map_err(io_err)?;
         save_json_atomic(&self.dir, "pending.json", s).map_err(io_err)?;
-        self.project(s)?;
+        self.project(Some(prev), s)?;
         fs::remove_file(self.dir.join("pending.json")).map_err(io_err)?;
         Ok(())
     }
@@ -541,7 +560,7 @@ impl LibraryStore {
         validate_notes(&batch)?;
         self.with(|st, s| {
             let (next, outcome) = apply_notes_index(s, &batch, &timestamp());
-            st.persist(&next)?;
+            st.persist(s, &next)?;
             *s = next;
             st.append_log(
                 &json!({"time":timestamp(),"caller":caller,"source":"obsidian",
@@ -553,7 +572,7 @@ impl LibraryStore {
     }
     fn import(&self, batch: ImportBatch, caller: &str) -> Result<ImportOutcome, ApiError> {
         validate(&batch)?;
-        self.with_sync(|st,s,sync|{let now=timestamp();let (mut next,o)=merge(s,&batch,&now);sync_state::project(sync,&mut next,None,&now);if next.books.len()>MAX_BOOKS||next.highlights.values().map(Vec::len).sum::<usize>()>MAX_HIGHLIGHTS{return Err(bad("library capacity exceeded"));}st.persist(&next)?;*s=next;
+        self.with_sync(|st,s,sync|{let now=timestamp();let (mut next,o)=merge(s,&batch,&now);sync_state::project(sync,&mut next,None,&now);if next.books.len()>MAX_BOOKS||next.highlights.values().map(Vec::len).sum::<usize>()>MAX_HIGHLIGHTS{return Err(bad("library capacity exceeded"));}st.persist(s, &next)?;*s=next;
         let mut options=OpenOptions::new();options.create(true).append(true);#[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}let mut f=options.open(st.dir.join("imports.jsonl")).map_err(io_err)?;
         let log=json!({"time":timestamp(),"caller":caller,"source":batch.source,"booksAdded":o.books_added,"booksUpdated":o.books_updated,"booksUnchanged":o.books_unchanged,"highlightsAdded":o.highlights_added,"highlightsSkipped":o.highlights_skipped,"removedFromKindle":o.removed_from_kindle,"conflictCount":o.conflicts.len(),"warningCount":o.warnings.len()});writeln!(f,"{log}").map_err(io_err)?;f.sync_all().map_err(io_err)?;Ok(o)})
     }
@@ -868,7 +887,7 @@ async fn patch(
                 });
             }
             next.books.insert(id, b.clone());
-            st.persist(&next)?;
+            st.persist(s, &next)?;
             *s = next;
             Ok(b)
         })
@@ -957,7 +976,7 @@ async fn brief(
             }
             b.briefs.push(brief.clone());
             b.updated_at = timestamp();
-            st.persist(&next)?;
+            st.persist(s, &next)?;
             *s = next;
             Ok(brief)
         })
@@ -990,6 +1009,63 @@ pub fn routes(st: AppState) -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_rewrites_only_changed_books() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(dir.path());
+        let batch = ImportBatch {
+            source: "kindle-usb".into(),
+            device: None,
+            scanned_at: timestamp(),
+            books: vec![],
+            clippings: ink_library::clippings::parse(
+                b"First Book (Writer)\n- Your Highlight on Location 1-2 | Added on Sunday, 4 October 2020 15:12:01\n\nOne\n==========\nSecond Book (Other)\n- Your Highlight on Location 3-4 | Added on Sunday, 4 October 2020 15:13:01\n\nTwo\n==========\n",
+            )
+            .unwrap()
+            .entries,
+        };
+        let (state, _) = merge(&LibraryState::default(), &batch, &timestamp());
+        assert_eq!(state.books.len(), 2);
+        store.persist(&LibraryState::default(), &state).unwrap();
+        // save_json_atomic renames a new file into place, so an untouched file keeps its inode.
+        let ino = |sub: &str, id: &str| {
+            fs::metadata(store.dir.join(sub).join(format!("{id}.json")))
+                .unwrap()
+                .ino()
+        };
+        let ids: Vec<String> = state.books.keys().cloned().collect();
+        let before: Vec<(u64, u64)> = ids
+            .iter()
+            .map(|id| (ino("books", id), ino("highlights", id)))
+            .collect();
+        let mut next = state.clone();
+        next.books.get_mut(&ids[0]).unwrap().tags = vec!["edited".into()];
+        store.persist(&state, &next).unwrap();
+        assert_ne!(
+            ino("books", &ids[0]),
+            before[0].0,
+            "the edited book is rewritten"
+        );
+        assert_eq!(
+            ino("highlights", &ids[0]),
+            before[0].1,
+            "its highlights did not change"
+        );
+        assert_eq!(
+            (ino("books", &ids[1]), ino("highlights", &ids[1])),
+            before[1],
+            "the other book is left alone"
+        );
+        assert!(!store.dir.join("pending.json").exists());
+        // What a fresh process reads back is the full new state.
+        assert_eq!(
+            super::store(dir.path()).with(|_, s| Ok(s.clone())).unwrap(),
+            next
+        );
+    }
 
     #[test]
     fn interrupted_projection_recovers_before_serving_records() {
