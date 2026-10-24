@@ -4,6 +4,7 @@ pub mod avatar;
 pub mod calculator;
 pub mod calendar;
 pub mod delegate;
+pub mod memos;
 pub mod meshy;
 pub mod notes;
 pub mod notify;
@@ -33,6 +34,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(reminders::RemindersTool),
         Arc::new(calendar::CalendarTool),
         Arc::new(tasks::TasksTool),
+        Arc::new(memos::MemosTool),
         Arc::new(shopping::ShoppingTool),
         Arc::new(presence::PresenceTool),
         Arc::new(avatar::AvatarOutfitTool),

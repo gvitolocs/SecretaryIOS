@@ -205,6 +205,9 @@ pub struct ToolEnv {
     pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
     /// Delegation to Claude, Grok and ChatGPT (`LUCINA_DELEGATE`).
     pub delegator: Option<Arc<lucina_delegate::Delegator>>,
+    /// lucina-memo (`memos`): base URL and the file with its service token.
+    pub memo_url: Option<String>,
+    pub memo_token_file: Option<PathBuf>,
 }
 
 impl ToolEnv {
@@ -248,6 +251,8 @@ impl ToolEnv {
             secretary_service_token_file: None,
             secrets: None,
             delegator: None,
+            memo_url: None,
+            memo_token_file: None,
         }
     }
 }
