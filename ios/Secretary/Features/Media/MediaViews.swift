@@ -281,8 +281,9 @@ struct MediaPlayerScreen: View {
             }
             .foregroundStyle(.white)
             .background(.black.opacity(0.35), in: Capsule())
-            .padding(.horizontal, 60)
-            .padding(.top, 4)
+            .padding(.horizontal, 16)
+            // Below AVKit's own top controls (Picture in Picture, AirPlay, volume).
+            .padding(.top, 52)
         }
     }
 }
