@@ -83,6 +83,8 @@ struct GalleryTab: View {
             BackupBanner { showBackup = true }
                 .padding(.horizontal)
                 .padding(.top, 4)
+            FilterChips()
+                .padding(.vertical, LucinaTokens.Space.sm)
             if store.items.isEmpty, !store.loading {
                 ContentUnavailableView(
                     store.filter.query.isEmpty ? "No photos yet" : "No results",
@@ -99,11 +101,12 @@ struct GalleryTab: View {
                         GalleryGrid(items: section.items) { viewing = $0 }
                     } header: {
                         Text(section.title)
-                            .font(.headline)
+                            .font(LucinaTokens.Fonts.headline)
+                            .foregroundStyle(Theme.text)
                             .padding(.horizontal)
                             .padding(.vertical, 6)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.bar)
+                            .background(Theme.page)
                     }
                 }
                 if store.canLoadMore {
@@ -114,7 +117,9 @@ struct GalleryTab: View {
                 }
             }
         }
+        .lucinaScreen()
         .navigationTitle(store.filter.album.flatMap { id in store.albums.first { $0.id == id }?.title } ?? String(localized: "Gallery"))
+        .navigationBarTitleDisplayMode(.large)
         .searchable(text: $search, prompt: "Places, months, albums")
         .onSubmit(of: .search) { store.filter.query = search }
         .onChange(of: search) { _, new in if new.isEmpty { store.filter.query = "" } }
@@ -124,23 +129,6 @@ struct GalleryTab: View {
             await store.reload()
         }
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Menu {
-                    Picker("Show", selection: $store.filter.kind) {
-                        Text("Everything").tag(String?.none)
-                        Text("Photos").tag(String?("photo"))
-                        Text("Videos").tag(String?("video"))
-                        Text("Audio").tag(String?("audio"))
-                    }
-                    Toggle("Favourites", isOn: $store.filter.favorites)
-                    if store.filter.album != nil {
-                        Button("All photos", systemImage: "photo.on.rectangle") { store.filter.album = nil }
-                    }
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                }
-                .accessibilityLabel("Filter")
-            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { showAlbums = true } label: { Image(systemName: "rectangle.stack") }
                     .accessibilityLabel("Albums")
@@ -154,7 +142,7 @@ struct GalleryTab: View {
             if store.items.isEmpty { await store.reload() }
             await store.loadAlbums()
         }
-        .sheet(isPresented: $showBackup) { NavigationStack { BackupSettingsView() } }
+        .sheet(isPresented: $showBackup) { NavigationStack { BackupSettingsView() }.lucinaSheet() }
         .sheet(isPresented: $showAlbums) {
             NavigationStack {
                 AlbumsView { album in
@@ -162,6 +150,7 @@ struct GalleryTab: View {
                     showAlbums = false
                 }
             }
+            .lucinaSheet()
         }
         .fullScreenCover(item: $viewing) { item in
             GalleryViewer(start: item)
@@ -219,8 +208,8 @@ struct GalleryThumb: View {
                 image.resizable().aspectRatio(contentMode: large ? .fit : .fill)
             } else {
                 ZStack {
-                    Rectangle().fill(.quaternary)
-                    Image(systemName: item.isAudio ? "waveform" : item.isVideo ? "film" : "photo").foregroundStyle(.secondary)
+                    Rectangle().fill(Theme.field)
+                    Image(systemName: item.isAudio ? "waveform" : item.isVideo ? "film" : "photo").foregroundStyle(Theme.textSecondary)
                 }
             }
         }
@@ -237,14 +226,14 @@ private struct BackupBanner: View {
             HStack(spacing: 10) {
                 Image(systemName: icon).foregroundStyle(tint)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.subheadline.weight(.medium))
-                    if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                    Text(title).font(LucinaTokens.Fonts.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                    if let detail { Text(detail).font(LucinaTokens.Fonts.caption).foregroundStyle(Theme.textSecondary) }
                 }
                 Spacer()
                 if case .uploading = backup.status { ProgressView() }
             }
-            .padding(10)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .padding(LucinaTokens.Space.md)
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("backupBanner")
@@ -261,9 +250,9 @@ private struct BackupBanner: View {
     }
     private var tint: Color {
         switch backup.status {
-        case .needsAccess, .failed: .orange
-        case .off: .secondary
-        default: .accentColor
+        case .needsAccess, .failed: Theme.warning
+        case .off: Theme.textSecondary
+        default: Theme.accent
         }
     }
     private var title: String {
@@ -307,7 +296,7 @@ struct BackupSettingsView: View {
                 LabeledContent("Backed up", value: "\(backup.backedUp)")
                 if backup.remaining > 0 { LabeledContent("Remaining", value: "\(backup.remaining)") }
                 if let d = backup.lastBackup { LabeledContent("Last backup", value: d.formatted(date: .abbreviated, time: .shortened)) }
-                if let e = backup.lastError { Text(e).font(.caption).foregroundStyle(.orange) }
+                if let e = backup.lastError { Text(e).font(LucinaTokens.Fonts.caption).foregroundStyle(Theme.warning) }
                 Button("Back up now") { backup.kick() }
                     .disabled(!backup.settings.enabled)
                 if backup.status == .needsAccess {
@@ -317,6 +306,7 @@ struct BackupSettingsView: View {
                 }
             }
         }
+        .lucinaList()
         .navigationTitle("Photo backup")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
@@ -335,15 +325,16 @@ struct AlbumsView: View {
             ForEach(store.albums.filter { $0.count > 0 || $0.systemKey == nil }) { album in
                 Button { pick(album) } label: {
                     HStack {
-                        Image(systemName: icon(album)).frame(width: 28)
-                        Text(album.title)
+                        Image(systemName: icon(album)).foregroundStyle(Theme.accent).frame(width: 28)
+                        Text(album.title).foregroundStyle(Theme.text)
                         Spacer()
-                        Text("\(album.count)").foregroundStyle(.secondary)
+                        Text("\(album.count)").foregroundStyle(Theme.textSecondary)
                     }
                 }
                 .foregroundStyle(.primary)
             }
         }
+        .lucinaList()
         .navigationTitle("Albums")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -424,7 +415,7 @@ struct GalleryViewer: View {
             }
         }
         .onAppear { current = start.id }
-        .sheet(isPresented: $showInfo) { NavigationStack { GalleryInfo(item: item) }.presentationDetents([.medium, .large]) }
+        .sheet(isPresented: $showInfo) { NavigationStack { GalleryInfo(item: item) }.lucinaSheet().presentationDetents([.medium, .large]) }
         .sheet(isPresented: $addToAlbum) {
             NavigationStack {
                 AlbumsView { album in
@@ -524,7 +515,35 @@ private struct GalleryInfo: View {
             if let c = item.camera { LabeledContent("Camera", value: c) }
             if let caption = item.caption { Text(caption) }
         }
+        .lucinaList()
         .navigationTitle("Info")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// What the timeline shows: everything, one kind, favourites, and the album being viewed.
+private struct FilterChips: View {
+    @Environment(GalleryStore.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: LucinaTokens.Space.sm) {
+                if let album = store.filter.album {
+                    ChipButton(title: LocalizedStringKey(store.albums.first { $0.id == album }?.title ?? "Album"),
+                               icon: "xmark", isOn: true) { store.filter.album = nil }
+                        .accessibilityIdentifier("galleryClearAlbum")
+                }
+                ChipButton(title: "All", isOn: store.filter.kind == nil && !store.filter.favorites) {
+                    store.filter.kind = nil
+                    store.filter.favorites = false
+                }
+                ChipButton(title: "Photos", icon: "photo", isOn: store.filter.kind == "photo") { store.filter.kind = "photo" }
+                ChipButton(title: "Videos", icon: "video", isOn: store.filter.kind == "video") { store.filter.kind = "video" }
+                ChipButton(title: "Audio", icon: "waveform", isOn: store.filter.kind == "audio") { store.filter.kind = "audio" }
+                ChipButton(title: "Favourites", icon: "heart", isOn: store.filter.favorites) { store.filter.favorites.toggle() }
+            }
+            .padding(.horizontal)
+        }
     }
 }
