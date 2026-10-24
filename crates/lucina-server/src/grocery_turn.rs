@@ -115,6 +115,14 @@ pub async fn process(
         return Ok(None);
     };
     let intent = parsed.intent;
+    // Deal questions reach here only when the Node deals engine could not
+    // answer (crate::node_deals); Node's own reply for that case.
+    if intent.starts_with("grocery.deals.") {
+        return Ok(handled(
+            intent,
+            "Nearby deal lookup is unavailable. Check home coordinates and deal sources.",
+        ));
+    }
     let Some(repo) = repo else {
         return Ok(handled(intent, "Grocery accounting is not configured yet. Set GROCERY_DATABASE_URL and run `npm run grocery:migrate` once."));
     };

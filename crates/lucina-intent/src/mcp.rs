@@ -24,6 +24,8 @@ pub const ALLOWED_GROCERY_INTENTS: &[&str] = &[
     "grocery.purchase",
     "grocery.shopping_list.query",
     "grocery.offer.search",
+    "grocery.deals.cheapest",
+    "grocery.deals.lunch",
     "grocery.price.query",
     "grocery.expense.query",
     "grocery.pantries.query",

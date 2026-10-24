@@ -306,7 +306,14 @@ async fn run_turn(
             )
             .await;
             st.recent.append(&t.session, "user", &t.message, Utc::now());
-            let finish = json_turn(&t, &prepared, cmid.as_deref()).await;
+            let game_system = if prepared.game.is_empty() || t.mcp.is_none() {
+                prepared.game.clone()
+            } else {
+                format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
+            };
+            let finish = crate::planner::TURN_SYSTEM
+                .scope(game_system, json_turn(&t, &prepared, cmid.as_deref()))
+                .await;
             (finish, Some(prepared))
         }
     };
@@ -726,16 +733,6 @@ async fn json_turn(
         }
     }
 
-    // Lucina's Pokémon Red run (status, start, pause); MCP turns may read the status only.
-    match crate::bridges::game_turn(&st.secretary.http, &t.message, t.mcp.is_some()).await {
-        Some(Err(blocked)) => {
-            tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
-            return Finish::refusal(&persona, blocked);
-        }
-        Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
-        None => {}
-    }
-
     // Tasks (LUCINA_TASKS=true): what to do today, add, done, reschedule
     // overdue. MCP turns may read, add and complete; deleting is refused.
     // Before the calendar: "cosa devo fare oggi?" answers with the tasks and
@@ -782,12 +779,26 @@ async fn json_turn(
     }
 
     // The deterministic grocery path (same as a Telegram text turn).
+    let grocery_intent = gi::parse_grocery_intent(&t.message).map(|g| g.intent);
     if t.mcp.is_some() {
-        if let Some(g) = gi::parse_grocery_intent(&t.message) {
-            if !mcp::ALLOWED_GROCERY_INTENTS.contains(&g.intent) {
-                tracing::warn!(session_id = %t.session, blocked = g.intent, "secretary mcp turn refused");
-                return Finish::refusal(&persona, g.intent);
+        if let Some(intent) = grocery_intent {
+            if !mcp::ALLOWED_GROCERY_INTENTS.contains(&intent) {
+                tracing::warn!(session_id = %t.session, blocked = intent, "secretary mcp turn refused");
+                return Finish::refusal(&persona, intent);
             }
+        }
+    }
+    // Deal questions: the Node Lucina's deals engine answers (Node stays
+    // canonical for deals until the port); the Rust grocery path below is
+    // the fallback when Node cannot.
+    if let Some(intent) = grocery_intent.filter(|i| crate::node_deals::DEALS_INTENTS.contains(i)) {
+        if let Some((reply, node_intent)) = st.node_deals.answer(&t.message, &t.channel).await {
+            let intent = if node_intent.is_empty() {
+                intent.to_owned()
+            } else {
+                node_intent
+            };
+            return Finish::reply(reply, "grocery").with(intent, None);
         }
     }
     match crate::grocery_turn::process(
@@ -816,17 +827,23 @@ async fn json_turn(
         }
     }
 
-    // The JSON-action planner, with the turn's classification.
-    let plan = match st
-        .planner
-        .route_classified(
-            &t.input(memory, PLANNER_PLATFORM),
-            &prepared.classification,
-            &st.cfg.intent,
-            st.cfg.capability_hints,
-        )
-        .await
-    {
+    // The JSON-action planner, with the turn's classification. While her game is live, owner turns skip the
+    // casual chat shortcut (which clips the context and cannot choose actions) so she reasons over the game
+    // state and can pass advice to her playing self (game_hint).
+    let game_live = t.mcp.is_none() && !prepared.game.is_empty();
+    let routed = if game_live {
+        st.planner.plan_response(&t.input(memory, PLANNER_PLATFORM)).await
+    } else {
+        st.planner
+            .route_classified(
+                &t.input(memory, PLANNER_PLATFORM),
+                &prepared.classification,
+                &st.cfg.intent,
+                st.cfg.capability_hints,
+            )
+            .await
+    };
+    let plan = match routed {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(surface = "secretary", error = %e, "response planning failed");
@@ -851,6 +868,44 @@ async fn json_turn(
     if t.mcp.is_some() && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
         tracing::warn!(session_id = %t.session, blocked = %action, "secretary mcp turn refused");
         return Finish::refusal(&persona, &action);
+    }
+
+    // Her Pokémon Red run (planner-chosen, never keyword shortcuts; MCP callers are refused above because these
+    // actions are not in mcp::ALLOWED_ACTIONS). Advice is text for her playing self only.
+    if action == "game_hint" {
+        let text = plan["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&t.message)
+            .to_owned();
+        let ack = plan["ack"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        return match crate::bridges::game_hint(&st.secretary.http, &text).await {
+            Ok(_) => Finish::reply(
+                ack.unwrap_or("Passed it to my playing self: I'll act on it in the game.").to_owned(),
+                "game",
+            )
+            .with(format!("[game hint queued] {text}"), Some(Meta::kind("game"))),
+            Err(e) => {
+                tracing::warn!(error = %e, "game hint failed");
+                Finish::reply("I couldn't reach my game right now, so the advice didn't get through.", "game")
+                    .with("[game hint failed]", Some(Meta::kind("game")))
+            }
+        };
+    }
+    if action == "game_start" || action == "game_pause" {
+        let running = action == "game_start";
+        let ok = crate::bridges::game_control(&st.secretary.http, running).await.is_ok();
+        let lang = lucina_intent::tasks::guess_lang(&t.message);
+        let text = if ok {
+            lucina_intent::game::control_reply(lang, running, true).to_owned()
+        } else {
+            lucina_intent::game::off(lang).to_owned()
+        };
+        return Finish::reply(text, "game").with(
+            format!("[game {} {}]", if running { "start" } else { "pause" }, if ok { "ok" } else { "failed" }),
+            Some(Meta::kind("game")),
+        );
     }
 
     // Lucina decided herself that another agent should do it.
@@ -1400,12 +1455,17 @@ async fn tools_turn(
         st.registry.clone()
     };
     let secrets = secrets_finish(&st, &message, mcp).await;
-    let memory_context = if secrets.is_some() {
-        String::new()
+    let (memory_context, game_system) = if secrets.is_some() {
+        (String::new(), String::new())
     } else {
-        crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true)
-            .await
-            .memory_context
+        let p =
+            crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true).await;
+        let game = if p.game.is_empty() || !mcp {
+            p.game
+        } else {
+            format!("{}\n{}", p.game, crate::bridges::GAME_MCP_NOTE)
+        };
+        (p.memory_context, game)
     };
     st.recent.append(&session, "user", &message, now);
     let ctx = Ctx::new(st.tool_env.clone(), &channel, &session).with_origin(origin);
@@ -1497,6 +1557,11 @@ async fn tools_turn(
             now,
             tz,
         );
+        let system = if game_system.is_empty() {
+            system
+        } else {
+            format!("{system}\n\n{game_system}")
+        };
         let msgs = vec![
             Message::system(system),
             Message::user(Prompts::user_block(USER_LABEL, &memory_context, &message)),

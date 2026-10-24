@@ -259,6 +259,10 @@ updated): Salling food-waste + Tjek flyer sources, the shopping-list matcher wit
 file `data/grocery/deal-synonyms.json`, the `grocery.deals.cheapest`/`grocery.deals.lunch` intents, and the Telegram
 digest/alert scheduler whose state file `data/grocery/deal-watch.json` must stay byte-compatible (INVENTORY §3). Port
 it with its recorded fixtures (`tests/fixtures/grocery-deals/`) as parity tests; until then only Node runs the watcher.
+Until then lucina-rs asks Node (`crates/lucina-server/src/node_deals.rs`, the reminder-forward token): it forwards
+`GET /api/secretary/grocery/deals/map` unchanged, and chat turns classified `grocery.offer.search`,
+`grocery.deals.cheapest` or `grocery.deals.lunch` take their reply from Node `POST /api/secretary/grocery/deals/answer`,
+with the Rust grocery reply as the fallback when Node cannot answer.
 
 Retirement: switch `lucina-nez` to a runtime without Lucina (`HERMES_RUNTIME` set to a value that disables
 `lucina`, for example `poko-routes`, after checking which OTHER-BOT pieces still need to run there), keep it on 8788

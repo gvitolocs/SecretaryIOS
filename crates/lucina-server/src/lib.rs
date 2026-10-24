@@ -18,6 +18,7 @@ pub mod delegation;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod node_deals;
 pub mod parity;
 pub mod planner;
 pub mod prompts;
@@ -61,6 +62,8 @@ pub struct Inner {
     pub usage: Option<Arc<UsageTotals>>,
     pub deepseek_has_key: KeyProbe,
     pub grocery: Option<Arc<GroceryRepo>>,
+    /// The Node Lucina's deals engine (map forward, deals answers).
+    pub node_deals: node_deals::NodeDeals,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
@@ -266,6 +269,11 @@ impl AppState {
             usage,
             deepseek_has_key: has_key,
             grocery,
+            node_deals: node_deals::NodeDeals::new(
+                &cfg.node_url,
+                cfg.node_token.clone(),
+                node_deals::TIMEOUT,
+            ),
             tool_env: Arc::new(env),
             registry,
             mcp_registry,

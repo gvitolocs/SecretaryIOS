@@ -338,6 +338,17 @@ async fn route(
         }
         return shopping_lists(st, method, uri, extra, fourth, body).await;
     }
+    // Deals stay on the Node Lucina until the port (PORT_PLAN phase 6).
+    if resource == Some("grocery")
+        && id == Some("deals")
+        && extra == Some("map")
+        && fourth.is_none()
+    {
+        if method != Method::GET {
+            return Err(ApiError::method_not_allowed(&["GET"]));
+        }
+        return st.node_deals.map(uri.query()).await;
+    }
     if extra.is_some() {
         return Err(ApiError::not_found());
     }

@@ -311,6 +311,30 @@ pub fn parse_grocery_intent_at(text: &str, now: DateTime<Utc>) -> Option<Grocery
         g
     };
 
+    // Deal questions (Node deals engine, src/grocery/intent.js): answered by
+    // the Node Lucina through /api/secretary/grocery/deals/answer.
+    if re!(r"(?:cheap.*healthy.*lunch|healthy.*cheap.*lunch|pranzo.*(?:economico|sano)|billig.*sund.*frokost)", "i").test(value) {
+        return Some(base("grocery.deals.lunch"));
+    }
+    let cheapest = [
+        re!(r"where\s+is\s+(.+?)\s+cheapest\b", "i"),
+        re!(r"where(?:['’]s| is)\s+the\s+cheapest\s+(.+)", "i"),
+        re!(r"dove\s+costa\s+meno\s+(.+)", "i"),
+        re!(r"dove\s+trovo\s+(.+?)\s+al\s+prezzo\s+più\s+basso", "i"),
+        re!(r"hvor\s+er\s+(.+?)\s+billigst", "i"),
+    ]
+    .into_iter()
+    .find_map(|r| r.exec(value).map(|c| group(&c, 1).to_owned()));
+    if let Some(raw) = cheapest {
+        let raw = re!(r"\s+(?:nearby|anywhere|ovunque|overalt)$", "i")
+            .replace(&clean_product_text(&raw), "")
+            .into_owned();
+        return Some(with_product("grocery.deals.cheapest", raw, false));
+    }
+    if re!(r"what['’]?s on offer for my (?:shopping )?list", "i").test(value) {
+        return Some(base("grocery.offer.search"));
+    }
+
     let past_question = asks_about_past(value);
     if !past_question && re!(r"\b(i (?:bought|purchased|got|picked up)|jeg købte|ho comprato|abbiamo comprato|ho preso|abbiamo preso)\b", "i").test(value) {
         let raw = product_after(value, re!(r"(?:i\s+(?:bought|purchased|got|picked up)|jeg\s+købte|ho\s+comprato|abbiamo\s+comprato|ho\s+preso|abbiamo\s+preso)\s+(.+)", "i"));
@@ -669,6 +693,41 @@ mod tests {
         assert_eq!(intent("ti ricordi quando abbiamo preso il pane?"), None);
         assert_eq!(intent("ciao come stai"), None);
         assert_eq!(intent("I need help with my essay"), None);
+    }
+
+    #[test]
+    fn deal_questions() {
+        // Node src/grocery/intent.js (deals engine).
+        assert_eq!(
+            intent("cheap healthy lunch nearby?"),
+            Some("grocery.deals.lunch")
+        );
+        assert_eq!(
+            intent("un pranzo sano ed economico qui vicino?"),
+            Some("grocery.deals.lunch")
+        );
+        assert_eq!(intent("billig sund frokost?"), Some("grocery.deals.lunch"));
+        let c = parse_grocery_intent("Where is prosciutto crudo cheapest?").unwrap();
+        assert_eq!(c.intent, "grocery.deals.cheapest");
+        assert_eq!(c.raw_product, "prosciutto crudo");
+        assert!(c.product.is_some());
+        let c = parse_grocery_intent("where's the cheapest milk anywhere").unwrap();
+        assert_eq!(
+            (c.intent, c.raw_product.as_str()),
+            ("grocery.deals.cheapest", "milk")
+        );
+        assert_eq!(
+            intent("dove costa meno il caffè?"),
+            Some("grocery.deals.cheapest")
+        );
+        assert_eq!(
+            intent("hvor er smør billigst?"),
+            Some("grocery.deals.cheapest")
+        );
+        let l = parse_grocery_intent("What's on offer for my shopping list?").unwrap();
+        assert_eq!(l.intent, "grocery.offer.search");
+        assert!(l.product.is_none() && l.raw_product.is_empty());
+        assert_eq!(intent("any good deals?"), Some("grocery.offer.search"));
     }
 
     #[test]
