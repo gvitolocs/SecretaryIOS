@@ -13,7 +13,7 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `calendar`, `shopping`, `presence`, `avatar_outfit`, `notify`,
+//!   `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
 //!   the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]),
 //!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
@@ -614,10 +614,11 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 19);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 17);
+        assert_eq!(all.names().len(), 20);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 18);
         let mcp = all.without(NO_MCP_TOOLS);
-        assert_eq!(mcp.names().len(), 13);
+        assert_eq!(mcp.names().len(), 14);
+        assert!(mcp.get("memos").is_some());
         for t in tools::delegate::DELEGATION_TOOLS
             .iter()
             .chain(OWNER_ONLY_TOOLS)
