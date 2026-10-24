@@ -134,6 +134,10 @@ final class AppModel {
             selectedTab = .chat
             showTasks = true
         }
+        if launch.openMemos {
+            selectedTab = .chat
+            showMemos = true
+        }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -373,6 +377,8 @@ struct LaunchOptions {
     var openNotes = false
     /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
     var openTasks = false
+    /// `-SecretaryInitialTab memos`: start on the voice memos.
+    var openMemos = false
 
     init(defaults: UserDefaults) {
         #if DEBUG
@@ -380,6 +386,7 @@ struct LaunchOptions {
         initialTab = defaults.string(forKey: "SecretaryInitialTab").flatMap(AppModel.Tab.init(rawValue:))
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
+        openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         #endif
     }
 }
