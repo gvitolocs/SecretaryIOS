@@ -5,6 +5,7 @@
 //! ```sh
 //! cargo run --manifest-path tools/design-tokens/Cargo.toml            # write the files
 //! cargo run --manifest-path tools/design-tokens/Cargo.toml -- --check # fail if any is stale
+//! cargo run --manifest-path tools/design-tokens/Cargo.toml -- --only android   # one platform (ios, web, compose, android)
 //! ```
 //!
 //! Outputs (never edit them by hand):
@@ -429,7 +430,12 @@ fn kotlin_plain(t: &Tokens) -> String {
 }
 
 fn main() -> ExitCode {
-    let check = std::env::args().any(|a| a == "--check");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let check = args.iter().any(|a| a == "--check");
+    // `--only android,web`: write (or check) just those outputs, for branches that carry one platform.
+    let only: Option<Vec<String>> = args.iter().position(|a| a == "--only")
+        .and_then(|i| args.get(i + 1))
+        .map(|list| list.split(',').map(|t| t.trim().to_owned()).collect());
     let root = repo_root();
     let source = root.join("design/tokens.json");
     let result = std::fs::read_to_string(&source)
@@ -445,17 +451,20 @@ fn main() -> ExitCode {
     };
     let plain = kotlin_plain(&tokens);
     let mut outputs = vec![
-        ("ios/Secretary/Shared/LucinaTokens.swift", swift(&tokens)),
-        ("web/src/styles/lucina-tokens.css", css(&tokens)),
-        ("design/generated/compose/LucinaTokens.kt", compose(&tokens)),
-        ("design/generated/android/LucinaTokens.kt", plain.clone()),
+        ("ios", "ios/Secretary/Shared/LucinaTokens.swift", swift(&tokens)),
+        ("web", "web/src/styles/lucina-tokens.css", css(&tokens)),
+        ("compose", "design/generated/compose/LucinaTokens.kt", compose(&tokens)),
+        ("android", "design/generated/android/LucinaTokens.kt", plain.clone()),
     ];
     // The framework-only Android apps (branch lucina-android) build android/common into each app.
     if root.join("android/common").is_dir() {
-        outputs.push(("android/common/LucinaTokens.kt", plain));
+        outputs.push(("android", "android/common/LucinaTokens.kt", plain));
+    }
+    if let Some(only) = &only {
+        outputs.retain(|(target, _, _)| only.iter().any(|t| t == target));
     }
     let mut stale = false;
-    for (path, content) in outputs {
+    for (_, path, content) in outputs {
         let file = root.join(path);
         if check {
             if std::fs::read_to_string(&file).ok().as_deref() != Some(content.as_str()) {
