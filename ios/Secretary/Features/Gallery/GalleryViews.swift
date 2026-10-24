@@ -69,7 +69,7 @@ final class GalleryStore {
     }
 }
 
-/// The Gallery screen. A plugin: the Plugins tab (or, until it exists, `galleryEntry()`) pushes it.
+/// The Gallery screen. A plugin: the Plugins tab's card pushes it (`app.showGallery`).
 struct GalleryScreen: View {
     @Environment(GalleryStore.self) private var store
     @Environment(PhotoBackup.self) private var backup
@@ -552,25 +552,3 @@ private struct FilterChips: View {
     }
 }
 
-/// The Gallery button on the chat, until the Plugins tab has its card.
-private struct GalleryEntry: ViewModifier {
-    @Environment(AppModel.self) private var app
-
-    func body(content: Content) -> some View {
-        @Bindable var app = app
-        content
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { app.showGallery = true } label: { Image(systemName: "photo.on.rectangle.angled") }
-                        .accessibilityLabel("Gallery")
-                        .accessibilityIdentifier("galleryButton")
-                }
-            }
-            .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
-    }
-}
-
-extension View {
-    /// The Gallery button and screen, on the chat.
-    func galleryEntry() -> some View { modifier(GalleryEntry()) }
-}
