@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ink-library",
+    "crates/ink-sync",
     "crates/ink-cli",
     "crates/secretary-core",
     "crates/secretary-server",

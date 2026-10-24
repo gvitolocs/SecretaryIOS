@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Formal verification gate (docs/verification.md):
-#   1. Stateright models  (verification/models: cargo test + the summary table)
+#   1. Stateright models  (verification/models: cargo test + the summary table), plus the
+#      property / fault-injection tests of the pure kernels they model (crates/ink-sync)
 #   2. TLC on every formal/**/*.cfg (each cfg's first line says MUST PASS or MUST FAIL)
 #   3. Verus on every verification/verus/*.rs (top level only: subdirectories such as
 #      verification/verus/diff/ hold plain-Rust differential tests, not Verus files)
@@ -56,6 +57,16 @@ if want models; then
     else
         tail -40 "$work/models-test.log"
         row models "cargo test -p verification-models" pass "FAIL" "see the output above"
+    fi
+    # Lucina Ink sync: the real apply under permutations + duplicates (proptest) and
+    # devices with crashes and torn writes over a flaky transport (docs/verification.md §6).
+    start=$(date +%s)
+    if cargo test -j"$CARGO_JOBS" -q -p ink-sync >"$work/ink-sync-test.log" 2>&1; then
+        row models "cargo test -p ink-sync (property + fault injection)" pass "PASS" \
+            "$(grep -oE '[0-9]+ passed' "$work/ink-sync-test.log" | awk '{n+=$1} END {print n}') tests, $(( $(date +%s) - start ))s"
+    else
+        tail -40 "$work/ink-sync-test.log"
+        row models "cargo test -p ink-sync (property + fault injection)" pass "FAIL" "see the output above"
     fi
     # The same cases as a table (states explored, depth, verdict per property).
     if cargo run -j"$CARGO_JOBS" -q -p verification-models --bin verify-models -- $([ "$deep" -eq 1 ] && echo --deep) \

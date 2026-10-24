@@ -1757,8 +1757,62 @@ one Kindle inventory, not independent per-device inventories.
 
 ### `GET /v1/library/sync`
 
-`{"imports":[…],"books":N,"highlights":N}`. Last 20 import log records,
-oldest first; logs contain counts and caller/source, never content.
+`{"imports":[…],"books":N,"highlights":N,"serverClock":N,"devices":{device:N},
+"pendingTombstones":[Tombstone],"recentConflicts":[Conflict]}`. Last 20 import log
+records, oldest first; logs contain counts and caller/source, never content.
+`serverClock` counts the device ops recorded; `devices` maps each device id to its
+largest contiguous applied counter; `recentConflicts` holds the 20 newest
+conflicts, newest first.
+
+### `POST /v1/library/sync`
+
+Local-first sync for reader devices (crate `ink-sync`; the future native reader,
+Mode B). A device appends every op durably to its own log (`ink_sync::outbox`,
+JSONL + fsync) before any network I/O, then sends unacked ops oldest first, in
+batches, retrying with exponential backoff and jitter. It never drops an unacked
+op and never re-sends an acked one after a restart.
+
+Body: `{"device":"kobo-1","ops":[Op]}`, at most 500 ops, every `opId` of that
+device (else `400`). Device ids are 1–64 characters `[A-Za-z0-9_.-]`.
+An op is `{"opId":"<device>:<counter>","at":RFC3339,"type":…,…}`; counters start at 1
+and only grow (the client never reuses one). Types:
+
+| `type` | fields | rule |
+|---|---|---|
+| `setProgress` | `bookId, anchor?, percent?, location?` | last writer wins by `(at, device, counter)`; an owner `PATCH` of progress sets a floor: device ops stamped at or before it lose |
+| `setStatus` | `bookId, status` (not `unknown`) | last writer wins by `(status = completed, at, device, counter)`: a device never moves a book back from `completed` (`protected`); an owner `PATCH` sets a floor like progress, and an owner `completed` freezes the status against every device op. Only the owner moves a book back from completed |
+| `addHighlight` | `bookId, kind? (highlight), text, anchor, note?` | grow-only set keyed by `device|bookId|kind|anchor|text` (whitespace collapsed); id `hl_` + 16 hex of SHA-256 of that key; the earliest op names `addedAt` |
+| `editNote` | `bookId, highlightId, note` (`null` clears) | last-writer-wins note per highlight id, device or Kindle highlights; a note also survives Kindle re-imports |
+| `deleteHighlight` | `bookId, highlightId` | recorded as an unconfirmed tombstone; **nothing is removed** until the owner confirms |
+| `startSession` / `endSession` | `bookId, sessionId, location?` | session start is the earliest, end the latest; sessions appear in `GET …/books/{id}` with `source:"device:<id>"` |
+
+Response: `{"acked":[opId],"conflicts":[Conflict],"serverClock":N}`. Every op the
+server recorded is acked, including duplicates, ops that lost, protected ops and
+invalid ops (rejected once, reported, never retried). An op far ahead of the
+device's applied counters (more than 1024 out of order) is not acked; the client
+retries it later. Apply is idempotent by op id (a replay changes nothing) and
+commutative, so two servers that apply the same ops in different orders hold the
+same content. A `Conflict` is `{opId,bookId,opType,kind,winner,detail}` with `kind`
+`superseded | protected | rejected | deleted`; conflicts are reported per request
+and kept in a bounded log (1000). Projected values carry `source:"device:<id>"`
+(progress, status) or `source:"device-sync"` (highlights). Ops on a book not in
+the library are kept and appear once the book is imported.
+
+Storage: `library/sync.json` (0600, atomic) holds the per-device watermarks (the
+largest contiguous counter plus a sparse set of out-of-order counters), the
+registers, tombstones and the conflict log. It is written before the book
+records it projects onto; loading re-projects it, so a crash between the two
+writes heals itself. Times are device clocks: a device with a fast clock wins
+last-writer-wins ties against others.
+
+### `POST /v1/library/sync/tombstones/{opId}/confirm`
+
+The owner confirms a device's `deleteHighlight`: the highlight is hidden from the
+library and stays hidden (Kindle re-imports and later `addHighlight` ops do not
+bring it back; such ops are reported as `deleted` conflicts). Device auth only:
+Lucina's service token gets `403 owner_required`. Unknown op ids return
+`404 tombstone_not_found`. Returns `{"tombstone":Tombstone}` with
+`{opId,bookId,highlightId,at,confirmed}`.
 
 ### `POST /v1/library/books/{id}/brief`
 

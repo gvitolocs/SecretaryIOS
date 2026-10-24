@@ -450,3 +450,262 @@ async fn dictionaries_import_but_default_lists_and_book_stats_exclude_them() {
     let (_, outcome) = h.call(Method::POST, "/v1/library/import", Some(b)).await;
     assert_eq!(outcome["booksUnchanged"], 3);
 }
+
+// ---- POST /v1/library/sync (ink-sync) ----------------------------------------------
+
+fn op(device: &str, n: u64, secs: i64, body: Value) -> Value {
+    let mut v = body;
+    v["opId"] = json!(format!("{device}:{n}"));
+    v["at"] = json!(chrono::DateTime::from_timestamp(1_790_000_000 + secs, 0)
+        .unwrap()
+        .to_rfc3339());
+    v
+}
+fn sync_body(device: &str, ops: Vec<Value>) -> Value {
+    json!({"device": device, "ops": ops})
+}
+impl H {
+    async fn restart(&mut self) {
+        let _ = self.stop.take().unwrap().send(());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let (base, stop) = start(&self.cfg).await;
+        self.base = base;
+        self.stop = Some(stop);
+    }
+}
+
+#[tokio::test]
+async fn sync_requires_auth_and_replays_are_noops() {
+    let mut h = H::new().await;
+    let (id, _) = h.import().await;
+    let body = sync_body(
+        "kobo-1",
+        vec![
+            op(
+                "kobo-1",
+                1,
+                10,
+                json!({"type":"setProgress","bookId":id,"anchor":"epubcfi(/6/4!/4/2)","percent":40.0}),
+            ),
+            op(
+                "kobo-1",
+                2,
+                11,
+                json!({"type":"addHighlight","bookId":id,"text":"A synced passage.","anchor":"epubcfi(/6/4!/4/8)","note":"mine"}),
+            ),
+            op(
+                "kobo-1",
+                3,
+                12,
+                json!({"type":"setStatus","bookId":id,"status":"reading"}),
+            ),
+            op(
+                "kobo-1",
+                4,
+                13,
+                json!({"type":"startSession","bookId":id,"sessionId":"kobo-1-s1","location":3}),
+            ),
+        ],
+    );
+    // Auth required.
+    let r = h
+        .http
+        .post(format!("{}/v1/library/sync", h.base))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    let (status, first) = h
+        .call(Method::POST, "/v1/library/sync", Some(body.clone()))
+        .await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(
+        first["acked"],
+        json!(["kobo-1:1", "kobo-1:2", "kobo-1:3", "kobo-1:4"])
+    );
+    assert_eq!(first["serverClock"], 4);
+    let path = format!("/v1/library/books/{id}");
+    let (_, book) = h.call(Method::GET, &path, None).await;
+    assert_eq!(book["book"]["progress"]["percent"], 40.0);
+    assert_eq!(book["book"]["progress"]["anchor"], "epubcfi(/6/4!/4/2)");
+    assert_eq!(book["book"]["progress"]["source"], "device:kobo-1");
+    assert_eq!(book["book"]["status"], "reading");
+    assert_eq!(book["book"]["statusSource"], "device:kobo-1");
+    let synced: Vec<_> = book["highlights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|h| h["source"] == "device-sync")
+        .collect();
+    assert_eq!(synced.len(), 1);
+    assert_eq!(synced[0]["note"], "mine");
+    assert_eq!(book["sessions"][0]["id"], "kobo-1-s1");
+    // A replay (lost response) is acked again and changes nothing.
+    let (status, again) = h
+        .call(Method::POST, "/v1/library/sync", Some(body.clone()))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(again["acked"], first["acked"]);
+    assert_eq!(again["serverClock"], 4);
+    assert_eq!(h.call(Method::GET, &path, None).await.1, book);
+    // Durable across a restart, and a replay after it is still a no-op.
+    h.restart().await;
+    assert_eq!(h.call(Method::GET, &path, None).await.1, book);
+    let (_, again) = h.call(Method::POST, "/v1/library/sync", Some(body)).await;
+    assert_eq!(again["serverClock"], 4);
+    assert_eq!(h.call(Method::GET, &path, None).await.1, book);
+    let (_, sync) = h.call(Method::GET, "/v1/library/sync", None).await;
+    assert_eq!(sync["serverClock"], 4);
+    assert_eq!(sync["devices"]["kobo-1"], 4);
+    // The envelope is checked: ops must belong to the request's device.
+    let bad = sync_body(
+        "kobo-1",
+        vec![op(
+            "kobo-2",
+            1,
+            1,
+            json!({"type":"setStatus","bookId":id,"status":"reading"}),
+        )],
+    );
+    assert_eq!(
+        h.call(Method::POST, "/v1/library/sync", Some(bad)).await.0,
+        400
+    );
+    assert_eq!(
+        h.call(
+            Method::POST,
+            "/v1/library/sync",
+            Some(json!({"device":"x","ops":"no"}))
+        )
+        .await
+        .0,
+        400
+    );
+}
+
+#[tokio::test]
+async fn sync_out_of_order_and_two_devices_converge() {
+    let h = H::new().await;
+    let (id, _) = h.import().await;
+    let p = |d: &str, n, secs, pct: f64| {
+        op(
+            d,
+            n,
+            secs,
+            json!({"type":"setProgress","bookId":id,"percent":pct}),
+        )
+    };
+    // kobo-1's ops arrive 3, 1, 2; boox-2's older position arrives last.
+    for (dev, ops) in [
+        ("kobo-1", vec![p("kobo-1", 3, 30, 30.0)]),
+        (
+            "kobo-1",
+            vec![p("kobo-1", 1, 10, 10.0), p("kobo-1", 2, 20, 20.0)],
+        ),
+        ("boox-2", vec![p("boox-2", 1, 25, 25.0)]),
+    ] {
+        let (status, r) = h
+            .call(Method::POST, "/v1/library/sync", Some(sync_body(dev, ops)))
+            .await;
+        assert_eq!(status, 200, "{r}");
+    }
+    let (_, book) = h
+        .call(Method::GET, &format!("/v1/library/books/{id}"), None)
+        .await;
+    assert_eq!(book["book"]["progress"]["percent"], 30.0);
+    let (_, sync) = h.call(Method::GET, "/v1/library/sync", None).await;
+    assert_eq!(sync["devices"], json!({"boox-2":1,"kobo-1":3}));
+    assert_eq!(sync["recentConflicts"][0]["opId"], "boox-2:1");
+    assert_eq!(sync["recentConflicts"][0]["winner"], "kobo-1:3");
+}
+
+#[tokio::test]
+async fn owner_completed_status_is_protected_and_deletions_need_the_owner() {
+    let h = H::new().await;
+    let (id, _) = h.import().await;
+    let path = format!("/v1/library/books/{id}");
+    let (status, _) = h
+        .call(Method::PATCH, &path, Some(json!({"status":"completed"})))
+        .await;
+    assert_eq!(status, 200);
+    // A device op stamped after the owner's edit still cannot revert it.
+    let future = chrono::Utc::now() + chrono::Duration::days(1);
+    let mut revert = json!({"type":"setStatus","bookId":id,"status":"reading","opId":"kobo-1:1"});
+    revert["at"] = json!(future.to_rfc3339());
+    let (status, r) = h
+        .call(
+            Method::POST,
+            "/v1/library/sync",
+            Some(sync_body("kobo-1", vec![revert])),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(r["acked"], json!(["kobo-1:1"]));
+    assert_eq!(r["conflicts"][0]["kind"], "protected");
+    let (_, book) = h.call(Method::GET, &path, None).await;
+    assert_eq!(book["book"]["status"], "completed");
+    assert_eq!(book["book"]["statusSource"], "owner");
+    // A deletion request is recorded, not applied.
+    let hl = book["highlights"][0]["id"].as_str().unwrap().to_owned();
+    let del = op(
+        "kobo-1",
+        2,
+        50,
+        json!({"type":"deleteHighlight","bookId":id,"highlightId":hl}),
+    );
+    let (_, r) = h
+        .call(
+            Method::POST,
+            "/v1/library/sync",
+            Some(sync_body("kobo-1", vec![del])),
+        )
+        .await;
+    assert_eq!(r["acked"], json!(["kobo-1:2"]));
+    assert_eq!(
+        h.call(Method::GET, &path, None).await.1["highlights"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let (_, sync) = h.call(Method::GET, "/v1/library/sync", None).await;
+    assert_eq!(sync["pendingTombstones"][0]["highlightId"], hl.as_str());
+    // Lucina cannot confirm; the owner's device can.
+    let confirm = format!("{}/v1/library/sync/tombstones/kobo-1:2/confirm", h.base);
+    let r = h
+        .http
+        .post(&confirm)
+        .bearer_auth(&h.service)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let (status, _) = h
+        .call(
+            Method::POST,
+            "/v1/library/sync/tombstones/kobo-1:9/confirm",
+            None,
+        )
+        .await;
+    assert_eq!(status, 404);
+    let (status, _) = h
+        .call(
+            Method::POST,
+            "/v1/library/sync/tombstones/kobo-1:2/confirm",
+            None,
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(h.call(Method::GET, &path, None).await.1["highlights"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // A re-import of the same clipping does not bring it back.
+    h.call(Method::POST, "/v1/library/import", Some(batch()))
+        .await;
+    assert!(h.call(Method::GET, &path, None).await.1["highlights"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
