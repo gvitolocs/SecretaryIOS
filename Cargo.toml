@@ -3,6 +3,10 @@ resolver = "2"
 members = [
     "crates/ink-library",
     "crates/ink-cli",
+    "crates/ink-kindle-hal",
+    "crates/ink-render",
+    "crates/ink-epub",
+    "apps/desktop-preview",
     "crates/secretary-core",
     "crates/secretary-server",
     "crates/secretary-gym",
