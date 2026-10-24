@@ -3,11 +3,9 @@ import SwiftUI
 
 struct WeightView: View {
     @Environment(WeightStore.self) private var store
-    @State private var quickValue = ""
     @State private var editing: BodyEntry?
     @State private var showSettings = false
-    @State private var logging = false
-    @FocusState private var quickFocused: Bool
+    @State private var adding = false
 
     var body: some View {
         List {
@@ -59,6 +57,11 @@ struct WeightView: View {
         .navigationTitle("Weight")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                Button { adding = true } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add measurement")
+                    .accessibilityIdentifier("weightAddButton")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { showSettings = true } label: { Image(systemName: "target") }
                     .accessibilityLabel("Goal and unit")
                     .disabled(store.view == nil)
@@ -66,43 +69,30 @@ struct WeightView: View {
         }
         .sheet(item: $editing) { entry in EntryEditor(entry: entry) }
         .sheet(isPresented: $showSettings) { WeightSettings() }
+        .sheet(isPresented: $adding) { QuickWeightSheet() }
         .task { if store.view == nil { await store.refresh() } }
     }
 
+    /// One tap opens the quick-entry sheet (weight focused, date and time set to now).
     private var quickLog: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "scalemass.fill").foregroundStyle(Theme.accent).accessibilityHidden(true)
-            TextField("Today's weight", text: $quickValue)
-                .keyboardType(.decimalPad)
-                .focused($quickFocused)
-                .font(.title3.monospacedDigit())
-                .accessibilityIdentifier("weightQuickField")
-            Text(store.unit.rawValue).foregroundStyle(.secondary)
-            Button {
-                Task { await log() }
-            } label: {
-                if logging { ProgressView() } else { Text("Log").bold() }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accentFill)
-            .disabled(quickValue.trimmingCharacters(in: .whitespaces).isEmpty || logging)
-            .accessibilityIdentifier("weightLogButton")
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
+        Button { adding = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "scalemass.fill").foregroundStyle(Theme.accent).accessibilityHidden(true)
+                Text("Today's weight")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { quickFocused = false }
+                Text(store.unit.rawValue).foregroundStyle(.secondary)
+                Image(systemName: "plus.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
             }
+            .contentShape(Rectangle())
         }
-    }
-
-    private func log() async {
-        logging = true
-        defer { logging = false }
-        if await store.log(quickValue) {
-            quickValue = ""
-            quickFocused = false
-        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add measurement")
+        .accessibilityIdentifier("weightQuickAdd")
     }
 
     private func statsGrid(_ view: BodyView) -> some View {
@@ -186,6 +176,71 @@ struct WeightView: View {
         .accessibilityElement(children: .combine)
         .accessibilityHint("Double-tap to edit, swipe to delete")
         .accessibilityIdentifier("weightEntry")
+    }
+}
+
+/// Strong-style "Add measurement": the weight field is focused with the decimal pad up,
+/// date and time start at now and can be moved back to log an earlier weigh-in.
+private struct QuickWeightSheet: View {
+    @Environment(WeightStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var value = ""
+    @State private var date = Date()
+    @State private var saving = false
+    @FocusState private var focused: Bool
+
+    /// The latest weigh-in as the placeholder, with the locale's decimal separator ("75,1").
+    private var lastValue: String? {
+        guard let grams = store.view?.entries.max(by: { $0.measuredMs < $1.measuredMs })?.weightGrams else { return nil }
+        return store.unit.number(grams: grams).replacingOccurrences(of: ".", with: Locale.current.decimalSeparator ?? ".")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Weight (\(store.unit.rawValue))") {
+                    TextField(text: $value, prompt: lastValue.map { Text(verbatim: $0) }) { Text("Weight") }
+                        .keyboardType(.decimalPad)
+                        .focused($focused)
+                        .font(.title2.monospacedDigit())
+                        .accessibilityIdentifier("weightSheetField")
+                }
+                Section {
+                    DatePicker("Date", selection: $date, in: ...Date(), displayedComponents: .date)
+                    DatePicker("Time of day", selection: $date, in: ...Date(), displayedComponents: .hourAndMinute)
+                        .accessibilityIdentifier("weightSheetTime")
+                }
+                if let error = store.actionError {
+                    Text(error).font(.footnote).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Add measurement")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("Close")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saving = true
+                        Task {
+                            defer { saving = false }
+                            if await store.log(value, at: date) { dismiss() }
+                        }
+                    }
+                    .bold()
+                    .disabled(value.trimmingCharacters(in: .whitespaces).isEmpty || saving)
+                    .accessibilityIdentifier("weightSaveButton")
+                }
+            }
+            .onAppear {
+                store.actionError = nil
+                date = Date()
+                focused = true
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

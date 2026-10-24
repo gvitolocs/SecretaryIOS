@@ -4755,6 +4755,7 @@
       }
     },
     "Log" : {
+      "extractionState" : "stale",
       "localizations" : {
         "da" : {
           "stringUnit" : {
@@ -9779,6 +9780,22 @@
         }
       }
     },
+    "Time of day" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ora"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tidspunkt"
+          }
+        }
+      }
+    },
     "Timer" : {
       "localizations" : {
         "da" : {
@@ -10995,6 +11012,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Peso e ripetizioni"
+          }
+        }
+      }
+    },
+    "Weight (%@)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peso (%@)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vægt (%@)"
           }
         }
       }
