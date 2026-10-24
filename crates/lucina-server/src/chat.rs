@@ -782,12 +782,26 @@ async fn json_turn(
     }
 
     // The deterministic grocery path (same as a Telegram text turn).
+    let grocery_intent = gi::parse_grocery_intent(&t.message).map(|g| g.intent);
     if t.mcp.is_some() {
-        if let Some(g) = gi::parse_grocery_intent(&t.message) {
-            if !mcp::ALLOWED_GROCERY_INTENTS.contains(&g.intent) {
-                tracing::warn!(session_id = %t.session, blocked = g.intent, "secretary mcp turn refused");
-                return Finish::refusal(&persona, g.intent);
+        if let Some(intent) = grocery_intent {
+            if !mcp::ALLOWED_GROCERY_INTENTS.contains(&intent) {
+                tracing::warn!(session_id = %t.session, blocked = intent, "secretary mcp turn refused");
+                return Finish::refusal(&persona, intent);
             }
+        }
+    }
+    // Deal questions: the Node Lucina's deals engine answers (Node stays
+    // canonical for deals until the port); the Rust grocery path below is
+    // the fallback when Node cannot.
+    if let Some(intent) = grocery_intent.filter(|i| crate::node_deals::DEALS_INTENTS.contains(i)) {
+        if let Some((reply, node_intent)) = st.node_deals.answer(&t.message, &t.channel).await {
+            let intent = if node_intent.is_empty() {
+                intent.to_owned()
+            } else {
+                node_intent
+            };
+            return Finish::reply(reply, "grocery").with(intent, None);
         }
     }
     match crate::grocery_turn::process(
