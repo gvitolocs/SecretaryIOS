@@ -9,62 +9,97 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
+import android.view.View
+import android.widget.Switch
 import android.widget.TextView
 import org.json.JSONObject
+import tech.getsecretary.design.LucinaUi
+import tech.getsecretary.design.ValueRow
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
-    private lateinit var status: TextView
-    private lateinit var notify: Button
+    private lateinit var ui: LucinaUi
+    private lateinit var summary: TextView
+    private lateinit var error: TextView
+    private lateinit var sms: ValueRow
+    private lateinit var forwarding: ValueRow
+    private lateinit var pairing: ValueRow
+    private lateinit var notifRow: ValueRow
+    private lateinit var pending: ValueRow
+    private lateinit var last: ValueRow
+    private lateinit var parser: ValueRow
+    private lateinit var version: ValueRow
+    private lateinit var access: ValueRow
+    private lateinit var notify: Switch
+    private lateinit var test: ValueRow
     private val worker = Executors.newSingleThreadExecutor()
-    private var notifications = false
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         cleanupLegacyNotification(this)
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 48, 32, 32)
-        }
-        setContentView(ScrollView(this).apply { addView(panel) })
-        panel.addView(TextView(this).apply { text = "Lucina OTP"; textSize = 28f })
-        panel.addView(TextView(this).apply {
-            text = "Forwards one-time codes from incoming SMS (and, if you allow it, notifications) to your private " +
-                "Lucina chat. Android wakes the app for each SMS; it sends over HTTPS and exits. No running service, " +
-                "SMS history, contacts or sending permission. Codes expire within minutes; match the code to the " +
-                "service you requested.\n"
+        ui = LucinaUi(this)
+        val page = ui.screen(this)
+        page.addView(ui.largeTitle("Lucina OTP"))
+        summary = ui.chip("Checking…", ui.c.textSecondary)
+        page.addView(summary)
+        error = ui.footnote("").apply { setTextColor(ui.c.negative); visibility = View.GONE }
+        page.addView(error)
+
+        page.addView(ui.sectionHeader("Status"))
+        sms = ui.valueRow("Incoming SMS")
+        forwarding = ui.valueRow("Forwarding")
+        pairing = ui.valueRow("Internet pairing")
+        notifRow = ui.valueRow("Notifications")
+        pending = ui.valueRow("Queued")
+        last = ui.valueRow("Last result")
+        parser = ui.valueRow("Parser self-test")
+        version = ui.valueRow("Version")
+        page.addView(ui.group(sms.view, forwarding.view, pairing.view, notifRow.view, pending.view, last.view, parser.view, version.view))
+
+        page.addView(ui.sectionHeader("SMS forwarding"))
+        page.addView(ui.card().apply {
+            addView(ui.pair(
+                ui.primaryButton("Enable") {
+                    if (checkSelfPermission(Manifest.permission.RECEIVE_SMS) != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS), 1)
+                    } else {
+                        configure(JSONObject().put("enabled", true))
+                    }
+                },
+                ui.secondaryButton("Disable") { configure(JSONObject().put("enabled", false)) },
+            ))
         })
-        status = TextView(this)
-        panel.addView(status)
-        panel.addView(button("Enable SMS forwarding") {
-            if (checkSelfPermission(Manifest.permission.RECEIVE_SMS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS), 1)
-            } else {
-                configure(JSONObject().put("enabled", true))
-            }
-        })
-        panel.addView(button("Disable forwarding") { configure(JSONObject().put("enabled", false)) })
-        panel.addView(button("Notification access") {
+
+        page.addView(ui.sectionHeader("Notifications and relay"))
+        access = ui.valueRow("Notification access", chevron = true) {
             startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-        })
-        notify = button("Forward notifications: …") { configure(JSONObject().put("notifications", !notifications)) }
-        panel.addView(notify)
-        panel.addView(button("Test connection") {
-            status.text = "Testing…\n"
+        }
+        val (toggle, sw) = ui.toggleRow("Forward notifications") { on -> configure(JSONObject().put("notifications", on)) }
+        notify = sw
+        test = ui.actionRow("Test connection") {
+            test.set("Testing…")
             background {
                 val r = JSONObject(Native.selfTest(true))
-                val line = "Test: ${r.optString("result")} in ${r.optLong("ms")} ms (parser ${if (r.optBoolean("parse")) "ok" else "FAILED"})"
-                refresh(line)
+                val result = r.optString("result")
+                val parse = r.optBoolean("parse")
+                val line = "${label(result)} in ${r.optLong("ms")} ms" + if (parse) "" else ", parser FAILED"
+                runOnUiThread { test.set(line, if (parse) resultColor(result) else ui.c.negative) }
+                refresh()
             }
-        })
+        }
+        page.addView(ui.group(access.view, toggle, test.view))
+
+        page.addView(ui.footnote(
+            "Forwards one-time codes from incoming SMS (and, if you allow it, notifications) to your private " +
+                "Lucina chat. Android wakes the app for each SMS; it sends over HTTPS and exits. No running service, " +
+                "SMS history, contacts or sending permission. Codes expire within minutes; match the code to the " +
+                "service you requested.",
+        ).apply { (layoutParams as android.widget.LinearLayout.LayoutParams).topMargin = ui.dp(20f) })
     }
 
     override fun onResume() {
         super.onResume()
-        background { refresh(null) }
+        background { refresh() }
     }
 
     override fun onDestroy() {
@@ -77,21 +112,16 @@ class MainActivity : Activity() {
         if (r == 1 && checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED) {
             configure(JSONObject().put("enabled", true))
         } else {
-            background { refresh(null) }
+            background { refresh() }
         }
-    }
-
-    private fun button(label: String, onClick: () -> Unit) = Button(this).apply {
-        text = label
-        setOnClickListener { onClick() }
     }
 
     private fun configure(patch: JSONObject) = background {
         Native.configure(patch.toString())
-        refresh(null)
+        refresh()
     }
 
-    /** Runs native work off the main thread; any failure shows up in the status line. */
+    /** Runs native work off the main thread; any failure shows up under the title. */
     private fun background(work: () -> Unit) {
         try {
             worker.execute {
@@ -99,38 +129,61 @@ class MainActivity : Activity() {
                     Core.ensure(this)
                     work()
                 } catch (t: Throwable) {
-                    runOnUiThread { status.text = "Core unavailable: ${t.javaClass.simpleName}\n" }
+                    runOnUiThread {
+                        error.text = "Core unavailable: ${t.javaClass.simpleName}"
+                        error.visibility = View.VISIBLE
+                    }
                 }
             }
         } catch (_: java.util.concurrent.RejectedExecutionException) {
         }
     }
 
-    /** Worker thread: reads status() and posts the text to the UI. */
-    private fun refresh(extra: String?) {
+    private fun label(result: String) = result.ifEmpty { "none" }.replace('_', ' ')
+
+    private fun resultColor(result: String): Int? = when (result) {
+        "sent" -> ui.c.positive
+        "queued", "paused", "duplicate" -> ui.c.warning
+        "", "disabled", "not_otp" -> null
+        else -> ui.c.negative
+    }
+
+    /** Worker thread: reads status() and posts it to the rows. */
+    private fun refresh() {
         val s = JSONObject(Native.status())
-        val sms = checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
-        val access = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+        val smsOk = checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED
+        val granted = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
             ?.contains(packageName) == true
         val on = s.optBoolean("notifications")
-        val last = s.optString("lastResult").ifEmpty { "none" }
-        val latency = if (s.has("lastLatencyMs") && !s.isNull("lastLatencyMs")) " (${s.optLong("lastLatencyMs")} ms)" else ""
-        val text = buildString {
-            append("Incoming SMS: ").append(if (sms) "allowed" else "not allowed").append('\n')
-            append("Forwarding: ").append(if (s.optBoolean("enabled")) "enabled" else "off").append('\n')
-            append("Notifications: ").append(if (on) "forwarded" else "off")
-                .append(if (access) ", access granted" else ", no access").append('\n')
-            append("Internet pairing: ").append(if (s.optBoolean("paired")) "ready" else "not configured").append('\n')
-            append("Queued: ").append(s.optInt("pending")).append('\n')
-            append("Last: ").append(last).append(latency).append('\n')
-            append("Parser self-test: ").append(if (s.optBoolean("selfTest")) "ok" else "FAILED").append('\n')
-            append("Version ").append(s.optString("version")).append(", protocol ").append(s.optInt("protocol")).append('\n')
-            if (extra != null) append(extra).append('\n')
-        }
+        val enabled = s.optBoolean("enabled")
+        val paired = s.optBoolean("paired")
+        val queued = s.optInt("pending")
+        val result = if (s.isNull("lastResult")) "" else s.optString("lastResult")
+        val latency = if (s.has("lastLatencyMs") && !s.isNull("lastLatencyMs")) " · ${s.optLong("lastLatencyMs")} ms" else ""
+        val selfTest = s.optBoolean("selfTest")
+        val ver = "${s.optString("version")} · protocol ${s.optInt("protocol")}"
         runOnUiThread {
-            notifications = on
-            notify.text = if (on) "Stop forwarding notifications" else "Forward notifications"
-            status.text = text
+            val c = ui.c
+            error.visibility = View.GONE
+            sms.set(if (smsOk) "Allowed" else "Not allowed", if (smsOk) c.positive else c.negative)
+            forwarding.set(if (enabled) "Enabled" else "Off", if (enabled) c.positive else c.warning)
+            pairing.set(if (paired) "Ready" else "Not configured", if (paired) c.positive else c.negative)
+            notifRow.set(
+                (if (on) "Forwarded" else "Off") + if (granted) ", access granted" else ", no access",
+                if (on && granted) c.positive else if (on) c.warning else null,
+            )
+            pending.set(queued.toString(), if (queued > 0) c.warning else null)
+            last.set(label(result) + latency, resultColor(result))
+            parser.set(if (selfTest) "OK" else "FAILED", if (selfTest) c.positive else c.negative)
+            version.set(ver)
+            access.set(if (granted) "Granted" else "Not granted")
+            notify.isChecked = on
+            when {
+                !smsOk || !paired || !selfTest -> ui.recolor(summary, "Needs setup", c.negative)
+                !enabled -> ui.recolor(summary, "Forwarding off", c.warning)
+                queued > 0 -> ui.recolor(summary, "$queued queued", c.warning)
+                else -> ui.recolor(summary, "Forwarding active", c.positive)
+            }
         }
     }
 

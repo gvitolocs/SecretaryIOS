@@ -11,7 +11,7 @@
     <application
         android:label="Lucina OTP"
         android:icon="@android:drawable/ic_lock_lock"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:extractNativeLibs="false">
