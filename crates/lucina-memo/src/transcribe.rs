@@ -106,6 +106,16 @@ pub enum SttError {
     /// No VRAM lease within the wait and no CPU model.
     #[error("GPU busy (no gpu-lease within {0:?}) and no CPU model configured")]
     GpuBusy(Duration),
+    /// The model file is not there (it lives on the MyBook, locked after a reboot).
+    #[error("Whisper model not available ({0}); is the MyBook unlocked?")]
+    ModelMissing(std::path::PathBuf),
+}
+
+impl SttError {
+    /// Worth waiting for (GPU or model back later), not a failure of this memo.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, SttError::GpuBusy(_) | SttError::ModelMissing(_))
+    }
 }
 
 /// Decodes `input` to `wav` (16 kHz mono s16) and returns its duration.
@@ -183,6 +193,10 @@ pub async fn transcribe(
     duration_sec: f64,
     gpu_wait: Duration,
 ) -> Result<Transcript, SttError> {
+    if !cfg.model.is_file() {
+        tracing::warn!(model = %cfg.model.display(), "Whisper model missing");
+        return Err(SttError::ModelMissing(cfg.model.clone()));
+    }
     let prefix = work.join("whisper");
     let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait).await;
     let (out, engine) = match gpu {
@@ -397,6 +411,15 @@ mod tests {
             t.text(),
             "Domani chiamo Marco per il preventivo. Poi la palestra alle sette."
         );
+    }
+
+    #[tokio::test]
+    async fn a_missing_model_is_transient() {
+        let mut cfg = WhisperConfig::from_lookup(|_| None);
+        cfg.model = "/nonexistent/ggml-large-v3.bin".into();
+        let dir = std::env::temp_dir();
+        let e = transcribe(&cfg, &dir.join("x.wav"), &dir, 1.0, Duration::ZERO).await.unwrap_err();
+        assert!(matches!(e, SttError::ModelMissing(_)) && e.is_transient(), "{e}");
     }
 
     #[test]

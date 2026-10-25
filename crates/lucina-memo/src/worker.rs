@@ -130,17 +130,18 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             let (t, source) =
                 match transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, wait).await {
                     Ok(t) => (t, "whisper"),
-                    Err(transcribe::SttError::GpuBusy(_)) => match device {
+                    Err(e) if e.is_transient() => match device {
                         Some(d) => {
-                            tracing::info!(%id, "GPU busy: using the iPhone's transcript for now");
+                            tracing::info!(%id, reason = %e, "using the iPhone's transcript for now");
                             (d, "device")
                         }
                         None => {
                             let _ = tokio::fs::remove_file(&wav).await;
-                            return Err(StepError::Later(
-                                Duration::from_secs(60),
-                                "waiting for the GPU".into(),
-                            ));
+                            let why = match e {
+                                transcribe::SttError::ModelMissing(_) => "waiting for the Whisper model (MyBook locked?)",
+                                _ => "waiting for the GPU",
+                            };
+                            return Err(StepError::Later(Duration::from_secs(60), why.into()));
                         }
                     },
                     Err(e) => return Err(e.into()),
@@ -358,7 +359,7 @@ async fn upgrade_one(app: &App) -> bool {
         Err(e) => {
             let busy = e
                 .downcast_ref::<transcribe::SttError>()
-                .is_some_and(|e| matches!(e, transcribe::SttError::GpuBusy(_)));
+                .is_some_and(transcribe::SttError::is_transient);
             if !busy {
                 tracing::warn!(%id, error = %e, "Whisper upgrade failed");
                 let _ = app.store.update(&id, |m| m.upgrade_attempts += 1);
