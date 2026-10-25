@@ -625,6 +625,11 @@ impl DealWatch {
         &self.settings
     }
 
+    /// The watch clock (epoch milliseconds).
+    pub fn now(&self) -> i64 {
+        (self.clock)()
+    }
+
     pub fn settings_mut(&mut self) -> &mut WatchSettings {
         &mut self.settings
     }

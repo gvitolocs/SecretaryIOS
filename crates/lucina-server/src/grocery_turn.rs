@@ -115,8 +115,8 @@ pub async fn process(
         return Ok(None);
     };
     let intent = parsed.intent;
-    // Deal questions reach here only when the Node deals engine could not
-    // answer (crate::node_deals); Node's own reply for that case.
+    // Deal questions reach here only when the deals engine could not answer
+    // (crate::deals: no home coordinates); Node's own reply for that case.
     if intent.starts_with("grocery.deals.") {
         return Ok(handled(
             intent,

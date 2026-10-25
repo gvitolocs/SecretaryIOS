@@ -10,6 +10,9 @@
 //!   `LUCINA_OWNER_DISCORD_USER_ID`. Exit code 78 on a fatal gateway close
 //!   (bad token, disallowed intents): systemd must not restart into an
 //!   identify loop.
+//! - `lucina deals list|cheapest <q>|lunch|map|digest|alerts [--dry-run|--send]`:
+//!   the grocery deals checks of Node's `scripts/grocery-deals.mjs` (dry run
+//!   unless `--send`; logs go to stderr).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -168,6 +171,13 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         expect_rust: usize,
     },
+    /// Grocery deals near home: list | cheapest <query> | lunch | map | digest | alerts
+    /// [--dry-run|--send] [--channel app|telegram|both] [--user ID] [--fixtures DIR]
+    /// [--items "A,B"] [--radiusM 500-15000]. Digest and alerts are dry runs unless --send.
+    Deals {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Watch the owner's Discord presence (separate gateway session).
     PresenceWatch {
         /// Data dir (default LUCINA_DATA_DIR or ./data); files go to <data>/presence.
@@ -291,16 +301,28 @@ fn check_data(dir: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 fn main() -> anyhow::Result<()> {
+    let cmd = Cli::parse().cmd.unwrap_or(Cmd::Serve);
+    let filter = |default: &str| {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
+    };
     // Logs are a sink: every formatted line goes through the redactor.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_writer(lucina_secrets::log::RedactingMakeWriter::new(
-            std::io::stdout,
-        ))
-        .init();
-    match Cli::parse().cmd.unwrap_or(Cmd::Serve) {
+    // `deals` prints its results on stdout, so its logs go to stderr.
+    if matches!(cmd, Cmd::Deals { .. }) {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter("warn"))
+            .with_writer(lucina_secrets::log::RedactingMakeWriter::new(
+                std::io::stderr,
+            ))
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter("info"))
+            .with_writer(lucina_secrets::log::RedactingMakeWriter::new(
+                std::io::stdout,
+            ))
+            .init();
+    }
+    match cmd {
         Cmd::PresenceWatch { data, token_file } => presence_watch(data, token_file),
         cmd => tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -312,6 +334,12 @@ fn main() -> anyhow::Result<()> {
 async fn run(cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
         Cmd::PresenceWatch { .. } => unreachable!("handled in main"),
+        Cmd::Deals { args } => {
+            let code = lucina_server::deals::cli(args).await;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         Cmd::Serve => {
             let cfg = Config::from_env()?;
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");

@@ -14,11 +14,11 @@ pub mod capabilities;
 pub mod chat;
 pub mod config;
 pub mod context;
+pub mod deals;
 pub mod delegation;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
-pub mod node_deals;
 pub mod parity;
 pub mod planner;
 pub mod prompts;
@@ -62,8 +62,8 @@ pub struct Inner {
     pub usage: Option<Arc<UsageTotals>>,
     pub deepseek_has_key: KeyProbe,
     pub grocery: Option<Arc<GroceryRepo>>,
-    /// The Node Lucina's deals engine (map forward, deals answers).
-    pub node_deals: node_deals::NodeDeals,
+    /// The grocery deals engine (`crate::deals`); `None` without home coordinates.
+    pub deals: Option<Arc<lucina_deals::DealsEngine>>,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
@@ -131,12 +131,8 @@ impl AppState {
             WriterKind::Local => Arc::new(LocalWriter(reminders.clone())),
             WriterKind::Node => Arc::new(NodeForwarder::new(&cfg.node_url, cfg.node_token.clone())),
         };
-        let grocery = match &cfg.grocery_database_url {
-            Some(url) => {
-                let catalog = Catalog::from_paths(Catalog::default_paths(
-                    cfg.shopping_catalog_path.clone(),
-                    &cfg.data_dir,
-                ));
+        let grocery = match connect_grocery(&cfg)? {
+            Some(repo) => {
                 // New custom shopping items are named in it/en/da by one model call
                 // (DeepSeek; LUCINA_SHOPPING_TRANSLATE=off turns it off).
                 let namer_model = model.clone();
@@ -158,9 +154,7 @@ impl AppState {
                         .map(|r| r.message.text().to_owned())
                     })
                 });
-                Some(Arc::new(
-                    GroceryRepo::connect_lazy(url, catalog)?.with_namer(namer),
-                ))
+                Some(Arc::new(repo.with_namer(namer)))
             }
             None => None,
         };
@@ -189,10 +183,16 @@ impl AppState {
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| std::path::Path::new(&h).join(".config/lucina-memo/service.token")))
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::Path::new(&h).join(".config/lucina-memo/service.token"))
+            })
             .filter(|p| p.is_file());
         if let Some(token) = memo_token {
-            env.memo_url = Some(std::env::var("LUCINA_MEMO_URL").unwrap_or_else(|_| "http://127.0.0.1:8795".into()));
+            env.memo_url = Some(
+                std::env::var("LUCINA_MEMO_URL").unwrap_or_else(|_| "http://127.0.0.1:8795".into()),
+            );
             env.memo_token_file = Some(token);
         }
         let env_http = env.http.clone();
@@ -247,6 +247,7 @@ impl AppState {
         // MCP turns: no owner-only tools and no delegation, ever.
         let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
         let prompts = prompts::Prompts::load(&cfg);
+        let deals = deals::engine(&cfg, grocery.clone());
         let inner = Inner {
             timeline,
             reminders,
@@ -269,11 +270,7 @@ impl AppState {
             usage,
             deepseek_has_key: has_key,
             grocery,
-            node_deals: node_deals::NodeDeals::new(
-                &cfg.node_url,
-                cfg.node_token.clone(),
-                node_deals::TIMEOUT,
-            ),
+            deals,
             tool_env: Arc::new(env),
             registry,
             mcp_registry,
@@ -308,7 +305,17 @@ impl AppState {
         Ok(Self(Arc::new(inner)))
     }
 
-    /// Background tasks: the reminder scheduler only when `LUCINA_SCHEDULER=true`.
+    /// Replace the deals engine (tests: fixtures and a fixed clock). Only
+    /// before the state is shared.
+    pub fn with_deals(mut self, engine: Option<Arc<lucina_deals::DealsEngine>>) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("with_deals before the state is shared")
+            .deals = engine;
+        self
+    }
+
+    /// Background tasks: the grocery deal watch when `GROCERY_OFFER_WATCH_ENABLED=true`,
+    /// the reminder scheduler only when `LUCINA_SCHEDULER=true`.
     pub fn spawn_background(&self) {
         // Learn every value in Lucina's Infisical folder, so the redactor
         // masks a secret even before a tool first uses it.
@@ -328,6 +335,8 @@ impl AppState {
         if self.cfg.telegram_requested || self.cfg.discord_requested {
             tracing::warn!("LUCINA_TELEGRAM_ENABLED/LUCINA_DISCORD_ENABLED: channels are not part of this build; they stay off");
         }
+        // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
+        deals::spawn_watch(self);
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {
                 tracing::warn!("LUCINA_SCHEDULER=true ignored: reminders.json is owned by the Node Lucina (LUCINA_REMINDERS_WRITER=node)");
@@ -346,6 +355,18 @@ impl AppState {
             );
         }
     }
+}
+
+/// The grocery repository (`GROCERY_DATABASE_URL`), connected lazily; `None` without one.
+pub fn connect_grocery(cfg: &Config) -> anyhow::Result<Option<GroceryRepo>> {
+    let Some(url) = &cfg.grocery_database_url else {
+        return Ok(None);
+    };
+    let catalog = Catalog::from_paths(Catalog::default_paths(
+        cfg.shopping_catalog_path.clone(),
+        &cfg.data_dir,
+    ));
+    Ok(Some(GroceryRepo::connect_lazy(url, catalog)?))
 }
 
 /// The full router.

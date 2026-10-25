@@ -109,6 +109,10 @@ pub struct Config {
     // grocery
     pub grocery_database_url: Option<String>,
     pub shopping_catalog_path: Option<PathBuf>,
+    /// Grocery deals near home (Node's `config.grocery` deal fields).
+    pub deals: lucina_deals::DealsConfig,
+    /// The deal watch (`GROCERY_OFFER_WATCH_ENABLED`, `GROCERY_DEALS_*`).
+    pub deal_watch: lucina_deals::WatchConfig,
     // llm + planner
     pub deepseek: DeepSeekConfig,
     pub planner: PlannerMode,
@@ -174,6 +178,8 @@ impl std::fmt::Debug for Config {
             .field("secrets_config", &self.secrets_config)
             .field("meshy", &self.meshy.enabled)
             .field("delegate", &self.delegate_enabled)
+            .field("deals", &self.deals.has_home())
+            .field("deal_watch", &self.deal_watch.enabled)
             .finish_non_exhaustive()
     }
 }
@@ -392,6 +398,8 @@ impl Config {
                 .and_then(|p| read_secret_file(&p))
                 .or_else(|| get("GROCERY_DATABASE_URL")),
             shopping_catalog_path: get("LUCINA_SHOPPING_CATALOG_PATH").map(PathBuf::from),
+            deals: lucina_deals::DealsConfig::from_lookup(&get, &data_dir),
+            deal_watch: lucina_deals::WatchConfig::from_lookup(&get, &data_dir),
             deepseek: DeepSeekConfig::from_lookup(&get),
             planner: match get("LUCINA_PLANNER").as_deref().map(str::trim) {
                 Some("tools") => PlannerMode::Tools,

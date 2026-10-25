@@ -1760,6 +1760,7 @@ dependencies = [
  "tokio",
  "tracing",
  "unicode-normalization",
+ "wiremock",
 ]
 
 [[package]]
@@ -1980,6 +1981,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "futures-util",
+ "lucina-deals",
  "lucina-delegate",
  "lucina-discord",
  "lucina-grocery",

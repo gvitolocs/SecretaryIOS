@@ -94,6 +94,7 @@ pub fn register_bootstrap(cfg: &Config) -> usize {
     );
     add("DSH_TOKEN", cfg.dsh.token.clone());
     add("DSH_TOKEN", file_value(&cfg.dsh.token_file));
+    add("SALLING_API_KEY", cfg.deals.salling_api_key.clone());
     // postgres://user:password@host/db
     add(
         "GROCERY_DATABASE_PASSWORD",

@@ -804,16 +804,15 @@ async fn json_turn(
             }
         }
     }
-    // Deal questions: the Node Lucina's deals engine answers (Node stays
-    // canonical for deals until the port); the Rust grocery path below is
-    // the fallback when Node cannot.
-    if let Some(intent) = grocery_intent.filter(|i| crate::node_deals::DEALS_INTENTS.contains(i)) {
-        if let Some((reply, node_intent)) = st.node_deals.answer(&t.message, &t.channel).await {
-            let intent = if node_intent.is_empty() {
-                intent.to_owned()
-            } else {
-                node_intent
-            };
+    // Deal questions: the deals engine answers (crate::deals); the grocery
+    // path below takes what it cannot (as Node's grocery process()).
+    if let (Some(engine), Some(_)) = (
+        st.deals.as_deref(),
+        grocery_intent.filter(|i| crate::deals::DEALS_INTENTS.contains(i)),
+    ) {
+        if let Some((reply, intent)) =
+            crate::deals::answer(engine, &st.cfg.grocery_user_id, &t.message).await
+        {
             return Finish::reply(reply, "grocery").with(intent, None);
         }
     }
@@ -848,7 +847,9 @@ async fn json_turn(
     // state and can pass advice to her playing self (game_hint).
     let game_live = t.mcp.is_none() && !prepared.game.is_empty();
     let routed = if game_live {
-        st.planner.plan_response(&t.input(memory, PLANNER_PLATFORM)).await
+        st.planner
+            .plan_response(&t.input(memory, PLANNER_PLATFORM))
+            .await
     } else {
         st.planner
             .route_classified(
@@ -895,23 +896,35 @@ async fn json_turn(
             .filter(|s| !s.is_empty())
             .unwrap_or(&t.message)
             .to_owned();
-        let ack = plan["ack"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let ack = plan["ack"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         return match crate::bridges::game_hint(&st.secretary.http, &text).await {
             Ok(_) => Finish::reply(
-                ack.unwrap_or("Passed it to my playing self: I'll act on it in the game.").to_owned(),
+                ack.unwrap_or("Passed it to my playing self: I'll act on it in the game.")
+                    .to_owned(),
                 "game",
             )
-            .with(format!("[game hint queued] {text}"), Some(Meta::kind("game"))),
+            .with(
+                format!("[game hint queued] {text}"),
+                Some(Meta::kind("game")),
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "game hint failed");
-                Finish::reply("I couldn't reach my game right now, so the advice didn't get through.", "game")
-                    .with("[game hint failed]", Some(Meta::kind("game")))
+                Finish::reply(
+                    "I couldn't reach my game right now, so the advice didn't get through.",
+                    "game",
+                )
+                .with("[game hint failed]", Some(Meta::kind("game")))
             }
         };
     }
     if action == "game_start" || action == "game_pause" {
         let running = action == "game_start";
-        let ok = crate::bridges::game_control(&st.secretary.http, running).await.is_ok();
+        let ok = crate::bridges::game_control(&st.secretary.http, running)
+            .await
+            .is_ok();
         let lang = lucina_intent::tasks::guess_lang(&t.message);
         let text = if ok {
             lucina_intent::game::control_reply(lang, running, true).to_owned()
@@ -919,7 +932,11 @@ async fn json_turn(
             lucina_intent::game::off(lang).to_owned()
         };
         return Finish::reply(text, "game").with(
-            format!("[game {} {}]", if running { "start" } else { "pause" }, if ok { "ok" } else { "failed" }),
+            format!(
+                "[game {} {}]",
+                if running { "start" } else { "pause" },
+                if ok { "ok" } else { "failed" }
+            ),
             Some(Meta::kind("game")),
         );
     }
@@ -1393,7 +1410,11 @@ fn remember_job(
 
 /// "Show in Gallery" (the app opens the path; web and older clients ignore unknown routes).
 fn gallery_action(path: &str, count: usize) -> Value {
-    let label = if count == 1 { "Show the photo".to_owned() } else { format!("Show {count} in Gallery") };
+    let label = if count == 1 {
+        "Show the photo".to_owned()
+    } else {
+        format!("Show {count} in Gallery")
+    };
     json!({"id": "gallery", "label": label, "emoji": "🖼️", "kind": "route", "payload": {"path": path}})
 }
 
@@ -1503,8 +1524,15 @@ async fn tools_turn(
     let (memory_context, game_system) = if secrets.is_some() {
         (String::new(), String::new())
     } else {
-        let p =
-            crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true).await;
+        let p = crate::context::prepare_with(
+            &st,
+            &session,
+            &message,
+            USER_LABEL,
+            PLANNER_PLATFORM,
+            true,
+        )
+        .await;
         let game = if p.game.is_empty() || !mcp {
             p.game
         } else {

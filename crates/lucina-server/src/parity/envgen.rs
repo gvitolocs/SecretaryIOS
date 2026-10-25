@@ -28,11 +28,21 @@ const RUST_PREFIXES: &[&str] = &[
     "HONCHO_",
     "DEEPSEEK_",
     "DSH_REMOTE_",
+    "GROCERY_DEALS_",
 ];
 const RUST_NAMES: &[&str] = &[
     "ALEXA_LUCINA_ENABLED",
     "HERMES_HARNESS_ENABLED",
     "GROCERY_DATABASE_URL",
+    // Grocery deals (crate::deals). GROCERY_OFFER_WATCH_ENABLED is not copied:
+    // the Rust deal watch has its own switch in mode.env.
+    "GROCERY_HOME_LAT",
+    "GROCERY_HOME_LNG",
+    "GROCERY_HOME_LABEL",
+    "GROCERY_NEARBY_RADIUS_M",
+    "GROCERY_REQUEST_TIMEOUT_MS",
+    "SALLING_API_KEY",
+    "SALLING_API_BASE_URL",
     "MEMORY_PROVIDER",
     "TELEGRAM_ALLOWED_CHAT_IDS",
     "HERMES_HARNESS_WORKSPACE",
