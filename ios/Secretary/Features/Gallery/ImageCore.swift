@@ -123,7 +123,7 @@ final class FrameMeter: NSObject {
         guard !durations.isEmpty else { return }
         let sorted = durations.sorted()
         let p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
-        log.info("GalleryFrames mode=\(gallerySmooth ? "smooth" : "legacy", privacy: .public) frames=\(sorted.count) hitches=\(self.hitches) worst_ms=\(Int(sorted.last ?? 0)) p95_ms=\(String(format: "%.1f", p95), privacy: .public)")
+        log.notice("GalleryFrames mode=\(gallerySmooth ? "smooth" : "legacy", privacy: .public) frames=\(sorted.count) hitches=\(self.hitches) worst_ms=\(Int(sorted.last ?? 0)) p95_ms=\(String(format: "%.1f", p95), privacy: .public)")
         durations.removeAll(keepingCapacity: true)
         hitches = 0
         started = last
@@ -278,7 +278,7 @@ final class RemoteImage {
                     GalleryImageCache.previews.setObject(img, forKey: previewKey as NSString, cost: img.width * img.height * 4)
                 }
                 let total = Date().timeIntervalSince(started)
-                log.info("GalleryImages \(url.lastPathComponent, privacy: .public) bytes=\(bytes) first_ms=\(Int((firstFrame ?? total) * 1000)) total_ms=\(Int(total * 1000))")
+                log.notice("GalleryImages \(url.lastPathComponent, privacy: .public) bytes=\(bytes) first_ms=\(Int((firstFrame ?? total) * 1000)) total_ms=\(Int(total * 1000))")
             } catch is CancellationError {
             } catch {
                 log.error("GalleryImages failed \(url.path, privacy: .public): \(String(describing: error), privacy: .public)")
