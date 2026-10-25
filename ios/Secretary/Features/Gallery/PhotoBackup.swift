@@ -92,7 +92,14 @@ final class PhotoBackup {
         }
         backedUp = ledger.values.filter { $0.itemId != nil }.count
         status = settings.enabled ? .idle : .off
-        path.pathUpdateHandler = { [weak self] p in Task { @MainActor in self?.currentPath = p } }
+        // A pass that waited for Wi-Fi (or for the first path update) starts again when the network allows it.
+        path.pathUpdateHandler = { [weak self] p in
+            Task { @MainActor in
+                guard let self else { return }
+                self.currentPath = p
+                if case .waiting = self.status, self.blockedReason() == nil { self.kick() }
+            }
+        }
         path.start(queue: .global(qos: .utility))
         UIDevice.current.isBatteryMonitoringEnabled = true
         BackgroundUploader.shared.onFinishedEvents = { [weak self] in Task { @MainActor in self?.kick() } }
@@ -182,8 +189,11 @@ final class PhotoBackup {
 
     private func blockedReason() -> String? {
         if settings.wifiOnly {
-            guard let p = currentPath, p.status == .satisfied else { return String(localized: "Waiting for a network") }
-            if p.isExpensive || p.isConstrained { return String(localized: "Waiting for Wi-Fi") }
+            // No path update yet (right after launch): don't block; the transfers' own session enforces Wi-Fi.
+            if let p = currentPath {
+                if p.status != .satisfied { return String(localized: "Waiting for a network") }
+                if p.isExpensive || p.isConstrained { return String(localized: "Waiting for Wi-Fi") }
+            }
         }
         if settings.chargingOnly {
             let s = UIDevice.current.batteryState
