@@ -745,14 +745,14 @@ async fn put_chunk(
         duplicate: false,
         item_id: u.item_id.clone(),
     };
-    match protocol::accept_chunk(state, offset, len) {
+    let mut skip = match protocol::accept_chunk(state, offset, len) {
         Ok(ChunkOutcome::AlreadyHave { offset }) => return Ok(Json(out(offset))),
-        Ok(ChunkOutcome::Append { .. }) => {}
+        Ok(ChunkOutcome::Append { skip, .. }) => skip,
         Err(e @ protocol::ChunkError::OffsetMismatch { .. }) => {
             return Err(ApiError(StatusCode::CONFLICT, format!("{e}; resume at {}", u.received)))
         }
         Err(e) => return Err(ApiError(StatusCode::CONFLICT, e.to_string())),
-    }
+    };
     let path = lib.cfg.uploads_dir().join(&id);
     let mut f = tokio::fs::OpenOptions::new().write(true).open(&path).await?;
     // The file can be longer than `received` if an earlier chunk was cut off mid-write.
@@ -766,11 +766,20 @@ async fn put_chunk(
     let mut stream = body.into_data_stream();
     let mut cut = false;
     while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
+        let Ok(mut chunk) = chunk else {
             cut = true;
             break;
         };
-        if written + chunk.len() as u64 > len || u.received + written + chunk.len() as u64 > u.declared {
+        // Bytes the server already has (a retry from an earlier offset).
+        if skip > 0 {
+            let n = skip.min(chunk.len() as u64);
+            skip -= n;
+            let _ = chunk.split_to(n as usize);
+            if chunk.is_empty() {
+                continue;
+            }
+        }
+        if u.received + written + chunk.len() as u64 > u.declared {
             return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "chunk longer than declared".into()));
         }
         f.write_all(&chunk).await?;
