@@ -51,6 +51,9 @@ final class AppModel {
     var showMemos = false
 
     @ObservationIgnored let client: APIClient
+    /// /v1/media/* (Gallery, photo backup, player) lives in p1's Caddy, not in secretary-server, so it
+    /// must use the primary URL: the tailnet fallback goes straight to secretary-server (404).
+    @ObservationIgnored let mediaClient: APIClient
     @ObservationIgnored let keychain: KeychainStore
 
     let chat: ChatStore
@@ -129,9 +132,16 @@ final class AppModel {
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
-        media = MediaPlayer(api: { MediaAPI(client: client) })
-        gallery = GalleryStore(api: { GalleryAPI(client: client) })
-        backup = PhotoBackup(api: { GalleryAPI(client: client) })
+        let mediaClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
+        self.mediaClient = mediaClient
+        // The key can change (sign-in): copy it on every use.
+        let mediaAPI = { () -> APIClient in
+            mediaClient.accessKey = client.accessKey
+            return mediaClient
+        }
+        media = MediaPlayer(api: { MediaAPI(client: mediaAPI()) })
+        gallery = GalleryStore(api: { GalleryAPI(client: mediaAPI()) })
+        backup = PhotoBackup(api: { GalleryAPI(client: mediaAPI()) })
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
         self.memoClient = memoClient
         memos = MemosStore(api: {
