@@ -1,9 +1,10 @@
 //! The pure core of the upload protocol, kept free of I/O so it can be model-checked
 //! (`verification/models/src/media_upload.rs`) and unit-tested.
 //!
-//! An upload is a declared size plus an append-only byte stream. Chunks must land exactly at
-//! the current offset (a retried chunk that was already stored is acknowledged, not appended
-//! twice). Finishing is allowed once, when every byte is in and the content hash matches.
+//! An upload is a declared size plus an append-only byte stream. A chunk must start at or before
+//! the current offset and must not leave a gap: bytes the server already has are skipped (iOS
+//! background sessions retry a cut-off PUT from the start), the rest is appended, and a chunk
+//! entirely below the offset is acknowledged, not appended twice. Finishing is allowed once, when every byte is in and the content hash matches.
 //! Ingest then either dedupes, records a new version of the phone asset, or adds a new item.
 //! None of these decisions ever removes an original or touches the phone.
 
@@ -17,8 +18,9 @@ pub struct UploadState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChunkOutcome {
-    /// Append `len` bytes at `received`; the new offset is `received + len`.
-    Append { new_offset: u64 },
+    /// Skip the first `skip` bytes of the chunk (already stored), append the rest at `received`;
+    /// the new offset is `offset + len`.
+    Append { skip: u64, new_offset: u64 },
     /// The chunk is entirely below the current offset: a retry of bytes already stored.
     AlreadyHave { offset: u64 },
 }
@@ -42,13 +44,13 @@ pub fn accept_chunk(s: UploadState, offset: u64, len: u64) -> Result<ChunkOutcom
     if end > s.declared {
         return Err(ChunkError::TooLarge);
     }
-    if offset == s.received {
-        return Ok(ChunkOutcome::Append { new_offset: end });
+    if offset > s.received {
+        return Err(ChunkError::OffsetMismatch { offset, expected: s.received });
     }
-    if end <= s.received {
+    if end <= s.received && len > 0 {
         return Ok(ChunkOutcome::AlreadyHave { offset: s.received });
     }
-    Err(ChunkError::OffsetMismatch { offset, expected: s.received })
+    Ok(ChunkOutcome::Append { skip: s.received - offset, new_offset: end.max(s.received) })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -119,8 +121,8 @@ mod tests {
 
     #[test]
     fn chunks_append_in_order() {
-        assert_eq!(accept_chunk(st(10, 0), 0, 4), Ok(ChunkOutcome::Append { new_offset: 4 }));
-        assert_eq!(accept_chunk(st(10, 4), 4, 6), Ok(ChunkOutcome::Append { new_offset: 10 }));
+        assert_eq!(accept_chunk(st(10, 0), 0, 4), Ok(ChunkOutcome::Append { skip: 0, new_offset: 4 }));
+        assert_eq!(accept_chunk(st(10, 4), 4, 6), Ok(ChunkOutcome::Append { skip: 0, new_offset: 10 }));
     }
 
     #[test]
@@ -129,9 +131,15 @@ mod tests {
     }
 
     #[test]
-    fn gaps_overlaps_and_overflow_are_refused() {
+    fn a_whole_file_retried_after_a_cut_skips_what_is_stored() {
+        // iOS background session: PUT of the whole file at 0 after 131 071 bytes arrived.
+        assert_eq!(accept_chunk(st(2_878_381, 131_071), 0, 2_878_381), Ok(ChunkOutcome::Append { skip: 131_071, new_offset: 2_878_381 }));
+        assert_eq!(accept_chunk(st(10, 4), 2, 4), Ok(ChunkOutcome::Append { skip: 2, new_offset: 6 }));
+    }
+
+    #[test]
+    fn gaps_and_overflow_are_refused() {
         assert_eq!(accept_chunk(st(10, 4), 6, 2), Err(ChunkError::OffsetMismatch { offset: 6, expected: 4 }));
-        assert_eq!(accept_chunk(st(10, 4), 2, 4), Err(ChunkError::OffsetMismatch { offset: 2, expected: 4 }));
         assert_eq!(accept_chunk(st(10, 4), 4, 7), Err(ChunkError::TooLarge));
         assert_eq!(accept_chunk(st(10, 4), u64::MAX, 2), Err(ChunkError::TooLarge));
         let done = UploadState { declared: 10, received: 10, finished: true };

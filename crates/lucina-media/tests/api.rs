@@ -78,6 +78,15 @@ async fn upload(app: &Router, name: &str, data: &[u8], meta: Value) -> Value {
     assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["offset"], mid as u64);
     let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset={}", mid + 1), &[1u8]).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    if mid > 4 {
+        // An iOS background retry: the whole file again from 0; the stored half is skipped.
+        let (s, b, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset=0"), data).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["offset"], data.len() as u64);
+        let (s, done) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+        assert_eq!(s, StatusCode::OK, "{done}");
+        return done;
+    }
     let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset={mid}"), &data[mid..]).await;
     assert_eq!(s, StatusCode::OK);
     let (s, done) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
