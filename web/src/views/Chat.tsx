@@ -4,7 +4,6 @@ import { outreachFromSearch, sendOutreachFeedback } from "../api/proactive";
 import { CHAT_MAX_CHARS } from "../api/secretary";
 import {
   FEEDBACK_ACTIONS,
-  type Attachment,
   type Channel,
   type FeedbackAction,
   type ProactiveAction,
@@ -22,6 +21,19 @@ import {
   SparkleIcon,
   SpeakerIcon,
 } from "../components/Icons";
+import { ShareComposer } from "../components/ShareComposer";
+import { AttachmentTray } from "../components/AttachmentTray";
+import { Attachments } from "../components/ChatAttachments";
+import {
+  filesFromClipboard,
+  filesFromDataTransfer,
+  formatCoordinate,
+  hasFileTransfer,
+  prepareDraftFiles,
+  releaseDraft,
+  type DraftAttachment,
+  type ShareLocation,
+} from "../lib/attachments";
 import { LinkifiedText } from "../components/LinkifiedText";
 import { Markdown } from "../components/Markdown";
 import { RichReply } from "../components/RichReply";
@@ -55,6 +67,7 @@ import {
   retryMessage,
   revealTick,
   richOf,
+  sendAttachmentMessage,
   sending,
   sendMessage,
   streamStatus,
@@ -79,12 +92,6 @@ const STREAM_LABELS = {
   reconnecting: "chat.streamReconnecting",
   offline: "chat.streamOffline",
 } as const satisfies Record<string, MessageKey>;
-
-const ATTACHMENT_LABELS: Record<Attachment["kind"], MessageKey> = {
-  image: "chat.photo",
-  voice: "chat.voice",
-  file: "chat.file",
-};
 
 const PRIORITY_LABELS = {
   high: "chat.priorityHigh",
@@ -367,20 +374,7 @@ export function SourceBadge(props: { message: ChatMessage }) {
   );
 }
 
-function Attachments(props: { items: Attachment[] }) {
-  return (
-    <ul class="attachments" aria-label={t("chat.attachments")}>
-      <For each={props.items}>
-        {(a) => (
-          <li class="attachment">
-            {t(ATTACHMENT_LABELS[a.kind])}
-            <Show when={a.name}>{(n) => <span class="attachment-name">: {n()}</span>}</Show>
-          </li>
-        )}
-      </For>
-    </ul>
-  );
-}
+export { Attachments };
 
 function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string }) {
   const [showTime, setShowTime] = createSignal(false);
@@ -392,6 +386,16 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
   const rich = () => (!isUser() && !isReminder() && !proactive() ? richOf(props.message) : undefined);
   const text = () => mcpSource(props.message.role, props.message.text, props.message.meta)?.text ?? props.message.text;
   const hasBody = () => !rich() && (!!text() || !!props.message.attachments?.length);
+  // A photo album's caption sits under it, Telegram-style.
+  const captionUnder = () => isUser() && !!props.message.attachments?.some((a) => a.kind === "image");
+  const shareStatus = () => {
+    const share = props.message.share;
+    if (!share) return "";
+    if (share.phase === "uploading") return t("share.uploadProgress", { percent: Math.round(share.progress * 100) });
+    if (share.phase === "error" || share.phase === "done") return "";
+    return t("share.reading");
+  };
+  const uploading = () => props.message.share?.phase === "uploading";
 
   function toggleTime(e: MouseEvent) {
     // Taps on links open the link; everything else reveals the time.
@@ -441,14 +445,31 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
               {t("chat.reminder")}
             </span>
           </Show>
+          <Show when={captionUnder() && props.message.attachments?.length ? props.message.attachments : null}>
+            {(a) => <Attachments items={a()} />}
+          </Show>
           <Show when={text()}>
             {/* Her plain replies are markdown too (safe renderer from Notes): no more literal "**". */}
             <Show when={isUser()} fallback={<Markdown text={props.message.text} class="md--chat" />}>
-              <LinkifiedText text={text()} />
+              <Show when={captionUnder()} fallback={<LinkifiedText text={text()} />}>
+                <div class="bubble-caption"><LinkifiedText text={text()} /></div>
+              </Show>
             </Show>
           </Show>
-          <Show when={props.message.attachments?.length ? props.message.attachments : null}>
+          <Show when={!captionUnder() && props.message.attachments?.length ? props.message.attachments : null}>
             {(a) => <Attachments items={a()} />}
+          </Show>
+          <Show when={shareStatus()}>
+            <p class="bubble-status" classList={{ "bubble-status--uploading": uploading() }} role="status">
+              <Show when={uploading()}>
+                <span
+                  class="share-progress-ring"
+                  style={{ "--share-progress": `${Math.round((props.message.share?.progress ?? 0) * 100)}%` }}
+                  aria-hidden="true"
+                />
+              </Show>
+              {shareStatus()}
+            </p>
           </Show>
         </div>
       </Show>
@@ -466,7 +487,7 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
         >
           {timeLabel(props.message.createdAt)}
         </time>
-        <Show when={props.message.status === "sending"}>
+        <Show when={props.message.status === "sending" && !props.message.share}>
           <span class="msg-meta">{t("chat.sending")}</span>
         </Show>
       </div>
@@ -502,8 +523,36 @@ function LiveIndicator() {
 export default function ChatView() {
   const [draft, setDraft] = createSignal("");
   const [filter, setFilter] = createSignal<SourceFilter>("all");
+  const [drafts, setDrafts] = createSignal<DraftAttachment[]>([]);
+  const [attachLocation, setAttachLocation] = createSignal<ShareLocation | null>(null);
+  const [attachOpen, setAttachOpen] = createSignal(false);
+  const [attachError, setAttachError] = createSignal("");
+  const [dragging, setDragging] = createSignal(false);
+  let dragDepth = 0;
+  let photosInput: HTMLInputElement | undefined;
+  let filesInput: HTMLInputElement | undefined;
+  let cameraInput: HTMLInputElement | undefined;
+  let attachBox: HTMLDivElement | undefined;
+  // The attach menu closes on Escape and on a press anywhere outside it.
+  createEffect(() => {
+    if (!attachOpen()) return;
+    const onPointer = (e: PointerEvent) => {
+      if (attachBox && e.target instanceof Node && !attachBox.contains(e.target)) setAttachOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAttachOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
   const tooLong = createMemo(() => draft().length > CHAT_MAX_CHARS);
-  const canSend = createMemo(() => draft().trim().length > 0 && !tooLong() && !sending());
+  const canSend = createMemo(
+    () => (draft().trim().length > 0 || drafts().length > 0 || !!attachLocation()) && !tooLong() && !sending(),
+  );
   const visible = createMemo(() => {
     const f = filter();
     // Filter by the derived source while preserving the stored channel.
@@ -679,15 +728,91 @@ export default function ChatView() {
     ),
   );
 
+  async function addFiles(files: readonly File[]) {
+    const list = files.filter((file) => file instanceof File);
+    if (!list.length) return;
+    setAttachError("");
+    try {
+      const prepared = await prepareDraftFiles(list);
+      setDrafts((all) => [...all, ...prepared]);
+    } catch {
+      setAttachError(t("share.failed"));
+    }
+  }
+
+  function removeDraft(item: { id?: string }) {
+    const draft = drafts().find((entry) => entry.id === item.id);
+    if (!draft) return;
+    releaseDraft(draft);
+    setDrafts((all) => all.filter((entry) => entry.id !== draft.id));
+  }
+
+  function onPaste(e: ClipboardEvent) {
+    const files = filesFromClipboard(e.clipboardData);
+    // Plain text keeps the browser's default paste.
+    if (!files.length) return;
+    e.preventDefault();
+    void addFiles(files);
+  }
+
+  function onDragEnter(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth++;
+    setDragging(true);
+  }
+
+  function onDragOver(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  }
+
+  function onDragLeave(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDragging(false);
+  }
+
+  function onDrop(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    setDragging(false);
+    void addFiles(filesFromDataTransfer(e.dataTransfer));
+  }
+
+  function shareCurrentLocation() {
+    setAttachOpen(false);
+    setAttachError("");
+    const geo = typeof navigator === "undefined" ? undefined : navigator.geolocation;
+    if (!geo) {
+      setAttachError(t("share.locationFailed"));
+      return;
+    }
+    geo.getCurrentPosition(
+      (pos) => setAttachLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => setAttachError(t("share.locationFailed")),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
+    );
+  }
+
   async function submit() {
     if (!canSend()) return;
     const text = draft();
+    const files = drafts();
+    const sharedLocation = attachLocation();
     setDraft("");
+    setDrafts([]);
+    setAttachLocation(null);
+    setAttachOpen(false);
     queueMicrotask(autosize);
     // Your own message must be visible: leave a filter that would hide it.
     if (filter() !== "all" && filter() !== "app") setFilter("all");
     atBottom = true;
-    await sendMessage(text);
+    if (files.length || sharedLocation) await sendAttachmentMessage(files, text, sharedLocation);
+    else await sendMessage(text);
     input?.focus();
   }
 
@@ -707,7 +832,7 @@ export default function ChatView() {
   }
 
   return (
-    <div class="chat">
+    <div class="chat" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div class="chat-bar">
         <div class="chip-group" role="group" aria-label={t("chat.filterGroup")}>
           <For each={SOURCE_FILTERS}>
@@ -830,6 +955,58 @@ export default function ChatView() {
           void submit();
         }}
       >
+        <Show when={drafts().length || attachLocation() || attachError()}>
+          <div class="composer-tray">
+            <AttachmentTray items={drafts()} onRemove={removeDraft} />
+            <Show when={attachLocation()}>
+              {(point) => (
+                <div class="composer-location">
+                  <span aria-hidden="true">📍</span>
+                  <span>{t("share.locationShared")}: {formatCoordinate(point().lat)}, {formatCoordinate(point().lon)}</span>
+                  <button
+                    type="button"
+                    aria-label={t("share.remove", { name: t("share.location") })}
+                    onClick={() => setAttachLocation(null)}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </Show>
+            <Show when={attachError()}>
+              <p class="field-error" role="alert">{attachError()}</p>
+            </Show>
+          </div>
+        </Show>
+        <div class="composer-attach" ref={attachBox}>
+          <button
+            type="button"
+            class="share-attach"
+            aria-label={t("share.attachMenu")}
+            aria-haspopup="menu"
+            aria-expanded={attachOpen() ? "true" : "false"}
+            onClick={() => setAttachOpen((open) => !open)}
+          >
+            📎
+          </button>
+          <Show when={attachOpen()}>
+            <div class="attach-menu" role="menu" aria-label={t("share.attachMenu")}>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); photosInput?.click(); }}>
+                <span aria-hidden="true">🖼</span> {t("share.attachPhotos")}
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); filesInput?.click(); }}>
+                <span aria-hidden="true">📄</span> {t("share.attachFiles")}
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); cameraInput?.click(); }}>
+                <span aria-hidden="true">📷</span> {t("share.attachCamera")}
+              </button>
+              <button type="button" role="menuitem" onClick={shareCurrentLocation}>
+                <span aria-hidden="true">📍</span> {t("share.attachLocation")}
+              </button>
+            </div>
+          </Show>
+        </div>
+        <ShareComposer />
         <label class="sr-only" for="composer-input">
           {t("chat.composer")}
         </label>
@@ -844,6 +1021,7 @@ export default function ChatView() {
             setDraft(e.currentTarget.value);
             autosize();
           }}
+          onPaste={onPaste}
           onKeyDown={onKeyDown}
           readOnly={sending()}
           aria-disabled={sending() ? "true" : "false"}
@@ -859,6 +1037,53 @@ export default function ChatView() {
           <SendIcon />
         </button>
       </form>
+      <input
+        ref={photosInput}
+        class="sr-only"
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        tabindex="-1"
+        aria-label={t("share.attachPhotos")}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          void addFiles(files);
+        }}
+      />
+      <input
+        ref={filesInput}
+        class="sr-only"
+        type="file"
+        multiple
+        tabindex="-1"
+        aria-label={t("share.attachFiles")}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          void addFiles(files);
+        }}
+      />
+      <input
+        ref={cameraInput}
+        class="sr-only"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        tabindex="-1"
+        aria-label={t("share.attachCamera")}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          void addFiles(files);
+        }}
+      />
+      <Show when={dragging()}>
+        <div class="drop-overlay" role="status">
+          <strong>{t("share.dropTitle")}</strong>
+          <span>{t("share.dropSub")}</span>
+        </div>
+      </Show>
     </div>
   );
 }
