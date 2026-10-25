@@ -96,3 +96,16 @@ chat's session, optional `meta` JSON with per-file transcript/size/duration/date
 Tests: `SecretaryTests/ChatAttachmentTests.swift` (ThumbHash vectors from the reference encoder, album frames for
 1-10, `meta` JSON and the chat multipart, paste classification with mock providers, same-share-id retry, local →
 server reconciliation, status decoding). Compiled on the Mac (`xcodebuild … -sdk iphoneos`); not run (no simulator).
+
+## App Group (not enabled yet)
+
+The App Group `group.tech.getsecretary.shared` is not registered on the team yet, and a signed build fails while the
+entitlement asks for it, so the entitlement is left out for now. The code checks `ShareRequestBuilder.hasAppGroup`:
+- without it, the share extension uploads in the foreground (the sheet stays open with progress) and each process keeps
+  its pending shares in its own caches;
+- with it, the extension hands the upload to a background session that finishes even if the extension is killed.
+
+To enable: register the group in Xcode (Signing & Capabilities → App Groups → + `group.tech.getsecretary.shared` on
+the Secretary and SecretaryShare targets), then add `com.apple.security.application-groups` =
+[`group.tech.getsecretary.shared`] back to `Secretary/Secretary.entitlements` and
+`Extensions/SecretaryShare/SecretaryShare.entitlements`.

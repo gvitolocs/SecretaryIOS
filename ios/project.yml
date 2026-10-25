@@ -22,10 +22,6 @@ targets:
   Secretary:
     type: application
     platform: iOS
-    attributes:
-      SystemCapabilities:
-        com.apple.ApplicationGroups.iOS:
-          enabled: 1
     sources:
       - path: Secretary
         excludes:
@@ -111,10 +107,6 @@ targets:
   SecretaryShare:
     type: app-extension
     platform: iOS
-    attributes:
-      SystemCapabilities:
-        com.apple.ApplicationGroups.iOS:
-          enabled: 1
     sources:
       - path: Extensions/SecretaryShare
         excludes: ["Info.plist"]
