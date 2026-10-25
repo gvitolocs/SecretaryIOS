@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lucina OTP 1.0.0: Kotlin shell + Rust core (crates/lucina-android). No Gradle, no network.
+# Lucina OTP 1.0.1: Kotlin shell + Rust core (crates/lucina-android). No Gradle, no network.
 # kotlinc (embeddable compiler from the Gradle cache) -> R8 -> aapt2 -> zip -> zipalign -> apksigner.
 # Env: KEYSTORE_DIR (signing.p12 + signing.pass, alias lucina-otp), OUT, SKIP_RUST=1 (reuse the last .so).
 set -euo pipefail

@@ -66,13 +66,21 @@ them from `$LUCINA_OTP_STATE_DIR/{phone,owner}.token`.
 
 - **Protocol 2:** no `windowId`. The relay accepts the code while it is armed (continuous or a timed window).
 - **Expiry:** `expiresAt` comes from `proto::expires_at(receivedAt, now, windowEnd)`.
-- **Repeats:** a repeated `eventId` within 2 minutes gets `{accepted:true, duplicate:true}`.
+- **Repeats:** a repeated `eventId` within 2 minutes gets `{accepted:true, duplicate:true}`. The relay remembers each id as its
+  SHA-256 with the time it is forgotten, in `$LUCINA_OTP_STATE_DIR/seen.json` (0600, written atomically before the 200; if it cannot
+  be written the code is refused with 503 and the phone retries). A restart reloads it and skips expired entries, so a retry after a
+  restart is still a duplicate.
 - **Test events:** `test:true` is validated and answered `{accepted:true, test:true}`, never stored. The phone can measure the whole
   path this way without a fake code reaching the owner.
 - **Limits:** at most 8 codes wait, and the oldest is dropped first; at most 64 event ids are remembered.
 
-`/otp` returns the newest code that has not expired. Codes live only in memory. When `LUCINA_OTP_CONTINUOUS=true`, the relay starts
-armed and continuous unless `$LUCINA_OTP_STATE_DIR/paused` exists. `/disarm` writes that file and `/arm` removes it.
+`/otp` returns the newest code that has not expired. Codes live only in memory, never on disk: a relay restart drops the waiting
+codes (their ids stay in `seen.json`). When `LUCINA_OTP_CONTINUOUS=true`, the relay starts armed and continuous unless
+`$LUCINA_OTP_STATE_DIR/paused` exists. `/disarm` writes that file and `/arm` removes it.
+
+- **`/arm` keeps waiting codes.** Only `/disarm` (and a timed window ending) drops them; each code still expires at its own
+  `expiresAt`. Arming a window that is still live keeps its `windowId` (a protocol-1 phone holding it keeps working; a timed window
+  gets the new length from now). Arming a continuous relay that is already armed changes nothing.
 
 ## Rust Lucina (`crates/lucina-server/src/otp.rs`)
 
@@ -92,8 +100,11 @@ the recent turns, Honcho or the `clientMessageId` replay cache.
 - **Defence in depth:** prompts to the model and log lines get `lucina_secrets::otp` (`Redactor::redact_outbound`), which masks codes
   near an OTP context word as `[otp]`. The plain redactor used by the API reply, the timeline and memory does not mask codes, because
   the owner's own delivery passes through the API sink.
+- **Redaction covers what `parse_otp` reads:** `otp::otp_spans` tokenizes the raw text and the same digit-normalized, link-stripped
+  view `parse_otp` uses, mapping those spans back to the original bytes. Codes in Arabic-Indic, Devanagari or full-width digits,
+  and codes that only come within 64 bytes of a context word once a link is removed, are masked too; other text is unchanged.
 
-## Lucina OTP app (`tech.getsecretary.lucinaotp`, 1.0.0, versionCode 5)
+## Lucina OTP app (`tech.getsecretary.lucinaotp`, 1.0.1, versionCode 6)
 
 - **Manifest:**
   - `RECEIVE_SMS`, `INTERNET`, `RECEIVE_BOOT_COMPLETED` (to re-arm the retry job after a reboot);
@@ -126,17 +137,27 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
 ### Rust behaviour
 
 - **Order:** parse first. A message without a code never touches the network or the disk.
+- **Not codes:** an all-digit number next to a currency marker (`1500 DKK`, `DKK 1500`, `$1999`, `kr`, `EUR`, …) or joined to
+  another number by `. , : / -` (`1250,00`, `2026-10-25`) is an amount or a date, never a code. `294-728` and `294 728` are codes.
 - **Dedup:** the same code from any source within 120 s is sent only once, so an SMS and its notification count as one.
+- **Write-ahead (1.0.1):** before the first `POST /incoming`, the code is queued in `queue.bin` with its event id and its dedup
+  fingerprint is saved in `state.bin`. The relay's answer then removes the entry (accepted, duplicate, 409, 401, 410, 400), or a
+  network error or 5xx leaves it for `flush`, which resends it with the same event id. A reboot or process death during the send
+  therefore loses nothing, and the other copy of the code (the notification) is still a duplicate. `init` re-derives the
+  fingerprints of queued codes, for a crash between the two writes. The JNI mutex holds a second copy until the first send returns.
 - **Network:**
   - one `POST /incoming` (protocol 2) over rustls (graviola provider, webpki roots, host must be `getsecretary.tech`);
   - no redirects; connect timeout 3 s, total 5 s;
   - the response may be at most 4 KiB, and the agent and connection are reused within the process.
   - A 409 means paused: drop the code and set `lastResult=paused`. A 401 means unpaired: drop the code. 410 or 400: drop it.
-  - On a network error or a 5xx, queue the code.
+  - On a network error or a 5xx, the code stays queued.
 - **Queue:**
   - stored AES-256-GCM-encrypted in `filesDir/lucina/queue.bin`, holding code, sender, event id, received time and source;
   - each entry lives at most `CODE_TTL_MS` after it was received, since an older code is useless;
-  - at most 8 entries; writes are atomic (temp file, fsync, rename).
+  - at most 8 entries; writes are atomic (temp file, fsync, rename); `flush` saves it after each answered entry.
+  - **Gap:** Kotlin schedules `RetryJobService` only on a `queued` result and at boot. After a process death mid-send (not a
+    reboot), the written-ahead entry waits until the next `queued` result or reboot. Fix in Kotlin (not done in 1.0.1):
+    schedule the job in `Core.ensure` when `status().pending > 0`.
 - **State:** config and token in `filesDir/lucina/state.bin`, AES-256-GCM with the same data key and a random 96-bit nonce per write.
   The token is never written in plaintext, and keys and tokens are zeroized after use.
 - **No logging** of bodies, codes or tokens. Kotlin may log `result` and `ms` only.
