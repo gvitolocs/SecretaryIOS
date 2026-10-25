@@ -431,6 +431,7 @@ struct GalleryViewer: View {
             current = start.id
             meter.start()
             prefetchNeighbours(of: start.id)
+            autoSwipe()
         }
         .onDisappear { meter.stop() }
         .onChange(of: current) { _, id in
@@ -461,6 +462,21 @@ struct GalleryViewer: View {
             Text("It stays on this iPhone. The server keeps it in the trash for 30 days.")
         }
         .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
+    }
+
+    /// `-SecretaryGalleryAutoSwipe N` (device measurements without UI tests): page forward through N
+    /// photos, one every 1.2 s, with the pager's own animation; frame times go to the GalleryFrames log.
+    private func autoSwipe() {
+        let n = UserDefaults.standard.integer(forKey: "SecretaryGalleryAutoSwipe")
+        guard n > 0 else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            for _ in 0..<n {
+                guard let i = store.items.firstIndex(where: { $0.id == current }), i + 1 < store.items.count else { break }
+                withAnimation(.easeInOut(duration: 0.35)) { current = store.items[i + 1].id }
+                try? await Task.sleep(for: .milliseconds(1200))
+            }
+        }
     }
 
     /// The two photos either side of the one on screen, decoded ahead of the swipe.
