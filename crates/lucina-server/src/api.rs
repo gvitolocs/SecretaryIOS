@@ -126,6 +126,92 @@ impl IntoResponse for ApiError {
 
 type ApiResult = Result<Response, ApiError>;
 
+/// The local lucina-pokemon server (`LUCINA_GAME_URL`, default `127.0.0.1:18767`): `state` (JSON), `screenshot`
+/// (PNG) and `control` (`{"running": bool, "reason"?}`). Read-only callers are told apart upstream: secretary-server
+/// lets only the owner's devices reach `control`.
+async fn game(st: &AppState, method: &Method, what: Option<&str>, body: Body) -> ApiResult {
+    let base = std::env::var("LUCINA_GAME_URL").unwrap_or_else(|_| "http://127.0.0.1:18767".into());
+    let base = base.trim_end_matches('/');
+    let http = &st.secretary.http;
+    let down = |e: String| ApiError::new(503, "game_unavailable", e);
+    match what {
+        Some("state") => {
+            if *method != Method::GET {
+                return Err(ApiError::method_not_allowed(&["GET"]));
+            }
+            let r = http
+                .get(format!("{base}/state"))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .map_err(|e| down(e.to_string()))?;
+            if !r.status().is_success() {
+                return Err(down(format!("game server answered {}", r.status())));
+            }
+            Ok(ok(r
+                .json::<Value>()
+                .await
+                .map_err(|e| down(e.to_string()))?))
+        }
+        Some("screenshot") => {
+            if *method != Method::GET {
+                return Err(ApiError::method_not_allowed(&["GET"]));
+            }
+            let r = http
+                .get(format!("{base}/screenshot"))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .map_err(|e| down(e.to_string()))?;
+            if !r.status().is_success() {
+                return Err(down(format!("game server answered {}", r.status())));
+            }
+            let png = r.bytes().await.map_err(|e| down(e.to_string()))?;
+            let mut resp = (StatusCode::OK, png).into_response();
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+            resp.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            Ok(resp)
+        }
+        Some("control") => {
+            if *method != Method::POST {
+                return Err(ApiError::method_not_allowed(&["POST"]));
+            }
+            let b = read_json(body, MAX_BODY_BYTES).await?;
+            let running = b["running"].as_bool().ok_or_else(|| {
+                ApiError::new(400, "invalid_request", "running must be true or false")
+            })?;
+            let reason: String = b["reason"]
+                .as_str()
+                .unwrap_or(if running {
+                    "Started by the owner from the app"
+                } else {
+                    "Paused by the owner from the app"
+                })
+                .chars()
+                .take(120)
+                .collect();
+            let r = http
+                .post(format!("{base}/control"))
+                .header("X-Lucina-Game", "1")
+                .json(&json!({"running": running, "reason": reason}))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .map_err(|e| down(e.to_string()))?;
+            if !r.status().is_success() {
+                return Err(down(format!("game server answered {}", r.status())));
+            }
+            Ok(ok(r
+                .json::<Value>()
+                .await
+                .map_err(|e| down(e.to_string()))?))
+        }
+        _ => Err(ApiError::not_found()),
+    }
+}
+
 // ---------------------------------------------------------------- body helpers
 
 pub async fn read_json(body: Body, limit: usize) -> Result<Value, ApiError> {
@@ -348,6 +434,10 @@ async fn route(
             return Err(ApiError::method_not_allowed(&["GET"]));
         }
         return st.node_deals.map(uri.query()).await;
+    }
+    // Lucina's Pokémon run for the apps (secretary-server /v1/game/*): live state, screen, start/pause.
+    if resource == Some("game") && extra.is_none() {
+        return game(st, method, id, body).await;
     }
     if extra.is_some() {
         return Err(ApiError::not_found());
