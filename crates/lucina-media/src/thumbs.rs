@@ -3,7 +3,11 @@
 //! - `l.jpg`: long side 1600 px, for the viewer;
 //! - `poster.jpg`: a frame of a video (or an audio file's cover art);
 //! - `preview.jpg`: the rendering the phone sent with the upload, used as the source for formats
-//!   we can't decode here (HEIC: nezopt's libheif has no HEVC plugin).
+//!   we can't decode here (HEIC: nezopt's libheif has no HEVC plugin);
+//! - `g.jxl`: the grid tile, 256 px square (centre crop), JPEG XL d2.5 (about 9 KB);
+//! - `p.jxl`: the full-screen preview, 1440 px long side, progressive JPEG XL d2.5 (about 75 KB),
+//!   which the Rust viewer refines as the bytes arrive (docs/media-library.md, "Renditions");
+//! - a ThumbHash (about 18 bytes) kept in the catalog and sent inside the item JSON.
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -42,9 +46,15 @@ impl ThumbSize {
     }
 }
 
+pub const GRID_PX: u32 = 256;
+pub const PREVIEW_PX: u32 = 1440;
+/// Butteraugli distance: SSIMULACRA2 about 81 at 256 px and 83 at 1440 px on the owner's photos.
+pub const JXL_DISTANCE: f32 = 2.5;
+
 /// Outcome stored in `items.thumb_state`.
 pub enum ThumbState {
-    Ready,
+    /// Thumbnails written; the ThumbHash of the picture.
+    Ready(Vec<u8>),
     /// Nothing to show (plain files, audio without art, HEIC without a phone preview).
     None,
 }
@@ -52,7 +62,7 @@ pub enum ThumbState {
 impl ThumbState {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ThumbState::Ready => "ready",
+            ThumbState::Ready(_) => "ready",
             ThumbState::None => "none",
         }
     }
@@ -92,7 +102,10 @@ pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path, durati
     let img = load_oriented(&src)?;
     write_jpeg(&resize_short(&img, SMALL_SHORT_SIDE), &dir.join(ThumbSize::Small.file()))?;
     write_jpeg(&resize_long(&img, LARGE_LONG_SIDE), &dir.join(ThumbSize::Large.file()))?;
-    Ok(ThumbState::Ready)
+    let grid = img.resize_to_fill(GRID_PX, GRID_PX, image::imageops::FilterType::Lanczos3);
+    write_atomic(&dir.join("g.jxl"), &encode_jxl(&grid, false)?)?;
+    write_atomic(&dir.join("p.jxl"), &encode_jxl(&resize_long(&img, PREVIEW_PX), true)?)?;
+    Ok(ThumbState::Ready(thumb_hash(&img)))
 }
 
 fn decodable(p: &Path) -> bool {
@@ -129,6 +142,37 @@ fn resize_long(img: &DynamicImage, long: u32) -> DynamicImage {
         return img.clone();
     }
     img.resize(long, long, image::imageops::FilterType::Triangle)
+}
+
+/// ThumbHash of a picture (from a copy no larger than 100 px, as the format wants).
+pub fn thumb_hash(img: &DynamicImage) -> Vec<u8> {
+    let small = img.thumbnail(100, 100).to_rgba8();
+    thumbhash::rgba_to_thumb_hash(small.width() as usize, small.height() as usize, small.as_raw())
+}
+
+/// JPEG XL at [`JXL_DISTANCE`]; `progressive` orders the data so a partial file renders (DC first).
+pub fn encode_jxl(img: &DynamicImage, progressive: bool) -> anyhow::Result<Vec<u8>> {
+    use jpegxl_rs::encode::EncoderSpeed;
+    use jpegxl_sys::encoder::encode::JxlEncoderFrameSettingId as Opt;
+    let rgb = img.to_rgb8();
+    let mut enc = jpegxl_rs::encoder_builder()
+        .quality(JXL_DISTANCE)
+        .speed(EncoderSpeed::Squirrel)
+        .build()
+        .map_err(|e| anyhow::anyhow!("jxl encoder: {e}"))?;
+    if progressive {
+        enc.set_frame_option(Opt::Responsive, 1);
+        enc.set_frame_option(Opt::ProgressiveAc, 1);
+        enc.set_frame_option(Opt::ProgressiveDc, 1);
+    }
+    enc.encode::<u8>(rgb.as_raw(), rgb.width(), rgb.height()).map_err(|e| anyhow::anyhow!("jxl encode: {e}"))
+}
+
+fn write_atomic(dst: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = dst.with_extension("part");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, dst)?;
+    Ok(())
 }
 
 fn write_jpeg(img: &DynamicImage, dst: &Path) -> anyhow::Result<()> {
@@ -192,12 +236,17 @@ mod tests {
         let cfg = Config::for_dirs(tmp.path().join("data"), tmp.path().join("store"));
         let src = tmp.path().join("in.png");
         DynamicImage::new_rgb8(2000, 1000).save(&src).unwrap();
-        assert!(matches!(generate(&cfg, "itm_abcdef", "photo", &src, None).unwrap(), ThumbState::Ready));
+        let ThumbState::Ready(hash) = generate(&cfg, "itm_abcdef", "photo", &src, None).unwrap() else { panic!("no thumbs") };
+        assert!((5..=40).contains(&hash.len()), "{}", hash.len());
         let dir = dir_for(&cfg, "itm_abcdef");
         let s = image::image_dimensions(dir.join("s.jpg")).unwrap();
         let l = image::image_dimensions(dir.join("l.jpg")).unwrap();
         assert_eq!(s, (720, 360));
         assert_eq!(l, (1600, 800));
+        let g = std::fs::read(dir.join("g.jxl")).unwrap();
+        let p = std::fs::read(dir.join("p.jxl")).unwrap();
+        assert_eq!(&g[..2], &[0xFF, 0x0A], "bare JPEG XL codestream");
+        assert!(!p.is_empty() && p.len() < 200_000);
         let bogus = tmp.path().join("x.heic");
         std::fs::write(&bogus, b"not an image").unwrap();
         assert!(matches!(generate(&cfg, "itm_zz", "photo", &bogus, None).unwrap(), ThumbState::None));

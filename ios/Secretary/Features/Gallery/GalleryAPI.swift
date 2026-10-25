@@ -32,15 +32,20 @@ struct GalleryItem: Codable, Identifiable, Hashable, Sendable {
     var thumbUrl: String?
     var album: String?
     var urls: URLs?
+    /// ThumbHash (base64): decoded by the Rust core into the placeholder.
+    var thumbhash: String?
 
     struct URLs: Codable, Hashable, Sendable {
         var original: String?
         var thumb: String?
         var large: String?
+        /// JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
+        var grid: String?
+        var preview: String?
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, title, caption, mime, size, width, height, place, camera, favorite, albums, album, urls
+        case id, kind, title, caption, mime, size, width, height, place, camera, favorite, albums, album, urls, thumbhash
         case takenAt = "taken_at"
         case createdAt = "created_at"
         case durationMs = "duration_ms"
