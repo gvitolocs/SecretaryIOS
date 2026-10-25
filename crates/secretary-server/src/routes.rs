@@ -3,8 +3,9 @@
 //! returns Lucina's `data` unwrapped.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{delete, get, patch};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use secretary_core::models::{AgendaQuery, ChatRequest, CreateReminder, ReminderQuery};
 use secretary_core::Call;
@@ -89,6 +90,39 @@ async fn reminders(
     QueryArgs(q): QueryArgs<ReminderQuery>,
 ) -> ApiResult {
     forward(&st, Call::reminders(&q)?).await
+}
+
+/// Lucina's Pokémon run: state (map, party, badges, objective, notes).
+async fn game_state(State(st): State<AppState>) -> ApiResult {
+    forward(&st, Call::game_state()).await
+}
+
+/// The live game screen as PNG, relayed as is.
+async fn game_screenshot(State(st): State<AppState>) -> Result<Response, ApiError> {
+    let (content_type, body) = st.lucina()?.bytes(&Call::game_screenshot()).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// Start (`{"running": true}`) or pause the run. Device login only: the owner's devices.
+async fn game_control(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    let running = body
+        .get("running")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "running: must be true or false",
+            )
+        })?;
+    forward(&st, Call::game_control(running)).await
 }
 
 async fn create_reminder(
@@ -189,4 +223,7 @@ pub fn protected() -> Router<AppState> {
         .route("/v1/shopping", get(shopping).post(shopping_add))
         .route("/v1/shopping/{id}", patch(shopping_update))
         .route("/v1/grocery/deals/map", get(deals_map))
+        .route("/v1/game/state", get(game_state))
+        .route("/v1/game/screenshot", get(game_screenshot))
+        .route("/v1/game/control", post(game_control))
 }
