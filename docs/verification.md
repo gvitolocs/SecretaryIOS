@@ -56,6 +56,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
+| 7 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (D0–D5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -107,6 +108,14 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | I5 ablation: ops leave the outbox when sent | 8 731 | 20 | `acked_never_lost`, `all_ops_applied` **violated** |
 | I6 ablation: plain last-writer-wins status | 9 034 | 21 | `owner_completed_never_reverted`, `device_completed_sticky` **violated** |
 | I7 ablation: the last delivery wins (no stamps) | 9 418 | 21 | `converges` **violated** |
+| D0 current Rust, no faults | 138 980 | 29 | `no_repeat` (DW2), `no_skip` (DW3) **violated**; the others hold |
+| D1 current Rust after the cutover, one fault | 1 172 708 | 29 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` (DW1), `no_skip` **violated** |
+| D1 + fixes F1, F2, F3 | 1 149 598 | 33 | all hold |
+| D2 cutover as performed (stop Node, start Rust) | 1 035 974 | 31 | the same four **violated** (DW1 through the stop, DW2, DW3) |
+| D2 + fixes in both runtimes | 958 309 | 35 | all hold |
+| D3 Node and Rust both running (rule witness) | 1 969 101 | 29 | the four **violated** |
+| D4 current, no server dedup | 1 215 167 | 29 | the four **violated** |
+| D5 fixes, no server dedup | 1 188 512 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -114,6 +123,10 @@ TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 
 property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` (`--deep`, the Stateright I2
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
+
+`formal/deals/`: `DealWatch_fixed` 1 149 598, `DealWatch_cutover_fixed` 958 309 and `DealWatch_current_nofaults` 138 980
+distinct states (the same counts as Stateright D1 + fixes, D2 + fixes and D0), each under 10 s; the `MUST FAIL` cfgs stop
+at their first violation.
 
 ## Invariants, models and mapping
 
@@ -296,6 +309,178 @@ The model is one book's registers (ops on different books touch disjoint registe
 | `Deliver(Resp)` | `Outbox::ack` (append + `sync_data`), `ClientMachine::on_response` |
 | `Drop`, `Dup` | `FlakyTransport` (`Faults`) |
 | `Owner` | `PATCH /v1/library/books/{id}` → `state::owner_set_status` / `owner_set_progress` |
+
+### 7. Grocery deal watch
+
+The deal watch of the Rust Lucina (`crates/lucina-deals`, branch `lucina-rs`, pinned at
+`verification/verus/diff/deals-revision`; Node original `Lucina/src/grocery/deals/watch.js` at `68b38dc~1`, the same
+logic line for line): a digest at 07:30 owner time (catch-up until 11:00, once per local date via `lastDigestDate`),
+alerts every 90 minutes inside 09:00–20:00 (at most four a day), one state file `data/grocery/deal-watch.json` for
+both runtimes. Each run loads the file, polls Salling food waste and Tjek flyers (either may fail), composes,
+sends through secretary-server `POST /v1/notify` with `dedupKey` `grocery-deals:<digest|alert>:<date>:<hash of the
+delivered keys and prices>`, and writes the file only after a successful send. The cutover (2026-10-25) stopped Node
+(container restart without the deals code) before the Rust watcher started.
+
+**The notify server's dedup, as it is** (`crates/secretary-server/src/notify/mod.rs::Notifier::admit`,
+`store.rs`, `routes.rs::notify`): under `admit_lock`, a key is a duplicate when it is in `seen` (an in-memory LRU of
+4096 keys, empty after a server restart) or on any notification in the inbox (`notifications.json`, at most 500
+items, read ones evicted first; there is no delete API). A duplicate is answered 200 `{"status":"duplicate"}`, which
+`AppNotify` reports as `Delivered`, so the watcher acknowledges it. There is no time limit: a key is suppressed until
+it leaves both stores, which a few watch messages cannot cause, so the model's server keeps every key. The key holds
+the run's local date and only the delivered best offers (`dedup_key_is_kind_date_and_delivered_offers` checks this on
+the real `compose`): an identical retry on the same date is suppressed; a retry with one more offer, a changed price
+or on the next date is a new notification.
+
+Model (`deals.rs`, twin `deals/DealWatch.tla`; the TLC state counts equal Stateright's): two items; item 0 has a
+food-waste offer and a flyer alternative, item 1 a flyer offer; prices none/low/high; two edits of the sources; two
+days of three clock slots (digest window, catch-up + first alert tick, later alert ticks); at most four run starts;
+one fault (a crash at any step, a lost response after the server admitted the message, the server down, or a failed
+source in a poll). The clock and the sources move between runs: a run takes seconds and reads the sources only at
+`Poll`. Switches: Node first and the cutover, Node and Rust at once, server dedup, and three proposed fixes:
+
+- **F1** write the composed message (`pending`, with its dedup key) into the state file before sending; a run that
+  finds one re-sends it with the same key (the server answers `duplicate` if it already has it), acknowledges it and
+  ends.
+- **F2** acknowledge only the delivered best offers (and their `relatedKeys`), not every active offer.
+- **F3** a notified price never goes up (`set_notified` keeps the lower price).
+
+Invariants (Stateright / TLA+), checked over the owner's receipts (ghost state), not over the file:
+
+- `no_repeat` / `NoRepeat`: an alert never carries an (item, key, price) the owner already received in any message.
+  The digest is a daily summary and may list received offers again (`digest_relists` is a reached witness of that
+  design); two digests on one date are `one_digest_per_day`.
+- `one_digest_per_day` / `OneDigestPerDay`: at most one admitted digest per digest date.
+- `silent_when_unchanged` / `SilentWhenUnchanged`: no digest is admitted whose run observed the same active offers
+  and prices as the last admitted digest's run, and no alert whose run observed the same as the last admitted
+  message's run. "Observed": a failed source shows fewer offers.
+- `no_skip` / `NoSkip`, safety over the history: when an alert run ends successfully (no source failed, and it either
+  skipped or delivered and saved), every item whose best offer has been the same since before the previous alert
+  tick, and which the run saw, has reached the owner at that price or lower. A capped run never starts.
+- `acked_only_after_admission` / `AckedOnlyAfterAdmission`: the file records a message only after the server has its
+  key (a failed send writes nothing). It holds in every case.
+
+Witnesses: `new_alert` / `NeverNewAlert` (an offer added or repriced by an edit reaches the owner in an alert),
+`restart_continues` / `NeverRestartContinues` (after a send whose save was lost, a later run saves), `cutover` /
+`NeverCutover` (Rust loads the file after Node stopped; in D3 both load), `digest_relists` / `NeverDigestRelists`.
+TLC: one `MUST PASS` cfg per holding case with all its invariants, `_witness` cfgs for it, and one `MUST FAIL` cfg
+per bug, each with the single invariant it breaks (16 cfgs).
+
+| Model action | Code (`crates/lucina-deals/src/` on `lucina-rs` unless noted) |
+|---|---|
+| `Tick` | `schedule.rs::Scheduler::tick`: digest from `GROCERY_DEALS_DIGEST_TIME` until 11:00, alerts in `GROCERY_DEALS_ALERT_WINDOW` every `GROCERY_DEALS_ALERT_INTERVAL_MIN` |
+| `Edit(offer, price)` | Salling / Tjek upstream changes (source caches: food waste 15 min, search 30 min, shorter than the alert interval) |
+| `Load(actor, kind)` | `watch.rs::DealWatch::run`: queue mutex, `time`/`date`, `WatchState::load`, `prune`, `already digested today`, `daily alert cap`; F1: a pending message |
+| `Poll(actor, mask)` | `engine.rs::list_matches` → `collect` (`sources.rs::food_waste`, `flyers`; a failure gives no deals of that source), `validity`, `match_names` (`matcher.rs::match_deal`, `group_deals`) |
+| `Decide(actor)` | `watch.rs::compose`: active offers, `digest_fingerprint`, `no active matches`, `unchanged digest`, best offer per item, the alert `notified_price <= price` filter, `dedup_key` |
+| `Claim(actor)` | F1 only (proposed): save the composed message as `pending` |
+| `Send(actor, outcome)` | `notify.rs::AppNotify::deliver` (one retry on network error, timeout or 5xx) → secretary-server `notify/routes.rs::notify` → `Notifier::publish`/`admit`; `Lost` = admitted but the response failed (`Delivery::Failed`), `Down` = not admitted |
+| `Save(actor)` | `watch.rs::acknowledge` + `WatchState::save` (tmp file, rename) |
+| `SkipSave(actor)` | `run`: a skipped digest sets `lastDigestDate` and saves |
+| `Crash(actor)` | the process dies anywhere; the queue and the digest cooldown are lost, the file and the inbox stay |
+| `StopNode`, `StartRust` | the cutover: Node's container restarted without the deals code (an in-flight run dies), then `lucina-server/src/deals.rs::start` |
+
+| Case | Node / Rust | Faults | Dedup | Fixes |
+|---|---|---|---|---|
+| D0 | Rust | none | on | – |
+| D1 | Rust | one | on | – |
+| D1 + fixes | Rust | one | on | F1 F2 F3 |
+| D2 | Node, `StopNode` at any step, `StartRust` | the stop | on | – |
+| D2 + fixes | as D2 | the stop | on | F1 F2 F3 in both runtimes |
+| D3 | Node and Rust at once | none | on | – |
+| D4 | Rust | one | off | – |
+| D5 | Rust | one | off | F1 F2 F3 |
+
+Verus (`deals_kernel.rs`, 60 verified, no `assume`/`external_body`): (a) validity: active, upcoming and expired
+partition every (from, to, now), an offer is never active at or after `to`, `validity_exec` is the code's branch
+order; (b) keys: `tjek:<id>` / `fw:<store>:<ean>` bytes are injective over (source, ids) when food-waste store ids
+have no `:` (`lemma_wire_injective`), and not otherwise (`lemma_wire_collision`: store `a:b` + ean `c` and store `a` +
+ean `b:c`; Salling store ids are UUIDs, but `sources.rs` does not check it); `group_exec` (the code's `group_deals`)
+gives one group per group id and keeps every member's key in its group, `deal_keys_exec` keeps the key and every
+related key, and acknowledging a group covers each member alone (`lemma_group_ack_covers_members`); (c) the new-match
+decision: after a run's acknowledgment (disjoint key sets), any offer sharing a key with an acknowledged deal is not
+new at that price or above (`lemma_ack_idempotent`), strictly cheaper on its keys is new
+(`lemma_strict_cheaper_is_new`), the alert filter selects exactly the offers with no key notified at or below their
+price (`lemma_alert_guard`), and the overwrite forgets a cheaper notification (`lemma_overwrite_forgets_cheaper`,
+the D0 price bounce); (d) matcher: a token without the term as a suffix never matches (`lemma_no_suffix_no_match`), a
+one-word term scores only on an equal token or a head-final compound with a >= 2-letter prefix
+(`lemma_single_term_needs_suffix`, `lemma_prefix_only_never_matches`), the four examples `skinkepizza`,
+`skinkeschnitzler`, `rugbrødschips`, `mælkechokolade` never match (`lemma_prefix_only_examples`), any exclude hit
+makes `match_deal` 0 (`lemma_exclude_veto`, reachable: `lemma_pizza_is_vetoed`); `term_score_exec` and
+`match_deal_exec` return the code's integers. Boundaries: date parsing, Unicode lowercasing/NFD and the token regex,
+the `\p{L}` class (per-character flags), `display` of raw ids, SHA-256; prices are integers (the code's f64 compare
+the same way on the prices sources return).
+
+`verification/verus/diff/run-deals.sh` (in the models section of `verify.sh`) extracts the pinned `lucina-deals` and
+`lucina-grocery` with `git archive` into `target/deals-diff` and runs `deals.rs` (14 tests) and `deals_group.rs`
+against the real functions: 20 000 validity triples at and around the boundaries, generated food-waste keys through
+the real `Sources::food_waste` and every fixture flyer key, 5 000 `deal_keys`, 3 000 alert batches (selection,
+acknowledgment, idempotence, strictly cheaper), 60 000 `term_score` and 20 000 `match_deal` cases on generated Danish
+headings, 4 000 `group_deals` inputs, and the real-code witnesses of the findings below. The kernel's exec functions
+enter as a plain-Rust copy (`deals_kernel_exec.rs`); the script stops when `deals_kernel.rs` no longer has the
+SHA-256 in `deals-kernel.sha256`, so the copy cannot drift silently.
+
+#### Findings (current code; production code unchanged, kept as `Violated` / `MUST FAIL`)
+
+Traces are the shortest (plain BFS), actor 0 = Node, 1 = Rust; `Poll(a, 0)` = both sources answered; `Edit(0, 0)`
+removes the food-waste offer, `Edit(0, 2)` reprices it high.
+
+**DW1, a send whose save is lost repeats offers** (D1, D2; `no_repeat`, `one_digest_per_day`,
+`silent_when_unchanged`). `run` delivers, then acknowledges and saves. If the response is lost (`AppNotify` reports
+`Failed` after the server stored the notification) or the process dies before the rename, the file does not know the
+owner got the message. The server only suppresses an identical retry on the same date:
+
+```text
+D1 no_repeat (9):            Tick; Load(1,Digest); Poll(1,0); Decide(1); Send(1,Lost);
+                             Load(1,Alert); Poll(1,0); Decide(1); Send(1,Delivered)
+D1 one_digest_per_day (9):   Load(1,Digest); Poll(1,0); Decide(1); Send(1,Lost); Edit(0,0);
+                             Load(1,Digest); Poll(1,0); Decide(1); Send(1,Delivered)
+D1 silent_when_unchanged (9): as no_repeat (the alert's observation equals the digest's)
+D2 one_digest_per_day (11):  Load(0,Digest); Poll(0,0); Decide(0); Send(0,Delivered); StopNode; Edit(0,0);
+                             StartRust; Load(1,Digest); Poll(1,0); Decide(1); Send(1,Delivered)
+```
+
+The first: the digest reached the owner, the alert at 09:00 does not see it acknowledged and sends the food-waste
+offer again (the digest key and the alert key differ by kind). Code: `watch.rs::DealWatch::run` (deliver, then
+`acknowledge` + `save`), `compose` (`dedup_key` from kind, date and delivered offers),
+`notify.rs::AppNotify::deliver`. The cutover hits the same gap when Node is stopped between its send and its save
+(D2). Fix F1; D1 + fixes and D2 + fixes hold, and D5 shows F1 needs the server dedup.
+
+**DW2, price bounce** (D0, no fault; `no_repeat`). `acknowledge` overwrites the notified price with the current one,
+also upwards (`WatchState::set_notified`). Notified at the low price, then a later delivered message acknowledges the
+high price (the next day's digest), then the price drops back and is alerted again:
+
+```text
+D0 no_repeat (20): Tick; Tick; Load(1,Alert); Poll(1,0); Decide(1); Send(1,Delivered); Save(1); Tick; Tick;
+                   Edit(0,2); Load(1,Digest); Poll(1,0); Decide(1); Send(1,Delivered); Save(1); Edit(0,1);
+                   Load(1,Alert); Poll(1,0); Decide(1); Send(1,Delivered)
+```
+
+Verus: `lemma_overwrite_forgets_cheaper`; real code: `price_bounce_alerts_a_received_price_again`. Fix F3.
+
+**DW3, an alternative is acknowledged without being shown** (D0; `no_skip`). Messages show each item's best offer
+only, but `acknowledge` records every active offer (`for item in &prepared.active { for deal in &item.deals …`;
+Node's comment: "Their alternatives are already known"). When the best offer goes away, the alternative is the best
+offer, active across alert ticks, never shown, and every alert skips it until the next digest:
+
+```text
+D0 no_skip (11): Load(1,Digest); Poll(1,0); Decide(1); Send(1,Delivered); Save(1); Edit(0,0); Tick; Tick;
+                 Load(1,Alert); Poll(1,0); Decide(1)
+```
+
+Real code: `alternative_acknowledged_without_delivery`. This is deliberate in Node and Rust, but it breaks `no_skip`
+as stated. Fix F2.
+
+**D3, two watchers** (rule witness, like P3/P4): stale snapshots and lost updates on the shared file give two digests
+on one date without any fault (16 actions). Never run both; the performed cutover stopped Node first.
+
+**D4/D5, the dedup key's role.** Without server dedup the identical retry after a lost response is a second digest
+(D4, 8 actions: `Load(1,Digest); Poll(1,0); Decide(1); Send(1,Lost); Load(1,Digest); Poll(1,0); Decide(1);
+Send(1,Delivered)`); with dedup the same retry is suppressed and the D1 trace needs a changed batch. F1 relies on
+dedup: without it the pending re-send repeats (D5, 7 actions).
+
+**Key domain.** `sources.rs::food_waste` joins raw upstream strings, so `fw:` keys are injective only for store ids
+without `:` (above); `relatedKeys` grouping and `deal_keys` keep every member, so acknowledging a group covers all of
+its branches.
 
 ## Bugs found
 
@@ -541,6 +726,16 @@ Confirm(0) Reserve(0)=20 StepRuns(0,10) StepRuns(0,13) Confirm(1) Reserve(1)=20 
 Fix: reserve the worst case per step (the estimate plus a margin bounding Meshy's drift), and before each step stop
 when consumed plus the next worst case would exceed the reservation. Verus K5 proves the arithmetic.
 
+### DW1–DW3: the grocery deal watch repeats or skips offers (low; notification noise, lucina-rs)
+
+Details and traces in §7. DW1: a send whose save is lost (lost response, crash, or the cutover's stop) lets the
+next run repeat offers, because secretary-server only suppresses an identical message on the same date. DW2:
+`acknowledge` raises a notified price, so a price that goes up and back down is alerted twice. DW3: alternatives are
+acknowledged without being shown, so an alternative that becomes the best offer is not alerted until the next
+digest. Proposed fixes (lucina-rs, `watch.rs`): F1 save the composed message and its dedup key before sending and
+re-send it first after a restart; F2 acknowledge only the delivered best offers; F3 never raise a notified price. The
+model holds with all three (D1 + fixes, D2 + fixes).
+
 ## Modeling assumptions
 
 - **Timeline.** A single `write()` of a whole line to an O_APPEND regular file is atomic (Linux; lines stay far
@@ -551,5 +746,9 @@ when consumed plus the next worst case would exceed the reservation. Verus K5 pr
 - **Shopping.** Each batch is one serialisable transaction (list row `FOR UPDATE`). The model has one list and two
   objects; `move`, `reorder` and `edit_item` are not modelled.
 - **OAuth.** The attacker cannot forge a PKCE verifier and cannot register an allowed redirect_uri.
+- **Deal watch.** A run takes seconds, so clock windows and source changes happen between runs; the digest
+  cooldown (10 min) is not modelled (a retry may come at any later time). Item names, body length and the five-item
+  limit are not modelled (the real-code tests keep `compose` exact). The server keeps every dedup key (true for a few
+  watch messages: 4096 LRU keys, 500 inbox items, no deletions).
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels
   cover the per-step invariants for all inputs.

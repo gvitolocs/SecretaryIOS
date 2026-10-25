@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use stateright::{Checker, Expectation, Model};
 
+pub mod deals;
 pub mod gates;
 pub mod ink_sync;
 pub mod oauth;
@@ -254,6 +255,7 @@ impl Case {
 /// Every case of every protocol.
 pub fn all_cases(deep: bool) -> Vec<Case> {
     let mut v = Vec::new();
+    v.extend(deals::cases(deep));
     v.extend(timeline::cases(deep));
     v.extend(ownership::cases(deep));
     v.extend(shopping::cases(deep));
