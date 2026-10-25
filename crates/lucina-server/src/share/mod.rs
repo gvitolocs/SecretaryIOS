@@ -334,7 +334,7 @@ async fn status(
     Ok(Json(job.public(false)))
 }
 
-pub(super) fn sanitize(s: &str) -> String {
+pub fn sanitize(s: &str) -> String {
     let s: String = s
         .chars()
         .map(|c| {
@@ -358,6 +358,10 @@ pub(super) fn sanitize(s: &str) -> String {
             .unwrap_or_default();
         s = clip(&s, 120 - ext.len());
         while s.len() > 120 - ext.len() {
+            s.pop();
+        }
+        // A cut right after a '.' plus ".ext" would make ".." (Verus SK4.4).
+        while s.ends_with('.') {
             s.pop();
         }
         s.push_str(&ext);
@@ -527,7 +531,8 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         if !(-90.0..=90.0).contains(&loc.lat) || !(-180.0..=180.0).contains(&loc.lon) {
             return Err(bad("invalid meta.location"));
         }
-        // The location becomes a part of its own: it counts toward the limit.
+        // Defence in depth: `meta` itself was one of the counted fields, so this
+        // never fires today (Verus SK4.1), but keeps the bound if fields change.
         check_parts(parts.len() + 1)?;
         let label = loc
             .name
