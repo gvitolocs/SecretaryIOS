@@ -343,3 +343,16 @@ async fn signed_renditions_need_no_upstream_key() {
     let res = app.clone().oneshot(Request::builder().uri(&forged).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn a_lost_upload_answers_gone() {
+    let (_t, lib, app) = setup();
+    let data = png(20, 20, 9);
+    let (_, created) = json_call(&app, "POST", "/v1/media/uploads", json!({"filename": "x.png", "size": data.len()})).await;
+    let id = created["upload_id"].as_str().unwrap().to_string();
+    let (s, _, _) = put_bytes(&app, &format!("/v1/media/uploads/{id}"), &data).await;
+    assert_eq!(s, StatusCode::OK);
+    std::fs::remove_file(lib.cfg.uploads_dir().join(&id)).unwrap();
+    let (s, _) = json_call(&app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+    assert_eq!(s, StatusCode::GONE);
+}

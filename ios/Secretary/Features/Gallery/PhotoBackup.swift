@@ -348,12 +348,21 @@ final class PhotoBackup {
         // An upload left over from an earlier run: finish it or resume it.
         if let uploadId = entry.uploadId, let temp = entry.tempFile, FileManager.default.fileExists(atPath: temp) {
             if let state = try? await api.uploadState(uploadId), !state.finished {
-                if state.offset < state.size {
-                    try await transfer(uploadId: uploadId, file: URL(fileURLWithPath: temp), offset: state.offset)
+                do {
+                    if state.offset < state.size {
+                        try await transfer(uploadId: uploadId, file: URL(fileURLWithPath: temp), offset: state.offset)
+                    }
+                    try await complete(w, uploadId: uploadId, temp: URL(fileURLWithPath: temp), entry: &entry)
+                    return
+                } catch let APIError.server(status, _, _) where status == 410 || status == 404 {
+                    // The server lost this upload: start the asset again (its dedupe finds the item if it is in).
+                    log.info("PhotoBackup upload \(uploadId, privacy: .public) gone, starting again")
                 }
-                try await complete(w, uploadId: uploadId, temp: URL(fileURLWithPath: temp), entry: &entry)
-                return
             }
+            try? FileManager.default.removeItem(atPath: temp)
+            entry.uploadId = nil
+            entry.tempFile = nil
+            ledger[w.key] = entry
         }
         let temp = try await export(w.resource)
         defer { if entry.uploadId == nil { try? FileManager.default.removeItem(at: temp) } }
@@ -565,7 +574,8 @@ private extension APIError {
     var isTransport: Bool {
         switch self {
         case .network, .timeout, .hostNotFound, .lucinaOffline: return true
-        case let .server(status, _, _): return status >= 500
+        // Gateways (p1 or nezopt away). A plain 500 is about this asset: skip it, keep going.
+        case let .server(status, _, _): return [502, 503, 504].contains(status)
         default: return false
         }
     }
