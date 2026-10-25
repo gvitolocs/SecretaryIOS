@@ -58,3 +58,41 @@ No implementation items are intentionally deferred. The full-screen thumbnail vi
 - `ios/docs/share-to-lucina.md`
 - `ios/l10n/translations.json`
 - `ios/project.yml`
+
+## Phase 2: attachments in Lucina's chat (Telegram style)
+
+Contract v1.1: the chat composer uses the same `POST /v1/share` (source `ios-chat`, `note` = caption, `sessionId` = the
+chat's session, optional `meta` JSON with per-file transcript/size/duration/date and the shared location).
+
+- **Shared pieces** (`Extensions/ShareShared/`, in the app and the extension): `PendingAttachment` (local copy, kind,
+  mime, size, preview, transcript, width/height/duration/date), `AttachmentLoader` (item providers for paste and drop,
+  PhotosPicker, document picker URLs, the pasteboard, camera photos and videos; paste classification image → file →
+  link → text, styled text stays text) and `AttachmentTray` (horizontal cards: thumbnail or type icon, name, size,
+  duration badge, remove, Quick Look). The share sheet shows its files in the tray and sends the per-file `meta`.
+- **Composer** (`Features/Chat/ChatComposer.swift`, `ComposerInputs.swift`): a `+` menu (Photos & videos up to 10,
+  Files, Camera, Location, Paste), a `UITextView` that sends pasted images/files to the tray (text still pastes as
+  text; Return sends), drag and drop of anything onto the chat, at most 20 files per message. Audio files are
+  transcribed on the iPhone (`SFSpeechRecognizer`, on-device only, 60 s cap, skipped without permission) and the
+  transcript goes in `meta.files[i].transcript`.
+- **Sending** (`ChatStore` + `ChatShares.swift`): files move to `Shares/Chat/<shareId>/` with `outgoing.json`; the body
+  is built there and handed to the background session (works without the App Group: the app's own container). The
+  optimistic bubble (`meta.kind = share`, `meta.shareId`) shows the local previews and a progress ring. Failure shows
+  "Not sent" + Retry, which rebuilds the body with the same share id on a fresh session (`<prefix><id>~<attempt>`).
+  `ShareUploads` keeps the 202 body, reports progress/outcome to the chat, and writes `<shareId>.result.json` so an
+  upload that finished while the app was suspended is settled on the next foreground. The 202 turns the bubble into
+  the server's user item (`userItemId`), keeping its local previews (`ChatPreviews`, keyed by share id + file index);
+  the timeline merge also replaces it by `meta.shareId`. `GET /v1/share/{id}` is polled every 2 s (max 10 min, only in
+  the foreground) for "Lucina is reading…/thinking…" under the bubble until her item arrives.
+- **Bubbles** (`AttachmentBubbles.swift`): one photo keeps its shape (max 260×340), 2-10 make an album mosaic
+  (`AlbumLayout`) with the caption inside the bubble; ThumbHash placeholder (`ThumbHash.swift`), then `urls.grid`
+  (JPEG XL via ImageIO), fallback `/thumb?size=256`; item JSON cached in memory and on disk (`ChatMedia`). Tap opens a
+  full-screen pager with `urls.preview` (fallback `/thumb?size=1024`), share and save (original file, add-only Photos
+  access). Videos: poster + play badge + duration, played by the media player. Audio: inline player on the tokenised
+  play URL. Files/contacts/calendars: type icon, name, size, type; Quick Look on the downloaded original. Links: title
+  + host. Locations: `MKMapSnapshotter` in the current light/dark style, tap opens Maps.
+- New Info.plist strings: `NSPhotoLibraryAddUsageDescription`; `NSCameraUsageDescription` now also mentions the chat
+  camera (both localized in `InfoPlist.xcstrings`).
+
+Tests: `SecretaryTests/ChatAttachmentTests.swift` (ThumbHash vectors from the reference encoder, album frames for
+1-10, `meta` JSON and the chat multipart, paste classification with mock providers, same-share-id retry, local →
+server reconciliation, status decoding). Compiled on the Mac (`xcodebuild … -sdk iphoneos`); not run (no simulator).
