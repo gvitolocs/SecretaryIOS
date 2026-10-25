@@ -2,6 +2,7 @@ import BackgroundTasks
 import Foundation
 import Network
 import Observation
+import os
 import Photos
 import UIKit
 
@@ -14,6 +15,10 @@ import UIKit
 //   A BGProcessingTask and the app refresh task pick the work up again later.
 // - Rules: Wi-Fi only (default on), only while charging (default off), include videos.
 // - Never deletes anything on the iPhone. The library access is read-only in practice.
+
+/// `log stream --predicate 'subsystem == "tech.getsecretary.app" AND category == "PhotoBackup"'` on a Mac, or
+/// `pymobiledevice3 syslog live --match PhotoBackup` for a device.
+private let log = Logger(subsystem: "tech.getsecretary.app", category: "PhotoBackup")
 
 @Observable
 @MainActor
@@ -135,6 +140,7 @@ final class PhotoBackup {
 
     /// App start, foreground, library change, background task: run if allowed and not running.
     func kick() {
+        log.info("PhotoBackup kick enabled=\(self.settings.enabled) running=\(self.running != nil)")
         guard settings.enabled, running == nil else { return }
         running = Task { [weak self] in
             await self?.run()
@@ -146,6 +152,7 @@ final class PhotoBackup {
         let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         let granted: PHAuthorizationStatus = current == .notDetermined
             ? await PHPhotoLibrary.requestAuthorization(for: .readWrite) : current
+        log.info("PhotoBackup access status=\(granted.rawValue)")
         guard granted == .authorized || granted == .limited else {
             status = .needsAccess
             return
@@ -216,6 +223,7 @@ final class PhotoBackup {
     private func run() async {
         status = .scanning
         let work = scan()
+        log.info("PhotoBackup scan found \(work.count) to send, \(self.ledger.count) known")
         remaining = work.count
         if work.isEmpty {
             status = .idle
@@ -225,6 +233,7 @@ final class PhotoBackup {
         for w in work {
             if Task.isCancelled { break }
             if let reason = blockedReason() {
+                log.info("PhotoBackup waiting: \(reason, privacy: .public)")
                 status = .waiting(reason)
                 return
             }
@@ -237,6 +246,7 @@ final class PhotoBackup {
             } catch is CancellationError {
                 break
             } catch {
+                log.error("PhotoBackup send failed: \(String(describing: error), privacy: .public)")
                 lastError = error.localizedDescription
                 // Skip this one for now; the next pass retries it.
                 done += 1
@@ -338,6 +348,7 @@ final class PhotoBackup {
         meta.livePairAsset = w.pairKey
         meta.liveMotion = w.motion ? true : nil
         meta.source = "phone-ios"
+        log.info("PhotoBackup exported \(size) bytes, creating upload")
         let created = try await api.createUpload(.init(filename: w.resource.originalFilename, size: size, meta: meta))
         if created.duplicate, let item = created.itemId {
             record(w, item: item, entry: &entry)
