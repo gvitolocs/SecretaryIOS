@@ -26,6 +26,7 @@ use stateright::{Checker, Expectation, Model};
 pub mod gates;
 pub mod ink_sync;
 pub mod oauth;
+pub mod otp;
 pub mod ownership;
 pub mod shopping;
 pub mod timeline;
@@ -260,6 +261,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(oauth::cases(deep));
     v.extend(gates::cases(deep));
     v.extend(ink_sync::cases(deep));
+    v.extend(otp::cases(deep));
     v
 }
 
