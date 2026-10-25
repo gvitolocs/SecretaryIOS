@@ -1,17 +1,27 @@
-//! The thin HTTP layer: tokens, routing, the `paused` file and the
-//! `tiny_http` loop around [`Store`].
+//! The thin HTTP layer: tokens, routing, the `paused` file, `seen.json` and
+//! the `tiny_http` loop around [`Store`].
+//!
+//! `seen.json` (F3): the event ids the relay remembers, as SHA-256 hashes
+//! with the time each is forgotten, never an id or a code. It is written
+//! atomically (0600 temp file, fsync, rename, directory fsync) before an
+//! accepted `/incoming` is acknowledged, and loaded (expired entries
+//! skipped) by [`Relay::open`], so a phone retry after a relay restart is
+//! still a duplicate. The codes themselves stay in memory only: a restart
+//! drops them.
 //!
 //! [`Relay::handle`] maps one request to one [`Reply`] without touching the
 //! network, so every route and status code is unit-tested; [`serve`] only
 //! reads requests, stamps the clock and writes replies.
 
 use std::fmt;
-use std::fs;
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lucina_phone_core::proto::{Incoming, MAX_BODY_BYTES};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::store::{Store, DEFAULT_ARM_SECONDS};
@@ -24,6 +34,10 @@ pub const DEFAULT_STATE_DIR: &str = "/var/lib/lucina-otp";
 const PREFIX: &str = "/v1/phone/otp";
 /// Tokens shorter than this are refused at start.
 pub const MIN_TOKEN_CHARS: usize = 40;
+/// The remembered event ids in the state directory.
+pub const SEEN_FILE: &str = "seen.json";
+/// A `seen.json` larger than this is not ours (64 entries are about 6 KiB).
+const MAX_SEEN_FILE_BYTES: u64 = 64 * 1024;
 
 /// Unix ms.
 pub fn now_ms() -> u64 {
@@ -65,7 +79,7 @@ impl std::error::Error for StartError {}
 /// Environment: `LUCINA_OTP_STATE_DIR` and `LUCINA_OTP_CONTINUOUS`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// Holds `owner.token`, `phone.token` and `paused`.
+    /// Holds `owner.token`, `phone.token`, `paused` and `seen.json`.
     pub state_dir: PathBuf,
     /// `LUCINA_OTP_CONTINUOUS=true`.
     pub continuous: bool,
@@ -120,6 +134,74 @@ impl Tokens {
     }
 }
 
+/// `seen.json`: `{"version":1,"seen":[{"hash":"<sha256 hex>","until":<ms>}]}`.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SeenFile {
+    version: u32,
+    seen: Vec<SeenEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SeenEntry {
+    hash: String,
+    until: u64,
+}
+
+/// The entries of `path`; empty when it is missing or unreadable.
+fn load_seen(path: &Path) -> Vec<(String, u64)> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_SEEN_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_SEEN_FILE_BYTES
+    {
+        return Vec::new();
+    }
+    match serde_json::from_slice::<SeenFile>(&bytes) {
+        Ok(f) if f.version == 1 => f.seen.into_iter().map(|e| (e.hash, e.until)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Atomically replaces `path` with the store's remembered ids (0600).
+fn save_seen(path: &Path, store: &Store) -> io::Result<()> {
+    let file = SeenFile {
+        version: 1,
+        seen: store
+            .seen()
+            .map(|(hash, until)| SeenEntry {
+                hash: hash.to_owned(),
+                until,
+            })
+            .collect(),
+    };
+    let body = serde_json::to_vec(&file)?;
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    // Make the rename durable; a failure here leaves a valid file.
+    if let Some(dir) = path.parent() {
+        if let Ok(d) = File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
+}
+
 /// A request body as read from the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Body<'a> {
@@ -168,16 +250,20 @@ pub struct Relay {
     store: Store,
     tokens: Tokens,
     paused_path: PathBuf,
+    seen_path: PathBuf,
     new_window_id: fn() -> String,
 }
 
 impl Relay {
-    /// Loads the tokens, reads the `paused` file and arms continuous
-    /// forwarding when it is configured and not paused.
+    /// Loads the tokens, reads the `paused` file and `seen.json` (skipping
+    /// expired entries) and arms continuous forwarding when it is
+    /// configured and not paused.
     pub fn open(config: &Config, now: u64) -> Result<Self, StartError> {
         let tokens = Tokens::load(&config.state_dir)?;
         let paused_path = config.state_dir.join("paused");
+        let seen_path = config.state_dir.join(SEEN_FILE);
         let mut store = Store::new(config.continuous, paused_path.exists());
+        store.restore_seen(load_seen(&seen_path), now);
         if store.starts_armed() {
             store.arm(0, now, random_window_id());
         }
@@ -185,6 +271,7 @@ impl Relay {
             store,
             tokens,
             paused_path,
+            seen_path,
             new_window_id: random_window_id,
         })
     }
@@ -251,8 +338,19 @@ impl Relay {
                 let Ok(event) = serde_json::from_slice::<Incoming>(body) else {
                     return Reply::error(400, "invalid_request");
                 };
+                let before = self.store.clone();
                 match self.store.receive(&event, now) {
-                    Ok(ack) => Reply::json(200, &ack),
+                    Ok(ack) if ack.duplicate || ack.test => Reply::json(200, &ack),
+                    Ok(ack) => {
+                        // The id must survive a restart before the phone
+                        // drops its copy; if it cannot, undo and let the
+                        // phone retry (5xx).
+                        if save_seen(&self.seen_path, &self.store).is_err() {
+                            self.store = before;
+                            return Reply::error(503, "seen_unavailable");
+                        }
+                        Reply::json(200, &ack)
+                    }
                     Err(refusal) => Reply::error(refusal.status(), refusal.error()),
                 }
             }
@@ -627,18 +725,161 @@ mod tests {
             503
         );
         assert!(restarted.store().armed(NOW));
-        let ack: IncomingAck = serde_json::from_str(
-            &call(
-                &mut restarted,
+        // Nor can seen.json: the code is refused with a 5xx (the phone
+        // retries) and the store is left as it was.
+        let body = r#"{"eventId":"0123456789abcdef","code":"482917"}"#;
+        let refused = call(&mut restarted, "POST", "/incoming", PHONE, body, NOW);
+        assert_eq!(
+            (refused.status, value(&refused)),
+            (503, json!({"error": "seen_unavailable"}))
+        );
+        assert_eq!(
+            (
+                restarted.store().pending_len(),
+                restarted.store().seen_len()
+            ),
+            (0, 0)
+        );
+        fs::create_dir_all(&dir).unwrap();
+        let ack: IncomingAck =
+            serde_json::from_str(&call(&mut restarted, "POST", "/incoming", PHONE, body, NOW).body)
+                .unwrap();
+        assert!(ack.accepted && !ack.duplicate);
+    }
+
+    fn incoming(id: u32, code: &str) -> String {
+        format!(
+            r#"{{"eventId":"8c1f0a52-7d2e-4f0b-9a51-{id:012}","code":"{code}","sender":"Bank","receivedAt":{NOW}}}"#
+        )
+    }
+
+    /// OTP3 (Stateright `otp.rs`): two owner `/otp` after a pause run take →
+    /// status → arm with a stale status; the second arm used to drop the code
+    /// the relay accepted in between.
+    #[test]
+    fn otp3_two_requests_after_a_pause_keep_the_code() {
+        let (mut r, _) = relay(true);
+        assert_eq!(call(&mut r, "POST", "/disarm", OWNER, "", NOW).status, 200);
+        for _ in 0..2 {
+            assert_eq!(call(&mut r, "GET", "/otp", OWNER, "", NOW).status, 204);
+        }
+        for _ in 0..2 {
+            let s = value(&call(&mut r, "GET", "/status", OWNER, "", NOW));
+            assert_eq!(s["armed"], false);
+        }
+        let first = value(&call(
+            &mut r,
+            "POST",
+            "/arm",
+            OWNER,
+            r#"{"seconds":300}"#,
+            NOW,
+        ));
+        let ack = call(
+            &mut r,
+            "POST",
+            "/incoming",
+            PHONE,
+            &incoming(1, "482917"),
+            NOW + 1,
+        );
+        assert_eq!(value(&ack), json!({"accepted": true}));
+        let second = value(&call(
+            &mut r,
+            "POST",
+            "/arm",
+            OWNER,
+            r#"{"seconds":300}"#,
+            NOW + 2,
+        ));
+        assert_eq!(first, second, "arming an armed continuous relay is a no-op");
+        let got = call(&mut r, "GET", "/otp", OWNER, "", NOW + 3);
+        assert_eq!(
+            (got.status, value(&got)["code"].clone()),
+            (200, json!("482917"))
+        );
+    }
+
+    /// OTP2: `/otp arm` while a code waits keeps it, in both modes; only
+    /// `/disarm` drops waiting codes.
+    #[test]
+    fn otp2_arm_keeps_a_waiting_code_disarm_drops_it() {
+        for continuous in [true, false] {
+            let (mut r, _) = relay(continuous);
+            call(&mut r, "POST", "/arm", OWNER, r#"{"seconds":300}"#, NOW);
+            call(
+                &mut r,
                 "POST",
                 "/incoming",
                 PHONE,
-                r#"{"eventId":"0123456789abcdef","code":"482917"}"#,
+                &incoming(1, "482917"),
                 NOW,
-            )
-            .body,
-        )
-        .unwrap();
-        assert!(ack.accepted && !ack.duplicate);
+            );
+            call(&mut r, "POST", "/arm", OWNER, r#"{"seconds":300}"#, NOW + 1);
+            let got = call(&mut r, "GET", "/otp", OWNER, "", NOW + 2);
+            assert_eq!(value(&got)["code"], "482917", "continuous={continuous}");
+            call(
+                &mut r,
+                "POST",
+                "/incoming",
+                PHONE,
+                &incoming(2, "482918"),
+                NOW + 3,
+            );
+            call(&mut r, "POST", "/disarm", OWNER, "", NOW + 4);
+            call(&mut r, "POST", "/arm", OWNER, r#"{"seconds":300}"#, NOW + 5);
+            assert_eq!(call(&mut r, "GET", "/otp", OWNER, "", NOW + 6).status, 204);
+        }
+    }
+
+    /// OTP4 (F3): a restart keeps the seen ids, so a phone retry of a code
+    /// the owner already took is a duplicate; `seen.json` holds only hashes.
+    #[test]
+    fn otp4_seen_ids_survive_a_restart() {
+        let (mut r, dir) = relay(true);
+        let event = incoming(7, "482917");
+        call(&mut r, "POST", "/incoming", PHONE, &event, NOW);
+        assert_eq!(
+            value(&call(&mut r, "GET", "/otp", OWNER, "", NOW + 1))["code"],
+            "482917"
+        );
+        let config = Config {
+            state_dir: dir.clone(),
+            continuous: true,
+        };
+        let mut r = Relay::open(&config, NOW + 2).unwrap();
+        assert_eq!(r.store().seen_len(), 1);
+        let retry = call(&mut r, "POST", "/incoming", PHONE, &event, NOW + 3);
+        assert_eq!(value(&retry), json!({"accepted": true, "duplicate": true}));
+        assert_eq!(call(&mut r, "GET", "/otp", OWNER, "", NOW + 4).status, 204);
+
+        let path = dir.join(SEEN_FILE);
+        let raw = fs::read_to_string(&path).unwrap();
+        let id = "8c1f0a52-7d2e-4f0b-9a51-000000000007";
+        assert!(!raw.contains("482917") && !raw.contains(id), "{raw}");
+        assert!(raw.contains(&crate::store::event_hash(id)));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!dir.join("seen.json.tmp").exists());
+
+        // Forgotten after two minutes: pruned at start, and the id is new again.
+        let later = NOW + crate::store::SEEN_TTL_MS;
+        let mut r = Relay::open(&config, later).unwrap();
+        assert_eq!(r.store().seen_len(), 0);
+        let mut fresh = event.replace(&NOW.to_string(), &later.to_string());
+        fresh = fresh.replace("482917", "482919");
+        assert_eq!(
+            value(&call(&mut r, "POST", "/incoming", PHONE, &fresh, later)),
+            json!({"accepted": true})
+        );
+        let raw = fs::read_to_string(&path).unwrap();
+        let saved: SeenFile = serde_json::from_str(&raw).unwrap();
+        assert_eq!(saved.seen.len(), 1, "the expired entry is not written back");
+
+        // A corrupt file starts empty instead of failing the start.
+        fs::write(&path, b"{not json").unwrap();
+        assert_eq!(Relay::open(&config, NOW).unwrap().store().seen_len(), 0);
     }
 }

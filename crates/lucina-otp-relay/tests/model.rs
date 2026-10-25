@@ -6,20 +6,26 @@
 //! phone sent, what the owner got). Actions:
 //!
 //! - `Arm` (a 30 s window, or continuous and unpausing when configured),
-//!   `Disarm` (which pauses continuous forwarding);
+//!   `Disarm` (which pauses continuous forwarding). Arming keeps the codes
+//!   already waiting (fix F2 of the forwarding model,
+//!   `verification/models/src/otp.rs`);
 //! - `Incoming(kind)`: a new event from the phone, protocol 2 (fresh, sent
 //!   late, too old, a test event) or protocol 1 (right or wrong window id);
 //! - `Resend(i)`: the phone sends event `i` again, unchanged. The phone keeps
 //!   an event for at most `CODE_TTL_MS` after receiving it, so a resend only
 //!   happens within that time;
-//! - `Take` (`GET /otp`) and `Tick` (the clock moves 40 s).
+//! - `Take` (`GET /otp`) and `Tick` (the clock moves 40 s);
+//! - `Restart`: the relay process restarts, as `Relay::open` does it: a new
+//!   store with the same `paused` state, the seen ids reloaded from
+//!   `seen.json` (fix F3), the waiting codes lost (they live only in memory).
 //!
 //! The three initial states are a timed relay, a continuous one, and a
 //! continuous one restarted while paused (the `paused` file).
 //!
 //! Properties, for every reachable state:
 //!
-//! - a code is delivered at most once;
+//! - a code is delivered at most once, also across a restart;
+//! - arming never drops a code that is waiting and fresh;
 //! - nothing is delivered at or after its expiry;
 //! - nothing accepted before a disarm is delivered after it;
 //! - test events are never delivered, and only accepted codes are;
@@ -62,6 +68,7 @@ enum Action {
     Resend(u8),
     Take,
     Tick,
+    Restart,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -72,6 +79,9 @@ struct Sent {
     window_id: Option<String>,
     /// Disarm count when the relay accepted it; `None` until it does.
     accepted_epoch: Option<u8>,
+    /// Arm and restart counts when the relay accepted it.
+    accepted_arms: u8,
+    accepted_restarts: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -81,6 +91,7 @@ struct State {
     ticks: u8,
     arms: u8,
     disarms: u8,
+    restarts: u8,
     windows: u16,
     sent: Vec<Sent>,
     /// Indices into `sent`, in delivery order.
@@ -94,6 +105,9 @@ struct State {
     saw_paused: bool,
     saw_event_limit: bool,
     saw_overflow: bool,
+    arm_dropped_code: bool,
+    delivered_across_arm: bool,
+    duplicate_after_restart: bool,
 }
 
 struct RelayModel {
@@ -103,6 +117,7 @@ struct RelayModel {
     max_ticks: u8,
     max_arms: u8,
     max_disarms: u8,
+    max_restarts: u8,
     /// `sometimes` properties this configuration must reach.
     reachable: fn() -> Vec<Property<RelayModel>>,
 }
@@ -137,11 +152,18 @@ impl RelayModel {
         let event = Self::incoming(&s.sent[i], i);
         let before = s.store.pending_len();
         match s.store.receive(&event, s.now) {
-            Ok(ack) if ack.duplicate => s.saw_duplicate = true,
+            Ok(ack) if ack.duplicate => {
+                s.saw_duplicate = true;
+                if s.sent[i].accepted_epoch.is_some() && s.sent[i].accepted_restarts < s.restarts {
+                    s.duplicate_after_restart = true;
+                }
+            }
             Ok(ack) if ack.test => {}
             Ok(_) => {
                 if s.sent[i].accepted_epoch.is_none() {
                     s.sent[i].accepted_epoch = Some(s.disarms);
+                    s.sent[i].accepted_arms = s.arms;
+                    s.sent[i].accepted_restarts = s.restarts;
                 }
                 if before == s.store.limits().pending {
                     s.saw_overflow = true;
@@ -176,6 +198,7 @@ impl Model for RelayModel {
                     ticks: 0,
                     arms: 0,
                     disarms: 0,
+                    restarts: 0,
                     windows,
                     sent: Vec::new(),
                     delivered: Vec::new(),
@@ -187,6 +210,9 @@ impl Model for RelayModel {
                     saw_paused: false,
                     saw_event_limit: false,
                     saw_overflow: false,
+                    arm_dropped_code: false,
+                    delivered_across_arm: false,
+                    duplicate_after_restart: false,
                 }
             })
             .collect()
@@ -211,6 +237,9 @@ impl Model for RelayModel {
         if s.ticks < self.max_ticks {
             actions.push(Action::Tick);
         }
+        if s.restarts < self.max_restarts {
+            actions.push(Action::Restart);
+        }
     }
 
     fn next_state(&self, last: &State, action: Action) -> Option<State> {
@@ -218,8 +247,23 @@ impl Model for RelayModel {
         match action {
             Action::Arm => {
                 s.arms += 1;
+                let fresh = s.store.fresh_len(s.now);
                 s.store.arm(ARM_SECONDS, s.now, window_id(s.windows));
+                if s.store.fresh_len(s.now) < fresh {
+                    s.arm_dropped_code = true;
+                }
                 s.windows += 1;
+            }
+            Action::Restart => {
+                s.restarts += 1;
+                let old = &s.store;
+                let mut store = Store::new(old.continuous(), old.paused()).with_limits(self.limits);
+                store.restore_seen(old.seen().map(|(h, u)| (h.to_owned(), u)), s.now);
+                if store.starts_armed() {
+                    store.arm(0, s.now, window_id(s.windows));
+                    s.windows += 1;
+                }
+                s.store = store;
             }
             Action::Disarm => {
                 s.disarms += 1;
@@ -248,6 +292,8 @@ impl Model for RelayModel {
                     phone_received,
                     window_id,
                     accepted_epoch: None,
+                    accepted_arms: 0,
+                    accepted_restarts: 0,
                 });
                 let i = s.sent.len() - 1;
                 Self::send(&mut s, i);
@@ -267,6 +313,9 @@ impl Model for RelayModel {
                     }
                     if sent.kind == Kind::Test {
                         s.unaccepted_delivery = true;
+                    }
+                    if sent.accepted_arms < s.arms {
+                        s.delivered_across_arm = true;
                     }
                     s.delivered.push(i as u8);
                 }
@@ -300,6 +349,9 @@ impl Model for RelayModel {
             }),
             Property::always("only accepted codes are delivered", |_, s: &State| {
                 !s.unaccepted_delivery
+            }),
+            Property::always("arming never drops a waiting code", |_, s: &State| {
+                !s.arm_dropped_code
             }),
             Property::always(
                 "pending never exceeds the limit",
@@ -348,6 +400,7 @@ fn store_model_all_actions() {
         max_ticks: 3,
         max_arms: 2,
         max_disarms: 1,
+        max_restarts: 0,
         reachable: || {
             vec![
                 Property::sometimes("a duplicate is acknowledged", |_, s: &State| {
@@ -362,6 +415,10 @@ fn store_model_all_actions() {
                             .is_some_and(|e| e > 0)
                     })
                 }),
+                Property::sometimes(
+                    "a code waiting across an arm is delivered",
+                    |_, s: &State| s.delivered_across_arm,
+                ),
                 Property::sometimes("a late code is delivered", |_, s: &State| {
                     delivered_kind(s, Kind::Late)
                 }),
@@ -389,6 +446,7 @@ fn store_model_event_limit() {
         max_ticks: 2,
         max_arms: 1,
         max_disarms: 1,
+        max_restarts: 0,
         reachable: || {
             vec![Property::sometimes(
                 "the event limit refuses",
@@ -411,9 +469,43 @@ fn store_model_real_pending_limit() {
         max_ticks: 0,
         max_arms: 0,
         max_disarms: 0,
+        max_restarts: 0,
         reachable: Vec::new,
     };
     let checker = model.checker().spawn_bfs().join();
     checker.assert_properties();
     println!("real limits: {} states", checker.unique_state_count());
+}
+
+/// A relay restart (F3): seen ids survive it, codes do not. 2 events against
+/// 1 pending slot, a restart, and an arm and a disarm around it.
+#[test]
+fn store_model_restart() {
+    let model = RelayModel {
+        limits: Limits {
+            pending: 1,
+            seen: 2,
+        },
+        kinds: &[Kind::Fresh, Kind::V1],
+        max_events: 2,
+        max_ticks: 2,
+        max_arms: 1,
+        max_disarms: 1,
+        max_restarts: 1,
+        reachable: || {
+            vec![
+                Property::sometimes("a retry after a restart is a duplicate", |_, s: &State| {
+                    s.duplicate_after_restart
+                }),
+                Property::sometimes("a code is delivered after a restart", |_, s: &State| {
+                    s.delivered
+                        .iter()
+                        .any(|i| s.sent[usize::from(*i)].accepted_restarts > 0)
+                }),
+            ]
+        },
+    };
+    let checker = model.checker().spawn_bfs().join();
+    checker.assert_properties();
+    println!("restart: {} states", checker.unique_state_count());
 }

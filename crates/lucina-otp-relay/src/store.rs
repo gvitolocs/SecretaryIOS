@@ -15,20 +15,29 @@
 //! - a code expires at [`proto::expires_at`]: two minutes after the phone
 //!   received it, and never after a timed window ends;
 //! - an event id seen in the last two minutes is acknowledged as a duplicate
-//!   and not stored again; at most [`MAX_SEEN`] ids are remembered;
+//!   and not stored again; at most [`MAX_SEEN`] ids are remembered, each as
+//!   its SHA-256 ([`event_hash`]), which the HTTP layer persists in
+//!   `seen.json` so a restart keeps them (F3, [`Store::seen`],
+//!   [`Store::restore_seen`]);
 //! - `test` events are validated and acknowledged, never stored;
 //! - at most [`MAX_PENDING`] codes wait, the oldest is dropped first;
 //! - [`Store::take`] hands out the newest fresh code once and removes it;
 //! - disarming drops every waiting code; with `LUCINA_OTP_CONTINUOUS` it also
-//!   pauses forwarding until the next arm.
+//!   pauses forwarding until the next arm;
+//! - arming never drops a waiting code (F2): each one still expires at its
+//!   own `expires_at`. Arming a live window keeps its id, so a protocol-1
+//!   phone holding it keeps working; on a continuous relay that is already
+//!   armed, arming changes nothing.
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
 
 use lucina_phone_core::proto::{
     self, Delivered, Incoming, IncomingAck, OtpSource, ProtoError, RelayStatus, WindowState,
     CODE_TTL_MS, PROTOCOL_VERSION,
 };
+use sha2::{Digest, Sha256};
 
 /// At most this many codes wait for the owner.
 pub const MAX_PENDING: usize = 8;
@@ -124,7 +133,8 @@ pub struct Store {
     window: Option<Window>,
     /// Oldest first.
     pending: VecDeque<Delivered>,
-    /// Event id and the time it is forgotten, oldest first.
+    /// [`event_hash`] of an event id and the time it is forgotten, oldest
+    /// first.
     seen: VecDeque<(String, u64)>,
 }
 
@@ -145,6 +155,22 @@ impl Hash for Store {
         }
         self.seen.hash(state);
     }
+}
+
+/// The SHA-256 of an event id as 64 lower-case hex characters: what the
+/// relay remembers (and writes to `seen.json`) instead of the id.
+pub fn event_hash(event_id: &str) -> String {
+    let digest = Sha256::digest(event_id.as_bytes());
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// A plausible [`event_hash`] (64 lower-case hex), for loading `seen.json`.
+pub fn valid_event_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 impl Store {
@@ -188,9 +214,43 @@ impl Store {
         self.pending.len()
     }
 
+    /// Codes waiting that have not expired at `now`.
+    pub fn fresh_len(&self, now: u64) -> usize {
+        self.pending.iter().filter(|d| d.expires_at > now).count()
+    }
+
     /// Event ids remembered.
     pub fn seen_len(&self) -> usize {
         self.seen.len()
+    }
+
+    /// The remembered event ids as `(event_hash, forgotten at)`, oldest first,
+    /// for `seen.json`. Never an id or a code.
+    pub fn seen(&self) -> impl Iterator<Item = (&str, u64)> {
+        self.seen.iter().map(|(h, until)| (h.as_str(), *until))
+    }
+
+    /// Loads remembered ids saved by [`Store::seen`] (after a restart).
+    /// Entries already forgotten at `now` or not an [`event_hash`] are
+    /// skipped; an entry is never kept past `now + SEEN_TTL_MS`; at most
+    /// [`Limits::seen`] entries are kept, the newest.
+    pub fn restore_seen(&mut self, entries: impl IntoIterator<Item = (String, u64)>, now: u64) {
+        let cap = now.saturating_add(SEEN_TTL_MS);
+        let mut loaded: Vec<(String, u64)> = entries
+            .into_iter()
+            .filter(|(h, until)| *until > now && valid_event_hash(h))
+            .map(|(h, until)| (h, until.min(cap)))
+            .collect();
+        loaded.sort_by_key(|(_, until)| *until);
+        for (h, until) in loaded {
+            if !self.seen.iter().any(|(x, _)| *x == h) {
+                self.seen.push_back((h, until));
+            }
+        }
+        self.seen.make_contiguous().sort_by_key(|(_, until)| *until);
+        while self.seen.len() > self.limits.seen {
+            self.seen.pop_front();
+        }
     }
 
     /// The store's capacities.
@@ -232,11 +292,21 @@ impl Store {
         }
     }
 
-    /// `POST /arm`: drops waiting codes and opens a new window with id
-    /// `window_id`. Continuous (and unpaused) when configured so, else
-    /// `seconds` long, clamped to 30–300 s.
+    /// `POST /arm`: continuous (and unpaused) when configured so, else a
+    /// window `seconds` long, clamped to 30–300 s, from `now`.
+    ///
+    /// Waiting codes are kept (F2): a code the relay accepted stays until it
+    /// is taken, expires at its own `expires_at`, or a disarm drops it. A
+    /// window that is still live keeps its id (`window_id` is used only for
+    /// a new window), so codes a protocol-1 phone sends with the id it
+    /// fetched are still accepted. Arming a continuous relay that is already
+    /// armed is a no-op apart from the answer.
     pub fn arm(&mut self, seconds: u64, now: u64, window_id: String) -> WindowState {
-        self.pending.clear();
+        self.pending.retain(|d| d.expires_at > now);
+        let id = match self.live_window(now) {
+            Some(live) => live.id.clone(),
+            None => window_id,
+        };
         let end = if self.continuous {
             self.paused = false;
             None
@@ -244,7 +314,7 @@ impl Store {
             let seconds = seconds.clamp(MIN_ARM_SECONDS, MAX_ARM_SECONDS);
             Some(now.saturating_add(seconds * 1000))
         };
-        self.window = Some(Window { id: window_id, end });
+        self.window = Some(Window { id, end });
         self.window(now)
     }
 
@@ -283,7 +353,8 @@ impl Store {
         }
         let window_end = window.end.unwrap_or(u64::MAX);
         self.prune(now);
-        if self.seen.iter().any(|(id, _)| *id == event.event_id) {
+        let hash = event_hash(&event.event_id);
+        if self.seen.iter().any(|(h, _)| *h == hash) {
             return Ok(IncomingAck {
                 accepted: true,
                 duplicate: true,
@@ -295,8 +366,7 @@ impl Store {
         if self.seen.len() >= self.limits.seen {
             return Err(Refusal::EventLimit);
         }
-        self.seen
-            .push_back((event.event_id.clone(), now.saturating_add(SEEN_TTL_MS)));
+        self.seen.push_back((hash, now.saturating_add(SEEN_TTL_MS)));
         if self.pending.len() >= self.limits.pending {
             self.pending.pop_front();
         }
@@ -508,6 +578,109 @@ mod tests {
             s.take(NOW).unwrap().received_at,
             NOW,
             "a phone clock ahead counts as now"
+        );
+    }
+
+    /// F2: arming keeps waiting codes and a live window's id; disarm drops them.
+    #[test]
+    fn arm_keeps_waiting_codes_disarm_drops_them() {
+        let mut s = Store::new(true, false);
+        let first = s.arm(0, NOW, WINDOW.into());
+        s.receive(&event(1), NOW).unwrap();
+        let again = s.arm(0, NOW + 1, "ffffffffffffffff".into());
+        assert_eq!(
+            first, again,
+            "arming an armed continuous relay changes nothing"
+        );
+        assert_eq!(s.pending_len(), 1);
+        assert_eq!(s.take(NOW + 2).unwrap().code, "100001");
+        s.receive(&event(2), NOW + 3).unwrap();
+        s.disarm();
+        s.arm(0, NOW + 4, "ffffffffffffffff".into());
+        assert_eq!(s.take(NOW + 4), None, "disarm dropped the waiting code");
+        assert_eq!(
+            s.window(NOW + 4).window_id.as_deref(),
+            Some("ffffffffffffffff")
+        );
+
+        // Timed: re-arming a live window keeps its id and the waiting code's
+        // own expiry; a protocol-1 code with the id it fetched still goes in.
+        let mut s = timed();
+        s.receive(&event(3), NOW).unwrap();
+        let w = s.arm(300, NOW + 10_000, "ffffffffffffffff".into());
+        assert_eq!(w.window_id.as_deref(), Some(WINDOW));
+        assert_eq!(w.expires_at, Some(NOW + 310_000));
+        let mut v1 = event(4);
+        v1.window_id = Some(WINDOW.into());
+        v1.received_at = None;
+        s.receive(&v1, NOW + 10_000).unwrap();
+        assert_eq!(s.take(NOW + 10_001).unwrap().code, "100004");
+        let d = s.take(NOW + 10_001).unwrap();
+        assert_eq!((d.code.as_str(), d.expires_at), ("100003", NOW + 60_000));
+        // A window that ended gets a new id; its codes had expired with it.
+        s.receive(&event(5), NOW + 20_000).unwrap();
+        let w = s.arm(30, NOW + 400_000, "ffffffffffffffff".into());
+        assert_eq!(w.window_id.as_deref(), Some("ffffffffffffffff"));
+        assert_eq!(s.pending_len(), 0);
+    }
+
+    /// F3: the seen ids are hashes, survive a restore, and expire.
+    #[test]
+    fn seen_ids_are_hashed_and_restored() {
+        let mut s = Store::new(true, false);
+        s.arm(0, NOW, WINDOW.into());
+        s.receive(&event(1), NOW).unwrap();
+        s.receive(&event(2), NOW + 1_000).unwrap();
+        let saved: Vec<(String, u64)> = s.seen().map(|(h, u)| (h.to_owned(), u)).collect();
+        assert_eq!(
+            saved[0],
+            (event_hash(&event(1).event_id), NOW + SEEN_TTL_MS)
+        );
+        assert!(saved
+            .iter()
+            .all(|(h, _)| valid_event_hash(h) && !h.contains("100001")));
+        assert_eq!(
+            event_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let mut restarted = Store::new(true, false);
+        let mut entries = saved.clone();
+        entries.push(("not-a-hash".into(), NOW + 5_000));
+        entries.push((event_hash("old"), NOW + 500));
+        entries.push((event_hash("far"), u64::MAX));
+        restarted.restore_seen(entries, NOW + 500);
+        assert_eq!(
+            restarted.seen_len(),
+            3,
+            "expired and invalid entries skipped"
+        );
+        assert!(restarted.seen().all(|(_, u)| u <= NOW + 500 + SEEN_TTL_MS));
+        restarted.arm(0, NOW + 600, WINDOW.into());
+        assert!(restarted.receive(&event(1), NOW + 600).unwrap().duplicate);
+        assert_eq!(
+            restarted.take(NOW + 600),
+            None,
+            "a retry is not stored again"
+        );
+
+        // The limit keeps the newest entries.
+        let mut small = Store::new(true, false).with_limits(Limits {
+            pending: 1,
+            seen: 1,
+        });
+        small.restore_seen(saved, NOW);
+        let kept: Vec<_> = small.seen().map(|(h, _)| h.to_owned()).collect();
+        assert_eq!(kept, [event_hash(&event(2).event_id)]);
+        // Once forgotten, the id is new again.
+        small.arm(0, NOW + SEEN_TTL_MS + 1_000, WINDOW.into());
+        let mut e = event(2);
+        e.received_at = None;
+        assert!(
+            !small
+                .receive(&e, NOW + SEEN_TTL_MS + 1_000)
+                .unwrap()
+                .duplicate
         );
     }
 }
