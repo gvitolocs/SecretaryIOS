@@ -16,22 +16,56 @@ final class GalleryStore {
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let api: () -> GalleryAPI
 
-    init(api: @escaping () -> GalleryAPI) { self.api = api }
+    @ObservationIgnored private var showingCachedListing = false
+
+    private struct Listing: Codable, Sendable {
+        let items: [GalleryItem]
+        let nextCursor: String?
+        let total: Int?
+    }
+
+    private static var listingURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gallery-listing.json")
+    }
+
+    init(api: @escaping () -> GalleryAPI) {
+        self.api = api
+        if let data = try? Data(contentsOf: Self.listingURL),
+           let saved = try? JSONDecoder().decode(Listing.self, from: data) {
+            items = saved.items
+            cursor = saved.nextCursor
+            total = saved.total
+            showingCachedListing = true
+        }
+    }
 
     var canLoadMore: Bool { cursor != nil }
 
     func reload() async {
         loading = true
         defer { loading = false }
+        let requestedFilter = filter
         do {
-            let page = try await api().items(filter)
+            let page = try await api().items(requestedFilter)
+            guard filter == requestedFilter, !Task.isCancelled else { return }
             items = page.items
             cursor = page.nextCursor
             total = page.total
             error = nil
+            showingCachedListing = false
+            if requestedFilter == GalleryAPI.Filter() {
+                let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
+                let url = Self.listingURL
+                await Task.detached(priority: .utility) {
+                    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
+                }.value
+            }
         } catch is CancellationError {
         } catch {
-            self.error = error.localizedDescription
+            guard filter == requestedFilter else { return }
+            self.error = showingCachedListing ? String(localized: "Offline — showing saved photos") : error.localizedDescription
         }
     }
 
@@ -86,6 +120,12 @@ struct GalleryScreen: View {
                 .padding(.top, 4)
             FilterChips()
                 .padding(.vertical, LucinaTokens.Space.sm)
+            if let error = store.error {
+                Text(error)
+                    .font(LucinaTokens.Fonts.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal)
+            }
             if store.items.isEmpty, !store.loading {
                 ContentUnavailableView(
                     store.filter.query.isEmpty ? "No photos yet" : "No results",
@@ -140,7 +180,7 @@ struct GalleryScreen: View {
             }
         }
         .task {
-            if store.items.isEmpty { await store.reload() }
+            await store.reload()
             await store.loadAlbums()
             // `-SecretaryGalleryOpenFirst YES` (device checks without UI tests): open the newest photo.
             if UserDefaults.standard.bool(forKey: "SecretaryGalleryOpenFirst"), viewing == nil {
@@ -383,6 +423,7 @@ struct AlbumsView: View {
 /// Full screen, swipe between items. Photos zoom; videos and audio open the media player.
 struct GalleryViewer: View {
     @Environment(GalleryStore.self) private var store
+    @Environment(PhotoBackup.self) private var backup
     @Environment(MediaPlayer.self) private var media
     @Environment(\.dismiss) private var dismiss
     let start: GalleryItem
@@ -488,7 +529,7 @@ struct GalleryViewer: View {
     private func prefetchNeighbours(of id: String) {
         guard gallerySmooth, let i = store.items.firstIndex(where: { $0.id == id }) else { return }
         let near = [i + 1, i - 1, i + 2, i - 2].filter { store.items.indices.contains($0) }.map { store.items[$0] }
-        PreviewPrefetcher.shared.prefetch(near, api: store.api())
+        PreviewPrefetcher.shared.prefetch(near.filter { backup.localAsset(for: $0.id) == nil }, api: store.api())
     }
 
     @ViewBuilder
