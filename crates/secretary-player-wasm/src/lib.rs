@@ -25,7 +25,11 @@ fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
 
 /// Starts the engine from a saved state ("" = empty).
 pub fn init(state: &str) {
-    let engine = if state.trim().is_empty() { Engine::in_memory() } else { Engine::from_state_json(state) };
+    let engine = if state.trim().is_empty() {
+        Engine::in_memory()
+    } else {
+        Engine::from_state_json(state)
+    };
     *ENGINE.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
 }
 
@@ -38,7 +42,9 @@ pub fn request(json: &str, now_ms: f64) -> String {
 
 pub fn state() -> String {
     let guard = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
-    guard.as_ref().map_or_else(|| "{}".to_string(), Engine::state_json)
+    guard
+        .as_ref()
+        .map_or_else(|| "{}".to_string(), Engine::state_json)
 }
 
 /// Leaks `text` into linear memory and packs its address and length. Only
@@ -91,11 +97,22 @@ mod tests {
     #[test]
     fn requests_and_state_survive_a_reload() {
         init("");
-        let ask = |json: &str, now: f64| -> serde_json::Value { serde_json::from_str(&request(json, now)).unwrap() };
-        assert_eq!(ask(r#"{"cmd":"position","id":"a","position_ms":600000,"duration_ms":3600000,"playing":false}"#, 5_000.0)["sync"], true);
+        let ask = |json: &str, now: f64| -> serde_json::Value {
+            serde_json::from_str(&request(json, now)).unwrap()
+        };
+        assert_eq!(
+            ask(
+                r#"{"cmd":"position","id":"a","position_ms":600000,"duration_ms":3600000,"playing":false}"#,
+                5_000.0
+            )["sync"],
+            true
+        );
         let saved = state();
         init(&saved);
-        assert_eq!(ask(r#"{"cmd":"resume","id":"a"}"#, 6_000.0)["position_ms"], 598_000);
+        assert_eq!(
+            ask(r#"{"cmd":"resume","id":"a"}"#, 6_000.0)["position_ms"],
+            598_000
+        );
         assert_eq!(ask(r#"{"cmd":"nope"}"#, 0.0)["code"], "invalid_command");
     }
 }

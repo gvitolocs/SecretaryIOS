@@ -281,7 +281,11 @@ impl Model for Memos {
             Action::TogglePauseInApp | Action::TogglePauseFromLiveActivity => {
                 // Both go through MemoRecorder.pause()/resume(), which update the activity.
                 n.toggles -= 1;
-                n.rec = if s.rec == Rec::Recording { Rec::Paused } else { Rec::Recording };
+                n.rec = if s.rec == Rec::Recording {
+                    Rec::Paused
+                } else {
+                    Rec::Recording
+                };
                 n.la = Some(n.rec == Rec::Paused);
             }
             Action::Stop => {
@@ -448,7 +452,11 @@ impl Model for Memos {
             }),
             Property::always("done_has_every_output", |_, s: &State| {
                 !s.done
-                    || (s.transcript.is_some() && s.summarized && s.rendered && s.published && s.notified)
+                    || (s.transcript.is_some()
+                        && s.summarized
+                        && s.rendered
+                        && s.published
+                        && s.notified)
             }),
             Property::eventually("finished_with_one_note_pdf_notification", |_, s: &State| {
                 s.done
@@ -498,8 +506,20 @@ pub fn cases(deep: bool) -> Vec<Case> {
         ]
     };
     vec![
-        Case::new(PROTOCOL, "V current code (before the 2026-10-25 fixes)", base(false, true), None, all(Violated, Violated)),
-        Case::new(PROTOCOL, "V + fixes (kernel K1/K6/K7, iPhone recovery)", base(true, true), None, all(Holds, Holds)),
+        Case::new(
+            PROTOCOL,
+            "V current code (before the 2026-10-25 fixes)",
+            base(false, true),
+            None,
+            all(Violated, Violated),
+        ),
+        Case::new(
+            PROTOCOL,
+            "V + fixes (kernel K1/K6/K7, iPhone recovery)",
+            base(true, true),
+            None,
+            all(Holds, Holds),
+        ),
         Case::new(
             PROTOCOL,
             "V fixed, gpu-lease without dead-holder pruning",

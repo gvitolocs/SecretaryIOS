@@ -129,7 +129,11 @@ impl Queue {
         if index >= self.items.len() {
             return;
         }
-        let pos = self.order.iter().position(|&o| o == index).expect("order covers items");
+        let pos = self
+            .order
+            .iter()
+            .position(|&o| o == index)
+            .expect("order covers items");
         self.items.remove(index);
         self.order.remove(pos);
         for o in &mut self.order {
@@ -404,7 +408,9 @@ mod tests {
 
     #[test]
     fn extra_fields_round_trip() {
-        let item: Item = serde_json::from_str(r#"{"id":"a","kind":"video","title":"T","poster_url":"/p.jpg"}"#).unwrap();
+        let item: Item =
+            serde_json::from_str(r#"{"id":"a","kind":"video","title":"T","poster_url":"/p.jpg"}"#)
+                .unwrap();
         let back = serde_json::to_value(&item).unwrap();
         assert_eq!(back["poster_url"], "/p.jpg");
     }
