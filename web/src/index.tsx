@@ -3,10 +3,9 @@ import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
 import { registerServiceWorker } from "./lib/push";
-import "@fontsource-variable/sora";
-import "@fontsource-variable/jetbrains-mono";
 import "./state/appearance";
 import "./styles.css";
+import "./styles/lucina-look.css";
 import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
 
@@ -19,10 +18,13 @@ const HistoryDetailView = lazy(() => import("./views/gym/HistoryDetail"));
 const ProgressView = lazy(() => import("./views/gym/Progress"));
 const ProgressDetailView = lazy(() => import("./views/gym/ProgressDetail"));
 const WeightView = lazy(() => import("./views/Weight"));
+const TrainingView = lazy(() => import("./views/Training"));
+const PluginsView = lazy(() => import("./views/Plugins"));
 const NotesView = lazy(() => import("./views/Notes"));
 const LinksView = lazy(() => import("./views/Links"));
 const TasksView = lazy(() => import("./views/Tasks"));
 const ModelsView = lazy(() => import("./views/Models"));
+const MemosView = lazy(() => import("./views/Memos"));
 
 // The service worker (Web Push, static asset cache). It never caches /v1.
 void registerServiceWorker();
@@ -51,10 +53,13 @@ render(
         </Route>
       </Route>
       <Route path="/weight" component={WeightView} />
+      <Route path="/training" component={TrainingView} />
+      <Route path="/plugins" component={PluginsView} />
       <Route path="/links" component={LinksView} />
       <Route path="/notes/:key?" component={NotesView} />
       <Route path="/tasks/:section?/:id?" component={TasksView} />
       <Route path="/models/:id?" component={ModelsView} />
+      <Route path="/memos/:id?" component={MemosView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),
