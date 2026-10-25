@@ -433,7 +433,10 @@ struct GalleryViewer: View {
             prefetchNeighbours(of: start.id)
         }
         .onDisappear { meter.stop() }
-        .onChange(of: current) { _, id in prefetchNeighbours(of: id) }
+        .onChange(of: current) { _, id in
+            meter.swipes += 1
+            prefetchNeighbours(of: id)
+        }
         .sheet(isPresented: $showInfo) { NavigationStack { GalleryInfo(item: item) }.lucinaSheet().presentationDetents([.medium, .large]) }
         .sheet(isPresented: $addToAlbum) {
             NavigationStack {
