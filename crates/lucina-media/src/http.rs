@@ -72,6 +72,10 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/items/{id}/original", get(original))
         .route("/v1/media/items/{id}/thumb", get(thumb))
         .route("/v1/media/items/{id}/poster", get(poster))
+        .route("/v1/media/items/{id}/r/{rendition}", get(rendition))
+        // The same renditions behind a play token: p1 passes /v1/media/s/* straight through, so a
+        // gallery page costs no device-rate-limit tokens (60 a minute) and needs no header.
+        .route("/v1/media/s/{token}/{id}/r/{rendition}", get(signed_rendition))
         .route("/v1/media/summary", get(summary))
         .route("/v1/media/albums", get(list_albums).post(create_album))
         .route("/v1/media/albums/{id}", get(get_album).patch(patch_album).delete(delete_album))
@@ -91,6 +95,7 @@ pub fn internal_router(lib: Library) -> Router {
     Router::new()
         .route("/internal/v1/external/{source}/{ext_id}", put(put_external).delete(delete_external))
         .route("/internal/v1/import", post(start_import))
+        .route("/internal/v1/ingest", post(ingest_local))
         .route("/internal/v1/items/{id}/path", get(item_path))
         .with_state(lib)
 }
@@ -140,9 +145,20 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         "thumb": has_thumb.then(|| format!("/v1/media/items/{id}/thumb?size=256&v={v}")),
         "large": has_thumb.then(|| format!("/v1/media/items/{id}/thumb?size=1024&v={v}")),
         "poster": (has_thumb && matches!(it.kind.as_str(), "video" | "audio")).then(|| format!("/v1/media/items/{id}/poster?v={v}")),
+        // JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
+        // Tokenised when the play secret is configured (no device rate limit, no header).
+        "grid": has_thumb.then(|| rendition_url(lib, id, "grid", v)),
+        "preview": has_thumb.then(|| rendition_url(lib, id, "preview", v)),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
     ItemOut { item: it, urls, poster_url, thumb_url, album }
+}
+
+fn rendition_url(lib: &Library, id: &str, which: &str, v: i64) -> String {
+    match &lib.signer {
+        Some(s) => format!("{}/r/{which}?v={v}", s.base(id).0),
+        None => format!("/v1/media/items/{id}/r/{which}?v={v}"),
+    }
 }
 
 /// Album titles for items, user albums first, for `ItemOut.album`.
@@ -323,6 +339,41 @@ async fn thumb(
 ) -> ApiResult<Response> {
     let file = ThumbSize::from_px(q.size).file();
     thumb_file(lib, id, file, headers).await
+}
+
+async fn signed_rendition(
+    State(lib): State<Library>,
+    Path((token, id, which)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let Some(secret) = lib.cfg.play_secret.as_deref() else { return Err(not_found()) };
+    if !secretary_media_stream::token::verify(secret, &id, &token, secretary_media_stream::now_secs()) {
+        return Err(ApiError(StatusCode::FORBIDDEN, "bad or expired token".into()));
+    }
+    rendition(State(lib), Path((id, which)), headers).await
+}
+
+/// `grid` (g.jxl) or `preview` (p.jxl), `image/jxl`, cached for a year (the URL carries the version).
+async fn rendition(
+    State(lib): State<Library>,
+    Path((id, rendition)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let file = match rendition.as_str() {
+        "grid" => "g.jxl",
+        "preview" => "p.jxl",
+        _ => return Err(not_found()),
+    };
+    if id.contains('/') || id.contains("..") {
+        return Err(not_found());
+    }
+    let iid = id.clone();
+    let it = lib.db.call(move |c| db::get_item(c, &iid)).await?.ok_or_else(not_found)?;
+    let path = thumbs::dir_for(&lib.cfg, &id).join(file);
+    if !path.is_file() {
+        return Err(not_found());
+    }
+    serve_file(headers, path, "image/jxl", &format!("{}-{}-{file}", it.hash, it.version), "private, max-age=31536000, immutable").await
 }
 
 async fn poster(State(lib): State<Library>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Response> {
@@ -745,14 +796,14 @@ async fn put_chunk(
         duplicate: false,
         item_id: u.item_id.clone(),
     };
-    match protocol::accept_chunk(state, offset, len) {
+    let mut skip = match protocol::accept_chunk(state, offset, len) {
         Ok(ChunkOutcome::AlreadyHave { offset }) => return Ok(Json(out(offset))),
-        Ok(ChunkOutcome::Append { .. }) => {}
+        Ok(ChunkOutcome::Append { skip, .. }) => skip,
         Err(e @ protocol::ChunkError::OffsetMismatch { .. }) => {
             return Err(ApiError(StatusCode::CONFLICT, format!("{e}; resume at {}", u.received)))
         }
         Err(e) => return Err(ApiError(StatusCode::CONFLICT, e.to_string())),
-    }
+    };
     let path = lib.cfg.uploads_dir().join(&id);
     let mut f = tokio::fs::OpenOptions::new().write(true).open(&path).await?;
     // The file can be longer than `received` if an earlier chunk was cut off mid-write.
@@ -766,11 +817,20 @@ async fn put_chunk(
     let mut stream = body.into_data_stream();
     let mut cut = false;
     while let Some(chunk) = stream.next().await {
-        let Ok(chunk) = chunk else {
+        let Ok(mut chunk) = chunk else {
             cut = true;
             break;
         };
-        if written + chunk.len() as u64 > len || u.received + written + chunk.len() as u64 > u.declared {
+        // Bytes the server already has (a retry from an earlier offset).
+        if skip > 0 {
+            let n = skip.min(chunk.len() as u64);
+            skip -= n;
+            let _ = chunk.split_to(n as usize);
+            if chunk.is_empty() {
+                continue;
+            }
+        }
+        if u.received + written + chunk.len() as u64 > u.declared {
             return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "chunk longer than declared".into()));
         }
         f.write_all(&chunk).await?;
@@ -830,6 +890,11 @@ async fn finish_upload(
         return Ok(Json(ingest::IngestResult { item_id, duplicate: false, version }));
     }
     let path = lib.cfg.uploads_dir().join(&id);
+    if !path.is_file() {
+        // The bytes are gone (an earlier finish ingested them, then the client hung up before the
+        // answer): the client starts this upload again; dedupe makes that cheap.
+        return Err(ApiError(StatusCode::GONE, "upload lost; start again".into()));
+    }
     let p2 = path.clone();
     let computed = tokio::task::spawn_blocking(move || crate::store::hash_file(&p2)).await??;
     let expected = r.hash.or(u.expected_hash).map(|h| h.to_ascii_lowercase());
@@ -842,21 +907,22 @@ async fn finish_upload(
     })?;
     let meta: ClientMeta = serde_json::from_str(&u.meta).unwrap_or_default();
     let preview = lib.cfg.uploads_dir().join(format!("{id}.preview"));
+    // Ingest and the "finished" mark in one blocking task: a client that hangs up drops this
+    // handler at its next await, which must not fall between the two.
     let l = lib.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let uid = id.clone();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<ingest::IngestResult> {
         let preview = preview.is_file().then_some(preview);
-        ingest::ingest_file(&l, &path, Some(computed), &meta, preview.as_deref())
-    })
-    .await??;
-    let (uid, item) = (id.clone(), res.item_id.clone());
-    lib.db
-        .call(move |c| {
+        let res = ingest::ingest_file(&l, &path, Some(computed), &meta, preview.as_deref())?;
+        l.db.with(|c| {
             c.execute(
                 "UPDATE uploads SET finished = 1, item_id = ?2, updated_at = ?3 WHERE id = ?1",
-                params![uid, item, now_str()],
+                params![uid, res.item_id, now_str()],
             )
-        })
-        .await?;
+        })?;
+        Ok(res)
+    })
+    .await??;
     let _ = tokio::fs::remove_file(lib.cfg.uploads_dir().join(format!("{id}.preview"))).await;
     Ok(Json(res))
 }
@@ -931,6 +997,67 @@ async fn delete_external(
         Some(_) => Ok(StatusCode::NO_CONTENT),
         None => Err(not_found()),
     }
+}
+
+/// A file another service on nezopt hands over (shares to Lucina): moved or copied into the
+/// library, deduped, indexed; thumbnails follow in the background.
+#[derive(Deserialize)]
+struct IngestReq {
+    path: String,
+    mime: Option<String>,
+    name: Option<String>,
+    source: Option<String>,
+    album: Option<String>,
+    taken_at: Option<String>,
+    caption: Option<String>,
+    #[serde(default)]
+    r#move: bool,
+}
+
+async fn ingest_local(State(lib): State<Library>, Json(r): Json<IngestReq>) -> ApiResult<Json<Value>> {
+    let src = PathBuf::from(&r.path);
+    if !src.is_absolute() || !src.is_file() {
+        return Err(bad("path must be an existing absolute file"));
+    }
+    let name = r
+        .name
+        .clone()
+        .filter(|n| !n.is_empty() && !n.contains('/'))
+        .or_else(|| src.file_name().and_then(|n| n.to_str()).map(str::to_string));
+    let meta = ClientMeta {
+        filename: name,
+        mime: r.mime.clone(),
+        taken_at: r.taken_at.clone(),
+        source: Some(r.source.clone().unwrap_or_else(|| "share".into())),
+        album: r.album.clone(),
+        caption: r.caption.clone(),
+        ..Default::default()
+    };
+    let l = lib.clone();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<ingest::IngestResult> {
+        // The library consumes its own copy in the uploads area (same disk as the spool).
+        let tmp = l.cfg.uploads_dir().join(db::new_id("ing"));
+        if r.r#move {
+            crate::store::durable_move(&src, &tmp)?;
+        } else {
+            std::fs::copy(&src, &tmp)?;
+        }
+        ingest::ingest_file(&l, &tmp, None, &meta, None)
+    })
+    .await?
+    .map_err(|e| bad(e.to_string()))?;
+    let id = res.item_id.clone();
+    let it = lib.db.call(move |c| db::get_item(c, &id)).await?.ok_or_else(not_found)?;
+    let out = item_out(&lib, it, None);
+    Ok(Json(json!({
+        "item_id": res.item_id,
+        "duplicate": res.duplicate,
+        "version": res.version,
+        "kind": out.item.kind,
+        "mime": out.item.mime,
+        "thumb_state": out.item.thumb_state,
+        "urls": out.urls,
+    })))
 }
 
 #[derive(Deserialize)]

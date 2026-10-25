@@ -2,6 +2,7 @@ import BackgroundTasks
 import Foundation
 import Network
 import Observation
+import os
 import Photos
 import UIKit
 
@@ -14,6 +15,10 @@ import UIKit
 //   A BGProcessingTask and the app refresh task pick the work up again later.
 // - Rules: Wi-Fi only (default on), only while charging (default off), include videos.
 // - Never deletes anything on the iPhone. The library access is read-only in practice.
+
+/// `log stream --predicate 'subsystem == "tech.getsecretary.app" AND category == "PhotoBackup"'` on a Mac, or
+/// `pymobiledevice3 syslog live --match PhotoBackup` for a device.
+private let log = Logger(subsystem: "tech.getsecretary.app", category: "PhotoBackup")
 
 @Observable
 @MainActor
@@ -92,7 +97,14 @@ final class PhotoBackup {
         }
         backedUp = ledger.values.filter { $0.itemId != nil }.count
         status = settings.enabled ? .idle : .off
-        path.pathUpdateHandler = { [weak self] p in Task { @MainActor in self?.currentPath = p } }
+        // A pass that waited for Wi-Fi (or for the first path update) starts again when the network allows it.
+        path.pathUpdateHandler = { [weak self] p in
+            Task { @MainActor in
+                guard let self else { return }
+                self.currentPath = p
+                if case .waiting = self.status, self.blockedReason() == nil { self.kick() }
+            }
+        }
         path.start(queue: .global(qos: .utility))
         UIDevice.current.isBatteryMonitoringEnabled = true
         BackgroundUploader.shared.onFinishedEvents = { [weak self] in Task { @MainActor in self?.kick() } }
@@ -128,6 +140,7 @@ final class PhotoBackup {
 
     /// App start, foreground, library change, background task: run if allowed and not running.
     func kick() {
+        log.info("PhotoBackup kick enabled=\(self.settings.enabled) running=\(self.running != nil)")
         guard settings.enabled, running == nil else { return }
         running = Task { [weak self] in
             await self?.run()
@@ -139,6 +152,7 @@ final class PhotoBackup {
         let current = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         let granted: PHAuthorizationStatus = current == .notDetermined
             ? await PHPhotoLibrary.requestAuthorization(for: .readWrite) : current
+        log.info("PhotoBackup access status=\(granted.rawValue)")
         guard granted == .authorized || granted == .limited else {
             status = .needsAccess
             return
@@ -170,6 +184,19 @@ final class PhotoBackup {
         running = nil
     }
 
+    /// Between two assets: 3 requests each at most, so a backup uses about 36 of the 60 a minute.
+    static let pace: Duration = .seconds(4)
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+
+    private func retry(after delay: Duration) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.kick()
+        }
+    }
+
     static func scheduleProcessing(chargingOnly: Bool) {
         let request = BGProcessingTaskRequest(identifier: processingIdentifier)
         request.requiresNetworkConnectivity = true
@@ -182,8 +209,11 @@ final class PhotoBackup {
 
     private func blockedReason() -> String? {
         if settings.wifiOnly {
-            guard let p = currentPath, p.status == .satisfied else { return String(localized: "Waiting for a network") }
-            if p.isExpensive || p.isConstrained { return String(localized: "Waiting for Wi-Fi") }
+            // No path update yet (right after launch): don't block; the transfers' own session enforces Wi-Fi.
+            if let p = currentPath {
+                if p.status != .satisfied { return String(localized: "Waiting for a network") }
+                if p.isExpensive || p.isConstrained { return String(localized: "Waiting for Wi-Fi") }
+            }
         }
         if settings.chargingOnly {
             let s = UIDevice.current.batteryState
@@ -206,6 +236,7 @@ final class PhotoBackup {
     private func run() async {
         status = .scanning
         let work = scan()
+        log.info("PhotoBackup scan found \(work.count) to send, \(self.ledger.count) known")
         remaining = work.count
         if work.isEmpty {
             status = .idle
@@ -215,6 +246,7 @@ final class PhotoBackup {
         for w in work {
             if Task.isCancelled { break }
             if let reason = blockedReason() {
+                log.info("PhotoBackup waiting: \(reason, privacy: .public)")
                 status = .waiting(reason)
                 return
             }
@@ -224,11 +256,29 @@ final class PhotoBackup {
                 done += 1
                 remaining = work.count - done
                 lastError = nil
+                // Every /v1/media request spends one of the device's 60 a minute (p1's login check):
+                // leave most of them to the app itself.
+                try await Task.sleep(for: Self.pace)
             } catch is CancellationError {
                 break
-            } catch {
+            } catch let APIError.rateLimited(_, retryAfter, _) {
+                log.info("PhotoBackup rate limited, retry in \(retryAfter ?? 60) s")
+                status = .waiting(String(localized: "Pausing for the server"))
+                retry(after: .seconds(max(retryAfter ?? 60, 10)))
+                saveLedger()
+                return
+            } catch let error as APIError where error.isTransport {
+                // The server or the network is away: stop, and try the whole pass again later.
+                log.error("PhotoBackup paused: \(String(describing: error), privacy: .public)")
                 lastError = error.localizedDescription
-                // Skip this one for now; the next pass retries it.
+                status = .failed(error.localizedDescription)
+                retry(after: .seconds(120))
+                saveLedger()
+                return
+            } catch {
+                log.error("PhotoBackup send failed: \(String(describing: error), privacy: .public)")
+                lastError = error.localizedDescription
+                // This asset only (export failed, odd file): skip it; the next pass retries it.
                 done += 1
             }
         }
@@ -298,12 +348,21 @@ final class PhotoBackup {
         // An upload left over from an earlier run: finish it or resume it.
         if let uploadId = entry.uploadId, let temp = entry.tempFile, FileManager.default.fileExists(atPath: temp) {
             if let state = try? await api.uploadState(uploadId), !state.finished {
-                if state.offset < state.size {
-                    try await transfer(uploadId: uploadId, file: URL(fileURLWithPath: temp), offset: state.offset)
+                do {
+                    if state.offset < state.size {
+                        try await transfer(uploadId: uploadId, file: URL(fileURLWithPath: temp), offset: state.offset)
+                    }
+                    try await complete(w, uploadId: uploadId, temp: URL(fileURLWithPath: temp), entry: &entry)
+                    return
+                } catch let APIError.server(status, _, _) where status == 410 || status == 404 {
+                    // The server lost this upload: start the asset again (its dedupe finds the item if it is in).
+                    log.info("PhotoBackup upload \(uploadId, privacy: .public) gone, starting again")
                 }
-                try await complete(w, uploadId: uploadId, temp: URL(fileURLWithPath: temp), entry: &entry)
-                return
             }
+            try? FileManager.default.removeItem(atPath: temp)
+            entry.uploadId = nil
+            entry.tempFile = nil
+            ledger[w.key] = entry
         }
         let temp = try await export(w.resource)
         defer { if entry.uploadId == nil { try? FileManager.default.removeItem(at: temp) } }
@@ -328,6 +387,7 @@ final class PhotoBackup {
         meta.livePairAsset = w.pairKey
         meta.liveMotion = w.motion ? true : nil
         meta.source = "phone-ios"
+        log.info("PhotoBackup exported \(size) bytes, creating upload")
         let created = try await api.createUpload(.init(filename: w.resource.originalFilename, size: size, meta: meta))
         if created.duplicate, let item = created.itemId {
             record(w, item: item, entry: &entry)
@@ -343,8 +403,11 @@ final class PhotoBackup {
         entry.tempFile = kept.path
         ledger[w.key] = entry
         saveLedger()
-        if w.asset.mediaType == .image, !w.motion, let jpeg = await preview(w.asset) {
-            try? await api.putPreview(uploadId, jpeg: jpeg)
+        // The server decodes JPEG and PNG itself; only HEIC/HEIF needs the phone's rendering.
+        let uti = w.resource.uniformTypeIdentifier
+        if w.asset.mediaType == .image, !w.motion, uti.contains("heic") || uti.contains("heif"),
+           let jpeg = await preview(w.asset) {
+            try await api.putPreview(uploadId, jpeg: jpeg)
         }
         try await transfer(uploadId: uploadId, file: kept, offset: 0)
         try await complete(w, uploadId: uploadId, temp: kept, entry: &entry)
@@ -395,6 +458,7 @@ final class PhotoBackup {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         if let key = client.accessKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         let status = try await BackgroundUploader.shared.upload(request, fromFile: source, cellular: !settings.wifiOnly)
+        if status == 429 { throw APIError.rateLimited(code: "rate_limited", retryAfter: nil, message: "Too many requests") }
         guard (200..<300).contains(status) else { throw APIError.network(message: "Upload failed (HTTP \(status)).") }
     }
 
@@ -501,6 +565,18 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
         DispatchQueue.main.async {
             self.systemCompletion.removeValue(forKey: id)?()
             self.onFinishedEvents?()
+        }
+    }
+}
+
+private extension APIError {
+    /// The request never got a real answer (network, timeout, 5xx): pause the whole pass.
+    var isTransport: Bool {
+        switch self {
+        case .network, .timeout, .hostNotFound, .lucinaOffline: return true
+        // Gateways (p1 or nezopt away). A plain 500 is about this asset: skip it, keep going.
+        case let .server(status, _, _): return [502, 503, 504].contains(status)
+        default: return false
         }
     }
 }

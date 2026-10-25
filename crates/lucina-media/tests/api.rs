@@ -78,6 +78,15 @@ async fn upload(app: &Router, name: &str, data: &[u8], meta: Value) -> Value {
     assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["offset"], mid as u64);
     let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset={}", mid + 1), &[1u8]).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    if mid > 4 {
+        // An iOS background retry: the whole file again from 0; the stored half is skipped.
+        let (s, b, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset=0"), data).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["offset"], data.len() as u64);
+        let (s, done) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+        assert_eq!(s, StatusCode::OK, "{done}");
+        return done;
+    }
     let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset={mid}"), &data[mid..]).await;
     assert_eq!(s, StatusCode::OK);
     let (s, done) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
@@ -92,7 +101,7 @@ async fn upload(app: &Router, name: &str, data: &[u8], meta: Value) -> Value {
 async fn wait_thumbs(lib: &Library) {
     // Run the worker for a moment.
     let h = tokio::spawn(ingest::thumb_worker(lib.clone()));
-    for _ in 0..50 {
+    for _ in 0..600 {
         let pending: i64 = lib
             .db
             .with(|c| c.query_row("SELECT COUNT(*) FROM items WHERE thumb_state = 'pending'", [], |r| r.get(0)))
@@ -185,6 +194,15 @@ async fn phone_backup_flow() {
     let (s, thumb, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/thumb?size=256"), None, &[]).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(&thumb[..2], &[0xFF, 0xD8]);
+    let (s, grid, h) = call(&app, "GET", &format!("/v1/media/items/{item_id}/r/grid?v=1"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(&grid[..2], &[0xFF, 0x0A]);
+    assert_eq!(h["content-type"], "image/jxl");
+    assert!(h["cache-control"].to_str().unwrap().contains("immutable"));
+    let (s, _, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/r/preview?v=1"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(items[0]["thumbhash"].as_str().is_some_and(|t| t.len() < 60), "{}", items[0]);
+    assert!(items[0]["urls"]["grid"].as_str().unwrap().contains("/r/grid"));
 
     // Edited on the phone: same asset, new bytes → same item, version 2.
     let edited = upload(&app, "IMG_0001.PNG", &png(1200, 800, 200), meta.clone()).await;
@@ -273,4 +291,68 @@ fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()
+}
+
+#[tokio::test]
+async fn internal_ingest_moves_a_shared_file_in() {
+    let (t, lib, app) = setup();
+    let src = t.path().join("shared photo.png");
+    std::fs::write(&src, png(64, 48, 7)).unwrap();
+    let (s, r) = json_call(&app, "POST", "/internal/v1/ingest",
+        json!({"path": src, "source": "share", "album": "Shared", "move": true})).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["kind"], "photo");
+    assert_eq!(r["duplicate"], false);
+    assert!(!src.exists(), "moved");
+    let id = r["item_id"].as_str().unwrap().to_string();
+    // Same bytes again (copied this time): a duplicate of the same item.
+    let again = t.path().join("again.png");
+    std::fs::write(&again, png(64, 48, 7)).unwrap();
+    let (_, r2) = json_call(&app, "POST", "/internal/v1/ingest", json!({"path": again})).await;
+    assert_eq!(r2["duplicate"], true);
+    assert_eq!(r2["item_id"], id.as_str());
+    assert!(again.exists(), "copied, not moved");
+    let (_, p) = json_call(&app, "GET", &format!("/internal/v1/items/{id}/path"), Value::Null).await;
+    assert!(std::path::Path::new(p["path"].as_str().unwrap()).is_file());
+    let (_, page) = get_json(&app, "/v1/media/items?album=Shared").await;
+    assert_eq!(page["items"][0]["id"], id.as_str());
+    let _ = lib;
+}
+
+#[tokio::test]
+async fn signed_renditions_need_no_upstream_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_dirs(tmp.path().join("data"), tmp.path().join("store"));
+    cfg.quiet_start = 0;
+    cfg.quiet_end = 0;
+    cfg.upstream_key = Some(KEY.into());
+    cfg.play_secret = Some(b"0123456789abcdef0123456789abcdef".to_vec());
+    store::init_store(&cfg).unwrap();
+    let lib = Library::open(cfg).unwrap();
+    let app = http::router(lib.clone(), None);
+    upload(&app, "a.png", &png(300, 200, 3), json!({})).await;
+    wait_thumbs(&lib).await;
+    let (_, page) = get_json(&app, "/v1/media/items").await;
+    let grid = page["items"][0]["urls"]["grid"].as_str().unwrap().to_string();
+    assert!(grid.starts_with("/v1/media/s/"), "{grid}");
+    // No upstream key: the token is the auth.
+    let res = app.clone().oneshot(Request::builder().uri(&grid).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "image/jxl");
+    let forged = grid.replacen("/v1/media/s/", "/v1/media/s/x", 1);
+    let res = app.clone().oneshot(Request::builder().uri(&forged).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_lost_upload_answers_gone() {
+    let (_t, lib, app) = setup();
+    let data = png(20, 20, 9);
+    let (_, created) = json_call(&app, "POST", "/v1/media/uploads", json!({"filename": "x.png", "size": data.len()})).await;
+    let id = created["upload_id"].as_str().unwrap().to_string();
+    let (s, _, _) = put_bytes(&app, &format!("/v1/media/uploads/{id}"), &data).await;
+    assert_eq!(s, StatusCode::OK);
+    std::fs::remove_file(lib.cfg.uploads_dir().join(&id)).unwrap();
+    let (s, _) = json_call(&app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+    assert_eq!(s, StatusCode::GONE);
 }

@@ -459,26 +459,36 @@ pub async fn thumb_worker(lib: Library) {
         for (id, kind) in batch {
             let l = lib.clone();
             let tid = id.clone();
-            let res = tokio::task::spawn_blocking(move || -> anyhow::Result<&'static str> {
-                let Some((path, item)) = original_path(&l, &tid)? else { return Ok("none") };
-                Ok(thumbs::generate(&l.cfg, &tid, &kind, &path, item.duration_ms)?.as_str())
+            let res = tokio::task::spawn_blocking(move || -> anyhow::Result<(&'static str, Option<Vec<u8>>)> {
+                let Some((path, item)) = original_path(&l, &tid)? else { return Ok(("none", None)) };
+                let state = thumbs::generate(&l.cfg, &tid, &kind, &path, item.duration_ms)?;
+                let hash = match &state {
+                    thumbs::ThumbState::Ready(h) => Some(h.clone()),
+                    thumbs::ThumbState::None => None,
+                };
+                Ok((state.as_str(), hash))
             })
             .await;
-            let state = match res {
+            let (state, hash) = match res {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
                     tracing::warn!(item = %id, error = %e, "thumbnail failed");
-                    "failed"
+                    ("failed", None)
                 }
                 Err(e) => {
                     tracing::warn!(item = %id, error = %e, "thumbnail task panicked");
-                    "failed"
+                    ("failed", None)
                 }
             };
             let sid = id.clone();
             let _ = lib
                 .db
-                .call(move |c| c.execute("UPDATE items SET thumb_state = ?2 WHERE id = ?1", params![sid, state]))
+                .call(move |c| {
+                    c.execute(
+                        "UPDATE items SET thumb_state = ?2, thumbhash = COALESCE(?3, thumbhash) WHERE id = ?1",
+                        params![sid, state, hash],
+                    )
+                })
                 .await;
             if state == "ready" {
                 lib.emit("item.updated", &id);
