@@ -1,15 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Secretary · Lucina 0.3.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
+<!-- Secretary · Lucina 0.4.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="tech.getsecretary.secretary"
-    android:versionCode="4" android:versionName="0.3.0">
+    android:versionCode="5" android:versionName="0.4.0">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+    <uses-feature android:name="android.hardware.location" android:required="false"/>
+    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
     <queries>
         <intent><action android:name="android.speech.RecognitionService"/></intent>
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE"/></intent>
+        <intent><action android:name="android.media.action.VIDEO_CAPTURE"/></intent>
     </queries>
     <application android:label="Secretary · Lucina" android:allowBackup="false" android:usesCleartextTraffic="false"
         android:extractNativeLibs="false" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:icon="@drawable/lucina">

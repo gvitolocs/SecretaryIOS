@@ -190,9 +190,29 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
   token moved into the encrypted `state.bin`, and the pref was deleted.
 - **Not yet verified:** a real carrier SMS, and a notification-sourced code.
 
+## Attachments in the chat WebView
+
+Secretary Android 0.4.0 (versionCode 5) lets the chat page attach photos, videos and files. A small
+`WebChromeClient` in `MainActivity` handles `<input type=file>`:
+
+- `onShowFileChooser` honours `FileChooserParams`: accept types become an `ACTION_OPEN_DOCUMENT` MIME filter
+  (`EXTRA_MIME_TYPES` when there is more than one), `MODE_OPEN_MULTIPLE` sets `EXTRA_ALLOW_MULTIPLE`, and
+  `isCaptureEnabled` adds `ACTION_IMAGE_CAPTURE` and/or `ACTION_VIDEO_CAPTURE` to a chooser beside the picker.
+- Camera output is written to a pending `MediaStore` content URI, so no `FileProvider` and no `CAMERA`
+  permission are needed. The unused camera entry is deleted, the captured entry is published
+  (`IS_PENDING = 0`), and the result Uris (including `ClipData` items) are returned through the callback.
+  Cancelling returns `null`.
+- `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` are declared. A geolocation prompt is granted only for
+  the exact `https://getsecretary.tech` origin, after the runtime permission is granted; the grant is not
+  retained, so a reload asks again.
+- `allowFileAccess` and `allowContentAccess` stay `false`; uploads use the chooser callback, not `file://` or
+  `content://` page access. `javaScriptEnabled` and `domStorageEnabled` were already on, and WebView's
+  Chromium paste events need no additional setting. The web composer owns paste and drag-and-drop handling.
+- The phase-1 `ShareActivity`, Direct Share shortcut and background upload are unchanged.
+
 ## Share to Lucina
 
-Secretary Android 0.3.0 (versionCode 4) receives `ACTION_SEND` and `ACTION_SEND_MULTIPLE`, for `*/*` and
+Secretary Android 0.4.0 (versionCode 5) receives `ACTION_SEND` and `ACTION_SEND_MULTIPLE`, for `*/*` and
 `text/plain`, through the exported, dialog-themed `ShareActivity` labeled **Lucina**. It accepts text, links,
 photos, videos, PDFs, documents, audio, contacts, locations and files exposed by other apps as content URIs.
 The dark framework UI previews snippets, file names and sizes, and available content-provider thumbnails.
