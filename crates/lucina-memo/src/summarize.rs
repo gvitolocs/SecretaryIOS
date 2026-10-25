@@ -83,7 +83,9 @@ pub fn timed_lines(t: &Transcript) -> Vec<String> {
 }
 
 fn local(at: DateTime<Utc>, tz: Tz) -> String {
-    at.with_timezone(&tz).format("%A %Y-%m-%d %H:%M").to_string()
+    at.with_timezone(&tz)
+        .format("%A %Y-%m-%d %H:%M")
+        .to_string()
 }
 
 /// Seconds from `12`, `"12"`, `"1:05"` or `"1:02:05"`.
@@ -95,7 +97,11 @@ fn seconds(v: &serde_json::Value) -> Option<f64> {
             if let Ok(x) = s.parse::<f64>() {
                 return Some(x);
             }
-            let parts: Vec<f64> = s.split(':').map(|p| p.parse::<f64>()).collect::<Result<_, _>>().ok()?;
+            let parts: Vec<f64> = s
+                .split(':')
+                .map(|p| p.parse::<f64>())
+                .collect::<Result<_, _>>()
+                .ok()?;
             Some(parts.iter().fold(0.0, |acc, p| acc * 60.0 + p))
         }
         _ => None,
@@ -108,16 +114,25 @@ fn items(raw: Vec<RawItem>, duration: f64, keep_owner: bool) -> Vec<Item> {
         .filter_map(|r| {
             let (text, at, owner, due) = match r {
                 RawItem::Text(t) => (t, None, None, None),
-                RawItem::Full { text, at, owner, due } => (text, at, owner, due),
+                RawItem::Full {
+                    text,
+                    at,
+                    owner,
+                    due,
+                } => (text, at, owner, due),
             };
             let text = text.trim().to_owned();
             if text.is_empty() {
                 return None;
             }
-            let clean = |o: Option<String>| o.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+            let clean =
+                |o: Option<String>| o.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
             Some(Item {
                 text,
-                at: at.as_ref().and_then(seconds).filter(|x| *x <= duration + 1.0),
+                at: at
+                    .as_ref()
+                    .and_then(seconds)
+                    .filter(|x| *x <= duration + 1.0),
                 owner: if keep_owner { clean(owner) } else { None },
                 due: if keep_owner { clean(due) } else { None },
             })
@@ -129,7 +144,10 @@ fn items(raw: Vec<RawItem>, duration: f64, keep_owner: bool) -> Vec<Item> {
 /// Pulls the first `{...}` object out of a reply (models sometimes wrap it).
 fn json_object(s: &str) -> &str {
     let s = s.trim();
-    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
     let s = s.strip_suffix("```").unwrap_or(s).trim();
     match (s.find('{'), s.rfind('}')) {
         (Some(a), Some(b)) if b > a => &s[a..=b],
@@ -137,9 +155,18 @@ fn json_object(s: &str) -> &str {
     }
 }
 
-pub fn parse(reply: &str, t: &Transcript, model: &str, instructions: Option<&str>) -> Result<Summary, SummaryError> {
-    let raw: Raw = serde_json::from_str(json_object(reply)).map_err(|e| SummaryError::Json(e.to_string()))?;
-    let title = crate::store::clean_title(raw.title.trim_matches(|c: char| c == '"' || c == '.' || c.is_whitespace()));
+pub fn parse(
+    reply: &str,
+    t: &Transcript,
+    model: &str,
+    instructions: Option<&str>,
+) -> Result<Summary, SummaryError> {
+    let raw: Raw =
+        serde_json::from_str(json_object(reply)).map_err(|e| SummaryError::Json(e.to_string()))?;
+    let title = crate::store::clean_title(
+        raw.title
+            .trim_matches(|c: char| c == '"' || c == '.' || c.is_whitespace()),
+    );
     let tags = raw
         .tags
         .into_iter()
@@ -155,7 +182,11 @@ pub fn parse(reply: &str, t: &Transcript, model: &str, instructions: Option<&str
         .take(5)
         .collect();
     Ok(Summary {
-        title: if title.is_empty() { "Voice memo".into() } else { title },
+        title: if title.is_empty() {
+            "Voice memo".into()
+        } else {
+            title
+        },
         language: t.language.clone(),
         overview: raw.overview.trim().to_owned(),
         key_points: items(raw.key_points, t.duration_sec, false),
@@ -219,13 +250,20 @@ pub async fn summarize(
                 ..Default::default()
             };
             let r = llm.complete(req).await?;
-            notes.push(format!("Notes on part {} of {n}:\n{}", i + 1, r.message.text().trim()));
+            notes.push(format!(
+                "Notes on part {} of {n}:\n{}",
+                i + 1,
+                r.message.text().trim()
+            ));
         }
         format!("The memo is long, so here are your notes on each part instead of the full transcript.\n\n{}", notes.join("\n\n"))
     };
     let mut user = format!("{}\n{body}", header(m, t, tz));
     if let Some(extra) = instructions.filter(|s| !s.trim().is_empty()) {
-        user.push_str(&format!("\n\nGiuseppe asked for this version: {}", extra.trim()));
+        user.push_str(&format!(
+            "\n\nGiuseppe asked for this version: {}",
+            extra.trim()
+        ));
     }
     let mut last_err = None;
     for attempt in 0..2 {
@@ -238,7 +276,11 @@ pub async fn summarize(
             ..Default::default()
         };
         let r = llm.complete(req).await?;
-        let label = if r.model.is_empty() { model_label } else { &r.model };
+        let label = if r.model.is_empty() {
+            model_label
+        } else {
+            &r.model
+        };
         match parse(r.message.text(), t, label, instructions) {
             Ok(s) => return Ok(s),
             Err(e) => {
@@ -260,7 +302,12 @@ mod tests {
             language: "it".into(),
             engine: "test".into(),
             duration_sec: 120.0,
-            segments: vec![Segment { start: 0.0, end: 5.0, text: "Ciao".into(), speaker: None }],
+            segments: vec![Segment {
+                start: 0.0,
+                end: 5.0,
+                text: "Ciao".into(),
+                speaker: None,
+            }],
             speakers: false,
             created_at: Utc::now(),
         }
@@ -281,7 +328,13 @@ mod tests {
 
     #[test]
     fn drops_times_past_the_end() {
-        let s = parse("{\"title\":\"x y\",\"overview\":\"o\",\"keyPoints\":[{\"text\":\"a\",\"at\":999}]}", &transcript(), "m", None).unwrap();
+        let s = parse(
+            "{\"title\":\"x y\",\"overview\":\"o\",\"keyPoints\":[{\"text\":\"a\",\"at\":999}]}",
+            &transcript(),
+            "m",
+            None,
+        )
+        .unwrap();
         assert_eq!(s.key_points[0].at, None);
     }
 }

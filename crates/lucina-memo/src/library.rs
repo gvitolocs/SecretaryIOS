@@ -12,17 +12,23 @@ use crate::model::Memo;
 use crate::App;
 
 fn base() -> Option<String> {
-    let v = std::env::var("LUCINA_MEMO_LIBRARY_URL").unwrap_or_else(|_| "http://127.0.0.1:8830".into());
+    let v =
+        std::env::var("LUCINA_MEMO_LIBRARY_URL").unwrap_or_else(|_| "http://127.0.0.1:8830".into());
     let v = v.trim().trim_end_matches('/').to_owned();
     (!v.is_empty() && v != "off").then_some(v)
 }
 
 fn client() -> Option<reqwest::Client> {
-    reqwest::Client::builder().timeout(Duration::from_secs(5)).build().ok()
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()
 }
 
 pub async fn register(app: &App, m: &Memo) {
-    let (Some(base), Some(http)) = (base(), client()) else { return };
+    let (Some(base), Some(http)) = (base(), client()) else {
+        return;
+    };
     let id = &m.id;
     let body = json!({
         "kind": "audio",
@@ -40,14 +46,26 @@ pub async fn register(app: &App, m: &Memo) {
             "app": app.cfg.memo_url(id),
         },
     });
-    match http.put(format!("{base}/internal/v1/external/voice-memo/{id}")).json(&body).send().await {
+    match http
+        .put(format!("{base}/internal/v1/external/voice-memo/{id}"))
+        .json(&body)
+        .send()
+        .await
+    {
         Ok(r) if r.status().is_success() => tracing::info!(%id, "registered in the media library"),
-        Ok(r) => tracing::info!(%id, status = r.status().as_u16(), "media library refused the memo"),
+        Ok(r) => {
+            tracing::info!(%id, status = r.status().as_u16(), "media library refused the memo")
+        }
         Err(e) => tracing::debug!(%id, error = %e.without_url(), "media library not reachable"),
     }
 }
 
 pub async fn unregister(id: &str) {
-    let (Some(base), Some(http)) = (base(), client()) else { return };
-    let _ = http.delete(format!("{base}/internal/v1/external/voice-memo/{id}")).send().await;
+    let (Some(base), Some(http)) = (base(), client()) else {
+        return;
+    };
+    let _ = http
+        .delete(format!("{base}/internal/v1/external/voice-memo/{id}"))
+        .send()
+        .await;
 }

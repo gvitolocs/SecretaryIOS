@@ -13,7 +13,10 @@ use clap::{Parser, Subcommand};
 use lucina_memo::{api, store, worker, App, Config};
 
 #[derive(Parser)]
-#[command(name = "lucina-memo", about = "Lucina voice memos: upload API and pipeline")]
+#[command(
+    name = "lucina-memo",
+    about = "Lucina voice memos: upload API and pipeline"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -52,7 +55,9 @@ enum Cmd {
 }
 
 fn app(cfg: Config) -> anyhow::Result<Arc<App>> {
-    let ds = lucina_llm::DeepSeekConfig::from_lookup(|k| std::env::var(k).ok().filter(|v| !v.is_empty()));
+    let ds = lucina_llm::DeepSeekConfig::from_lookup(|k| {
+        std::env::var(k).ok().filter(|v| !v.is_empty())
+    });
     let label = ds.model.clone();
     let llm = lucina_llm::DeepSeek::new(ds).context("DeepSeek client")?;
     App::new(cfg, Arc::new(llm), label)
@@ -61,7 +66,9 @@ fn app(cfg: Config) -> anyhow::Result<Arc<App>> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with_target(false)
         .init();
     let cli = Cli::parse();
@@ -77,7 +84,9 @@ async fn main() -> anyhow::Result<()> {
             let router = api::router(app.clone());
             let mut servers = Vec::new();
             for bind in &app.cfg.binds {
-                let listener = tokio::net::TcpListener::bind(bind).await.with_context(|| format!("bind {bind}"))?;
+                let listener = tokio::net::TcpListener::bind(bind)
+                    .await
+                    .with_context(|| format!("bind {bind}"))?;
                 tracing::info!(%bind, "lucina-memo listening");
                 let r = router.clone();
                 servers.push(tokio::spawn(async move { axum::serve(listener, r).await }));
@@ -92,14 +101,20 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("lucina-memo stopping");
             Ok(())
         }
-        Cmd::Import { file, title, recorded_at } => {
+        Cmd::Import {
+            file,
+            title,
+            recorded_at,
+        } => {
             let id = import(&cfg, &file, title, recorded_at).await?;
             println!("{id}");
             Ok(())
         }
         Cmd::Process { id } => {
             let app = app(cfg)?;
-            worker::process(&app, &id).await.map_err(anyhow::Error::msg)?;
+            worker::process(&app, &id)
+                .await
+                .map_err(anyhow::Error::msg)?;
             println!("{}", serde_json::to_string_pretty(&app.store.get(&id))?);
             Ok(())
         }
@@ -117,7 +132,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::LibrarySync => {
             let app = app(cfg)?;
-            for m in app.store.list().into_iter().filter(|m| m.status == lucina_memo::model::Status::Done) {
+            for m in app
+                .store
+                .list()
+                .into_iter()
+                .filter(|m| m.status == lucina_memo::model::Status::Done)
+            {
                 lucina_memo::library::register(&app, &m).await;
                 println!("{}  {}", m.id, m.title);
             }
@@ -142,11 +162,24 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Uploads `file` through the local API in 4 MiB chunks.
-async fn import(cfg: &Config, file: &std::path::Path, title: Option<String>, recorded_at: Option<DateTime<Utc>>) -> anyhow::Result<String> {
-    let token = std::fs::read_to_string(cfg.service_token_file.as_ref().context("LUCINA_MEMO_SERVICE_TOKEN_FILE")?)?;
+async fn import(
+    cfg: &Config,
+    file: &std::path::Path,
+    title: Option<String>,
+    recorded_at: Option<DateTime<Utc>>,
+) -> anyhow::Result<String> {
+    let token = std::fs::read_to_string(
+        cfg.service_token_file
+            .as_ref()
+            .context("LUCINA_MEMO_SERVICE_TOKEN_FILE")?,
+    )?;
     let token = token.trim();
     let base = format!("http://{}", cfg.binds.first().context("LUCINA_MEMO_BIND")?);
-    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let mime = match ext.as_str() {
         "m4a" | "mp4" | "aac" => "audio/mp4",
         "webm" => "audio/webm",
@@ -158,7 +191,10 @@ async fn import(cfg: &Config, file: &std::path::Path, title: Option<String>, rec
     };
     let bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let recorded_at = recorded_at.unwrap_or_else(|| {
-        std::fs::metadata(file).and_then(|m| m.modified()).map(DateTime::<Utc>::from).unwrap_or_else(|_| Utc::now())
+        std::fs::metadata(file)
+            .and_then(|m| m.modified())
+            .map(DateTime::<Utc>::from)
+            .unwrap_or_else(|_| Utc::now())
     });
     let http = reqwest::Client::new();
     let created: serde_json::Value = http
@@ -190,7 +226,10 @@ async fn import(cfg: &Config, file: &std::path::Path, title: Option<String>, rec
         offset += chunk.len();
     }
     use sha2::Digest;
-    let sha: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let sha: String = sha2::Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     http.post(format!("{base}/v1/memos/{id}/complete"))
         .bearer_auth(token)
         .json(&serde_json::json!({"sha256": sha}))

@@ -53,7 +53,8 @@ impl Config {
         let home = get("HOME").unwrap_or_else(|| "/home/nez".into());
         Self {
             data_dir: PathBuf::from(
-                get("LUCINA_MEMO_DIR").unwrap_or_else(|| format!("{home}/Projects/Lucina/data/memos")),
+                get("LUCINA_MEMO_DIR")
+                    .unwrap_or_else(|| format!("{home}/Projects/Lucina/data/memos")),
             ),
             binds: get("LUCINA_MEMO_BIND")
                 .unwrap_or_else(|| "127.0.0.1:8795".into())
@@ -75,8 +76,12 @@ impl Config {
             whisper: transcribe::WhisperConfig::from_lookup(get),
             vault: obsidian::VaultTarget::from_lookup(get),
             notify: notify::NotifyConfig::from_lookup(get),
-            chrome: PathBuf::from(get("LUCINA_MEMO_CHROME").unwrap_or_else(|| "/usr/bin/google-chrome".into())),
-            max_attempts: get("LUCINA_MEMO_MAX_ATTEMPTS").and_then(|v| v.parse().ok()).unwrap_or(5),
+            chrome: PathBuf::from(
+                get("LUCINA_MEMO_CHROME").unwrap_or_else(|| "/usr/bin/google-chrome".into()),
+            ),
+            max_attempts: get("LUCINA_MEMO_MAX_ATTEMPTS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
         }
     }
 
@@ -117,7 +122,11 @@ fn read_token(p: &Option<PathBuf>) -> anyhow::Result<Option<String>> {
 }
 
 impl App {
-    pub fn new(cfg: Config, llm: Arc<dyn lucina_llm::ChatModel>, llm_label: String) -> anyhow::Result<Arc<Self>> {
+    pub fn new(
+        cfg: Config,
+        llm: Arc<dyn lucina_llm::ChatModel>,
+        llm_label: String,
+    ) -> anyhow::Result<Arc<Self>> {
         let store = store::Store::open(&cfg.data_dir)?;
         Ok(Arc::new(Self {
             gateway_token: read_token(&cfg.gateway_token_file)?,

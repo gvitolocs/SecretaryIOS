@@ -31,11 +31,24 @@ into tasks. Never invent content that is not in the memo. If he is not asking ab
 /// A question or request about the owner's voice memos (whole words: "memorizza" is not one).
 pub fn is_memo_request(text: &str) -> bool {
     let t = text.to_lowercase();
-    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = t
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
     let word = |w: &[&str]| words.iter().any(|x| w.contains(x));
     let phrase = |p: &[&str]| p.iter().any(|x| t.contains(x));
-    word(&["memo", "memos", "memoer", "memoen", "memoet", "lydnote", "lydnoter", "talememo", "diktat"])
-        || phrase(&["voice note", "voice-note", "nota vocale", "note vocali", "appunto vocale", "appunti vocali", "vocale di oggi", "vocale di ieri"])
+    word(&[
+        "memo", "memos", "memoer", "memoen", "memoet", "lydnote", "lydnoter", "talememo", "diktat",
+    ]) || phrase(&[
+        "voice note",
+        "voice-note",
+        "nota vocale",
+        "note vocali",
+        "appunto vocale",
+        "appunti vocali",
+        "vocale di oggi",
+        "vocale di ieri",
+    ])
 }
 
 pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
@@ -47,15 +60,32 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let mut reg = Registry::new();
     reg.register(Arc::new(MemosTool)).ok()?;
     reg.register(Arc::new(TasksTool)).ok()?;
-    let origin = if t.mcp.is_some() { Origin::Mcp } else { Origin::Owner };
+    let origin = if t.guarded {
+        Origin::Mcp
+    } else {
+        Origin::Owner
+    };
     let ctx = Ctx::new(st.tool_env.clone(), &t.channel, &t.session).with_origin(origin);
     let mcp_note = t.mcp.as_ref().map(mcp::note).unwrap_or_default();
     let extra = format!("{SECRETARY_EXTRA_SYSTEM} {GUIDE} {mcp_note}");
     let now = chrono::Utc::now();
-    let system =
-        st.planner.prompts.agent_system(PLATFORM_LABEL, &t.message, memory, extra.trim(), now, st.cfg.time_zone);
-    let msgs = vec![Message::system(system), Message::user(Prompts::user_block(&t.user_label, memory, &t.message))];
-    let cfg = AgentConfig { deadline: st.cfg.turn_deadline, max_rounds: 5, ..AgentConfig::default() };
+    let system = st.planner.prompts.agent_system(
+        PLATFORM_LABEL,
+        &t.message,
+        memory,
+        extra.trim(),
+        now,
+        st.cfg.time_zone,
+    );
+    let msgs = vec![
+        Message::system(system),
+        Message::user(Prompts::user_block(&t.user_label, memory, &t.message)),
+    ];
+    let cfg = AgentConfig {
+        deadline: st.cfg.turn_deadline,
+        max_rounds: 5,
+        ..AgentConfig::default()
+    };
     let timeline = st.timeline.clone();
     let channel = t.channel.clone();
     let on_tool = move |r: &ToolRecord| {
@@ -63,11 +93,25 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
             channel: channel.clone(),
             role: "lucina".into(),
             text: format!("🔧 {} → {}", r.summary, if r.ok { "ok" } else { "error" }),
-            meta: Some(Meta { tool: Some(r.name.clone()), ok: Some(r.ok), ..Meta::kind("tool") }),
+            meta: Some(Meta {
+                tool: Some(r.name.clone()),
+                ok: Some(r.ok),
+                ..Meta::kind("tool")
+            }),
             ..Default::default()
         });
     };
-    match agent::run(st.model.as_ref(), &reg, msgs, &ctx, &st.pending, &cfg, &on_tool).await {
+    match agent::run(
+        st.model.as_ref(),
+        &reg,
+        msgs,
+        &ctx,
+        &st.pending,
+        &cfg,
+        &on_tool,
+    )
+    .await
+    {
         Ok(out) if !out.text.is_empty() => {
             let mut f = Finish::reply(out.text.clone(), "memos");
             let calls = out.records.iter().filter(|r| r.name == "memos").count();
