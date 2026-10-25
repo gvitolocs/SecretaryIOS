@@ -9,6 +9,7 @@ members = [
     "crates/secretary-mcp",
     "crates/secretary-calendar",
     "crates/secretary-tasks",
+    "crates/lucina-link",
     "verification/models",
 ]
 
