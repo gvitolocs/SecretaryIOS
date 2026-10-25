@@ -101,7 +101,7 @@ async fn upload(app: &Router, name: &str, data: &[u8], meta: Value) -> Value {
 async fn wait_thumbs(lib: &Library) {
     // Run the worker for a moment.
     let h = tokio::spawn(ingest::thumb_worker(lib.clone()));
-    for _ in 0..50 {
+    for _ in 0..600 {
         let pending: i64 = lib
             .db
             .with(|c| c.query_row("SELECT COUNT(*) FROM items WHERE thumb_state = 'pending'", [], |r| r.get(0)))
@@ -194,6 +194,15 @@ async fn phone_backup_flow() {
     let (s, thumb, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/thumb?size=256"), None, &[]).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(&thumb[..2], &[0xFF, 0xD8]);
+    let (s, grid, h) = call(&app, "GET", &format!("/v1/media/items/{item_id}/r/grid?v=1"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(&grid[..2], &[0xFF, 0x0A]);
+    assert_eq!(h["content-type"], "image/jxl");
+    assert!(h["cache-control"].to_str().unwrap().contains("immutable"));
+    let (s, _, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/r/preview?v=1"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(items[0]["thumbhash"].as_str().is_some_and(|t| t.len() < 60), "{}", items[0]);
+    assert!(items[0]["urls"]["grid"].as_str().unwrap().contains("/r/grid"));
 
     // Edited on the phone: same asset, new bytes → same item, version 2.
     let edited = upload(&app, "IMG_0001.PNG", &png(1200, 800, 200), meta.clone()).await;

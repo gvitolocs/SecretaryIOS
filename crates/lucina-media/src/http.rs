@@ -72,6 +72,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/items/{id}/original", get(original))
         .route("/v1/media/items/{id}/thumb", get(thumb))
         .route("/v1/media/items/{id}/poster", get(poster))
+        .route("/v1/media/items/{id}/r/{rendition}", get(rendition))
         .route("/v1/media/summary", get(summary))
         .route("/v1/media/albums", get(list_albums).post(create_album))
         .route("/v1/media/albums/{id}", get(get_album).patch(patch_album).delete(delete_album))
@@ -140,6 +141,9 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         "thumb": has_thumb.then(|| format!("/v1/media/items/{id}/thumb?size=256&v={v}")),
         "large": has_thumb.then(|| format!("/v1/media/items/{id}/thumb?size=1024&v={v}")),
         "poster": (has_thumb && matches!(it.kind.as_str(), "video" | "audio")).then(|| format!("/v1/media/items/{id}/poster?v={v}")),
+        // JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
+        "grid": has_thumb.then(|| format!("/v1/media/items/{id}/r/grid?v={v}")),
+        "preview": has_thumb.then(|| format!("/v1/media/items/{id}/r/preview?v={v}")),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
     ItemOut { item: it, urls, poster_url, thumb_url, album }
@@ -323,6 +327,29 @@ async fn thumb(
 ) -> ApiResult<Response> {
     let file = ThumbSize::from_px(q.size).file();
     thumb_file(lib, id, file, headers).await
+}
+
+/// `grid` (g.jxl) or `preview` (p.jxl), `image/jxl`, cached for a year (the URL carries the version).
+async fn rendition(
+    State(lib): State<Library>,
+    Path((id, rendition)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let file = match rendition.as_str() {
+        "grid" => "g.jxl",
+        "preview" => "p.jxl",
+        _ => return Err(not_found()),
+    };
+    if id.contains('/') || id.contains("..") {
+        return Err(not_found());
+    }
+    let iid = id.clone();
+    let it = lib.db.call(move |c| db::get_item(c, &iid)).await?.ok_or_else(not_found)?;
+    let path = thumbs::dir_for(&lib.cfg, &id).join(file);
+    if !path.is_file() {
+        return Err(not_found());
+    }
+    serve_file(headers, path, "image/jxl", &format!("{}-{}-{file}", it.hash, it.version), "private, max-age=31536000, immutable").await
 }
 
 async fn poster(State(lib): State<Library>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Response> {

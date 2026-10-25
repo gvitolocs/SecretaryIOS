@@ -132,6 +132,7 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         let now = now_str();
         for (key, title) in SYSTEM_ALBUMS {
             conn.execute(
@@ -167,6 +168,18 @@ impl Db {
         let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         f(&mut guard).map_err(DbError::from)
     }
+}
+
+/// Columns added after the first deploy.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let has = |col: &str| -> rusqlite::Result<bool> {
+        let mut st = conn.prepare("SELECT 1 FROM pragma_table_info('items') WHERE name = ?1")?;
+        st.exists([col])
+    };
+    if !has("thumbhash")? {
+        conn.execute("ALTER TABLE items ADD COLUMN thumbhash BLOB", [])?;
+    }
+    Ok(())
 }
 
 pub fn now_str() -> String {
@@ -219,11 +232,13 @@ pub struct Item {
     pub links: serde_json::Value,
     pub trashed_at: Option<String>,
     pub thumb_state: String,
+    /// ThumbHash (base64, about 24 characters): the placeholder shown before any bytes arrive.
+    pub thumbhash: Option<String>,
 }
 
 pub const ITEM_COLS: &str = "id, kind, title, caption, mime, bytes, hash, taken_at, added_at, width, height, duration_ms, \
     video_codec, audio_codec, lat, lon, place_name, admin1, admin2, cc, camera, source, live_pair, favorite, version, links, \
-    trashed_at, thumb_state";
+    trashed_at, thumb_state, thumbhash";
 
 pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
     let lat: Option<f64> = r.get(14)?;
@@ -265,6 +280,10 @@ pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
         links: links.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or(serde_json::Value::Null),
         trashed_at: r.get(26)?,
         thumb_state: r.get(27)?,
+        thumbhash: r.get::<_, Option<Vec<u8>>>(28)?.map(|h| {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(h)
+        }),
     })
 }
 
@@ -496,7 +515,7 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
             break;
         }
         let it = item_from_row(r)?;
-        let sort_at: String = r.get(28)?;
+        let sort_at: String = r.get(29)?;
         last_key = Some(format!("{sort_at}|{}", it.id));
         if let Some((lat, lon, km)) = near {
             match &it.place {
