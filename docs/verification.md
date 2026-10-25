@@ -56,6 +56,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
+| 7 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -107,6 +108,8 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | I5 ablation: ops leave the outbox when sent | 8 731 | 20 | `acked_never_lost`, `all_ops_applied` **violated** |
 | I6 ablation: plain last-writer-wins status | 9 034 | 21 | `owner_completed_never_reverted`, `device_completed_sticky` **violated** |
 | I7 ablation: the last delivery wins (no stamps) | 9 418 | 21 | `converges` **violated** |
+| Pk game control, lucina-game-link 2f837e0 | 26 628 | 40 | `no_clock_frame_during_input`, `pause_within_one_step`, `no_save_during_input` **violated**; one driver holds |
+| Pk + fixes Pk1 (clock under lock), Pk2 (no save while busy) | 2 582 | 17 | all hold (+ `paused_in_battle_then_resumed` reached) |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -114,6 +117,7 @@ TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 
 property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` (`--deep`, the Stateright I2
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
+`GameControl_fixed`: 11 208; `GameControl_current_driver` (one driver in the current code): 116 344.
 
 ## Invariants, models and mapping
 
@@ -296,6 +300,49 @@ The model is one book's registers (ops on different books touch disjoint registe
 | `Deliver(Resp)` | `Outbox::ack` (append + `sync_data`), `ClientMachine::on_response` |
 | `Drop`, `Dup` | `FlakyTransport` (`Faults`) |
 | `Owner` | `PATCH /v1/library/books/{id}` → `state::owner_set_status` / `owner_set_progress` |
+
+### 7. Lucina's Pokémon Red: game control and the planner
+
+The game server (`lucina-pokemon serve`, nezopt 127.0.0.1:18767) owns one Boytacean emulator behind a mutex. Lucina
+plays through `POST /macro` (her Hermes turns, via the MCP tools); the owner starts and pauses her from chat
+(Telegram, lucina-rs), the Secretary iPhone and web screens (`/v1/game/control` → lucina-rs → `/control`), the Mac
+viewer over an SSH tunnel, and the play loop pauses itself after three failed turns.
+
+Invariants (`game.rs` / `GameControl.tla`):
+
+| Property | Meaning |
+|---|---|
+| `one_driver` / `OneDriver` | at most one macro holds `busy` (two Hermes turns, or a turn left over after a restart, never both press buttons) |
+| `keys_only_by_busy_holder` | a key is down only for the macro that won `busy` |
+| `no_clock_frame_during_input` | the real-time clock thread never advances a frame while a macro holds a key |
+| `pause_within_one_step` | after a pause is applied, at most one frame advances with input |
+| `no_save_during_input` | no save state is written while a key is down (it would come back pressed after a restore) |
+| `paused_in_battle_then_resumed` (sometimes; TLC `GameControl_fixed_witness`) | a pause during a battle, then play again and input in the same battle |
+
+| Model action | Code (Lucina repo, `rust/lucina-pokemon/src/`) |
+|---|---|
+| `ClockRead`, `ClockFrame` | `main.rs::server`, the clock thread (`busy` read, `next_frame`, 30 s checkpoint `save`) |
+| `MacroStart` | `main.rs::handle` `/macro`: `busy.compare_exchange(false, true)`, else "Another action is still running." |
+| `Press`, `Lift` | `macros.rs` `tap` / `step` (`with(|g| g.key_press(..))`, `key_lift`) |
+| `Frame` | `macros.rs::frames` (under the lock: `if !e.running { return Err("Paused by the owner") }`, `next_frame`) |
+| `End` | `/macro` after `macros::run`: `save`, `save_journal`, `busy.store(false)` |
+| `Control(src, run)` | `/control` (chat: `src/game-bridge.js`, lucina-rs `lucina_intent::game`; iPhone/web: secretary-server `/v1/game/control`; viewer buttons; `driver` auto-pause) |
+| `Save` | `/save` |
+| `TunnelDrop`, `TunnelUp` | the Mac viewer's `ssh -L 18767` tunnel (its requests are lost while down) |
+| `Restart` | `systemctl --user restart lucina-pokemon` / `redeploy.sh` (`running` is not persisted) |
+
+Verus (`verification/verus/game_planner.rs`) proves, for every map up to 128 × 128 cells and every start and goal:
+P1 a legal move lands on floor, on a Cut tree only with Cut, on a card-key door only with the Card Key, never on a
+wall or a blocked cell (people, the Saffron guards, Snorlax, learned stops); a two-cell move hops a ledge in its own
+direction from floor. P2 every route `plan` returns is a chain of legal moves from the start to the goal. P3 the
+search and the route rebuild terminate (decreases on the rounds and on the parent distance). P4 the story step
+`progress` shows next has every prerequisite done, for the `STORY_REQUIRES` table. Warps, edge connections, spinners
+and the Mansion holes change maps and are outside the kernel. Two differential tests in the Lucina repo tie it to the
+code: `world.rs::routes_only_enter_walkable_cells` checks every step of planned ROM routes (Diglett's Cave, Rocket
+Hideout spinners, Viridian Gym, Silph Co. card-key doors, Cut on Route 9, ledges on Route 3, the Mansion with the
+switch on: 267 steps) against the kernel's step rule, and `plan.rs::story_requirements_come_first` checks that
+`REQUIRES` equals the kernel's `STORY_REQUIRES` line. `scripts/verify.sh` runs them when the crate is checked out
+(`LUCINA_POKEMON_DIR`).
 
 ## Bugs found
 
@@ -541,6 +588,26 @@ Confirm(0) Reserve(0)=20 StepRuns(0,10) StepRuns(0,13) Confirm(1) Reserve(1)=20 
 Fix: reserve the worst case per step (the estimate plus a margin bounding Meshy's drift), and before each step stop
 when consumed plus the next worst case would exceed the reservation. Verus K5 proves the arithmetic.
 
+### Pk1: the clock thread advances a frame while a macro holds a key, also while paused (low-medium). **Fixed.**
+
+The clock thread read `busy` and then took the emulator lock. In between, a macro could take `busy` and press a key
+(`with(..)` has no pause check), so the clock advanced a frame with the macro's key down. While paused, every macro
+call of a Hermes turn still running presses a key before its first `frames(..)` check, so each call could leak one
+input frame: the pause did not hold within one step. Shortest trace: `ClockRead`, `MacroStart(0)`, `Press(0)`,
+`ClockFrame`. Fix (branch `lucina-game-link`): the clock thread takes the lock first and reads `busy` under it.
+
+### Pk2: `/control` and `/save` save while a macro holds a key (low). **Fixed.**
+
+A pause from chat or the app during a macro wrote the save state with the macro's key down; after a restart the key
+came back pressed. Trace: `MacroStart(0)`, `Press(0)`, `Control(Chat, false)`. Fix: both save only when no macro holds
+`busy` (the macro saves when it ends, and a pause ends it at its next frame); `/save` answers `saved: false` then.
+
+### Pk3: a story step claimed more than its check (low). **Fixed.**
+
+Writing the requirement table showed that "Get HM03 Surf and HM04 Strength" was marked done by the Surf flag
+alone, so the plan never sent Lucina for Strength, which Victory Road needs. It is now "Get HM03 Surf", with a
+separate "Get HM04 STRENGTH" step (EVENT_GOT_HM04) before the Elite Four.
+
 ## Modeling assumptions
 
 - **Timeline.** A single `write()` of a whole line to an O_APPEND regular file is atomic (Linux; lines stay far
@@ -551,5 +618,8 @@ when consumed plus the next worst case would exceed the reservation. Verus K5 pr
 - **Shopping.** Each batch is one serialisable transaction (list row `FOR UPDATE`). The model has one list and two
   objects; `move`, `reorder` and `edit_item` are not modelled.
 - **OAuth.** The attacker cannot forge a PKCE verifier and cannot register an allowed redirect_uri.
+- **Pokémon.** Every handler and macro step is one critical section of the emulator lock (as in the code, except the
+  current clock thread, modelled in two steps). Two macro callers, one restart, battles start on a frame with input.
+  Story steps are checked by their event flags; the kernel does not model RAM.
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels
   cover the per-step invariants for all inputs.

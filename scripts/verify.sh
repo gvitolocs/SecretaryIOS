@@ -10,6 +10,7 @@
 # Usage: scripts/verify.sh [--deep] [--only models|tlc|verus]
 #   --deep   exhaustive Stateright bounds (feature `deep`) and the *_deep TLC cfgs
 # Env: JAVA, TLA_JAR, VERUS_BIN (defaults: ~/tools/...), VERUS_DIR (default verification/verus),
+#      LUCINA_POKEMON_DIR (the lucina-pokemon crate, for its kernel differential tests; skipped if absent),
 #      CARGO_TARGET_DIR, TLC_WORKERS,
 #      TLC_TIMEOUT (seconds per cfg, default 900), CARGO_JOBS (default 2).
 set -u
@@ -67,6 +68,19 @@ if want models; then
     else
         tail -40 "$work/ink-sync-test.log"
         row models "cargo test -p ink-sync (property + fault injection)" pass "FAIL" "see the output above"
+    fi
+    # Lucina's Pokémon planner (Lucina repo): the differential tests that tie verification/verus/game_planner.rs
+    # to the code (planned ROM routes against the kernel's step rule; the story requirement table).
+    pk="${LUCINA_POKEMON_DIR:-$HOME/Projects/.worktrees/Lucina/game-link/rust/lucina-pokemon}"
+    if [ -f "$pk/Cargo.toml" ]; then
+        start=$(date +%s)
+        if (cd "$pk" && CARGO_TARGET_DIR="$pk/target" cargo test -j"$CARGO_JOBS" -q --release -- \
+            routes_only_enter_walkable_cells story_requirements_come_first) >"$work/pokemon-test.log" 2>&1; then
+            row models "lucina-pokemon kernel differential tests" pass "PASS" "$(( $(date +%s) - start ))s"
+        else
+            tail -40 "$work/pokemon-test.log"
+            row models "lucina-pokemon kernel differential tests" pass "FAIL" "see the output above"
+        fi
     fi
     # The same cases as a table (states explored, depth, verdict per property).
     if cargo run -j"$CARGO_JOBS" -q -p verification-models --bin verify-models -- $([ "$deep" -eq 1 ] && echo --deep) \

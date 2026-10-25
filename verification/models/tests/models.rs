@@ -56,3 +56,8 @@ fn gates() {
 fn ink_sync() {
     run("ink-sync");
 }
+
+#[test]
+fn game() {
+    run("game");
+}
