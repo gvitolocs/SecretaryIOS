@@ -83,8 +83,8 @@ struct KeychainStore: Sendable {
 }
 
 /// What the app's extensions need to report to the server on their own: the device token
-/// and the server addresses, in the shared keychain group. Written only while a source
-/// that uses an extension (Safari, Screen Time) is on; removed on sign-out.
+/// and the server addresses, in the shared keychain group. Includes each enabled source
+/// that uses an extension, plus explicit shares at every sign-in; removed on sign-out.
 struct BridgeCredentials: Codable, Equatable, Sendable {
     var token: String
     var endpoints: [String]

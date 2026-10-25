@@ -179,6 +179,9 @@ final class AppModel {
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
         chat.onTransportError = onError
         chat.onTransportSuccess = onSuccess
+        // Attachments sent from the chat report their upload progress and outcome to its bubbles.
+        ShareUploads.shared.observer = chat
+        AttachmentStore.purgePending()
         let device = device
         let wardrobe = wardrobe
         let notes = notes
@@ -215,6 +218,9 @@ final class AppModel {
             return
         }
         phase = .signedIn
+        device.syncCredentials()
+        LucinaDonations.donate(daily: true)
+        Task { await ShareUploads.shared.retryPending() }
         if backup.settings.enabled { Task { await backup.requestAccessAndRun() } }
         await health.refresh()
         do {
@@ -257,6 +263,7 @@ final class AppModel {
             self.deviceName = session.deviceName ?? deviceName
             signedOutReason = nil
             phase = .signedIn
+            device.syncCredentials()
             await health.refresh()
         } catch {
             client.accessKey = previous
