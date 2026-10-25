@@ -81,3 +81,8 @@ fn memos() {
 fn player() {
     run("player");
 }
+
+#[test]
+fn share() {
+    run("share");
+}

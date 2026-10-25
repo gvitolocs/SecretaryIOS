@@ -32,6 +32,7 @@ pub mod memos;
 pub mod oauth;
 pub mod ownership;
 pub mod player;
+pub mod share;
 pub mod shopping;
 pub mod timeline;
 
@@ -270,6 +271,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(game::cases(deep));
     v.extend(media_backup::cases(deep));
     v.extend(player::cases(deep));
+    v.extend(share::cases(deep));
     v
 }
 

@@ -295,6 +295,13 @@ function matchItem(list: ChatMessage[], it: TimelineItem): ChatMessage | undefin
   if (it.role === "user" && it.clientMessageId) {
     return list.find((m) => m.role === "user" && !m.itemId && m.clientMessageId === it.clientMessageId);
   }
+  // A composer share's server item can arrive (stream, poll) before the 202, or
+  // without it when the 202 is lost: match it to the local bubble by shareId
+  // (Stateright SH5, Verus SK2.4; iOS Timeline.merge does the same).
+  const shareId = it.role === "user" ? it.meta?.shareId : undefined;
+  if (shareId) {
+    return list.find((m) => m.role === "user" && !m.itemId && m.share?.id === shareId);
+  }
   if (it.role === "lucina") {
     const cmid = it.clientMessageId ?? (it.replyTo ? list.find((m) => m.itemId === it.replyTo)?.clientMessageId : undefined);
     if (cmid) return list.find((m) => m.role === "lucina" && !m.itemId && m.replyFor === cmid);

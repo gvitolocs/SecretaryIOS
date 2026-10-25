@@ -73,6 +73,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
 | 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
+| 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -143,6 +144,13 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | R naive server (every push overwrites) | 1 066 693 | 28 | `no_position_lost`, `server_never_regresses` **violated** (rule witness) |
 | R naive device (adopts any server entry) | 1 046 485 | 30 | `never_back_to_stale` **violated** (rule witness) |
 | R naive acknowledge (ignores time) | 541 645 | 26 | `no_position_lost` **violated** (rule witness) |
+| SH fixed: composer album, crash, faults, other writers, attacker | 21 400 | 21 | holds; retry/crash/album/auth witnesses |
+| SH fixed: composer + extension with App Group (background) | 58 514 | 31 | holds; retry/bg-kill/crash/album witnesses |
+| SH fixed: composer + extension without App Group (today) | 306 346 | 39 | holds; fg-kill-lost/retry/crash witnesses |
+| SH window bug (recovery scans the newest N=1 items) | 23 712 | 25 | `sh2`, `sh3` **violated** |
+| SH reconcile bug (bubble matched by the 202's userItemId only) | 21 400 | 21 | `sh5` **violated** |
+| SH stuck bug (failed append → 500, no worker) | 14 504 | 21 | `sh6` **violated** |
+| SH ablation: no `X-Share-Gateway` check, lucina-rs reachable directly | 260 843 | 29 | `sh4` **violated** |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -561,6 +569,56 @@ the engine ran); and the wasm answer pack round-trips exactly for 32-bit address
 | `Deliver(Reply)` | `Book::acknowledge`, then `Book::merge` of the returned entries |
 | `Pull` + `Deliver(PullReply)` | `syncProgress`: `GET /v1/media/progress` → `Book::merge`; `/play`'s `progress` field → `merge` |
 | `Offline` | a failed request: the entry stays pending (`pending`) and is pushed again later |
+### 12. Share to Lucina
+
+Every share (the iOS share extension and chat composer, Shortcuts, Android's share target, the web share target and
+composer) is one `POST /v1/share` with a client-made `shareId` (`docs/share.md`). p1 checks the owner's device token
+(forward_auth) and adds `X-Share-Gateway`; lucina-rs refuses anything without it. `receive` runs under one mutex:
+a known `shareId` returns the saved result (`duplicate`); otherwise files go into lucina-media, `status.json` is
+saved (processing, with the user item and its fixed id), the user item is appended if missing, and a worker reads
+every part and writes one Lucina answer. On restart `recover` respawns every share still processing.
+
+The model has the composer's two-file album (retried with the same id), a share extension with or without the App
+Group (without it, a kill loses the body and the owner re-shares under a new id), an attacker with no owner auth,
+lost requests and responses, crashes between any two server steps, other timeline writers, and the chat view.
+
+Invariants (Stateright name / TLA+ name):
+
+- `sh1_one_user_item` / `OneUserItem`: each accepted share has exactly one user item in the timeline.
+- `sh2_answered_once` / `AnsweredOnce`: Lucina answers each share at most once (exactly once when it completes).
+- `sh3_retry_idempotent` / `RetryIdempotent`: a retry with the same id never adds a user item or an answer.
+- `sh4_owner_only` / `OwnerOnly`: nothing is stored, ingested or answered for a request without owner auth.
+- `sh5_one_bubble` / `OneBubble`: the chat shows each share once after reconciliation.
+- `sh6_accepted_completes` / `AcceptedCompletes`: with nothing in flight, no accepted share is left processing.
+
+Witnesses (`sometimes` / `Share_fixed_*_witness.cfg`): a retry answered `duplicate`, a background-upload kill that
+still delivers, a foreground kill that loses the share, a crash and recovery that completes, a two-file album with
+one item and one answer, and a refused unauthenticated request.
+
+Verus (`share_kernels.rs`, 57 verified; `share_reconcile.rs`, 24 verified; no `assume`/`admit`/`external_body`):
+- SK1 the router is total and returns one kind of `KINDS`; a decisive sniff wins over name and mime; zip containers
+  route to document/sheet/slides/archive; text-like claims on non-text bytes fall to `other`; every timeline kind
+  passes `normalize`'s whitelist and `take(32)`.
+- SK2 one userItemId and at most one user item per shareId across crashes before or after the save, recovery and
+  other writers; every 202 (fresh or duplicate) carries it; matching bubbles by the 202's userItemId OR
+  `meta.shareId` gives one bubble per share in any order.
+- SK3 the full-scan recovery answers at most once; the `raw.contains(id)` prefilter is sound.
+- SK4 receive limits: ≤ 32 parts (the location check never fires: `meta` is itself a counted field), ≤ 2 GiB, the
+  per-field caps, id/session/character limits, and the fixed `sanitize` (non-empty, ≤ 120 bytes, no separators,
+  control characters or `..`).
+Witnesses: `unfixed_window_scan`, `unfixed_match_by_id_only`, `unfixed_sanitize_keeps_dotdot`. Differential test:
+`crates/lucina-server/tests/verus_share.rs` (branch `lucina-rs`) runs the real `route`/`sniff`/`timeline_kind`/
+`normalize`/`sanitize` and the `/v1/share` limits against the kernels.
+
+| Action (model) | Code |
+|---|---|
+| `Send` / `Reshare` / `Kill` | iOS `ShareRequestBuilder.build` + `ShareUploads.enqueue`/`sendNow`, `ChatShares`; Android `ShareActivity` + `ShareJobService`; web `sendAttachmentMessage` |
+| `Attack` / gateway | p1 Caddy `@share` (`forward_auth`, CSRF, `X-Share-Gateway`); `share::authenticate` |
+| `Deliver`, `RxIngest`, `RxSave`, `RxFinish`, `RxAppendFails` | `share::receive` (`find`, `store_in_library`, `save`, `ensure_user`, `spawn`) |
+| `ProcBegin`, `ProcRead`, `ProcTurn`, `ProcFail`, `ProcSave` | `share::process` (`ensure_user`, `existing_reply`, `extract::read`, `chat::share_turn`), `spawn`'s error path |
+| `Crash`, `Restart`, `Recover` | lucina-rs restart; `share::recover` |
+| `OtherAppend` | Node and other turns appending to `timeline.jsonl` |
+| `TimelineDeliver` | the app's timeline stream/poll (iOS `Timeline.merge`, web `mergeItems`/`matchItem`) |
 
 ## Bugs found
 
@@ -960,6 +1018,40 @@ Deliver(PullReply 0: device 1's entry) Play(0) Deliver(Reply 0: acked @1 clears 
 Clocks differ by seconds between an iPhone, a laptop and a browser, so this is the ordinary case after a hand-off
 from a device whose clock is ahead. Fixed with `write_stamp`: a write is stamped `max(now, held + 1)`
 (Lamport-style). Test: `a_write_after_adopting_a_faster_clock_still_wins`.
+### SH1: recovery answered a share twice after 500 newer timeline items (medium). **Fixed.**
+
+`existing_reply` looked for Lucina's reply only among the newest 500 items. A crash after the reply was written and
+before `status.json` said done, followed by 500 items from other writers (Node, Telegram, proactive), made the
+restarted worker answer again (Stateright SH window: `sh2`, `sh3`; Verus `unfixed_window_scan`). Fixed on
+`lucina-rs` (share-server 4810c5a): every item is checked, with a `raw.contains(user item id)` prefilter before any
+JSON parsing; regression test `recovery_finds_a_reply_far_behind_newer_items` fails on the old scan.
+
+### SH2: a failed append left an accepted share stuck until a restart (medium). **Fixed.**
+
+`receive` saved `status.json` as processing, then returned 500 when appending the user item failed (flock, I/O,
+ENOSPC, a failed rotation) without spawning the worker. Every retry got `duplicate`/`received`; nothing ran until
+lucina-rs restarted (Stateright SH stuck: `sh6`). Fixed (share-server 115222f): the error is logged and the worker is
+spawned (it appends again); a live set also respawns a processing share whose worker is gone (error or panic) when
+its retry arrives. Regression test `a_failed_append_still_processes_the_share`.
+
+### SH3: the web chat showed a share twice when its item arrived before the 202 (low-medium). **Fixed.**
+
+`matchItem` in `web/src/state/chat.ts` matched user items only by item id or `clientMessageId`, and a share's
+server item has neither for the local bubble, and `parseMeta` dropped `meta.shareId`. A stream copy before the 202
+was a second bubble until `adopt()`; with the 202 lost it stayed (Stateright SH reconcile: `sh5`; Verus
+`unfixed_match_by_id_only`). Fixed on `main` (this change): `parseMeta` keeps `kind: "share"`, `shareId`, `intent`,
+and `matchItem` matches by `meta.shareId` like iOS `Timeline.merge`; the new chatShare test fails without it.
+
+### SH4: `sanitize` could produce `..` (low). **Fixed.**
+
+When the 120-byte cut of a long file name ended right after a dot, `.ext` was appended to it
+(`a*115 + "." + b*10 + ".jpg"` → `a*115 + "..jpg"`). Not a traversal (no separator, an `NN-` prefix), but it broke the
+no-`..` rule (Verus SK4.4). Fixed (share-server cd23ecc): trailing dots are dropped before the extension.
+Refuted while checking: a shared location cannot make a 33rd part (`meta` is one of the 32 counted fields); the added
+`check_parts(parts.len() + 1)` is defence in depth.
+
+Open, by design: a re-share after a lost 202 or a foreground kill (no App Group yet) is a new `shareId`, so it is
+answered again; files moved into lucina-media by a request killed before `status.json` stay in the Shared album.
 
 ## Modeling assumptions
 

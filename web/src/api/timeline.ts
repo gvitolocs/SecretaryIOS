@@ -38,7 +38,7 @@ export interface ItemMeta {
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive";
+  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive" | "share";
   /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
   outfit?: string;
   hair?: string;
@@ -50,6 +50,9 @@ export interface ItemMeta {
   proactive?: ProactiveMeta;
   /** Message format v1 `model3d` blocks (3D models from the gallery). */
   blocks?: Model3dBlock[];
+  /** With kind "share": the POST /v1/share idempotency key and the quick action. */
+  shareId?: string;
+  intent?: string;
 }
 
 export type ProactivePriority = "low" | "normal" | "high";
@@ -186,6 +189,11 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (m.kind === "note") {
     out.kind = "note";
     if (typeof m.slug === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(m.slug)) out.slug = m.slug;
+  }
+  if (m.kind === "share") {
+    out.kind = "share";
+    if (typeof m.shareId === "string" && /^[A-Za-z0-9-]{8,64}$/.test(m.shareId)) out.shareId = m.shareId;
+    if (typeof m.intent === "string" && /^[a-z]{1,16}$/.test(m.intent)) out.intent = m.intent;
   }
   if (m.format === "v1") {
     const blocks = parseModel3dBlocks(m.blocks);
