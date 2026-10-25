@@ -281,15 +281,7 @@ async fn run_turn(
 ) -> Result<Value, ApiError> {
     if st.cfg.planner == PlannerMode::Tools {
         let from_mcp = mcp_turn.is_some();
-        let origin = if from_mcp && !st.cfg.mcp_trusted {
-            Origin::Mcp
-        } else {
-            Origin::Owner
-        };
-        return tools_turn(
-            st, message, session, cmid, channel, surface, origin, from_mcp,
-        )
-        .await;
+        return tools_turn(st, message, session, cmid, channel, surface, from_mcp).await;
     }
     // With rich replies the app turns structure into widgets and buttons.
     let base_system = if st.cfg.rich_replies {
@@ -1569,11 +1561,15 @@ async fn tools_turn(
     cmid: Option<String>,
     channel: String,
     surface: TurnSurface,
-    origin: Origin,
     from_mcp: bool,
 ) -> Result<Value, ApiError> {
     // The tool set follows `origin` (trusted MCP turns get the owner's);
     // memory reads and writes follow `surface`.
+    let origin = if from_mcp && !st.cfg.mcp_trusted {
+        Origin::Mcp
+    } else {
+        Origin::Owner
+    };
     let mcp = matches!(origin, Origin::Mcp);
     let now = Utc::now();
     let tz = st.cfg.time_zone;
