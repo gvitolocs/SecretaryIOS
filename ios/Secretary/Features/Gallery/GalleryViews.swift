@@ -146,6 +146,10 @@ struct GalleryScreen: View {
             if UserDefaults.standard.bool(forKey: "SecretaryGalleryOpenFirst"), viewing == nil {
                 viewing = store.items.first { $0.kind == "photo" }
             }
+            // `-SecretaryGalleryOpen <item id>`: open that item (it must be on the first page).
+            if let id = UserDefaults.standard.string(forKey: "SecretaryGalleryOpen"), viewing == nil {
+                viewing = store.items.first { $0.id == id }
+            }
         }
         .sheet(isPresented: $showBackup) { NavigationStack { BackupSettingsView() }.lucinaSheet() }
         .sheet(isPresented: $showAlbums) {
