@@ -52,6 +52,14 @@ final class ChatStore {
     private(set) var choices: [String: String] = [:]
     /// Rich replies that just arrived: their bubbles appear one by one, once.
     @ObservationIgnored private var revealIds: Set<String> = []
+    /// Attachments the composer is uploading: 0...1 by share id.
+    private(set) var shareProgress: [String: Double] = [:]
+    /// Where Lucina is with a share (`GET /v1/share/{id}`), while it is being read.
+    private(set) var shareStatus: [String: ShareStatus] = [:]
+    /// Shares sent from this phone's composer, by share id (Shares/Chat/<id>/outgoing.json).
+    @ObservationIgnored private(set) var outgoing: [String: OutgoingShare] = [:]
+    @ObservationIgnored private var sharePollers: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var isForeground = false
 
     struct PrefillRequest: Equatable {
         let text: String
@@ -85,6 +93,8 @@ final class ChatStore {
         lastEventId = cache.lastEventId
         if cache.localOnly { mode = .localOnly }
         choices = (defaults.dictionary(forKey: Self.choicesKey) as? [String: String]) ?? [:]
+        outgoing = ChatShareOutbox.loadAll()
+        reconcileOutbox()
     }
 
     // MARK: - Rich replies
@@ -206,14 +216,18 @@ final class ChatStore {
 
     /// Starts or stops the SSE connection (foreground only; the view calls this on scene changes).
     func setForeground(_ active: Bool) {
+        isForeground = active
         if active {
             Task {
                 if mode != .server { await refresh() }
                 if mode == .server { startStream() }
             }
             resumePolling()
+            reconcileOutbox()
+            resumeSharePolling()
         } else {
             stopStream()
+            stopSharePolling()
         }
     }
 
@@ -306,6 +320,7 @@ final class ChatStore {
     private func post(_ text: String) async -> String? {
         let message = Self.clean(text)
         guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return nil }
+        LucinaDonations.donate()
         let clientId = UUID().uuidString
         items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
                                   clientMessageId: clientId, localStatus: .sending))
@@ -325,6 +340,10 @@ final class ChatStore {
 
     /// Resends a failed message with the same `clientMessageId` (idempotent on the server).
     func retry(_ itemId: String) async {
+        if let shareId = items.first(where: { $0.id == itemId })?.meta?.shareId, outgoing[shareId] != nil {
+            retryShare(shareId)
+            return
+        }
         guard let index = items.firstIndex(where: { $0.id == itemId }), items[index].localStatus == .error,
               let clientId = items[index].clientMessageId, !isSending else { return }
         items[index].localStatus = .sending
@@ -463,6 +482,12 @@ final class ChatStore {
     func clear() {
         stopPolling()
         stopStream()
+        stopSharePolling()
+        outgoing = [:]
+        shareProgress = [:]
+        shareStatus = [:]
+        ChatShareOutbox.removeAll()
+        ChatPreviews.removeAll()
         items = []
         jobs = [:]
         lastEventId = nil
@@ -509,12 +534,236 @@ final class ChatStore {
         }
         cache.items = cache.items.map { item in
             var item = item
-            if item.localStatus == .sending {
+            // Attachments keep uploading in the background session; reconcileOutbox() settles them.
+            if item.localStatus == .sending, item.meta?.isShare != true {
                 item.localStatus = .error
                 item.localError = String(localized: "Not sent: the app closed before Lucina answered.")
             }
             return item
         }
         return cache
+    }
+}
+
+// MARK: - Attachments, Telegram style
+
+/// Files from the composer go through `POST /v1/share` (source `ios-chat`) on the background upload
+/// session, so they keep uploading while the app is suspended. The bubble shows at once with the local
+/// previews and a progress ring; a failure offers Retry with the same share id (the server dedupes); the
+/// 202 turns the bubble into the server's user item; `GET /v1/share/{id}` says when Lucina is reading.
+extension ChatStore: ShareUploadObserver {
+    nonisolated static let sharePollInterval: Duration = .seconds(2)
+    nonisolated static let sharePollLimit: TimeInterval = 10 * 60
+
+    /// Sends the tray (files, links, the location) with the caption. Returns false when nothing was sent.
+    @discardableResult
+    func sendShare(caption: String, attachments: [PendingAttachment], urls: [String] = [], location: ShareMeta.Location? = nil) -> Bool {
+        let text = Self.clean(caption)
+        guard !attachments.isEmpty || !urls.isEmpty || location != nil, text.count <= Self.maxCharacters else { return false }
+        let shareId = UUID().uuidString
+        let files: [OutgoingShare.File]
+        do {
+            let folder = try ChatShareOutbox.directory(shareId)
+            files = try attachments.enumerated().map { try ChatShareOutbox.adopt($0.element, index: $0.offset, into: folder) }
+        } catch {
+            ChatShareOutbox.remove(shareId)
+            return false
+        }
+        for (index, attachment) in attachments.enumerated() where attachment.kind.isVisual {
+            if let thumbnail = attachment.thumbnail { ChatPreviews.store(thumbnail, shareId: shareId, index: index) }
+        }
+        let share = OutgoingShare(shareId: shareId, caption: text, files: files, urls: urls, location: location, createdAt: Date())
+        try? ChatShareOutbox.save(share)
+        outgoing[shareId] = share
+        LucinaDonations.donate()
+        items.append(share.localItem())
+        persist()
+        upload(share, retry: false)
+        return true
+    }
+
+    /// "Not sent — Retry": the same share id, a fresh body from the kept files.
+    func retryShare(_ shareId: String) {
+        guard let share = outgoing[shareId], share.acceptedAt == nil,
+              let index = items.firstIndex(where: { $0.id == TimelineItem.localPrefix + shareId }) else { return }
+        items[index].localStatus = .sending
+        items[index].localError = nil
+        persist()
+        upload(share, retry: true)
+    }
+
+    private func upload(_ share: OutgoingShare, retry: Bool) {
+        let client = api().client
+        guard let token = client.accessKey, !token.isEmpty else {
+            markShareFailed(share.shareId, String(localized: "You were signed out."))
+            return
+        }
+        let base = client.baseURL
+        let endpoints = ([base] + client.endpoints.filter { $0 != base }).map(\.absoluteString)
+        let credentials = BridgeCredentials(token: token, endpoints: endpoints, sources: ["share"])
+        let sessionId = sessionId
+        shareProgress[share.shareId] = 0
+        Task {
+            do {
+                let record = try await Task.detached(priority: .userInitiated) {
+                    let folder = try ChatShareOutbox.directory(share.shareId)
+                    return try ShareRequestBuilder.build(payload: share.payload(in: folder), intent: "ask", note: share.caption,
+                                                         source: "ios-chat", credentials: credentials,
+                                                         directory: ShareRequestBuilder.directory(), shareId: share.shareId,
+                                                         sessionId: sessionId, meta: share.meta, origin: "chat")
+                }.value
+                if let directory = try? ShareRequestBuilder.directory() {
+                    try? FileManager.default.removeItem(at: ShareResultFile.url(share.shareId, in: directory))
+                }
+                try ShareUploads.shared.enqueue(record, credentials: credentials,
+                                                attempt: retry ? String(UUID().uuidString.prefix(8)) : nil)
+            } catch {
+                shareProgress[share.shareId] = nil
+                markShareFailed(share.shareId, (error as? LocalizedError)?.errorDescription ?? String(localized: "Not sent"))
+            }
+        }
+    }
+
+    private func markShareFailed(_ shareId: String, _ message: String) {
+        items = ShareReconcile.fail(items, shareId: shareId, message: message)
+        persist()
+    }
+
+    nonisolated static func shareFailure(_ status: Int?) -> String {
+        guard let status, status > 0 else { return String(localized: "Not sent") }
+        if status == 401 { return String(localized: "You were signed out.") }
+        return ShareFailure.server(status).localizedDescription
+    }
+
+    // MARK: Upload callbacks
+
+    func shareUploadProgressed(_ shareId: String, fraction: Double) {
+        guard let share = outgoing[shareId], share.acceptedAt == nil else { return }
+        shareProgress[shareId] = min(1, max(0, fraction))
+    }
+
+    func shareUploadFinished(_ result: ShareUploadResult) {
+        guard outgoing[result.shareId] != nil else { return }
+        applyShareResult(shareId: result.shareId, success: result.decision == .success, status: result.status, body: result.body)
+    }
+
+    private func applyShareResult(shareId: String, success: Bool, status: Int?, body: Data?) {
+        guard var share = outgoing[shareId] else { return }
+        shareProgress[shareId] = nil
+        if let directory = try? ShareRequestBuilder.directory() {
+            try? FileManager.default.removeItem(at: ShareResultFile.url(shareId, in: directory))
+        }
+        guard success else {
+            if share.acceptedAt == nil { markShareFailed(shareId, Self.shareFailure(status)) }
+            return
+        }
+        let accepted = body.flatMap { try? JSONDecoder().decode(ShareAccepted.self, from: $0) }
+        if share.acceptedAt == nil {
+            share.acceptedAt = Date()
+            share.userItemId = accepted?.userItemId
+            outgoing[shareId] = share
+            try? ChatShareOutbox.save(share)
+            ChatShareOutbox.dropFiles(share)
+        }
+        items = ShareReconcile.accept(items, shareId: shareId, accepted: accepted)
+        persist()
+        startSharePolling(shareId)
+    }
+
+    /// Settles bubbles whose upload finished while nobody listened (suspended or relaunched in the background).
+    func reconcileOutbox() {
+        guard !outgoing.isEmpty, let directory = try? ShareRequestBuilder.directory() else { return }
+        var changed = false
+        for (shareId, share) in outgoing where share.acceptedAt == nil {
+            if let data = try? Data(contentsOf: ShareResultFile.url(shareId, in: directory)),
+               let result = try? JSONDecoder().decode(ShareResultFile.self, from: data) {
+                applyShareResult(shareId: shareId, success: result.success, status: result.status, body: result.body)
+                continue
+            }
+            guard let index = items.firstIndex(where: { $0.id == TimelineItem.localPrefix + shareId }) else {
+                if let server = items.first(where: { !$0.isLocal && $0.role == .user && $0.meta?.shareId == shareId }) {
+                    // The timeline delivered the server's copy first: the server has it.
+                    var copy = share
+                    copy.acceptedAt = Date()
+                    copy.userItemId = server.id
+                    outgoing[shareId] = copy
+                    try? ChatShareOutbox.save(copy)
+                    ChatShareOutbox.dropFiles(copy)
+                } else {
+                    outgoing[shareId] = nil
+                    ChatShareOutbox.remove(shareId)
+                }
+                continue
+            }
+            let inFlight = FileManager.default.fileExists(atPath: directory.appendingPathComponent(shareId + ".json").path)
+            if !inFlight, items[index].localStatus == .sending, shareProgress[shareId] == nil {
+                items[index].localStatus = .error
+                items[index].localError = String(localized: "Not sent")
+                changed = true
+            }
+        }
+        if changed { persist() }
+    }
+
+    // MARK: "Lucina is reading…"
+
+    /// The share's status while Lucina is still reading it and has not answered yet.
+    func readingStatus(for item: TimelineItem) -> ShareStatus? {
+        guard item.role == .user, let shareId = item.meta?.shareId, let status = shareStatus[shareId], status.isWorking else { return nil }
+        let userItemId = item.isLocal ? outgoing[shareId]?.userItemId : item.id
+        return ShareReconcile.replied(items, userItemId: userItemId, status: status) ? nil : status
+    }
+
+    /// The composer's own copy of a file it sent, while it is still kept (before the server took it).
+    func localFile(shareId: String?, fileIndex: Int) -> URL? {
+        guard let shareId, let share = outgoing[shareId],
+              let folder = try? ChatShareOutbox.root().appendingPathComponent(shareId, isDirectory: true) else { return nil }
+        return share.localFile(at: fileIndex, in: folder)
+    }
+
+    private func startSharePolling(_ shareId: String) {
+        guard isForeground, sharePollers[shareId] == nil, let acceptedAt = outgoing[shareId]?.acceptedAt,
+              shareStatus[shareId]?.isFinished != true else { return }
+        let deadline = acceptedAt.addingTimeInterval(Self.sharePollLimit)
+        guard Date() < deadline else { return }
+        sharePollers[shareId] = Task { [weak self] in
+            while !Task.isCancelled, Date() < deadline {
+                guard let self else { return }
+                if !(await self.pollShare(shareId)) { break }
+                try? await Task.sleep(for: Self.sharePollInterval)
+            }
+            self?.sharePollers[shareId] = nil
+        }
+    }
+
+    private func resumeSharePolling() {
+        for (shareId, share) in outgoing where share.acceptedAt != nil { startSharePolling(shareId) }
+    }
+
+    private func stopSharePolling() {
+        sharePollers.values.forEach { $0.cancel() }
+        sharePollers.removeAll()
+    }
+
+    /// Returns whether to keep polling.
+    private func pollShare(_ shareId: String) async -> Bool {
+        do {
+            let status: ShareStatus = try await api().client.get("/v1/share/" + MediaAPI.encode(shareId))
+            guard !Task.isCancelled else { return false }
+            shareStatus[shareId] = status
+            let userItemId = outgoing[shareId]?.userItemId ?? items.first { !$0.isLocal && $0.meta?.shareId == shareId }?.id
+            if status.isFinished || ShareReconcile.replied(items, userItemId: userItemId, status: status) {
+                if let id = status.lucinaItemId, !items.contains(where: { $0.id == id }) { await refresh() }
+                return false
+            }
+            return true
+        } catch {
+            let apiError = APIError.wrap(error)
+            if apiError.status == 404 || apiError.endsSession {
+                shareStatus[shareId] = nil
+                return false
+            }
+            return true
+        }
     }
 }

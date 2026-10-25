@@ -26,10 +26,12 @@ targets:
       - path: Secretary
         excludes:
           - "Info.plist"
+      - path: Extensions/ShareShared
     info:
       path: Secretary/Info.plist
       properties:
         CFBundleDisplayName: Secretary
+        NSUserActivityTypes: [INSendMessageIntent]
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, it, da]
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -59,12 +61,13 @@ targets:
         NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
         NSSupportsLiveActivities: true
         SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSPhotoLibraryAddUsageDescription: "Photos Lucina's chat shows you are saved to your library when you tap Save."
         NSPhotoLibraryUsageDescription: "Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone."
         NSMicrophoneUsageDescription: "Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos."
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
-        # Face tracking (Lucina mirrors your face) and AR (Lucina in your room); localized in
+        # Face tracking (Lucina mirrors your face), AR (Lucina in your room) and the chat's camera; localized in
         # Secretary/Resources/InfoPlist.xcstrings.
-        NSCameraUsageDescription: "Only when you turn it on: Lucina mirrors your face or appears in your room. The camera image stays on this iPhone."
+        NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # The deals map's Directions button opens Google Maps when it is installed (canOpenURL).
@@ -81,6 +84,8 @@ targets:
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
       - framework: Frameworks/SecretaryCore.xcframework
         embed: false
+      - target: SecretaryShare
+      - sdk: Intents.framework
       - target: SecretarySafari
       - target: SecretaryScreenTimeReport
       - target: SecretaryScreenTimeMonitor
@@ -98,6 +103,49 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_EMIT_LOC_STRINGS: YES
+  SecretaryShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/SecretaryShare
+        excludes: ["Info.plist"]
+      - path: Extensions/ShareShared
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Shared/LucinaTokens.swift
+      - path: Secretary/Features/Share/LucinaDonations.swift
+      - path: Secretary/Features/Share/ShareUploads.swift
+      - path: Secretary/Resources/Localizable.xcstrings
+    dependencies:
+      - sdk: Intents.framework
+      - sdk: QuickLookThumbnailing.framework
+      - sdk: LinkPresentation.framework
+      - sdk: ImageIO.framework
+      - sdk: QuickLook.framework
+      - sdk: PhotosUI.framework
+      - sdk: AVFoundation.framework
+    info:
+      path: Extensions/SecretaryShare/Info.plist
+      properties:
+        CFBundleDisplayName: Lucina
+        CFBundleLocalizations: [en, it, da]
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ShareViewController"
+          NSExtensionAttributes:
+            IntentsSupported: [INSendMessageIntent]
+            NSExtensionActivationRule: 'SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.item" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.content" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.data" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.plain-text").@count >= 1).@count >= 1'
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.share
+        PRODUCT_NAME: SecretaryShare
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryShare/SecretaryShare.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
         SWIFT_EMIT_LOC_STRINGS: YES
   SecretarySafari:
     type: app-extension

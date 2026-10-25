@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var app
     @Environment(HealthStore.self) private var health
+    @AppStorage("share.lastResultMessage", store: UserDefaults(suiteName: ShareRequestBuilder.group)) private var lastShareResult = ""
     @State private var confirmSignOut = false
     @State private var showPassword = false
     @State private var developerTaps = 0
@@ -15,6 +16,13 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Share to Lucina") {
+                Label("Share to Lucina", systemImage: "square.and.arrow.up")
+                if !lastShareResult.isEmpty { Text(lastShareResult).font(.caption).foregroundStyle(.secondary) }
+                Text("Lucina is in the share sheet. To keep her first: Share → scroll the app row to the end → More → Edit → add Lucina to Favorites and drag her to the top. iOS orders the rest by how often you use them.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+
             Section {
                 NavigationLink {
                     LinksView()

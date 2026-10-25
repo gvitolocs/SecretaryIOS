@@ -456,14 +456,14 @@ final class DeviceHub {
     }
 
     /// Lets the Safari and Screen Time extensions send their events: the token and server
-    /// addresses go to the shared keychain group only while one of those sources is on.
+    /// addresses always support explicit shares; automatic reporting still respects each switch.
     func syncCredentials() {
-        let sources = [DeviceSource.safari, .screenTime].filter { access.isOn($0) }.map(\.rawValue)
-        guard !sources.isEmpty, let token = client.accessKey, !token.isEmpty else {
+        let sources = ["share"] + [DeviceSource.safari, .screenTime].filter { access.isOn($0) }.map(\.rawValue)
+        guard let token = client.accessKey, !token.isEmpty else {
             BridgeCredentials.write(nil)
             return
         }
-        let endpoints = [client.baseURL] + client.endpoints.filter { $0 != client.baseURL }
+        let endpoints = client.endpoints
         BridgeCredentials.write(BridgeCredentials(token: token, endpoints: endpoints.map(\.absoluteString), sources: sources))
     }
 

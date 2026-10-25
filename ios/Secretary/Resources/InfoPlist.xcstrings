@@ -2,25 +2,49 @@
   "sourceLanguage": "en",
   "strings": {
     "NSCameraUsageDescription": {
-      "comment": "Camera permission: face tracking and AR for Lucina.",
+      "comment": "Camera permission: face tracking and AR for Lucina, photos and videos for the chat.",
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only when you turn it on: Lucina mirrors your face or appears in your room. The camera image stays on this iPhone."
+            "value": "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
           }
         },
         "it": {
           "stringUnit": {
             "state": "translated",
-            "value": "Solo quando lo attivi tu: Lucina imita il tuo viso o compare nella tua stanza. L'immagine della fotocamera resta su questo iPhone."
+            "value": "Lucina imita il tuo viso o compare nella tua stanza quando lo attivi, e puoi scattare foto e video da mandarle in chat. Niente lascia questo iPhone se non lo invii tu."
           }
         },
         "da": {
           "stringUnit": {
             "state": "translated",
-            "value": "Kun når du slår det til: Lucina spejler dit ansigt eller dukker op i dit rum. Kamerabilledet bliver på denne iPhone."
+            "value": "Lucina spejler dit ansigt eller dukker op i dit rum, når du slår det til, og du kan tage billeder og videoer og sende dem til hende i chatten. Intet forlader denne iPhone, medmindre du sender det."
+          }
+        }
+      }
+    },
+    "NSPhotoLibraryAddUsageDescription": {
+      "comment": "Add-only photo permission: saving a chat photo.",
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Photos Lucina's chat shows you are saved to your library when you tap Save."
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le foto della chat con Lucina vengono salvate nella tua libreria quando tocchi Salva."
+          }
+        },
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Billeder fra chatten med Lucina gemmes i dit bibliotek, når du trykker på Gem."
           }
         }
       }

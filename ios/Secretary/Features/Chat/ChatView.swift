@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Chat tab, built from parts so other surfaces can reuse them:
 /// `[stage] + ChatTranscript + ChatComposer`. A future `LucinaStage` (the animated
@@ -8,6 +9,8 @@ struct ChatView<Stage: View>: View {
     @Environment(ChatStore.self) private var store
     @Environment(AppModel.self) private var app
     private let stage: Stage
+    @State private var composer = ComposerModel()
+    @State private var dropTargeted = false
 
     init(@ViewBuilder stage: () -> Stage) {
         self.stage = stage()
@@ -22,9 +25,23 @@ struct ChatView<Stage: View>: View {
             }
             stage
             ChatTranscript()
-            ChatComposer()
+            ChatComposer(model: composer)
         }
         .background(Theme.page)
+        // Files dragged onto the chat (iPad, Mac, or another app in Split View) land in the tray.
+        .onDrop(of: [UTType.item], isTargeted: $dropTargeted) { providers in
+            composer.add(providers: providers)
+            return true
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)
+                    .strokeBorder(Theme.accent, style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+                    .background(Theme.accentSoft.clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous)))
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) { ChatTitle() }
@@ -252,7 +269,8 @@ private struct MessageRow: View {
         return HStack {
             if isUser { Spacer(minLength: 48) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-                if !item.displayText.isEmpty {
+                // With photos or videos the caption sits inside the media bubble (AttachmentMessage).
+                if !item.displayText.isEmpty && !item.attachments.contains(where: \.isVisual) {
                     // Her plain replies are markdown too (the Notes renderer): no literal "**".
                     Text(isUser ? LinkText.attributed(item.displayText) : ChatMarkdown.inline(item.displayText))
                         .textSelection(.enabled)
@@ -267,13 +285,17 @@ private struct MessageRow: View {
                         .accessibilityIdentifier(isUser ? "userMessage" : "lucinaMessage")
                 }
                 if !item.attachments.isEmpty {
-                    ForEach(Array(item.attachments.enumerated()), id: \.offset) { _, attachment in
-                        Label(attachment.name ?? attachment.kind.capitalized, systemImage: Self.symbol(for: attachment.kind))
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Theme.field, in: Capsule())
+                    AttachmentMessage(item: item, isUser: isUser)
+                }
+                if let status = store.readingStatus(for: item) {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text(status.stage == "thinking" ? "Lucina is thinking…" : "Lucina is reading…")
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("shareReading")
                 }
                 if let job {
                     JobCard(job: job)
@@ -281,14 +303,22 @@ private struct MessageRow: View {
                 if item.localStatus == .error {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red).accessibilityHidden(true)
-                        Text(item.localError ?? "Not delivered.").font(.caption).foregroundStyle(.secondary)
+                        Text(item.localError ?? String(localized: "Not delivered."))
+                            .font(.caption).foregroundStyle(.secondary)
                         Button("Retry") { Task { await store.retry(item.id) } }
                             .font(.caption.bold())
-                            .disabled(store.isSending)
+                            .disabled(store.isSending && item.meta?.isShare != true)
                             .accessibilityIdentifier("retryMessage")
                     }
                 } else if item.localStatus == .sending {
-                    Text("Sending…").font(.caption2).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if let shareId = item.meta?.shareId, !item.attachments.contains(where: \.isVisual),
+                           let progress = store.shareProgress[shareId] {
+                            ProgressView(value: progress).progressViewStyle(.circular).controlSize(.mini)
+                        }
+                        Text("Sending…")
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
                 } else {
                     SourceBadge(item: item)
                         .padding(.horizontal, 4)
@@ -299,12 +329,7 @@ private struct MessageRow: View {
     }
 
     static func symbol(for kind: String) -> String {
-        switch kind.lowercased() {
-        case "image", "photo": return "photo"
-        case "audio", "voice": return "waveform"
-        case "video": return "video"
-        default: return "paperclip"
-        }
+        TimelineAttachment.symbol(for: kind)
     }
 }
 
@@ -416,76 +441,6 @@ private struct ProactiveCard: View {
             let ok = await store.outreachFeedback(id, action)
             busy = false
             if ok { chosen = action } else { failed = true }
-        }
-    }
-}
-
-/// The message field and send button. Sends on return.
-struct ChatComposer: View {
-    @Environment(ChatStore.self) private var store
-    @State private var draft = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message Lucina", text: $draft, axis: .vertical)
-                .lineLimit(1...6)
-                .submitLabel(.send)
-                .onSubmit(send)
-                .focused($focused)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .accessibilityIdentifier("chatComposer")
-                .onChange(of: store.prefill) { _, request in
-                    // A button asked for text in the composer: the owner finishes and sends it.
-                    guard let request else { return }
-                    draft = request.text.isEmpty || request.text.hasSuffix(" ") ? request.text : request.text + " "
-                    focused = true
-                }
-                .onChange(of: draft) { _, value in
-                    // A multi-line field inserts a newline on return instead of submitting:
-                    // treat a typed trailing newline as "send".
-                    if value.hasSuffix("\n") {
-                        draft = String(value.dropLast())
-                        send()
-                    }
-                }
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 34))
-                    .symbolRenderingMode(.hierarchical)
-            }
-            .disabled(!canSend)
-            .accessibilityLabel("Send")
-            .accessibilityIdentifier("chatSend")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .topTrailing) {
-            if draft.count > ChatStore.maxCharacters - 200 {
-                Text("\(draft.count)/\(ChatStore.maxCharacters)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(draft.count > ChatStore.maxCharacters ? .red : .secondary)
-                    .padding(.trailing, 60)
-                    .offset(y: -14)
-            }
-        }
-    }
-
-    private var canSend: Bool {
-        let cleaned = ChatStore.clean(draft)
-        return !cleaned.isEmpty && cleaned.count <= ChatStore.maxCharacters && !store.isSending
-    }
-
-    private func send() {
-        guard canSend else { return }
-        let text = draft
-        draft = ""
-        focused = true
-        Task {
-            if !(await store.send(text)) { draft = text }
         }
     }
 }
