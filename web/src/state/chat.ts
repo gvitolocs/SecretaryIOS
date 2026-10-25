@@ -20,6 +20,22 @@ import {
   type TimelineItem,
 } from "../api/timeline";
 import { t } from "../i18n";
+import {
+  buildShareMeta,
+  draftAttachment,
+  locationAttachment,
+  releaseDraft,
+  type DraftAttachment,
+  type ShareLocation,
+} from "../lib/attachments";
+import {
+  newShareId,
+  pollShareStatus,
+  postChatShare,
+  type ShareStage,
+  type ShareStatus,
+  type ShareStatusAttachment,
+} from "../lib/chatShare";
 import { chatSessionId, uuid } from "../lib/ids";
 import { parseRich, speechText, stripMarkdown, type RichMessage } from "../lib/rich";
 import { readJSON, removeKey, writeJSON } from "../lib/storage";
@@ -36,6 +52,20 @@ export interface JobState {
   imageUrl?: string | null;
   /** Transient polling problem, shown under the card while it retries. */
   pollError: string | null;
+}
+
+/** A chat composer attachment send: upload progress, then the reading stage. */
+export interface ChatShare {
+  /** The idempotency key also used by POST /v1/share (retry keeps it). */
+  id: string;
+  files: DraftAttachment[];
+  progress: number;
+  phase: "uploading" | ShareStage;
+  /** The optional `meta` JSON built when the send started. */
+  meta?: string;
+  error?: string;
+  stage?: ShareStage;
+  attachments?: ShareStatusAttachment[];
 }
 
 export interface ChatMessage {
@@ -64,6 +94,8 @@ export interface ChatMessage {
   rich?: RichMessage;
   /** Arrived while the chat was open: reveal its bubbles one by one. Never cached. */
   reveal?: boolean;
+  /** This tab's attachment upload/reading state. */
+  share?: ChatShare;
 }
 
 /** The v1 rich message of a chat message, if it has one. */
@@ -191,7 +223,26 @@ function byTime(a: ChatMessage, b: ChatMessage): number {
 }
 
 function persist(): void {
-  writeJSON("session", CACHE_KEY, chat.messages.slice(-CACHE_LIMIT));
+  // Files and blob previews cannot survive a reload: drop attachment sends the
+  // server never accepted (a retry could not resend the files) and strip the
+  // tab-only state from the accepted ones.
+  const cache = chat.messages.slice(-CACHE_LIMIT).filter((m) => !m.share || m.status === "sent").map((m) => {
+    if (!m.share && !m.attachments?.some((a) => a.previewUrl)) return m;
+    return {
+      ...m,
+      ...(m.share ? { share: undefined } : {}),
+      ...(m.attachments
+        ? {
+            attachments: m.attachments.map((a) => {
+              const rest = { ...a };
+              delete rest.previewUrl;
+              return rest;
+            }),
+          }
+        : {}),
+    };
+  });
+  writeJSON("session", CACHE_KEY, cache);
 }
 
 function find(key: string): ChatMessage | undefined {
@@ -212,18 +263,20 @@ function commit(edit: (list: ChatMessage[]) => void): void {
 }
 
 function serverFields(it: TimelineItem): Partial<ChatMessage> {
-  return {
+  const fields: Partial<ChatMessage> = {
     itemId: it.id,
     role: it.role,
     text: it.text,
     createdAt: it.ts,
     channel: it.channel,
     replyTo: it.replyTo,
-    attachments: it.attachments,
     meta: it.meta,
     backfilled: it.backfilled,
     ...(it.clientMessageId ? { clientMessageId: it.clientMessageId } : {}),
   };
+  // Keep the optimistic previews when the server item has no attachment list.
+  if (it.attachments) fields.attachments = it.attachments;
+  return fields;
 }
 
 function fromItem(it: TimelineItem): ChatMessage {
@@ -357,8 +410,22 @@ export function receiveItem(item: TimelineItem): void {
       const m = list.find((x) => x.itemId === item.id);
       if (m) m.reveal = true;
     }
+    // Lucina answered an attachment: no more "reading…" state.
+    if (item.role === "lucina") finishShareForReply(list, item.replyTo);
   });
   for (const cb of itemListeners) cb(item);
+}
+
+function finishShareForReply(list: ChatMessage[], replyTo: string | undefined): void {
+  if (!replyTo) return;
+  for (const m of list) {
+    if (!m.share || m.itemId !== replyTo) continue;
+    if (m.share.phase !== "done") {
+      // A new object: commit's copy is shallow, so nested edits must not mutate the store.
+      m.share = { ...m.share, phase: "done", stage: "done" };
+      stopSharePoll(m.share.id);
+    }
+  }
 }
 
 // ---- Live stream ----------------------------------------------------------------
@@ -551,9 +618,184 @@ export async function sendMessage(text: string): Promise<boolean> {
 export async function retryMessage(key: string): Promise<void> {
   const msg = find(key);
   if (!msg || msg.role !== "user" || msg.status !== "error" || sending()) return;
+  if (msg.share) {
+    setChat("messages", (m) => m.key === key, { status: "sending", error: undefined, share: { ...msg.share!, phase: "uploading", progress: 0, error: undefined } });
+    persist();
+    await deliverShare(key);
+    return;
+  }
   setChat("messages", (m) => m.key === key, { status: "sending", error: undefined });
   persist();
   await deliver(key);
+}
+
+/**
+ * Adds an optimistic attachment bubble (files and/or a shared location) and
+ * sends it through POST /v1/share. Returns false if there is nothing to send.
+ */
+export async function sendAttachmentMessage(
+  files: readonly DraftAttachment[],
+  caption = "",
+  location?: ShareLocation | null,
+): Promise<boolean> {
+  const text = cleanMessage(caption);
+  if (text.length > CHAT_MAX_CHARS) return false;
+  if (!files.length && !location) return false;
+  if (sending()) return false;
+  const shareId = newShareId();
+  const last = chat.messages[chat.messages.length - 1];
+  const attachments = files.map(draftAttachment);
+  if (location) attachments.push(locationAttachment(location));
+  const msg: ChatMessage = {
+    key: `f:${shareId}`,
+    role: "user",
+    text,
+    createdAt: Math.max(Date.now(), last ? last.createdAt + 1 : 0),
+    channel: "web",
+    status: "sending",
+    attachments,
+    share: {
+      id: shareId,
+      files: [...files],
+      progress: 0,
+      phase: "uploading",
+      meta: buildShareMeta(files, location),
+    },
+  };
+  commit((list) => {
+    list.push(msg);
+  });
+  await deliverShare(msg.key);
+  return true;
+}
+
+function setShareProgress(key: string, progress: number): void {
+  setChat(
+    "messages",
+    (m) => m.key === key,
+    "share",
+    (share) => (share ? { ...share, progress: Math.max(share.progress, Math.min(1, progress)) } : share),
+  );
+}
+
+async function deliverShare(key: string): Promise<void> {
+  const msg = find(key);
+  if (!msg?.share) return;
+  const share = msg.share;
+  const shareId = share.id;
+  const files = share.files;
+  const meta = share.meta;
+  const text = msg.text;
+  const gen = generation;
+  setSending(true);
+  try {
+    const accepted = await postChatShare(
+      { shareId, files, caption: text, meta },
+      { onProgress: (loaded, total) => setShareProgress(key, total > 0 ? loaded / total : 0) },
+    );
+    if (gen !== generation || !find(key)) return;
+    let finished = false;
+    commit((list) => {
+      const mine = list.find((m) => m.key === key);
+      if (!mine) return;
+      mine.status = "sent";
+      delete mine.error;
+      if (accepted.userItemId) adopt(list, key, accepted.userItemId);
+      const replied = !!mine.itemId &&
+        list.some((m) => m.role === "lucina" && (m.replyTo === mine.itemId || (!!accepted.lucinaItemId && m.itemId === accepted.lucinaItemId)));
+      if ((replied || accepted.stage === "done") && mine.share) finished = true;
+    });
+    // Update the nested share through the store setter so the bubble re-renders
+    // (a plain mutation inside commit's cloned list is not deep-merged).
+    setChat(
+      "messages",
+      (m) => m.key === key,
+      "share",
+      (current): ChatShare | undefined =>
+        current
+          ? {
+              ...current,
+              progress: 1,
+              phase: finished ? "done" : accepted.stage ?? "received",
+              stage: finished ? "done" : accepted.stage,
+              error: undefined,
+            }
+          : current,
+    );
+    if (!finished) startSharePoll(key, shareId);
+  } catch (e) {
+    if (gen !== generation || !find(key)) return;
+    const message = e instanceof Error && e.message ? e.message : t("chat.notDelivered");
+    setChat("messages", (m) => m.key === key, { status: "error", error: t("share.notSentRetry") });
+    setChat("messages", (m) => m.key === key, "share", (current): ChatShare | undefined =>
+      current ? { ...current, phase: "error", error: message } : current);
+    persist();
+  } finally {
+    if (gen === generation) setSending(false);
+  }
+}
+
+// ---- Share status polling ------------------------------------------------------
+
+const shareStops = new Map<string, () => void>();
+
+function stopSharePoll(shareId: string): void {
+  const stop = shareStops.get(shareId);
+  if (!stop) return;
+  shareStops.delete(shareId);
+  stop();
+}
+
+function startSharePoll(key: string, shareId: string): void {
+  stopSharePoll(shareId);
+  const stop = pollShareStatus(shareId, {
+    onUpdate: (status) => {
+      if (!find(key)) {
+        stopSharePoll(shareId);
+        return;
+      }
+      applyShareStatus(key, status);
+      if (status.stage === "done" || status.stage === "error") shareStops.delete(shareId);
+    },
+  });
+  shareStops.set(shareId, stop);
+}
+
+function applyShareStatus(key: string, status: ShareStatus): void {
+  commit((list) => {
+    const mine = list.find((m) => m.key === key);
+    if (!mine?.share) return;
+    // Replace (never mutate) the nested share and attachments: commit's copy is
+    // shallow, and an in-place edit would bypass the store's signals.
+    mine.share = {
+      ...mine.share,
+      phase: status.stage,
+      stage: status.stage,
+      attachments: status.attachments,
+      ...(status.error ? { error: status.error } : {}),
+    };
+    if (status.stage === "error") {
+      mine.status = "error";
+      mine.error = status.error ?? t("share.notSentRetry");
+    }
+    if (status.userItemId) adopt(list, key, status.userItemId);
+    if (mine.attachments && status.attachments.length) {
+      mine.attachments = mine.attachments.map((attachment, index) => {
+        const item = status.attachments.find((a) => a.index === index);
+        if (!item) return attachment;
+        return {
+          ...attachment,
+          ...(item.mediaId ? { mediaId: item.mediaId } : {}),
+          ...(item.summary && !attachment.name ? { name: item.summary } : {}),
+        };
+      });
+    }
+  });
+}
+
+export function stopSharePolling(): void {
+  for (const stop of shareStops.values()) stop();
+  shareStops.clear();
 }
 
 // ---- Job polling -----------------------------------------------------------
@@ -624,6 +866,8 @@ function reset(messages: ChatMessage[]): void {
   connections = 0;
   teardownStream();
   stopJobPolling();
+  stopSharePolling();
+  for (const m of chat.messages) if (m.share) for (const file of m.share.files) releaseDraft(file);
   setChat({ messages, nextBefore: null, loaded: false });
   setSending(false);
   setLastReply("");

@@ -17,6 +17,18 @@ export interface Attachment {
   mediaId?: string;
   url?: string;
   bytes?: number;
+  /** 0-based position in the original share's `file` parts. */
+  index?: number;
+  /** base64 ThumbHash placeholder, when lucina-media knows one. */
+  thumbhash?: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  /** Location attachments. */
+  lat?: number;
+  lon?: number;
+  /** This tab only: object URL of a just-picked file, before the server item arrives. */
+  previewUrl?: string;
 }
 
 export interface ItemMeta {
@@ -191,11 +203,20 @@ function parseAttachments(v: unknown): Attachment[] | undefined {
     if (typeof kind !== "string" || !["image", "voice", "file", "video", "audio", "pdf", "document", "link", "text", "contact", "location"].includes(kind)) continue;
     const raw = a as Record<string, unknown>;
     const attachment: Attachment = { kind: kind as Attachment["kind"] };
-    for (const key of ["name", "mime", "mediaId", "url"] as const) {
-      const value = str(raw[key]);
+    for (const key of ["name", "mime", "mediaId", "url", "thumbhash"] as const) {
+      const value = str(raw[key], key === "thumbhash" ? 400 : 200);
       if (value) attachment[key] = value;
     }
     if (typeof raw.bytes === "number" && Number.isFinite(raw.bytes) && raw.bytes >= 0) attachment.bytes = raw.bytes;
+    if (typeof raw.index === "number" && Number.isInteger(raw.index) && raw.index >= 0) attachment.index = raw.index;
+    for (const key of ["width", "height", "durationMs"] as const) {
+      const value = raw[key];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) attachment[key] = value;
+    }
+    for (const key of ["lat", "lon"] as const) {
+      const value = raw[key];
+      if (typeof value === "number" && Number.isFinite(value)) attachment[key] = value;
+    }
     out.push(attachment);
   }
   return out.length ? out : undefined;

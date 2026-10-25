@@ -5,7 +5,17 @@ import { ShareComposer, ShareSheet } from "./ShareComposer";
 import { fileShare, listShares, saveShare, sendShare } from "../lib/share";
 import { Attachments } from "../views/Chat";
 import { parseItem } from "../api/timeline";
+import { resetJxlSupport } from "../lib/jxl";
 vi.mock("heic2any", () => ({ default: vi.fn(async () => new Blob(["jpeg"], { type: "image/jpeg" })) }));
+
+/** An Image whose JPEG XL probe fails at once (jsdom never loads images). */
+class NoJxlImage {
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  set src(_value: string) {
+    queueMicrotask(() => this.onerror?.());
+  }
+}
 
 const nativeClone = structuredClone;
 // jsdom Files are not supported by Node's structuredClone. Match the browser's
@@ -34,7 +44,7 @@ describe("share sheet", () => {
     const { unmount } = render(() => <ShareSheet entry={entry()} onSent={() => {}} onClose={() => {}} />);
     expect(screen.getByRole("dialog", { name: "Share with Lucina" })).toBeInTheDocument();
     expect(screen.getByAltText("photo.png")).toHaveAttribute("src", "blob:preview");
-    expect(screen.getByText(/doc.pdf/)).toHaveTextContent("KB");
+    expect(screen.getByText(/doc.pdf/)).toHaveTextContent("3 B");
     expect(screen.getByRole("link", { name: /example.com/ })).toHaveAttribute("href", "https://example.com/page");
     expect(screen.getByText("Shared words")).toBeInTheDocument();
     unmount();
@@ -75,17 +85,24 @@ describe("share sheet", () => {
     expect((vi.mocked(fetch).mock.calls[1]![1]!.body as FormData).get("shareId")).toBe(share.id);
   });
 
-  it("recovers pending shares without a query and opens picker files in the same sheet", async () => {
+  it("recovers pending shares without a query and reopens them from the pending button", async () => {
     await saveShare(entry());
+    await saveShare({ ...fileShare([new File(["text"], "new.txt")]), createdAt: Date.now() + 1 });
     render(() => <ShareComposer />);
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.getByAltText("photo.png")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
-    fireEvent.change(screen.getByLabelText("Attach files", { selector: "input" }), { target: { files: [new File(["text"], "new.txt")] } });
-    await waitFor(async () => expect(await listShares()).toHaveLength(2));
-    expect(await screen.findByRole("dialog")).toHaveTextContent("new.txt");
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Shared items waiting (2)" }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent("photo.png");
+    expect(screen.queryByLabelText("Attach files", { selector: "input" })).toBeNull();
+  });
+
+  it("shows no share button when the inbox is empty", async () => {
+    render(() => <ShareComposer />);
+    await waitFor(() => expect(screen.queryByRole("button", { name: /Shared items waiting/ })).toBeNull());
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("converts HEIC to JPEG and gives unknown files an octet-stream type", async () => {
@@ -101,7 +118,9 @@ describe("share sheet", () => {
   });
 });
 
-it("parses extended attachments, renders thumbnails, safe links and kind chips", () => {
+it("parses extended attachments, renders thumbnails, safe links and kind chips", async () => {
+  vi.stubGlobal("Image", NoJxlImage);
+  resetJxlSupport();
   const item = parseItem({ id: "1", ts: new Date().toISOString(), role: "user", channel: "web", text: "Shared", attachments: [
     { kind: "image", name: "photo", mediaId: "itm_photo", mime: "image/jpeg", bytes: 123 },
     { kind: "video", name: "clip", mediaId: "itm_video" },
@@ -112,7 +131,8 @@ it("parses extended attachments, renders thumbnails, safe links and kind chips",
   ] })!;
   expect(item.attachments![0]).toMatchObject({ mime: "image/jpeg", bytes: 123 });
   render(() => <Attachments items={item.attachments!} />);
-  expect(screen.getByAltText("photo")).toHaveAttribute("src", "/v1/media/items/itm_photo/thumb?size=256");
+  // No JPEG XL decoder here: the JPEG thumb, once the feature test has answered.
+  expect(await screen.findByAltText("photo")).toHaveAttribute("src", "/v1/media/items/itm_photo/thumb?size=256");
   expect(screen.getByAltText("clip")).toHaveAttribute("src", "/v1/media/items/itm_video/thumb?size=256");
   expect(screen.getByRole("link", { name: /example.com/ })).toHaveAttribute("href", "https://example.com/");
   expect(screen.queryByRole("link", { name: /unsafe/ })).toBeNull();

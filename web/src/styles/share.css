@@ -18,3 +18,624 @@
 .attachment img { width: 96px; height: 96px; border-radius: 12px; object-fit: cover; }
 .attachment a { display: inline-flex; gap: 6px; align-items: center; color: var(--lu-accent); }
 @media (max-width: 600px) { .share-backdrop { align-items: flex-end; } }
+
+/* ---- Chat composer attachments ------------------------------------------- */
+
+.composer {
+  flex-wrap: wrap;
+  position: relative;
+}
+
+.composer-tray {
+  flex-basis: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.attachment-tray {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tray-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  max-width: 230px;
+  padding: 6px 8px;
+  border: 1px solid var(--lu-separator);
+  border-radius: 14px;
+  background: var(--lu-card);
+  color: var(--lu-text);
+}
+
+.tray-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--lu-field);
+  font-size: 20px;
+}
+
+.tray-thumb img,
+.tray-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tray-duration {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--lu-scrim);
+  color: var(--lu-on-accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tray-body {
+  min-width: 0;
+}
+
+.tray-name {
+  display: block;
+  overflow: hidden;
+  color: var(--lu-text);
+  font-size: var(--lu-type-footnote);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tray-name small {
+  color: var(--lu-text-secondary);
+  font-weight: 400;
+}
+
+.tray-remove {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lu-field);
+  color: var(--lu-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tray-remove:hover {
+  color: var(--lu-text);
+}
+
+.composer-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: start;
+  max-width: 100%;
+  padding: 5px 8px 5px 10px;
+  border: 1px solid var(--lu-separator);
+  border-radius: var(--lu-radius-pill);
+  background: var(--lu-card);
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-footnote);
+}
+
+.composer-location button {
+  border: 0;
+  background: transparent;
+  color: var(--lu-text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer-attach {
+  position: relative;
+  flex: none;
+  align-self: flex-end;
+}
+
+.composer-attach .share-attach {
+  display: grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 50px;
+  border-radius: 22px;
+  font-size: 20px;
+}
+
+.composer-attach .share-attach:hover,
+.composer-attach .share-attach[aria-expanded="true"] {
+  background: var(--lu-accent-soft);
+}
+
+.attach-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  min-width: 200px;
+  padding: 6px;
+  border: 1px solid var(--lu-separator);
+  border-radius: var(--lu-radius-card);
+  background: var(--lu-card-raised);
+  box-shadow: 0 18px 48px var(--lu-scrim);
+}
+
+.attach-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--lu-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.attach-menu button:hover,
+.attach-menu button:focus-visible {
+  background: var(--lu-accent-soft);
+}
+
+.field-error {
+  margin: 0;
+  color: var(--lu-negative);
+  font-size: var(--lu-type-footnote);
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 12px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 2px dashed var(--lu-accent);
+  border-radius: var(--lu-radius-card);
+  background: color-mix(in srgb, var(--lu-bg) 80%, transparent);
+  color: var(--lu-text);
+  pointer-events: none;
+  text-align: center;
+}
+
+.drop-overlay span {
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-footnote);
+}
+
+/* ---- Attachment bubbles -------------------------------------------------- */
+
+.attachments.attachments--album,
+.attachments.attachments--list {
+  opacity: 1;
+}
+
+.attachments--album {
+  display: grid;
+  gap: 2px;
+  width: min(100%, 430px);
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.attachments--album .attachment {
+  min-width: 0;
+  min-height: 0;
+}
+
+.attachments--n2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 2 / 1;
+}
+
+.attachments--n3 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 3 / 2;
+}
+
+.attachments--n4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  aspect-ratio: 1;
+}
+
+.attachments--n5,
+.attachments--n6,
+.attachments--n7,
+.attachments--n8,
+.attachments--n9,
+.attachments--n10 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  aspect-ratio: 1;
+}
+
+.attachments--list {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.attachments:first-child,
+.attachments--list:first-child {
+  margin-top: 0;
+}
+
+.attachments--album .attachment::before,
+.attachments--list .attachment::before {
+  content: none;
+}
+
+.attachment--media,
+.attachment--video,
+.attachment--audio {
+  display: block;
+}
+
+.media-button {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--lu-field);
+  color: inherit;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.media-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--lu-field);
+}
+
+/* A single image keeps its own aspect ratio (capped in height by narrowing it). */
+.attachments--n1 .media-frame {
+  width: min(100%, calc(520px * var(--media-ar, 1.3333)));
+  height: auto;
+}
+
+/* Album cells crop to the mosaic grid. */
+.attachments--album:not(.attachments--n1) .media-frame {
+  aspect-ratio: auto !important;
+}
+
+.media-thumbhash,
+.attachments .media-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-thumbhash {
+  filter: blur(12px);
+  transform: scale(1.08);
+}
+
+.attachments .media-img {
+  opacity: 0;
+  transition: opacity var(--lu-motion-base) ease-out;
+}
+
+.attachments .media-img.is-loaded {
+  opacity: 1;
+}
+
+.media-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--lu-scrim);
+  color: var(--lu-on-accent);
+  font-size: 20px;
+  transform: translate(-50%, -50%);
+}
+
+.media-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--lu-scrim);
+  color: var(--lu-on-accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-failed {
+  position: absolute;
+  right: 6px;
+  left: 6px;
+  bottom: 6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: var(--lu-scrim);
+  color: var(--lu-negative);
+  font-size: 11px;
+}
+
+.media-video {
+  display: block;
+  width: min(100%, 430px);
+  max-height: 430px;
+  border-radius: 14px;
+  background: var(--lu-card);
+}
+
+.attachment--video {
+  width: min(100%, 430px);
+}
+
+.attachment--video .media-button {
+  border-radius: 14px;
+}
+
+.video-poster .media-frame {
+  aspect-ratio: 16 / 10;
+}
+
+.attachment-caption {
+  display: block;
+  margin-top: 4px;
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-caption);
+  overflow-wrap: anywhere;
+}
+
+.audio-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 340px);
+  padding: 8px 12px;
+  border-radius: 16px;
+  background: var(--lu-card);
+}
+
+.audio-toggle {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lu-accent-fill);
+  color: var(--lu-on-accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.audio-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--lu-separator);
+}
+
+.audio-track > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--lu-accent);
+}
+
+.audio-time {
+  flex: none;
+  color: var(--lu-text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-card,
+.link-card,
+.location-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 380px);
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--lu-card);
+  color: var(--lu-text);
+  text-decoration: none;
+}
+
+.file-card:hover,
+.link-card:hover,
+.location-card:hover {
+  background: var(--lu-card-raised);
+}
+
+.file-icon,
+.location-pin {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--lu-accent-soft);
+  color: var(--lu-accent);
+  font-size: 19px;
+}
+
+.file-body,
+.location-body,
+.link-card {
+  min-width: 0;
+}
+
+.file-body,
+.location-body {
+  display: grid;
+  gap: 1px;
+}
+
+.file-name,
+.location-name,
+.link-title {
+  overflow: hidden;
+  color: var(--lu-text);
+  font-size: var(--lu-type-subheadline);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-body small,
+.location-body small {
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-caption-2);
+}
+
+.file-download {
+  flex: none;
+  margin-left: auto;
+  color: var(--lu-accent);
+  font-size: 18px;
+}
+
+.link-card {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.link-card small {
+  overflow: hidden;
+  width: 100%;
+  color: var(--lu-accent);
+  font-size: var(--lu-type-caption-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment--link a {
+  display: flex;
+  color: inherit;
+}
+
+.bubble-caption {
+  margin-top: 6px;
+}
+
+.bubble-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-caption-2);
+}
+
+.share-progress-ring {
+  display: inline-block;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: conic-gradient(var(--lu-accent) var(--share-progress, 0%), var(--lu-separator) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), var(--lu-text) 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), var(--lu-text) 0);
+}
+
+/* ---- Lightbox ------------------------------------------------------------ */
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--lu-bg) 94%, transparent);
+  outline: none;
+}
+
+.lightbox-img {
+  max-width: min(100%, 1200px);
+  max-height: calc(100dvh - 48px);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.lightbox-count {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  color: var(--lu-text-secondary);
+  font-size: var(--lu-type-caption);
+  transform: translateX(-50%);
+}
+
+.lightbox-close,
+.lightbox-prev,
+.lightbox-next {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lu-card-raised);
+  color: var(--lu-text);
+  font-size: 26px;
+  cursor: pointer;
+}
+
+.lightbox-close { top: 16px; right: 16px; }
+.lightbox-prev { top: 50%; left: 16px; transform: translateY(-50%); }
+.lightbox-next { top: 50%; right: 16px; transform: translateY(-50%); }
+
+@media (max-width: 600px) {
+  .attachments--album { width: 100%; }
+  .attach-menu { left: -8px; }
+  .lightbox { padding: 8px; }
+  .lightbox-prev { left: 8px; }
+  .lightbox-next { right: 8px; }
+}

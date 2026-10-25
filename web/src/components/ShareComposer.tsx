@@ -1,29 +1,12 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { t } from "../i18n";
-import { deleteShare, fileShare, linkHost, listShares, saveShare, sendShare, type ShareEntry, type ShareIntent } from "../lib/share";
+import { deleteShare, linkHost, listShares, sendShare, type ShareEntry, type ShareIntent } from "../lib/share";
 import { safeHref } from "../lib/linkify";
 import { loadLatest } from "../state/chat";
+import { fileKind } from "../lib/attachments";
+import { AttachmentTray } from "./AttachmentTray";
 import "../styles/share.css";
-
-function FilePreview(props: { file: File }) {
-  const [src, setSrc] = createSignal("");
-  createEffect(() => {
-    if (!props.file.type.startsWith("image/")) return;
-    const url = URL.createObjectURL(props.file);
-    setSrc(url);
-    onCleanup(() => URL.revokeObjectURL(url));
-  });
-  return (
-    <div class="share-preview">
-      <Show when={src()}><img src={src()} alt={props.file.name} /></Show>
-      <span>
-        {props.file.name}
-        <small>{new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(props.file.size / 1024)} KB</small>
-      </span>
-    </div>
-  );
-}
 
 export function ShareSheet(props: { entry: ShareEntry; onSent: () => void; onClose: () => void }) {
   const [note, setNote] = createSignal("");
@@ -97,7 +80,7 @@ export function ShareSheet(props: { entry: ShareEntry; onSent: () => void; onClo
           </header>
           <Show when={props.entry.title}><p>{props.entry.title}</p></Show>
           <div class="share-previews">
-            <For each={props.entry.files}>{(file) => <FilePreview file={file} />}</For>
+            <AttachmentTray items={props.entry.files.map((file) => ({ name: file.name, size: file.size, kind: fileKind(file), file }))} />
             <For each={props.entry.url}>{(url) => (
               <div class="share-preview">
                 <Show when={safeHref(url)} fallback={<span>{linkHost(url)}</span>}>
@@ -131,11 +114,15 @@ export function ShareSheet(props: { entry: ShareEntry; onSent: () => void; onClo
   );
 }
 
+/**
+ * Shares that arrived through the PWA share target wait in the IndexedDB inbox
+ * and open in the share sheet. New attachments are picked from the chat
+ * composer's attach menu, so this only shows a button while shares are pending.
+ */
 export function ShareComposer() {
   const [entries, setEntries] = createSignal<ShareEntry[]>([]);
   const [open, setOpen] = createSignal(false);
   const [error, setError] = createSignal(false);
-  let picker!: HTMLInputElement;
 
   async function refresh(preferredId?: string) {
     if (typeof indexedDB === "undefined") return;
@@ -159,29 +146,16 @@ export function ShareComposer() {
 
   return (
     <>
-      <input
-        ref={picker}
-        class="sr-only"
-        type="file"
-        multiple
-        tabindex="-1"
-        aria-label={t("share.attach")}
-        onChange={async (e) => {
-          const files = Array.from(e.currentTarget.files ?? []);
-          e.currentTarget.value = "";
-          if (!files.length) return;
-          try {
-            const entry = fileShare(files);
-            await saveShare(entry);
-            await refresh(entry.id);
-          } catch {
-            setError(true);
-          }
-        }}
-      />
-      <button type="button" class="share-attach" aria-label={t("share.attach")} onClick={() => entries().length ? setOpen(true) : picker.click()}>
-        📎<Show when={entries().length}><small>{entries().length}</small></Show>
-      </button>
+      <Show when={entries().length}>
+        <button
+          type="button"
+          class="share-attach share-pending"
+          aria-label={t("share.pending", { count: entries().length })}
+          onClick={() => setOpen(true)}
+        >
+          📥<small>{entries().length}</small>
+        </button>
+      </Show>
       <Show when={error()}>
         <button type="button" role="alert" onClick={() => void refresh()}>{t("share.storageFailed")}</button>
       </Show>
