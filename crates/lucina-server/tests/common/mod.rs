@@ -27,6 +27,8 @@ pub fn script(v: Value) -> Script {
 }
 
 pub async fn harness(s: Script, tweak: impl FnOnce(&mut Config)) -> H {
+    // Hermetic: never read the live Pokémon game server on this machine.
+    std::env::set_var("LUCINA_GAME", "false");
     let dir = tempfile::tempdir().unwrap();
     let fake = fake::spawn("127.0.0.1:0".parse().unwrap(), s, None)
         .await
