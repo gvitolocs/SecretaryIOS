@@ -58,6 +58,16 @@ fn ink_sync() {
 }
 
 #[test]
+fn deploy() {
+    run("deploy");
+}
+
+#[test]
+fn game() {
+    run("game");
+}
+
+#[test]
 fn media_backup() {
     run("media-backup");
 }

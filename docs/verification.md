@@ -26,7 +26,11 @@ The multi-process protocols of Secretary / Lucina are checked three ways:
    fail, because either the model got too weak or the bug was fixed without updating the model.
 4. **No vacuous passes.** Every passing configuration has a `sometimes` property (Stateright) or a `*_witness.cfg`
    (TLC) proving that it reaches the interesting states: a rotation, a resume, a 409, a handover, a refresh.
-5. Generated TLC output (`*_TTrace_*`, `states/`) is never committed (`formal/.gitignore`). `verify.sh` runs TLC
+5. **Every deploy goes through `deploy-guard`** (protocol 7). Inside `/tmp/lucina-merge.lock`, build from the
+   target branch's tip in a clean tree, run `deploy-guard check --runtime <name>` (it refuses unless the live build
+   is an ancestor of the commit, the commit is on the target branch and the tree is clean), deploy, then run
+   `deploy-guard record --runtime <name>`. Live but uncommitted work is committed to the target branch first.
+6. Generated TLC output (`*_TTrace_*`, `states/`) is never committed (`formal/.gitignore`). `verify.sh` runs TLC
    with `-noGenerateSpecTE` and a temporary `-metadir`.
 
 ## How to run
@@ -56,7 +60,9 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
-| 7 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
+| 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
+| 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
+| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -108,6 +114,13 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | I5 ablation: ops leave the outbox when sent | 8 731 | 20 | `acked_never_lost`, `all_ops_applied` **violated** |
 | I6 ablation: plain last-writer-wins status | 9 034 | 21 | `owner_completed_never_reverted`, `device_completed_sticky` **violated** |
 | I7 ablation: the last delivery wins (no stamps) | 9 418 | 21 | `converges` **violated** |
+| D1 24–25 Oct: lock, builds from the checkout or main, no guard | 53 631 | 29 | `no_rollback`, `prod_on_main`, `no_dirty_deploy` **violated** |
+| D2 lock skipped (old habit), clean builds only | 417 346 | 24 | `no_rollback`, `single_holder` **violated** |
+| D3 lock + clean builds, branch deploys, no guard | 85 221 | 33 | `no_rollback`, `prod_on_main` **violated** |
+| D4 fix: lock + deploy-guard + commit live WIP | 62 062 | 31 | all hold (`--deep`, 3 sessions: 37 050 072 states, depth 45, 48 s, 4.3 GB) |
+| D5 guard without the lock (check-then-push race) | 1 403 757 | 26 | `no_rollback`, `prod_on_main`, `single_holder` **violated** |
+| Pk game control, lucina-game-link 2f837e0 | 26 628 | 40 | `no_clock_frame_during_input`, `pause_within_one_step`, `no_save_during_input` **violated**; one driver holds |
+| Pk + fixes Pk1 (clock under lock), Pk2 (no save while busy) | 2 582 | 17 | all hold (+ `paused_in_battle_then_resumed` reached) |
 | M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
 | M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
 | M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
@@ -118,6 +131,7 @@ TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 
 property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` (`--deep`, the Stateright I2
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
+`GameControl_fixed`: 11 208; `GameControl_current_driver` (one driver in the current code): 116 344.
 `MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
 `MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
 
@@ -303,7 +317,93 @@ The model is one book's registers (ops on different books touch disjoint registe
 | `Drop`, `Dup` | `FlakyTransport` (`Faults`) |
 | `Owner` | `PATCH /v1/library/books/{id}` → `state::owner_set_status` / `owner_set_progress` |
 
-### 7. Lucina media library: photo backup
+### 7. Multi-session merge and deploy
+
+Claude sessions share `/tmp/lucina-merge.lock` (a `mkdir` lock on nezopt), the branches of this repo, the main checkout
+`~/Projects/SecretaryIOS` (which held uncommitted live work: the Desk/Hermes web view, `/v1/hermes`, the calls module)
+and the deploys of secretary-server, the web app and lucina-rs. Each model session has one feature on its own branch,
+may leave uncommitted work in the shared checkout, and deploys to every runtime. Commit content is a set of features,
+so "A is an ancestor of B" is "A ⊆ B". Two sessions and two runtimes by default; `--deep` checks the fix with three.
+
+Invariants (Stateright name / TLA+ name):
+
+- `no_rollback` / `NoRollback`: every runtime runs a build that contains everything deployed to it before.
+- `prod_on_main` / `ProdOnMain`: production is always a commit on the target branch (nothing uncommitted or unmerged
+  is live).
+- `single_holder` / `SingleHolder`: the merge/build/deploy section is never occupied by two sessions.
+- `no_dirty_deploy` / `NoDirtyDeploy`: no deploy ships a dirty tree.
+- Witnesses: `all_features_live` / `Deploy_fixed_witness.cfg` (every session's work reaches every runtime) and
+  `guard_refused` / `Deploy_fixed_refused_witness.cfg` (the guard does refuse a deploy).
+
+The switches are the procedures: D1 is what was done on 24–25 Oct (lock taken; builds from the dirty checkout or
+from main; nothing compared with what is live), D2 a session that skips the lock, D3 deploys from feature branches,
+D4 the fix, D5 the guard without the lock. D5 shows why both are needed: `check` and the push are separate steps, so
+a check that passes can be overtaken by another session's deploy, and an unlocked merge can lose another merge.
+
+Verus (`deploy_guard.rs`, 11 verified): D-K1 `guard_allows` is exactly the rule; D-K2 an allowed deploy keeps
+everything deployed before; D-K3 production stays on main as main grows; and over any sequence of guarded deploys the
+last build contains every earlier one.
+
+| Model action | Code / procedure |
+|---|---|
+| `Branch` | `wt add <name> main` (a worktree off main's tip) and commits there |
+| `EditCheckout` | edits left uncommitted in `~/Projects/SecretaryIOS` (the main checkout) |
+| `Acquire` / `Release` | `mkdir /tmp/lucina-merge.lock` (+ an `owner` file) / `rmdir` |
+| `MergeRead` / `MergeWrite` | fetch the target branch, merge into its tip, update the branch |
+| `CommitWip` | commit the live uncommitted work to the target branch (25 Oct: 7298be7, b7388d0) |
+| `BuildMain` / `BuildCheckout` / `BuildBranch` | `cargo build --release` / `vite build` from main's tip, from the main checkout's working tree, or from a feature branch |
+| `Check` | `deploy-guard check --runtime <r>` (`tools/deploy-guard`) |
+| `Push` | `install` of `secretary-server` / `rsync` of `web/dist` to p1, `~/.local/bin/lucina-rs` + restart |
+
+`deploy-guard` keeps the live commit per runtime in `~/.local/state/deploy-guard/<runtime>.commit` on nezopt (where
+every build and deploy runs): `check` before the push, `record` right after it, `status` to list. Exit codes: 0 ok,
+1 refused, 2 usage or git error, 3 no ledger entry (record the live commit once with `--bootstrap`). Target
+branches: `main` for secretary-server, secretary-mcp and web; `lucina-rs` for lucina-rs; `--target` otherwise.
+Its tests (`cargo test --manifest-path tools/deploy-guard/Cargo.toml`, in the models section of `verify.sh`)
+check the rule for every input combination and replay the 25 Oct incident on real git repos.
+### 8. Lucina's Pokémon Red: game control and the planner
+
+The game server (`lucina-pokemon serve`, nezopt 127.0.0.1:18767) owns one Boytacean emulator behind a mutex. Lucina
+plays through `POST /macro` (her Hermes turns, via the MCP tools); the owner starts and pauses her from chat
+(Telegram, lucina-rs), the Secretary iPhone and web screens (`/v1/game/control` → lucina-rs → `/control`), the Mac
+viewer over an SSH tunnel, and the play loop pauses itself after three failed turns.
+
+Invariants (`game.rs` / `GameControl.tla`):
+
+| Property | Meaning |
+|---|---|
+| `one_driver` / `OneDriver` | at most one macro holds `busy` (two Hermes turns, or a turn left over after a restart, never both press buttons) |
+| `keys_only_by_busy_holder` | a key is down only for the macro that won `busy` |
+| `no_clock_frame_during_input` | the real-time clock thread never advances a frame while a macro holds a key |
+| `pause_within_one_step` | after a pause is applied, at most one frame advances with input |
+| `no_save_during_input` | no save state is written while a key is down (it would come back pressed after a restore) |
+| `paused_in_battle_then_resumed` (sometimes; TLC `GameControl_fixed_witness`) | a pause during a battle, then play again and input in the same battle |
+
+| Model action | Code (Lucina repo, `rust/lucina-pokemon/src/`) |
+|---|---|
+| `ClockRead`, `ClockFrame` | `main.rs::server`, the clock thread (`busy` read, `next_frame`, 30 s checkpoint `save`) |
+| `MacroStart` | `main.rs::handle` `/macro`: `busy.compare_exchange(false, true)`, else "Another action is still running." |
+| `Press`, `Lift` | `macros.rs` `tap` / `step` (`with(|g| g.key_press(..))`, `key_lift`) |
+| `Frame` | `macros.rs::frames` (under the lock: `if !e.running { return Err("Paused by the owner") }`, `next_frame`) |
+| `End` | `/macro` after `macros::run`: `save`, `save_journal`, `busy.store(false)` |
+| `Control(src, run)` | `/control` (chat: `src/game-bridge.js`, lucina-rs `lucina_intent::game`; iPhone/web: secretary-server `/v1/game/control`; viewer buttons; `driver` auto-pause) |
+| `Save` | `/save` |
+| `TunnelDrop`, `TunnelUp` | the Mac viewer's `ssh -L 18767` tunnel (its requests are lost while down) |
+| `Restart` | `systemctl --user restart lucina-pokemon` / `redeploy.sh` (`running` is not persisted) |
+
+Verus (`verification/verus/game_planner.rs`) proves, for every map up to 128 × 128 cells and every start and goal:
+P1 a legal move lands on floor, on a Cut tree only with Cut, on a card-key door only with the Card Key, never on a
+wall or a blocked cell (people, the Saffron guards, Snorlax, learned stops); a two-cell move hops a ledge in its own
+direction from floor. P2 every route `plan` returns is a chain of legal moves from the start to the goal. P3 the
+search and the route rebuild terminate (decreases on the rounds and on the parent distance). P4 the story step
+`progress` shows next has every prerequisite done, for the `STORY_REQUIRES` table. Warps, edge connections, spinners
+and the Mansion holes change maps and are outside the kernel. Two differential tests in the Lucina repo tie it to the
+code: `world.rs::routes_only_enter_walkable_cells` checks every step of planned ROM routes (Diglett's Cave, Rocket
+Hideout spinners, Viridian Gym, Silph Co. card-key doors, Cut on Route 9, ledges on Route 3, the Mansion with the
+switch on: 267 steps) against the kernel's step rule, and `plan.rs::story_requirements_come_first` checks that
+`REQUIRES` equals the kernel's `STORY_REQUIRES` line. `scripts/verify.sh` runs them when the crate is checked out
+(`LUCINA_POKEMON_DIR`).
+### 9. Lucina media library: photo backup
 
 The iPhone backs up its photo library to lucina-media on nezopt through p1 (`docs/media-library.md`). Per asset the
 phone sends `POST /v1/media/uploads`, `PUT /uploads/{id}?offset=N` with the rest of the file (a background
@@ -356,6 +456,21 @@ of the 60 requests a minute.
 Severity reflects today's deployment. **Fixed** means fixed on branch `verify-fixes` (from `main`, commit 1e19f27),
 with regression tests. The other bugs are in code on branches other people work on, in uncommitted work, or in
 plans, so they are reported here with the proposed fix and not changed.
+
+### D1: a deploy from a clean main removed live code (high; production regression 25 Oct 2026). **Fixed** (procedure + `deploy-guard`)
+
+On 24 Oct secretary-server and the web were deployed from the main checkout's working tree, which held uncommitted
+work: `/v1/hermes`, the calls module and the Desk web view went live without being on any branch. On 25 Oct the
+web-design merge kept the Desk work by rebuilding from the same tree, but at 13:52 UTC Lucina Ink deployed
+secretary-server from a clean build of main (6b59881), which had no calls module: `/v1/calls/capabilities` and
+`/v1/calls/transcribe` went from 401 to 404, and the Android Phone card lost its backend. Every step was done under
+the merge lock, so the lock alone did not prevent it. The model finds it as D1's shortest `no_rollback`
+counterexample (16 steps): session 0 merges and deploys a build of the dirty checkout, session 1 merges and deploys a
+clean build of main.
+
+Fix: the live work was committed (main 7298be7 for `/v1/hermes` and the web, b7388d0 for calls) and production was
+redeployed from main at 14:16 UTC; `deploy-guard check` now refuses a deploy whose commit does not contain the
+live one, a dirty tree, or a commit not on the target branch, and the procedure in the policy makes it mandatory.
 
 ### T1: a late timeline line is skipped on resume (medium; the phase-1 "known weakness" does harm)
 
@@ -595,6 +710,25 @@ Confirm(0) Reserve(0)=20 StepRuns(0,10) StepRuns(0,13) Confirm(1) Reserve(1)=20 
 Fix: reserve the worst case per step (the estimate plus a margin bounding Meshy's drift), and before each step stop
 when consumed plus the next worst case would exceed the reservation. Verus K5 proves the arithmetic.
 
+### Pk1: the clock thread advances a frame while a macro holds a key, also while paused (low-medium). **Fixed.**
+
+The clock thread read `busy` and then took the emulator lock. In between, a macro could take `busy` and press a key
+(`with(..)` has no pause check), so the clock advanced a frame with the macro's key down. While paused, every macro
+call of a Hermes turn still running presses a key before its first `frames(..)` check, so each call could leak one
+input frame: the pause did not hold within one step. Shortest trace: `ClockRead`, `MacroStart(0)`, `Press(0)`,
+`ClockFrame`. Fix (branch `lucina-game-link`): the clock thread takes the lock first and reads `busy` under it.
+
+### Pk2: `/control` and `/save` save while a macro holds a key (low). **Fixed.**
+
+A pause from chat or the app during a macro wrote the save state with the macro's key down; after a restart the key
+came back pressed. Trace: `MacroStart(0)`, `Press(0)`, `Control(Chat, false)`. Fix: both save only when no macro holds
+`busy` (the macro saves when it ends, and a pause ends it at its next frame); `/save` answers `saved: false` then.
+
+### Pk3: a story step claimed more than its check (low). **Fixed.**
+
+Writing the requirement table showed that "Get HM03 Surf and HM04 Strength" was marked done by the Surf flag
+alone, so the plan never sent Lucina for Strength, which Victory Road needs. It is now "Get HM03 Surf", with a
+separate "Get HM04 STRENGTH" step (EVENT_GOT_HM04) before the Elite Four.
 ### M1: a restart between ingest and the "finished" mark stalled the backup for good (medium). **Fixed.**
 
 Found live (the backup stopped at one asset; every retried finish was a 500), reproduced by the
@@ -650,6 +784,9 @@ changed here: it is a lucina-media change with a deploy, outside this verificati
 - **Shopping.** Each batch is one serialisable transaction (list row `FOR UPDATE`). The model has one list and two
   objects; `move`, `reorder` and `edit_item` are not modelled.
 - **OAuth.** The attacker cannot forge a PKCE verifier and cannot register an allowed redirect_uri.
+- **Pokémon.** Every handler and macro step is one critical section of the emulator lock (as in the code, except the
+  current clock thread, modelled in two steps). Two macro callers, one restart, battles start on a frame with input.
+  Story steps are checked by their event flags; the kernel does not model RAM.
 - **Media backup.** A file's hash is its identity (blake3 collisions are ignored); each photo is two bytes, so a
   PUT can be cut once in the middle. Each server step is atomic under the catalog's `Mutex<Connection>`. p1's token
   bucket is a fixed window of `limit` requests that `Tick` refills; the 4 s pacing is in Verus (e), not in the
