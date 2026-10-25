@@ -24,7 +24,9 @@
 //!   `LUCINA_OTP_CONTINUOUS=true`, or a timed window), the `paused` file,
 //!   pending codes (newest first out, at most 8, consume once), seen event
 //!   ids (kept across arm/disarm), `test` events never stored, 409/410.
-//!   A restart keeps only the `paused` file.
+//!   Seen event ids are written to `seen.json` before an accepted
+//!   `/incoming` is answered (a failed write rolls the store back and
+//!   answers 503); a restart keeps `paused` and `seen.json`, not the codes.
 //! - **Lucina** answers the owner's `/otp` in steps, each one relay call:
 //!   take; on 204 status; arm if not armed. A taken code is checked against
 //!   Lucina's clock before it is shown. `/otp stop` disarms, `/otp arm` arms.
@@ -46,13 +48,16 @@
 //! | `OwnerAsks`, `LucinaStep` | `otp::run` `OtpAction::Take`: `take`, then `status`, then `arm` |
 //! | `OwnerStop`, `OwnerArm` | `/otp stop` → `/disarm` (`Store::disarm`, `paused` file); `/otp arm` → `/arm` (`Store::arm`) |
 //! | `OtherAsks` | `otp::respond` / `secretary_chat` with an MCP or non-owner asker |
-//! | `RelayRestart` | `Relay::open` (`paused` file, `starts_armed`); codes and seen ids were in memory |
+//! | `SeenWriteFails` | `Relay::handle` `/incoming`: `save_seen` fails → `self.store = before`, 503 → `Outcome::Retry` |
+//! | `RelayRestart` | `Relay::open` (`paused` file, `seen.json`, `starts_armed`); codes were in memory |
 //! | `Tick` | the clocks (phone and relay agree to within a tick) |
 //!
-//! Switches: `write_ahead`, `arm_keeps_codes` and `persist_seen` are the
-//! proposed fixes (all false = the current code). `owner_guard`,
-//! `lucina_expiry_check` and `relay_dedup` are mechanisms of the current code
-//! that the ablation cases switch off.
+//! Switches: `write_ahead` (F1, commit `ac9e7be`), `arm_keeps_codes` and
+//! `persist_seen` (F2, F3, commit `60472d9`) model the fixes, all on branch
+//! `otp-fixes`; true is the code as it is now. The `*_bug_pre_*` cases keep
+//! the code from before each fix as regression witnesses. `owner_guard`,
+//! `lucina_expiry_check` and `relay_dedup` are mechanisms of the code that
+//! the ablation cases switch off.
 
 use stateright::{Model, Property};
 
@@ -171,6 +176,7 @@ pub struct State {
     pub drops: u8,
     pub crashes: u8,
     pub restarts: u8,
+    pub seen_failures: u8,
     pub takes: u8,
     pub stops: u8,
     pub arms: u8,
@@ -196,6 +202,7 @@ pub enum Action {
     Serve,
     LoseRequest,
     LoseResponse,
+    SeenWriteFails,
     PhoneGets,
     Flush,
     SelfTest,
@@ -227,6 +234,8 @@ pub struct Otp {
     pub drops: u8,
     pub crashes: u8,
     pub restarts: u8,
+    /// Failed `seen.json` writes (needs `persist_seen`).
+    pub seen_failures: u8,
     /// Owner `/otp` requests (in total, and at once).
     pub takes: u8,
     pub threads: usize,
@@ -234,15 +243,18 @@ pub struct Otp {
     pub arms: u8,
     pub tests: u8,
     pub others: u8,
-    // Fixes (false = the current code).
-    /// F1: `forward` saves the fingerprint and the queue entry before the
-    /// first send, and removes the entry when the relay answers.
+    // Fixes (true = the code now; false = before the fix).
+    /// F1 (`ac9e7be`): `forward` queues the code and saves its fingerprint
+    /// before the first send (`Bridge::open` re-derives fingerprints of
+    /// queued codes), and removes the entry on any answer but Retry.
     pub write_ahead: bool,
-    /// F2: `Store::arm` keeps the waiting codes when already armed.
+    /// F2 (`60472d9`): `Store::arm` keeps the waiting codes and drops only
+    /// expired ones. Before: `pending.clear()`.
     pub arm_keeps_codes: bool,
-    /// F3: the relay keeps seen event ids across a restart.
+    /// F3 (`60472d9`): seen ids go to `seen.json` before the 200 and are
+    /// reloaded at start. Before: memory only.
     pub persist_seen: bool,
-    // Mechanisms (true = the current code; ablations switch one off).
+    // Mechanisms (true = the code; ablations switch one off).
     pub owner_guard: bool,
     pub lucina_expiry_check: bool,
     pub relay_dedup: bool,
@@ -331,10 +343,19 @@ impl Otp {
         None
     }
 
-    /// `Store::arm`: the current code drops the waiting codes, armed or not.
+    /// `Store::arm`. F2: keep the waiting codes, drop the expired ones.
+    /// Before F2: drop them all, armed or not.
     fn arm(&self, s: &mut State) {
         let was_armed = Self::armed(s);
-        if !(self.arm_keeps_codes && was_armed) {
+        if self.arm_keeps_codes {
+            let now = s.now;
+            let (keep, gone): (Vec<Waiting>, Vec<Waiting>) =
+                s.pending.iter().partition(|w| w.exp > now);
+            s.pending = keep;
+            for w in gone {
+                Self::exempt(s, w.code);
+            }
+        } else {
             for w in std::mem::take(&mut s.pending) {
                 // Codes of a window that already ended are gone anyway; codes
                 // dropped from a live window are not exempt (the bug).
@@ -416,6 +437,7 @@ impl Model for Otp {
             drops: self.drops,
             crashes: self.crashes,
             restarts: self.restarts,
+            seen_failures: self.seen_failures,
             takes: self.takes,
             stops: self.stops,
             arms: self.arms,
@@ -451,6 +473,9 @@ impl Model for Otp {
                 a.push(Action::Serve);
                 if s.drops > 0 {
                     a.push(Action::LoseRequest);
+                }
+                if self.persist_seen && s.seen_failures > 0 {
+                    a.push(Action::SeenWriteFails);
                 }
             }
             Some(Stage::Response(o)) => {
@@ -534,6 +559,18 @@ impl Model for Otp {
                     s.retry_dedup = true;
                 }
                 f.stage = Stage::Response(o);
+                s.inflight = Some(f);
+            }
+            Action::SeenWriteFails => {
+                // Only an acceptance writes seen.json; a failed write rolls
+                // the whole store back (`self.store = before`) and answers 503.
+                let mut f = s.inflight?;
+                let mut probe = s.clone();
+                if self.receive(&mut probe, f.entry) != Outcome::Accepted {
+                    return None;
+                }
+                s.seen_failures -= 1;
+                f.stage = Stage::Response(Outcome::Retry);
                 s.inflight = Some(f);
             }
             Action::LoseRequest | Action::LoseResponse => {
@@ -742,9 +779,9 @@ pub const PROTOCOL: &str = "otp";
 pub fn cases(deep: bool) -> Vec<Case> {
     use Expect::*;
     use Src::*;
-    // The deployed configuration, current code, no environment events: each
-    // case below turns on the events it needs.
-    let current = Otp {
+    // The deployed configuration, the code as it is now (branch `otp-fixes`),
+    // no environment events: each case below turns on the events it needs.
+    let now = Otp {
         // Code 0: an SMS and its notification; code 1: an SMS.
         copies: vec![vec![Sms, Notification], vec![Sms]],
         ttl: 2,
@@ -756,51 +793,31 @@ pub fn cases(deep: bool) -> Vec<Case> {
         drops: 0,
         crashes: 0,
         restarts: 0,
+        seen_failures: 0,
         takes: 2,
         threads: 1,
         stops: 0,
         arms: 0,
         tests: 0,
         others: 0,
-        write_ahead: false,
-        arm_keeps_codes: false,
-        persist_seen: false,
+        write_ahead: true,
+        arm_keeps_codes: true,
+        persist_seen: true,
         owner_guard: true,
         lucina_expiry_check: true,
         relay_dedup: true,
     };
-    let fixes = Otp {
-        write_ahead: true,
-        arm_keeps_codes: true,
-        persist_seen: true,
-        ..current.clone()
+    // Regression witnesses: the code just before each fix commit.
+    // 60472d9 (relay F2, F3) landed before ac9e7be (phone F1).
+    let pre_ac9e7be = Otp {
+        write_ahead: false,
+        ..now.clone()
     };
-    // The fixed code under phone and network faults plus a relay restart.
-    let faults = Otp {
-        drops: 1,
-        crashes: 1,
-        restarts: 1,
-        ..fixes.clone()
-    };
-    // The fixed code under the owner's pause/arm, two concurrent `/otp`
-    // requests and the phone's self-test.
-    let owner = Otp {
-        stops: 1,
-        arms: 1,
-        threads: 2,
-        tests: 1,
-        ..fixes.clone()
-    };
-    // Everything at once (`--deep` only: about 10^8 states).
-    let everything = Otp {
-        drops: 1,
-        crashes: 1,
-        restarts: 1,
-        stops: 1,
-        arms: 1,
-        tests: 1,
-        others: 1,
-        ..fixes.clone()
+    let pre_60472d9 = Otp {
+        write_ahead: false,
+        arm_keeps_codes: false,
+        persist_seen: false,
+        ..now.clone()
     };
     let expect = |loss, once, expiry, witnesses: &[&'static str]| {
         let mut v = vec![
@@ -820,14 +837,43 @@ pub fn cases(deep: bool) -> Vec<Case> {
         "delivered_after_reboot",
         "delivered_from_notification",
     ];
-    vec![
+    let reboot = Otp {
+        crashes: 1,
+        ..now.clone()
+    };
+    let arm = Otp {
+        arms: 1,
+        others: 1,
+        ..now.clone()
+    };
+    let race = Otp {
+        stops: 1,
+        threads: 2,
+        ..now.clone()
+    };
+    let restart = Otp {
+        drops: 1,
+        restarts: 1,
+        seen_failures: 1,
+        ..now.clone()
+    };
+    let mut cases = vec![
         Case::new(
             PROTOCOL,
-            "OTP1 phone reboot during the first send (current)",
-            Otp {
-                crashes: 1,
-                ..current.clone()
-            },
+            "OTP1 phone reboot during the first send",
+            reboot.clone(),
+            None,
+            expect(
+                Holds,
+                Holds,
+                Holds,
+                &["delivered_after_reboot", "delivered_from_notification"],
+            ),
+        ),
+        Case::new(
+            PROTOCOL,
+            "OTP1_bug_pre_ac9e7be phone reboot during the first send",
+            pre_ac9e7be.with(&reboot),
             None,
             expect(
                 Violated,
@@ -838,48 +884,68 @@ pub fn cases(deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "OTP2 /otp arm while a code waits; an MCP /otp (current)",
-            Otp {
-                arms: 1,
-                others: 1,
-                ..current.clone()
-            },
+            "OTP2 /otp arm while a code waits; an MCP /otp",
+            arm.clone(),
+            None,
+            expect(Holds, Holds, Holds, &["code_expired_undelivered"]),
+        ),
+        Case::new(
+            PROTOCOL,
+            "OTP2_bug_pre_60472d9 /otp arm while a code waits",
+            pre_60472d9.with(&arm),
             None,
             expect(Violated, Holds, Holds, &["code_expired_undelivered"]),
         ),
         Case::new(
             PROTOCOL,
-            "OTP3 two /otp after a pause: auto-arm race (current)",
-            Otp {
-                stops: 1,
-                threads: 2,
-                ..current.clone()
-            },
+            "OTP3 two /otp after a pause (auto-arm race)",
+            race.clone(),
+            None,
+            expect(Holds, Holds, Holds, &["code_expired_undelivered"]),
+        ),
+        Case::new(
+            PROTOCOL,
+            "OTP3_bug_pre_60472d9 two /otp after a pause",
+            pre_60472d9.with(&race),
             None,
             expect(Violated, Holds, Holds, &["code_expired_undelivered"]),
         ),
         Case::new(
             PROTOCOL,
-            "OTP4 relay restart forgets seen ids (current)",
-            Otp {
-                drops: 1,
-                restarts: 1,
-                ..current.clone()
-            },
+            "OTP4 relay restart, a failed seen.json write (503)",
+            restart.clone(),
+            None,
+            expect(Holds, Holds, Holds, &["retry_deduplicated"]),
+        ),
+        Case::new(
+            PROTOCOL,
+            "OTP4_bug_pre_60472d9 relay restart forgets seen ids",
+            pre_60472d9.with(&restart),
             None,
             expect(Holds, Violated, Holds, &["retry_deduplicated"]),
         ),
         Case::new(
             PROTOCOL,
-            "OTP5 fixes F1-F3: drops, reboot, relay restart",
-            faults.clone(),
+            "OTP5 drops, reboot, relay restart",
+            Otp {
+                drops: 1,
+                crashes: 1,
+                restarts: 1,
+                ..now.clone()
+            },
             None,
             expect(Holds, Holds, Holds, &all_witnesses),
         ),
         Case::new(
             PROTOCOL,
-            "OTP6 fixes F1-F3: pause/arm, two /otp, self-test",
-            owner,
+            "OTP6 pause/arm, two /otp, self-test",
+            Otp {
+                stops: 1,
+                arms: 1,
+                threads: 2,
+                tests: 1,
+                ..now.clone()
+            },
             None,
             expect(
                 Holds,
@@ -890,22 +956,25 @@ pub fn cases(deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "OTP7 fixes F1-F3: timed windows (not continuous)",
+            "OTP7 timed windows (not continuous): drops, reboot, restart",
             Otp {
                 continuous: false,
-                ..faults.clone()
+                drops: 1,
+                crashes: 1,
+                restarts: 1,
+                ..now.clone()
             },
             None,
             expect(Holds, Holds, Holds, &all_witnesses),
         ),
-        // Ablations: each switches off one mechanism of the current code.
+        // Ablations: each switches off one mechanism of the code.
         Case::new(
             PROTOCOL,
             "OTP8 ablation: no private-owner guard",
             Otp {
                 owner_guard: false,
                 others: 1,
-                ..current.clone()
+                ..now.clone()
             },
             None,
             vec![("owner_only", Violated), ("at_most_once", Holds)],
@@ -915,7 +984,7 @@ pub fn cases(deep: bool) -> Vec<Case> {
             "OTP9 ablation: Lucina skips its expiry check",
             Otp {
                 lucina_expiry_check: false,
-                ..current.clone()
+                ..now.clone()
             },
             None,
             vec![("never_after_expiry", Violated), ("at_most_once", Holds)],
@@ -926,21 +995,46 @@ pub fn cases(deep: bool) -> Vec<Case> {
             Otp {
                 relay_dedup: false,
                 drops: 1,
-                ..current
+                ..now.clone()
             },
             None,
             vec![("at_most_once", Violated), ("no_silent_loss", Holds)],
         ),
-    ]
-    .into_iter()
-    .chain(deep.then(|| {
-        Case::new(
+    ];
+    if deep {
+        // Everything at once: about 10^8 states.
+        cases.push(Case::new(
             PROTOCOL,
-            "OTP11 fixes F1-F3: every environment event (deep)",
-            everything,
+            "OTP11 every environment event (deep)",
+            Otp {
+                drops: 1,
+                crashes: 1,
+                restarts: 1,
+                seen_failures: 1,
+                stops: 1,
+                arms: 1,
+                tests: 1,
+                others: 1,
+                ..now
+            },
             None,
             expect(Holds, Holds, Holds, &all_witnesses),
-        )
-    }))
-    .collect()
+        ));
+    }
+    cases
+}
+
+impl Otp {
+    /// `self`'s code switches with `env`'s environment events.
+    fn with(&self, env: &Otp) -> Otp {
+        Otp {
+            write_ahead: self.write_ahead,
+            arm_keeps_codes: self.arm_keeps_codes,
+            persist_seen: self.persist_seen,
+            owner_guard: self.owner_guard,
+            lucina_expiry_check: self.lucina_expiry_check,
+            relay_dedup: self.relay_dedup,
+            ..env.clone()
+        }
+    }
 }

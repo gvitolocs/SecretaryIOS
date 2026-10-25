@@ -15,18 +15,22 @@
 (* returns. A reboot keeps the queue and the saved state and loses the     *)
 (* request in flight. The network loses a request or a response. The      *)
 (* relay keeps pending codes (newest out first, consumed once) and seen    *)
-(* event ids in memory, plus the paused file. Lucina answers /otp in       *)
+(* event ids, written to seen.json before an acceptance is answered (a     *)
+(* failed write rolls back and answers 503), plus the paused file; a       *)
+(* restart drops the codes only. Lucina answers /otp in                    *)
 (* steps: take; on 204 status; arm when not armed; it checks the expiry    *)
 (* of a taken code before showing it.                                      *)
 (*                                                                         *)
-(* WriteAhead, ArmKeepsCodes, PersistSeen are the proposed fixes F1-F3     *)
-(* (FALSE = the current code); OwnerGuard, LucinaExpiryCheck, RelayDedup   *)
-(* are mechanisms of the current code (ablations switch one off).          *)
+(* WriteAhead (F1, commit ac9e7be), ArmKeepsCodes and PersistSeen (F2, F3, *)
+(* commit 60472d9) model the fixes on branch otp-fixes: TRUE is the code   *)
+(* now, FALSE the code before (the *_bug cfgs keep those as regression     *)
+(* witnesses). OwnerGuard, LucinaExpiryCheck, RelayDedup are mechanisms of *)
+(* the code (ablations switch one off).                                    *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets
 
 CONSTANTS TTL, MaxTime, Continuous, WindowLen, RelayLimit, QueueLimit,
-          Drops, Crashes, Restarts, Takes, Threads, Stops, Arms, Tests, Others,
+          Drops, Crashes, Restarts, SeenFailures, Takes, Threads, Stops, Arms, Tests, Others,
           WriteAhead, ArmKeepsCodes, PersistSeen,
           OwnerGuard, LucinaExpiryCheck, RelayDedup
 
@@ -39,13 +43,13 @@ VARIABLES now, born, arrived,
           queue, recent, recentDisk, inflight,
           window, paused, pending, seen,
           lucina,
-          drops, crashes, restarts, takes, stops, arms, tests, others,
+          drops, crashes, restarts, seenFails, takes, stops, arms, tests, others,
           delivered, exempt, preCrash, leaked, retryDedup
 
 env == <<now, born, arrived>>
 phone == <<queue, recent, recentDisk, inflight>>
 relay == <<window, paused, pending, seen>>
-budget == <<drops, crashes, restarts, takes, stops, arms, tests, others>>
+budget == <<drops, crashes, restarts, seenFails, takes, stops, arms, tests, others>>
 ghost == <<delivered, exempt, preCrash, leaked, retryDedup>>
 vars == <<env, phone, relay, lucina, budget, ghost>>
 
@@ -102,13 +106,14 @@ Take ==
     ELSE LET r == PopFresh(pending, {})
          IN [has |-> r.has, got |-> r.got, pending |-> r.pending, window |-> window, ex |-> r.ex]
 
-(* Store::arm -> [pending, window, paused, ex]. The current code drops the  *)
-(* waiting codes even when armed (not exempt); F2 keeps them.               *)
+(* Store::arm -> [pending, window, paused, ex]. F2: keep the waiting codes, *)
+(* drop the expired ones. Before F2: drop them all, even when armed (those *)
+(* are not exempt).                                                         *)
 ArmR ==
     LET was == Armed(window)
-        keep == ArmKeepsCodes /\ was
-    IN [pending |-> IF keep THEN pending ELSE <<>>,
-        ex |-> IF ~keep /\ ~was THEN CodesOf(pending) ELSE {},
+    IN [pending |-> IF ArmKeepsCodes THEN SelectSeq(pending, LAMBDA w : w.exp > now) ELSE <<>>,
+        ex |-> IF ArmKeepsCodes THEN CodesWhere(pending, LAMBDA w : w.exp <= now)
+               ELSE IF ~was THEN CodesOf(pending) ELSE {},
         window |-> IF Continuous THEN Cont ELSE Until(now + WindowLen),
         paused |-> IF Continuous THEN FALSE ELSE paused]
 
@@ -132,7 +137,8 @@ Init == /\ now = 0
         /\ window = IF Continuous THEN Cont ELSE Off
         /\ paused = FALSE /\ pending = <<>> /\ seen = {}
         /\ lucina = <<>>
-        /\ drops = Drops /\ crashes = Crashes /\ restarts = Restarts /\ takes = Takes
+        /\ drops = Drops /\ crashes = Crashes /\ restarts = Restarts /\ seenFails = SeenFailures
+        /\ takes = Takes
         /\ stops = Stops /\ arms = Arms /\ tests = Tests /\ others = Others
         /\ delivered = <<>> /\ exempt = {} /\ preCrash = {} /\ leaked = FALSE
         /\ retryDedup = FALSE
@@ -178,14 +184,24 @@ LoseRequest ==
     /\ inflight.on /\ inflight.stage = "req" /\ drops > 0
     /\ drops' = drops - 1
     /\ inflight' = [inflight EXCEPT !.stage = "resp", !.out = "retry"]
-    /\ UNCHANGED <<env, queue, recent, recentDisk, relay, lucina, crashes, restarts, takes,
-                   stops, arms, tests, others, ghost>>
+    /\ UNCHANGED <<env, queue, recent, recentDisk, relay, lucina, crashes, restarts, seenFails,
+                   takes, stops, arms, tests, others, ghost>>
 LoseResponse ==
     /\ inflight.on /\ inflight.stage = "resp" /\ inflight.out # "retry" /\ drops > 0
     /\ drops' = drops - 1
     /\ inflight' = [inflight EXCEPT !.out = "retry"]
-    /\ UNCHANGED <<env, queue, recent, recentDisk, relay, lucina, crashes, restarts, takes,
-                   stops, arms, tests, others, ghost>>
+    /\ UNCHANGED <<env, queue, recent, recentDisk, relay, lucina, crashes, restarts, seenFails,
+                   takes, stops, arms, tests, others, ghost>>
+
+(* Relay::handle /incoming: save_seen fails -> self.store = before, 503.   *)
+(* Only an acceptance writes seen.json.                                     *)
+SeenWriteFails ==
+    /\ inflight.on /\ inflight.stage = "req" /\ PersistSeen /\ seenFails > 0
+    /\ Receive(inflight.e).out = "accepted"
+    /\ seenFails' = seenFails - 1
+    /\ inflight' = [inflight EXCEPT !.stage = "resp", !.out = "retry"]
+    /\ UNCHANGED <<env, queue, recent, recentDisk, relay, lucina, drops, crashes, restarts,
+                   takes, stops, arms, tests, others, ghost>>
 
 (* forward after send (enqueue, finish), or the flush_at loop body *)
 PhoneGets ==
@@ -227,7 +243,7 @@ SelfTest ==
                                         src |-> "sms"],
                     kind |-> "test", stage |-> "req", out |-> "none"]
     /\ UNCHANGED <<env, queue, recent, recentDisk, relay, lucina, drops, crashes, restarts,
-                   takes, stops, arms, others, ghost>>
+                   seenFails, takes, stops, arms, others, ghost>>
 
 (* Reboot / process death: Bridge::open reloads state.bin and queue.bin. *)
 Crash ==
@@ -236,8 +252,8 @@ Crash ==
     /\ inflight' = NoFlight
     /\ recent' = recentDisk
     /\ preCrash' = preCrash \cup {c \in Codes : born[c] # None}
-    /\ UNCHANGED <<env, queue, recentDisk, relay, lucina, drops, restarts, takes, stops, arms,
-                   tests, others, delivered, exempt, leaked, retryDedup>>
+    /\ UNCHANGED <<env, queue, recentDisk, relay, lucina, drops, restarts, seenFails, takes,
+                   stops, arms, tests, others, delivered, exempt, leaked, retryDedup>>
 
 (* Time; expired dedup entries and seen ids never match again (dropped).  *)
 Tick ==
@@ -253,7 +269,8 @@ OwnerAsks ==
     /\ takes > 0 /\ Len(lucina) < Threads
     /\ takes' = takes - 1
     /\ lucina' = Append(lucina, [pc |-> "take", w |-> NoWait])
-    /\ UNCHANGED <<env, phone, relay, drops, crashes, restarts, stops, arms, tests, others, ghost>>
+    /\ UNCHANGED <<env, phone, relay, drops, crashes, restarts, seenFails, stops, arms, tests,
+                   others, ghost>>
 
 LucinaStep(i) ==
     LET l == lucina[i]
@@ -295,8 +312,8 @@ OwnerStop ==
     /\ pending' = <<>>
     /\ exempt' = exempt \cup CodesOf(pending)
     /\ paused' = IF Continuous THEN TRUE ELSE paused
-    /\ UNCHANGED <<env, phone, seen, lucina, drops, crashes, restarts, takes, arms, tests, others,
-                   delivered, preCrash, leaked, retryDedup>>
+    /\ UNCHANGED <<env, phone, seen, lucina, drops, crashes, restarts, seenFails, takes, arms,
+                   tests, others, delivered, preCrash, leaked, retryDedup>>
 
 (* /otp arm -> POST /arm *)
 OwnerArm ==
@@ -305,8 +322,8 @@ OwnerArm ==
     /\ LET a == ArmR
        IN /\ pending' = a.pending /\ window' = a.window /\ paused' = a.paused
           /\ exempt' = exempt \cup a.ex
-    /\ UNCHANGED <<env, phone, seen, lucina, drops, crashes, restarts, takes, stops, tests, others,
-                   delivered, preCrash, leaked, retryDedup>>
+    /\ UNCHANGED <<env, phone, seen, lucina, drops, crashes, restarts, seenFails, takes, stops,
+                   tests, others, delivered, preCrash, leaked, retryDedup>>
 
 (* Lucina MCP or a non-owner Telegram chat asks: reply::private_owner. *)
 OtherAsks ==
@@ -318,10 +335,10 @@ OtherAsks ==
           ELSE /\ pending' = t.pending /\ window' = t.window
                /\ exempt' = exempt \cup t.ex
                /\ leaked' = (leaked \/ t.has)
-    /\ UNCHANGED <<env, phone, paused, seen, lucina, drops, crashes, restarts, takes, stops,
-                   arms, tests, delivered, preCrash, retryDedup>>
+    /\ UNCHANGED <<env, phone, paused, seen, lucina, drops, crashes, restarts, seenFails, takes,
+                   stops, arms, tests, delivered, preCrash, retryDedup>>
 
-(* Relay::open after a restart: only the paused file survives. *)
+(* Relay::open after a restart: the paused file and seen.json survive (F3). *)
 RelayRestart ==
     /\ restarts > 0
     /\ restarts' = restarts - 1
@@ -329,11 +346,11 @@ RelayRestart ==
     /\ exempt' = exempt \cup CodesOf(pending)
     /\ seen' = IF PersistSeen THEN seen ELSE {}
     /\ window' = IF Continuous /\ ~paused THEN Cont ELSE Off
-    /\ UNCHANGED <<env, phone, paused, lucina, drops, crashes, takes, stops, arms, tests, others,
-                   delivered, preCrash, leaked, retryDedup>>
+    /\ UNCHANGED <<env, phone, paused, lucina, drops, crashes, seenFails, takes, stops, arms,
+                   tests, others, delivered, preCrash, leaked, retryDedup>>
 
 Next == \/ \E c \in Codes, i \in 1..2 : i <= Len(Copies[c]) /\ Arrive(c, i)
-        \/ Serve \/ LoseRequest \/ LoseResponse \/ PhoneGets \/ Flush \/ SelfTest \/ Crash
+        \/ Serve \/ LoseRequest \/ LoseResponse \/ SeenWriteFails \/ PhoneGets \/ Flush \/ SelfTest \/ Crash
         \/ Tick \/ OwnerAsks \/ \E i \in 1..Threads : LucinaStep(i)
         \/ OwnerStop \/ OwnerArm \/ OtherAsks \/ RelayRestart
 
