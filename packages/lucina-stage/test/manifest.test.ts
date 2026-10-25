@@ -110,4 +110,11 @@ describe('manifest state clip pools', () => {
     expect(m.stateClips).toEqual({ idle: ['status_loop', 'relax_loop'] });
     expect(normalizeManifest({}).stateClips).toEqual({});
   });
+
+  it('reads pose.armSpreadDeg, clamped, 0 when absent or not a number', () => {
+    expect(normalizeManifest({ pose: { armSpreadDeg: 8 } }).pose.armSpreadDeg).toBe(8);
+    expect(normalizeManifest({ pose: { armSpreadDeg: 90 } }).pose.armSpreadDeg).toBe(25);
+    expect(normalizeManifest({ pose: { armSpreadDeg: '8' } }).pose.armSpreadDeg).toBe(0);
+    expect(normalizeManifest({}).pose.armSpreadDeg).toBe(0);
+  });
 });
