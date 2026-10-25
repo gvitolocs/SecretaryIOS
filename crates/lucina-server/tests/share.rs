@@ -534,3 +534,92 @@ async fn later_chat_turns_recall_earlier_attachments() {
     assert!(asked.contains("Earlier attachments"), "{asked}");
     assert!(asked.contains("84,30"), "{asked}");
 }
+
+#[tokio::test]
+async fn recovery_finds_a_reply_far_behind_newer_items() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-window-0001")
+            .text("text", "WINDOW_TEXT a short note"),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "share-window-0001").await;
+    assert_eq!(done["status"], "done");
+    // Other writers keep appending: the reply ends up far from the end.
+    for i in 0..600 {
+        h.state
+            .timeline
+            .append(lucina_store::timeline::NewItem {
+                channel: "telegram".into(),
+                role: "user".into(),
+                text: format!("other writer {i}"),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    // A crash after the reply was written but before status.json said done.
+    let status_file = h
+        .state
+        .cfg
+        .share
+        .dir
+        .join(chrono::Utc::now().format("%Y-%m").to_string())
+        .join("share-window-0001/status.json");
+    let mut persisted: Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
+    persisted["status"] = json!("processing");
+    std::fs::write(&status_file, serde_json::to_vec(&persisted).unwrap()).unwrap();
+    let lines_before = h.timeline_lines().len();
+    let calls_before = h.fake.requests().len();
+    let restarted = lucina_server::AppState::build(h.state.cfg.clone(), None).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, lucina_server::app(restarted)).await.unwrap()
+    });
+    assert_eq!(finished(&h, "share-window-0001").await["lucinaItemId"], done["lucinaItemId"]);
+    assert_eq!(h.timeline_lines().len(), lines_before, "no second answer");
+    assert_eq!(h.fake.requests().len(), calls_before, "no second model call");
+}
+
+#[tokio::test]
+async fn a_shared_location_counts_toward_the_part_limit() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let mut form = Form::new().text("shareId", "share-limit-0001");
+    for i in 0..32 {
+        form = form.text("text", format!("part {i}"));
+    }
+    let r = submit(&h, form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#)).await;
+    assert_eq!(r.status(), 400);
+    let mut form = Form::new().text("shareId", "share-limit-0002");
+    for i in 0..30 {
+        form = form.text("text", format!("part {i}"));
+    }
+    let r = submit(&h, form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#)).await;
+    assert_eq!(r.status(), 202);
+}
+
+#[tokio::test]
+async fn a_failed_append_still_processes_the_share() {
+    let services = services().await;
+    let h = setup(&services).await;
+    // The timeline's lock sidecar can't be opened (a directory): every append fails.
+    let lock = std::path::PathBuf::from(format!("{}.lock", h.state.cfg.timeline_path.display()));
+    let _ = std::fs::remove_file(&lock);
+    std::fs::create_dir_all(&lock).unwrap();
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-stuck-0001")
+            .text("text", "STUCK_TEXT"),
+    )
+    .await;
+    // Accepted (status.json is saved), not a 500 that leaves it processing forever.
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "share-stuck-0001").await;
+    assert_ne!(done["status"], "processing", "{done}");
+    std::fs::remove_dir(&lock).unwrap();
+}

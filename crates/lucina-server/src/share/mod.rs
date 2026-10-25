@@ -98,6 +98,9 @@ impl ShareConfig {
 }
 pub struct ShareRuntime {
     ingest: Mutex<()>,
+    /// Shares with a processing task right now (a `processing` share outside
+    /// this set has lost its worker and is respawned on the next request).
+    live: std::sync::Mutex<std::collections::HashSet<String>>,
     worker: Semaphore,
     recovered: AtomicBool,
     vision: Mutex<Option<vision::Server>>,
@@ -108,6 +111,7 @@ impl ShareRuntime {
     pub fn new(cfg: &ShareConfig) -> Self {
         Self {
             ingest: Mutex::new(()),
+            live: std::sync::Mutex::new(std::collections::HashSet::new()),
             worker: Semaphore::new(1),
             recovered: AtomicBool::new(false),
             vision: Mutex::new(None),
@@ -334,7 +338,7 @@ async fn status(
     Ok(Json(job.public(false)))
 }
 
-pub(super) fn sanitize(s: &str) -> String {
+pub fn sanitize(s: &str) -> String {
     let s: String = s
         .chars()
         .map(|c| {
@@ -358,6 +362,10 @@ pub(super) fn sanitize(s: &str) -> String {
             .unwrap_or_default();
         s = clip(&s, 120 - ext.len());
         while s.len() > 120 - ext.len() {
+            s.pop();
+        }
+        // A cut right after a '.' plus ".ext" would make ".." (Verus SK4.4).
+        while s.ends_with('.') {
             s.pop();
         }
         s.push_str(&ext);
@@ -527,6 +535,9 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         if !(-90.0..=90.0).contains(&loc.lat) || !(-180.0..=180.0).contains(&loc.lon) {
             return Err(bad("invalid meta.location"));
         }
+        // Defence in depth: `meta` itself was one of the counted fields, so this
+        // never fires today (Verus SK4.1), but keeps the bound if fields change.
+        check_parts(parts.len() + 1)?;
         let label = loc
             .name
             .clone()
@@ -579,8 +590,14 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         }
     }
     let _lock = st.share.ingest.lock().await;
-    if let Some((_, job)) = find(root, &id).await {
-        return Ok((StatusCode::ACCEPTED, Json(job.public(true))).into_response());
+    if let Some((dir, job)) = find(root, &id).await {
+        let response = job.public(true);
+        // A share accepted earlier whose worker is gone (an error or panic
+        // after status.json): the retry restarts it (Stateright SH6).
+        if job.status == "processing" && !is_live(&st, &job.share_id) {
+            spawn(st.clone(), dir, job);
+        }
+        return Ok((StatusCode::ACCEPTED, Json(response)).into_response());
     }
     let month = root.join(Utc::now().format("%Y-%m").to_string());
     tokio::fs::create_dir_all(&month).await?;
@@ -705,7 +722,12 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         error: None,
     };
     save(&dir, &job).await?;
-    ensure_user(&st, &job)?;
+    // status.json says processing now: the share must be processed even if
+    // the append fails here (`process` appends it again). Returning an error
+    // without spawning left it stuck until a restart (Stateright SH6).
+    if let Err(e) = ensure_user(&st, &job) {
+        tracing::warn!(share_id = %job.share_id, error = %e, "share user item not appended yet; processing retries it");
+    }
     let response = job.public(false);
     spawn(st.clone(), dir, job);
     Ok((StatusCode::ACCEPTED, Json(response)).into_response())
@@ -826,10 +848,13 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
     Ok(())
 }
 /// Lucina's reply to the share's user item, if one was written before a
-/// restart (newest items only).
+/// restart. Every item is checked: other writers keep appending, so a reply
+/// can be far from the end (a "newest N" window answered twice; Stateright
+/// case and Verus `unfixed_window_scan` in docs/verification.md). Items that
+/// don't mention the id are skipped before any JSON parsing.
 fn existing_reply(st: &AppState, user_item: &str) -> Option<(String, String)> {
     let items = st.timeline.read_all().ok()?;
-    items.iter().rev().take(500).find_map(|i| {
+    items.iter().rev().filter(|i| i.raw.contains(user_item)).find_map(|i| {
         let v: Value = serde_json::from_str(&i.raw).ok()?;
         (v["role"] == "lucina" && v["replyTo"] == user_item).then(|| {
             (
@@ -866,8 +891,36 @@ pub(crate) fn recover(st: AppState) {
         }
     });
 }
+fn is_live(st: &AppState, id: &str) -> bool {
+    st.share
+        .live
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(id)
+}
+
+/// Removes the share from the live set when its task ends, panics included.
+struct LiveGuard(AppState, String);
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        self.0
+            .share
+            .live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.1);
+    }
+}
+
 fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
+    {
+        let mut live = st.share.live.lock().unwrap_or_else(|e| e.into_inner());
+        if !live.insert(job.share_id.clone()) {
+            return; // already being processed
+        }
+    }
     tokio::spawn(async move {
+        let _live = LiveGuard(st.clone(), job.share_id.clone());
         let _permit = st
             .share
             .worker
