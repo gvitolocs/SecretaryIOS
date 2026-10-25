@@ -97,6 +97,37 @@ impl Call {
         Self::new(Method::GET, &["health"])
     }
 
+    /// `GET /hermes`: the Hermes desk settings.
+    pub fn hermes() -> Self {
+        Self::new(Method::GET, &["hermes"])
+    }
+
+    /// `PUT /hermes`.
+    pub fn hermes_update(body: Value) -> Result<Self> {
+        Ok(Self::new(Method::PUT, &["hermes"]).with_body(body))
+    }
+
+    /// `GET /game/state`: Lucina's Pokémon run (map, party, badges, objective, notes).
+    pub fn game_state() -> Self {
+        Self::new(Method::GET, &["game", "state"])
+    }
+
+    /// `GET /game/screenshot`: the current screen as PNG (send with [`LucinaClient::bytes`]).
+    pub fn game_screenshot() -> Self {
+        Self::new(Method::GET, &["game", "screenshot"])
+    }
+
+    /// `POST /game/control`: start (`true`) or pause the run.
+    pub fn game_control(running: bool) -> Self {
+        let reason = if running {
+            "Started by the owner from the app"
+        } else {
+            "Paused by the owner from the app"
+        };
+        Self::new(Method::POST, &["game", "control"])
+            .with_body(serde_json::json!({"running": running, "reason": reason}))
+    }
+
     /// `POST /chat`.
     pub fn chat(req: &ChatRequest) -> Result<Self> {
         validate::text("message", &req.message, validate::MAX_MESSAGE_CHARS)?;
@@ -579,6 +610,32 @@ impl LucinaClient {
         timeout: Duration,
     ) -> Result<T> {
         Ok(self.send(call, timeout).await?.1)
+    }
+
+    /// Send `call` and return the raw body with its content type, for non-JSON answers (the game screenshot).
+    /// A non-2xx answer is decoded as Lucina's JSON error.
+    pub async fn bytes(&self, call: &Call) -> Result<(String, Vec<u8>)> {
+        let resp = self
+            .http
+            .request(call.method.clone(), self.url(call))
+            .bearer_auth(&self.token)
+            .timeout(self.timeouts.default)
+            .send()
+            .await
+            .map_err(Error::from_reqwest)?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let body = resp.bytes().await.map_err(Error::from_reqwest)?;
+        if !status.is_success() {
+            decode_response::<Value>(status.as_u16(), &body)?;
+            return Err(Error::Decode(format!("unexpected status {status}")));
+        }
+        Ok((content_type, body.to_vec()))
     }
 
     async fn send<T: DeserializeOwned>(&self, call: &Call, timeout: Duration) -> Result<(u16, T)> {

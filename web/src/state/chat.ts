@@ -69,6 +69,7 @@ export interface ChatShare {
 }
 
 export interface ChatMessage {
+  sensitive?: boolean;
   /** Stable render identity; survives the optimistic -> server swap. */
   key: string;
   /** Server timeline item id, once known. */
@@ -225,8 +226,12 @@ function byTime(a: ChatMessage, b: ChatMessage): number {
 function persist(): void {
   // Files and blob previews cannot survive a reload: drop attachment sends the
   // server never accepted (a retry could not resend the files) and strip the
-  // tab-only state from the accepted ones.
-  const cache = chat.messages.slice(-CACHE_LIMIT).filter((m) => !m.share || m.status === "sent").map((m) => {
+  // tab-only state from the accepted ones. Sensitive replies are never cached.
+  const cache = chat.messages
+    .filter((m) => !m.sensitive)
+    .slice(-CACHE_LIMIT)
+    .filter((m) => !m.share || m.status === "sent")
+    .map((m) => {
     if (!m.share && !m.attachments?.some((a) => a.previewUrl)) return m;
     return {
       ...m,
@@ -514,7 +519,8 @@ async function deliver(key: string): Promise<void> {
     const rawJob = res?.job && res.job.id !== undefined && res.job.id !== null ? res.job : null;
     const action = typeof res?.action === "string" ? res.action : null;
     const replyText = typeof res?.reply === "string" ? res.reply : "";
-    const rich = parseRich(res) ?? undefined;
+    const sensitive = res?.sensitive === true;
+    const rich = sensitive ? undefined : parseRich(res) ?? undefined;
     const job: JobState | null = rawJob
       ? { id: String(rawJob.id), status: String(rawJob.status ?? "queued"), action, pollError: null }
       : null;
@@ -559,13 +565,24 @@ async function deliver(key: string): Promise<void> {
         replyFor: cmid,
         action,
         job,
+        ...(sensitive ? { sensitive: true } : {}),
         ...(rich ? { rich, reveal: true } : {}),
       };
       if (lucinaItemId) reply.itemId = lucinaItemId;
       list.push(reply);
       replyKey = reply.key;
     });
-    if (replyText || rich) {
+    if (sensitive && replyKey && res.expiresAt) {
+      const expiringKey = replyKey;
+      const timer = setTimeout(() => {
+        if (gen !== generation) return;
+        commit((list) => { const m = list.find((v) => v.key === expiringKey); if (m) m.text = "OTP expired."; });
+        setLastReply("");
+      }, Math.max(0, Math.min(120_000, res.expiresAt - Date.now())));
+      // Browser timer is bounded; it carries only a message key, never the code.
+      void timer;
+    }
+    if (!sensitive && (replyText || rich)) {
       // Her voice and the live region get the bubbles only (never the widgets), without markdown.
       const spoken = rich ? speechText(rich) : stripMarkdown(replyText);
       setLastReply(spoken);
