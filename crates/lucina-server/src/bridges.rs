@@ -756,7 +756,14 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
         .collect();
     let events: Vec<&str> = state["events"]
         .as_array()
-        .map(|a| a.iter().rev().take(6).rev().filter_map(|v| v.as_str()).collect())
+        .map(|a| {
+            a.iter()
+                .rev()
+                .take(6)
+                .rev()
+                .filter_map(|v| v.as_str())
+                .collect()
+        })
         .unwrap_or_default();
     let mut s = format!(
         "Lucina's Pokémon Red run (live, {}; {} actions so far):",
@@ -808,7 +815,12 @@ pub async fn game_hint(http: &reqwest::Client, text: &str) -> Result<Value, Stri
     if t.is_empty() {
         return Err("empty advice".into());
     }
-    game_post(http, "/hint", json!({"text": t.chars().take(300).collect::<String>()})).await
+    game_post(
+        http,
+        "/hint",
+        json!({"text": t.chars().take(300).collect::<String>()}),
+    )
+    .await
 }
 
 /// Start (`true`) or pause the run.
@@ -818,7 +830,12 @@ pub async fn game_control(http: &reqwest::Client, running: bool) -> Result<Value
     } else {
         "Paused by the owner from chat"
     };
-    game_post(http, "/control", json!({"running": running, "reason": reason})).await
+    game_post(
+        http,
+        "/control",
+        json!({"running": running, "reason": reason}),
+    )
+    .await
 }
 
 /// `handleTasksTurn` (`LUCINA_TASKS=true`): what to do today, add, done,

@@ -6,11 +6,17 @@
 //! metadata, Discord presence, calendar, named notes, recent turns,
 //! delivered reminders, Honcho (only for policies that allow it, clipped to
 //! the policy budget).
+//!
+//! Every owner block (presence, calendar, notes, tasks, shopping, recent
+//! turns, delivered reminders, Honcho) is the owner's personal memory: a turn
+//! whose surface may not read it gets only the metadata and the game block
+//! (`docs/lucina-rust/MEMORY-SURFACES.md`).
 
 use chrono::Utc;
 use lucina_intent::policy::{self, Policy};
 use lucina_intent::presence;
 use lucina_intent::tier0::{self, Classification};
+use lucina_memory::{Scope, TurnSurface};
 use lucina_store::reminders::delivered_context;
 
 use crate::planner::TurnInput;
@@ -125,18 +131,20 @@ pub async fn classify(
 /// `prepareLucinaTurnContext` for an owner turn.
 pub async fn prepare(
     st: &AppState,
+    surface: &TurnSurface,
     session: &str,
     user_text: &str,
     user_label: &str,
     platform: &str,
 ) -> Prepared {
-    prepare_with(st, session, user_text, user_label, platform, false).await
+    prepare_with(st, surface, session, user_text, user_label, platform, false).await
 }
 
 /// `tools_mode`: the native tool loop decides by itself, so no tier-1
 /// classifier call and the full project context.
 pub async fn prepare_with(
     st: &AppState,
+    surface: &TurnSurface,
     session: &str,
     user_text: &str,
     user_label: &str,
@@ -147,7 +155,17 @@ pub async fn prepare_with(
     let tz = st.cfg.time_zone;
     let metadata = st.recent.metadata_block(session, tz, now);
     let first_after_idle = metadata.contains("- first turn after idle: yes");
-    let recent_context = st.recent.render(session, tz);
+    // The owner's personal memory, per the turn's surface (recent turns
+    // included: they also feed the intent classifier).
+    let owner = surface.may_read(&Scope::OwnerPersonal);
+    if !owner {
+        surface.log_denied("read", &Scope::OwnerPersonal, "turn_context");
+    }
+    let recent_context = if owner {
+        st.recent.render(session, tz)
+    } else {
+        String::new()
+    };
     let (classification, policy, reason) = if tools_mode {
         let c = tier0::classify_tier0(user_text, &recent_context, &st.cfg.intent)
             .unwrap_or_else(Classification::fallback);
@@ -160,21 +178,25 @@ pub async fn prepare_with(
     tracing::info!(intent = %classification.intent, confidence = classification.confidence, tier0 = classification.tier0(), policy = policy.as_str(), %reason, "lucina intent classified");
     let budgets = policy.budgets();
 
-    let presence = presence_block(st, user_text);
+    let presence = if owner {
+        presence_block(st, user_text)
+    } else {
+        String::new()
+    };
     // Her own Pokémon Red run, live, so she answers as the player and can pass it advice (game_hint).
     let game = crate::bridges::game_context(&st.secretary.http).await;
-    let calendar = if st.cfg.calendar_enabled {
+    let calendar = if owner && st.cfg.calendar_enabled {
         crate::bridges::calendar_context(&st.secretary, user_text, now, tz).await
     } else {
         String::new()
     };
-    let notes = if st.cfg.notes_enabled {
+    let notes = if owner && st.cfg.notes_enabled {
         crate::bridges::notes_context(&st.secretary, &st.bridge_state, user_text).await
     } else {
         String::new()
     };
     // LUCINA_TASKS=true: owner turns about the day or tasks get today's tasks.
-    let tasks = if st.cfg.tasks_enabled {
+    let tasks = if owner && st.cfg.tasks_enabled {
         crate::bridges::tasks_context(&st.secretary, user_text, tz).await
     } else {
         String::new()
@@ -182,24 +204,28 @@ pub async fn prepare_with(
     // A compound question ("cosa c'è sulla lista della spesa e cosa ho nella
     // nota X?"): no grocery shortcut answers it, so the shopping list comes
     // here (calendar and named notes are above).
-    let shopping = shopping_block(st, user_text, now).await;
+    let shopping = if owner {
+        shopping_block(st, user_text, now).await
+    } else {
+        String::new()
+    };
     let recent = if policy == Policy::PersonaOnly || recent_context.is_empty() {
         String::new()
     } else {
         clip_recent(&recent_context, budgets.recent_turns)
     };
     let reminders = match (&st.cfg.owner_chat_id, policy) {
-        (Some(chat), p) if p != Policy::PersonaOnly && st.cfg.reminders_enabled => {
+        (Some(chat), p) if owner && p != Policy::PersonaOnly && st.cfg.reminders_enabled => {
             let owner = crate::api::owner_reminders(st).unwrap_or_default();
             delivered_context(&owner, chat, tz, now)
         }
         _ => String::new(),
     };
-    let honcho = if policy.uses_honcho() {
+    let honcho = if owner && policy.uses_honcho() {
         let ctx = tokio::time::timeout(
             std::time::Duration::from_secs(12),
             st.memory
-                .build_context(&st.cfg.owner_peer_id, session, user_text),
+                .build_context(surface, &st.cfg.owner_peer_id, session, user_text),
         )
         .await
         .unwrap_or_default();

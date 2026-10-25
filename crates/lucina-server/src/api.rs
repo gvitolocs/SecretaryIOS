@@ -293,7 +293,8 @@ async fn secretary(
         .filter(|s| !s.is_empty())
         .map(decode)
         .collect();
-    match route(&st, &method, &uri, &headers, &parts, body).await {
+    let bearer = crate::surface::BearerVerified::checked();
+    match route(&st, bearer, &method, &uri, &headers, &parts, body).await {
         Ok(r) => r,
         Err(e) => {
             if e.status == StatusCode::INTERNAL_SERVER_ERROR {
@@ -307,6 +308,7 @@ async fn secretary(
 
 async fn route(
     st: &AppState,
+    bearer: crate::surface::BearerVerified,
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
@@ -373,7 +375,7 @@ async fn route(
         (Some("chat"), None) => {
             only(&["POST"])?;
             let body = read_json(body, MAX_BODY_BYTES).await?;
-            let mut out = crate::chat::handle_chat(st.clone(), body).await?;
+            let mut out = crate::chat::handle_chat(st.clone(), bearer, body).await?;
             // The reply sink (app, web and Lucina MCP all read it here).
             lucina_secrets::redactor().redact_json(&mut out);
             Ok(ok(out))
@@ -409,7 +411,7 @@ async fn route(
         }
         (Some("agenda"), None) => {
             only(&["GET"])?;
-            agenda(st, uri).await
+            agenda(st, bearer, uri).await
         }
         (Some("meshy"), Some("confirm")) => {
             only(&["POST"])?;
@@ -743,7 +745,7 @@ pub fn clip_sentences(text: &str, max: usize) -> String {
         .to_owned()
 }
 
-async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
+async fn agenda(st: &AppState, bearer: crate::surface::BearerVerified, uri: &Uri) -> ApiResult {
     let tz = st.cfg.time_zone;
     let date = query_param(uri, "date")
         .filter(|d| !d.is_empty())
@@ -811,6 +813,7 @@ async fn agenda(st: &AppState, uri: &Uri) -> ApiResult {
         let memory = st
             .memory
             .build_context(
+                &crate::surface::app_surface(&st.cfg, bearer),
                 &st.cfg.owner_peer_id,
                 &lucina_memory::secretary_session_id("", &st.cfg.default_session),
                 &format!("Daily agenda briefing for {date}"),

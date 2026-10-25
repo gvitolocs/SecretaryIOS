@@ -26,13 +26,24 @@ enum Msg {
     Create,
     Query,
     /// Bytes [offset, offset+len) of the file.
-    Put { offset: u8, len: u8 },
+    Put {
+        offset: u8,
+        len: u8,
+    },
     Complete,
     // server -> client
-    Created { received: u8, done: bool },
-    Offset { received: u8, done: bool },
+    Created {
+        received: u8,
+        done: bool,
+    },
+    Offset {
+        received: u8,
+        done: bool,
+    },
     Completed,
-    Short { received: u8 },
+    Short {
+        received: u8,
+    },
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -104,7 +115,10 @@ impl Model for Upload {
     }
 
     fn actions(&self, s: &State, out: &mut Vec<Action>) {
-        if s.sends < MAX_SENDS && s.net.len() < MAX_NET && matches!(s.client, Client::Start | Client::At(_) | Client::Waiting) {
+        if s.sends < MAX_SENDS
+            && s.net.len() < MAX_NET
+            && matches!(s.client, Client::Start | Client::At(_) | Client::Waiting)
+        {
             out.push(Action::ClientSend);
         }
         for (i, (to_server, m)) in s.net.iter().enumerate() {
@@ -131,8 +145,17 @@ impl Model for Upload {
                 n.sends += 1;
                 let m = match s.client {
                     // A retry while waiting (timeout) re-asks where the server is.
-                    Client::Start | Client::Waiting => if s.has_id { Msg::Query } else { Msg::Create },
-                    Client::At(off) if off < N => Msg::Put { offset: off, len: CHUNK.min(N - off) },
+                    Client::Start | Client::Waiting => {
+                        if s.has_id {
+                            Msg::Query
+                        } else {
+                            Msg::Create
+                        }
+                    }
+                    Client::At(off) if off < N => Msg::Put {
+                        offset: off,
+                        len: CHUNK.min(N - off),
+                    },
                     Client::At(_) => Msg::Complete,
                     Client::Done => return None,
                 };
@@ -151,7 +174,11 @@ impl Model for Upload {
                 n.client = Client::Start;
             }
             Action::Deliver(i) | Action::DeliverShort(i, _) => {
-                let keep = if let Action::DeliverShort(_, k) = a { Some(k) } else { None };
+                let keep = if let Action::DeliverShort(_, k) = a {
+                    Some(k)
+                } else {
+                    None
+                };
                 let (to_server, m) = n.net.remove(i);
                 if to_server {
                     // The server (`Store::create/append/complete`).
@@ -160,17 +187,29 @@ impl Model for Upload {
                             if n.memos == 0 {
                                 n.memos = 1;
                             }
-                            Msg::Created { received: n.received, done: n.queued }
+                            Msg::Created {
+                                received: n.received,
+                                done: n.queued,
+                            }
                         }
-                        Msg::Query => Msg::Offset { received: n.received, done: n.queued },
+                        Msg::Query => Msg::Offset {
+                            received: n.received,
+                            done: n.queued,
+                        },
                         Msg::Put { offset, len } => {
                             if n.queued || offset != n.received {
-                                Msg::Offset { received: n.received, done: n.queued }
+                                Msg::Offset {
+                                    received: n.received,
+                                    done: n.queued,
+                                }
                             } else {
                                 let got = keep.unwrap_or(len);
                                 n.corrupt |= offset != n.received;
                                 n.received = (offset + got).min(N);
-                                Msg::Offset { received: n.received, done: false }
+                                Msg::Offset {
+                                    received: n.received,
+                                    done: false,
+                                }
                             }
                         }
                         Msg::Complete => {
@@ -181,7 +220,9 @@ impl Model for Upload {
                                 n.queued = true;
                                 Msg::Completed
                             } else {
-                                Msg::Short { received: n.received }
+                                Msg::Short {
+                                    received: n.received,
+                                }
                             }
                         }
                         _ => return None,
@@ -197,7 +238,11 @@ impl Model for Upload {
                     match m {
                         Msg::Created { received, done } | Msg::Offset { received, done } => {
                             n.has_id = true;
-                            n.client = if done { Client::Done } else { Client::At(received) };
+                            n.client = if done {
+                                Client::Done
+                            } else {
+                                Client::At(received)
+                            };
                         }
                         Msg::Short { received } => n.client = Client::At(received),
                         Msg::Completed => n.client = Client::Done,
@@ -213,9 +258,15 @@ impl Model for Upload {
         vec![
             Property::always("prefix", |_, s: &State| !s.corrupt && s.received <= N),
             Property::always("one memo per recording", |_, s: &State| s.memos <= 1),
-            Property::always("complete only when whole", |_, s: &State| !s.queued || s.received == N),
-            Property::always("done means queued", |_, s: &State| s.client != Client::Done || s.queued),
-            Property::sometimes("uploaded", |_, s: &State| s.queued && s.client == Client::Done),
+            Property::always("complete only when whole", |_, s: &State| {
+                !s.queued || s.received == N
+            }),
+            Property::always("done means queued", |_, s: &State| {
+                s.client != Client::Done || s.queued
+            }),
+            Property::sometimes("uploaded", |_, s: &State| {
+                s.queued && s.client == Client::Done
+            }),
         ]
     }
 }
@@ -224,5 +275,9 @@ impl Model for Upload {
 fn resumable_upload_is_safe() {
     let checker = Upload.checker().spawn_bfs().join();
     checker.assert_properties();
-    assert!(checker.unique_state_count() > 1000, "model too small: {}", checker.unique_state_count());
+    assert!(
+        checker.unique_state_count() > 1000,
+        "model too small: {}",
+        checker.unique_state_count()
+    );
 }

@@ -69,9 +69,16 @@ pub struct Store {
 
 /// `audio/mp4; codecs=...` → (`audio/mp4`, `m4a`). None = not an accepted type.
 pub fn audio_type(mime: &str) -> Option<(&'static str, &'static str)> {
-    let base = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     Some(match base.as_str() {
-        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" | "audio/mp4a-latm" => ("audio/mp4", "m4a"),
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" | "audio/mp4a-latm" => {
+            ("audio/mp4", "m4a")
+        }
         "audio/webm" | "video/webm" => ("audio/webm", "webm"),
         "audio/ogg" | "audio/opus" => ("audio/ogg", "ogg"),
         "audio/wav" | "audio/x-wav" | "audio/wave" => ("audio/wav", "wav"),
@@ -84,12 +91,15 @@ pub fn audio_type(mime: &str) -> Option<(&'static str, &'static str)> {
 pub fn valid_id(id: &str) -> bool {
     id.len() == 19
         && id.starts_with("mm_")
-        && id[3..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && id[3..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn valid_client_id(s: &str) -> bool {
     (1..=100).contains(&s.len())
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 pub fn clean_title(t: &str) -> String {
@@ -178,7 +188,8 @@ impl Store {
                 }
             };
             if m.status == Status::Uploading {
-                let len = std::fs::metadata(entry.path().join("audio.part")).map_or(0, |md| md.len());
+                let len =
+                    std::fs::metadata(entry.path().join("audio.part")).map_or(0, |md| md.len());
                 if len != m.received_bytes {
                     m.received_bytes = len;
                     write_json(&meta, &m)?;
@@ -261,7 +272,11 @@ impl Store {
                 break id;
             }
         };
-        let title = n.title.as_deref().map(clean_title).filter(|t| !t.is_empty());
+        let title = n
+            .title
+            .as_deref()
+            .map(clean_title)
+            .filter(|t| !t.is_empty());
         let m = Memo {
             id: id.clone(),
             client_id: n.client_id.clone(),
@@ -352,7 +367,9 @@ impl Store {
         let _held = lock.lock().await;
         let m = self.get(id).ok_or(StoreError::NotFound)?;
         if m.status != Status::Uploading {
-            return Err(StoreError::Conflict("the upload is already complete".into()));
+            return Err(StoreError::Conflict(
+                "the upload is already complete".into(),
+            ));
         }
         let path = self.part_path(id);
         let on_disk = tokio::fs::metadata(&path).await.map_or(0, |md| md.len());
@@ -362,7 +379,10 @@ impl Store {
             }
             return Err(StoreError::Offset(on_disk));
         }
-        let mut f = tokio::fs::OpenOptions::new().append(true).open(&path).await?;
+        let mut f = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await?;
         let mut written = on_disk;
         let mut failure: Option<StoreError> = None;
         let mut in_request = 0u64;
@@ -482,8 +502,15 @@ mod tests {
         }
     }
 
-    fn chunks(parts: &[&'static [u8]]) -> impl Stream<Item = std::result::Result<axum::body::Bytes, String>> + Unpin {
-        stream::iter(parts.iter().map(|p| Ok(axum::body::Bytes::from_static(p))).collect::<Vec<_>>())
+    fn chunks(
+        parts: &[&'static [u8]],
+    ) -> impl Stream<Item = std::result::Result<axum::body::Bytes, String>> + Unpin {
+        stream::iter(
+            parts
+                .iter()
+                .map(|p| Ok(axum::body::Bytes::from_static(p)))
+                .collect::<Vec<_>>(),
+        )
     }
 
     #[tokio::test]
@@ -513,7 +540,10 @@ mod tests {
         let want = {
             let mut h = Sha256::new();
             h.update(b"abcdef");
-            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+            h.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         let done = s.complete(&m.id, Some(&want)).await.unwrap();
         assert_eq!(done.status, Status::Queued);
@@ -533,13 +563,19 @@ mod tests {
         let s = Store::open(dir.path()).unwrap();
         let (m, _) = s.create(new_memo("c2", 3)).unwrap();
         s.append(&m.id, 0, chunks(&[b"xyz"])).await.unwrap();
-        assert!(matches!(s.complete(&m.id, Some("00")).await, Err(StoreError::Conflict(_))));
+        assert!(matches!(
+            s.complete(&m.id, Some("00")).await,
+            Err(StoreError::Conflict(_))
+        ));
         assert_eq!(s.get(&m.id).unwrap().received_bytes, 0);
     }
 
     #[test]
     fn types_and_ids() {
-        assert_eq!(audio_type("audio/webm;codecs=opus"), Some(("audio/webm", "webm")));
+        assert_eq!(
+            audio_type("audio/webm;codecs=opus"),
+            Some(("audio/webm", "webm"))
+        );
         assert_eq!(audio_type("application/pdf"), None);
         assert!(valid_id("mm_0123456789abcdef"));
         assert!(!valid_id("mm_0123456789abcdeg"));

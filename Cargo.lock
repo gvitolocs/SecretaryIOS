@@ -2016,6 +2016,7 @@ name = "lucina-memory"
 version = "0.1.0"
 dependencies = [
  "lucina-secrets",
+ "proptest",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2189,6 +2190,7 @@ name = "lucina-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "jsonschema",
@@ -2204,6 +2206,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

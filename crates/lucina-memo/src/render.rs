@@ -104,15 +104,26 @@ pub fn esc(s: &str) -> String {
 
 /// Date line in the recording's local time, e.g. `24/10/2026 14:31`.
 pub fn local_when(m: &Memo, tz: Tz) -> String {
-    let tz = m.timezone.as_deref().and_then(|z| z.parse::<Tz>().ok()).unwrap_or(tz);
-    m.recorded_at.with_timezone(&tz).format("%d/%m/%Y %H:%M").to_string()
+    let tz = m
+        .timezone
+        .as_deref()
+        .and_then(|z| z.parse::<Tz>().ok())
+        .unwrap_or(tz);
+    m.recorded_at
+        .with_timezone(&tz)
+        .format("%d/%m/%Y %H:%M")
+        .to_string()
 }
 
 fn item_li(i: &Item, l: &Labels) -> String {
     let mut s = format!("<li>{}", esc(&i.text));
     let mut meta = Vec::new();
     if let Some(o) = &i.owner {
-        meta.push(if o.eq_ignore_ascii_case("me") { l.owner_me.to_owned() } else { esc(o) });
+        meta.push(if o.eq_ignore_ascii_case("me") {
+            l.owner_me.to_owned()
+        } else {
+            esc(o)
+        });
     }
     if let Some(d) = &i.due {
         meta.push(format!("{} {}", l.due, esc(d)));
@@ -121,7 +132,10 @@ fn item_li(i: &Item, l: &Labels) -> String {
         meta.push(clock(at));
     }
     if !meta.is_empty() {
-        s.push_str(&format!(" <span class=\"meta\">· {}</span>", meta.join(" · ")));
+        s.push_str(&format!(
+            " <span class=\"meta\">· {}</span>",
+            meta.join(" · ")
+        ));
     }
     s.push_str("</li>");
     s
@@ -157,7 +171,11 @@ pub fn html(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, app_url: &str) -> Str
             )
         })
         .collect();
-    let tags: String = s.tags.iter().map(|t| format!("<span class=\"tag\">#{}</span>", esc(t))).collect();
+    let tags: String = s
+        .tags
+        .iter()
+        .map(|t| format!("<span class=\"tag\">#{}</span>", esc(t)))
+        .collect();
     format!(
         r#"<!doctype html>
 <html lang="{lang}"><head><meta charset="utf-8"><title>{title}</title>
@@ -232,7 +250,12 @@ footer {{ margin-top: 14pt; font-size: 8.5pt; color: var(--muted); }}
 pub struct RenderError(pub String);
 
 /// Prints `html_file` to `pdf` with headless Chrome.
-pub async fn print_pdf(chrome: &Path, html_file: &Path, pdf: &Path, work: &Path) -> Result<(), RenderError> {
+pub async fn print_pdf(
+    chrome: &Path,
+    html_file: &Path,
+    pdf: &Path,
+    work: &Path,
+) -> Result<(), RenderError> {
     let profile = work.join("chrome-profile");
     let tmp = pdf.with_extension("pdf.tmp");
     let _ = tokio::fs::remove_file(&tmp).await;
@@ -265,13 +288,18 @@ pub async fn print_pdf(chrome: &Path, html_file: &Path, pdf: &Path, work: &Path)
         .map_err(|_| RenderError("chrome timed out".into()))?
         .map_err(|e| RenderError(e.to_string()))?;
     let _ = tokio::fs::remove_dir_all(&profile).await;
-    let ok = tokio::fs::metadata(&tmp).await.map(|m| m.len() > 800).unwrap_or(false);
+    let ok = tokio::fs::metadata(&tmp)
+        .await
+        .map(|m| m.len() > 800)
+        .unwrap_or(false);
     if !out.status.success() || !ok {
         let err = String::from_utf8_lossy(&out.stderr);
         let err: String = err.lines().rev().take(5).collect::<Vec<_>>().join(" | ");
         return Err(RenderError(format!("exit {:?}: {err}", out.status.code())));
     }
-    tokio::fs::rename(&tmp, pdf).await.map_err(|e| RenderError(e.to_string()))
+    tokio::fs::rename(&tmp, pdf)
+        .await
+        .map_err(|e| RenderError(e.to_string()))
 }
 
 #[cfg(test)]
@@ -284,7 +312,12 @@ mod tests {
         assert_eq!(esc("<b>&\"'"), "&lt;b&gt;&amp;&quot;&#39;");
         let l = labels("it");
         let li = item_li(
-            &Item { text: "<script>".into(), at: Some(61.0), owner: Some("me".into()), due: Some("domani".into()) },
+            &Item {
+                text: "<script>".into(),
+                at: Some(61.0),
+                owner: Some("me".into()),
+                due: Some("domani".into()),
+            },
             &l,
         );
         assert!(li.contains("&lt;script&gt;"));

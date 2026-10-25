@@ -10,12 +10,17 @@
 //!   `LUCINA_OWNER_DISCORD_USER_ID`. Exit code 78 on a fatal gateway close
 //!   (bad token, disallowed intents): systemd must not restart into an
 //!   identify loop.
+//! - `lucina google-auth drive [--code <redirect URL or code>]`: Lucina's own
+//!   Google Drive grant (read-only, `mylucina20@gmail.com` only).
+//! - `lucina drive ls [--query Q] [--folder ID] [--search TEXT]`,
+//!   `lucina drive get <ID or link> [--out PATH]`: her Drive from the shell.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use lucina_server::{app, AppState, Config};
+use lucina_tools::google;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -168,6 +173,23 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         expect_rust: usize,
     },
+    /// Grant Lucina's own Google account to this host (opens nothing: prints
+    /// the consent link, then takes the redirected URL with `--code`).
+    GoogleAuth {
+        /// The service (only `drive`).
+        service: String,
+        /// The whole address-bar URL Google redirected to, or the bare code.
+        #[arg(long)]
+        code: Option<String>,
+        /// Ask for read-only Drive (default: full Drive, read and write).
+        #[arg(long)]
+        read_only: bool,
+    },
+    /// Lucina's Google Drive (read-only).
+    Drive {
+        #[command(subcommand)]
+        cmd: DriveCmd,
+    },
     /// Watch the owner's Discord presence (separate gateway session).
     PresenceWatch {
         /// Data dir (default LUCINA_DATA_DIR or ./data); files go to <data>/presence.
@@ -177,6 +199,257 @@ enum Cmd {
         #[arg(long)]
         token_file: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum DriveCmd {
+    /// Files, newest first (JSON lines).
+    Ls {
+        /// Name contains.
+        #[arg(long)]
+        query: Option<String>,
+        /// Full-text search instead of names.
+        #[arg(long)]
+        search: Option<String>,
+        /// Only this folder (id).
+        #[arg(long)]
+        folder: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
+    /// Upload a local file (prints the new file as JSON).
+    Put {
+        file: PathBuf,
+        /// Parent folder id (default: My Drive).
+        #[arg(long)]
+        folder: Option<String>,
+        /// Name in Drive (default: the local file name).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Create a folder (prints it as JSON).
+    Mkdir {
+        name: String,
+        #[arg(long)]
+        parent: Option<String>,
+    },
+    /// One file: its text on stdout, or its bytes to `--out` (with checksums).
+    Get {
+        /// File id or Drive link.
+        file: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
+struct GoogleEnv {
+    client_file: PathBuf,
+    token_file: PathBuf,
+    pending_file: PathBuf,
+    redirect_uri: String,
+    account: String,
+}
+
+impl GoogleEnv {
+    fn from_env() -> Self {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let home = var("HOME").unwrap_or_else(|| "/home/nez".into());
+        Self {
+            client_file: var("LUCINA_GOOGLE_CLIENT_FILE")
+                .unwrap_or_else(|| google::DEFAULT_CLIENT_FILE.into())
+                .into(),
+            token_file: var("LUCINA_DRIVE_TOKEN_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| google::config_file(&home, "google-drive-token.json")),
+            pending_file: google::config_file(&home, "google-auth-pending.json"),
+            redirect_uri: var("LUCINA_GOOGLE_REDIRECT_URI")
+                .unwrap_or_else(|| google::DEFAULT_REDIRECT_URI.into()),
+            account: var("LUCINA_DRIVE_ACCOUNT").unwrap_or_else(|| google::DEFAULT_ACCOUNT.into()),
+        }
+    }
+
+    fn drive(&self) -> anyhow::Result<google::Drive> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        Ok(google::Drive::open(
+            http,
+            google::GoogleEndpoints::default(),
+            &self.client_file,
+            &self.token_file,
+        )?)
+    }
+}
+
+async fn google_auth(service: &str, code: Option<String>, read_only: bool) -> anyhow::Result<()> {
+    if service != "drive" {
+        anyhow::bail!("unknown service {service:?} (only `drive`)");
+    }
+    let g = GoogleEnv::from_env();
+    let client = google::GoogleClient::from_file(&g.client_file)?;
+    let ep = google::GoogleEndpoints::default();
+    let now = chrono::Utc::now().timestamp();
+    let Some(pasted) = code else {
+        let pending = google::Pending::new(now);
+        pending.save(&g.pending_file)?;
+        let scope = if read_only {
+            google::SCOPE_DRIVE_READONLY
+        } else {
+            google::SCOPE_DRIVE
+        };
+        let url = google::authorize_url(&ep, &client, &g.redirect_uri, &pending, &g.account, scope);
+        println!(
+            "Open this link signed in as {} and allow {} access to Drive:\n",
+            g.account,
+            if read_only { "read" } else { "read and write" }
+        );
+        println!("{url}\n");
+        println!(
+            "Google then redirects to {}?...&code=... (the page may not load: that is fine).",
+            g.redirect_uri
+        );
+        println!("Copy the whole address-bar URL within 15 minutes and run:");
+        println!("  lucina google-auth drive --code '<the URL>'");
+        return Ok(());
+    };
+    let pending = google::Pending::load(&g.pending_file)?;
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let token = google::complete_consent(
+        &http,
+        &ep,
+        &client,
+        &g.redirect_uri,
+        &pending,
+        &pasted,
+        &g.account,
+        now,
+    )
+    .await?;
+    token.save(&g.token_file)?;
+    let _ = std::fs::remove_file(&g.pending_file);
+    println!(
+        "{}",
+        serde_json::json!({
+            "ok": true,
+            "account": token.account_email,
+            "scopes": token.scopes(),
+            "tokenPath": g.token_file,
+        })
+    );
+    Ok(())
+}
+
+async fn drive_cmd(cmd: DriveCmd) -> anyhow::Result<()> {
+    let d = GoogleEnv::from_env().drive()?;
+    match cmd {
+        DriveCmd::Ls {
+            query,
+            search,
+            folder,
+            limit,
+        } => {
+            let mut q = google::ListQuery {
+                folder_id: folder,
+                name_contains: query,
+                full_text: search,
+                page_size: limit.clamp(1, 100),
+                page_token: None,
+            };
+            let mut left = limit as usize;
+            loop {
+                let page = d.list(&q).await?;
+                for f in page.files.iter().take(left) {
+                    println!("{}", serde_json::to_string(f)?);
+                }
+                left = left.saturating_sub(page.files.len());
+                match page.next_page_token {
+                    Some(t) if left > 0 => q.page_token = Some(t),
+                    _ => break,
+                }
+            }
+        }
+        DriveCmd::Put { file, folder, name } => {
+            let bytes = std::fs::read(&file)?;
+            let name = name.unwrap_or_else(|| {
+                file.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "upload".into())
+            });
+            let f = d
+                .upload(
+                    &name,
+                    &bytes,
+                    google::mime_for_name(&name),
+                    folder.as_deref(),
+                    None,
+                )
+                .await?;
+            let sha = google::sha256_hex(&bytes);
+            println!(
+                "{}",
+                serde_json::json!({"ok": true, "file": f, "sha256": sha,
+                    "sha256Verified": f.sha256_checksum.as_deref().map(|s| s.eq_ignore_ascii_case(&sha))})
+            );
+        }
+        DriveCmd::Mkdir { name, parent } => {
+            let f = d.create_folder(&name, parent.as_deref()).await?;
+            println!("{}", serde_json::to_string(&f)?);
+        }
+        DriveCmd::Get { file, out } => {
+            let id = google::file_id_of(&file)
+                .ok_or_else(|| anyhow::anyhow!("not a Drive file id or link"))?;
+            let f = d.get(&id).await?;
+            match out {
+                None if !google::is_text(&f) => {
+                    println!("{}", serde_json::to_string_pretty(&f)?);
+                    eprintln!("binary file: use --out PATH to download it");
+                }
+                None => {
+                    let bytes = d.content(&f).await?.unwrap_or_default();
+                    use std::io::Write;
+                    std::io::stdout().write_all(&bytes)?;
+                }
+                Some(path) => {
+                    let bytes = d.content(&f).await?.ok_or_else(|| {
+                        anyhow::anyhow!("{} has no downloadable form", f.mime_type)
+                    })?;
+                    let sha = google::sha256_hex(&bytes);
+                    let verified = f
+                        .sha256_checksum
+                        .as_deref()
+                        .map(|s| s.eq_ignore_ascii_case(&sha));
+                    if verified == Some(false) {
+                        anyhow::bail!(
+                            "sha256 mismatch: Drive says {:?}, got {sha}; nothing written",
+                            f.sha256_checksum
+                        );
+                    }
+                    let tmp = path.with_extension("part");
+                    std::fs::write(&tmp, &bytes)?;
+                    std::fs::rename(&tmp, &path)?;
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "ok": true,
+                            "id": f.id,
+                            "name": f.name,
+                            "mimeType": f.mime_type,
+                            "bytes": bytes.len(),
+                            "sha256": sha,
+                            "driveSha256": f.sha256_checksum,
+                            "driveMd5": f.md5_checksum,
+                            "sha256Verified": verified,
+                            "out": path,
+                        })
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Exit code for a fatal gateway close (`RestartPreventExitStatus=78`).
@@ -312,6 +585,12 @@ fn main() -> anyhow::Result<()> {
 async fn run(cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
         Cmd::PresenceWatch { .. } => unreachable!("handled in main"),
+        Cmd::GoogleAuth {
+            service,
+            code,
+            read_only,
+        } => google_auth(&service, code, read_only).await?,
+        Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Serve => {
             let cfg = Config::from_env()?;
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");

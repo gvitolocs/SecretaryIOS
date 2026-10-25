@@ -1,6 +1,7 @@
 //! Honcho is a sink: writes and queries go through the redactor.
 
-use lucina_memory::{HonchoConfig, Memory, MemoryMode};
+use lucina_memory::surface::OwnerIds;
+use lucina_memory::{HonchoConfig, Memory, MemoryMode, TurnFacts, TurnSurface};
 use wiremock::matchers::any;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -19,7 +20,12 @@ async fn honcho_writes_and_queries_are_redacted() {
         ..HonchoConfig::default()
     };
     let m = Memory::new(MemoryMode::ReadWrite, cfg).unwrap();
+    let app = TurnSurface::classify(
+        &TurnFacts::secretary("ios", true, None),
+        &OwnerIds::default(),
+    );
     m.remember(
+        &app,
         "giuseppe",
         "secretary_t",
         &format!("my key is {VALUE}"),
@@ -27,9 +33,9 @@ async fn honcho_writes_and_queries_are_redacted() {
     )
     .await
     .unwrap();
-    let _ = m.search(&format!("where is {VALUE}"), 5).await;
+    let _ = m.search(&app, &format!("where is {VALUE}"), 5).await;
     let _ = m
-        .build_context("giuseppe", "secretary_t", &format!("context {VALUE}"))
+        .build_context(&app, "giuseppe", "secretary_t", &format!("context {VALUE}"))
         .await;
     let reqs = s.received_requests().await.unwrap();
     assert!(reqs.iter().any(|r| r.url.path().ends_with("/messages")));

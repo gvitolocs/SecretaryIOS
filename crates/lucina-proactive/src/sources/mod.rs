@@ -389,10 +389,25 @@ pub struct HonchoMemory {
     pub memory: lucina_memory::Memory,
 }
 
+impl HonchoMemory {
+    /// The proactive engine's memory surface: background work whose output
+    /// goes to the owner alone (his app timeline, his Telegram chat), so it
+    /// may read his personal memory and never writes it.
+    pub fn surface() -> lucina_memory::TurnSurface {
+        lucina_memory::TurnSurface::classify(
+            &lucina_memory::TurnFacts::background(
+                lucina_memory::surface::BackgroundOrigin::Proactive,
+                true,
+            ),
+            &lucina_memory::surface::OwnerIds::default(),
+        )
+    }
+}
+
 #[async_trait::async_trait]
 impl MemoryFeed for HonchoMemory {
     async fn search(&self, query: &str, limit: u32) -> Vec<String> {
-        match self.memory.search(query, limit).await {
+        match self.memory.search(&Self::surface(), query, limit).await {
             Ok(v) => v
                 .into_iter()
                 .map(|m| m.content)

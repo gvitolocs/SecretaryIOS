@@ -51,11 +51,20 @@ impl From<StoreError> for ApiError {
         match e {
             StoreError::Invalid(m) => Self::bad(m),
             StoreError::NotFound => Self::not_found(),
-            StoreError::Offset(n) => Self(StatusCode::CONFLICT, "offset_mismatch", format!("the server has {n} bytes"), Some(n)),
+            StoreError::Offset(n) => Self(
+                StatusCode::CONFLICT,
+                "offset_mismatch",
+                format!("the server has {n} bytes"),
+                Some(n),
+            ),
             StoreError::Conflict(m) => Self::new(StatusCode::CONFLICT, "conflict", m),
             StoreError::Io(e) => {
                 tracing::error!(error = %e, "memo store I/O");
-                Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", "memo store unavailable")
+                Self::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "memo store unavailable",
+                )
             }
         }
     }
@@ -69,7 +78,8 @@ impl IntoResponse for ApiError {
         }
         let mut r = (self.0, Json(body)).into_response();
         if let Some(n) = self.3 {
-            r.headers_mut().insert("upload-offset", HeaderValue::from(n));
+            r.headers_mut()
+                .insert("upload-offset", HeaderValue::from(n));
         }
         r
     }
@@ -86,10 +96,16 @@ async fn auth(State(app): State<Arc<App>>, req: Request, next: Next) -> Response
     let header_str = |n: &str| h.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
     if let (Some(want), Some(got)) = (app.gateway_token(), header_str("x-memo-gateway")) {
         if ct_eq(want, got) {
-            let cookie_only = h.contains_key(header::COOKIE) && !h.contains_key(header::AUTHORIZATION);
+            let cookie_only =
+                h.contains_key(header::COOKIE) && !h.contains_key(header::AUTHORIZATION);
             let writes = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
             if cookie_only && writes && header_str("x-secretary-csrf") != Some("1") {
-                return ApiError::new(StatusCode::FORBIDDEN, "csrf", "cookie-authenticated requests that change state need X-Secretary-CSRF: 1").into_response();
+                return ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "csrf",
+                    "cookie-authenticated requests that change state need X-Secretary-CSRF: 1",
+                )
+                .into_response();
             }
             return next.run(req).await;
         }
@@ -103,7 +119,12 @@ async fn auth(State(app): State<Arc<App>>, req: Request, next: Next) -> Response
             return next.run(req).await;
         }
     }
-    ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "memo API: unknown caller").into_response()
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "memo API: unknown caller",
+    )
+    .into_response()
 }
 
 pub fn router(app: Arc<App>) -> Router {
@@ -140,7 +161,11 @@ async fn health(State(app): State<Arc<App>>) -> Json<Value> {
 }
 
 fn id_ok(id: &str) -> Result<(), ApiError> {
-    if valid_id(id) { Ok(()) } else { Err(ApiError::not_found()) }
+    if valid_id(id) {
+        Ok(())
+    } else {
+        Err(ApiError::not_found())
+    }
 }
 
 #[derive(Deserialize)]
@@ -160,7 +185,10 @@ struct CreateBody {
     source: Option<String>,
 }
 
-async fn create(State(app): State<Arc<App>>, Json(b): Json<CreateBody>) -> R<(StatusCode, Json<Value>)> {
+async fn create(
+    State(app): State<Arc<App>>,
+    Json(b): Json<CreateBody>,
+) -> R<(StatusCode, Json<Value>)> {
     let source = b.source.unwrap_or_else(|| "app".into());
     if source.len() > 16 || !source.bytes().all(|c| c.is_ascii_lowercase()) {
         return Err(ApiError::bad("source: a short lowercase word"));
@@ -181,7 +209,14 @@ async fn create(State(app): State<Arc<App>>, Json(b): Json<CreateBody>) -> R<(St
     if created {
         tracing::info!(id = %m.id, size = m.size_bytes, source = %m.source, "memo created");
     }
-    Ok((if created { StatusCode::CREATED } else { StatusCode::OK }, Json(json!({"memo": m}))))
+    Ok((
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(json!({"memo": m})),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -208,7 +243,8 @@ async fn list(State(app): State<Arc<App>>, Query(q): Query<ListQuery>) -> R {
 async fn detail(State(app): State<Arc<App>>, Path(id): Path<String>) -> R {
     id_ok(&id)?;
     let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
-    let summary: Option<Summary> = read_json(&app.store.summary_path(&id)).map_err(StoreError::from)?;
+    let summary: Option<Summary> =
+        read_json(&app.store.summary_path(&id)).map_err(StoreError::from)?;
     Ok(Json(json!({
         "memo": m,
         "summary": summary,
@@ -220,10 +256,15 @@ async fn detail(State(app): State<Arc<App>>, Path(id): Path<String>) -> R {
 async fn transcript(State(app): State<Arc<App>>, Path(id): Path<String>) -> R {
     id_ok(&id)?;
     app.store.get(&id).ok_or_else(ApiError::not_found)?;
-    let t: Option<Transcript> = read_json(&app.store.transcript_path(&id)).map_err(StoreError::from)?;
+    let t: Option<Transcript> =
+        read_json(&app.store.transcript_path(&id)).map_err(StoreError::from)?;
     match t {
         Some(t) => Ok(Json(json!({"transcript": t}))),
-        None => Err(ApiError::new(StatusCode::NOT_FOUND, "not_ready", "no transcript yet")),
+        None => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_ready",
+            "no transcript yet",
+        )),
     }
 }
 
@@ -239,12 +280,21 @@ struct DeviceTranscriptBody {
 
 /// The recording device's own transcript (short memos on the iPhone). Used while the GPU
 /// is busy; never replaces a Whisper transcript.
-async fn device_transcript(State(app): State<Arc<App>>, Path(id): Path<String>, Json(b): Json<DeviceTranscriptBody>) -> R {
+async fn device_transcript(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(b): Json<DeviceTranscriptBody>,
+) -> R {
     id_ok(&id)?;
     let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
-    let lang_ok = (2..=8).contains(&b.language.len()) && b.language.bytes().all(|c| c.is_ascii_lowercase() || c == b'-');
+    let lang_ok = (2..=8).contains(&b.language.len())
+        && b.language
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c == b'-');
     if !lang_ok || b.engine.is_empty() || b.engine.chars().count() > 80 {
-        return Err(ApiError::bad("language: a code like it; engine: 1-80 characters"));
+        return Err(ApiError::bad(
+            "language: a code like it; engine: 1-80 characters",
+        ));
     }
     if b.segments.is_empty() || b.segments.len() > 20_000 {
         return Err(ApiError::bad("segments: 1 to 20000"));
@@ -252,14 +302,27 @@ async fn device_transcript(State(app): State<Arc<App>>, Path(id): Path<String>, 
     let mut segments = Vec::with_capacity(b.segments.len());
     for s in b.segments {
         let text = s.text.trim();
-        if !(s.start.is_finite() && s.end.is_finite() && s.start >= 0.0 && s.end >= s.start) || text.chars().count() > 4000 {
-            return Err(ApiError::bad("segment: start <= end, finite, text up to 4000 characters"));
+        if !(s.start.is_finite() && s.end.is_finite() && s.start >= 0.0 && s.end >= s.start)
+            || text.chars().count() > 4000
+        {
+            return Err(ApiError::bad(
+                "segment: start <= end, finite, text up to 4000 characters",
+            ));
         }
         if !text.is_empty() {
-            segments.push(crate::model::Segment { start: s.start, end: s.end, text: text.to_owned(), speaker: None });
+            segments.push(crate::model::Segment {
+                start: s.start,
+                end: s.end,
+                text: text.to_owned(),
+                speaker: None,
+            });
         }
     }
-    let duration = if b.duration_sec.is_finite() && b.duration_sec > 0.0 { b.duration_sec } else { m.duration_sec };
+    let duration = if b.duration_sec.is_finite() && b.duration_sec > 0.0 {
+        b.duration_sec
+    } else {
+        m.duration_sec
+    };
     let t = Transcript {
         language: b.language.split('-').next().unwrap_or("und").to_owned(),
         engine: b.engine,
@@ -268,13 +331,16 @@ async fn device_transcript(State(app): State<Arc<App>>, Path(id): Path<String>, 
         speakers: false,
         created_at: Utc::now(),
     };
-    crate::store::write_json(&app.store.device_transcript_path(&id), &t).map_err(StoreError::from)?;
+    crate::store::write_json(&app.store.device_transcript_path(&id), &t)
+        .map_err(StoreError::from)?;
     // A memo waiting for the GPU can go ahead now.
     if m.status == Status::Queued && m.next_attempt_at.is_some() {
         app.store.update(&id, |m| m.next_attempt_at = None)?;
     }
     app.wake.notify_one();
-    Ok(Json(json!({"stored": true, "used": m.transcript_source.as_deref() != Some("whisper")})))
+    Ok(Json(
+        json!({"stored": true, "used": m.transcript_source.as_deref() != Some("whisper")}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -283,7 +349,11 @@ struct RenameBody {
     title: String,
 }
 
-async fn rename(State(app): State<Arc<App>>, Path(id): Path<String>, Json(b): Json<RenameBody>) -> R {
+async fn rename(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(b): Json<RenameBody>,
+) -> R {
     id_ok(&id)?;
     let title = crate::store::clean_title(&b.title);
     if title.is_empty() {
@@ -310,7 +380,11 @@ async fn remove(State(app): State<Arc<App>>, Path(id): Path<String>) -> R {
     id_ok(&id)?;
     let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
     if m.status.is_pipeline() && !matches!(m.status, Status::Queued) {
-        return Err(ApiError::new(StatusCode::CONFLICT, "busy", "the memo is being processed; try again in a minute"));
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "busy",
+            "the memo is being processed; try again in a minute",
+        ));
     }
     app.store.trash(&id)?;
     crate::library::unregister(&id).await;
@@ -318,7 +392,13 @@ async fn remove(State(app): State<Arc<App>>, Path(id): Path<String>) -> R {
     Ok(Json(json!({"deleted": id})))
 }
 
-async fn upload(State(app): State<Arc<App>>, Path(id): Path<String>, headers: HeaderMap, Query(q): Query<OffsetQuery>, body: Body) -> R<Response> {
+async fn upload(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<OffsetQuery>,
+    body: Body,
+) -> R<Response> {
     id_ok(&id)?;
     let offset = headers
         .get("upload-offset")
@@ -326,9 +406,14 @@ async fn upload(State(app): State<Arc<App>>, Path(id): Path<String>, headers: He
         .and_then(|v| v.trim().parse::<u64>().ok())
         .or(q.offset)
         .ok_or_else(|| ApiError::bad("Upload-Offset header (or ?offset=) required"))?;
-    let m = app.store.append(&id, offset, body.into_data_stream()).await?;
-    let mut r = Json(json!({"receivedBytes": m.received_bytes, "sizeBytes": m.size_bytes})).into_response();
-    r.headers_mut().insert("upload-offset", HeaderValue::from(m.received_bytes));
+    let m = app
+        .store
+        .append(&id, offset, body.into_data_stream())
+        .await?;
+    let mut r =
+        Json(json!({"receivedBytes": m.received_bytes, "sizeBytes": m.size_bytes})).into_response();
+    r.headers_mut()
+        .insert("upload-offset", HeaderValue::from(m.received_bytes));
     Ok(r)
 }
 
@@ -344,7 +429,11 @@ struct CompleteBody {
     sha256: Option<String>,
 }
 
-async fn complete(State(app): State<Arc<App>>, Path(id): Path<String>, body: Option<Json<CompleteBody>>) -> R {
+async fn complete(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    body: Option<Json<CompleteBody>>,
+) -> R {
     id_ok(&id)?;
     let b = body.map(|Json(b)| b).unwrap_or_default();
     if let Some(h) = &b.sha256 {
@@ -366,10 +455,17 @@ struct ResummarizeBody {
     instructions: Option<String>,
 }
 
-async fn resummarize(State(app): State<Arc<App>>, Path(id): Path<String>, body: Option<Json<ResummarizeBody>>) -> R {
+async fn resummarize(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    body: Option<Json<ResummarizeBody>>,
+) -> R {
     id_ok(&id)?;
     let b = body.map(|Json(b)| b).unwrap_or_default();
-    let instructions = b.instructions.map(|s| s.trim().chars().take(2000).collect::<String>()).filter(|s| !s.is_empty());
+    let instructions = b
+        .instructions
+        .map(|s| s.trim().chars().take(2000).collect::<String>())
+        .filter(|s| !s.is_empty());
     let m = worker::request_resummary(&app, &id, instructions)?;
     Ok(Json(json!({"memo": m})))
 }
@@ -381,12 +477,20 @@ struct ReprocessBody {
     from_transcript: bool,
 }
 
-async fn reprocess(State(app): State<Arc<App>>, Path(id): Path<String>, body: Option<Json<ReprocessBody>>) -> R {
+async fn reprocess(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    body: Option<Json<ReprocessBody>>,
+) -> R {
     id_ok(&id)?;
     let b = body.map(|Json(b)| b).unwrap_or_default();
     let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
     if m.status == Status::Uploading {
-        return Err(ApiError::new(StatusCode::CONFLICT, "conflict", "the upload is not complete"));
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            "the upload is not complete",
+        ));
     }
     let m = worker::request_reprocess(&app, &id, b.from_transcript)?;
     Ok(Json(json!({"memo": m})))
@@ -407,7 +511,8 @@ fn parse_when(app: &App, s: &str, end: bool) -> Result<DateTime<Utc>, ApiError> 
     if let Ok(t) = DateTime::parse_from_rfc3339(s) {
         return Ok(t.with_timezone(&Utc));
     }
-    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| ApiError::bad("dates: YYYY-MM-DD or RFC 3339"))?;
+    let d = NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|_| ApiError::bad("dates: YYYY-MM-DD or RFC 3339"))?;
     let d = if end { d.succ_opt().unwrap_or(d) } else { d };
     let local = app
         .cfg
@@ -419,8 +524,15 @@ fn parse_when(app: &App, s: &str, end: bool) -> Result<DateTime<Utc>, ApiError> 
 }
 
 async fn search_memos(State(app): State<Arc<App>>, Query(q): Query<SearchQuery>) -> R {
-    let mut from = q.from.as_deref().map(|s| parse_when(&app, s, false)).transpose()?;
-    let to = q.to.as_deref().map(|s| parse_when(&app, s, true)).transpose()?;
+    let mut from = q
+        .from
+        .as_deref()
+        .map(|s| parse_when(&app, s, false))
+        .transpose()?;
+    let to =
+        q.to.as_deref()
+            .map(|s| parse_when(&app, s, true))
+            .transpose()?;
     if let Some(d) = q.days {
         from = Some(Utc::now() - CDuration::days(d.clamp(1, 3650)));
     }
@@ -434,22 +546,38 @@ async fn search_memos(State(app): State<Arc<App>>, Query(q): Query<SearchQuery>)
     Ok(Json(json!({"memos": hits})))
 }
 
-async fn pdf(State(app): State<Arc<App>>, Path(id): Path<String>, headers: HeaderMap) -> R<Response> {
+async fn pdf(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> R<Response> {
     id_ok(&id)?;
     let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
     let path = app.store.pdf_path(&id);
     if !path.exists() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_ready", "no PDF yet"));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_ready",
+            "no PDF yet",
+        ));
     }
     let name = format!("{}.pdf", crate::obsidian::safe_name(&m.title));
     serve_file(&path, "application/pdf", &headers, Some(&name)).await
 }
 
-async fn audio(State(app): State<Arc<App>>, Path(id): Path<String>, headers: HeaderMap) -> R<Response> {
+async fn audio(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> R<Response> {
     id_ok(&id)?;
     let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
     if m.status == Status::Uploading {
-        return Err(ApiError::new(StatusCode::CONFLICT, "uploading", "the audio is still uploading"));
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "uploading",
+            "the audio is still uploading",
+        ));
     }
     serve_file(&app.store.audio_path(&m), &m.mime, &headers, None).await
 }
@@ -476,8 +604,15 @@ pub fn parse_range(h: &str, len: u64) -> Option<(u64, u64)> {
     (start <= end && start < len).then_some((start, end))
 }
 
-async fn serve_file(path: &std::path::Path, mime: &str, headers: &HeaderMap, download: Option<&str>) -> R<Response> {
-    let meta = tokio::fs::metadata(path).await.map_err(|_| ApiError::not_found())?;
+async fn serve_file(
+    path: &std::path::Path,
+    mime: &str,
+    headers: &HeaderMap,
+    download: Option<&str>,
+) -> R<Response> {
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| ApiError::not_found())?;
     let len = meta.len();
     let mtime = meta
         .modified()
@@ -485,7 +620,11 @@ async fn serve_file(path: &std::path::Path, mime: &str, headers: &HeaderMap, dow
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_secs());
     let etag = format!("\"{len:x}-{mtime:x}\"");
-    if headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(etag.as_str())
+    {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
     let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
@@ -503,22 +642,48 @@ async fn serve_file(path: &std::path::Path, mime: &str, headers: &HeaderMap, dow
         },
     };
     let count = if len == 0 { 0 } else { end - start + 1 };
-    let mut f = tokio::fs::File::open(path).await.map_err(|_| ApiError::not_found())?;
-    f.seek(std::io::SeekFrom::Start(start)).await.map_err(|e| ApiError::from(StoreError::Io(e)))?;
+    let mut f = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    f.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(|e| ApiError::from(StoreError::Io(e)))?;
     let stream = tokio_util::io::ReaderStream::new(f.take(count));
     let mut r = Response::new(Body::from_stream(stream));
     *r.status_mut() = status;
     let h = r.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(mime).unwrap_or(HeaderValue::from_static("application/octet-stream")));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(mime).unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
     h.insert(header::CONTENT_LENGTH, HeaderValue::from(count));
     h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    h.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap_or(HeaderValue::from_static("\"0\"")));
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=0, must-revalidate"));
+    h.insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag).unwrap_or(HeaderValue::from_static("\"0\"")),
+    );
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=0, must-revalidate"),
+    );
     if status == StatusCode::PARTIAL_CONTENT {
-        h.insert(header::CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {start}-{end}/{len}")).unwrap_or(HeaderValue::from_static("bytes */0")));
+        h.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{len}"))
+                .unwrap_or(HeaderValue::from_static("bytes */0")),
+        );
     }
     if let Some(name) = download {
-        let ascii: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || " .-_".contains(c) { c } else { '_' }).collect();
+        let ascii: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || " .-_".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{ascii}\"")) {
             h.insert(header::CONTENT_DISPOSITION, v);
         }

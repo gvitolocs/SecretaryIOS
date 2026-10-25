@@ -17,7 +17,7 @@ use futures_util::FutureExt;
 use lucina_intent::mcp::{self, McpTurn};
 use lucina_intent::{domains as dm, grocery as gi, notes as nt, outfit};
 use lucina_llm::Message;
-use lucina_memory::{secretary_session_id, MemoryMode};
+use lucina_memory::{secretary_session_id, MemoryMode, TurnSurface};
 use lucina_store::jobs::Job;
 use lucina_store::parser::{parse_at_time, parse_date_part, parse_reminder_message, ParseOptions};
 use lucina_store::reminders::{format_confirmation, format_list, CreateReminder};
@@ -31,8 +31,10 @@ use serde_json::{json, Value};
 use crate::api::{optional_string, owner_reminders, ApiError, PLATFORM_LABEL, USER_LABEL};
 use crate::planner::TurnInput;
 use crate::prompts::Prompts;
+use crate::surface::BearerVerified;
 use crate::{jobs, AppState, PlannerMode};
 
+pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
@@ -44,8 +46,14 @@ const CLIENT_MESSAGE_KEEP: usize = 200;
 pub const PLANNER_PLATFORM: &str = "secretary";
 pub const SECRETARY_EXTRA_SYSTEM: &str = "This conversation comes from the Secretary app on Giuseppe's iPhone. Reply in the language of the message. Keep it short: usually 1-3 sentences. Plain text only: no markdown tables or headings.";
 
-/// Validate the body, dedupe `clientMessageId` retries, run the turn.
-pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
+/// Validate the body, classify the turn's memory surface (once), dedupe
+/// `clientMessageId` retries, run the turn. `bearer`: the request passed the
+/// Secretary bearer check.
+pub async fn handle_chat(
+    st: AppState,
+    bearer: BearerVerified,
+    body: Value,
+) -> Result<Value, ApiError> {
     let message = match &body["message"] {
         Value::String(s) if !s.trim().is_empty() => lucina_store::timeutil::js_trim(s).to_owned(),
         _ => return Err(ApiError::bad_request("message is required")),
@@ -87,6 +95,17 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
     if utf16_len(&text) > MAX_MESSAGE_CHARS {
         return Err(too_long());
     }
+    let surface = crate::surface::chat_surface(&st.cfg, Some(bearer), &channel, mcp_turn.as_ref());
+    tracing::info!(session_id = %session, %channel, mcp = mcp_turn.as_ref().map(|m| m.caller.as_str()), surface = surface.class_name(), chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
+    // Only the owner and his MCP delegates chat here; anything else fails
+    // closed before any memory read or timeline write.
+    if !surface.is_owner() {
+        tracing::warn!(
+            surface = surface.class_name(),
+            "secretary chat refused by memory surface policy"
+        );
+        return Err(ApiError::new(403, "forbidden", ""));
+    }
     // OTP requests: answered here, never seen by the model, the timeline,
     // memory or the replay cache (Node `handleChat`).
     if let Some(out) = crate::otp::secretary_chat(
@@ -100,10 +119,9 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
     {
         return Ok(out);
     }
-    tracing::info!(session_id = %session, %channel, mcp = mcp_turn.as_ref().map(|m| m.caller.as_str()), chars = message.chars().count(), has_client_message_id = !client_message_id.is_empty(), "secretary chat received");
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
-        return run_turn(st, text, session, None, channel, mcp_turn).await;
+        return run_turn(st, text, session, None, channel, mcp_turn, surface).await;
     };
     let key = format!("{session}:{cmid_value}");
     enum Slot {
@@ -126,7 +144,7 @@ pub async fn handle_chat(st: AppState, body: Value) -> Result<Value, ApiError> {
                         None => break,
                     };
                 }
-                let fut = run_turn(st.clone(), text, session, cmid, channel, mcp_turn)
+                let fut = run_turn(st.clone(), text, session, cmid, channel, mcp_turn, surface)
                     .boxed()
                     .shared();
                 map.insert(key.clone(), (Instant::now(), fut.clone()));
@@ -242,6 +260,10 @@ struct Turn<'a> {
     session: String,
     channel: String,
     mcp: Option<McpTurn>,
+    /// The turn's memory surface (classified once in `handle_chat`).
+    surface: TurnSurface,
+    /// An MCP turn held to the allowlist (`LUCINA_MCP_TRUSTED=false`).
+    guarded: bool,
     user_label: String,
     extra_system: String,
 }
@@ -268,14 +290,11 @@ async fn run_turn(
     cmid: Option<String>,
     channel: String,
     mcp_turn: Option<McpTurn>,
+    surface: TurnSurface,
 ) -> Result<Value, ApiError> {
     if st.cfg.planner == PlannerMode::Tools {
-        let origin = if mcp_turn.is_some() {
-            Origin::Mcp
-        } else {
-            Origin::Owner
-        };
-        return tools_turn(st, message, session, cmid, channel, origin).await;
+        let from_mcp = mcp_turn.is_some();
+        return tools_turn(st, message, session, cmid, channel, surface, from_mcp).await;
     }
     // With rich replies the app turns structure into widgets and buttons.
     let base_system = if st.cfg.rich_replies {
@@ -283,10 +302,17 @@ async fn run_turn(
     } else {
         SECRETARY_EXTRA_SYSTEM
     };
+    let note = |m: &McpTurn| {
+        if st.cfg.mcp_trusted {
+            mcp::note_trusted(m)
+        } else {
+            mcp::note(m)
+        }
+    };
     let (user_label, extra_system) = match &mcp_turn {
         Some(m) => (
-            format!("{USER_LABEL}; {}", mcp::note(m)),
-            format!("{base_system} {}", mcp::note(m)),
+            format!("{USER_LABEL}; {}", note(m)),
+            format!("{base_system} {}", note(m)),
         ),
         None => (USER_LABEL.to_owned(), base_system.to_owned()),
     };
@@ -298,12 +324,15 @@ async fn run_turn(
     let timeline =
         TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
     let user_item = timeline.record_user(&message, Vec::new());
+    let guarded = mcp_turn.is_some() && !st.cfg.mcp_trusted;
     let t = Turn {
         st: &st,
         message,
         session,
         channel,
         mcp: mcp_turn,
+        surface,
+        guarded,
         user_label,
         extra_system,
     };
@@ -317,6 +346,7 @@ async fn run_turn(
         None => {
             let prepared = crate::context::prepare(
                 &st,
+                &t.surface,
                 &t.session,
                 &t.message,
                 &t.user_label,
@@ -324,7 +354,7 @@ async fn run_turn(
             )
             .await;
             st.recent.append(&t.session, "user", &t.message, Utc::now());
-            let game_system = if prepared.game.is_empty() || t.mcp.is_none() {
+            let game_system = if prepared.game.is_empty() || !t.guarded {
                 prepared.game.clone()
             } else {
                 format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
@@ -374,6 +404,7 @@ async fn run_turn(
             t.session.clone(),
             timeline.user_item_id(),
             t.channel.clone(),
+            t.surface.clone(),
         );
     }
     let mut out = json!({
@@ -485,13 +516,17 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
     .filter(|s| !s.is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let (mem, peer, sid) = (
+    let (mem, peer, sid, surface) = (
         st.memory.clone(),
         st.cfg.owner_peer_id.clone(),
         t.session.clone(),
+        t.surface.clone(),
     );
     tokio::spawn(async move {
-        if let Err(e) = mem.remember(&peer, &sid, &label, &assistant).await {
+        if let Err(e) = mem
+            .remember(&surface, &peer, &sid, &label, &assistant)
+            .await
+        {
             tracing::warn!(error = %e, "secretary honcho remember failed");
         }
     });
@@ -636,8 +671,13 @@ async fn json_turn(
         return f;
     }
 
+    // Lucina's own Google Drive (LUCINA_DRIVE=true with a grant), read-only.
+    if let Some(f) = drive_turn::try_turn(t, memory).await {
+        return f;
+    }
+
     // "Mettiti il vestito da cameriera" (LUCINA_AVATAR_OUTFIT=true; never from MCP).
-    if t.mcp.is_none() && st.cfg.outfit_enabled {
+    if !t.guarded && st.cfg.outfit_enabled {
         if let Some(look) = outfit::parse_outfit_intent(&t.message) {
             let o = crate::bridges::change_look(&st.secretary, &look).await;
             return Finish::reply(o.reply, "avatar_outfit").with(o.action_result, o.meta);
@@ -645,7 +685,7 @@ async fn json_turn(
     }
 
     // Delegation (LUCINA_DELEGATE=true): the owner's switches, undo, and
-    // explicit asks ("chiedi a Grok …"). Never from Lucina MCP.
+    // explicit asks ("chiedi a Grok …"). From Lucina MCP only when trusted.
     if let Some(d) = st.delegator.clone() {
         if let Some(f) = delegation_hook(t, &d, memory).await {
             return f;
@@ -697,7 +737,7 @@ async fn json_turn(
     if st.cfg.notes_enabled {
         let pending = !st.bridge_state.pending_part(&t.session).is_empty();
         if let Some(intent) = nt::parse_notes_intent(&t.message, pending) {
-            if t.mcp.is_some() && !mcp::ALLOWED_ACTIONS.contains(&"notes") {
+            if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&"notes") {
                 return Finish::refusal(&persona, "notes");
             }
             let source = t
@@ -714,7 +754,7 @@ async fn json_turn(
             )
             .await;
             if let Some(note) = &o.memory_note {
-                remember_note(st, &t.session, note, &source);
+                remember_note(st, &t.surface, &t.session, note, &source);
             }
             let mut reply = o.reply.clone();
             if let Some(note) = &o.read_note {
@@ -760,7 +800,7 @@ async fn json_turn(
         match crate::bridges::tasks_turn(
             &st.secretary,
             &t.message,
-            t.mcp.is_some(),
+            t.guarded,
             st.cfg.time_zone,
             st.cfg.calendar_enabled,
         )
@@ -782,7 +822,7 @@ async fn json_turn(
             &st.bridge_state,
             &t.message,
             &t.session,
-            t.mcp.is_some(),
+            t.guarded,
             Utc::now(),
             st.cfg.time_zone,
         )
@@ -809,7 +849,7 @@ async fn json_turn(
 
     // The deterministic grocery path (same as a Telegram text turn).
     let grocery_intent = gi::parse_grocery_intent(&t.message).map(|g| g.intent);
-    if t.mcp.is_some() {
+    if t.guarded {
         if let Some(intent) = grocery_intent {
             if !mcp::ALLOWED_GROCERY_INTENTS.contains(&intent) {
                 tracing::warn!(session_id = %t.session, blocked = intent, "secretary mcp turn refused");
@@ -859,9 +899,11 @@ async fn json_turn(
     // The JSON-action planner, with the turn's classification. While her game is live, owner turns skip the
     // casual chat shortcut (which clips the context and cannot choose actions) so she reasons over the game
     // state and can pass advice to her playing self (game_hint).
-    let game_live = t.mcp.is_none() && !prepared.game.is_empty();
+    let game_live = !t.guarded && !prepared.game.is_empty();
     let routed = if game_live {
-        st.planner.plan_response(&t.input(memory, PLANNER_PLATFORM)).await
+        st.planner
+            .plan_response(&t.input(memory, PLANNER_PLATFORM))
+            .await
     } else {
         st.planner
             .route_classified(
@@ -894,7 +936,7 @@ async fn json_turn(
         .unwrap_or("reply")
         .to_owned();
 
-    if t.mcp.is_some() && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
+    if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
         tracing::warn!(session_id = %t.session, blocked = %action, "secretary mcp turn refused");
         return Finish::refusal(&persona, &action);
     }
@@ -908,23 +950,35 @@ async fn json_turn(
             .filter(|s| !s.is_empty())
             .unwrap_or(&t.message)
             .to_owned();
-        let ack = plan["ack"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let ack = plan["ack"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         return match crate::bridges::game_hint(&st.secretary.http, &text).await {
             Ok(_) => Finish::reply(
-                ack.unwrap_or("Passed it to my playing self: I'll act on it in the game.").to_owned(),
+                ack.unwrap_or("Passed it to my playing self: I'll act on it in the game.")
+                    .to_owned(),
                 "game",
             )
-            .with(format!("[game hint queued] {text}"), Some(Meta::kind("game"))),
+            .with(
+                format!("[game hint queued] {text}"),
+                Some(Meta::kind("game")),
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "game hint failed");
-                Finish::reply("I couldn't reach my game right now, so the advice didn't get through.", "game")
-                    .with("[game hint failed]", Some(Meta::kind("game")))
+                Finish::reply(
+                    "I couldn't reach my game right now, so the advice didn't get through.",
+                    "game",
+                )
+                .with("[game hint failed]", Some(Meta::kind("game")))
             }
         };
     }
     if action == "game_start" || action == "game_pause" {
         let running = action == "game_start";
-        let ok = crate::bridges::game_control(&st.secretary.http, running).await.is_ok();
+        let ok = crate::bridges::game_control(&st.secretary.http, running)
+            .await
+            .is_ok();
         let lang = lucina_intent::tasks::guess_lang(&t.message);
         let text = if ok {
             lucina_intent::game::control_reply(lang, running, true).to_owned()
@@ -932,7 +986,11 @@ async fn json_turn(
             lucina_intent::game::off(lang).to_owned()
         };
         return Finish::reply(text, "game").with(
-            format!("[game {} {}]", if running { "start" } else { "pause" }, if ok { "ok" } else { "failed" }),
+            format!(
+                "[game {} {}]",
+                if running { "start" } else { "pause" },
+                if ok { "ok" } else { "failed" }
+            ),
             Some(Meta::kind("game")),
         );
     }
@@ -1195,11 +1253,11 @@ async fn delegation_hook(
     d: &std::sync::Arc<lucina_delegate::Delegator>,
     memory: &str,
 ) -> Option<Finish> {
-    if let Some(f) = delegation_settings(d, &t.message, t.mcp.is_some()).await {
+    if let Some(f) = delegation_settings(d, &t.message, t.guarded).await {
         return Some(f);
     }
     let i = lucina_delegate::intent::parse_delegation(&t.message)?;
-    if t.mcp.is_some() {
+    if t.guarded {
         tracing::warn!(session_id = %t.session, "secretary mcp turn refused: delegation");
         return Some(delegation_refused(i.lang));
     }
@@ -1243,7 +1301,7 @@ async fn delegated_finish(
 }
 
 /// Honcho: a saved note's summary (`rememberNote`).
-fn remember_note(st: &AppState, session: &str, note: &Value, source: &str) {
+fn remember_note(st: &AppState, surface: &TurnSurface, session: &str, note: &Value, source: &str) {
     if st.memory.mode() != MemoryMode::ReadWrite {
         return;
     }
@@ -1253,13 +1311,14 @@ fn remember_note(st: &AppState, session: &str, note: &Value, source: &str) {
         note["slug"].as_str().unwrap_or("")
     );
     let assistant = nt::summary_for_memory(note, source);
-    let (mem, peer, sid) = (
+    let (mem, peer, sid, surface) = (
         st.memory.clone(),
         st.cfg.owner_peer_id.clone(),
         session.to_owned(),
+        surface.clone(),
     );
     tokio::spawn(async move {
-        if let Err(e) = mem.remember(&peer, &sid, &user, &assistant).await {
+        if let Err(e) = mem.remember(&surface, &peer, &sid, &user, &assistant).await {
             tracing::warn!(error = %e, "note honcho remember failed");
         }
     });
@@ -1276,6 +1335,8 @@ fn spawn_job(
     session: String,
     user_item: Option<String>,
     channel: String,
+    // The job keeps the surface of the turn that started it.
+    surface: TurnSurface,
 ) {
     tokio::spawn(async move {
         let record = |text: String, rich: Option<&lucina_store::rich::RichMessage>| {
@@ -1342,7 +1403,15 @@ fn spawn_job(
                     j.finished_at = Some(now_iso());
                 });
                 st.recent.append(&session, "assistant", &result, Utc::now());
-                remember_job(&st, &session, &message, &action, &result, &action_result);
+                remember_job(
+                    &st,
+                    &surface,
+                    &session,
+                    &message,
+                    &action,
+                    &result,
+                    &action_result,
+                );
             }
             Err(reason) => {
                 let reason: String = reason.chars().take(500).collect();
@@ -1355,7 +1424,7 @@ fn spawn_job(
                     j.timeline_item_id = item.map(|i| i.id);
                     j.finished_at = Some(now_iso());
                 });
-                remember_job(&st, &session, &message, &action, &text, "");
+                remember_job(&st, &surface, &session, &message, &action, &text, "");
             }
         }
         st.jobs.finish(&job.id);
@@ -1364,6 +1433,7 @@ fn spawn_job(
 
 fn remember_job(
     st: &AppState,
+    surface: &TurnSurface,
     session: &str,
     message: &str,
     action: &str,
@@ -1390,13 +1460,14 @@ fn remember_job(
     .filter(|s| !s.is_empty())
     .collect::<Vec<_>>()
     .join("\n\n");
-    let (mem, peer, sid) = (
+    let (mem, peer, sid, surface) = (
         st.memory.clone(),
         st.cfg.owner_peer_id.clone(),
         session.to_owned(),
+        surface.clone(),
     );
     tokio::spawn(async move {
-        if let Err(e) = mem.remember(&peer, &sid, &user, &assistant).await {
+        if let Err(e) = mem.remember(&surface, &peer, &sid, &user, &assistant).await {
             tracing::warn!(error = %e, "secretary honcho remember failed");
         }
     });
@@ -1406,7 +1477,11 @@ fn remember_job(
 
 /// "Show in Gallery" (the app opens the path; web and older clients ignore unknown routes).
 fn gallery_action(path: &str, count: usize) -> Value {
-    let label = if count == 1 { "Show the photo".to_owned() } else { format!("Show {count} in Gallery") };
+    let label = if count == 1 {
+        "Show the photo".to_owned()
+    } else {
+        format!("Show {count} in Gallery")
+    };
     json!({"id": "gallery", "label": label, "emoji": "🖼️", "kind": "route", "payload": {"path": path}})
 }
 
@@ -1498,26 +1573,45 @@ async fn tools_turn(
     session: String,
     cmid: Option<String>,
     channel: String,
-    origin: Origin,
+    surface: TurnSurface,
+    from_mcp: bool,
 ) -> Result<Value, ApiError> {
+    // The tool set follows `origin` (trusted MCP turns get the owner's);
+    // memory reads and writes follow `surface`.
+    let origin = if from_mcp && !st.cfg.mcp_trusted {
+        Origin::Mcp
+    } else {
+        Origin::Owner
+    };
     let mcp = matches!(origin, Origin::Mcp);
     let now = Utc::now();
     let tz = st.cfg.time_zone;
     let persona = st.cfg.persona.clone();
     let turn = TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone());
     let user_item = turn.record_user(&message, Vec::new());
-    // MCP callers never get the owner-only tools (secrets).
+    // MCP callers never get the owner-only tools (secrets); a guarded MCP
+    // turn gets no delegation either.
     let registry = if mcp {
         st.mcp_registry.clone()
+    } else if from_mcp {
+        st.trusted_mcp_registry.clone()
     } else {
         st.registry.clone()
     };
-    let secrets = secrets_finish(&st, &message, mcp).await;
+    let secrets = secrets_finish(&st, &message, from_mcp).await;
     let (memory_context, game_system) = if secrets.is_some() {
         (String::new(), String::new())
     } else {
-        let p =
-            crate::context::prepare_with(&st, &session, &message, USER_LABEL, PLANNER_PLATFORM, true).await;
+        let p = crate::context::prepare_with(
+            &st,
+            &surface,
+            &session,
+            &message,
+            USER_LABEL,
+            PLANNER_PLATFORM,
+            true,
+        )
+        .await;
         let game = if p.game.is_empty() || !mcp {
             p.game
         } else {
@@ -1669,12 +1763,18 @@ async fn tools_turn(
     .await;
     st.recent
         .append(&session, "assistant", &remembered, Utc::now());
+    // MCP turns are remembered with their caller (label and metadata).
     let t2 = Turn {
         st: &st,
         message: message.clone(),
         session: session.clone(),
         channel: channel.clone(),
-        mcp: None,
+        mcp: surface.caller().map(|caller| McpTurn {
+            caller: caller.to_owned(),
+            text: message.clone(),
+        }),
+        surface: surface.clone(),
+        guarded: false,
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
     };
