@@ -118,6 +118,32 @@ impl SttError {
     }
 }
 
+/// Rewraps an ADTS `.aac` upload (the iPhone's crash-safe recording) as `.m4a` without
+/// re-encoding; a file cut off mid-frame is re-encoded instead. Returns the new file.
+pub async fn remux_adts(cfg: &WhisperConfig, input: &Path, output: &Path) -> Result<(), SttError> {
+    let tmp = output.with_extension("m4a.tmp");
+    for codec in [&["-c:a", "copy"][..], &["-c:a", "aac", "-b:a", "96k"][..]] {
+        let out = Command::new(&cfg.ffmpeg)
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(input)
+            .args(["-vn"])
+            .args(codec)
+            .args(["-movflags", "+faststart", "-f", "mp4"])
+            .arg(&tmp)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| SttError::Decode(format!("ffmpeg: {e}")))?;
+        if out.status.success() && tokio::fs::metadata(&tmp).await.is_ok_and(|m| m.len() > 0) {
+            tokio::fs::rename(&tmp, output).await.map_err(|e| SttError::Decode(e.to_string()))?;
+            return Ok(());
+        }
+        tracing::info!(error = %tail(&out.stderr), "ADTS remux with {:?} failed", codec);
+    }
+    let _ = tokio::fs::remove_file(&tmp).await;
+    Err(SttError::Decode("the ADTS recording could not be read".into()))
+}
+
 /// Decodes `input` to `wav` (16 kHz mono s16) and returns its duration.
 pub async fn decode(cfg: &WhisperConfig, input: &Path, wav: &Path) -> Result<f64, SttError> {
     let out = Command::new(&cfg.ffmpeg)
@@ -420,6 +446,30 @@ mod tests {
         let dir = std::env::temp_dir();
         let e = transcribe(&cfg, &dir.join("x.wav"), &dir, 1.0, Duration::ZERO).await.unwrap_err();
         assert!(matches!(e, SttError::ModelMissing(_)) && e.is_transient(), "{e}");
+    }
+
+    /// A recording cut off mid-frame (iOS killed the app) still becomes a playable .m4a.
+    #[tokio::test]
+    async fn cut_off_adts_is_recovered() {
+        let cfg = WhisperConfig::from_lookup(|_| None);
+        if !cfg.ffmpeg.exists() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let full = dir.path().join("full.aac");
+        let st = std::process::Command::new(&cfg.ffmpeg)
+            .args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "aac", "-f", "adts"])
+            .arg(&full)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let bytes = std::fs::read(&full).unwrap();
+        let cut = dir.path().join("cut.aac");
+        std::fs::write(&cut, &bytes[..bytes.len() * 2 / 3 + 7]).unwrap();
+        let out = dir.path().join("audio.m4a");
+        remux_adts(&cfg, &cut, &out).await.unwrap();
+        let d = duration(&cfg, &out).await.unwrap();
+        assert!(d > 2.0 && d < 4.0, "duration {d}");
     }
 
     #[test]

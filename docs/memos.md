@@ -24,8 +24,9 @@ iPhone / web ──HTTPS──► p1 Caddy /v1/memos* ──tailnet──► luc
 
 ## Recording
 
-- **iPhone**: chat toolbar → waveform button (or Siri/Shortcuts/Action button: "Record a memo in Secretary").
-  AAC mono 44.1 kHz 96 kbit/s, live level meter, pause/resume, keeps recording with the screen locked
+- **iPhone**: the Plugins tab → Voice memos (or Siri/Shortcuts/Action button: "Record a memo in Secretary").
+  ADTS AAC (`.aac`) mono 44.1 kHz 96 kbit/s, so a recording cut off when iOS kills the app still decodes; the next
+  launch recovers and queues it (`MemoUploadQueue.recoverOrphans`). The server rewraps it as `.m4a` (step 0). live level meter, pause/resume, keeps recording with the screen locked
   (`UIBackgroundModes: audio`); a call or Siri pauses it and it resumes when iOS allows.
   The **Live Activity** shows the timer on the Lock Screen and in the Dynamic Island with Pause/Resume and Done
   buttons (`LiveActivityIntent`s, run in the app's process, which is alive while recording).
@@ -86,6 +87,14 @@ attempts; `reprocess` re-queues).
 Tool `memos` (lucina-rs): `list`, `search` ("what did I say in yesterday's memo about X": `from`/`to` = that date
 plus words; without words every memo of the range with its summary), `read` (summary + timed transcript),
 `resummarize`. Action items become tasks through the `tasks` tool, or with + in the iPhone's memo screen.
+
+## Verification
+
+`docs/verification.md` §7 (branch main): the Stateright model `verification/models/src/memos.rs`, its TLA+ twin
+`formal/memos/Memos.tla`, and the Verus kernel `verification/verus/memo_kernel.rs` (K1–K7) whose function bodies are
+`crates/lucina-memo/src/kernel.rs` (differential test `tests/verus_kernel.rs`). Bugs found and fixed there: B1 a
+second vault note after a crash and a rename, B2 Whisper replaced by the iPhone transcript on a reprocess, B3 Telegram
+sent twice after a crash, B4 a recording lost when iOS killed the app.
 
 ## Operations
 

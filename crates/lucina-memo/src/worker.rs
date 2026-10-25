@@ -9,7 +9,7 @@ use chrono::Utc;
 
 use crate::model::{Memo, Status, Summary, Transcript};
 use crate::store::{read_json, write_atomic, write_json};
-use crate::{obsidian, render, summarize, transcribe, App};
+use crate::{kernel, obsidian, render, summarize, transcribe, App};
 
 /// `resummarize.json`: the owner's instructions for the next summary.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -110,6 +110,21 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
     tokio::fs::create_dir_all(&work).await?;
     let tz = app.cfg.timezone;
 
+    // 0. An ADTS upload (.aac, crash-safe on the iPhone) becomes .m4a for playback,
+    //    Whisper and the vault. The original stays until the .m4a is in place.
+    if m.ext == "aac" {
+        let input = store.audio_path(&m);
+        let output = store.dir(id).join("audio.m4a");
+        transcribe::remux_adts(&app.cfg.whisper, &input, &output).await?;
+        let size = tokio::fs::metadata(&output).await?.len();
+        m = store.update(id, |m| {
+            m.ext = "m4a".into();
+            m.mime = "audio/mp4".into();
+            m.size_bytes = size;
+        })?;
+        let _ = tokio::fs::remove_file(&input).await;
+    }
+
     // 1. Transcript.
     let transcript: Transcript = match read_json::<Transcript>(&store.transcript_path(id))? {
         Some(t) if m.steps.transcribed_at.is_some() => t,
@@ -127,25 +142,32 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             } else {
                 Duration::from_secs(120)
             };
-            let (t, source) =
-                match transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, wait).await {
-                    Ok(t) => (t, "whisper"),
-                    Err(e) if e.is_transient() => match device {
-                        Some(d) => {
-                            tracing::info!(%id, reason = %e, "using the iPhone's transcript for now");
-                            (d, "device")
-                        }
-                        None => {
-                            let _ = tokio::fs::remove_file(&wav).await;
-                            let why = match e {
-                                transcribe::SttError::ModelMissing(_) => "waiting for the Whisper model (MyBook locked?)",
-                                _ => "waiting for the GPU",
-                            };
-                            return Err(StepError::Later(Duration::from_secs(60), why.into()));
-                        }
-                    },
-                    Err(e) => return Err(e.into()),
-                };
+            // A reprocess may run step 1 again over an existing transcript.
+            let existing = kernel::Source::parse(m.transcript_source.as_deref())
+                .filter(|_| store.transcript_path(id).exists());
+            let result = transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, wait).await;
+            let gpu = match &result {
+                Ok(_) => kernel::Gpu::Done,
+                Err(e) if e.is_transient() => kernel::Gpu::Busy,
+                Err(_) => kernel::Gpu::Failed,
+            };
+            let (t, source) = match (kernel::transcript_choice(existing, gpu, device.is_some()), result, device) {
+                (kernel::Choice::UseWhisper, Ok(t), _) => (t, "whisper"),
+                (kernel::Choice::UseDevice, Err(e), Some(d)) => {
+                    tracing::info!(%id, reason = %e, "using the iPhone's transcript for now");
+                    (d, "device")
+                }
+                (kernel::Choice::Wait, Err(e), _) => {
+                    let _ = tokio::fs::remove_file(&wav).await;
+                    let why = match e {
+                        transcribe::SttError::ModelMissing(_) => "waiting for the Whisper model (MyBook locked?)",
+                        _ => "waiting for the GPU",
+                    };
+                    return Err(StepError::Later(Duration::from_secs(60), why.into()));
+                }
+                (_, Err(e), _) => return Err(e.into()),
+                (c, Ok(_), _) => return Err(StepError::Failed(format!("transcript choice {c:?} without a transcript"))),
+            };
             write_json(&store.transcript_path(id), &t)?;
             let _ = tokio::fs::remove_file(&wav).await;
             m = store.update(id, |m| {
@@ -229,13 +251,19 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
     if let Some(vault) = &app.cfg.vault {
         if m.steps.published_at.is_none() {
             m = set(app, id, Status::Publishing)?;
-            let base = m
+            let existing = m
                 .obsidian_note
                 .as_deref()
                 .and_then(|p| p.rsplit('/').next())
                 .and_then(|f| f.strip_suffix(".md"))
-                .map(str::to_owned)
-                .unwrap_or_else(|| obsidian::base_name(&m, &summary, tz));
+                .map(str::to_owned);
+            let base = kernel::note_base(existing, || obsidian::base_name(&m, &summary, tz));
+            // The path is recorded before the copy: a crash after rsync must not let a later
+            // title (rename, new summary) create a second note for this memo.
+            let note_path = format!("{}/{base}.md", vault.folder);
+            if m.obsidian_note.as_deref() != Some(note_path.as_str()) {
+                m = store.update(id, |m| m.obsidian_note = Some(note_path.clone()))?;
+            }
             let note_md = obsidian::note(&m, &summary, &transcript, tz, &base, &url);
             let mut entries: Vec<(Memo, String)> = store
                 .list()
@@ -267,19 +295,30 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             .await?;
             obsidian::push(vault, &bundle).await?;
             let _ = tokio::fs::remove_dir_all(&bundle.stage).await;
-            let note_path = format!("{}/{base}.md", vault.folder);
-            m = store.update(id, |m| {
-                m.obsidian_note = Some(note_path.clone());
-                m.steps.published_at = Some(Utc::now());
-            })?;
+            m = store.update(id, |m| m.steps.published_at = Some(Utc::now()))?;
         }
     }
 
     // 5. Notification.
     if m.steps.notified_at.is_none() {
-        let sent = crate::notify::send(&app.cfg.notify, &m, &summary, &url).await?;
+        let telegram = kernel::send_telegram(m.notify_telegram_rev, m.revision);
+        if telegram {
+            let rev = m.revision;
+            m = store.update(id, |m| m.notify_telegram_rev = Some(rev))?;
+        }
+        let sent = crate::notify::send(&app.cfg.notify, &m, &summary, &url, telegram).await?;
         tracing::info!(%id, channels = ?sent, "memo ready");
-        store.update(id, |m| m.steps.notified_at = Some(Utc::now()))?;
+        m = store.update(id, |m| m.steps.notified_at = Some(Utc::now()))?;
+    }
+    if !kernel::ready_to_finish(
+        m.steps.transcribed_at.is_some(),
+        m.steps.summarized_at.is_some(),
+        m.steps.rendered_at.is_some(),
+        m.steps.published_at.is_some(),
+        app.cfg.vault.is_some(),
+        m.steps.notified_at.is_some(),
+    ) {
+        return Err(StepError::Failed("a step is missing; not marking done".into()));
     }
 
     let m = store.update(id, |m| {
@@ -331,7 +370,7 @@ async fn upgrade_one(app: &App) -> bool {
             // Keep the iPhone's text when Whisper heard much less (silence filtering, VAD).
             let ours = t.text().chars().count();
             let theirs = device.as_ref().map_or(0, |d| d.text().chars().count());
-            if ours * 2 < theirs {
+            if !kernel::upgrade_replaces(ours as u64, theirs as u64) {
                 let _ = app
                     .store
                     .update(&id, |m| m.transcript_source = Some("device-kept".into()));

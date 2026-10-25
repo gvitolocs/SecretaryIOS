@@ -105,6 +105,10 @@ pub struct Memo {
     pub transcript_source: Option<String>,
     #[serde(default)]
     pub upgrade_attempts: u32,
+    /// The revision whose Telegram message was (about to be) sent: a retry of that revision
+    /// skips Telegram, which cannot deduplicate (kernel::send_telegram).
+    #[serde(default)]
+    pub notify_telegram_rev: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

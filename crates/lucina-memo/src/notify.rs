@@ -85,6 +85,7 @@ pub async fn send(
     m: &Memo,
     s: &Summary,
     url: &str,
+    telegram: bool,
 ) -> Result<Vec<&'static str>, String> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
@@ -120,7 +121,7 @@ pub async fn send(
             Err(e) => errors.push(format!("service token: {e}")),
         }
     }
-    if let (Some(token), Some(chat)) = (&cfg.telegram_token, &cfg.telegram_chat) {
+    if let (true, Some(token), Some(chat)) = (telegram, &cfg.telegram_token, &cfg.telegram_chat) {
         let r = http
             .post(format!("https://api.telegram.org/bot{token}/sendMessage"))
             .json(&json!({"chat_id": chat, "text": body, "disable_web_page_preview": true}))

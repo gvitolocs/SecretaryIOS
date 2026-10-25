@@ -76,9 +76,11 @@ pub fn audio_type(mime: &str) -> Option<(&'static str, &'static str)> {
         .trim()
         .to_ascii_lowercase();
     Some(match base.as_str() {
-        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" | "audio/mp4a-latm" => {
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/mp4a-latm" => {
             ("audio/mp4", "m4a")
         }
+        // ADTS AAC: the iPhone records it because a cut-off file still decodes (worker step 0 remuxes it to .m4a).
+        "audio/aac" | "audio/x-aac" | "audio/aacp" => ("audio/aac", "aac"),
         "audio/webm" | "video/webm" => ("audio/webm", "webm"),
         "audio/ogg" | "audio/opus" => ("audio/ogg", "ogg"),
         "audio/wav" | "audio/x-wav" | "audio/wave" => ("audio/wav", "wav"),
@@ -308,6 +310,7 @@ impl Store {
             revision: 0,
             transcript_source: None,
             upgrade_attempts: 0,
+            notify_telegram_rev: None,
         };
         let dir = self.dir(&id);
         std::fs::create_dir_all(&dir)?;
@@ -340,6 +343,12 @@ impl Store {
         let m = g.memos.get_mut(id).ok_or(StoreError::NotFound)?;
         let mut next = m.clone();
         f(&mut next);
+        debug_assert!(
+            crate::kernel::status_allowed(m.status, next.status),
+            "status {:?} -> {:?} is not a transition of the pipeline",
+            m.status,
+            next.status
+        );
         next.updated_at = Utc::now();
         write_json(&self.dir(id).join("meta.json"), &next)?;
         *m = next.clone();
@@ -577,6 +586,8 @@ mod tests {
             Some(("audio/webm", "webm"))
         );
         assert_eq!(audio_type("application/pdf"), None);
+        assert_eq!(audio_type("audio/aac"), Some(("audio/aac", "aac")));
+        assert_eq!(audio_type("audio/mp4"), Some(("audio/mp4", "m4a")));
         assert!(valid_id("mm_0123456789abcdef"));
         assert!(!valid_id("mm_0123456789abcdeg"));
         assert!(!valid_id("../etc/passwd"));

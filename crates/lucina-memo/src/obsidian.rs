@@ -415,6 +415,7 @@ mod tests {
             revision: 0,
             transcript_source: None,
             upgrade_attempts: 0,
+            notify_telegram_rev: None,
         }
     }
 

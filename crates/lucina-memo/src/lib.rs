@@ -10,6 +10,7 @@
 //! Recordings stay on this host and the owner's Pi; only transcript text goes
 //! to Lucina's chat model for the summary.
 pub mod api;
+pub mod kernel;
 pub mod library;
 pub mod model;
 pub mod notify;
