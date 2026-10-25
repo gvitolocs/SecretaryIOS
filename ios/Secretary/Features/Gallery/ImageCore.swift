@@ -330,6 +330,8 @@ struct RustTile: View {
 struct RustPhoto: View {
     @Environment(GalleryStore.self) private var store
     let item: GalleryItem
+    /// One tap (not a double tap): the viewer shows or hides its controls, as in Google Photos.
+    var onTap: () -> Void = {}
     @State private var remote = RemoteImage()
     @State private var view: [String: Double]?
     @State private var rect = CGRect.zero
@@ -366,7 +368,9 @@ struct RustPhoto: View {
                     lastDrag = g.translation
                 }
                 .onEnded { _ in lastDrag = .zero }, including: gallerySmooth && !zoomed ? .subviews : .all)
+            // Double tap first, so a single tap waits until it is not the start of a double one.
             .onTapGesture(count: 2) { p in gesture(["op": "double_tap", "x": p.x, "y": p.y], geo.size) }
+            .onTapGesture(count: 1) { onTap() }
             .onAppear {
                 fit(geo.size)
                 remote.load(store.api().absolute(item.urls?.preview ?? item.urls?.large), accessKey: store.api().client.accessKey,
