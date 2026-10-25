@@ -51,3 +51,8 @@ fn oauth() {
 fn gates() {
     run("gates");
 }
+
+#[test]
+fn player() {
+    run("player");
+}

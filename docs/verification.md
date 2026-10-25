@@ -55,6 +55,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 3 | Shopping v2 ops + client outbox | `shopping.rs` (S1–S3) | `shopping/ShoppingOps.tla` (+ `MigratedSync.tla`) | `protocol_kernels.rs` K3; `shopping_ops.rs`; `sync_kernel.rs` | Node `Lucina/src/grocery/shopping.js::applyShoppingOps`; Rust `lucina-grocery/src/lib.rs` (branch `lucina-rs`); `crates/secretary-server/src/shopping.rs`; web `web/src/state/shopping.ts`, `lib/shoppingOps.ts` (item objects: branch `shopping-items`) |
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
+| 6 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` M1–M5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -99,9 +100,16 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | G Meshy credits (WIP) | 232 | 10 | `charged_within_daily_cap` **violated** |
 | G Meshy + MCP yes (G1 open) | 463 | 10 | `only_owner_confirms` **violated** |
 | G Meshy + fix G4 (per-step guard) | 115 | 10 | all hold |
+| R before fixes R1, R2 (`updated_at` only) | 86 766 | 22 | `no_position_lost`, `devices_converge` **violated** |
+| R + fix R1 only (device clock stamps) | 157 777 | 24 | `devices_converge` **violated** |
+| R + fixes R1, R2 | 514 139 | 26 | all hold |
+| R naive server (every push overwrites) | 1 066 693 | 28 | `no_position_lost`, `server_never_regresses` **violated** (rule witness) |
+| R naive device (adopts any server entry) | 1 046 485 | 30 | `never_back_to_stale` **violated** (rule witness) |
+| R naive acknowledge (ignores time) | 541 645 | 26 | `no_position_lost` **violated** (rule witness) |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
-`ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
+`ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214, `ResumeSync_fixed`: 514 139, the
+same count as the Stateright case). `Timeline_fixed_deep.cfg`
 (`--deep`): 1 053 488.
 
 ## Invariants, models and mapping
@@ -233,6 +241,41 @@ Invariants:
 | `Reserve` | `Service::start` → `Ledger::reserve` |
 | `StepRuns` | `Service::run` step loop (`consumed_credits`) |
 | `Settle` | `Ledger::settle` |
+
+### 6. Media player resume positions
+
+One film, two devices (three with `--deep`), the server. Devices play (a new position, stamped), push their
+unacknowledged entry one request at a time, pull the server's entry, and go offline (their messages in flight are
+lost). The network delays and reorders. Clocks are shared milliseconds, so two devices can stamp the same
+`updated_at`.
+
+Invariants:
+
+- `no_position_lost`: once every device is online and clean and nothing is in flight, the server holds the newest
+  position anyone played (newest by `(updated_at, device)`).
+- `devices_converge`: ...and every device that pulled since the server's last change shows that position.
+- `never_back_to_stale`: a device never adopts an entry older than its own.
+- `server_never_regresses`: the server never replaces its entry with an older one.
+- Witnesses: `concurrent_playback` (two devices played between syncs) and `offline_gap_resolved` (an offline gap
+  with unsynced positions ended with every device on the newest position).
+
+The Verus kernels (`player_kernels.rs`) prove the per-step rules for all inputs: the `(updated_at, device)` order is
+a strict total order; `merge` takes only a newer entry, so a device never goes back; `Store::put` keeps the newer
+entry and returns exactly what is newer; an acknowledgement never clears a later write; merging is commutative,
+associative and idempotent; `write_stamp` stamps after the held entry; positions are clamped to the duration; the
+resume point never passes the saved position; the play token's base-36 expiry round-trips and `verify` accepts
+only an unexpired, untampered token; the subtitle choice per film wins, "off" stays off, other films keep theirs,
+and the language default is the best-ranked track; every FFI request path returns an answer (bridge_error unless
+the engine ran); and the wasm answer pack round-trips exactly for 32-bit addresses.
+
+| Model action | Code |
+|---|---|
+| `Play` | `Book::tick` (`write_stamp`, `clamp_position`): iOS `MediaPlayer.reportNow`, web `state/media.ts::report` |
+| `Push` | `pushProgress` (iOS `MediaPlayer`, web `state/media.ts`): `pending` → `POST /v1/media/progress` |
+| `Deliver(Push)` | server `progress::Store::put` (`crates/secretary-media-stream/src/progress.rs`) |
+| `Deliver(Reply)` | `Book::acknowledge`, then `Book::merge` of the returned entries |
+| `Pull` + `Deliver(PullReply)` | `syncProgress`: `GET /v1/media/progress` → `Book::merge`; `/play`'s `progress` field → `merge` |
+| `Offline` | a failed request: the entry stays pending (`pending`) and is pushed again later |
 
 ## Bugs found
 
@@ -478,6 +521,35 @@ Confirm(0) Reserve(0)=20 StepRuns(0,10) StepRuns(0,13) Confirm(1) Reserve(1)=20 
 Fix: reserve the worst case per step (the estimate plus a margin bounding Meshy's drift), and before each step stop
 when consumed plus the next worst case would exceed the reservation. Verus K5 proves the arithmetic.
 
+### R1: two devices writing in the same millisecond end on different positions (low). **Fixed.**
+
+`Store::put` and `Book::merge` compared `updated_at` only. With equal stamps the server kept the first push, the
+second device's entry was acknowledged and not replaced, and a device that pulled kept its own:
+
+```
+Play(0) Push(0) Play(1) Push(1) Deliver(Push 0 @1) Deliver(Push 1 @1) Deliver(Reply 0) Deliver(Reply 1)
+-> server holds device 0's position, the newest (by device) is device 1's
+```
+
+Fixed in `crates/secretary-player/src/progress.rs`: `Entry::is_newer_than` orders by `(updated_at, device)`, and
+`merge` uses it. The server's `Store::put` must use it too (branch `media-player`). Test:
+`same_millisecond_writes_have_one_winner`.
+
+### R2: a position played after adopting another device's entry is dropped (medium). **Fixed.**
+
+Found by the model once R1 was in. A device stamped a new write with its own clock. After it adopted an entry
+from a device whose clock is ahead (or from the same millisecond), its next position was older than the entry it
+held. The acknowledgement of its earlier push then cleared it, and the devices stayed apart:
+
+```
+Play(0) Push(0) Play(1) Push(1) Deliver(Push 0) Deliver(Push 1) Pull(0) Deliver(Reply 1)
+Deliver(PullReply 0: device 1's entry) Play(0) Deliver(Reply 0: acked @1 clears the new write)
+```
+
+Clocks differ by seconds between an iPhone, a laptop and a browser, so this is the ordinary case after a hand-off
+from a device whose clock is ahead. Fixed with `write_stamp`: a write is stamped `max(now, held + 1)`
+(Lamport-style). Test: `a_write_after_adopting_a_faster_clock_still_wins`.
+
 ## Modeling assumptions
 
 - **Timeline.** A single `write()` of a whole line to an O_APPEND regular file is atomic (Linux; lines stay far
@@ -488,5 +560,8 @@ when consumed plus the next worst case would exceed the reservation. Verus K5 pr
 - **Shopping.** Each batch is one serialisable transaction (list row `FOR UPDATE`). The model has one list and two
   objects; `move`, `reorder` and `edit_item` are not modelled.
 - **OAuth.** The attacker cannot forge a PKCE verifier and cannot register an allowed redirect_uri.
+- **Player.** One film (entries of different films never interact). Each push and each `Store::put` is atomic
+  (the server's progress store takes a lock per batch). A write's position is unique, so a stamp identifies one
+  write. HMAC-SHA256 is a secure MAC: the token proof abstracts the tag comparison as `tag_matches`.
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels
   cover the per-step invariants for all inputs.
