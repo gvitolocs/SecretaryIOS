@@ -9,6 +9,9 @@ use std::{
     sync::Mutex,
 };
 
+/// The image viewer core (secretary-image): its own binary entry points, not a JSON engine.
+pub mod image;
+
 thread_local! {
     static OPEN_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
@@ -163,7 +166,7 @@ macro_rules! module {
 }
 
 /// Module names reported by `secretary_version`.
-pub const MODULES: &[&str] = &["gym", "body", "player"];
+pub const MODULES: &[&str] = &["gym", "body", "player", "image"];
 
 module!(
     secretary_gym::Engine,
