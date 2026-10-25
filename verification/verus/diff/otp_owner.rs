@@ -1,5 +1,5 @@
 //! Differential test of `verification/verus/otp_owner.rs` against the real
-//! `lucina_phone_core::reply::private_owner` (lucina-rs c357646).
+//! `lucina_phone_core::reply::private_owner` (lucina-rs; unchanged by F1-F5).
 //!
 //! Belongs in `crates/lucina-phone-core/tests/verus_otp_owner.rs`; `diff/otp_run.sh`
 //! runs it. The `/otp` dispatch kernel (`dispatch`, `secretary_chat_dispatch`) mirrors

@@ -1,20 +1,29 @@
 // OTP redaction: `otp_spans` (collect, sort, merge) and `redact_otps`.
 //
-// Production (branch lucina-rs, c357646): crates/lucina-phone-core/src/otp.rs
-//   collect      <-> `otp_spans` before the sort: every GOOGLE match, then (when there is
-//                    a context word) every CODES match that is `plausible` and within
-//                    MAX_DISTANCE of some context
-//   sort_spans   <-> `spans.sort_unstable()` (lexicographic on (start, end))
-//   merge        <-> the merge loop (`start < last.1` extends, else push)
-//   redact       <-> `redact_otps` (text before each span, then REDACTED, then the tail)
+// Production: crates/lucina-phone-core/src/otp.rs, branch lucina-rs dd7ec9e (F5: 52b9140, merged
+// from otp-fixes). Before F5: lucina-rs c357646.
+//   collect        <-> `candidate_spans`: every GOOGLE match, then (when there is a
+//                      context word) every CODES match that is `plausible` and within
+//                      MAX_DISTANCE of some context
+//   map_append     <-> F5: `candidate_spans(&view.text)` mapped by `View::original`
+//                      (`mapped`), added when `view.text != text` (`differs`)
+//   sort_spans     <-> `spans.sort_unstable()` (lexicographic on (start, end))
+//   merge          <-> the merge loop (`start < last.1` extends, else push)
+//   redact         <-> `redact_otps` (text before each span, then REDACTED, then the tail)
+//   otp_spans / redact_otps          the F5 code: raw spans + mapped view spans
+//   otp_spans_raw / redact_raw       one text only: the code before F5, and F5's raw half
 // Differential test: verification/verus/diff/otp_redact.rs.
 //
-// Modelled: the span logic exactly, over the tokenizer's output on the text being
-// redacted (same Cand / Ctx shape as otp_extract.rs: positions in bytes, wf: start < end,
-// 4 <= len <= 10, spans inside the text). The output is a sequence of items, Keep(p)
-// for the input byte at p and Ph for one REDACTED placeholder: what the code
-// concatenates. Abstracted: the regexes (tokenizer), UTF-8 (spans are on char
-// boundaries because the regexes match whole chars; not modelled).
+// Modelled: the span logic exactly, over the tokenizer's output: on the raw text
+// (cands, ctxs, google) and on the view `parse_otp` reads (vcands, vctxs, vgoogle:
+// digit-normalized, URL-stripped), with `View::origin` (`origin`: for each view byte the
+// original char's byte range, in order). Same Cand / Ctx shape as otp_extract.rs (wf:
+// start < end, 4 <= len <= 10, spans inside their text). When the view equals the text
+// the caller passes the same tokens and the identity origin (`wf_f5`). The output is a
+// sequence of items, Keep(p) for the input byte at p and Ph for one REDACTED
+// placeholder: what the code concatenates. Abstracted: the regexes, UTF-8 (spans are
+// on char boundaries because the regexes match whole chars and `origin` maps whole
+// chars; not modelled).
 //
 // Proven:
 //   D1 collect: every Google span and every candidate that passes the selection guard
@@ -24,14 +33,12 @@
 //      and a position is covered by the merged spans iff it is covered by an input span.
 //   D4 redact: no Keep(p) for a covered p; every uncovered position is kept, in order
 //      (text outside spans unchanged); one Ph per merged span; identity with no spans.
-//   D5 (theorem otp_spans_hide_selectable): for every candidate that `parse_otp` could
-//      select, i.e. eligible (with or without the amount fix) and within MAX_DISTANCE
-//      of some context span, no byte of it survives redaction.
-// D5 holds when redaction sees the same candidates and contexts as `parse_otp`. On
-// lucina-rs it does not: `parse_otp` tokenizes the digit-normalized, URL-stripped text
-// while `otp_spans` tokenizes the raw text, so codes in Arabic-Indic / Devanagari /
-// full-width digits, and codes moved within 64 bytes of a context only by removing a
-// URL, are selected but not redacted (KNOWN BUG, diff/otp_redact.rs).
+//   D5 (F5) every candidate `parse_otp` can select (in its view: plausible, with or
+//      without F4's amount skip, and within MAX_DISTANCE of a context) has none of its
+//      original bytes kept, nor has any raw-text candidate near a context (the old
+//      guarantee: F5 only adds spans); bytes outside every raw and mapped span are kept.
+//   witness_f5_unicode_digits_hidden: a code in Arabic-Indic digits that the raw text
+//      does not tokenize is redacted through the view.
 use vstd::prelude::*;
 
 verus! {
@@ -663,7 +670,9 @@ pub fn redact(n: usize, merged: &Vec<(usize, usize)>) -> (out: Vec<Item>)
 
 // ---------------------------------------------------------------- D5
 
-pub fn otp_spans(n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usize, usize)>) -> (merged: Vec<(usize, usize)>)
+/// `otp_spans` before F5 (lucina-rs c357646), and F5's `candidate_spans` + sort + merge
+/// on one text.
+pub fn otp_spans_raw(n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usize, usize)>) -> (merged: Vec<(usize, usize)>)
     requires
         wf(cands@, google@, n as nat),
     ensures
@@ -732,8 +741,8 @@ pub fn otp_spans(n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usi
     merged
 }
 
-/// `redact_otps`. D5: no byte of a selectable candidate is kept.
-pub fn redact_otps(n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usize, usize)>) -> (out: Vec<Item>)
+/// `redact_otps` before F5: D5 on one text (no byte of a selectable candidate is kept).
+pub fn redact_raw(n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usize, usize)>) -> (out: Vec<Item>)
     requires
         wf(cands@, google@, n as nat),
     ensures
@@ -747,7 +756,7 @@ pub fn redact_otps(n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(u
                 < out@[j]->Keep_0,
         cands@.len() == 0 && google@.len() == 0 ==> out@.len() == n && forall|i: int| 0 <= i < n ==> #[trigger] out@[i] == Item::Keep(i as usize),
 {
-    let merged = otp_spans(n, cands, ctxs, google);
+    let merged = otp_spans_raw(n, cands, ctxs, google);
     let out = redact(n, &merged);
     proof {
         assert forall|i: int, j: int|
@@ -775,6 +784,306 @@ proof fn lemma_selectable_is_plausible(c: Cand, fixed: bool)
 {
 }
 
+// ---------------------------------------------------------------- F5: the superset
+
+/// `View::original`: the original bytes of the view's bytes s.0..s.1.
+pub open spec fn mapped(s: (usize, usize), origin: Seq<(usize, usize)>) -> (usize, usize) {
+    (origin[s.0 as int].0, origin[s.1 - 1].1)
+}
+
+/// `View::origin`: one original char range per view byte, in order, inside the text.
+pub open spec fn wf_origin(origin: Seq<(usize, usize)>, m: nat, n: nat) -> bool {
+    &&& origin.len() == m
+    &&& forall|j: int| 0 <= j < m ==> (#[trigger] origin[j]).0 < origin[j].1 <= n
+    &&& forall|i: int, j: int| 0 <= i <= j < m ==> (#[trigger] origin[i]).0 <= (#[trigger] origin[j]).0
+}
+
+pub open spec fn identity_origin(origin: Seq<(usize, usize)>, n: nat) -> bool {
+    origin.len() == n && forall|j: int| 0 <= j < n ==> #[trigger] origin[j] == (j as usize, (j + 1) as usize)
+}
+
+/// What F5 redaction may cover: a raw-text span or a mapped view span.
+pub open spec fn collected_f5(
+    s: (usize, usize),
+    cands: Seq<Cand>, ctxs: Seq<Ctx>, google: Seq<(usize, usize)>,
+    vcands: Seq<Cand>, vctxs: Seq<Ctx>, vgoogle: Seq<(usize, usize)>,
+    origin: Seq<(usize, usize)>, differs: bool,
+) -> bool {
+    collected(s, cands, ctxs, google) || (differs && exists|v: (usize, usize)| #![auto]
+        collected(v, vcands, vctxs, vgoogle) && mapped(v, origin) == s)
+}
+
+/// The view's span plus the original text: what `otp_spans` must accept from the caller.
+pub open spec fn wf_f5(
+    n: nat, cands: Seq<Cand>, ctxs: Seq<Ctx>, google: Seq<(usize, usize)>,
+    m: nat, vcands: Seq<Cand>, vctxs: Seq<Ctx>, vgoogle: Seq<(usize, usize)>,
+    origin: Seq<(usize, usize)>, differs: bool,
+) -> bool {
+    &&& wf(cands, google, n)
+    &&& wf(vcands, vgoogle, m)
+    &&& wf_origin(origin, m, n)
+    // `if view.text != text`: otherwise the view is the text.
+    &&& !differs ==> vcands == cands && vctxs == ctxs && vgoogle == google && m == n && identity_origin(origin, n)
+}
+
+proof fn lemma_mapped_wf(s: (usize, usize), origin: Seq<(usize, usize)>, m: nat, n: nat)
+    requires
+        wf_span(s, m),
+        wf_origin(origin, m, n),
+    ensures
+        wf_span(mapped(s, origin), n),
+        forall|p: int| s.0 <= p < s.1 ==> mapped(s, origin).0 <= (#[trigger] origin[p]).0,
+{
+    assert(origin[s.0 as int].0 <= origin[s.1 - 1].0);
+}
+
+/// `spans.extend(candidate_spans(&view.text).map(|(s, e)| view.original(s, e)))`.
+fn map_append(spans: &mut Vec<(usize, usize)>, v: &Vec<(usize, usize)>, origin: &Vec<(usize, usize)>, Ghost(m): Ghost<nat>, Ghost(n): Ghost<nat>)
+    requires
+        forall|j: int| 0 <= j < v@.len() ==> wf_span(#[trigger] v@[j], m),
+        wf_origin(origin@, m, n),
+    ensures
+        final(spans)@.len() == old(spans)@.len() + v@.len(),
+        forall|i: int| 0 <= i < old(spans)@.len() ==> #[trigger] final(spans)@[i] == old(spans)@[i],
+        forall|j: int| 0 <= j < v@.len() ==> #[trigger] final(spans)@[old(spans)@.len() + j] == mapped(v@[j], origin@),
+{
+    let ghost start = spans@;
+    let mut j: usize = 0;
+    while j < v.len()
+        invariant
+            0 <= j <= v.len(),
+            forall|k: int| 0 <= k < v@.len() ==> wf_span(#[trigger] v@[k], m),
+            wf_origin(origin@, m, n),
+            spans@.len() == start.len() + j,
+            forall|i: int| 0 <= i < start.len() ==> #[trigger] spans@[i] == start[i],
+            forall|k: int| 0 <= k < j ==> #[trigger] spans@[start.len() + k] == mapped(v@[k], origin@),
+        decreases v.len() - j,
+    {
+        let (s, e) = v[j];
+        assert(wf_span(v@[j as int], m));
+        let a = origin[s].0;
+        let b = origin[e - 1].1;
+        spans.push((a, b));
+        j += 1;
+    }
+}
+
+/// `otp_spans` on lucina-rs dd7ec9e (F5, 52b9140): the raw-text candidate spans, plus (when the
+/// view differs from the text) the view's candidate spans mapped back; sorted, merged.
+pub fn otp_spans(
+    n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usize, usize)>,
+    Ghost(m): Ghost<nat>, vcands: &Vec<Cand>, vctxs: &Vec<Ctx>, vgoogle: &Vec<(usize, usize)>,
+    origin: &Vec<(usize, usize)>, differs: bool,
+) -> (merged: Vec<(usize, usize)>)
+    requires
+        wf_f5(n as nat, cands@, ctxs@, google@, m, vcands@, vctxs@, vgoogle@, origin@, differs),
+    ensures
+        disjoint(merged@),
+        forall|k: int| 0 <= k < merged@.len() ==> wf_span(#[trigger] merged@[k], n as nat),
+        // the raw-text guarantee, as before F5
+        forall|i: int|
+            0 <= i < cands@.len() && plausible(#[trigger] cands@[i]) && near(cands@[i], ctxs@) ==> forall|p: int|
+                cands@[i].start <= p < cands@[i].end ==> #[trigger] covered(p, merged@),
+        // F5: every candidate parse_otp can select, in original bytes
+        forall|i: int|
+            0 <= i < vcands@.len() && plausible(#[trigger] vcands@[i]) && near(vcands@[i], vctxs@) ==> forall|p: int|
+                mapped(span_of(vcands@[i]), origin@).0 <= p < mapped(span_of(vcands@[i]), origin@).1 ==> #[trigger] covered(p, merged@),
+        forall|i: int| 0 <= i < vgoogle@.len() ==> forall|p: int|
+            mapped(#[trigger] vgoogle@[i], origin@).0 <= p < mapped(vgoogle@[i], origin@).1 ==> #[trigger] covered(p, merged@),
+        forall|i: int| 0 <= i < google@.len() ==> forall|p: int| (#[trigger] google@[i]).0 <= p < google@[i].1 ==> #[trigger] covered(p, merged@),
+        // nothing else
+        forall|p: int| #[trigger] covered(p, merged@) ==> exists|s: (usize, usize)| #![auto]
+            collected_f5(s, cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs) && in_span(p, s),
+{
+    let mut spans = collect(cands, ctxs, google);
+    let ghost raw = spans@;
+    let ghost mut v: Seq<(usize, usize)> = Seq::empty();
+    if differs {
+        let vs = collect(vcands, vctxs, vgoogle);
+        proof {
+            v = vs@;
+            assert forall|j: int| 0 <= j < vs@.len() implies wf_span(#[trigger] vs@[j], m) by {
+                assert(collected(vs@[j], vcands@, vctxs@, vgoogle@));
+                if vgoogle@.contains(vs@[j]) {
+                    let g = choose|g: int| 0 <= g < vgoogle@.len() && vgoogle@[g] == vs@[j];
+                    assert(wf_span(vgoogle@[g], m));
+                } else {
+                    let c = choose|c: int| 0 <= c < vcands@.len() && plausible(#[trigger] vcands@[c]) && near(vcands@[c], vctxs@) && span_of(vcands@[c]) == vs@[j];
+                    assert(wf_span(span_of(vcands@[c]), m));
+                }
+            }
+        }
+        map_append(&mut spans, &vs, origin, Ghost(m), Ghost(n as nat));
+        proof {
+            // the view's collected spans, mapped, are in spans
+            assert forall|x: (usize, usize)| #[trigger] v.contains(x) implies spans@.contains(mapped(x, origin@)) by {
+                let j = choose|j: int| 0 <= j < v.len() && v[j] == x;
+                assert(spans@[raw.len() + j] == mapped(x, origin@));
+            }
+        }
+    }
+    proof {
+        assert forall|x: (usize, usize)| #[trigger] raw.contains(x) implies spans@.contains(x) by {
+            let j = choose|j: int| 0 <= j < raw.len() && raw[j] == x;
+            assert(spans@[j] == x);
+        }
+        // every span is a raw collected one or a mapped view one
+        assert forall|j: int| 0 <= j < spans@.len() implies
+            collected_f5(#[trigger] spans@[j], cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs)
+            && wf_span(spans@[j], n as nat) by {
+            if j < raw.len() {
+                assert(spans@[j] == raw[j]);
+                assert(collected(raw[j], cands@, ctxs@, google@));
+                if google@.contains(raw[j]) {
+                    let g = choose|g: int| 0 <= g < google@.len() && google@[g] == raw[j];
+                    assert(wf_span(google@[g], n as nat));
+                } else {
+                    let c = choose|c: int| 0 <= c < cands@.len() && plausible(#[trigger] cands@[c]) && near(cands@[c], ctxs@) && span_of(cands@[c]) == raw[j];
+                    assert(wf_span(span_of(cands@[c]), n as nat));
+                }
+            } else {
+                let k = j - raw.len();
+                assert(differs);
+                assert(spans@[raw.len() + k] == mapped(v[k], origin@));
+                assert(collected(v[k], vcands@, vctxs@, vgoogle@));
+                assert(wf_span(v[k], m)) by {
+                    if vgoogle@.contains(v[k]) {
+                        let g = choose|g: int| 0 <= g < vgoogle@.len() && vgoogle@[g] == v[k];
+                        assert(wf_span(vgoogle@[g], m));
+                    } else {
+                        let c = choose|c: int| 0 <= c < vcands@.len() && plausible(#[trigger] vcands@[c]) && near(vcands@[c], vctxs@) && span_of(vcands@[c]) == v[k];
+                        assert(wf_span(span_of(vcands@[c]), m));
+                    }
+                }
+                lemma_mapped_wf(v[k], origin@, m, n as nat);
+            }
+        }
+    }
+    let sorted_spans = sort_spans(&spans);
+    proof {
+        assert forall|i: int| 0 <= i < sorted_spans@.len() implies wf_span(#[trigger] sorted_spans@[i], n as nat) by {
+            assert(sorted_spans@.contains(sorted_spans@[i]));
+            let j = choose|j: int| 0 <= j < spans@.len() && spans@[j] == sorted_spans@[i];
+            assert(wf_span(spans@[j], n as nat));
+        }
+    }
+    let merged = merge(&sorted_spans, Ghost(n as nat));
+    proof {
+        assert forall|s: (usize, usize)| #[trigger] spans@.contains(s) implies forall|p: int| s.0 <= p < s.1 ==> covered(p, merged@) by {
+            assert(sorted_spans@.contains(s));
+            let k = choose|k: int| 0 <= k < sorted_spans@.len() && sorted_spans@[k] == s;
+            assert forall|p: int| s.0 <= p < s.1 implies covered(p, merged@) by {
+                assert(in_span(p, sorted_spans@[k]));
+                assert(covered(p, sorted_spans@));
+            }
+        }
+        assert forall|i: int|
+            0 <= i < cands@.len() && plausible(#[trigger] cands@[i]) && near(cands@[i], ctxs@) implies forall|p: int|
+                cands@[i].start <= p < cands@[i].end ==> #[trigger] covered(p, merged@) by {
+            assert(raw.contains(span_of(cands@[i])));
+            assert(spans@.contains(span_of(cands@[i])));
+        }
+        assert forall|i: int| 0 <= i < google@.len() implies forall|p: int| (#[trigger] google@[i]).0 <= p < google@[i].1 ==> #[trigger] covered(p, merged@) by {
+            assert(raw.contains(google@[i]));
+            assert(spans@.contains(google@[i]));
+        }
+        assert forall|i: int|
+            0 <= i < vcands@.len() && plausible(#[trigger] vcands@[i]) && near(vcands@[i], vctxs@) implies forall|p: int|
+                mapped(span_of(vcands@[i]), origin@).0 <= p < mapped(span_of(vcands@[i]), origin@).1 ==> #[trigger] covered(p, merged@) by {
+            let x = span_of(vcands@[i]);
+            if differs {
+                assert(v.contains(x));
+                assert(spans@.contains(mapped(x, origin@)));
+            } else {
+                assert(cands@[i] == vcands@[i]);
+                assert(origin@[x.0 as int] == (x.0, (x.0 + 1) as usize));
+                assert(origin@[x.1 - 1] == ((x.1 - 1) as usize, x.1));
+                assert(mapped(x, origin@) == x);
+                assert(raw.contains(x));
+                assert(spans@.contains(x));
+            }
+        }
+        assert forall|i: int| 0 <= i < vgoogle@.len() implies forall|p: int|
+            mapped(#[trigger] vgoogle@[i], origin@).0 <= p < mapped(vgoogle@[i], origin@).1 ==> #[trigger] covered(p, merged@) by {
+            let x = vgoogle@[i];
+            if differs {
+                assert(v.contains(x));
+                assert(spans@.contains(mapped(x, origin@)));
+            } else {
+                assert(google@[i] == x);
+                assert(origin@[x.0 as int] == (x.0, (x.0 + 1) as usize));
+                assert(origin@[x.1 - 1] == ((x.1 - 1) as usize, x.1));
+                assert(mapped(x, origin@) == x);
+                assert(raw.contains(x));
+                assert(spans@.contains(x));
+            }
+        }
+        assert forall|p: int| #[trigger] covered(p, merged@) implies exists|s: (usize, usize)| #![auto]
+            collected_f5(s, cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs) && in_span(p, s) by {
+            assert(covered(p, sorted_spans@));
+            let k = choose|k: int| 0 <= k < sorted_spans@.len() && in_span(p, #[trigger] sorted_spans@[k]);
+            assert(sorted_spans@.contains(sorted_spans@[k]));
+            let j = choose|j: int| 0 <= j < spans@.len() && spans@[j] == sorted_spans@[k];
+            assert(collected_f5(spans@[j], cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs));
+        }
+    }
+    merged
+}
+
+/// `redact_otps` on lucina-rs dd7ec9e (F5). D5: no original byte of a code `parse_otp` can
+/// return is kept; bytes outside every raw and mapped span are kept, in order.
+pub fn redact_otps(
+    n: usize, cands: &Vec<Cand>, ctxs: &Vec<Ctx>, google: &Vec<(usize, usize)>,
+    Ghost(m): Ghost<nat>, vcands: &Vec<Cand>, vctxs: &Vec<Ctx>, vgoogle: &Vec<(usize, usize)>,
+    origin: &Vec<(usize, usize)>, differs: bool,
+) -> (out: Vec<Item>)
+    requires
+        wf_f5(n as nat, cands@, ctxs@, google@, m, vcands@, vctxs@, vgoogle@, origin@, differs),
+    ensures
+        forall|i: int, j: int|
+            0 <= i < vcands@.len() && plausible(#[trigger] vcands@[i]) && near(vcands@[i], vctxs@) && 0 <= j
+                < out@.len() && (#[trigger] out@[j]) is Keep ==> !(mapped(span_of(vcands@[i]), origin@).0 <= out@[j]->Keep_0
+                < mapped(span_of(vcands@[i]), origin@).1),
+        forall|i: int, j: int|
+            0 <= i < cands@.len() && plausible(#[trigger] cands@[i]) && near(cands@[i], ctxs@) && 0 <= j
+                < out@.len() && (#[trigger] out@[j]) is Keep ==> !(cands@[i].start <= out@[j]->Keep_0 < cands@[i].end),
+        forall|p: int| #![auto] 0 <= p < n && !(exists|s: (usize, usize)| #![auto]
+            collected_f5(s, cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs) && in_span(p, s)) ==> keeps(out@, p),
+        forall|i: int, j: int|
+            0 <= i < j < out@.len() && (#[trigger] out@[i]) is Keep && (#[trigger] out@[j]) is Keep ==> out@[i]->Keep_0
+                < out@[j]->Keep_0,
+{
+    let merged = otp_spans(n, cands, ctxs, google, Ghost(m), vcands, vctxs, vgoogle, origin, differs);
+    let out = redact(n, &merged);
+    proof {
+        assert forall|i: int, j: int|
+            0 <= i < vcands@.len() && plausible(#[trigger] vcands@[i]) && near(vcands@[i], vctxs@) && 0 <= j
+                < out@.len() && (#[trigger] out@[j]) is Keep implies !(mapped(span_of(vcands@[i]), origin@).0 <= out@[j]->Keep_0
+                < mapped(span_of(vcands@[i]), origin@).1) by {
+            let p = out@[j]->Keep_0 as int;
+            if mapped(span_of(vcands@[i]), origin@).0 <= p < mapped(span_of(vcands@[i]), origin@).1 {
+                assert(covered(p, merged@));
+            }
+        }
+        assert forall|i: int, j: int|
+            0 <= i < cands@.len() && plausible(#[trigger] cands@[i]) && near(cands@[i], ctxs@) && 0 <= j
+                < out@.len() && (#[trigger] out@[j]) is Keep implies !(cands@[i].start <= out@[j]->Keep_0 < cands@[i].end) by {
+            let p = out@[j]->Keep_0 as int;
+            if cands@[i].start <= p < cands@[i].end {
+                assert(covered(p, merged@));
+            }
+        }
+        assert forall|p: int| #![auto] 0 <= p < n && !(exists|s: (usize, usize)| #![auto]
+            collected_f5(s, cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs) && in_span(p, s)) implies keeps(out@, p) by {
+            if covered(p, merged@) {
+                assert(exists|s: (usize, usize)| #![auto]
+                    collected_f5(s, cands@, ctxs@, google@, vcands@, vctxs@, vgoogle@, origin@, differs) && in_span(p, s));
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- witness
 
 /// "Your security code is 682149." (n = 29): bytes 22..28 become one placeholder.
@@ -786,7 +1095,7 @@ fn witness_code_is_hidden() {
     let google: Vec<(usize, usize)> = Vec::new();
     assert(dist(cands@[0], ctxs@[0]) == 9);
     assert(selectable(cands@[0], false) && near(cands@[0], ctxs@));
-    let out = redact_otps(29, &cands, &ctxs, &google);
+    let out = redact_raw(29, &cands, &ctxs, &google);
     // Byte 25 (inside the code) is not kept; byte 3 (outside every span) is.
     assert(!keeps(out@, 25)) by {
         if keeps(out@, 25) {
@@ -800,6 +1109,44 @@ fn witness_code_is_hidden() {
                 let i = choose|i: int| 0 <= i < cands@.len() && plausible(#[trigger] cands@[i]) && near(cands@[i], ctxs@) && span_of(cands@[i]) == s;
                 assert(i == 0);
             }
+        }
+    }
+}
+
+/// F5: "OTP " + four Arabic-Indic digits (12 bytes; the view "OTP 1234" is 8). The raw
+/// text has no candidate; the view's code maps back to bytes 4..12, none of them kept.
+fn witness_f5_unicode_digits_hidden() {
+    let cands: Vec<Cand> = Vec::new();
+    let google: Vec<(usize, usize)> = Vec::new();
+    let mut ctxs: Vec<Ctx> = Vec::new();
+    ctxs.push(Ctx { start: 0, end: 3 });
+    let mut vctxs: Vec<Ctx> = Vec::new();
+    vctxs.push(Ctx { start: 0, end: 3 });
+    let mut vcands: Vec<Cand> = Vec::new();
+    vcands.push(Cand { start: 4, end: 8, len: 4, has_digit: true, all_digits: true, after_plus: false, in_url: false, currency: false, numeric_join: false });
+    let vgoogle: Vec<(usize, usize)> = Vec::new();
+    let mut origin: Vec<(usize, usize)> = Vec::new();
+    origin.push((0, 1));
+    origin.push((1, 2));
+    origin.push((2, 3));
+    origin.push((3, 4));
+    origin.push((4, 6));
+    origin.push((6, 8));
+    origin.push((8, 10));
+    origin.push((10, 12));
+    assert(wf_origin(origin@, 8, 12));
+    assert(dist(vcands@[0], vctxs@[0]) == 1);
+    assert(plausible(vcands@[0]) && near(vcands@[0], vctxs@));
+    assert(mapped(span_of(vcands@[0]), origin@) == (4usize, 12usize));
+    let out = redact_otps(12, &cands, &ctxs, &google, Ghost(8), &vcands, &vctxs, &vgoogle, &origin, true);
+    assert(!keeps(out@, 6) && !keeps(out@, 11)) by {
+        if keeps(out@, 6) {
+            let j = choose|j: int| 0 <= j < out@.len() && #[trigger] out@[j] == Item::Keep(6);
+            assert(out@[j] is Keep);
+        }
+        if keeps(out@, 11) {
+            let j = choose|j: int| 0 <= j < out@.len() && #[trigger] out@[j] == Item::Keep(11);
+            assert(out@[j] is Keep);
         }
     }
 }

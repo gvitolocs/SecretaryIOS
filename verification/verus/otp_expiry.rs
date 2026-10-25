@@ -1,7 +1,7 @@
 // OTP lifetime: `expires_at`, the relay store (receive / take / arm / disarm) and the
 // phone's offline queue.
 //
-// Production (branch lucina-rs, c357646):
+// Production (branch lucina-rs dd7ec9e, with F1 ac9e7be and F2 60472d9 from otp-fixes; before them c357646):
 //   expires_at          <-> crates/lucina-phone-core/src/proto.rs `expires_at`, CODE_TTL_MS
 //   Store / Core        <-> crates/lucina-otp-relay/src/store.rs `Store`
 //                           (continuous, paused, limits, window, pending, seen)
@@ -9,16 +9,21 @@
 //                           seen-id duplicate, expires_at, EventLimit, push seen, drop oldest,
 //                           push pending)
 //     take              <-> `Store::take` (not armed: drop all; else pop_back until fresh)
-//     arm / disarm      <-> `Store::arm`, `Store::disarm`
+//     arm / disarm      <-> `Store::arm` (F2: keeps fresh pending codes and a live
+//                           window's id), `Store::disarm`
 //   retain_fresh / enqueue / flush
 //                       <-> crates/lucina-android/src/bridge.rs `Pending::fresh`,
 //                           `Bridge::enqueue`, `Bridge::flush_at`, the TTL gate in `forward`
+//   forward_queue       <-> `Bridge::forward` after F1: write-ahead enqueue, then the POST;
+//                           any answer but Retry removes the entry by event id
 // Differential tests: verification/verus/diff/otp_expiry.rs (relay store, expires_at) and
 // verification/verus/diff/otp_queue.rs (phone queue).
 //
 // Modelled: every field the decisions read, with u64 times and saturating adds as in the
 // code. Abstracted: event ids, codes and window ids are u64 (the code compares them for
-// equality only); `Incoming::validate` is the `valid` flag; sender cleaning and `source`
+// equality only; F3 stores SHA-256 hashes of event ids, which keeps equality);
+// `Incoming::validate` is the `valid` flag; F3's `restore_seen` after a restart is not
+// modelled; sender cleaning and `source`
 // are not modelled (they never affect what is stored or returned). The phone's network
 // outcome is an oracle (`retry[i]`: the i-th POST of a flush answers Retry). Entry's
 // `stored_at` is model-only (the relay's clock when the entry was stored).
@@ -36,9 +41,11 @@
 //   R4 pending event ids are distinct; a receive whose id is in `seen` with
 //      until > now (within SEEN_TTL = CODE_TTL of its first receipt) never stores.
 //   R5 inv is inductive over receive / take / arm / disarm from the empty store.
+//   R7 (F2) arming never drops a pending code that is still fresh at `now`.
 //   P1 phone: forward never sends or queues a code past the TTL; enqueue keeps at most
 //      MAX_QUEUE (8) entries, all fresh; flush only POSTs fresh entries and keeps only
-//      fresh ones.
+//      fresh ones; F1's forward_queue keeps the code queued (last) unless the relay
+//      answered, and then no entry with its event id is left.
 //   Non-vacuity: witness_* run receive then take and get the code back, then None.
 use vstd::prelude::*;
 
@@ -288,13 +295,16 @@ pub open spec fn clamp_arm(seconds: u64) -> int {
     if seconds < MIN_ARM { MIN_ARM as int } else if seconds > MAX_ARM { MAX_ARM as int } else { seconds as int }
 }
 
+/// F2 (60472d9): arming keeps waiting codes (only expired ones go) and a live
+/// window keeps its id.
 pub open spec fn arm_core(c: Core, seconds: u64, now: u64, wid: u64) -> Core {
+    let id = if armed(c, now) { c.window->Some_0.id } else { wid };
     if c.continuous {
-        Core { pending: Seq::empty(), paused: false, window: Some(Win { id: wid, end: None }), ..c }
+        Core { pending: prune_p(c.pending, now), paused: false, window: Some(Win { id, end: None }), ..c }
     } else {
         Core {
-            pending: Seq::empty(),
-            window: Some(Win { id: wid, end: Some(sat(now + clamp_arm(seconds) * 1000) as u64) }),
+            pending: prune_p(c.pending, now),
+            window: Some(Win { id, end: Some(sat(now + clamp_arm(seconds) * 1000) as u64) }),
             ..c
         }
     }
@@ -733,9 +743,36 @@ proof fn lemma_arm_disarm_inv(r: Relay, seconds: u64, now: u64, wid: u64)
     ensures
         inv(step_arm(r, seconds, now, wid)),
         inv(step_disarm(r)),
+        // R7 (F2): arming never drops a code that is still fresh.
+        forall|i: int| 0 <= i < r.c.pending.len() && (#[trigger] r.c.pending[i]).expires > now ==> step_arm(
+            r,
+            seconds,
+            now,
+            wid,
+        ).c.pending.contains(r.c.pending[i]),
 {
-    lemma_clear_pending(r, step_arm(r, seconds, now, wid));
     lemma_clear_pending(r, step_disarm(r));
+    let c = r.c;
+    let r2 = step_arm(r, seconds, now, wid);
+    lemma_prune_p(c.pending, now);
+    let pp = prune_p(c.pending, now);
+    assert(r2.c.pending == pp && r2.c.seen == c.seen);
+    assert forall|i: int| 0 <= i < pp.len() implies covered(r2.c.seen, (#[trigger] pp[i]).id, pp[i].expires as int) by {
+        assert(pp.contains(pp[i]));
+        let k = choose|k: int| 0 <= k < c.pending.len() && c.pending[k] == pp[i];
+        assert(covered(c.seen, c.pending[k].id, c.pending[k].expires as int));
+    }
+    assert forall|i: int| 0 <= i < r2.taken.len() implies covered(r2.c.seen, (#[trigger] r2.taken[i]).id, r2.taken[i].expires as int) || r2.clock >= r2.taken[i].expires by {
+        assert(covered(r.c.seen, r.taken[i].id, r.taken[i].expires as int) || r.clock >= r.taken[i].expires);
+    }
+    assert forall|i: int, k: int| 0 <= i < r2.taken.len() && 0 <= k < pp.len() && (#[trigger] r2.taken[i]).id == (#[trigger] pp[k]).id implies pp[k].stored_at >= r2.taken[i].expires by {
+        assert(pp.contains(pp[k]));
+        let k2 = choose|k2: int| 0 <= k2 < c.pending.len() && c.pending[k2] == pp[k];
+        assert(r.taken[i].id == c.pending[k2].id);
+    }
+    assert forall|i: int| 0 <= i < c.pending.len() && (#[trigger] c.pending[i]).expires > now implies r2.c.pending.contains(c.pending[i]) by {
+        assert(c.pending.contains(c.pending[i]));
+    }
 }
 
 /// R4: an event whose id was stored less than SEEN_TTL ago is a duplicate (when it gets
@@ -949,20 +986,50 @@ impl Store {
         None
     }
 
-    /// `Store::arm`.
+    fn prune_pending(&mut self, now: u64)
+        ensures
+            final(self)@ == (Core { pending: prune_p(old(self)@.pending, now), ..old(self)@ }),
+    {
+        let mut p: Vec<Entry> = Vec::new();
+        let mut i: usize = 0;
+        while i < self.pending.len()
+            invariant
+                0 <= i <= self.pending.len(),
+                p@ == prune_p(self.pending@.subrange(0, i as int), now),
+            decreases self.pending.len() - i,
+        {
+            let x = self.pending[i];
+            assert(self.pending@.subrange(0, i + 1).drop_last() =~= self.pending@.subrange(0, i as int));
+            if x.expires > now {
+                p.push(x);
+            }
+            i += 1;
+        }
+        assert(self.pending@.subrange(0, self.pending.len() as int) =~= self.pending@);
+        self.pending = p;
+    }
+
+    /// `Store::arm` (F2).
     pub fn arm(&mut self, seconds: u64, now: u64, wid: u64)
         ensures
             final(self)@ == arm_core(old(self)@, seconds, now, wid),
     {
-        self.pending = Vec::new();
+        let id = if self.armed_exec(now) {
+            match self.window {
+                Some(w) => w.id,
+                None => wid,
+            }
+        } else {
+            wid
+        };
+        self.prune_pending(now);
         if self.continuous {
             self.paused = false;
-            self.window = Some(Win { id: wid, end: None });
+            self.window = Some(Win { id, end: None });
         } else {
             let s = if seconds < MIN_ARM { MIN_ARM } else if seconds > MAX_ARM { MAX_ARM } else { seconds };
-            self.window = Some(Win { id: wid, end: Some(sat_add(now, s * 1000)) });
+            self.window = Some(Win { id, end: Some(sat_add(now, s * 1000)) });
         }
-        assert(self@.pending =~= Seq::<Entry>::empty());
     }
 
     /// `Store::disarm`.
@@ -1140,6 +1207,55 @@ pub fn flush(q: &mut Vec<Pend>, now: u64, retry: &Vec<bool>) -> (posted: Vec<Pen
     posted
 }
 
+/// Removes every entry with event id `id` (`queue.retain(|p| p.event_id != event_id)`).
+pub fn remove_id(q: &mut Vec<Pend>, id: u64)
+    ensures
+        forall|i: int| 0 <= i < final(q)@.len() ==> (#[trigger] final(q)@[i]).id != id,
+        forall|i: int| 0 <= i < final(q)@.len() ==> old(q)@.contains(#[trigger] final(q)@[i]),
+        final(q)@.len() <= old(q)@.len(),
+{
+    let mut out: Vec<Pend> = Vec::new();
+    let mut i: usize = 0;
+    while i < q.len()
+        invariant
+            0 <= i <= q.len(),
+            out@.len() <= i,
+            forall|k: int| 0 <= k < out@.len() ==> (#[trigger] out@[k]).id != id,
+            forall|k: int| 0 <= k < out@.len() ==> q@.contains(#[trigger] out@[k]),
+        decreases q.len() - i,
+    {
+        let p = q[i];
+        if p.id != id {
+            out.push(p);
+            assert(q@[i as int] == p);
+        }
+        i += 1;
+    }
+    *q = out;
+}
+
+/// `Bridge::forward` after F1: the code is queued (write-ahead) before the POST; an
+/// answer other than Retry (`answered`) removes it again.
+pub fn forward_queue(q: &mut Vec<Pend>, p: Pend, now: u64, answered: bool)
+    requires
+        fresh(p, now),
+    ensures
+        final(q)@.len() <= MAX_QUEUE,
+        all_fresh(final(q)@, now),
+        !answered ==> final(q)@.len() >= 1 && final(q)@.last() == p,
+        answered ==> forall|i: int| 0 <= i < final(q)@.len() ==> (#[trigger] final(q)@[i]).id != p.id,
+{
+    enqueue(q, p, now);
+    if answered {
+        let ghost before = q@;
+        remove_id(q, p.id);
+        assert forall|i: int| 0 <= i < q@.len() implies fresh(#[trigger] q@[i], now) by {
+            assert(before.contains(q@[i]));
+            let k = choose|k: int| 0 <= k < before.len() && before[k] == q@[i];
+        }
+    }
+}
+
 // ======================================================================== non-vacuity
 
 fn witness_receive_take_once() {
@@ -1175,6 +1291,9 @@ fn witness_receive_take_once() {
     }
     let o2 = s.receive(&ev, 1_000_001);
     assert(o2 == Outcome::Duplicate);
+    // F2: re-arming keeps the waiting code (and the live window's id).
+    s.arm(30, 1_000_001, 8);
+    assert(s.window is Some && s.window->Some_0.id == 7);
     let d = s.take(1_000_002);
     assert(d is Some);
     assert(d->Some_0.code == 482917 && d->Some_0.expires == 1_060_000);

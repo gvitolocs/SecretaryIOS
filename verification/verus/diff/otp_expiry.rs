@@ -1,6 +1,7 @@
 //! Differential test of `verification/verus/otp_expiry.rs` (expires_at and the relay
 //! store) against the real `lucina_phone_core::proto::expires_at` and
-//! `lucina_otp_relay::store::Store` (lucina-rs c357646).
+//! `lucina_otp_relay::store::Store` (REV of `otp_run.sh`, default lucina-rs dd7ec9e, which has
+//! F2/F3). F3's seen-id hashing keeps id equality; `restore_seen` is not driven.
 //!
 //! Belongs in `crates/lucina-otp-relay/tests/verus_otp_store.rs`; `diff/otp_run.sh`
 //! runs it. Random operation sequences (arm, disarm, receive, take, with clocks that
@@ -174,14 +175,16 @@ mod kernel {
             None
         }
 
+        /// F2: keeps fresh pending codes and a live window's id.
         pub fn arm(&mut self, seconds: u64, now: u64, wid: u64) {
-            self.pending = Vec::new();
+            let id = if self.armed(now) { self.window.map_or(wid, |w| w.id) } else { wid };
+            self.pending = self.pending.iter().copied().filter(|x| x.expires > now).collect();
             if self.continuous {
                 self.paused = false;
-                self.window = Some(Win { id: wid, end: None });
+                self.window = Some(Win { id, end: None });
             } else {
                 let s = seconds.clamp(30, 300);
-                self.window = Some(Win { id: wid, end: Some(sat_add(now, s * 1000)) });
+                self.window = Some(Win { id, end: Some(sat_add(now, s * 1000)) });
             }
         }
 
@@ -266,7 +269,7 @@ fn expires_at_matches_kernel() {
 #[test]
 fn store_matches_kernel_and_theorems_hold() {
     let mut r = Rng(0x5eed_0202);
-    let (mut stored, mut taken, mut dups, mut limits_hit) = (0, 0, 0, 0);
+    let (mut stored, mut taken, mut dups, mut limits_hit, mut rearms) = (0, 0, 0, 0, 0);
     for run in 0..600 {
         let continuous = r.below(3) == 0;
         let paused = r.below(4) == 0;
@@ -296,8 +299,13 @@ fn store_matches_kernel_and_theorems_hold() {
                 0 => {
                     wid += 1;
                     let secs = r.below(400);
+                    let fresh_before: Vec<kernel::Entry> = k.pending.iter().copied().filter(|x| x.expires > now).collect();
                     real.arm(secs, now, window_id(wid));
                     k.arm(secs, now, wid);
+                    // R7 (F2): arming drops no fresh code.
+                    assert_eq!(k.pending, fresh_before);
+                    assert_eq!(real.window(now).window_id, k.window.map(|w| window_id(w.id)));
+                    rearms += 1;
                 }
                 1 => {
                     real.disarm();
@@ -315,8 +323,9 @@ fn store_matches_kernel_and_theorems_hold() {
                         2 => Some(now.saturating_sub(CODE_TTL_MS + r.below(10_000))),
                         _ => Some(now.saturating_sub(r.below(100_000))),
                     };
+                    // The live window's id (F2 keeps it across re-arms), a wrong one, or none.
                     let w = match r.below(6) {
-                        0 => Some(wid),
+                        0 => Some(k.window.map_or(wid, |w| w.id)),
                         1 => Some(wid + 1000),
                         _ => None,
                     };
@@ -375,6 +384,6 @@ fn store_matches_kernel_and_theorems_hold() {
             assert!(real.pending_len() <= lp && real.seen_len() <= ls);
         }
     }
-    assert!(stored > 1_000 && taken > 500 && dups > 100 && limits_hit > 10, "{stored} {taken} {dups} {limits_hit}");
-    eprintln!("store == kernel: {stored} stored, {taken} taken, {dups} duplicates, {limits_hit} event limits");
+    assert!(stored > 1_000 && taken > 500 && dups > 100 && limits_hit > 10 && rearms > 1_000, "{stored} {taken} {dups} {limits_hit} {rearms}");
+    eprintln!("store == kernel (F2 arm): {stored} stored, {taken} taken, {dups} duplicates, {limits_hit} event limits, {rearms} arms");
 }

@@ -1,6 +1,6 @@
 // OTP owner gate: who may receive a code, and Rust Lucina's `/otp` dispatch.
 //
-// Production (branch lucina-rs, c357646):
+// Production (branch lucina-rs, c357646; unchanged at dd7ec9e by F1-F5):
 //   private_owner_exec <-> crates/lucina-phone-core/src/reply.rs `private_owner`
 //   dispatch / secretary_chat_dispatch
 //                      <-> crates/lucina-server/src/otp.rs `respond` + `run` (the Take arm)

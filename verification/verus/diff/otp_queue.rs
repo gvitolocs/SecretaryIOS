@@ -1,5 +1,6 @@
 //! Differential test of the phone-queue part of `verification/verus/otp_expiry.rs`
-//! (`forward_gate`, `enqueue`, `flush`) against the real `Bridge` (lucina-rs c357646
+//! (`forward_gate`, `forward_queue`, `enqueue`, `flush`) against the real `Bridge`
+//! (REV of `otp_run.sh`, default lucina-rs dd7ec9e with F1 write-ahead;
 //! `crates/lucina-android/src/bridge.rs`), over a mock relay on 127.0.0.1.
 //!
 //! It needs the crate-private `on_sms_at` / `flush_at` / `Transport::plain_http_for_tests`,
@@ -23,7 +24,7 @@ const KEY: [u8; 32] = [9; 32];
 const TOKEN: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 /// Plain-Rust copy of the kernel (`sat_add`, `fresh_exec`, `forward_gate`,
-/// `retain_fresh`, `enqueue`, `flush`).
+/// `retain_fresh`, `enqueue`, `remove_id`, `forward_queue`, `flush`).
 mod kernel {
     pub const TTL: u64 = 120_000;
     pub const MAX_QUEUE: usize = 8;
@@ -75,6 +76,19 @@ mod kernel {
             q.remove(0);
         }
         q.push(p);
+    }
+
+    pub fn remove_id(q: &mut Vec<Pend>, id: u64) {
+        let out: Vec<Pend> = q.iter().copied().filter(|p| p.id != id).collect();
+        *q = out;
+    }
+
+    /// F1: write-ahead enqueue, then the POST; any answer but Retry removes the entry.
+    pub fn forward_queue(q: &mut Vec<Pend>, p: Pend, now: u64, answered: bool) {
+        enqueue(q, p, now);
+        if answered {
+            remove_id(q, p.id);
+        }
     }
 
     pub fn flush(q: &mut Vec<Pend>, now: u64, retry: &[bool]) -> Vec<Pend> {
@@ -145,7 +159,7 @@ impl Rng {
 fn queue_matches_kernel_and_only_fresh_codes_are_sent() {
     static N: AtomicU32 = AtomicU32::new(0);
     let mut r = Rng(0x5eed_0301);
-    let (mut queued, mut expired, mut posted_total, mut evicted) = (0, 0, 0, 0);
+    let (mut queued, mut expired, mut posted_total, mut evicted, mut answered) = (0, 0, 0, 0, 0);
     for scenario in 0..40 {
         let dir = std::env::temp_dir().join(format!(
             "verus-otp-queue-{}-{}",
@@ -168,7 +182,13 @@ fn queue_matches_kernel_and_only_fresh_codes_are_sent() {
                 _ => (now - r.below(CODE_TTL_MS + 20_000)) as i64,
             };
             let code = 100_000 + scenario * 1_000 + i;
-            mock.script.lock().unwrap().push_back(503);
+            // Mostly offline (503: Retry, the code stays queued); sometimes accepted or paused.
+            let (status, want) = match r.below(5) {
+                0 => (200, Forward::Sent),
+                1 => (409, Forward::Paused),
+                _ => (503, Forward::Queued),
+            };
+            mock.script.lock().unwrap().push_back(status);
             let got = b.on_sms_at("Bank", &format!("Your verification code is {code}."), received_ms, now).result;
             match kernel::forward_gate(received_ms, now) {
                 None => {
@@ -177,12 +197,16 @@ fn queue_matches_kernel_and_only_fresh_codes_are_sent() {
                     expired += 1;
                 }
                 Some(t) => {
-                    assert_eq!(got, Forward::Queued, "scenario {scenario} code {i}");
+                    assert_eq!(got, want, "scenario {scenario} code {i}");
                     if kq.len() >= MAX_QUEUE {
                         evicted += 1;
                     }
-                    kernel::enqueue(&mut kq, kernel::Pend { id: code, received_at: t }, now);
-                    queued += 1;
+                    kernel::forward_queue(&mut kq, kernel::Pend { id: code, received_at: t }, now, status != 503);
+                    if status == 503 {
+                        queued += 1;
+                    } else {
+                        answered += 1;
+                    }
                 }
             }
             assert_eq!(b.status().pending as usize, kq.len(), "scenario {scenario} after code {i}");
@@ -218,6 +242,6 @@ fn queue_matches_kernel_and_only_fresh_codes_are_sent() {
         drop(b);
         let _ = std::fs::remove_dir_all(&dir);
     }
-    assert!(queued > 50 && expired > 10 && posted_total > 30 && evicted > 0, "{queued} {expired} {posted_total} {evicted}");
-    eprintln!("queue == kernel: {queued} queued, {expired} expired at once, {evicted} evictions, {posted_total} posted by flush");
+    assert!(queued > 50 && expired > 10 && posted_total > 30 && evicted > 0 && answered > 20, "{queued} {expired} {posted_total} {evicted} {answered}");
+    eprintln!("queue == kernel (F1): {queued} queued, {answered} answered at once, {expired} expired at once, {evicted} evictions, {posted_total} posted by flush");
 }

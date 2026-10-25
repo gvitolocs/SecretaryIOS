@@ -5,8 +5,10 @@
 //! Installed by `otp_run.sh` as `crates/lucina-phone-core/tests/otp_common/mod.rs`
 //! (a directory, so it is not a test target of its own).
 //!
-//! The patterns, `ascii_digits` and `MAX_DISTANCE` are copied verbatim from
-//! lucina-rs c357646 `crates/lucina-phone-core/src/otp.rs` (they are private there).
+//! The patterns, `ascii_digit`, `View` (F5) and `MAX_DISTANCE` are copied verbatim from
+//! lucina-rs dd7ec9e (F4/F5: 52b9140) `crates/lucina-phone-core/src/otp.rs` (they are private there);
+//! the F4 tokenizer flags below (`currency_adjacent`, `numeric_join`) are the functions
+//! F4 took from this file.
 //! The differential tests compare the kernels fed by this tokenizer with the real
 //! public functions, so a drift in the copy shows up as a mismatch.
 #![allow(dead_code)]
@@ -15,7 +17,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-// ---- copied from lucina-rs c357646 crates/lucina-phone-core/src/otp.rs ----------
+// ---- copied from lucina-rs dd7ec9e crates/lucina-phone-core/src/otp.rs -----------
 pub const MAX_DISTANCE: usize = 64;
 pub const MAX_BODY_BYTES: usize = 8192;
 
@@ -41,16 +43,49 @@ pub static GOOGLE: LazyLock<Regex> = LazyLock::new(|| {
 });
 pub static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://\S+").expect("URL pattern"));
 
+pub fn ascii_digit(c: char) -> char {
+    let n = c as u32;
+    [0x660, 0x6f0, 0x966, 0xff10]
+        .into_iter()
+        .find(|zero| n >= *zero && n < *zero + 10)
+        .map_or(c, |zero| char::from_u32(48 + n - zero).unwrap_or(c))
+}
+
+pub struct View {
+    pub text: String,
+    pub origin: Vec<(usize, usize)>,
+}
+
+impl View {
+    pub fn new(body: &str) -> Self {
+        let mut normalized = String::with_capacity(body.len());
+        let mut from = Vec::with_capacity(body.len());
+        for (i, c) in body.char_indices() {
+            let before = normalized.len();
+            normalized.push(ascii_digit(c));
+            from.resize(normalized.len(), (i, i + c.len_utf8()));
+            debug_assert!(normalized.len() > before);
+        }
+        let mut text = String::with_capacity(normalized.len());
+        let mut origin = Vec::with_capacity(from.len());
+        let mut at = 0;
+        for m in URL.find_iter(&normalized) {
+            text.push_str(&normalized[at..m.start()]);
+            origin.extend_from_slice(&from[at..m.start()]);
+            at = m.end();
+        }
+        text.push_str(&normalized[at..]);
+        origin.extend_from_slice(&from[at..]);
+        Self { text, origin }
+    }
+
+    pub fn original(&self, start: usize, end: usize) -> (usize, usize) {
+        (self.origin[start].0, self.origin[end - 1].1)
+    }
+}
+
 pub fn ascii_digits(body: &str) -> String {
-    body.chars()
-        .map(|c| {
-            let n = c as u32;
-            [0x660, 0x6f0, 0x966, 0xff10]
-                .into_iter()
-                .find(|zero| n >= *zero && n < *zero + 10)
-                .map_or(c, |zero| char::from_u32(48 + n - zero).unwrap_or(c))
-        })
-        .collect()
+    body.chars().map(ascii_digit).collect()
 }
 // ---- end of the copy -------------------------------------------------------------
 
@@ -74,7 +109,7 @@ pub struct Ctx {
     pub end: usize,
 }
 
-/// The proposed fix's currency markers (whole tokens, case-insensitive) and symbols.
+/// F4's currency markers (whole tokens, case-insensitive) and symbols.
 const CURRENCY_WORDS: &[&str] = &[
     "dkk", "kr", "kr.", "sek", "nok", "eur", "euro", "euros", "usd", "gbp", "chf", "pln", "inr", "rs", "rs.",
 ];
@@ -85,7 +120,7 @@ fn currency_word(w: &str) -> bool {
     CURRENCY_WORDS.iter().any(|c| w.eq_ignore_ascii_case(c))
 }
 
-/// FIX tokenizer flag: the number is next to a currency marker ("1500 DKK", "DKK 1500",
+/// F4 tokenizer flag (`currency_adjacent` in otp.rs): the number is next to a currency marker ("1500 DKK", "DKK 1500",
 /// "$1999", "1500kr" cannot happen: CODES needs a word boundary).
 pub fn currency_adjacent(text: &str, start: usize, end: usize) -> bool {
     let before = text[..start].trim_end();
@@ -98,7 +133,7 @@ pub fn currency_adjacent(text: &str, start: usize, end: usize) -> bool {
     currency_word(next) || currency_word(prev)
 }
 
-/// FIX tokenizer flag: glued to another number by . , : / - ("1250,00", "2026-10-25").
+/// F4 tokenizer flag (`numeric_join` in otp.rs): glued to another number by . , : / - ("1250,00", "2026-10-25").
 pub fn numeric_join(text: &str, start: usize, end: usize) -> bool {
     let b = text.as_bytes();
     let sep = |c: u8| matches!(c, b'.' | b',' | b':' | b'/' | b'-');
@@ -137,7 +172,8 @@ pub struct ParseTokens {
 pub fn parse_tokens(sender: &str, body: &str) -> ParseTokens {
     let too_long = body.len() > MAX_BODY_BYTES;
     let normalized = ascii_digits(body);
-    let text = URL.replace_all(&normalized, "").into_owned();
+    let text = View::new(body).text;
+    assert_eq!(text, URL.replace_all(&normalized, ""), "View::text is the old URL-stripped text");
     let google = if sender.eq_ignore_ascii_case("google") || text.to_lowercase().contains("google") {
         GOOGLE.captures(&text).map(|m| m[1].to_owned())
     } else {
@@ -180,6 +216,19 @@ pub fn raw_tokens(text: &str) -> RawTokens {
         ctxs: CONTEXT.find_iter(text).map(|m| Ctx { start: m.start(), end: m.end() }).collect(),
         google: GOOGLE.find_iter(text).map(|m| (m.start(), m.end())).collect(),
     }
+}
+
+/// What F5's `otp_spans` works on: the raw tokens, the view's tokens and `View::origin`.
+pub struct F5Tokens {
+    pub raw: RawTokens,
+    pub view: RawTokens,
+    pub origin: Vec<(usize, usize)>,
+    pub differs: bool,
+}
+
+pub fn f5_tokens(text: &str) -> F5Tokens {
+    let v = View::new(text);
+    F5Tokens { raw: raw_tokens(text), view: raw_tokens(&v.text), differs: v.text != text, origin: v.origin }
 }
 
 // ---- generator -------------------------------------------------------------------
