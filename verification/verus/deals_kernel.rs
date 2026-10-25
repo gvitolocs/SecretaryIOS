@@ -33,7 +33,7 @@
 //       a higher price, are never new), lemma_strict_cheaper_is_new, lemma_alert_guard
 //       (select_exec picks exactly the new offers), lemma_overwrite_forgets_cheaper (a later
 //       acknowledgment at a higher price makes the earlier, cheaper price new again: the
-//       price-bounce repeat of the model, D0).
+//       price-bounce repeat of the model, G0).
 //   (d) lemma_no_suffix_no_match, lemma_prefix_only_examples (skinkepizza, skinkeschnitzler,
 //       rugbrødschips, mælkechokolade), lemma_single_term_needs_suffix (a one-word term
 //       scores only on an equal token or a head-final compound with a >= 2-letter prefix),

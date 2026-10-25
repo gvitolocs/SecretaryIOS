@@ -1,6 +1,6 @@
 //! Differential tests of the Verus deals kernel (`verification/verus/deals_kernel.rs`)
 //! against the real lucina-deals code at the pinned revision (`deals-revision`), plus
-//! real-code witnesses of the DealWatch model findings (docs/verification.md §7).
+//! real-code witnesses of the DealWatch model findings (docs/verification.md §14).
 //!
 //! `run-deals.sh` extracts the pinned crates with `git archive` into `target/deals-diff`,
 //! installs this file as `crates/lucina-deals/tests/verus_deals.rs` and the plain-Rust

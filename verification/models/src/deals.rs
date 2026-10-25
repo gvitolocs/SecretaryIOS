@@ -713,7 +713,7 @@ pub fn cases(_deep: bool) -> Vec<Case> {
     vec![
         Case::new(
             PROTOCOL,
-            "D0 current Rust, no faults",
+            "G0 current Rust, no faults",
             Deals {
                 max_faults: 0,
                 ..current.clone()
@@ -723,28 +723,28 @@ pub fn cases(_deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "D1 current Rust after the cutover (one fault)",
+            "G1 current Rust after the cutover (one fault)",
             current.clone(),
             None,
             expect(&all, &rust_witnesses),
         ),
         Case::new(
             PROTOCOL,
-            "D1 + fixes F1 F2 F3",
+            "G1 + fixes F1 F2 F3",
             fixed.clone(),
             None,
             expect(&[], &rust_witnesses),
         ),
         Case::new(
             PROTOCOL,
-            "D2 cutover as performed (stop Node, start Rust)",
+            "G2 cutover as performed (stop Node, start Rust)",
             node.clone(),
             None,
             expect(&all, &cutover_witnesses),
         ),
         Case::new(
             PROTOCOL,
-            "D2 + fixes in both runtimes",
+            "G2 + fixes in both runtimes",
             Deals {
                 fix_pending: true,
                 fix_ack_delivered: true,
@@ -756,7 +756,7 @@ pub fn cases(_deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "D3 Node and Rust both running (rule witness)",
+            "G3 Node and Rust both running (rule witness)",
             Deals {
                 overlap: true,
                 ..node.clone()
@@ -766,7 +766,7 @@ pub fn cases(_deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "D4 current, no server dedup",
+            "G4 current, no server dedup",
             Deals {
                 dedup: false,
                 ..current.clone()
@@ -776,7 +776,7 @@ pub fn cases(_deep: bool) -> Vec<Case> {
         ),
         Case::new(
             PROTOCOL,
-            "D5 fixes, no server dedup",
+            "G5 fixes, no server dedup",
             Deals {
                 dedup: false,
                 ..fixed

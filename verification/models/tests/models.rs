@@ -131,3 +131,38 @@ fn deals_cap_failed_send_and_duplicate_retry() {
         "acknowledge records the alternative too"
     );
 }
+
+#[test]
+fn otp() {
+    run("otp");
+}
+
+#[test]
+fn deploy() {
+    run("deploy");
+}
+
+#[test]
+fn game() {
+    run("game");
+}
+
+#[test]
+fn media_backup() {
+    run("media-backup");
+}
+
+#[test]
+fn memos() {
+    run("memos");
+}
+
+#[test]
+fn player() {
+    run("player");
+}
+
+#[test]
+fn share() {
+    run("share");
+}

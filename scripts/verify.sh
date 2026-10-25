@@ -11,6 +11,7 @@
 # Usage: scripts/verify.sh [--deep] [--only models|tlc|verus]
 #   --deep   exhaustive Stateright bounds (feature `deep`) and the *_deep TLC cfgs
 # Env: JAVA, TLA_JAR, VERUS_BIN (defaults: ~/tools/...), VERUS_DIR (default verification/verus),
+#      LUCINA_POKEMON_DIR (the lucina-pokemon crate, for its kernel differential tests; skipped if absent),
 #      CARGO_TARGET_DIR, TLC_WORKERS,
 #      TLC_TIMEOUT (seconds per cfg, default 900), CARGO_JOBS (default 2).
 set -u
@@ -32,6 +33,12 @@ done
 
 JAVA="${JAVA:-$HOME/tools/jdk-21.0.12.1+1/bin/java}"
 TLA_JAR="${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}"
+# On nezopt every gate runs through verify-gate (one at a time, MemoryMax 12G, no swap): it holds
+# /tmp/lucina-verify.lock on fd 9 and execs this script, so fd 9 points at the lock when it is ours.
+if [ "$(readlink "/proc/$$/fd/9" 2>/dev/null)" != /tmp/lucina-verify.lock ] && { [ -x "$HOME/.local/bin/verify-gate" ] || command -v verify-gate >/dev/null 2>&1; }; then
+    echo "verify.sh: not run through verify-gate; on nezopt use 'verify-gate' (or 'verify-gate -- scripts/verify.sh ...') so gates do not run in parallel and fill swap" >&2
+fi
+
 export VSTD_PATH="${VSTD_PATH:-$HOME/tools/verus/verus-x86-linux}"
 VERUS_BIN="${VERUS_BIN:-$VSTD_PATH/verus}"
 TLC_WORKERS="${TLC_WORKERS:-4}"
@@ -69,13 +76,36 @@ if want models; then
         tail -40 "$work/ink-sync-test.log"
         row models "cargo test -p ink-sync (property + fault injection)" pass "FAIL" "see the output above"
     fi
-    # The Verus deals kernel against the real lucina-deals at the pinned revision (§7).
+    # The Verus deals kernel against the real lucina-deals at the pinned revision (§14).
     start=$(date +%s)
     if verification/verus/diff/run-deals.sh >"$work/deals-diff.log" 2>&1; then
         row models "lucina-deals Verus differential tests (pinned source)" pass "PASS" "$(( $(date +%s) - start ))s"
     else
         tail -40 "$work/deals-diff.log"
         row models "lucina-deals Verus differential tests (pinned source)" pass "FAIL" "see the output above"
+    fi
+    # deploy-guard: the deploy model's fix as a tool (docs/verification.md §7), its rule and
+    # today's incident replayed on real git repos.
+    start=$(date +%s)
+    if cargo test -j"$CARGO_JOBS" -q --manifest-path tools/deploy-guard/Cargo.toml >"$work/deploy-guard-test.log" 2>&1; then
+        row models "cargo test deploy-guard (rule + git replay)" pass "PASS" \
+            "$(grep -oE '[0-9]+ passed' "$work/deploy-guard-test.log" | awk '{n+=$1} END {print n}') tests, $(( $(date +%s) - start ))s"
+    else
+        tail -40 "$work/deploy-guard-test.log"
+        row models "cargo test deploy-guard (rule + git replay)" pass "FAIL" "see the output above"
+    fi
+    # Lucina's Pokémon planner (Lucina repo): the differential tests that tie verification/verus/game_planner.rs
+    # to the code (planned ROM routes against the kernel's step rule; the story requirement table).
+    pk="${LUCINA_POKEMON_DIR:-$HOME/Projects/.worktrees/Lucina/game-link/rust/lucina-pokemon}"
+    if [ -f "$pk/Cargo.toml" ]; then
+        start=$(date +%s)
+        if (cd "$pk" && CARGO_TARGET_DIR="$pk/target" cargo test -j"$CARGO_JOBS" -q --release -- \
+            routes_only_enter_walkable_cells story_requirements_come_first) >"$work/pokemon-test.log" 2>&1; then
+            row models "lucina-pokemon kernel differential tests" pass "PASS" "$(( $(date +%s) - start ))s"
+        else
+            tail -40 "$work/pokemon-test.log"
+            row models "lucina-pokemon kernel differential tests" pass "FAIL" "see the output above"
+        fi
     fi
     # The same cases as a table (states explored, depth, verdict per property).
     if cargo run -j"$CARGO_JOBS" -q -p verification-models --bin verify-models -- $([ "$deep" -eq 1 ] && echo --deep) \

@@ -545,3 +545,12 @@ export function BookIcon() {
     </svg>
   );
 }
+
+export function FilmIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="14" rx="2.5" />
+      <path d="M10 9.2v5.6l4.6-2.8z" />
+    </svg>
+  );
+}
