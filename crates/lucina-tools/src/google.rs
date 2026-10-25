@@ -941,6 +941,7 @@ fn path_segment(id: &str) -> Result<&str, GoogleError> {
 /// A Drive id from an id or a Drive link (`/file/d/<id>/…`, `?id=<id>`).
 pub fn file_id_of(input: &str) -> Option<String> {
     let s = input.trim();
+    let s = s.strip_prefix("gdrive:").unwrap_or(s);
     if path_segment(s).is_ok() {
         return Some(s.to_owned());
     }
@@ -1114,6 +1115,7 @@ mod tests {
             Some("abc_DEF-1")
         );
         assert_eq!(file_id_of("abc123").as_deref(), Some("abc123"));
+        assert_eq!(file_id_of("gdrive:abc_DEF-1").as_deref(), Some("abc_DEF-1"));
         assert!(file_id_of("../etc/passwd").is_none());
     }
 

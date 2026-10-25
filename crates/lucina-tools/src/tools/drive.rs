@@ -68,14 +68,19 @@ struct Args {
 
 pub struct DriveTool;
 
+/// Ids go out labelled (`gdrive:<id>`) so the redactor lets them through.
+fn drive_ref(id: &str) -> String {
+    format!("{}{id}", lucina_secrets::redact::DRIVE_REF_PREFIX)
+}
+
 fn file_json(f: &DriveFile) -> Value {
     json!({
-        "id": f.id,
+        "id": drive_ref(&f.id),
         "name": f.name,
         "mime_type": f.mime_type,
         "modified": f.modified_time,
         "size": f.size.as_deref().and_then(|s| s.parse::<u64>().ok()),
-        "parents": f.parents,
+        "parents": f.parents.iter().map(|p| drive_ref(p)).collect::<Vec<_>>(),
         "link": f.web_view_link,
         "sha256": f.sha256_checksum,
         "md5": f.md5_checksum,
@@ -335,7 +340,7 @@ mod tests {
             .call(json!({"action": "search", "text": "outlook"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(out["files"][0]["id"], "M1");
+        assert_eq!(out["files"][0]["id"], "gdrive:M1");
         assert_eq!(out["account"], google::DEFAULT_ACCOUNT);
         let out = DriveTool
             .call(
@@ -387,9 +392,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(out["file"]["id"], "N1");
+        assert_eq!(out["file"]["id"], "gdrive:N1");
         let out = DriveTool
-            .call(json!({"action": "trash", "file_id": "N1"}), &ctx)
+            .call(json!({"action": "trash", "file_id": "gdrive:N1"}), &ctx)
             .await
             .unwrap();
         assert_eq!(out["done"], "trashed");
