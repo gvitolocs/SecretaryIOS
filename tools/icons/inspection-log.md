@@ -25,7 +25,7 @@ colours (`icons contrast` gate ≤ 25 % weak edge), no clipping, no stray shapes
 | dish-soap | pass | Green squeeze bottle, drop label, bubbles. Long label ("Washing-up liquid") is a tile-text matter, not the icon. |
 | eggs | pass | Two brown and one white egg in a carton. |
 | flour | pass | Paper sack with wheat ear and blue band. |
-| ham | pass | Leg with pink cut face, fat ring and bone; `crust` rind keeps it off the red tile. |
+| ham | pass (redrawn 2026-10-24) | v1, a leg with a bone knob, read as a chicken drumstick and was a twin of prosciutto (both on the owner's list). Now two pink cooked-ham slices with a cream fat rim and rose marbling; contrast 0 % weak edge on all four tiles. |
 | ice-cream | pass | Cone, strawberry and chocolate scoops, cherry. |
 | milk | pass | Gable carton, blue label with a drop. |
 | olive-oil | pass | Bottle with olive-branch label. |

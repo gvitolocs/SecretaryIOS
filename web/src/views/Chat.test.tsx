@@ -208,6 +208,37 @@ describe("Chat", () => {
     expect(calls).toHaveLength(fetched);
   });
 
+  it("labels MCP turns and replies, strips legacy prefixes, and filters Agents separately", async () => {
+    const items = [
+      ...MIXED,
+      { id: "m1", ts: at(10), channel: "web", role: "user", text: "Agent question", meta: { via: "mcp", caller: "claude-code" } },
+      { id: "m2", ts: at(9), channel: "web", role: "lucina", text: "Agent answer", meta: { via: "mcp", caller: "www" } },
+      { id: "m3", ts: at(8), channel: "web", role: "user", text: "[via Lucina MCP, from claude-code] Legacy question" },
+    ];
+    serve(() => ({ status: 404 }), () => ({ body: { items, nextBefore: null } }));
+    render(() => <ChatView />);
+    await screen.findByText("Legacy question");
+    expect(screen.queryByText(/\[via Lucina MCP/)).toBeNull();
+    const badge = screen.getByText("Agent answer").closest(".msg")!.querySelector(".src-badge")!;
+    expect(badge).toHaveAttribute("data-channel", "mcp");
+    expect(badge.textContent).toBe("via Cursor");
+    expect(badge.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Legacy question").closest(".msg")!.querySelector(".src-badge")!.textContent).toBe("via Claude Code");
+
+    fireEvent.click(screen.getByRole("button", { name: "App" }));
+    expect(screen.queryByText("Agent question")).toBeNull();
+    expect(screen.queryByText("Agent answer")).toBeNull();
+    expect(screen.queryByText("Legacy question")).toBeNull();
+    expect(screen.getByText("Web reply")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    expect(screen.getByText("Agent question")).toBeInTheDocument();
+    expect(screen.getByText("Agent answer")).toBeInTheDocument();
+    expect(screen.getByText("Legacy question")).toBeInTheDocument();
+    expect(screen.queryByText("Web reply")).toBeNull();
+    expect(document.querySelectorAll(".messages .msg")).toHaveLength(3);
+  });
+
   it("loads earlier messages on request", async () => {
     const calls = serve(
       () => ({ status: 404 }),

@@ -115,6 +115,44 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
     forward(&st, Call::shopping()).await
 }
 
+/// `GET /v1/grocery/deals/map`: Lucina's deals map around home, plus the
+/// server's client-side Google Maps keys so the app can draw the map itself.
+async fn deals_map(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<DealsMapQuery>,
+) -> ApiResult {
+    let radius = match q.radius_m.as_deref() {
+        None => None,
+        Some(raw) => Some(secretary_core::validate::bounded_int(
+            "radiusM",
+            raw,
+            secretary_core::validate::DEALS_RADIUS_MIN,
+            secretary_core::validate::DEALS_RADIUS_MAX,
+        )?),
+    };
+    let (status, Json(mut data)) = forward(&st, Call::deals_map(radius)?).await?;
+    if let Some(obj) = data.as_object_mut() {
+        // The keys are client-side, referrer/bundle-id restricted in Google
+        // Cloud, so serving them to an authenticated device is intended.
+        obj.insert(
+            "maps".into(),
+            json!({
+                "webKey": st.maps.web,
+                "iosKey": st.maps.ios,
+                "mapId": st.maps.map_id,
+            }),
+        );
+    }
+    Ok((status, Json(data)))
+}
+
+/// Query of `GET /v1/grocery/deals/map` (optional `radiusM` in meters).
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DealsMapQuery {
+    radius_m: Option<String>,
+}
+
 async fn shopping_add(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
     forward(&st, Call::shopping_add(body)?).await
 }
@@ -142,4 +180,5 @@ pub fn protected() -> Router<AppState> {
         .route("/v1/agenda", get(agenda))
         .route("/v1/shopping", get(shopping).post(shopping_add))
         .route("/v1/shopping/{id}", patch(shopping_update))
+        .route("/v1/grocery/deals/map", get(deals_map))
 }

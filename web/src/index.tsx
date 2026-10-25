@@ -10,6 +10,8 @@ import "./styles.css";
 import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
 
+const DealsMapView = lazy(() => import("./views/shopping/DealsMap"));
+
 const GymHome = lazy(() => import("./views/gym/GymHome"));
 const WorkoutView = lazy(() => import("./views/gym/Workout"));
 const HistoryView = lazy(() => import("./views/gym/History"));
@@ -33,7 +35,10 @@ render(
   () => (
     <Router root={App}>
       <Route path="/" component={ChatView} />
-      <Route path="/shopping" component={ShoppingView} />
+      <Route path="/shopping">
+        <Route path="/" component={ShoppingView} />
+        <Route path="/map" component={DealsMapView} />
+      </Route>
       <Route path="/gym">
         <Route path="/" component={GymHome} />
         <Route path="/workout" component={WorkoutView} />

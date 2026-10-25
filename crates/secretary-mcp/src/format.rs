@@ -158,8 +158,16 @@ pub fn timeline(page: &Value, channel: Option<&str>, limit: usize, tz: Tz) -> St
         if it.pointer("/meta/kind").and_then(Value::as_str) == Some("reminder") {
             text.push_str(" [reminder delivery]");
         }
+        let source = if it.pointer("/meta/via").and_then(Value::as_str) == Some("mcp") {
+            match it.pointer("/meta/caller").and_then(Value::as_str) {
+                Some(caller) if !caller.trim().is_empty() => format!("mcp:{caller}"),
+                _ => "mcp".to_owned(),
+            }
+        } else {
+            ch.to_owned()
+        };
         lines.push(format!(
-            "[{} · {ch}] {who}: {text}",
+            "[{} · {source}] {who}: {text}",
             local_time(it.get("ts"), tz)
         ));
     }
@@ -1088,6 +1096,27 @@ mod tests {
         assert!(pick_item(&both, "mele", needed)
             .unwrap_err()
             .contains("several"));
+    }
+
+    #[test]
+    fn timeline_mcp_sources_keep_stored_channel_filter() {
+        let page = json!({"items": [
+            {"id": "a", "channel": "web", "role": "user", "text": "Hi", "meta": {"via": "mcp", "caller": "claude-code"}},
+            {"id": "b", "channel": "web", "role": "lucina", "text": "Hello", "meta": {"via": "mcp", "caller": "www"}},
+            {"id": "c", "channel": "web", "role": "lucina", "text": "Missing", "meta": {"via": "mcp"}},
+            {"id": "d", "channel": "web", "role": "user", "text": "Empty", "meta": {"via": "mcp", "caller": "  "}},
+            {"id": "e", "channel": "web", "role": "user", "text": "App", "meta": {"caller": "test"}}
+        ]});
+        let t = timeline(&page, Some("web"), 20, chrono_tz::UTC);
+        assert!(t.contains(" · mcp:claude-code] owner: Hi"), "{t}");
+        assert!(t.contains(" · mcp:www] Lucina: Hello"), "{t}");
+        assert!(t.contains(" · mcp] Lucina: Missing"), "{t}");
+        assert!(t.contains(" · mcp] owner: Empty"), "{t}");
+        assert!(t.contains(" · web] owner: App"), "{t}");
+        assert_eq!(
+            timeline(&page, Some("mcp"), 20, chrono_tz::UTC),
+            "No messages."
+        );
     }
 
     #[test]

@@ -143,6 +143,7 @@ export function SearchSheet(props: { act: (fn: () => void) => void }) {
                         kind="recent"
                         icon={itemIcon(item)}
                         catalogId={item.catalogId}
+                        section={item.section}
                         name={item.name}
                         spec={item.spec}
                         label={t("recentItem", { name: item.name })}
