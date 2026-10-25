@@ -40,7 +40,7 @@ impl<W: Write> RedactingWriter<W> {
         }
         let text = String::from_utf8_lossy(&self.buf).into_owned();
         self.buf.clear();
-        let out = redactor().redact(&text);
+        let out = redactor().redact_outbound(&text);
         self.inner.write_all(out.as_bytes())?;
         self.inner.flush()
     }
@@ -107,10 +107,15 @@ mod tests {
         tracing::subscriber::with_default(sub, || {
             tracing::info!(body = "got log-secret-Value-9876 back", "upstream said");
             tracing::warn!("header was Bearer abcdEFGH1234ijklMNOP5678");
+            tracing::info!("sms said: your verification code is 482917");
         });
         let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         assert!(!text.contains("log-secret-Value-9876"), "{text}");
         assert!(text.contains("[secret:LOG_TEST_KEY]"), "{text}");
         assert!(text.contains("Bearer [secret:token]"), "{text}");
+        assert!(
+            !text.contains("482917") && text.contains("code is [otp]"),
+            "{text}"
+        );
     }
 }

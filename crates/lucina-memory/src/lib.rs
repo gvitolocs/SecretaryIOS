@@ -11,6 +11,10 @@
 //! search only: no get-or-create, no messages; the safe shadow default) and
 //! `readwrite` (also `remember`).
 
+pub mod surface;
+
+pub use surface::{Scope, Surface, TurnFacts, TurnSurface};
+
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -29,6 +33,12 @@ pub enum MemoryError {
     ReadOnly,
     #[error("memory is off")]
     Off,
+    /// The turn's surface may not write this scope (no Honcho call was made).
+    #[error("memory write denied: surface {surface}, scope {scope}")]
+    Denied {
+        surface: &'static str,
+        scope: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,11 +585,27 @@ impl Memory {
         self.client.as_ref()
     }
 
+    /// The scope of a peer's records: the owner peer is the owner's
+    /// personal memory, any other peer is that person's.
+    pub fn scope_of_peer(&self, peer_id: &str) -> Scope {
+        let owner = self
+            .client
+            .as_ref()
+            .map(|c| c.config().owner_peer_id.as_str());
+        if owner == Some(peer_id) {
+            Scope::OwnerPersonal
+        } else {
+            Scope::Person(peer_id.to_owned())
+        }
+    }
+
     /// Context for a turn: one read-only `session.context` call (summary,
     /// representation conditioned on the prompt when vector search is on,
-    /// session tail). Never fails: errors become an empty context.
+    /// session tail). Never fails: errors, and reads the turn's surface may
+    /// not make, become an empty context.
     pub async fn build_context(
         &self,
+        surface: &TurnSurface,
         user_peer_id: &str,
         session_id: &str,
         prompt: &str,
@@ -587,6 +613,11 @@ impl Memory {
         let Some(c) = &self.client else {
             return String::new();
         };
+        let scope = self.scope_of_peer(user_peer_id);
+        if !surface.may_read(&scope) {
+            surface.log_denied("read", &scope, "honcho_context");
+            return String::new();
+        }
         let cfg = c.config();
         let search = cfg.use_vector_search.then_some(prompt);
         let q = ContextQuery {
@@ -611,20 +642,37 @@ impl Memory {
 
     /// Store one exchange (`readwrite` only), as Node's `rememberWithClient`:
     /// get-or-create peers and session, add both peers, add two messages
-    /// with `metadata.role`.
+    /// with `metadata.role`. The surface is checked first: a denied write
+    /// makes no Honcho call. An MCP (owner delegate) write carries
+    /// `metadata.via = "mcp"` and `metadata.caller` on the user message.
     pub async fn remember(
         &self,
+        surface: &TurnSurface,
         user_peer_id: &str,
         session_id: &str,
         user_text: &str,
         assistant_text: &str,
     ) -> Result<(), MemoryError> {
+        if self.client.is_some() {
+            let scope = self.scope_of_peer(user_peer_id);
+            if !surface.may_write(&scope) {
+                surface.log_denied("write", &scope, "honcho_messages");
+                return Err(MemoryError::Denied {
+                    surface: surface.class_name(),
+                    scope: scope.kind(),
+                });
+            }
+        }
         let c = match (self.mode, &self.client) {
             (MemoryMode::ReadWrite, Some(c)) => c,
             (MemoryMode::Off, _) | (_, None) => return Err(MemoryError::Off),
             (MemoryMode::ReadOnly, _) => return Err(MemoryError::ReadOnly),
         };
         let agent = c.config().agent_peer_id.clone();
+        let user_meta = match surface.caller() {
+            Some(caller) => json!({"role": "user", "via": "mcp", "caller": caller}),
+            None => json!({"role": "user"}),
+        };
         c.ensure_peer(user_peer_id).await?;
         c.ensure_peer(&agent).await?;
         c.ensure_session(session_id).await?;
@@ -635,7 +683,7 @@ impl Memory {
                 NewMessage {
                     peer_id: user_peer_id.into(),
                     content: user_text.into(),
-                    metadata: json!({"role": "user"}),
+                    metadata: user_meta,
                 },
                 NewMessage {
                     peer_id: agent,
@@ -648,9 +696,20 @@ impl Memory {
         Ok(())
     }
 
-    /// Semantic search over the owner's messages (read-only, any mode but off).
-    pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<HonchoMessage>, MemoryError> {
+    /// Semantic search over the owner's messages (read-only, any mode but
+    /// off). A surface that may not read the owner's personal memory gets
+    /// nothing.
+    pub async fn search(
+        &self,
+        surface: &TurnSurface,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<HonchoMessage>, MemoryError> {
         let c = self.client.as_ref().ok_or(MemoryError::Off)?;
+        if !surface.may_read(&Scope::OwnerPersonal) {
+            surface.log_denied("read", &Scope::OwnerPersonal, "honcho_search");
+            return Ok(Vec::new());
+        }
         c.search_peer(&c.config().owner_peer_id.clone(), query, limit)
             .await
     }

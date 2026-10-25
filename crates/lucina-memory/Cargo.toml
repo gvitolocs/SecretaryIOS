@@ -15,4 +15,5 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+proptest = "1"
 wiremock = "0.6"

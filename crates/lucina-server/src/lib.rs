@@ -19,11 +19,13 @@ pub mod delegation;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod otp;
 pub mod parity;
 pub mod planner;
 pub mod prompts;
 pub mod rich;
 pub mod secrets;
+pub mod surface;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -68,6 +70,8 @@ pub struct Inner {
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
     pub mcp_registry: Arc<Registry>,
+    /// Trusted MCP turns (`LUCINA_MCP_TRUSTED`): everything but the owner-only tools.
+    pub trusted_mcp_registry: Arc<Registry>,
     /// Infisical secrets (`LUCINA_SECRETS_CONFIG`), for tools only.
     pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
     /// Meshy 3D (`LUCINA_MESHY=true`) and its one-tool registry.
@@ -195,6 +199,23 @@ impl AppState {
             );
             env.memo_token_file = Some(token);
         }
+        // Lucina's own Google Drive: only with a grant (`lucina google-auth drive`).
+        if cfg.drive_enabled {
+            match lucina_tools::google::Drive::open(
+                env.http.clone(),
+                lucina_tools::google::GoogleEndpoints::default(),
+                &cfg.google_client_file,
+                &cfg.drive_token_file,
+            ) {
+                Ok(d) => {
+                    tracing::info!(account = d.account(), "Google Drive connected");
+                    env.drive = Some(Arc::new(d));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "LUCINA_DRIVE is on but Drive is not usable: tool skipped")
+                }
+            }
+        }
         let env_http = env.http.clone();
         let jobs = Arc::new(
             JobStore::new(&cfg.jobs_path).with_node_file(Some(cfg.node_jobs_path.clone())),
@@ -232,6 +253,11 @@ impl AppState {
         if delegator.is_none() {
             registry = registry.without(lucina_tools::tools::delegate::DELEGATION_TOOLS);
         }
+        if env.drive.is_some() && cfg.tools.allows("drive") {
+            registry
+                .register(Arc::new(lucina_tools::tools::drive::DriveTool))
+                .expect("drive tool registers");
+        }
         let meshy_registry = meshy.as_ref().map(|svc| {
             let tool = Arc::new(lucina_tools::tools::meshy::MeshyTool::new(svc.clone()));
             if cfg.tools.allows("meshy") {
@@ -246,6 +272,7 @@ impl AppState {
         let registry = Arc::new(registry);
         // MCP turns: no owner-only tools and no delegation, ever.
         let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
+        let trusted_mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
         let prompts = prompts::Prompts::load(&cfg);
         let deals = deals::engine(&cfg, grocery.clone());
         let inner = Inner {
@@ -274,6 +301,7 @@ impl AppState {
             tool_env: Arc::new(env),
             registry,
             mcp_registry,
+            trusted_mcp_registry,
             secrets: secret_store,
             delegator,
             pending: Arc::new(PendingStore::file(

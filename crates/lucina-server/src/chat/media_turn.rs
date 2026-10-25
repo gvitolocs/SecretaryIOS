@@ -85,7 +85,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let st = t.st;
     let mut reg = Registry::new();
     reg.register(Arc::new(MediaTool)).ok()?;
-    let origin = if t.mcp.is_some() {
+    let origin = if t.guarded {
         Origin::Mcp
     } else {
         Origin::Owner
