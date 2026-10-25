@@ -34,6 +34,8 @@ use crate::prompts::Prompts;
 use crate::surface::BearerVerified;
 use crate::{jobs, AppState, PlannerMode};
 
+pub mod media_turn;
+pub mod memo_turn;
 pub mod meshy_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
@@ -164,6 +166,8 @@ struct Finish {
     job: Option<Job>,
     /// The plan of a job to start once the ack item is on the timeline.
     job_plan: Option<Value>,
+    /// Buttons the tools asked for (a Gallery page with what Lucina found).
+    routes: Vec<Value>,
 }
 
 impl Finish {
@@ -176,6 +180,7 @@ impl Finish {
             action_result: String::new(),
             job: None,
             job_plan: None,
+            routes: Vec::new(),
         }
     }
 
@@ -346,6 +351,7 @@ async fn run_turn(
         !finish.action.starts_with("secrets_"),
     )
     .await;
+    let rich_msg = with_routes(rich_msg, &finish.routes);
     st.recent
         .append(&t.session, "assistant", &remembered, Utc::now());
     remember_turn(&st, &t, &finish.action, &remembered, &finish.action_result);
@@ -798,6 +804,16 @@ async fn json_turn(
             Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
             None => {}
         }
+    }
+
+    // Voice memos: "cosa ho detto nel memo di ieri su X" (a short tool loop, before the library's).
+    if let Some(f) = memo_turn::try_turn(t, memory).await {
+        return f;
+    }
+
+    // The photo library: "fammi vedere le foto di Copenaghen" (a short tool loop, like Meshy).
+    if let Some(f) = media_turn::try_turn(t, memory).await {
+        return f;
     }
 
     // The deterministic grocery path (same as a Telegram text turn).
@@ -1410,8 +1426,37 @@ fn remember_job(
 
 // ---------------------------------------------------------------- tools mode
 
+/// "Show in Gallery" (the app opens the path; web and older clients ignore unknown routes).
+fn gallery_action(path: &str, count: usize) -> Value {
+    let label = if count == 1 { "Show the photo".to_owned() } else { format!("Show {count} in Gallery") };
+    json!({"id": "gallery", "label": label, "emoji": "🖼️", "kind": "route", "payload": {"path": path}})
+}
+
+/// Tool buttons first, then the composer's (up to the format's limit).
+fn with_routes(
+    msg: Option<lucina_store::rich::RichMessage>,
+    routes: &[Value],
+) -> Option<lucina_store::rich::RichMessage> {
+    let mut msg = msg?;
+    if !routes.is_empty() {
+        let preset: Vec<Value> = routes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| lucina_store::rich::normalize_action(a, i))
+            .collect();
+        msg.actions = lucina_store::rich::merge_actions(preset, std::mem::take(&mut msg.actions));
+    }
+    Some(msg)
+}
+
 fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     let mut f = Finish::reply(reply, "reply");
+    if let Some((path, count)) = effects.iter().rev().find_map(|e| match e {
+        Effect::Gallery { path, count } => Some((path.clone(), *count)),
+        _ => None,
+    }) {
+        f.routes.push(gallery_action(&path, count));
+    }
     if let Some((reminder, created)) = effects.iter().rev().find_map(|e| match e {
         Effect::ReminderCreated { reminder, created } => Some((reminder.clone(), *created)),
         _ => None,

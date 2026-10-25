@@ -1,0 +1,28 @@
+[Unit]
+Description=Lucina voice memos: resumable uploads, local Whisper, summary, PDF, Obsidian note (127.0.0.1 + tailnet :8795)
+Documentation=file:///home/nez/Projects/SecretaryIOS/docs/memos.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/Lucina
+# DEEPSEEK_KEY_FILE, LUCINA_SECRETARY_SERVER_URL, LUCINA_SECRETARY_SERVICE_TOKEN_FILE,
+# TELEGRAM_ALLOWED_CHAT_IDS come from Lucina's generated env; memo.env is this service's own.
+EnvironmentFile=%h/.config/lucina-rs/node.env
+EnvironmentFile=%h/.config/lucina-memo/memo.env
+Environment=RUST_LOG=info
+ExecStart=%h/.local/bin/lucina-memo serve
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 40); do curl -fsS -m 3 -o /dev/null http://127.0.0.1:8795/health && exit 0; sleep 0.5; done; echo "lucina-memo: /health did not answer" >&2; exit 1'
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=30
+UMask=0077
+MemoryHigh=512M
+MemoryMax=1G
+NoNewPrivileges=yes
+Nice=5
+
+[Install]
+WantedBy=default.target
