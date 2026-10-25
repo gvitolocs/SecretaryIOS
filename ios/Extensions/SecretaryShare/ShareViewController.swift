@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import QuickLookThumbnailing
 import LinkPresentation
 import Intents
 
@@ -28,6 +27,8 @@ final class ShareViewController: UIViewController {
 final class ShareSheetModel: ObservableObject {
     weak var context: NSExtensionContext?
     @Published var payload = SharePayload()
+    /// The files, as the tray shows them (the owner can remove some before sending).
+    @Published var attachments: [PendingAttachment] = []
     @Published var note = ""
     @Published var error: String?
     @Published var loaded = false
@@ -48,6 +49,9 @@ final class ShareSheetModel: ObservableObject {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let items = context?.inputItems.compactMap { $0 as? NSExtensionItem } ?? []
             payload = try await ShareItemReader.read(items, directory: directory)
+            var read: [PendingAttachment] = []
+            for file in payload.files { read.append(await PendingAttachment.make(from: file)) }
+            attachments = read
             let size = try payload.files.reduce(Int64(0)) { total, file in
                 total + Int64(try file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
             }
@@ -63,10 +67,14 @@ final class ShareSheetModel: ObservableObject {
         context?.completeRequest(returningItems: nil)
     }
 
+    var hasContent: Bool { !attachments.isEmpty || !payload.urls.isEmpty || !payload.texts.isEmpty }
+
     func send(_ intent: String) {
-        guard !sending, loaded else { return }
+        guard !sending, loaded, hasContent else { return }
         sending = true
-        let payload = payload
+        var payload = payload
+        payload.files = attachments.map(\.shareFile)
+        let meta = PendingAttachment.meta(for: attachments)
         let note = note
         Task {
             do {
@@ -74,7 +82,7 @@ final class ShareSheetModel: ObservableObject {
                 // File I/O and multipart streaming run away from the UI thread.
                 let record = try await Task.detached {
                     try ShareRequestBuilder.build(payload: payload, intent: intent, note: note, source: "ios-share",
-                                                  credentials: credentials, directory: ShareRequestBuilder.directory())
+                                                  credentials: credentials, directory: ShareRequestBuilder.directory(), meta: meta)
                 }.value
                 if ShareRequestBuilder.hasAppGroup {
                     try ShareUploads.shared.enqueue(record, credentials: credentials)
@@ -112,8 +120,8 @@ private struct ShareSheet: View {
                 if let error = model.error { Text(error).foregroundStyle(.secondary) }
                 if model.loaded {
                     VStack(alignment: .leading, spacing: 12) {
-                        ForEach(Array(model.payload.files.enumerated()), id: \.offset) { _, file in
-                            ShareFilePreview(file: file)
+                        if !model.attachments.isEmpty {
+                            AttachmentTray(attachments: $model.attachments)
                         }
                         ForEach(Array(model.payload.urls.enumerated()), id: \.offset) { _, url in
                             ShareLinkPreview(rawURL: url, title: model.payload.title)
@@ -135,7 +143,7 @@ private struct ShareSheet: View {
                     }
                     Button { model.send("ask") } label: {
                         Text(LocalizedStringKey(model.sent ? "Sent ✓" : "Send to Lucina")).font(.headline).frame(maxWidth: .infinity).padding()
-                    }.buttonStyle(.borderedProminent).tint(ShareStyle.button)
+                    }.buttonStyle(.borderedProminent).tint(ShareStyle.button).disabled(!model.hasContent)
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())]) {
                         ForEach(actions, id: \.1) { title, intent in
                             Button { model.send(intent) } label: { Text(LocalizedStringKey(title)).font(.caption).padding(8).frame(maxWidth: .infinity) }
@@ -146,28 +154,6 @@ private struct ShareSheet: View {
             }.padding(22).disabled(model.sending)
         }.background(ShareStyle.page.ignoresSafeArea()).foregroundStyle(ShareStyle.text).tint(ShareStyle.accent)
             .preferredColorScheme(.dark)
-    }
-}
-
-private struct ShareFilePreview: View {
-    let file: ShareFile
-    @State private var thumbnail: UIImage?
-    var body: some View {
-        HStack(spacing: 12) {
-            if let thumbnail { Image(uiImage: thumbnail).resizable().scaledToFit().frame(width: 56, height: 56) }
-            else { Image(systemName: "doc").frame(width: 56, height: 56) }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(file.name).lineLimit(2)
-                Text(ByteCountFormatter.string(fromByteCount: Int64((try? file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0), countStyle: .file)).font(.caption)
-            }
-        }.task {
-            let request = QLThumbnailGenerator.Request(fileAt: file.url, size: CGSize(width: 56, height: 56), scale: 2, representationTypes: .thumbnail)
-            thumbnail = await withCheckedContinuation { continuation in
-                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, _ in
-                    continuation.resume(returning: representation?.uiImage)
-                }
-            }
-        }
     }
 }
 

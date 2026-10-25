@@ -47,7 +47,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Lucina sees your upcoming events and adds or removes them when you ask.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Only when you turn it on: Lucina mirrors your face or appears in your room. The camera image stays on this iPhone.</string>
+	<string>Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing.</string>
 	<key>NSHealthUpdateUsageDescription</key>
@@ -58,6 +58,8 @@
 	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Photos Lucina's chat shows you are saved to your library when you tap Save.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
