@@ -1,6 +1,6 @@
-// Verus-verified kernels of the media player (docs/verification.md, protocol 6):
+// Verus-verified kernels of the media player (docs/verification.md, protocol 10):
 //
-//   M1  resume positions, last writer wins (`crates/secretary-player/src/progress.rs`
+//   MP1 resume positions, last writer wins (`crates/secretary-player/src/progress.rs`
 //       `Entry::is_newer_than`, `Book::merge`, `Book::acknowledge`; the server's
 //       `progress::Store::put` in `crates/secretary-media-stream`): the order is a strict
 //       total order, a device never adopts a stale entry, the server keeps the newest
@@ -8,14 +8,14 @@
 //       write, and merging is commutative, associative and idempotent (every device
 //       ends on the same entry whatever order the updates arrive in).
 //       A new write is stamped after the entry the device holds (fix R2, `write_stamp`).
-//   M2  positions: clamped to the duration; the resume point and the "finished" margin.
-//   M3  play tokens (`crates/secretary-media-stream/src/token.rs`): the expiry encoding
+//   MP2 positions: clamped to the duration; the resume point and the "finished" margin.
+//   MP3 play tokens (`crates/secretary-media-stream/src/token.rs`): the expiry encoding
 //       round-trips (base 36), and `verify` accepts only an untampered, unexpired token
 //       of the right length.
-//   M4  the subtitle choice per film (`crates/secretary-player/src/prefs.rs`): the
+//   MP4 the subtitle choice per film (`crates/secretary-player/src/prefs.rs`): the
 //       owner's choice for a film always wins, "off" stays off, other films keep
 //       theirs, and the language default picks the best matching track.
-//   M5  the C/wasm ABI wrappers (`crates/secretary-ffi`, `crates/secretary-player-wasm`):
+//   MP5 the C/wasm ABI wrappers (`crates/secretary-ffi`, `crates/secretary-player-wasm`):
 //       every request path returns a JSON answer (bridge_error unless the engine ran),
 //       and the wasm answer pointer/length pack round-trips exactly when both fit in
 //       32 bits (wasm32), which is why the native 64-bit test cannot use it.
@@ -28,7 +28,7 @@ use vstd::prelude::*;
 verus! {
 
 // ---------------------------------------------------------------------------
-// M1: last writer wins
+// MP1: last writer wins
 // ---------------------------------------------------------------------------
 
 /// `(updated_at, device)`: the order of `Entry::is_newer_than`.
@@ -225,7 +225,7 @@ pub fn acknowledge(dirty: bool, local_at: u64, acked_at: u64) -> (r: bool)
 }
 
 // ---------------------------------------------------------------------------
-// M2: positions, resume point, finished
+// MP2: positions, resume point, finished
 // ---------------------------------------------------------------------------
 
 pub open spec fn margin_spec(duration: u64) -> u64 {
@@ -291,7 +291,7 @@ pub fn resume_point(position: u64, duration: u64, finished: bool) -> (r: u64)
 }
 
 // ---------------------------------------------------------------------------
-// M3: play tokens
+// MP3: play tokens
 // ---------------------------------------------------------------------------
 
 /// The expiry as base-36 digits (most significant first), as `token::base36` writes it.
@@ -369,7 +369,7 @@ pub proof fn lemma_fresh_token_window(signed_at: u64, ttl: u64, now: u64)
 }
 
 // ---------------------------------------------------------------------------
-// M4: subtitle choice per film
+// MP4: subtitle choice per film
 // ---------------------------------------------------------------------------
 
 pub struct Track {
@@ -527,7 +527,7 @@ pub proof fn lemma_choice_memory(per_film: Map<nat, Choice>, film: nat, other: n
 }
 
 // ---------------------------------------------------------------------------
-// M5: ABI wrappers
+// MP5: ABI wrappers
 // ---------------------------------------------------------------------------
 
 pub enum Answer {
