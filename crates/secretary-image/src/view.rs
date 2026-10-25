@@ -146,6 +146,103 @@ impl View {
     }
 }
 
+/// A one-finger drag shorter than this (points) has no direction yet.
+pub const AXIS_SLOP: f32 = 10.0;
+/// Fitted picture: the drag is the viewer's own (out or info) when it is this much steeper than
+/// horizontal; flatter drags belong to the pager.
+const STEEP: f32 = 1.2;
+/// The picture shrinks by up to this while dragged down, as in Google Photos.
+const SHRINK: f32 = 0.25;
+/// Released past this share of the viewport height (or flung past [`FLING_OUT`]) → close.
+const OUT_AT: f32 = 0.12;
+const FLING_OUT: f32 = 0.3;
+/// Released this far up (points), or flung past [`FLING_INFO`] of the height → the details sheet.
+const INFO_AT: f32 = 80.0;
+const FLING_INFO: f32 = 0.25;
+
+/// Who owns a one-finger drag, decided once from its first movement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DragAxis {
+    /// Not far enough to tell.
+    Undecided,
+    /// Horizontal on a fitted picture: the next or previous one.
+    Pager,
+    /// Vertical on a fitted picture: down closes the viewer, up shows the details.
+    Out,
+    /// The picture is zoomed: the drag pans it.
+    Pan,
+}
+
+/// How a picture being dragged out is drawn: moved by `offset`, shrunk to `scale` (about its
+/// centre) and over a backdrop of this opacity (0 shows what is behind the viewer).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DragOut {
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub scale: f32,
+    pub backdrop: f32,
+}
+
+/// What a released drag-out does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DragEnd {
+    /// Close the viewer.
+    Dismiss,
+    /// Spring back and show the details.
+    Info,
+    /// Spring back.
+    Back,
+}
+
+impl DragOut {
+    pub const REST: DragOut = DragOut { offset_x: 0.0, offset_y: 0.0, scale: 1.0, backdrop: 1.0 };
+}
+
+impl View {
+    fn zoomed(&self) -> bool {
+        self.scale > 1.01
+    }
+
+    /// Who owns a drag that has moved (`dx`, `dy`) so far.
+    pub fn drag_axis(&self, dx: f32, dy: f32) -> DragAxis {
+        if self.zoomed() {
+            return DragAxis::Pan;
+        }
+        let (ax, ay) = (dx.abs(), dy.abs());
+        if ax.max(ay) < AXIS_SLOP {
+            DragAxis::Undecided
+        } else if ay > ax * STEEP {
+            DragAxis::Out
+        } else {
+            DragAxis::Pager
+        }
+    }
+
+    /// Down: the picture follows the finger, shrinks and the backdrop fades (gone at half the
+    /// viewport height). Up: it follows at half speed, as the details come up behind it.
+    pub fn drag_out(&self, dx: f32, dy: f32) -> DragOut {
+        if dy <= 0.0 {
+            return DragOut { offset_y: dy * 0.5, ..DragOut::REST };
+        }
+        let progress = if self.viewport_h > 0.0 { (dy / (0.5 * self.viewport_h)).min(1.0) } else { 1.0 };
+        DragOut { offset_x: dx, offset_y: dy, scale: 1.0 - SHRINK * progress, backdrop: 1.0 - progress }
+    }
+
+    /// The release of a drag-out at (`dy`), with the platform's predicted end of the throw.
+    pub fn drag_end(&self, dy: f32, predicted_dy: f32) -> DragEnd {
+        let h = self.viewport_h.max(1.0);
+        if dy > 0.0 && (dy > OUT_AT * h || predicted_dy > FLING_OUT * h) {
+            DragEnd::Dismiss
+        } else if dy < 0.0 && (-dy > INFO_AT || -predicted_dy > FLING_INFO * h) {
+            DragEnd::Info
+        } else {
+            DragEnd::Back
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +299,42 @@ mod tests {
         assert!(close(v.scale, TAP_SCALE));
         assert!(!View::new(1440.0, 960.0, 390.0, 844.0).wants_original(1440.0, 3.0));
         assert!(v.pinch(3.0, 195.0, 422.0).wants_original(1440.0, 3.0));
+    }
+
+    #[test]
+    fn drag_axis_splits_pager_out_and_pan() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_axis(3.0, 4.0), DragAxis::Undecided);
+        assert_eq!(v.drag_axis(30.0, 10.0), DragAxis::Pager);
+        assert_eq!(v.drag_axis(20.0, 20.0), DragAxis::Pager, "diagonal stays with the pager");
+        assert_eq!(v.drag_axis(5.0, 40.0), DragAxis::Out);
+        assert_eq!(v.drag_axis(-5.0, -40.0), DragAxis::Out);
+        assert_eq!(v.double_tap(195.0, 422.0).drag_axis(0.0, 100.0), DragAxis::Pan, "zoomed: the drag pans");
+    }
+
+    #[test]
+    fn dragging_down_follows_shrinks_and_fades() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_out(0.0, 0.0), DragOut::REST);
+        let d = v.drag_out(30.0, 211.0); // a quarter of the height = half way
+        assert!(close(d.offset_x, 30.0) && close(d.offset_y, 211.0));
+        assert!(close(d.scale, 0.875) && close(d.backdrop, 0.5), "{d:?}");
+        let far = v.drag_out(0.0, 2000.0);
+        assert!(close(far.scale, 0.75) && close(far.backdrop, 0.0), "clamped: {far:?}");
+        let up = v.drag_out(50.0, -100.0);
+        assert!(close(up.offset_y, -50.0) && close(up.offset_x, 0.0) && close(up.scale, 1.0) && close(up.backdrop, 1.0));
+    }
+
+    #[test]
+    fn release_closes_far_or_fast_and_springs_back_otherwise() {
+        let v = View::new(1440.0, 960.0, 390.0, 844.0);
+        assert_eq!(v.drag_end(120.0, 130.0), DragEnd::Dismiss, "past 12% of 844");
+        assert_eq!(v.drag_end(40.0, 400.0), DragEnd::Dismiss, "a quick flick down");
+        assert_eq!(v.drag_end(60.0, 70.0), DragEnd::Back);
+        assert_eq!(v.drag_end(60.0, -50.0), DragEnd::Back, "pulled back up before letting go");
+        assert_eq!(v.drag_end(-90.0, -90.0), DragEnd::Info);
+        assert_eq!(v.drag_end(-30.0, -300.0), DragEnd::Info, "a quick flick up");
+        assert_eq!(v.drag_end(-30.0, -40.0), DragEnd::Back);
+        assert_eq!(v.drag_end(0.0, 0.0), DragEnd::Back);
     }
 }

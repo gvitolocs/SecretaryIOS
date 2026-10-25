@@ -178,5 +178,12 @@ fn image_decoder_thumbhash_and_view_through_the_c_abi() {
         let answer: serde_json::Value = serde_json::from_str(&take(secretary_ffi::image::secretary_image_view(req.as_ptr()))).unwrap();
         assert_eq!(answer["ok"], true);
         assert_eq!(answer["view"]["scale"], 2.5);
+
+        // Swipe down on a fitted photo: released past 12% of the height closes the viewer.
+        let req = CString::new(r#"{"new":[1440,960,390,844],"drag":{"dx":4,"dy":150,"predicted_dy":160,"ended":true}}"#).unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&take(secretary_ffi::image::secretary_image_view(req.as_ptr()))).unwrap();
+        assert_eq!(answer["drag"]["axis"], "out");
+        assert_eq!(answer["drag"]["end"], "dismiss");
+        assert!(answer["drag"]["out"]["backdrop"].as_f64().unwrap() < 1.0);
     }
 }

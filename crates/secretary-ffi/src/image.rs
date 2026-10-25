@@ -10,7 +10,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
-use secretary_image::view::{Gesture, View};
+use secretary_image::view::{DragAxis, Gesture, View};
 use secretary_image::Decoder;
 
 thread_local! {
@@ -181,10 +181,22 @@ struct ViewRequest {
     view: Option<View>,
     new: Option<[f32; 4]>,
     gesture: Option<Gesture>,
+    /// A one-finger drag so far (`ended` on release), for the swipe down to close.
+    drag: Option<DragRequest>,
     #[serde(default = "default_preview_px")]
     preview_px: f32,
     #[serde(default = "default_screen_scale")]
     screen_scale: f32,
+}
+
+#[derive(serde::Deserialize)]
+struct DragRequest {
+    dx: f32,
+    dy: f32,
+    #[serde(default)]
+    predicted_dy: f32,
+    #[serde(default)]
+    ended: bool,
 }
 
 fn default_preview_px() -> f32 {
@@ -197,6 +209,9 @@ fn default_screen_scale() -> f32 {
 /// Zoom and pan, JSON in and out:
 /// `{"new":[image_w,image_h,viewport_w,viewport_h]}` or `{"view":{...},"gesture":{"op":"pinch",
 /// "factor":1.2,"x":..,"y":..}}` → `{"ok":true,"view":{...},"rect":{x,y,w,h},"wants_original":bool}`.
+/// With `"drag":{"dx","dy","predicted_dy","ended"}` the answer also has `"drag":{"axis":"undecided"|
+/// "pager"|"out"|"pan","out":{offset_x,offset_y,scale,backdrop}}`, plus `"end":"dismiss"|"info"|"back"`
+/// on a released drag-out.
 /// Free the answer with `secretary_string_free`.
 ///
 /// # Safety
@@ -220,12 +235,21 @@ pub unsafe extern "C" fn secretary_image_view(json: *const c_char) -> *mut c_cha
             Some(g) => view.apply(g),
             None => view,
         };
-        serde_json::json!({
+        let mut answer = serde_json::json!({
             "ok": true,
             "view": view,
             "rect": view.rect(),
             "wants_original": view.wants_original(req.preview_px, req.screen_scale),
-        })
+        });
+        if let Some(d) = req.drag {
+            let axis = view.drag_axis(d.dx, d.dy);
+            let mut drag = serde_json::json!({"axis": axis, "out": view.drag_out(d.dx, d.dy)});
+            if d.ended && axis == DragAxis::Out {
+                drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy));
+            }
+            answer["drag"] = drag;
+        }
+        answer
     }))
     .unwrap_or_else(|_| serde_json::json!({"ok": false, "error": "panic in the image core"}));
     super::output(answer.to_string())
