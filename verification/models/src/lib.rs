@@ -23,8 +23,11 @@ use std::time::{Duration, Instant};
 
 use stateright::{Checker, Expectation, Model};
 
+pub mod deploy;
+pub mod game;
 pub mod gates;
 pub mod ink_sync;
+pub mod media_backup;
 pub mod memos;
 pub mod oauth;
 pub mod ownership;
@@ -262,6 +265,9 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(oauth::cases(deep));
     v.extend(gates::cases(deep));
     v.extend(ink_sync::cases(deep));
+    v.extend(deploy::cases(deep));
+    v.extend(game::cases(deep));
+    v.extend(media_backup::cases(deep));
     v
 }
 

@@ -498,11 +498,11 @@ pub fn cases(deep: bool) -> Vec<Case> {
         ]
     };
     vec![
-        Case::new(PROTOCOL, "M current code (before the 2026-10-25 fixes)", base(false, true), None, all(Violated, Violated)),
-        Case::new(PROTOCOL, "M + fixes (kernel K1/K6/K7, iPhone recovery)", base(true, true), None, all(Holds, Holds)),
+        Case::new(PROTOCOL, "V current code (before the 2026-10-25 fixes)", base(false, true), None, all(Violated, Violated)),
+        Case::new(PROTOCOL, "V + fixes (kernel K1/K6/K7, iPhone recovery)", base(true, true), None, all(Holds, Holds)),
         Case::new(
             PROTOCOL,
-            "M fixed, gpu-lease without dead-holder pruning",
+            "V fixed, gpu-lease without dead-holder pruning",
             base(true, false),
             None,
             vec![
