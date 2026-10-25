@@ -71,7 +71,8 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 | 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
 | 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
-| 10 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
+| 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
+| 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -133,6 +134,9 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
 | M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
 | M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
+| V voice memos, current code (before 2026-10-25) | 26 253 | 43 | `no_duplicate_notes`, `telegram_at_most_once`, `whisper_never_downgraded`, `no_lost_audio`, `finished_…` **violated** |
+| V + fixes (kernel K1/K6/K7, iPhone recovery) | 24 930 | 37 | all hold |
+| V fixed, gpu-lease without dead-holder pruning | 21 906 | 36 | `finished_with_one_note_pdf_notification` **violated** |
 | R before fixes R1, R2 (`updated_at` only) | 86 766 | 22 | `no_position_lost`, `devices_converge` **violated** |
 | R + fix R1 only (device clock stamps) | 157 777 | 24 | `devices_converge` **violated** |
 | R + fixes R1, R2 | 514 139 | 26 | all hold |
@@ -149,6 +153,7 @@ bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the
 `GameControl_fixed`: 11 208; `GameControl_current_driver` (one driver in the current code): 116 344.
 `MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
 `MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
+1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count). `Memos_fixed`: 24 930, the same space as Stateright's M + fixes.
 
 ## Invariants, models and mapping
 
@@ -465,8 +470,64 @@ of the 60 requests a minute.
 | `Delivery::Lost`, `Delivery::Cut` | background-session cut-offs, timeouts; the phone resends from `known` |
 | `Restart` | lucina-media restart (`systemctl --user restart lucina-media`, a crash) |
 | rate limit, `Tick` | p1 `forward_auth GET /v1/avatar` → `secretary-server` `ratelimit.rs` (token bucket, 60/min per device); `PhotoBackup.run` on `APIError.rateLimited` waits `max(retryAfter ?? 60, 10)` s |
+### 10. Voice memos
 
-### 10. Media player resume positions
+A recording on the iPhone to its transcript, summary, PDF, Obsidian note and notification (`docs/memos.md`). The
+iPhone records (pause/resume in the app or from the Live Activity, both through `MemoRecordingCommands`), iOS may
+kill the app at any time, the upload queue sends the file over a network that fails, a short memo also sends its
+on-device transcript; the `lucina-memo` worker runs step 0 (ADTS → .m4a), 1 transcript (Whisper under a
+`gpu-lease`, or the iPhone's transcript while the GPU is busy), 2 summary, 3 PDF, 4 Obsidian push, 5 notification,
+done, and the idle Whisper upgrade; it may crash at any point (systemd restarts it; it continues from the recorded
+steps). Another GPU job takes and releases the lease; `gpu-lease` drops a dead holder. The owner renames (any time)
+or reprocesses (once done).
+
+Invariants (Stateright name / TLA+ name):
+
+- `no_duplicate_notes` / `NoDuplicateNotes`: one note in the vault per memo, whatever the crashes and renames.
+- `telegram_at_most_once` / `TelegramAtMostOnce`: at most one Telegram message per revision.
+- `app_inbox_once_per_revision` / `AppInboxOncePerRevision`: the app inbox has one entry per revision (dedup key).
+- `whisper_never_downgraded` / `WhisperNeverDowngraded`: a Whisper transcript is never replaced by the iPhone's.
+- `no_lost_audio` / `NoLostAudio`: a recording is never left unreadable and unqueued.
+- `live_activity_matches_recorder` / `LiveActivityMatchesRecorder`: while the app runs, the Live Activity shows
+  exactly the recorder's state (recording, paused, none).
+- `done_has_every_output` / `DoneHasEveryOutput`: `done` only with transcript, summary, PDF, note and notification.
+- `finished_with_one_note_pdf_notification` (eventually, Stateright): every recording ends done with one note, the
+  PDF, its notification, and the GPU lease released. Witnesses: `gpu_busy_then_free` / `Memos_fixed_witness.cfg`,
+  `device_transcript_replaced` / `Memos_fixed_upgrade_witness.cfg`.
+
+The upload protocol itself (chunks, offsets, cut-off bodies, crashes, duplicates) has its own exhaustive model in
+`crates/lucina-memo/tests/upload_model.rs` (prefix, one memo per recording, complete only when whole); here an
+upload is one step that may fail.
+
+Verus (`memo_kernel.rs`, 19 verified): K1 `transcript_choice` (never downgrades Whisper; Whisper wins whenever it
+ran; the iPhone transcript is used only, and then always, when the GPU is busy and no Whisper transcript exists),
+K2 `upgrade_replaces` (iff Whisper heard at least half as much; no overflow), K3 `route_on_device` (only with a
+model for the language and up to the threshold), K4 `status_allowed` (`uploading` left only for `queued` and never
+re-entered; `done`/`failed` entered only from a pipeline step; everything else can be re-queued), K5
+`ready_to_finish`, K6 `send_telegram` with `lemma_telegram_at_most_once` (any number of retries from any marker:
+at most one send), K7 `note_base` with `lemma_one_note` (a memo keeps its first note name over any sequence of
+titles). Mutations checked: the old step 1 fails K1; sending before recording the marker fails K6. Differential
+test: `crates/lucina-memo/tests/verus_kernel.rs` (production kernel vs the proved bodies, every small input);
+`Store::update` asserts `status_allowed` on every write.
+
+| Model action | Code |
+|---|---|
+| `TogglePauseInApp`, `TogglePauseFromLiveActivity` | `MemoRecorder.pause/resume` (both update the activity); `Pause/ResumeMemoRecordingIntent` → `MemoRecordingCommands.handle` |
+| `Stop` | `MemosStore.finishRecording` → `MemoUploadQueue.add` |
+| `KillApp`, `Relaunch` | iOS jetsam / SIGKILL; launch: `MemoRecorder.endStaleActivities`, `MemoUploadQueue.recoverOrphans` |
+| `UploadOk`, `UploadFails` | `MemoUploadQueue.upload` (create by client id, chunks at the server offset, complete with SHA-256) |
+| `SendDeviceTranscript` | `MemoUploadQueue.sendTranscript` → `PUT /v1/memos/{id}/device-transcript` |
+| `WorkerStep` 1 | `worker::steps` step 1: `transcribe::transcribe` (the `gpu-lease` shim) + `kernel::transcript_choice` |
+| `WorkerStep` 2, 3 | `summarize::summarize`, `render::print_pdf` |
+| `WorkerStep` 4 / `Pushed` | `kernel::note_base`, `obsidian_note` recorded, `obsidian::push` (rsync), `published_at` |
+| `WorkerStep` 5 / `Sent` | `kernel::send_telegram` (marker first), `notify::send` (app inbox `dedupKey memo:<id>:<revision>`), `notified_at` |
+| `WorkerStep` done | `kernel::ready_to_finish`, `status = done` |
+| `WorkerCrash` | process death; `gpu-lease` holder dies (`Dead`) |
+| `OtherTakesGpu`, `OtherReleasesGpu`, `PruneDeadLease` | other `gpu-lease run` jobs; `gpu-lease` prunes dead pids on every access |
+| `OwnerRename`, `OwnerReprocess` | `PATCH /v1/memos/{id}`; `POST …/reprocess {fromTranscript}` |
+| `Upgrade` | `worker::upgrade_one` + `kernel::upgrade_replaces` |
+
+### 11. Media player resume positions
 
 One film, two devices (three with `--deep`), the server. Devices play (a new position, stamped), push their
 unacknowledged entry one request at a time, pull the server's entry, and go offline (their messages in flight are
@@ -823,6 +884,53 @@ legitimately bring two items to the same bytes), so nothing catches it. Proposed
 (all hold): decide again inside `insert_item`'s transaction, and turn the insert into a duplicate when an item with
 this hash appeared meanwhile (the `by_asset` branch already has the unique `items_asset` index behind it). Not
 changed here: it is a lucina-media change with a deploy, outside this verification pass.
+### B1: a crash after the vault copy, then a rename, makes a second note (low). **Fixed.**
+
+The worker recorded the note's path only after the rsync. If it crashed in between and the owner renamed the memo
+(allowed in any status), the next publish used the new title, so the vault got a second note for the memo:
+
+```
+Stop UploadOk WorkerStep×5 (… push) WorkerCrash OwnerRename WorkerStep WorkerStep -> 2 notes
+```
+
+Fix (lucina-rs): the path is recorded before the copy (`kernel::note_base`, Verus K7).
+
+### B2: a reprocess while the GPU is busy replaces Whisper with the iPhone transcript (low). **Fixed.**
+
+`reprocess --transcript` clears the step; with the GPU busy and an iPhone transcript on file, step 1 took the
+iPhone's text over the Whisper transcript the memo already had:
+
+```
+Stop UploadOk SendDeviceTranscript WorkerStep×9 OtherTakesGpu OwnerReprocess WorkerStep
+```
+
+Fix (lucina-rs): `kernel::transcript_choice` waits for the GPU when a Whisper transcript exists (Verus K1).
+
+### B3: a crash after the notification is sent sends Telegram again (low). **Fixed.**
+
+`notified_at` was written after sending. The app inbox deduplicates (`dedupKey`), Telegram does not:
+
+```
+Stop UploadOk WorkerStep×7 (… send) WorkerCrash WorkerStep -> Telegram twice
+```
+
+Fix (lucina-rs): the revision is recorded before Telegram is called; a retry of that revision skips Telegram
+(at most once; app inbox still exactly once) (Verus K6).
+
+### B4: a recording cut off by iOS is lost (medium; one real recording lost on 2026-10-24). **Fixed.**
+
+The iPhone recorded AAC in `.m4a`, whose index is written when the recording stops. When iOS killed the app
+mid-recording, the file had no index (`AudioFileOpenURL failed` on the 72 KB orphan found on the iPhone) and was
+never queued:
+
+```
+KillApp Relaunch -> no_lost_audio violated
+```
+
+Fix: the iPhone records ADTS AAC (`.aac`, self-framed: a cut-off file decodes up to its last frame) and on launch
+`MemoUploadQueue.recoverOrphans` queues any recording not in the queue; the server remuxes ADTS to `.m4a` in step 0
+(`transcribe::remux_adts`, re-encoding when the last frame is cut). Checked on the iPhone (iOS 27.0.1): SIGKILL after
+6 s of recording, the relaunch recovered 6.2 s; and in `cut_off_adts_is_recovered` (a file cut at two thirds).
 
 ### R1: two devices writing in the same millisecond end on different positions (low). **Fixed.**
 
@@ -874,5 +982,9 @@ from a device whose clock is ahead. Fixed with `write_stamp`: a write is stamped
   bucket is a fixed window of `limit` requests that `Tick` refills; the 4 s pacing is in Verus (e), not in the
   model, so the model's client is more aggressive than the real one. Edits (NewVersion) are in Verus (d), not in
   the model.
+- **Voice memos.** One recording; each worker step is atomic except the two split ones (rsync then meta,
+  send then meta). The upload is one step (its protocol is modelled in `tests/upload_model.rs`). The app
+  inbox deduplicates by key (secretary-server `NewNotification::keys`). Liveness assumes the other GPU job and
+  the network eventually let go (bounded budgets).
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels
   cover the per-step invariants for all inputs.

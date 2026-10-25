@@ -73,6 +73,11 @@ fn media_backup() {
 }
 
 #[test]
+fn memos() {
+    run("memos");
+}
+
+#[test]
 fn player() {
     run("player");
 }

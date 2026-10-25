@@ -1,4 +1,4 @@
-// Verus-verified kernels of the media player (docs/verification.md, protocol 10):
+// Verus-verified kernels of the media player (docs/verification.md, protocol 11):
 //
 //   MP1 resume positions, last writer wins (`crates/secretary-player/src/progress.rs`
 //       `Entry::is_newer_than`, `Book::merge`, `Book::acknowledge`; the server's
