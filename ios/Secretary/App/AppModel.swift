@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import UIKit
 
 /// App-wide state: the server, the stored device token, sign-in/out, the shared
@@ -134,7 +135,22 @@ final class AppModel {
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
-        let mediaClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
+        var mediaBase = client.primaryURL
+        #if DEBUG || SCREENSHOTS
+        let selftest = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
+        // `-SecretaryMediaOffline YES`: the Gallery, the player and the backup talk to a port nothing listens
+        // on, so every media request fails at once as if the phone were offline.
+        if UserDefaults.standard.bool(forKey: "SecretaryMediaOffline"), let unreachable = URL(string: "http://127.0.0.1:9") {
+            mediaBase = unreachable
+            selftest.notice("GalleryImages selftest offline")
+        }
+        // `-SecretaryGalleryClearCache YES`: no cached renditions at start (the saved listing stays).
+        if UserDefaults.standard.bool(forKey: "SecretaryGalleryClearCache") {
+            GalleryDiskCache.removeAllNow()
+            selftest.notice("GalleryImages selftest cache cleared")
+        }
+        #endif
+        let mediaClient = APIClient(baseURL: mediaBase, accessKey: client.accessKey)
         self.mediaClient = mediaClient
         // The key can change (sign-in): copy it on every use.
         let mediaAPI = { () -> APIClient in
@@ -209,6 +225,9 @@ final class AppModel {
         let wardrobe = wardrobe
         let notes = notes
         let notifications = notifications
+        // Videos on this iPhone play from Photos (the backup ledger knows which items they are).
+        let ledger = backup
+        media.localVideo = { id in ledger.localAsset(for: id) }
         notifications.calendarEvents = { await device.calendarAlerts() }
         chat.onItems = { [weak self] items in
             device.bridge.consider(items)

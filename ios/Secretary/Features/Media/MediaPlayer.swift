@@ -1,7 +1,10 @@
 import AVFoundation
 import MediaPlayer
 import Observation
+import os
 import UIKit
+
+private let localPlayLog = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
 
 /// Playback of the owner's videos and audio from the server (docs/media-player.md).
 ///
@@ -13,6 +16,10 @@ import UIKit
 @MainActor
 final class MediaPlayer {
     let player = AVPlayer()
+    /// Item id → this iPhone's Photos asset (the photo backup's ledger): those videos play from the phone,
+    /// with nothing downloaded, also offline.
+    @ObservationIgnored var localVideo: ((String) -> String?)?
+    @ObservationIgnored private var playingLocal = false
 
     private(set) var queue: [MediaItem] = []
     private(set) var currentIndex: Int?
@@ -146,6 +153,7 @@ final class MediaPlayer {
         player.pause()
         player.replaceCurrentItem(with: nil)
         info = nil
+        playingLocal = false
         error = nil
         cues = []
         subtitle = nil
@@ -165,6 +173,10 @@ final class MediaPlayer {
     private func open(_ item: MediaItem) async {
         defer { if current?.id == item.id { loading = false } }
         do {
+            if item.isVideo, let identifier = localVideo?(item.id), let asset = await LocalVideo.asset(identifier) {
+                try await openLocal(item, asset)
+                return
+            }
             let info = try await api().play(id: item.id)
             guard !Task.isCancelled, current?.id == item.id else { return }
             if let saved = info.progress { _ = try? core?.merge([saved]) }
@@ -192,6 +204,27 @@ final class MediaPlayer {
             guard current?.id == item.id else { return }
             self.error = error.localizedDescription
         }
+    }
+
+    /// A video that is on this iPhone plays from Photos (resume positions still come from the core).
+    private func openLocal(_ item: MediaItem, _ asset: AVAsset) async throws {
+        guard !Task.isCancelled, current?.id == item.id else { return }
+        let seconds = (try? await asset.load(.duration))?.seconds ?? 0
+        let durationMs = seconds.isFinite && seconds > 0 ? Int(seconds * 1000) : item.durationMs
+        let resumeMs = (try? core?.resume(id: item.id, durationMs: durationMs)) ?? 0
+        playingLocal = true
+        if let durationMs { duration = TimeInterval(durationMs) / 1000 }
+        activateAudioSession(video: true)
+        let avItem = AVPlayerItem(asset: asset)
+        observeEnd(of: avItem)
+        player.replaceCurrentItem(with: avItem)
+        try await waitUntilReady(avItem)
+        guard !Task.isCancelled, current?.id == item.id else { return }
+        if resumeMs > 0 { await seekWhenAvailable(TimeInterval(resumeMs) / 1000, in: avItem) }
+        guard !Task.isCancelled, current?.id == item.id else { return }
+        player.playImmediately(atRate: rate)
+        updateNowPlaying()
+        localPlayLog.notice("GalleryImages source=local video id=\(item.id, privacy: .public)")
     }
 
     private func waitUntilReady(_ item: AVPlayerItem) async throws {
@@ -329,7 +362,7 @@ final class MediaPlayer {
     // MARK: Time and positions
 
     private func tick(_ time: CMTime) {
-        guard info != nil, time.isNumeric else { return }
+        guard info != nil || playingLocal, time.isNumeric else { return }
         position = time.seconds
         if let item = player.currentItem {
             if item.duration.isNumeric, item.duration.seconds.isFinite, item.duration.seconds > 0 { duration = item.duration.seconds }
@@ -357,7 +390,7 @@ final class MediaPlayer {
 
     /// Tells the core where we are; pushes to the server when it says so.
     private func reportNow(playing: Bool) {
-        guard let core, let item = current, info != nil, item.kind != "photo" else { return }
+        guard let core, let item = current, info != nil || playingLocal, item.kind != "photo" else { return }
         lastReport = position
         guard let tick = try? core.position(id: item.id, positionMs: Int(position * 1000), durationMs: Int(duration * 1000),
                                             playing: playing, device: deviceName) else { return }
@@ -430,7 +463,7 @@ final class MediaPlayer {
     }
 
     private func updateNowPlaying() {
-        guard let item = current, info != nil else {
+        guard let item = current, info != nil || playingLocal else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }

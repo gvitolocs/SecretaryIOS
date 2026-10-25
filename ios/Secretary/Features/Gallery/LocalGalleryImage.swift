@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import Foundation
 import Observation
@@ -22,7 +23,7 @@ private final class LocalPhotoRequest: @unchecked Sendable {
             let access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
             guard access == .authorized || access == .limited,
                   let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject,
-                  asset.mediaType == .image else {
+                  asset.mediaType == .image || asset.mediaType == .video else {
                 receive(nil, .zero, 0, true)
                 return
             }
@@ -82,6 +83,25 @@ private final class LocalPhotoRequest: @unchecked Sendable {
             self.cancelled = true
             for id in self.requests { self.manager.cancelImageRequest(id) }
             self.requests.removeAll()
+        }
+    }
+}
+
+/// A video in this iPhone's Photos library, for the player. Local only: nothing comes from iCloud.
+enum LocalVideo {
+    static func asset(_ identifier: String) async -> AVAsset? {
+        let access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard access == .authorized || access == .limited,
+              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject,
+              asset.mediaType == .video else { return nil }
+        let options = PHVideoRequestOptions()
+        options.isNetworkAccessAllowed = false
+        options.deliveryMode = .highQualityFormat
+        options.version = .current
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { video, _, _ in
+                continuation.resume(returning: video)
+            }
         }
     }
 }

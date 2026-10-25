@@ -544,9 +544,14 @@ struct GalleryViewer: View {
     private func page(_ it: GalleryItem) -> some View {
         if it.isVideo || it.isAudio {
             ZStack {
-                GalleryThumb(item: it, large: true)
-                    .contentShape(Rectangle())
-                    .onTapGesture { chromeHidden.toggle() }
+                if it.isVideo {
+                    // The poster as a photo: from Photos for a phone video, else the cached JPEG XL renditions.
+                    RustPhoto(item: it, onTap: { chromeHidden.toggle() })
+                } else {
+                    GalleryThumb(item: it, large: true)
+                        .contentShape(Rectangle())
+                        .onTapGesture { chromeHidden.toggle() }
+                }
                 Button {
                     let playable = store.items.filter { $0.isVideo || $0.isAudio }
                     let queue = playable.map(\.mediaItem)
