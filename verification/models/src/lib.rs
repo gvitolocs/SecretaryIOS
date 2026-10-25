@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use stateright::{Checker, Expectation, Model};
 
+pub mod deploy;
 pub mod gates;
 pub mod ink_sync;
 pub mod oauth;
@@ -260,6 +261,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(oauth::cases(deep));
     v.extend(gates::cases(deep));
     v.extend(ink_sync::cases(deep));
+    v.extend(deploy::cases(deep));
     v
 }
 

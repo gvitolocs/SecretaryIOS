@@ -26,7 +26,11 @@ The multi-process protocols of Secretary / Lucina are checked three ways:
    fail, because either the model got too weak or the bug was fixed without updating the model.
 4. **No vacuous passes.** Every passing configuration has a `sometimes` property (Stateright) or a `*_witness.cfg`
    (TLC) proving that it reaches the interesting states: a rotation, a resume, a 409, a handover, a refresh.
-5. Generated TLC output (`*_TTrace_*`, `states/`) is never committed (`formal/.gitignore`). `verify.sh` runs TLC
+5. **Every deploy goes through `deploy-guard`** (protocol 7). Inside `/tmp/lucina-merge.lock`, build from the
+   target branch's tip in a clean tree, run `deploy-guard check --runtime <name>` (it refuses unless the live build
+   is an ancestor of the commit, the commit is on the target branch and the tree is clean), deploy, then run
+   `deploy-guard record --runtime <name>`. Live but uncommitted work is committed to the target branch first.
+6. Generated TLC output (`*_TTrace_*`, `states/`) is never committed (`formal/.gitignore`). `verify.sh` runs TLC
    with `-noGenerateSpecTE` and a temporary `-metadir`.
 
 ## How to run
@@ -56,6 +60,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
+| 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -107,6 +112,11 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | I5 ablation: ops leave the outbox when sent | 8 731 | 20 | `acked_never_lost`, `all_ops_applied` **violated** |
 | I6 ablation: plain last-writer-wins status | 9 034 | 21 | `owner_completed_never_reverted`, `device_completed_sticky` **violated** |
 | I7 ablation: the last delivery wins (no stamps) | 9 418 | 21 | `converges` **violated** |
+| D1 24–25 Oct: lock, builds from the checkout or main, no guard | 53 631 | 29 | `no_rollback`, `prod_on_main`, `no_dirty_deploy` **violated** |
+| D2 lock skipped (old habit), clean builds only | 417 346 | 24 | `no_rollback`, `single_holder` **violated** |
+| D3 lock + clean builds, branch deploys, no guard | 85 221 | 33 | `no_rollback`, `prod_on_main` **violated** |
+| D4 fix: lock + deploy-guard + commit live WIP | 62 062 | 31 | all hold (`--deep`, 3 sessions: 37 050 072 states, depth 45, 48 s, 4.3 GB) |
+| D5 guard without the lock (check-then-push race) | 1 403 757 | 26 | `no_rollback`, `prod_on_main`, `single_holder` **violated** |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -297,11 +307,71 @@ The model is one book's registers (ops on different books touch disjoint registe
 | `Drop`, `Dup` | `FlakyTransport` (`Faults`) |
 | `Owner` | `PATCH /v1/library/books/{id}` → `state::owner_set_status` / `owner_set_progress` |
 
+### 7. Multi-session merge and deploy
+
+Claude sessions share `/tmp/lucina-merge.lock` (a `mkdir` lock on nezopt), the branches of this repo, the main checkout
+`~/Projects/SecretaryIOS` (which held uncommitted live work: the Desk/Hermes web view, `/v1/hermes`, the calls module)
+and the deploys of secretary-server, the web app and lucina-rs. Each model session has one feature on its own branch,
+may leave uncommitted work in the shared checkout, and deploys to every runtime. Commit content is a set of features,
+so "A is an ancestor of B" is "A ⊆ B". Two sessions and two runtimes by default; `--deep` checks the fix with three.
+
+Invariants (Stateright name / TLA+ name):
+
+- `no_rollback` / `NoRollback`: every runtime runs a build that contains everything deployed to it before.
+- `prod_on_main` / `ProdOnMain`: production is always a commit on the target branch (nothing uncommitted or unmerged
+  is live).
+- `single_holder` / `SingleHolder`: the merge/build/deploy section is never occupied by two sessions.
+- `no_dirty_deploy` / `NoDirtyDeploy`: no deploy ships a dirty tree.
+- Witnesses: `all_features_live` / `Deploy_fixed_witness.cfg` (every session's work reaches every runtime) and
+  `guard_refused` / `Deploy_fixed_refused_witness.cfg` (the guard does refuse a deploy).
+
+The switches are the procedures: D1 is what was done on 24–25 Oct (lock taken; builds from the dirty checkout or
+from main; nothing compared with what is live), D2 a session that skips the lock, D3 deploys from feature branches,
+D4 the fix, D5 the guard without the lock. D5 shows why both are needed: `check` and the push are separate steps, so
+a check that passes can be overtaken by another session's deploy, and an unlocked merge can lose another merge.
+
+Verus (`deploy_guard.rs`, 11 verified): D-K1 `guard_allows` is exactly the rule; D-K2 an allowed deploy keeps
+everything deployed before; D-K3 production stays on main as main grows; and over any sequence of guarded deploys the
+last build contains every earlier one.
+
+| Model action | Code / procedure |
+|---|---|
+| `Branch` | `wt add <name> main` (a worktree off main's tip) and commits there |
+| `EditCheckout` | edits left uncommitted in `~/Projects/SecretaryIOS` (the main checkout) |
+| `Acquire` / `Release` | `mkdir /tmp/lucina-merge.lock` (+ an `owner` file) / `rmdir` |
+| `MergeRead` / `MergeWrite` | fetch the target branch, merge into its tip, update the branch |
+| `CommitWip` | commit the live uncommitted work to the target branch (25 Oct: 7298be7, b7388d0) |
+| `BuildMain` / `BuildCheckout` / `BuildBranch` | `cargo build --release` / `vite build` from main's tip, from the main checkout's working tree, or from a feature branch |
+| `Check` | `deploy-guard check --runtime <r>` (`tools/deploy-guard`) |
+| `Push` | `install` of `secretary-server` / `rsync` of `web/dist` to p1, `~/.local/bin/lucina-rs` + restart |
+
+`deploy-guard` keeps the live commit per runtime in `~/.local/state/deploy-guard/<runtime>.commit` on nezopt (where
+every build and deploy runs): `check` before the push, `record` right after it, `status` to list. Exit codes: 0 ok,
+1 refused, 2 usage or git error, 3 no ledger entry (record the live commit once with `--bootstrap`). Target
+branches: `main` for secretary-server, secretary-mcp and web; `lucina-rs` for lucina-rs; `--target` otherwise.
+Its tests (`cargo test --manifest-path tools/deploy-guard/Cargo.toml`, in the models section of `verify.sh`)
+check the rule for every input combination and replay the 25 Oct incident on real git repos.
+
 ## Bugs found
 
 Severity reflects today's deployment. **Fixed** means fixed on branch `verify-fixes` (from `main`, commit 1e19f27),
 with regression tests. The other bugs are in code on branches other people work on, in uncommitted work, or in
 plans, so they are reported here with the proposed fix and not changed.
+
+### D1: a deploy from a clean main removed live code (high; production regression 25 Oct 2026). **Fixed** (procedure + `deploy-guard`)
+
+On 24 Oct secretary-server and the web were deployed from the main checkout's working tree, which held uncommitted
+work: `/v1/hermes`, the calls module and the Desk web view went live without being on any branch. On 25 Oct the
+web-design merge kept the Desk work by rebuilding from the same tree, but at 13:52 UTC Lucina Ink deployed
+secretary-server from a clean build of main (6b59881), which had no calls module: `/v1/calls/capabilities` and
+`/v1/calls/transcribe` went from 401 to 404, and the Android Phone card lost its backend. Every step was done under
+the merge lock, so the lock alone did not prevent it. The model finds it as D1's shortest `no_rollback`
+counterexample (16 steps): session 0 merges and deploys a build of the dirty checkout, session 1 merges and deploys a
+clean build of main.
+
+Fix: the live work was committed (main 7298be7 for `/v1/hermes` and the web, b7388d0 for calls) and production was
+redeployed from main at 14:16 UTC; `deploy-guard check` now refuses a deploy whose commit does not contain the
+live one, a dirty tree, or a commit not on the target branch, and the procedure in the policy makes it mandatory.
 
 ### T1: a late timeline line is skipped on resume (medium; the phase-1 "known weakness" does harm)
 
