@@ -4,8 +4,15 @@
 //!   network access.
 //! - **Dedup:** the same code from any source within [`DEDUP_MS`] is sent
 //!   once. Only keyed fingerprints are kept, never the code.
+//! - **Write-ahead (F1):** before the first send, the dedup fingerprint
+//!   and the queue entry (with its event id) are saved (`queue.bin`, then
+//!   `state.bin`; [`Bridge::open`] also re-derives the fingerprints of
+//!   queued codes). A crash or reboot during the send leaves the code
+//!   queued for [`Bridge::flush`] with the same event id, and a second copy
+//!   of the code (the notification) is still a duplicate.
 //! - **Forward:** one `POST /incoming`; 409 → paused, 401 → unpaired,
-//!   410 → expired, 400 → dropped, network error or 5xx → queued.
+//!   410 → expired, 400 → dropped (each removes the queue entry, as does an
+//!   acceptance), network error or 5xx → stays queued.
 //! - **Queue:** at most [`MAX_QUEUE`] codes in `queue.bin`, each kept at most
 //!   [`CODE_TTL_MS`] after it was received.
 //! - **State:** switches, token and the last result in `state.bin`.
@@ -26,7 +33,7 @@ use crate::net::{elapsed_ms, Outcome, Transport};
 use crate::store::{event_id, Secret, Vault};
 
 /// Version of the app this library ships in.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.0.1";
 /// The app's own package; its notifications are ignored.
 pub const OWN_PACKAGE: &str = "tech.getsecretary.lucinaotp";
 /// At most this many codes wait in the queue; the oldest goes first.
@@ -229,6 +236,24 @@ pub struct Bridge {
     state: State,
     queue: Vec<Pending>,
     self_test: OnceLock<bool>,
+    /// Test-only fault injection: called after the write-ahead and after
+    /// the send; `false` simulates the process dying at that point.
+    #[cfg(test)]
+    pub(crate) crash_hook: Option<CrashHook>,
+}
+
+/// Test-only: `false` means "the process dies here".
+#[cfg(test)]
+pub(crate) type CrashHook = Box<dyn FnMut(CrashPoint, &Path) -> bool + Send>;
+
+/// Where the test-only crash hook runs.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CrashPoint {
+    /// The fingerprint and the queue entry are on disk; nothing was sent.
+    BeforeSend,
+    /// The relay answered; the answer is not applied yet.
+    AfterSend,
 }
 
 impl Bridge {
@@ -260,7 +285,16 @@ impl Bridge {
             state,
             queue,
             self_test: OnceLock::new(),
+            #[cfg(test)]
+            crash_hook: None,
         };
+        // A crash between the queue and the state write: every queued code
+        // is still a duplicate for its other copies.
+        for i in 0..bridge.queue.len() {
+            let fingerprint = bridge.vault.fingerprint(bridge.queue[i].code.as_str());
+            let at = bridge.queue[i].received_at;
+            bridge.remember(fingerprint, at);
+        }
         if bridge.state.token.is_none() {
             if let Some(token) = legacy_token.filter(|t| valid_token(t)) {
                 bridge.state.token = Some(Secret::new(token.to_owned()));
@@ -377,34 +411,80 @@ impl Bridge {
         if self.state.recent.iter().any(|&(f, _)| f == fingerprint) {
             return Forward::Duplicate;
         }
-        if self.state.recent.len() >= MAX_RECENT {
-            self.state.recent.remove(0);
+        self.remember(fingerprint, now);
+        if self.state.token.is_none() {
+            return self.finish(Forward::Unpaired);
         }
-        self.state.recent.push((fingerprint, now));
         let Ok(event_id) = event_id() else {
             return self.finish(Forward::Error);
         };
-        let pending = Pending {
-            event_id,
-            code,
-            sender,
-            received_at,
-            source,
+        // Write-ahead (F1): the code is queued, and its fingerprint saved,
+        // before any network call. The JNI mutex holds every other copy
+        // until this call returns; a crash leaves both on disk.
+        self.enqueue(
+            Pending {
+                event_id: event_id.clone(),
+                code,
+                sender,
+                received_at,
+                source,
+            },
+            now,
+        );
+        let _ = self.save_state();
+        #[cfg(test)]
+        if !self.crash_at(CrashPoint::BeforeSend) {
+            return Forward::Error;
+        }
+        let Some(pending) = self.queue.last() else {
+            return self.finish(Forward::Error);
         };
-        let result = match self.send(&pending, now) {
-            Outcome::Retry => {
-                self.enqueue(pending, now);
-                Forward::Queued
-            }
-            other => forward_result(other),
-        };
+        let (outcome, ms) = self.send(pending);
+        #[cfg(test)]
+        if !self.crash_at(CrashPoint::AfterSend) {
+            return Forward::Error;
+        }
+        self.note(outcome, ms, now);
+        let result = forward_result(outcome);
+        if outcome != Outcome::Retry {
+            self.queue.retain(|p| p.event_id != event_id);
+            let _ = self.save_queue();
+        }
         self.finish(result)
     }
 
-    /// Sends one code; records the latency when it was accepted.
-    fn send(&mut self, pending: &Pending, now: u64) -> Outcome {
+    /// Adds a dedup fingerprint handled at `at`, unless it is there already.
+    fn remember(&mut self, fingerprint: u64, at: u64) {
+        if self.state.recent.iter().any(|&(f, _)| f == fingerprint) {
+            return;
+        }
+        if self.state.recent.len() >= MAX_RECENT {
+            self.state.recent.remove(0);
+        }
+        self.state.recent.push((fingerprint, at));
+    }
+
+    #[cfg(test)]
+    fn crash_at(&mut self, point: CrashPoint) -> bool {
+        let dir = self.vault.dir().to_owned();
+        self.crash_hook
+            .as_mut()
+            .is_none_or(|hook| hook(point, &dir))
+    }
+
+    /// Records the latency when the relay accepted a code.
+    fn note(&mut self, outcome: Outcome, ms: u64, now: u64) {
+        if let Outcome::Accepted { .. } = outcome {
+            self.state.last_forward_at_ms = Some(now);
+            self.state.last_latency_ms = Some(ms);
+        }
+    }
+
+    /// Sends one code with its stored event id. Returns the outcome and the
+    /// round trip in ms.
+    fn send(&self, pending: &Pending) -> (Outcome, u64) {
         let Some(token) = self.state.token.as_ref() else {
-            return Outcome::Unpaired;
+            return (Outcome::Unpaired, 0);
         };
         let event = WireEvent(Incoming {
             window_id: None,
@@ -416,16 +496,13 @@ impl Bridge {
             test: false,
         });
         if event.0.validate().is_err() {
-            return Outcome::Rejected;
+            return (Outcome::Rejected, 0);
         }
-        let (outcome, ms) = self.transport.post_incoming(token.as_str(), &event.0);
-        if let Outcome::Accepted { .. } = outcome {
-            self.state.last_forward_at_ms = Some(now);
-            self.state.last_latency_ms = Some(ms);
-        }
-        outcome
+        self.transport.post_incoming(token.as_str(), &event.0)
     }
 
+    /// Queues `pending` (dropping stale entries, then the oldest when full)
+    /// and saves `queue.bin`.
     fn enqueue(&mut self, pending: Pending, now: u64) {
         self.queue.retain(|p| p.fresh(now));
         while self.queue.len() >= MAX_QUEUE {
@@ -442,8 +519,8 @@ impl Bridge {
         result
     }
 
-    /// Sends queued codes that are still fresh, oldest first, and stops at
-    /// the first network failure.
+    /// Sends queued codes that are still fresh, oldest first, each with the
+    /// event id it was queued with, and stops at the first network failure.
     pub fn flush(&mut self) -> FlushReport {
         self.flush_at(now_ms())
     }
@@ -456,11 +533,15 @@ impl Bridge {
         let mut last = None;
         while !self.queue.is_empty() {
             let pending = self.queue.remove(0);
-            let outcome = self.send(&pending, now);
+            let (outcome, ms) = self.send(&pending);
+            self.note(outcome, ms, now);
             if outcome == Outcome::Retry {
                 self.queue.insert(0, pending);
                 break;
             }
+            // Answered: saved at once, so a crash later in the loop does
+            // not resend it (a resend would only be a relay duplicate).
+            let _ = self.save_queue();
             let result = forward_result(outcome);
             if result == Forward::Sent {
                 sent += 1;
@@ -469,7 +550,7 @@ impl Bridge {
             }
             last = Some(result);
         }
-        if self.queue.len() != before {
+        if last.is_none() && self.queue.len() != before {
             let _ = self.save_queue();
         }
         if let Some(result) = last {

@@ -12,7 +12,9 @@ use std::thread;
 use lucina_phone_core::proto::{Incoming, OtpSource, CODE_TTL_MS, ORIGIN};
 use serde_json::{json, Value};
 
-use crate::bridge::{now_ms, Bridge, Forward, Probe, DEDUP_MS, MAX_QUEUE, QUEUE_FILE, STATE_FILE};
+use crate::bridge::{
+    now_ms, Bridge, CrashPoint, Forward, Probe, DEDUP_MS, MAX_QUEUE, QUEUE_FILE, STATE_FILE,
+};
 use crate::net::{classify, Outcome, Transport};
 use crate::store::{event_id, StoreError, Vault};
 
@@ -702,4 +704,131 @@ fn tls_provider_verifies_lets_encrypt_chains() {
         .get("https://expired-isrgrootx2.letsencrypt.org/")
         .call()
         .is_err());
+}
+
+const MESSAGING: &str = "com.samsung.android.messaging";
+
+/// OTP1 (F1, Stateright `otp.rs`): the process dies after the write-ahead,
+/// before the first send. After the restart the other copies of the code
+/// are duplicates and `flush` sends it exactly once.
+#[test]
+fn crash_before_the_first_send_keeps_the_code() {
+    let dir = TempDir::new();
+    let mock = Mock::new();
+    let now = now_ms();
+    {
+        let mut b = paired(&dir, mock.transport());
+        b.configure(r#"{"notifications":true}"#).unwrap();
+        b.crash_hook = Some(Box::new(|point, _| point != CrashPoint::BeforeSend));
+        b.on_sms_at("Bank", OTP_SMS, now as i64, now);
+    }
+    assert!(mock.hits().is_empty(), "it died before sending");
+    let mut b = Bridge::open_with(&dir.0, &KEY, None, mock.transport()).unwrap();
+    assert_eq!(b.status().pending, 1);
+    let copy = b.on_notification_at(MESSAGING, "Bank", OTP_SMS, now as i64, now + 500);
+    assert_eq!(copy.result, Forward::Duplicate);
+    let again = b.on_sms_at("Bank", OTP_SMS, now as i64, now + 600);
+    assert_eq!(again.result, Forward::Duplicate);
+    assert!(mock.hits().is_empty());
+    let f = b.flush_at(now + 1_000);
+    assert_eq!((f.sent, f.pending, f.retry), (1, 0, false));
+    let hits = mock.hits();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].body["code"], OTP_CODE);
+    assert!(lucina_phone_core::proto::valid_event_id(
+        hits[0].body["eventId"].as_str().unwrap()
+    ));
+    let mut b = Bridge::open_with(&dir.0, &KEY, None, mock.transport()).unwrap();
+    assert_eq!(b.flush_at(now + 2_000).sent, 0);
+    assert_eq!(mock.hits().len(), 1, "sent once");
+}
+
+/// The relay accepted the code but the phone died before it saw the
+/// answer: the flush after the restart resends the same event id, which
+/// the relay answers as a duplicate.
+#[test]
+fn crash_after_the_send_resends_the_same_event_id() {
+    let dir = TempDir::new();
+    let mock = Mock::new();
+    let now = now_ms();
+    {
+        let mut b = paired(&dir, mock.transport());
+        b.configure(r#"{"notifications":true}"#).unwrap();
+        b.crash_hook = Some(Box::new(|point, _| point != CrashPoint::AfterSend));
+        b.on_sms_at("Bank", OTP_SMS, now as i64, now);
+    }
+    assert_eq!(mock.hits().len(), 1);
+    let mut b = Bridge::open_with(&dir.0, &KEY, None, mock.transport()).unwrap();
+    assert_eq!(b.status().pending, 1);
+    let copy = b.on_notification_at(MESSAGING, "Bank", OTP_SMS, now as i64, now + 500);
+    assert_eq!(copy.result, Forward::Duplicate);
+    mock.reply(200, r#"{"accepted":true,"duplicate":true}"#);
+    let f = b.flush_at(now + 1_000);
+    assert_eq!((f.sent, f.pending), (1, 0));
+    let hits = mock.hits();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].body["eventId"], hits[1].body["eventId"]);
+    assert_eq!(hits[1].body["code"], OTP_CODE);
+    assert!(!dir.lucina().join(QUEUE_FILE).exists());
+}
+
+/// A second copy of the code while the first send is in flight: what a
+/// fresh process would load from disk at that moment already holds the
+/// fingerprint and the queued entry (the JNI mutex makes the live process
+/// wait for the send instead).
+#[test]
+fn second_copy_during_the_send_is_a_duplicate() {
+    let dir = TempDir::new();
+    let mock = Mock::new();
+    let now = now_ms();
+    let mut b = paired(&dir, mock.transport());
+    b.configure(r#"{"notifications":true}"#).unwrap();
+    let seen: Arc<Mutex<Option<(Forward, u32)>>> = Arc::default();
+    let (out, files, base) = (seen.clone(), dir.0.clone(), mock.base.clone());
+    b.crash_hook = Some(Box::new(move |point, _| {
+        if point == CrashPoint::BeforeSend {
+            let transport = Transport::plain_http_for_tests(base.clone());
+            let mut other = Bridge::open_with(&files, &KEY, None, transport).unwrap();
+            let r = other.on_notification_at(MESSAGING, "Bank", OTP_SMS, now as i64, now + 1);
+            *out.lock().unwrap() = Some((r.result, other.status().pending));
+        }
+        true
+    }));
+    assert_eq!(
+        b.on_sms_at("Bank", OTP_SMS, now as i64, now).result,
+        Forward::Sent
+    );
+    assert_eq!(*seen.lock().unwrap(), Some((Forward::Duplicate, 1)));
+    assert_eq!(mock.hits().len(), 1);
+    assert_eq!(b.status().pending, 0);
+    assert!(!dir.lucina().join(QUEUE_FILE).exists());
+    let copy = b.on_notification_at(MESSAGING, "Bank", OTP_SMS, now as i64, now + 2);
+    assert_eq!(copy.result, Forward::Duplicate);
+    assert_eq!(mock.hits().len(), 1);
+}
+
+/// A crash between the `queue.bin` and the `state.bin` write: `open`
+/// re-derives the fingerprint of the queued code.
+#[test]
+fn queued_code_is_a_duplicate_without_its_saved_fingerprint() {
+    let dir = TempDir::new();
+    let mock = Mock::new();
+    let now = now_ms();
+    let state = dir.lucina().join(STATE_FILE);
+    {
+        let mut b = paired(&dir, mock.transport());
+        b.configure(r#"{"notifications":true}"#).unwrap();
+        let before = fs::read(&state).unwrap();
+        let path = state.clone();
+        b.crash_hook = Some(Box::new(move |_, _| {
+            fs::write(&path, &before).unwrap();
+            false
+        }));
+        b.on_sms_at("Bank", OTP_SMS, now as i64, now);
+    }
+    let mut b = Bridge::open_with(&dir.0, &KEY, None, mock.transport()).unwrap();
+    assert_eq!(b.status().pending, 1);
+    let copy = b.on_notification_at(MESSAGING, "Bank", OTP_SMS, now as i64, now + 500);
+    assert_eq!(copy.result, Forward::Duplicate);
+    assert!(mock.hits().is_empty());
 }
