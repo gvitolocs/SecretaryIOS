@@ -485,7 +485,7 @@ struct RustTile: View {
         }
         .onAppear {
             let scale = UIScreen.main.scale
-            local.load(item.kind == "photo" ? backup.localAsset(for: item.id) : nil,
+            local.load(item.kind == "photo" || item.isVideo ? backup.localAsset(for: item.id) : nil,
                        size: CGSize(width: 256 * scale, height: 256 * scale), tile: true)
             if local.unavailable { loadServer() }
         }
@@ -554,7 +554,8 @@ struct RustPhoto: View {
             .onAppear {
                 fit(geo.size)
                 let scale = UIScreen.main.scale
-                local.load(item.kind == "photo" ? backup.localAsset(for: item.id) : nil,
+                log.notice("GalleryImages page id=\(item.id, privacy: .public) local=\(backup.localAsset(for: item.id) != nil)")
+                local.load(item.kind == "photo" || item.isVideo ? backup.localAsset(for: item.id) : nil,
                            size: CGSize(width: geo.size.width * scale, height: geo.size.height * scale), tile: false)
                 if local.unavailable { loadServer() }
             }

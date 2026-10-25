@@ -209,6 +209,9 @@ final class AppModel {
         let wardrobe = wardrobe
         let notes = notes
         let notifications = notifications
+        // Videos on this iPhone play from Photos (the backup ledger knows which items they are).
+        let ledger = backup
+        media.localVideo = { id in ledger.localAsset(for: id) }
         notifications.calendarEvents = { await device.calendarAlerts() }
         chat.onItems = { [weak self] items in
             device.bridge.consider(items)
