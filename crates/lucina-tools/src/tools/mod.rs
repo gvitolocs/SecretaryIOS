@@ -4,6 +4,7 @@ pub mod avatar;
 pub mod calculator;
 pub mod calendar;
 pub mod delegate;
+pub mod drive;
 pub mod meshy;
 pub mod notes;
 pub mod notify;

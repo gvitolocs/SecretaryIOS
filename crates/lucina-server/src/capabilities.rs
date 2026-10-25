@@ -43,6 +43,10 @@ pub struct Capabilities {
     /// `LUCINA_WEB_CRAWL_ENABLED` (default true).
     pub web: bool,
     pub oracle_monitor: bool,
+    /// `LUCINA_MCP_TRUSTED`: MCP callers with the owner's token act like him.
+    pub mcp_trusted: bool,
+    /// `LUCINA_DRIVE`: Lucina's own Google Drive (read-only).
+    pub drive: bool,
 }
 
 impl Capabilities {
@@ -79,6 +83,8 @@ impl Capabilities {
             images: get("COMFYUI_BASE_URL").is_some_and(|u| !u.trim().is_empty()),
             web: not_false("LUCINA_WEB_CRAWL_ENABLED"),
             oracle_monitor: is_true("LUCINA_ORACLE_MONITOR_ENABLED"),
+            mcp_trusted: is_true("LUCINA_MCP_TRUSTED"),
+            drive: is_true("LUCINA_DRIVE"),
         }
     }
 
@@ -141,7 +147,12 @@ impl Capabilities {
         );
         add(self.secretary, "Secretary app chat (web PWA and iOS), one timeline shared with Telegram, Discord and Alexa.".into(), Some("Secretary app chat is off on this runtime."));
         add(self.alexa, "Alexa as a voice input surface.".into(), None);
-        add(self.secretary, format!("Lucina MCP: ChatGPT, Grok and Claude Code can ask me on Giuseppe's behalf. MCP guard: they may only {}; anything else waits for Giuseppe's own yes in the app or on Telegram.", Self::mcp_allowed_phrase()), None);
+        if self.mcp_trusted {
+            add(self.secretary, "Lucina MCP: ChatGPT, Grok, Cursor and Claude Code ask me on Giuseppe's behalf with his token, so I act on their requests as on his own (downloads, project work, delegation), with my own judgement; secrets and money stay out.".into(), None);
+        } else {
+            add(self.secretary, format!("Lucina MCP: ChatGPT, Grok and Claude Code can ask me on Giuseppe's behalf. MCP guard: they may only {}; anything else waits for Giuseppe's own yes in the app or on Telegram.", Self::mcp_allowed_phrase()), None);
+        }
+        add(self.drive, "My own Google Drive (mylucina20@gmail.com): list, search, read and write my files, make folders, rename, move and trash (the `drive` tool); the operator moves files in and out with `lucina drive get` / `lucina drive put`.".into(), None);
         add(
             self.reminders,
             format!(

@@ -43,6 +43,10 @@ pub struct Config {
     /// `LUCINA_RICH_REPLIES` (default false): Lucina message format v1 replies
     /// and the conversational style rules (`crate::rich`).
     pub rich_replies: bool,
+    /// `LUCINA_MCP_TRUSTED`: Lucina MCP turns (a caller holding an `mcp_…`
+    /// token: ChatGPT, Grok, Cursor, Claude Code) act like the owner. Secrets
+    /// and paid Meshy credits stay owner-only either way.
+    pub mcp_trusted: bool,
     /// `LUCINA_RICH_COMPOSE_TIMEOUT_MS` (25000): one JSON-mode compose call.
     pub rich_compose_timeout: Duration,
     /// `LUCINA_NOTES`, `LUCINA_CALENDAR`, `LUCINA_AVATAR_OUTFIT`,
@@ -139,6 +143,12 @@ pub struct Config {
     pub secrets_config: Option<PathBuf>,
     /// Meshy 3D (`LUCINA_MESHY`, `MESHY_*`, `LUCINA_MESHY_*`).
     pub meshy: lucina_meshy::MeshyConfig,
+    /// `LUCINA_DRIVE` (default false): Lucina's own Google Drive, read-only.
+    pub drive_enabled: bool,
+    /// `LUCINA_GOOGLE_CLIENT_FILE` (default: the Lucina Gmail OAuth client).
+    pub google_client_file: PathBuf,
+    /// `LUCINA_DRIVE_TOKEN_FILE` (default `~/.config/lucina-rs/google-drive-token.json`).
+    pub drive_token_file: PathBuf,
     /// `LUCINA_DELEGATE` (default false): Lucina delegates to Claude, Grok
     /// and ChatGPT on her own judgement (crate `lucina-delegate`).
     pub delegate_enabled: bool,
@@ -169,6 +179,8 @@ impl std::fmt::Debug for Config {
             .field("secrets_config", &self.secrets_config)
             .field("meshy", &self.meshy.enabled)
             .field("delegate", &self.delegate_enabled)
+            .field("drive", &self.drive_enabled)
+            .field("mcp_trusted", &self.mcp_trusted)
             .finish_non_exhaustive()
     }
 }
@@ -299,6 +311,7 @@ impl Config {
             intent,
             capability_hints: flag("LUCINA_CAPABILITY_HINTS_ENABLED", true),
             rich_replies: flag("LUCINA_RICH_REPLIES", false),
+            mcp_trusted: flag("LUCINA_MCP_TRUSTED", false),
             rich_compose_timeout: Duration::from_millis(
                 num("LUCINA_RICH_COMPOSE_TIMEOUT_MS", 25_000).max(1000),
             ),
@@ -399,6 +412,19 @@ impl Config {
             meshy,
             delegate_enabled: flag("LUCINA_DELEGATE", false),
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
+            drive_enabled: flag("LUCINA_DRIVE", false),
+            google_client_file: PathBuf::from(
+                get("LUCINA_GOOGLE_CLIENT_FILE")
+                    .unwrap_or_else(|| lucina_tools::google::DEFAULT_CLIENT_FILE.into()),
+            ),
+            drive_token_file: get("LUCINA_DRIVE_TOKEN_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    lucina_tools::google::config_file(
+                        &get("HOME").unwrap_or_else(|| "/home/nez".into()),
+                        "google-drive-token.json",
+                    )
+                }),
             data_dir,
         })
     }

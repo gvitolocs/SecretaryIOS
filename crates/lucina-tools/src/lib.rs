@@ -18,13 +18,16 @@
 //!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
 //!   these is offered on Lucina MCP turns ([`NO_MCP_TOOLS`]); `meshy` (3D
-//!   models, registered by the server when `LUCINA_MESHY=true`).
+//!   models, registered by the server when `LUCINA_MESHY=true`); `drive`
+//!   (Lucina's own Google Drive, read-only, registered by the server when
+//!   `LUCINA_DRIVE=true` and the grant exists, see [`google`]).
 //! - Secrets: a tool reads a secret by setting name through [`Ctx::secret`]
 //!   (`weather.api_key` -> `secret://lucina/prod/lucina#OPEN_METEO_API_KEY`),
 //!   uses the value for its own outbound call only, and every tool result is
 //!   redacted before anything else sees it ([`agent::execute`]).
 
 pub mod agent;
+pub mod google;
 pub mod pending;
 pub mod reminder_writer;
 pub mod tools;
@@ -205,6 +208,8 @@ pub struct ToolEnv {
     pub secrets: Option<Arc<lucina_secrets::SecretStore>>,
     /// Delegation to Claude, Grok and ChatGPT (`LUCINA_DELEGATE`).
     pub delegator: Option<Arc<lucina_delegate::Delegator>>,
+    /// Lucina's own Google Drive, read-only (`LUCINA_DRIVE`).
+    pub drive: Option<Arc<google::Drive>>,
 }
 
 impl ToolEnv {
@@ -248,6 +253,7 @@ impl ToolEnv {
             secretary_service_token_file: None,
             secrets: None,
             delegator: None,
+            drive: None,
         }
     }
 }

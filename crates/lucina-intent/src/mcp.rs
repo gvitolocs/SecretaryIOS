@@ -95,6 +95,14 @@ pub fn note(m: &McpTurn) -> String {
     )
 }
 
+/// The note for an MCP turn when MCP callers are trusted (`LUCINA_MCP_TRUSTED`).
+pub fn note_trusted(m: &McpTurn) -> String {
+    format!(
+        "This request comes from {} acting for the owner through Lucina MCP with the owner's token; Giuseppe is not typing it himself, but he authorized this client: act on it as you would on his own request (your own judgement, the hard limits still hold).",
+        m.caller
+    )
+}
+
 /// The note `source` for an MCP caller ("chatgpt", "claude-code", "grok").
 pub fn note_source(caller: &str) -> String {
     let lower = caller.to_lowercase();
