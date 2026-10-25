@@ -148,6 +148,12 @@ final class AppModel {
         #endif
         // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
         MemoRecorder.endStaleActivities()
+        // A recording iOS cut off last time is recovered and queued.
+        #if DEBUG
+        memos.queue.recoverOrphans(dryRun: defaults.bool(forKey: "SecretaryMemoRecoverDryRun"))
+        #else
+        memos.queue.recoverOrphans()
+        #endif
         let memoStore = memos
         MemoRecordingCommands.handle = { command in
             switch command {

@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Network
 import Observation
@@ -22,8 +23,11 @@ struct LocalMemo: Codable, Identifiable, Equatable, Sendable {
     var nextAttempt: Date?
     /// The on-device transcript reached the server.
     var deviceTranscriptSent: Bool?
+    /// The file's extension (`aac` for crash-safe recordings; nil = an older `.m4a`).
+    var ext: String?
 
-    var file: URL { MemoFiles.audio(clientId) }
+    var file: URL { MemoFiles.audio(clientId, ext: ext ?? "m4a") }
+    var mime: String { ext == "aac" ? "audio/aac" : "audio/mp4" }
     var progress: Double { sizeBytes > 0 ? min(1, Double(uploadedBytes) / Double(sizeBytes)) : 0 }
 }
 
@@ -70,12 +74,51 @@ final class MemoUploadQueue {
 
     func add(_ r: FinishedRecording, title: String? = nil) {
         let size = (try? FileManager.default.attributesOfItem(atPath: r.url.path)[.size] as? Int64) ?? 0
-        items.append(LocalMemo(clientId: r.clientId, recordedAt: r.startedAt, duration: r.duration, sizeBytes: size, title: title))
+        items.append(LocalMemo(clientId: r.clientId, recordedAt: r.startedAt, duration: r.duration, sizeBytes: size, title: title,
+                               ext: r.url.pathExtension))
         save()
         kick()
     }
 
     func local(serverId: String) -> LocalMemo? { items.first { $0.serverId == serverId } }
+
+    /// On launch: a recording iOS cut off (the app was killed while recording) is on disk but
+    /// not in the queue. If it decodes and has sound, queue it like a finished recording.
+    /// `dryRun` (DEBUG device tests): only log what would be recovered, then delete the file.
+    @discardableResult
+    func recoverOrphans(dryRun: Bool = false) -> Int {
+        let known = Set(items.map(\.clientId))
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: MemoFiles.directory, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
+            return 0
+        }
+        var recovered = 0
+        for url in files where url.pathExtension == "aac" {
+            let clientId = url.deletingPathExtension().lastPathComponent
+            guard !known.contains(clientId) else { continue }
+            let values = try? url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+            guard let audio = try? AVAudioFile(forReading: url), audio.processingFormat.sampleRate > 0 else {
+                MemoLog.write("recover \(clientId): unreadable, kept on disk")
+                continue
+            }
+            let duration = Double(audio.length) / audio.processingFormat.sampleRate
+            if dryRun {
+                MemoLog.write("recover (dry run) \(clientId): \(String(format: "%.1f", duration)) s, \(values?.fileSize ?? 0) bytes; deleted")
+                try? fm.removeItem(at: url)
+                continue
+            }
+            guard duration >= 0.5 else { continue }
+            items.append(LocalMemo(clientId: clientId, recordedAt: values?.creationDate ?? Date(), duration: duration,
+                                   sizeBytes: Int64(values?.fileSize ?? 0), ext: "aac"))
+            recovered += 1
+            MemoLog.write("recovered \(clientId): \(String(format: "%.1f", duration)) s cut off by iOS; queued")
+        }
+        if recovered > 0 {
+            save()
+            kick()
+        }
+        return recovered
+    }
 
     /// Clears backoffs and uploads now (network back, owner pulled to refresh).
     func retryNow() {
@@ -92,7 +135,7 @@ final class MemoUploadQueue {
     /// Forgets a recording that never reached the server (the owner deleted it).
     func remove(clientId: String) {
         items.removeAll { $0.clientId == clientId }
-        try? FileManager.default.removeItem(at: MemoFiles.audio(clientId))
+        for ext in ["aac", "m4a"] { try? FileManager.default.removeItem(at: MemoFiles.audio(clientId, ext: ext)) }
         save()
     }
 
@@ -160,7 +203,7 @@ final class MemoUploadQueue {
         if serverId == nil {
             let created = try await api.create(.init(clientId: m.clientId, title: m.title, recordedAt: m.recordedAt,
                                                      timezone: TimeZone.current.identifier, durationSec: m.duration,
-                                                     mime: "audio/mp4", sizeBytes: m.sizeBytes, source: "ios"))
+                                                     mime: m.mime, sizeBytes: m.sizeBytes, source: "ios"))
             serverId = created.id
             offset = created.receivedBytes
             MemoLog.write("created \(created.id) for \(m.clientId) title=\(m.title ?? "nil")")

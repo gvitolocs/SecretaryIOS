@@ -76,6 +76,14 @@ enum MemoSynthetic {
 @MainActor
 enum MemoRecordSelfTest {
     static func runIfRequested(store: MemosStore, defaults: UserDefaults = .standard) {
+        // `-SecretaryMemoRecordOnly YES`: start recording and keep going (the kill test).
+        if defaults.bool(forKey: "SecretaryMemoRecordOnly") {
+            Task { @MainActor in
+                await store.record()
+                MemoLog.write("record-only: started, file \(store.recorder.currentFileName ?? "?")")
+            }
+            return
+        }
         guard defaults.bool(forKey: "SecretaryMemoRecordTest") else { return }
         Task { @MainActor in
             let rec = store.recorder

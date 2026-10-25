@@ -141,7 +141,7 @@ final class MemosStore {
 
     /// The local file to play: this iPhone's recording, or a cached download.
     func audioFile(for row: MemoRow) async -> URL? {
-        if let c = row.clientId, FileManager.default.fileExists(atPath: MemoFiles.audio(c).path) { return MemoFiles.audio(c) }
+        if let c = row.clientId, let file = MemoFiles.existingAudio(c) { return file }
         guard let id = row.serverId, let api = api() else { return nil }
         let cached = MemoFiles.cached(id)
         if FileManager.default.fileExists(atPath: cached.path) { return cached }

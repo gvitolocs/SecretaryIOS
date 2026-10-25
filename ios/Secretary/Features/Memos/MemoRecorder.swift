@@ -18,7 +18,16 @@ enum MemoFiles {
         return dir
     }
 
-    static func audio(_ clientId: String) -> URL { directory.appendingPathComponent("\(clientId).m4a") }
+    /// New recordings are ADTS AAC (`.aac`): self-framed, so a file cut off when iOS kills the
+    /// app still decodes and is recovered on the next launch. Older ones are `.m4a`.
+    static func audio(_ clientId: String, ext: String = "m4a") -> URL {
+        directory.appendingPathComponent("\(clientId).\(ext)")
+    }
+
+    /// This iPhone's file for a recording, whichever format it has.
+    static func existingAudio(_ clientId: String) -> URL? {
+        ["aac", "m4a"].map { audio(clientId, ext: $0) }.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
 
     /// Downloaded copies of memos recorded elsewhere.
     static func cached(_ serverId: String) -> URL {
@@ -77,6 +86,9 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
 
     var isActive: Bool { state != .idle }
 
+    /// The file being recorded (diagnostics).
+    var currentFileName: String? { current?.url.lastPathComponent }
+
     static let settings: [String: Any] = [
         AVFormatIDKey: kAudioFormatMPEG4AAC,
         AVSampleRateKey: 44_100,
@@ -101,7 +113,7 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             return
         }
         let clientId = UUID().uuidString.lowercased()
-        let url = MemoFiles.audio(clientId)
+        let url = MemoFiles.audio(clientId, ext: "aac")
         do {
             let r = try AVAudioRecorder(url: url, settings: Self.settings)
             r.isMeteringEnabled = true
