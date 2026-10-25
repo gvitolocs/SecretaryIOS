@@ -15,7 +15,8 @@ private let signposter = OSSignposter(subsystem: "tech.getsecretary.app", catego
 
 /// `-SecretaryGallerySmooth NO`: the first viewer (no prefetch, every progressive pass shown), for
 /// before/after frame-time measurements.
-let gallerySmooth = UserDefaults.standard.object(forKey: "SecretaryGallerySmooth") as? Bool ?? true
+let gallerySmooth = UserDefaults.standard.object(forKey: "SecretaryGallerySmooth") == nil
+    || UserDefaults.standard.bool(forKey: "SecretaryGallerySmooth")
 
 /// Decoded pictures shared by the grid and the viewer, bounded by memory.
 enum GalleryImageCache {
@@ -98,6 +99,8 @@ final class FrameMeter: NSObject {
     private var durations: [Double] = []
     private var hitches = 0
     private var started: CFTimeInterval = 0
+    /// Page changes in this window (so a quiet window is told apart from a smooth swipe).
+    var swipes = 0
 
     func start() {
         guard link == nil else { return }
@@ -123,9 +126,10 @@ final class FrameMeter: NSObject {
         guard !durations.isEmpty else { return }
         let sorted = durations.sorted()
         let p95 = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
-        log.notice("GalleryFrames mode=\(gallerySmooth ? "smooth" : "legacy", privacy: .public) frames=\(sorted.count) hitches=\(self.hitches) worst_ms=\(Int(sorted.last ?? 0)) p95_ms=\(String(format: "%.1f", p95), privacy: .public)")
+        log.notice("GalleryFrames mode=\(gallerySmooth ? "smooth" : "legacy", privacy: .public) swipes=\(self.swipes) frames=\(sorted.count) hitches=\(self.hitches) worst_ms=\(Int(sorted.last ?? 0)) p95_ms=\(String(format: "%.1f", p95), privacy: .public)")
         durations.removeAll(keepingCapacity: true)
         hitches = 0
+        swipes = 0
         started = last
     }
 
