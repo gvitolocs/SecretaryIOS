@@ -34,7 +34,8 @@ impl Entry {
     /// The last-writer-wins order: `updated_at`, then the device name. Two
     /// devices writing in the same millisecond still have one winner.
     pub fn is_newer_than(&self, other: &Entry) -> bool {
-        (self.updated_at, self.device.as_deref().unwrap_or("")) > (other.updated_at, other.device.as_deref().unwrap_or(""))
+        (self.updated_at, self.device.as_deref().unwrap_or(""))
+            > (other.updated_at, other.device.as_deref().unwrap_or(""))
     }
 }
 
@@ -97,7 +98,11 @@ pub fn resume_point(entry: Option<&Entry>, duration_ms: Option<u64>) -> u64 {
     if e.finished || (duration > 0 && is_finished(e.position_ms, duration)) {
         return 0;
     }
-    let min = if duration > 0 { RESUME_MIN_MS.min(duration / 10) } else { RESUME_MIN_MS };
+    let min = if duration > 0 {
+        RESUME_MIN_MS.min(duration / 10)
+    } else {
+        RESUME_MIN_MS
+    };
     if e.position_ms < min {
         0
     } else {
@@ -136,17 +141,26 @@ impl Book {
             updated_at: write_stamp(now, local.entry.as_ref().map(|e| e.updated_at)),
             device,
         };
-        let changed = local.entry.as_ref().map(|e| (e.position_ms, e.finished)) != Some((position_ms, finished));
+        let changed = local.entry.as_ref().map(|e| (e.position_ms, e.finished))
+            != Some((position_ms, finished));
         let newly_finished = finished && !local.entry.as_ref().is_some_and(|e| e.finished);
         let jumped = previous.is_some_and(|p| p.abs_diff(position_ms) > SEEK_JUMP_MS);
         local.entry = Some(entry.clone());
         local.dirty |= changed;
         let sync = local.dirty
-            && (!playing || newly_finished || jumped || local.last_push == 0 || now.saturating_sub(local.last_push) >= SYNC_EVERY_MS);
+            && (!playing
+                || newly_finished
+                || jumped
+                || local.last_push == 0
+                || now.saturating_sub(local.last_push) >= SYNC_EVERY_MS);
         if sync {
             local.last_push = now;
         }
-        Tick { sync, finished, entry }
+        Tick {
+            sync,
+            finished,
+            entry,
+        }
     }
 
     /// Entries the server has not acknowledged.
@@ -219,10 +233,20 @@ mod tests {
 
     #[test]
     fn resume_rules() {
-        let e = |pos, dur, fin| Entry { id: "a".into(), position_ms: pos, duration_ms: dur, finished: fin, updated_at: 1, device: None };
+        let e = |pos, dur, fin| Entry {
+            id: "a".into(),
+            position_ms: pos,
+            duration_ms: dur,
+            finished: fin,
+            updated_at: 1,
+            device: None,
+        };
         assert_eq!(resume_point(None, Some(MIN)), 0);
         assert_eq!(resume_point(Some(&e(5_000, 60 * MIN, false)), None), 0);
-        assert_eq!(resume_point(Some(&e(30 * MIN, 60 * MIN, false)), None), 30 * MIN - 2_000);
+        assert_eq!(
+            resume_point(Some(&e(30 * MIN, 60 * MIN, false)), None),
+            30 * MIN - 2_000
+        );
         assert_eq!(resume_point(Some(&e(30 * MIN, 60 * MIN, true)), None), 0);
         assert_eq!(resume_point(Some(&e(59 * MIN, 60 * MIN, false)), None), 0);
         // A 40 s memo resumes from 5 s.
@@ -247,14 +271,24 @@ mod tests {
         // Finish.
         let t = b.tick("a", 59 * MIN, d, true, 21_000, None);
         assert!(t.sync && t.finished);
-        assert!(b.tick("a", 59 * MIN + 1_000, d, true, 22_000, None).finished);
+        assert!(
+            b.tick("a", 59 * MIN + 1_000, d, true, 22_000, None)
+                .finished
+        );
     }
 
     #[test]
     fn merge_is_last_writer_wins() {
         let mut b = Book::default();
         b.tick("a", 10 * MIN, 60 * MIN, false, 1_000, None);
-        let remote = |at| Entry { id: "a".into(), position_ms: 20 * MIN, duration_ms: 60 * MIN, finished: false, updated_at: at, device: Some("web".into()) };
+        let remote = |at| Entry {
+            id: "a".into(),
+            position_ms: 20 * MIN,
+            duration_ms: 60 * MIN,
+            finished: false,
+            updated_at: at,
+            device: Some("web".into()),
+        };
         assert!(b.merge(vec![remote(500)]).is_empty());
         assert_eq!(b.get("a").unwrap().position_ms, 10 * MIN);
         assert_eq!(b.pending().len(), 1);
@@ -265,9 +299,18 @@ mod tests {
 
     #[test]
     fn same_millisecond_writes_have_one_winner() {
-        let at = |device: &str, pos| Entry { id: "a".into(), position_ms: pos, duration_ms: 60 * MIN, finished: false, updated_at: 5, device: Some(device.into()) };
+        let at = |device: &str, pos| Entry {
+            id: "a".into(),
+            position_ms: pos,
+            duration_ms: 60 * MIN,
+            finished: false,
+            updated_at: 5,
+            device: Some(device.into()),
+        };
         let (iphone, web) = (at("iPhone", 10 * MIN), at("web", 20 * MIN));
-        assert!(web.is_newer_than(&iphone) && !iphone.is_newer_than(&web) && !web.is_newer_than(&web));
+        assert!(
+            web.is_newer_than(&iphone) && !iphone.is_newer_than(&web) && !web.is_newer_than(&web)
+        );
         // The iPhone adopts the web's write from the same millisecond; the web keeps its own.
         let mut phone = Book::default();
         phone.tick("a", 10 * MIN, 60 * MIN, false, 5, Some("iPhone".into()));
@@ -282,7 +325,14 @@ mod tests {
     fn a_write_after_adopting_a_faster_clock_still_wins() {
         // The web's clock is ahead: its entry is stamped 9000 while the iPhone reads 5000.
         let mut phone = Book::default();
-        let web = Entry { id: "a".into(), position_ms: 20 * MIN, duration_ms: 60 * MIN, finished: false, updated_at: 9_000, device: Some("web".into()) };
+        let web = Entry {
+            id: "a".into(),
+            position_ms: 20 * MIN,
+            duration_ms: 60 * MIN,
+            finished: false,
+            updated_at: 9_000,
+            device: Some("web".into()),
+        };
         phone.merge(vec![web.clone()]);
         let t = phone.tick("a", 21 * MIN, 60 * MIN, false, 5_000, Some("iPhone".into()));
         assert_eq!(t.entry.updated_at, 9_001);
@@ -295,8 +345,20 @@ mod tests {
     #[test]
     fn positions_stay_within_the_duration() {
         let mut b = Book::default();
-        assert_eq!(b.tick("a", 70 * MIN, 60 * MIN, false, 1, None).entry.position_ms, 60 * MIN);
-        let far = Entry { id: "b".into(), position_ms: 99 * MIN, duration_ms: 60 * MIN, finished: false, updated_at: 9, device: None };
+        assert_eq!(
+            b.tick("a", 70 * MIN, 60 * MIN, false, 1, None)
+                .entry
+                .position_ms,
+            60 * MIN
+        );
+        let far = Entry {
+            id: "b".into(),
+            position_ms: 99 * MIN,
+            duration_ms: 60 * MIN,
+            finished: false,
+            updated_at: 9,
+            device: None,
+        };
         b.merge(vec![far]);
         assert_eq!(b.get("b").unwrap().position_ms, 60 * MIN);
         assert_eq!(clamp_position(5, 0), 5);

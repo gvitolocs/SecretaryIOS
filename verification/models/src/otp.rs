@@ -403,8 +403,7 @@ impl Otp {
         s.queue.iter().any(|e| e.code == c)
             || s.inflight.is_some_and(|f| f.entry.code == c)
             || s.pending.iter().any(|w| w.code == c)
-            || s
-                .lucina
+            || s.lucina
                 .iter()
                 .any(|l| matches!(l, Lucina::Got(w) if w.code == c))
     }

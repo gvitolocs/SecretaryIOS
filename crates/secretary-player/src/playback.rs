@@ -73,13 +73,22 @@ pub struct Plan {
 }
 
 fn direct_container(client: Client, c: &str, is_video: bool) -> bool {
-    let apple = matches!(c, "mov" | "mp4" | "m4v" | "m4a" | "3gp" | "mov,mp4,m4a,3gp,3g2,mj2");
+    let apple = matches!(
+        c,
+        "mov" | "mp4" | "m4v" | "m4a" | "3gp" | "mov,mp4,m4a,3gp,3g2,mj2"
+    );
     let apple_audio = matches!(c, "mp3" | "aac" | "adts" | "wav" | "aiff" | "caf" | "flac");
     match client {
         Client::Ios | Client::Macos | Client::WebSafari => apple || (!is_video && apple_audio),
-        Client::Android => apple || matches!(c, "matroska" | "mkv" | "webm" | "matroska,webm") || (!is_video && (apple_audio || matches!(c, "ogg"))),
+        Client::Android => {
+            apple
+                || matches!(c, "matroska" | "mkv" | "webm" | "matroska,webm")
+                || (!is_video && (apple_audio || matches!(c, "ogg")))
+        }
         Client::WebChrome | Client::WebFirefox => {
-            apple || matches!(c, "webm" | "matroska,webm") || (!is_video && (apple_audio || matches!(c, "ogg")))
+            apple
+                || matches!(c, "webm" | "matroska,webm")
+                || (!is_video && (apple_audio || matches!(c, "ogg")))
         }
     }
 }
@@ -96,10 +105,17 @@ fn video_ok(client: Client, codec: &str) -> bool {
 fn audio_ok(client: Client, codec: &str) -> bool {
     let pcm = codec.starts_with("pcm_");
     match client {
-        Client::Ios | Client::Macos => pcm || matches!(codec, "aac" | "mp3" | "alac" | "flac" | "ac3" | "eac3" | "opus"),
+        Client::Ios | Client::Macos => {
+            pcm || matches!(
+                codec,
+                "aac" | "mp3" | "alac" | "flac" | "ac3" | "eac3" | "opus"
+            )
+        }
         Client::WebSafari => pcm || matches!(codec, "aac" | "mp3" | "alac" | "flac" | "opus"),
         Client::Android => pcm || matches!(codec, "aac" | "mp3" | "flac" | "opus" | "vorbis"),
-        Client::WebChrome | Client::WebFirefox => pcm || matches!(codec, "aac" | "mp3" | "flac" | "opus" | "vorbis"),
+        Client::WebChrome | Client::WebFirefox => {
+            pcm || matches!(codec, "aac" | "mp3" | "flac" | "opus" | "vorbis")
+        }
     }
 }
 
@@ -114,7 +130,9 @@ fn hls_video_ok(client: Client, codec: &str) -> bool {
 
 fn hls_audio_ok(client: Client, codec: &str) -> bool {
     match client {
-        Client::Ios | Client::Macos | Client::WebSafari => matches!(codec, "aac" | "mp3" | "ac3" | "eac3" | "alac" | "flac"),
+        Client::Ios | Client::Macos | Client::WebSafari => {
+            matches!(codec, "aac" | "mp3" | "ac3" | "eac3" | "alac" | "flac")
+        }
         Client::Android => matches!(codec, "aac" | "mp3" | "ac3" | "eac3" | "opus" | "flac"),
         Client::WebChrome | Client::WebFirefox => matches!(codec, "aac" | "mp3"),
     }
@@ -125,15 +143,35 @@ pub fn plan(probe: &Probe, client: Client) -> Plan {
     let video = probe.video_codec.as_deref().map(str::to_ascii_lowercase);
     let audio = probe.audio_codec.as_deref().map(str::to_ascii_lowercase);
     let apple = matches!(client, Client::Ios | Client::Macos | Client::WebSafari);
-    let bad_hevc_tag = apple && video.as_deref() == Some("hevc") && probe.codec_tag.as_deref().is_some_and(|t| t != "hvc1");
+    let bad_hevc_tag = apple
+        && video.as_deref() == Some("hevc")
+        && probe.codec_tag.as_deref().is_some_and(|t| t != "hvc1");
     // A 10-bit H.264 (Hi10P) has no hardware decoder anywhere.
     let hi10 = video.as_deref() == Some("h264") && probe.bit_depth.is_some_and(|b| b > 8);
 
-    let v_direct = video.as_deref().is_none_or(|v| video_ok(client, v) && !hi10);
+    let v_direct = video
+        .as_deref()
+        .is_none_or(|v| video_ok(client, v) && !hi10);
     let a_direct = audio.as_deref().is_none_or(|a| audio_ok(client, a));
-    if v_direct && a_direct && !bad_hevc_tag && direct_container(client, &container, video.is_some()) {
-        let copy = |s: &Option<String>| if s.is_some() { Stream::Copy } else { Stream::None };
-        return Plan { mode: Mode::Direct, video: copy(&video), audio: copy(&audio), hvc1_tag: false, tonemap: false };
+    if v_direct
+        && a_direct
+        && !bad_hevc_tag
+        && direct_container(client, &container, video.is_some())
+    {
+        let copy = |s: &Option<String>| {
+            if s.is_some() {
+                Stream::Copy
+            } else {
+                Stream::None
+            }
+        };
+        return Plan {
+            mode: Mode::Direct,
+            video: copy(&video),
+            audio: copy(&audio),
+            hvc1_tag: false,
+            tonemap: false,
+        };
     }
 
     let v = match video.as_deref() {
@@ -146,7 +184,11 @@ pub fn plan(probe: &Probe, client: Client) -> Plan {
         Some(a) if hls_audio_ok(client, a) => Stream::Copy,
         Some(_) => Stream::Aac,
     };
-    let mode = if v == Stream::H264 || a == Stream::Aac { Mode::Transcode } else { Mode::Remux };
+    let mode = if v == Stream::H264 || a == Stream::Aac {
+        Mode::Transcode
+    } else {
+        Mode::Remux
+    };
     Plan {
         mode,
         video: v,
@@ -186,7 +228,10 @@ mod tests {
     #[test]
     fn dts_audio_is_transcoded_video_copied() {
         let plan = plan(&p("matroska", Some("hevc"), Some("dts")), Client::Ios);
-        assert_eq!((plan.mode, plan.video, plan.audio, plan.hvc1_tag), (Mode::Transcode, Stream::Copy, Stream::Aac, true));
+        assert_eq!(
+            (plan.mode, plan.video, plan.audio, plan.hvc1_tag),
+            (Mode::Transcode, Stream::Copy, Stream::Aac, true)
+        );
     }
 
     #[test]
@@ -202,16 +247,31 @@ mod tests {
         let mut probe = p("mp4", Some("hevc"), Some("eac3"));
         probe.hdr = true;
         let plan = plan(&probe, Client::WebChrome);
-        assert_eq!((plan.mode, plan.video, plan.audio, plan.tonemap), (Mode::Transcode, Stream::H264, Stream::Aac, true));
+        assert_eq!(
+            (plan.mode, plan.video, plan.audio, plan.tonemap),
+            (Mode::Transcode, Stream::H264, Stream::Aac, true)
+        );
     }
 
     #[test]
     fn audio_files() {
-        assert_eq!(plan(&p("mp3", None, Some("mp3")), Client::Ios).mode, Mode::Direct);
-        assert_eq!(plan(&p("ogg", None, Some("opus")), Client::WebChrome).mode, Mode::Direct);
+        assert_eq!(
+            plan(&p("mp3", None, Some("mp3")), Client::Ios).mode,
+            Mode::Direct
+        );
+        assert_eq!(
+            plan(&p("ogg", None, Some("opus")), Client::WebChrome).mode,
+            Mode::Direct
+        );
         let ogg_ios = plan(&p("ogg", None, Some("opus")), Client::Ios);
-        assert_eq!((ogg_ios.mode, ogg_ios.audio), (Mode::Transcode, Stream::Aac));
-        assert_eq!(plan(&p("flac", None, Some("flac")), Client::Ios).mode, Mode::Direct);
+        assert_eq!(
+            (ogg_ios.mode, ogg_ios.audio),
+            (Mode::Transcode, Stream::Aac)
+        );
+        assert_eq!(
+            plan(&p("flac", None, Some("flac")), Client::Ios).mode,
+            Mode::Direct
+        );
     }
 
     #[test]

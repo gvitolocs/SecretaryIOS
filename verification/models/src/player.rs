@@ -50,10 +50,21 @@ pub struct Dev {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Msg {
-    Push { dev: u8, w: Write },
+    Push {
+        dev: u8,
+        w: Write,
+    },
     /// Acknowledges the submitted stamp; carries the stored entry when it is newer.
-    Reply { dev: u8, acked_at: u8, newer: Option<Write> },
-    PullReply { dev: u8, w: Option<Write>, version: u8 },
+    Reply {
+        dev: u8,
+        acked_at: u8,
+        newer: Option<Write>,
+    },
+    PullReply {
+        dev: u8,
+        w: Option<Write>,
+        version: u8,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -154,7 +165,13 @@ impl Model for ResumeSync {
         vec![State {
             now: 1,
             devices: (0..self.devices)
-                .map(|_| Dev { local: None, dirty: false, online: true, pushing: false, seen: 0 })
+                .map(|_| Dev {
+                    local: None,
+                    dirty: false,
+                    online: true,
+                    pushing: false,
+                    seen: 0,
+                })
                 .collect(),
             server: None,
             version: 0,
@@ -178,7 +195,9 @@ impl Model for ResumeSync {
         for (i, d) in s.devices.iter().enumerate() {
             let i = i as u8;
             // A device's clock moves forward between its own writes.
-            if s.writes > 0 && (self.stamp_after_held || d.local.is_none_or(|l| l.dev != i || l.at < s.now)) {
+            if s.writes > 0
+                && (self.stamp_after_held || d.local.is_none_or(|l| l.dev != i || l.at < s.now))
+            {
                 actions.push(Action::Play(i));
             }
             if d.online && s.outages > 0 {
@@ -190,7 +209,12 @@ impl Model for ResumeSync {
             if d.online && d.dirty && !d.pushing {
                 actions.push(Action::Push(i));
             }
-            if d.online && !s.net.iter().any(|m| matches!(m, Msg::PullReply { dev, .. } if *dev == i)) {
+            if d.online
+                && !s
+                    .net
+                    .iter()
+                    .any(|m| matches!(m, Msg::PullReply { dev, .. } if *dev == i))
+            {
                 actions.push(Action::Pull(i));
             }
         }
@@ -213,7 +237,11 @@ impl Model for ResumeSync {
                     Some(h) if self.stamp_after_held && h >= s.now => h + 1,
                     _ => s.now,
                 };
-                let w = Write { pos: s.next_pos, at, dev: d };
+                let w = Write {
+                    pos: s.next_pos,
+                    at,
+                    dev: d,
+                };
                 s.next_pos += 1;
                 s.writes -= 1;
                 let dev = &mut s.devices[d as usize];
@@ -236,7 +264,9 @@ impl Model for ResumeSync {
                 }
                 // The device's requests and the replies to it are lost.
                 s.net.retain(|m| match *m {
-                    Msg::Push { dev, .. } | Msg::Reply { dev, .. } | Msg::PullReply { dev, .. } => dev != d,
+                    Msg::Push { dev, .. } | Msg::Reply { dev, .. } | Msg::PullReply { dev, .. } => {
+                        dev != d
+                    }
                 });
             }
             Action::Online(d) => s.devices[d as usize].online = true,
@@ -247,7 +277,11 @@ impl Model for ResumeSync {
                 add(&mut s.net, Msg::Push { dev: d, w });
             }
             Action::Pull(d) => {
-                let m = Msg::PullReply { dev: d, w: s.server, version: s.version };
+                let m = Msg::PullReply {
+                    dev: d,
+                    w: s.server,
+                    version: s.version,
+                };
                 add(&mut s.net, m);
             }
             Action::Deliver(m) => {
@@ -273,9 +307,20 @@ impl Model for ResumeSync {
                             s.server = Some(w);
                             s.version += 1;
                         }
-                        add(&mut s.net, Msg::Reply { dev, acked_at: w.at, newer });
+                        add(
+                            &mut s.net,
+                            Msg::Reply {
+                                dev,
+                                acked_at: w.at,
+                                newer,
+                            },
+                        );
                     }
-                    Msg::Reply { dev, acked_at, newer } => {
+                    Msg::Reply {
+                        dev,
+                        acked_at,
+                        newer,
+                    } => {
                         let d = &mut s.devices[dev as usize];
                         d.pushing = false;
                         // Book::acknowledge
@@ -308,7 +353,9 @@ impl Model for ResumeSync {
             // ...and every device that pulled since the last change shows it.
             Property::always("devices_converge", |_, s: &State| {
                 !ResumeSync::quiescent(s)
-                    || s.devices.iter().all(|d| d.seen != s.version || s.version == 0 || d.local == s.server)
+                    || s.devices
+                        .iter()
+                        .all(|d| d.seen != s.version || s.version == 0 || d.local == s.server)
             }),
             // A device never goes back to an older entry because of a stale update.
             Property::always("never_back_to_stale", |_, s: &State| !s.stale_adopted),
@@ -321,7 +368,9 @@ impl Model for ResumeSync {
                     && ResumeSync::quiescent(s)
                     && s.server == s.latest
                     && s.devices.iter().filter(|d| d.local.is_some()).count() >= 2
-                    && s.devices.iter().all(|d| d.seen == s.version && d.local == s.server)
+                    && s.devices
+                        .iter()
+                        .all(|d| d.seen == s.version && d.local == s.server)
             }),
         ]
     }
@@ -356,36 +405,65 @@ pub fn cases(deep: bool) -> Vec<Case> {
         Case::new(
             PROTOCOL,
             "R before fixes R1, R2 (updated_at only)",
-            ResumeSync { tie_break: false, stamp_after_held: false, ..base.clone() },
+            ResumeSync {
+                tie_break: false,
+                stamp_after_held: false,
+                ..base.clone()
+            },
             None,
             all(Violated, Violated, Holds, Holds),
         ),
         Case::new(
             PROTOCOL,
             "R + fix R1 only (stamped with the device clock)",
-            ResumeSync { stamp_after_held: false, ..base.clone() },
+            ResumeSync {
+                stamp_after_held: false,
+                ..base.clone()
+            },
             None,
-            vec![("devices_converge", Violated), ("never_back_to_stale", Holds), ("server_never_regresses", Holds)],
+            vec![
+                ("devices_converge", Violated),
+                ("never_back_to_stale", Holds),
+                ("server_never_regresses", Holds),
+            ],
         ),
-        Case::new(PROTOCOL, "R + fixes R1, R2", base.clone(), None, all(Holds, Holds, Holds, Holds)),
+        Case::new(
+            PROTOCOL,
+            "R + fixes R1, R2",
+            base.clone(),
+            None,
+            all(Holds, Holds, Holds, Holds),
+        ),
         Case::new(
             PROTOCOL,
             "R naive server: every push overwrites",
-            ResumeSync { server_lww: false, ..base.clone() },
+            ResumeSync {
+                server_lww: false,
+                ..base.clone()
+            },
             None,
-            vec![("no_position_lost", Violated), ("server_never_regresses", Violated)],
+            vec![
+                ("no_position_lost", Violated),
+                ("server_never_regresses", Violated),
+            ],
         ),
         Case::new(
             PROTOCOL,
             "R naive device: adopts whatever the server sends",
-            ResumeSync { merge_lww: false, ..base.clone() },
+            ResumeSync {
+                merge_lww: false,
+                ..base.clone()
+            },
             None,
             vec![("never_back_to_stale", Violated)],
         ),
         Case::new(
             PROTOCOL,
             "R naive acknowledge: clears dirty for a later write",
-            ResumeSync { ack_checks_time: false, ..base },
+            ResumeSync {
+                ack_checks_time: false,
+                ..base
+            },
             None,
             vec![("no_position_lost", Violated)],
         ),

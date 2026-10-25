@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Formal verification gate (docs/verification.md):
 #   1. Stateright models  (verification/models: cargo test + the summary table), plus the
-#      property / fault-injection tests of the pure kernels they model (crates/ink-sync)
+#      property / fault-injection tests of the pure kernels they model (crates/ink-sync) and
+#      the deals kernel's differential tests on the pinned lucina-deals (verification/verus/diff/run-deals.sh)
 #   2. TLC on every formal/**/*.cfg (each cfg's first line says MUST PASS or MUST FAIL)
 #   3. Verus on every verification/verus/*.rs (top level only: subdirectories such as
 #      verification/verus/diff/ hold plain-Rust differential tests, not Verus files)
@@ -24,7 +25,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --deep) deep=1 ;;
         --only) only="${2:-}"; shift ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
@@ -74,6 +75,14 @@ if want models; then
     else
         tail -40 "$work/ink-sync-test.log"
         row models "cargo test -p ink-sync (property + fault injection)" pass "FAIL" "see the output above"
+    fi
+    # The Verus deals kernel against the real lucina-deals at the pinned revision (§14).
+    start=$(date +%s)
+    if verification/verus/diff/run-deals.sh >"$work/deals-diff.log" 2>&1; then
+        row models "lucina-deals Verus differential tests (pinned source)" pass "PASS" "$(( $(date +%s) - start ))s"
+    else
+        tail -40 "$work/deals-diff.log"
+        row models "lucina-deals Verus differential tests (pinned source)" pass "FAIL" "see the output above"
     fi
     # deploy-guard: the deploy model's fix as a tool (docs/verification.md §7), its rule and
     # today's incident replayed on real git repos.

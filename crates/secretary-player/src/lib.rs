@@ -135,7 +135,9 @@ fn ten() -> usize {
 }
 
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 impl Engine {
@@ -160,13 +162,19 @@ impl Engine {
 
     /// An engine that never touches the disk (server-side helpers, tests).
     pub fn in_memory() -> Self {
-        Self { path: PathBuf::new(), state: State::default() }
+        Self {
+            path: PathBuf::new(),
+            state: State::default(),
+        }
     }
 
     /// An in-memory engine from a saved state (the browser keeps it in
     /// localStorage). Unreadable state starts empty, like `open`.
     pub fn from_state_json(json: &str) -> Self {
-        Self { path: PathBuf::new(), state: serde_json::from_str(json).unwrap_or_default() }
+        Self {
+            path: PathBuf::new(),
+            state: serde_json::from_str(json).unwrap_or_default(),
+        }
     }
 
     /// The whole state, for callers that persist it themselves.
@@ -181,7 +189,9 @@ impl Engine {
     pub fn handle_at(&mut self, json: &str, now: u64) -> Value {
         let command: Command = match serde_json::from_str(json) {
             Ok(c) => c,
-            Err(e) => return json!({"ok": false, "code": "invalid_command", "error": e.to_string()}),
+            Err(e) => {
+                return json!({"ok": false, "code": "invalid_command", "error": e.to_string()})
+            }
         };
         let (answer, changed) = self.process(command, now);
         if changed {
@@ -238,37 +248,72 @@ impl Engine {
                 q.set_mode(repeat, shuffle);
                 (self.queue_view(), true)
             }
-            Command::Position { id, position_ms, duration_ms, playing, device } => {
-                let tick = self.state.progress.tick(&id, position_ms, duration_ms, playing, now, device);
+            Command::Position {
+                id,
+                position_ms,
+                duration_ms,
+                playing,
+                device,
+            } => {
+                let tick =
+                    self.state
+                        .progress
+                        .tick(&id, position_ms, duration_ms, playing, now, device);
                 // Persist on pushes only: a write per second would wear the flash for nothing.
                 let save = tick.sync;
-                (json!({"ok": true, "sync": tick.sync, "finished": tick.finished, "entry": tick.entry}), save)
+                (
+                    json!({"ok": true, "sync": tick.sync, "finished": tick.finished, "entry": tick.entry}),
+                    save,
+                )
             }
             Command::Resume { id, duration_ms } => {
                 let entry = self.state.progress.get(&id);
                 let position = progress::resume_point(entry, duration_ms);
-                (json!({"ok": true, "position_ms": position, "entry": entry}), false)
+                (
+                    json!({"ok": true, "position_ms": position, "entry": entry}),
+                    false,
+                )
             }
-            Command::Pending => (json!({"ok": true, "entries": self.state.progress.pending()}), false),
+            Command::Pending => (
+                json!({"ok": true, "entries": self.state.progress.pending()}),
+                false,
+            ),
             Command::Acknowledge { entries } => {
-                let acks: Vec<(String, u64)> = entries.into_iter().map(|a| (a.id, a.updated_at)).collect();
+                let acks: Vec<(String, u64)> =
+                    entries.into_iter().map(|a| (a.id, a.updated_at)).collect();
                 self.state.progress.acknowledge(&acks);
-                (json!({"ok": true, "pending": self.state.progress.pending().len()}), true)
+                (
+                    json!({"ok": true, "pending": self.state.progress.pending().len()}),
+                    true,
+                )
             }
             Command::Merge { entries } => {
                 let changed = self.state.progress.merge(entries);
                 let any = !changed.is_empty();
                 (json!({"ok": true, "changed": changed}), any)
             }
-            Command::Recent { limit } => (json!({"ok": true, "entries": self.state.progress.recent(limit)}), false),
-            Command::Subtitles { text } => (json!({"ok": true, "cues": subtitles::parse(&text)}), false),
-            Command::Plan { probe, client } => (json!({"ok": true, "plan": playback::plan(&probe, client)}), false),
+            Command::Recent { limit } => (
+                json!({"ok": true, "entries": self.state.progress.recent(limit)}),
+                false,
+            ),
+            Command::Subtitles { text } => {
+                (json!({"ok": true, "cues": subtitles::parse(&text)}), false)
+            }
+            Command::Plan { probe, client } => (
+                json!({"ok": true, "plan": playback::plan(&probe, client)}),
+                false,
+            ),
             Command::SubtitlePick { id, tracks } => {
                 let pick = self.state.subtitles.pick(&id, &tracks);
-                (json!({"ok": true, "track": pick.track, "reason": pick.reason}), false)
+                (
+                    json!({"ok": true, "track": pick.track, "reason": pick.reason}),
+                    false,
+                )
             }
             Command::SubtitleChoose { id, track, lang } => {
-                self.state.subtitles.choose(&id, track.as_deref(), lang.as_deref());
+                self.state
+                    .subtitles
+                    .choose(&id, track.as_deref(), lang.as_deref());
                 (json!({"ok": true}), true)
             }
         }
@@ -303,15 +348,33 @@ mod tests {
         let r = e.handle_at(r#"{"cmd":"position","id":"a","position_ms":600000,"duration_ms":3600000,"playing":false}"#, 2_000);
         assert_eq!(r["sync"], true);
         let r = e.handle_at(r#"{"cmd":"queue_next","auto":true}"#, 3_000);
-        assert_eq!((r["moved"].as_bool(), r["queue"]["item"]["id"].as_str()), (Some(true), Some("b")));
+        assert_eq!(
+            (r["moved"].as_bool(), r["queue"]["item"]["id"].as_str()),
+            (Some(true), Some("b"))
+        );
         drop(e);
 
         let mut e = Engine::open(&path).unwrap();
-        assert_eq!(e.handle(r#"{"cmd":"queue_get"}"#)["queue"]["item"]["id"], "b");
-        assert_eq!(e.handle(r#"{"cmd":"resume","id":"a"}"#)["position_ms"], 598_000);
-        assert_eq!(e.handle(r#"{"cmd":"pending"}"#)["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            e.handle(r#"{"cmd":"queue_get"}"#)["queue"]["item"]["id"],
+            "b"
+        );
+        assert_eq!(
+            e.handle(r#"{"cmd":"resume","id":"a"}"#)["position_ms"],
+            598_000
+        );
+        assert_eq!(
+            e.handle(r#"{"cmd":"pending"}"#)["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         e.handle(r#"{"cmd":"acknowledge","entries":[{"id":"a","updated_at":2000}]}"#);
-        assert!(e.handle(r#"{"cmd":"pending"}"#)["entries"].as_array().unwrap().is_empty());
+        assert!(e.handle(r#"{"cmd":"pending"}"#)["entries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         let r = e.handle(r#"{"cmd":"plan","probe":{"container":"matroska","video_codec":"h264","audio_codec":"aac"},"client":"ios"}"#);
         assert_eq!(r["plan"]["mode"], "remux");
         let r = e.handle(r#"{"cmd":"subtitles","text":"1\n00:00:01,000 --> 00:00:02,000\nHi\n"}"#);
@@ -333,10 +396,19 @@ mod tests {
     fn state_round_trips_through_json() {
         let mut e = Engine::in_memory();
         e.handle_at(r#"{"cmd":"position","id":"a","position_ms":600000,"duration_ms":3600000,"playing":false}"#, 1_000);
-        e.handle_at(r#"{"cmd":"subtitle_choose","id":"a","track":"x0","lang":"da"}"#, 1_000);
+        e.handle_at(
+            r#"{"cmd":"subtitle_choose","id":"a","track":"x0","lang":"da"}"#,
+            1_000,
+        );
         let mut back = Engine::from_state_json(&e.state_json());
-        assert_eq!(back.handle_at(r#"{"cmd":"resume","id":"a"}"#, 2_000)["position_ms"], 598_000);
-        assert_eq!(Engine::from_state_json("{not json").handle_at(r#"{"cmd":"pending"}"#, 1)["entries"], json!([]));
+        assert_eq!(
+            back.handle_at(r#"{"cmd":"resume","id":"a"}"#, 2_000)["position_ms"],
+            598_000
+        );
+        assert_eq!(
+            Engine::from_state_json("{not json").handle_at(r#"{"cmd":"pending"}"#, 1)["entries"],
+            json!([])
+        );
     }
 
     #[test]
@@ -347,7 +419,10 @@ mod tests {
         fs::write(&path, b"{not json").unwrap();
         let mut e = Engine::open(&path).unwrap();
         assert!(dir.join("player.bad").exists());
-        assert_eq!(e.handle(r#"{"cmd":"queue_get"}"#)["queue"]["current"], Value::Null);
+        assert_eq!(
+            e.handle(r#"{"cmd":"queue_get"}"#)["queue"]["current"],
+            Value::Null
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }
