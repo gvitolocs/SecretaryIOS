@@ -237,9 +237,22 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
     }
 
     private func startActivity() {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        activity = try? Activity.request(attributes: MemoRecordingAttributes(startedAt: Date()),
-                                         content: .init(state: activityState, staleDate: nil), pushType: nil)
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            MemoLog.write("live activity: disabled in Settings")
+            return
+        }
+        do {
+            activity = try Activity.request(attributes: MemoRecordingAttributes(startedAt: Date()),
+                                            content: .init(state: activityState, staleDate: nil), pushType: nil)
+        } catch {
+            MemoLog.write("live activity: request failed: \(error)")
+        }
+    }
+
+    /// The Live Activity as iOS has it now (state, paused flag), for the device self-test.
+    var activityReport: String {
+        guard let a = activity else { return "none" }
+        return "\(a.activityState) paused=\(a.content.state.paused)"
     }
 
     private func updateActivity() {

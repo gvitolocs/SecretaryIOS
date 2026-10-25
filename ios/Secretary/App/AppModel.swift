@@ -142,6 +142,7 @@ final class AppModel {
         if let tab = launch.initialTab { selectedTab = tab }
         #if DEBUG
         MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
+        MemoRecordSelfTest.runIfRequested(store: memos, defaults: defaults)
         #endif
         // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
         MemoRecorder.endStaleActivities()
