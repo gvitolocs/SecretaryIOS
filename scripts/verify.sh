@@ -69,6 +69,16 @@ if want models; then
         tail -40 "$work/ink-sync-test.log"
         row models "cargo test -p ink-sync (property + fault injection)" pass "FAIL" "see the output above"
     fi
+    # deploy-guard: the deploy model's fix as a tool (docs/verification.md §7), its rule and
+    # today's incident replayed on real git repos.
+    start=$(date +%s)
+    if cargo test -j"$CARGO_JOBS" -q --manifest-path tools/deploy-guard/Cargo.toml >"$work/deploy-guard-test.log" 2>&1; then
+        row models "cargo test deploy-guard (rule + git replay)" pass "PASS" \
+            "$(grep -oE '[0-9]+ passed' "$work/deploy-guard-test.log" | awk '{n+=$1} END {print n}') tests, $(( $(date +%s) - start ))s"
+    else
+        tail -40 "$work/deploy-guard-test.log"
+        row models "cargo test deploy-guard (rule + git replay)" pass "FAIL" "see the output above"
+    fi
     # Lucina's Pokémon planner (Lucina repo): the differential tests that tie verification/verus/game_planner.rs
     # to the code (planned ROM routes against the kernel's step rule; the story requirement table).
     pk="${LUCINA_POKEMON_DIR:-$HOME/Projects/.worktrees/Lucina/game-link/rust/lucina-pokemon}"

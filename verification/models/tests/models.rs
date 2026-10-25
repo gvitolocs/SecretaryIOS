@@ -58,6 +58,11 @@ fn ink_sync() {
 }
 
 #[test]
+fn deploy() {
+    run("deploy");
+}
+
+#[test]
 fn game() {
     run("game");
 }
