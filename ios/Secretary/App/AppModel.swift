@@ -179,6 +179,9 @@ final class AppModel {
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
         chat.onTransportError = onError
         chat.onTransportSuccess = onSuccess
+        // Attachments sent from the chat report their upload progress and outcome to its bubbles.
+        ShareUploads.shared.observer = chat
+        AttachmentStore.purgePending()
         let device = device
         let wardrobe = wardrobe
         let notes = notes

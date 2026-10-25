@@ -40,12 +40,22 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
     var mediaId: String? = nil
     var url: String? = nil
     var bytes: Int64? = nil
+    /// Base64 ThumbHash from lucina-media, when known (contract v1.1).
+    var thumbhash: String? = nil
+    var width: Int? = nil
+    var height: Int? = nil
+    var durationMs: Int? = nil
+    /// A shared location.
+    var lat: Double? = nil
+    var lon: Double? = nil
 
-    init(kind: String, name: String? = nil, mime: String? = nil, mediaId: String? = nil, url: String? = nil, bytes: Int64? = nil) {
+    init(kind: String, name: String? = nil, mime: String? = nil, mediaId: String? = nil, url: String? = nil, bytes: Int64? = nil,
+         thumbhash: String? = nil, width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, lat: Double? = nil, lon: Double? = nil) {
         self.kind = kind; self.name = name; self.mime = mime; self.mediaId = mediaId; self.url = url; self.bytes = bytes
+        self.thumbhash = thumbhash; self.width = width; self.height = height; self.durationMs = durationMs; self.lat = lat; self.lon = lon
     }
 
-    private enum CodingKeys: String, CodingKey { case kind, name, mime, mediaId, url, bytes }
+    private enum CodingKeys: String, CodingKey { case kind, name, mime, mediaId, url, bytes, thumbhash, width, height, durationMs, lat, lon }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = (try? c.decode(String.self, forKey: .kind)) ?? "file"
@@ -54,6 +64,29 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
         mediaId = try? c.decode(String.self, forKey: .mediaId)
         url = try? c.decode(String.self, forKey: .url)
         bytes = try? c.decode(Int64.self, forKey: .bytes)
+        thumbhash = try? c.decode(String.self, forKey: .thumbhash)
+        width = try? c.decode(Int.self, forKey: .width)
+        height = try? c.decode(Int.self, forKey: .height)
+        durationMs = try? c.decode(Int.self, forKey: .durationMs)
+        lat = try? c.decode(Double.self, forKey: .lat)
+        lon = try? c.decode(Double.self, forKey: .lon)
+    }
+
+    var normalizedKind: String { kind.lowercased() == "photo" ? "image" : kind.lowercased() }
+    var isImage: Bool { normalizedKind == "image" }
+    var isVideo: Bool { normalizedKind == "video" }
+    var isVisual: Bool { isImage || isVideo }
+    var isAudio: Bool { ["audio", "voice"].contains(normalizedKind) }
+    /// Not a file part: links, plain text and locations ride along as their own attachments.
+    var isFilePart: Bool { !["link", "text", "location"].contains(normalizedKind) }
+
+    /// Coordinates from `lat`/`lon`, or a `geo:` URL.
+    var coordinate: (lat: Double, lon: Double)? {
+        if let lat, let lon { return (lat, lon) }
+        guard let url, url.lowercased().hasPrefix("geo:") else { return nil }
+        let parts = url.dropFirst(4).split(separator: ";").first?.split(separator: ",") ?? []
+        guard parts.count >= 2, let lat = Double(parts[0]), let lon = Double(parts[1]) else { return nil }
+        return (lat, lon)
     }
 
     static func symbol(for kind: String) -> String {
@@ -67,6 +100,11 @@ struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
         case "location": return "mappin.and.ellipse"
         case "text": return "text.quote"
         case "link": return "link"
+        case "calendar": return "calendar"
+        case "archive": return "doc.zipper"
+        case "code": return "chevron.left.forwardslash.chevron.right"
+        case "spreadsheet": return "tablecells"
+        case "presentation": return "rectangle.on.rectangle.angled"
         default: return "doc"
         }
     }
@@ -106,6 +144,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var topic: String?
     var why: String?
     var actions: [ProactiveAction]?
+    /// With `kind == "share"`: the share (files from the share sheet or the chat composer) behind the item.
+    var shareId: String?
 
     var isReminder: Bool { kind == "reminder" }
     var isProactive: Bool {
@@ -114,6 +154,7 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
             && id.dropFirst(3).allSatisfy { ("0"..."9").contains($0) || ("A"..."Z").contains($0) && !"ILOU".contains($0) }
     }
     var isDeviceCommand: Bool { kind == "device_command" }
+    var isShare: Bool { kind == "share" && shareId?.isEmpty == false }
 
     init(chatTitle: String? = nil, guildName: String? = nil, channelName: String? = nil, isDm: Bool? = nil, kind: String? = nil) {
         self.chatTitle = chatTitle
@@ -141,11 +182,12 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         topic = c.lenientOptional(String.self, .topic)
         why = c.lenientOptional(String.self, .why)
         actions = c.lenientOptional([ProactiveAction].self, .actions)
+        shareId = c.lenientOptional(String.self, .shareId)
     }
 
     private enum CodingKeys: String, CodingKey {
         case via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
-        case outreachId, priority, topic, why, actions
+        case outreachId, priority, topic, why, actions, shareId
     }
 }
 
@@ -367,7 +409,9 @@ enum TimelineMerge {
             for local in byId.values where local.isLocal && local.role == item.role && local.id != item.id {
                 let sameClient = item.clientMessageId != nil && item.clientMessageId == local.clientMessageId
                 let sameReply = item.role == .lucina && item.replyTo != nil && item.replyTo == local.replyTo
-                if sameClient || sameReply {
+                // A chat attachment's bubble is the server's share item (`meta.shareId`).
+                let sameShare = item.role == .user && item.meta?.isShare == true && item.meta?.shareId == local.meta?.shareId
+                if sameClient || sameReply || sameShare {
                     byId[local.id] = nil
                     replaced[local.id] = item.id
                     if item.role == .user {

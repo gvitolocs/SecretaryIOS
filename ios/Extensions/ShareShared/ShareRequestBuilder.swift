@@ -34,6 +34,56 @@ struct ShareRecord: Codable {
     var intent: String
     var attempts: Int
     var boundary: String
+    /// `chat` when Lucina's chat composer sent it: the bubble shows the outcome (`<shareId>.result.json`).
+    var origin: String? = nil
+}
+
+/// The optional `meta` form field (contract v1.1): per-file facts the phone already knows, by the
+/// 0-based order of the `file` parts, and the owner's current location.
+struct ShareMeta: Codable, Equatable, Sendable {
+    struct File: Codable, Equatable, Sendable {
+        var index: Int
+        var transcript: String?
+        var width: Int?
+        var height: Int?
+        var durationMs: Int?
+        var takenAt: String?
+        var lat: Double?
+        var lon: Double?
+
+        var hasFacts: Bool {
+            transcript != nil || width != nil || height != nil || durationMs != nil || takenAt != nil || lat != nil || lon != nil
+        }
+    }
+
+    struct Location: Codable, Equatable, Sendable {
+        var lat: Double
+        var lon: Double
+        var name: String?
+    }
+
+    var files: [File] = []
+    var location: Location?
+
+    static let maxBytes = 64 * 1024
+
+    var isEmpty: Bool { !files.contains(where: \.hasFacts) && location == nil }
+
+    /// Sorted keys; only files with facts; transcripts shortened until it fits in 64 KB.
+    func json() throws -> String {
+        var copy = self
+        copy.files = files.filter(\.hasFacts)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var data = try encoder.encode(copy)
+        while data.count > Self.maxBytes {
+            guard let longest = copy.files.indices.max(by: { (copy.files[$0].transcript?.count ?? 0) < (copy.files[$1].transcript?.count ?? 0) }),
+                  let transcript = copy.files[longest].transcript, !transcript.isEmpty else { throw ShareFailure.preparation }
+            copy.files[longest].transcript = String(transcript.prefix(transcript.count / 2))
+            data = try encoder.encode(copy)
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
 }
 
 enum ShareRequestBuilder {
@@ -60,6 +110,15 @@ enum ShareRequestBuilder {
         return url
     }
 
+    /// The share behind a background-session identifier: `prefix + shareId`, or `prefix + shareId + "~" + attempt`
+    /// for a retry (a fresh session, so it never collides with one still being torn down).
+    static func shareId(fromSession identifier: String) -> String? {
+        guard identifier.hasPrefix(prefix) else { return nil }
+        let rest = identifier.dropFirst(prefix.count)
+        let id = rest.split(separator: "~", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        return id.isEmpty ? nil : id
+    }
+
     static func save(_ record: ShareRecord, in directory: URL) throws {
         try JSONEncoder().encode(record).write(to: directory.appendingPathComponent(record.shareId + ".json"),
                                                 options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -68,12 +127,18 @@ enum ShareRequestBuilder {
     /// Bounded chunks, including for multi-gigabyte movie/document providers.
     static func build(payload: SharePayload, intent: String, note: String, source: String,
                       credentials: BridgeCredentials, directory: URL, shareId: String = UUID().uuidString,
-                      boundary: String = "Lucina-" + UUID().uuidString, language: String = String((Locale.preferredLanguages.first ?? "en").prefix(2))) throws -> ShareRecord {
-        guard !payload.files.isEmpty || !payload.texts.isEmpty || !payload.urls.isEmpty else { throw ShareFailure.empty }
+                      boundary: String = "Lucina-" + UUID().uuidString, language: String = String((Locale.preferredLanguages.first ?? "en").prefix(2)),
+                      sessionId: String? = nil, meta: ShareMeta? = nil, origin: String? = nil) throws -> ShareRecord {
+        let hasContent = !payload.files.isEmpty || !payload.texts.isEmpty || !payload.urls.isEmpty
+        guard hasContent || meta?.location != nil else { throw ShareFailure.empty }
         var fields = [("shareId", shareId), ("intent", intent), ("note", String(note.prefix(4000))),
                       ("lang", language), ("channel", "ios"), ("source", source)]
         if !payload.title.isEmpty { fields.append(("title", payload.title)) }
         fields += payload.texts.map { ("text", $0) } + payload.urls.map { ("url", $0) }
+        // A location on its own still has one part, so servers without `meta` see it too.
+        if !hasContent, let location = meta?.location { fields.append(("text", "geo:\(location.lat),\(location.lon)")) }
+        if let sessionId, !sessionId.isEmpty { fields.append(("sessionId", sessionId)) }
+        if let meta, !meta.isEmpty { fields.append(("meta", try meta.json())) }
         guard fields.count + payload.files.count <= 32 else { throw ShareFailure.tooManyParts }
         var estimated = Int64(fields.reduce(0) { $0 + $1.1.utf8.count })
         for file in payload.files {
@@ -109,7 +174,7 @@ enum ShareRequestBuilder {
         try line("--\(boundary)--\r\n")
         try output.synchronize()
         let record = ShareRecord(shareId: shareId, createdAt: Date(), endpoints: credentials.endpoints,
-                                 intent: intent, attempts: 1, boundary: boundary)
+                                 intent: intent, attempts: 1, boundary: boundary, origin: origin)
         try save(record, in: directory)
         succeeded = true
         return record

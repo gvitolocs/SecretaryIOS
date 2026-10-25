@@ -12,14 +12,47 @@ private final class UploadProgress: NSObject, URLSessionTaskDelegate, @unchecked
     }
 }
 
+/// The outcome of one upload attempt, for the chat bubble.
+struct ShareUploadResult: Sendable {
+    let shareId: String
+    let status: Int?
+    let decision: ShareRetryPolicy.Decision
+    /// The server's answer (202: `{shareId, userItemId, attachments}`).
+    let body: Data?
+}
+
+/// What the chat composer's bubble records when a share it sent finishes while nobody listens
+/// (the app was suspended or relaunched in the background): `<shareId>.result.json` next to the body.
+struct ShareResultFile: Codable, Sendable {
+    var shareId: String
+    var status: Int?
+    var success: Bool
+    var body: Data?
+    var date: Date
+
+    static func url(_ shareId: String, in directory: URL) -> URL {
+        directory.appendingPathComponent(shareId + ".result.json")
+    }
+}
+
+/// Lucina's chat listens to uploads it started: progress while the app is alive, and the outcome.
+@MainActor
+protocol ShareUploadObserver: AnyObject {
+    func shareUploadProgressed(_ shareId: String, fraction: Double)
+    func shareUploadFinished(_ result: ShareUploadResult)
+}
+
 /// Shared by Shortcuts, the share extension and the app's background-session delegate.
 @MainActor
-final class ShareUploads: NSObject, URLSessionTaskDelegate {
+final class ShareUploads: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
     static let shared = ShareUploads()
     static let completed = Notification.Name("LucinaShareCompleted")
     private var sessions: [String: URLSession] = [:]
     private var completions: [String: () -> Void] = [:]
     private var retrying = Set<String>()
+    /// Response bodies of background uploads, by session identifier (one task per session).
+    private var bodies: [String: Data] = [:]
+    weak var observer: ShareUploadObserver?
 
     private func session(_ identifier: String) -> URLSession {
         if let existing = sessions[identifier] { return existing }
@@ -33,11 +66,13 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
         return session
     }
 
-    func enqueue(_ record: ShareRecord, credentials: BridgeCredentials) throws {
+    /// Hands the body to nsurlsessiond, so it keeps going while the app is suspended. `attempt` names a fresh
+    /// session for a retry of the same share id (the server dedupes by share id).
+    func enqueue(_ record: ShareRecord, credentials: BridgeCredentials, attempt: String? = nil) throws {
         guard let endpoint = record.endpoints.first, let request = request(record, endpoint: endpoint, token: credentials.token),
               let directory = try? ShareRequestBuilder.directory() else { throw ShareFailure.preparation }
-        let task = session(ShareRequestBuilder.prefix + record.shareId)
-            .uploadTask(with: request, fromFile: directory.appendingPathComponent(record.shareId + ".body"))
+        let identifier = ShareRequestBuilder.prefix + record.shareId + (attempt.map { "~" + $0 } ?? "")
+        let task = session(identifier).uploadTask(with: request, fromFile: directory.appendingPathComponent(record.shareId + ".body"))
         task.resume()
     }
 
@@ -49,12 +84,14 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
         let body = directory.appendingPathComponent(record.shareId + ".body")
         var lastStatus: Int?
         var lastError: Error?
+        var lastBody: Data?
         for endpoint in record.endpoints {
             guard let request = request(record, endpoint: endpoint, token: credentials.token) else { continue }
             do {
-                let (_, response) = try await URLSession.shared.upload(for: request, fromFile: body,
-                                                                       delegate: UploadProgress(progress))
+                let (data, response) = try await URLSession.shared.upload(for: request, fromFile: body,
+                                                                          delegate: UploadProgress(progress))
                 lastStatus = (response as? HTTPURLResponse)?.statusCode
+                lastBody = data
                 let decision = ShareRetryPolicy.decision(status: lastStatus, attempts: 0)
                 if decision == .success || decision == .discard { break }
             } catch let error as URLError where [.cannotFindHost, .dnsLookupFailed, .cannotConnectToHost].contains(error.code) {
@@ -64,7 +101,7 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
         }
         let decision = ShareRetryPolicy.decision(status: lastStatus, attempts: record.attempts)
         if decision == .success {
-            finish(record, status: lastStatus)
+            finish(record, status: lastStatus, body: lastBody)
             return
         }
         if let lastError, lastStatus == nil { throw lastError }
@@ -85,14 +122,33 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
         return request
     }
 
+    nonisolated func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let identifier = session.configuration.identifier ?? ""
+        MainActor.assumeIsolated {
+            var body = self.bodies[identifier] ?? Data()
+            // Only the small JSON answer matters; never hold an unexpected large body.
+            if body.count < 1_000_000 { body.append(data) }
+            self.bodies[identifier] = body
+        }
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                                totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0, let identifier = session.configuration.identifier,
+              let shareId = ShareRequestBuilder.shareId(fromSession: identifier) else { return }
+        let fraction = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
+        MainActor.assumeIsolated { self.observer?.shareUploadProgressed(shareId, fraction: fraction) }
+    }
+
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let identifier = session.configuration.identifier ?? ""
         let status = (task.response as? HTTPURLResponse)?.statusCode
         MainActor.assumeIsolated {
+            let body = self.bodies.removeValue(forKey: identifier)
             guard let record = self.record(identifier) else { return }
             let result = ShareRetryPolicy.decision(status: error == nil ? status : nil, attempts: 0)
             if !self.retrying.contains(record.shareId) || result == .success || result == .discard {
-                self.finish(record, status: error == nil ? status : nil)
+                self.finish(record, status: error == nil ? status : nil, body: error == nil ? body : nil)
             }
             // The app gets didFinishEvents; an extension can release its session here.
             if self.completions[identifier] == nil {
@@ -110,13 +166,19 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
     }
 
     private func record(_ identifier: String) -> ShareRecord? {
-        guard identifier.hasPrefix(ShareRequestBuilder.prefix), let directory = try? ShareRequestBuilder.directory(),
-              let data = try? Data(contentsOf: directory.appendingPathComponent(String(identifier.dropFirst(ShareRequestBuilder.prefix.count)) + ".json")) else { return nil }
+        guard let shareId = ShareRequestBuilder.shareId(fromSession: identifier), let directory = try? ShareRequestBuilder.directory(),
+              let data = try? Data(contentsOf: directory.appendingPathComponent(shareId + ".json")) else { return nil }
         return try? JSONDecoder().decode(ShareRecord.self, from: data)
     }
 
-    private func finish(_ record: ShareRecord, status: Int?) {
+    private func finish(_ record: ShareRecord, status: Int?, body: Data? = nil) {
         let decision = ShareRetryPolicy.decision(status: status, attempts: record.attempts)
+        let isChat = record.origin == "chat"
+        if isChat, decision != .retry, let directory = try? ShareRequestBuilder.directory() {
+            let result = ShareResultFile(shareId: record.shareId, status: status, success: decision == .success, body: body, date: Date())
+            try? JSONEncoder().encode(result).write(to: ShareResultFile.url(record.shareId, in: directory), options: .atomic)
+        }
+        observer?.shareUploadFinished(ShareUploadResult(shareId: record.shareId, status: status, decision: decision, body: body))
         guard decision != .retry else { return }
         let defaults = UserDefaults(suiteName: ShareRequestBuilder.group)
         defaults?.set(["shareId": record.shareId, "status": status ?? 0, "success": decision == .success,
@@ -127,7 +189,8 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
         }
         if decision == .success {
             NotificationCenter.default.post(name: Self.completed, object: nil)
-        } else {
+        } else if !isChat {
+            // A chat bubble shows "Not sent" with Retry instead.
             let content = UNMutableNotificationContent()
             content.title = String(localized: "Couldn't send to Lucina")
             content.sound = .default
@@ -139,7 +202,7 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
     func retryPending() async {
         guard let credentials = BridgeCredentials.read(), let directory = try? ShareRequestBuilder.directory(),
               let entries = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
-        for entry in entries where entry.pathExtension == "json" {
+        for entry in entries where entry.pathExtension == "json" && !entry.lastPathComponent.hasSuffix(".result.json") {
             if Task.isCancelled { return }
             guard let data = try? Data(contentsOf: entry), var record = try? JSONDecoder().decode(ShareRecord.self, from: data),
                   Date().timeIntervalSince(record.createdAt) > 120, !retrying.contains(record.shareId),
@@ -158,11 +221,13 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
             do {
                 try ShareRequestBuilder.save(record, in: directory)
                 var finalStatus: Int?
+                var finalBody: Data?
                 for endpoint in record.endpoints {
                     guard let request = request(record, endpoint: endpoint, token: credentials.token) else { continue }
                     do {
-                        let (_, response) = try await URLSession.shared.upload(for: request, fromFile: directory.appendingPathComponent(record.shareId + ".body"))
+                        let (data, response) = try await URLSession.shared.upload(for: request, fromFile: directory.appendingPathComponent(record.shareId + ".body"))
                         finalStatus = (response as? HTTPURLResponse)?.statusCode
+                        finalBody = data
                         let result = ShareRetryPolicy.decision(status: finalStatus, attempts: 0)
                         if result == .success || result == .discard { break }
                     } catch {
@@ -175,7 +240,7 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
                         finalStatus = nil
                     }
                 }
-                if FileManager.default.fileExists(atPath: entry.path) { finish(record, status: finalStatus) }
+                if FileManager.default.fileExists(atPath: entry.path) { finish(record, status: finalStatus, body: finalBody) }
             } catch { /* Keep the existing body and record when persistence is unavailable. */ }
             retrying.remove(record.shareId)
         }
