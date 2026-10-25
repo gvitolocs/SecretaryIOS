@@ -195,6 +195,17 @@ pub async fn prepare_with(
     } else {
         String::new()
     };
+    // Files the owner shared earlier, when the message talks about one.
+    let attachments = if owner {
+        let memory = st.share.memory.clone();
+        let text = user_text.to_owned();
+        let at = now.timestamp_millis();
+        tokio::task::spawn_blocking(move || memory.context_block(&text, at))
+            .await
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     // LUCINA_TASKS=true: owner turns about the day or tasks get today's tasks.
     let tasks = if owner && st.cfg.tasks_enabled {
         crate::bridges::tasks_context(&st.secretary, user_text, tz).await
@@ -248,7 +259,8 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, calendar, notes, tasks, shopping, recent, reminders, honcho,
+        metadata, presence, calendar, notes, attachments, tasks, shopping, recent, reminders,
+        honcho,
     ]
     .into_iter()
     .filter(|s| !s.is_empty())

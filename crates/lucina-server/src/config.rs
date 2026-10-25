@@ -30,6 +30,7 @@ pub enum WriterKind {
 
 #[derive(Clone)]
 pub struct Config {
+    pub share: crate::share::ShareConfig,
     pub bind: SocketAddr,
     /// Every address to listen on (`LUCINA_BIND`, comma-separated; the
     /// first is `bind`).
@@ -341,6 +342,7 @@ impl Config {
             secretary_service_token_file.clone(),
         );
         Ok(Self {
+            share: crate::share::ShareConfig::from_lookup(&get),
             bind,
             binds,
             shadow: flag("LUCINA_SHADOW", false),

@@ -38,6 +38,7 @@ pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+mod share_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
 pub const MAX_MESSAGE_CHARS: usize = 12_000;
@@ -292,12 +293,51 @@ async fn run_turn(
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
 ) -> Result<Value, ApiError> {
-    if st.cfg.planner == PlannerMode::Tools {
+    run_turn_inner(st, message, session, cmid, channel, mcp_turn, surface, None).await
+}
+
+/// Share ingestion has already written the owner's timeline item.
+pub(crate) async fn share_turn(
+    st: AppState,
+    message: String,
+    session: String,
+    channel: String,
+    item: lucina_store::timeline::TimelineItem,
+) -> Result<Value, ApiError> {
+    let surface =
+        crate::surface::chat_surface(&st.cfg, Some(BearerVerified::checked()), &channel, None);
+    run_turn_inner(
+        st,
+        message,
+        session,
+        None,
+        channel,
+        None,
+        surface,
+        Some(item),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_turn_inner(
+    st: AppState,
+    message: String,
+    session: String,
+    cmid: Option<String>,
+    channel: String,
+    mcp_turn: Option<McpTurn>,
+    surface: TurnSurface,
+    existing: Option<lucina_store::timeline::TimelineItem>,
+) -> Result<Value, ApiError> {
+    if st.cfg.planner == PlannerMode::Tools && existing.is_none() {
         let from_mcp = mcp_turn.is_some();
         return tools_turn(st, message, session, cmid, channel, surface, from_mcp).await;
     }
     // With rich replies the app turns structure into widgets and buttons.
-    let base_system = if st.cfg.rich_replies {
+    let base_system = if existing.is_some() {
+        crate::share::SHARE_SYSTEM
+    } else if st.cfg.rich_replies {
         crate::rich::SECRETARY_EXTRA_SYSTEM_RICH
     } else {
         SECRETARY_EXTRA_SYSTEM
@@ -323,6 +363,11 @@ async fn run_turn(
     });
     let timeline =
         TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
+    let timeline = if let Some(item) = existing {
+        timeline.with_user_item(item)
+    } else {
+        timeline
+    };
     let user_item = timeline.record_user(&message, Vec::new());
     let guarded = mcp_turn.is_some() && !st.cfg.mcp_trusted;
     let t = Turn {
@@ -665,6 +710,10 @@ async fn json_turn(
     let st = t.st;
     let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
+
+    if t.extra_system == crate::share::SHARE_SYSTEM {
+        return share_turn::run(t, memory).await;
+    }
 
     // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request.
     if let Some(f) = meshy_turn::try_turn(t, memory).await {

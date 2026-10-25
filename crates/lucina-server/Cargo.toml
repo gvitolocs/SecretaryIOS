@@ -24,7 +24,7 @@ lucina-delegate = { path = "../lucina-delegate" }
 lucina-intent = { path = "../lucina-intent" }
 lucina-phone-core = { path = "../lucina-phone-core" }
 lucina-discord = { path = "../lucina-discord", features = ["gateway"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 tokio = { workspace = true }
 tokio-stream = "0.1"
 futures-util = { workspace = true }
@@ -43,10 +43,21 @@ sha2 = { workspace = true }
 regex = "1"
 reqwest = { workspace = true }
 
+libc = "0.2"
+base64 = "=0.22.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+lopdf = "0.38"
+pdf-extract = "0.10"
+scraper = "0.24"
+tempfile = "3"
+lucina-memo = { path = "../lucina-memo" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+calamine = "0.30"
+tar = "0.4"
+flate2 = "1"
+
 [dev-dependencies]
 secretary-core = { path = "../secretary-core" }
 secretary-server = { path = "../secretary-server" }
-reqwest = { workspace = true, features = ["stream"] }
-tempfile = "3"
+reqwest = { workspace = true, features = ["stream", "multipart"] }
 wiremock = "0.6"
-base64 = "=0.22.1"

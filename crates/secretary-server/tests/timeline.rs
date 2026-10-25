@@ -99,8 +99,8 @@ async fn mock_handler(
                 None => json!({
                     "items": [
                         {"id": "tl_3", "ts": 1_761_048_003_000_i64, "channel": "web", "role": "lucina",
-                         "text": "Ciao!", "replyTo": "tl_2", "meta": {"kind": "reminder"},
-                         "attachments": [{"kind": "image", "name": "a.png"}], "futureField": {"x": 1}},
+                         "text": "Ciao!", "replyTo": "tl_2", "meta": {"kind": "share", "shareId": "share-test-1234", "intent": "ask"},
+                         "attachments": [{"kind": "image", "name": "a.png", "mime": "image/png", "mediaId": "itm_123", "url": "https://example.com/a.png", "bytes": 123}], "futureField": {"x": 1}},
                         {"id": "tl_2", "ts": 1_761_048_002_000_i64, "channel": "ios", "role": "user",
                          "text": "Ciao", "clientMessageId": "c-2"},
                     ],
@@ -292,8 +292,14 @@ async fn timeline_pages_pass_through() {
     assert_eq!(b["items"][0]["id"], "tl_3");
     assert_eq!(b["items"][0]["ts"], 1_761_048_003_000_i64);
     assert_eq!(b["items"][0]["replyTo"], "tl_2");
-    assert_eq!(b["items"][0]["meta"], json!({"kind": "reminder"}));
-    assert_eq!(b["items"][0]["attachments"][0]["kind"], "image");
+    assert_eq!(
+        b["items"][0]["meta"],
+        json!({"kind":"share", "shareId":"share-test-1234", "intent":"ask"})
+    );
+    assert_eq!(
+        b["items"][0]["attachments"],
+        json!([{"kind":"image", "name":"a.png", "mime":"image/png", "mediaId":"itm_123", "url":"https://example.com/a.png", "bytes":123}])
+    );
     assert_eq!(
         b["items"][0]["futureField"],
         json!({"x": 1}),

@@ -25,6 +25,7 @@ pub mod planner;
 pub mod prompts;
 pub mod rich;
 pub mod secrets;
+pub mod share;
 pub mod surface;
 
 use std::collections::HashMap;
@@ -53,6 +54,7 @@ pub type SharedChat = futures_util::future::Shared<
 pub type KeyProbe = Box<dyn Fn() -> bool + Send + Sync>;
 
 pub struct Inner {
+    pub share: crate::share::ShareRuntime,
     pub cfg: Config,
     pub timeline: Arc<TimelineStore>,
     pub reminders: Arc<ReminderStore>,
@@ -275,12 +277,18 @@ impl AppState {
             only.register(tool).expect("meshy tool registers");
             Arc::new(only)
         });
-        let registry = Arc::new(registry);
         // MCP turns: no owner-only tools and no delegation, ever.
         let mcp_registry = Arc::new(registry.without(lucina_tools::NO_MCP_TOOLS));
         let trusted_mcp_registry = Arc::new(registry.without(lucina_tools::OWNER_ONLY_TOOLS));
+        // The owner's shared files: owner turns only, so added after the MCP registries.
+        let share = crate::share::ShareRuntime::new(&cfg.share);
+        for tool in crate::share::tools::all(share.memory.clone()) {
+            registry.register(tool).expect("attachment tools register");
+        }
+        let registry = Arc::new(registry);
         let prompts = prompts::Prompts::load(&cfg);
         let inner = Inner {
+            share,
             timeline,
             reminders,
             writer,
