@@ -391,6 +391,8 @@ struct GalleryViewer: View {
     @State private var addToAlbum = false
     @State private var confirmTrash = false
     @State private var meter = FrameMeter()
+    /// One tap on the photo hides the bars and the status bar (black, picture only); another brings them back.
+    @State private var chromeHidden = false
 
     var body: some View {
         let item = store.items.first { $0.id == current } ?? start
@@ -402,8 +404,11 @@ struct GalleryViewer: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .background(.black)
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea(edges: chromeHidden ? .all : .bottom)
             .toolbarBackground(.visible, for: .navigationBar, .bottomBar)
+            .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
+            .statusBarHidden(chromeHidden)
+            .animation(.easeInOut(duration: 0.2), value: chromeHidden)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .principal) {
@@ -491,6 +496,8 @@ struct GalleryViewer: View {
         if it.isVideo || it.isAudio {
             ZStack {
                 GalleryThumb(item: it, large: true)
+                    .contentShape(Rectangle())
+                    .onTapGesture { chromeHidden.toggle() }
                 Button {
                     let playable = store.items.filter { $0.isVideo || $0.isAudio }
                     let queue = playable.map(\.mediaItem)
@@ -502,7 +509,7 @@ struct GalleryViewer: View {
                 .accessibilityIdentifier("galleryPlay")
             }
         } else {
-            RustPhoto(item: it)
+            RustPhoto(item: it) { chromeHidden.toggle() }
         }
     }
 
