@@ -32,6 +32,12 @@ done
 
 JAVA="${JAVA:-$HOME/tools/jdk-21.0.12.1+1/bin/java}"
 TLA_JAR="${TLA_JAR:-$HOME/tools/tla/tla2tools.jar}"
+# On nezopt every gate runs through verify-gate (one at a time, MemoryMax 12G, no swap): it holds
+# /tmp/lucina-verify.lock on fd 9 and execs this script, so fd 9 points at the lock when it is ours.
+if [ "$(readlink "/proc/$$/fd/9" 2>/dev/null)" != /tmp/lucina-verify.lock ] && { [ -x "$HOME/.local/bin/verify-gate" ] || command -v verify-gate >/dev/null 2>&1; }; then
+    echo "verify.sh: not run through verify-gate; on nezopt use 'verify-gate' (or 'verify-gate -- scripts/verify.sh ...') so gates do not run in parallel and fill swap" >&2
+fi
+
 export VSTD_PATH="${VSTD_PATH:-$HOME/tools/verus/verus-x86-linux}"
 VERUS_BIN="${VERUS_BIN:-$VSTD_PATH/verus}"
 TLC_WORKERS="${TLC_WORKERS:-4}"

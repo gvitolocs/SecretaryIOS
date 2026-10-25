@@ -35,7 +35,15 @@ The multi-process protocols of Secretary / Lucina are checked three ways:
 
 ## How to run
 
+On nezopt run every gate through `~/.local/bin/verify-gate` (`verify-gate`, or `verify-gate -- <cmd>` for a model
+check or a single Verus file). It runs one gate at a time (`/tmp/lucina-verify.lock`) in a systemd scope with
+`MemoryMax=12G` and no swap: on 2026-10-25 three parallel gates (about 10, 15 and 5 GiB) filled swap and got other
+apps OOM-killed. It refuses `--deep` unless `VERIFY_DEEP_OK=1`, which is set only when the owner asks for an
+exhaustive run. `scripts/verify.sh` prints a reminder when it is run outside verify-gate.
+
 ```sh
+verify-gate                       # = scripts/verify.sh under the lock and the memory cap
+verify-gate -- cargo run -p verification-models --bin verify-models -- --only deploy
 scripts/verify.sh                 # everything, default bounds (about 3 min on nezopt)
 scripts/verify.sh --only models   # or: tlc | verus
 scripts/verify.sh --deep          # exhaustive Stateright bounds + formal/**/*_deep*.cfg (slow)
