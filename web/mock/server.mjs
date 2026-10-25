@@ -1869,9 +1869,12 @@ async function route(req, res) {
     return send(res, 200, { down: mockServerDown });
   }
 
+  // Play URLs carry their own token (on p1 they skip the gateway's auth too).
+  if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
+  if (path.startsWith("/v1/media")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
   if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);

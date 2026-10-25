@@ -71,6 +71,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 | 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
 | 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
+| 10 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -132,6 +133,12 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
 | M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
 | M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
+| R before fixes R1, R2 (`updated_at` only) | 86 766 | 22 | `no_position_lost`, `devices_converge` **violated** |
+| R + fix R1 only (device clock stamps) | 157 777 | 24 | `devices_converge` **violated** |
+| R + fixes R1, R2 | 514 139 | 26 | all hold |
+| R naive server (every push overwrites) | 1 066 693 | 28 | `no_position_lost`, `server_never_regresses` **violated** (rule witness) |
+| R naive device (adopts any server entry) | 1 046 485 | 30 | `never_back_to_stale` **violated** (rule witness) |
+| R naive acknowledge (ignores time) | 541 645 | 26 | `no_position_lost` **violated** (rule witness) |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -459,6 +466,41 @@ of the 60 requests a minute.
 | `Restart` | lucina-media restart (`systemctl --user restart lucina-media`, a crash) |
 | rate limit, `Tick` | p1 `forward_auth GET /v1/avatar` → `secretary-server` `ratelimit.rs` (token bucket, 60/min per device); `PhotoBackup.run` on `APIError.rateLimited` waits `max(retryAfter ?? 60, 10)` s |
 
+### 10. Media player resume positions
+
+One film, two devices (three with `--deep`), the server. Devices play (a new position, stamped), push their
+unacknowledged entry one request at a time, pull the server's entry, and go offline (their messages in flight are
+lost). The network delays and reorders. Clocks are shared milliseconds, so two devices can stamp the same
+`updated_at`.
+
+Invariants:
+
+- `no_position_lost`: once every device is online and clean and nothing is in flight, the server holds the newest
+  position anyone played (newest by `(updated_at, device)`).
+- `devices_converge`: ...and every device that pulled since the server's last change shows that position.
+- `never_back_to_stale`: a device never adopts an entry older than its own.
+- `server_never_regresses`: the server never replaces its entry with an older one.
+- Witnesses: `concurrent_playback` (two devices played between syncs) and `offline_gap_resolved` (an offline gap
+  with unsynced positions ended with every device on the newest position).
+
+The Verus kernels (`player_kernels.rs`) prove the per-step rules for all inputs: the `(updated_at, device)` order is
+a strict total order; `merge` takes only a newer entry, so a device never goes back; `Store::put` keeps the newer
+entry and returns exactly what is newer; an acknowledgement never clears a later write; merging is commutative,
+associative and idempotent; `write_stamp` stamps after the held entry; positions are clamped to the duration; the
+resume point never passes the saved position; the play token's base-36 expiry round-trips and `verify` accepts
+only an unexpired, untampered token; the subtitle choice per film wins, "off" stays off, other films keep theirs,
+and the language default is the best-ranked track; every FFI request path returns an answer (bridge_error unless
+the engine ran); and the wasm answer pack round-trips exactly for 32-bit addresses.
+
+| Model action | Code |
+|---|---|
+| `Play` | `Book::tick` (`write_stamp`, `clamp_position`): iOS `MediaPlayer.reportNow`, web `state/media.ts::report` |
+| `Push` | `pushProgress` (iOS `MediaPlayer`, web `state/media.ts`): `pending` → `POST /v1/media/progress` |
+| `Deliver(Push)` | server `progress::Store::put` (`crates/secretary-media-stream/src/progress.rs`) |
+| `Deliver(Reply)` | `Book::acknowledge`, then `Book::merge` of the returned entries |
+| `Pull` + `Deliver(PullReply)` | `syncProgress`: `GET /v1/media/progress` → `Book::merge`; `/play`'s `progress` field → `merge` |
+| `Offline` | a failed request: the entry stays pending (`pending`) and is pushed again later |
+
 ## Bugs found
 
 Severity reflects today's deployment. **Fixed** means fixed on branch `verify-fixes` (from `main`, commit 1e19f27),
@@ -782,6 +824,35 @@ legitimately bring two items to the same bytes), so nothing catches it. Proposed
 this hash appeared meanwhile (the `by_asset` branch already has the unique `items_asset` index behind it). Not
 changed here: it is a lucina-media change with a deploy, outside this verification pass.
 
+### R1: two devices writing in the same millisecond end on different positions (low). **Fixed.**
+
+`Store::put` and `Book::merge` compared `updated_at` only. With equal stamps the server kept the first push, the
+second device's entry was acknowledged and not replaced, and a device that pulled kept its own:
+
+```
+Play(0) Push(0) Play(1) Push(1) Deliver(Push 0 @1) Deliver(Push 1 @1) Deliver(Reply 0) Deliver(Reply 1)
+-> server holds device 0's position, the newest (by device) is device 1's
+```
+
+Fixed in `crates/secretary-player/src/progress.rs`: `Entry::is_newer_than` orders by `(updated_at, device)`, and
+`merge` uses it. The server's `Store::put` must use it too (branch `media-player`). Test:
+`same_millisecond_writes_have_one_winner`.
+
+### R2: a position played after adopting another device's entry is dropped (medium). **Fixed.**
+
+Found by the model once R1 was in. A device stamped a new write with its own clock. After it adopted an entry
+from a device whose clock is ahead (or from the same millisecond), its next position was older than the entry it
+held. The acknowledgement of its earlier push then cleared it, and the devices stayed apart:
+
+```
+Play(0) Push(0) Play(1) Push(1) Deliver(Push 0) Deliver(Push 1) Pull(0) Deliver(Reply 1)
+Deliver(PullReply 0: device 1's entry) Play(0) Deliver(Reply 0: acked @1 clears the new write)
+```
+
+Clocks differ by seconds between an iPhone, a laptop and a browser, so this is the ordinary case after a hand-off
+from a device whose clock is ahead. Fixed with `write_stamp`: a write is stamped `max(now, held + 1)`
+(Lamport-style). Test: `a_write_after_adopting_a_faster_clock_still_wins`.
+
 ## Modeling assumptions
 
 - **Timeline.** A single `write()` of a whole line to an O_APPEND regular file is atomic (Linux; lines stay far
@@ -792,6 +863,9 @@ changed here: it is a lucina-media change with a deploy, outside this verificati
 - **Shopping.** Each batch is one serialisable transaction (list row `FOR UPDATE`). The model has one list and two
   objects; `move`, `reorder` and `edit_item` are not modelled.
 - **OAuth.** The attacker cannot forge a PKCE verifier and cannot register an allowed redirect_uri.
+- **Player.** One film (entries of different films never interact). Each push and each `Store::put` is atomic
+  (the server's progress store takes a lock per batch). A write's position is unique, so a stamp identifies one
+  write. HMAC-SHA256 is a secure MAC: the token proof abstracts the tag comparison as `tag_matches`.
 - **Pokémon.** Every handler and macro step is one critical section of the emulator lock (as in the code, except the
   current clock thread, modelled in two steps). Two macro callers, one restart, battles start on a frame with input.
   Story steps are checked by their event flags; the kernel does not model RAM.

@@ -71,3 +71,8 @@ fn game() {
 fn media_backup() {
     run("media-backup");
 }
+
+#[test]
+fn player() {
+    run("player");
+}

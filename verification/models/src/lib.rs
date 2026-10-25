@@ -30,6 +30,7 @@ pub mod ink_sync;
 pub mod media_backup;
 pub mod oauth;
 pub mod ownership;
+pub mod player;
 pub mod shopping;
 pub mod timeline;
 
@@ -266,6 +267,7 @@ pub fn all_cases(deep: bool) -> Vec<Case> {
     v.extend(deploy::cases(deep));
     v.extend(game::cases(deep));
     v.extend(media_backup::cases(deep));
+    v.extend(player::cases(deep));
     v
 }
 
