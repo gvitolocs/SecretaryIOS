@@ -890,6 +890,11 @@ async fn finish_upload(
         return Ok(Json(ingest::IngestResult { item_id, duplicate: false, version }));
     }
     let path = lib.cfg.uploads_dir().join(&id);
+    if !path.is_file() {
+        // The bytes are gone (an earlier finish ingested them, then the client hung up before the
+        // answer): the client starts this upload again; dedupe makes that cheap.
+        return Err(ApiError(StatusCode::GONE, "upload lost; start again".into()));
+    }
     let p2 = path.clone();
     let computed = tokio::task::spawn_blocking(move || crate::store::hash_file(&p2)).await??;
     let expected = r.hash.or(u.expected_hash).map(|h| h.to_ascii_lowercase());
@@ -902,21 +907,22 @@ async fn finish_upload(
     })?;
     let meta: ClientMeta = serde_json::from_str(&u.meta).unwrap_or_default();
     let preview = lib.cfg.uploads_dir().join(format!("{id}.preview"));
+    // Ingest and the "finished" mark in one blocking task: a client that hangs up drops this
+    // handler at its next await, which must not fall between the two.
     let l = lib.clone();
-    let res = tokio::task::spawn_blocking(move || {
+    let uid = id.clone();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<ingest::IngestResult> {
         let preview = preview.is_file().then_some(preview);
-        ingest::ingest_file(&l, &path, Some(computed), &meta, preview.as_deref())
-    })
-    .await??;
-    let (uid, item) = (id.clone(), res.item_id.clone());
-    lib.db
-        .call(move |c| {
+        let res = ingest::ingest_file(&l, &path, Some(computed), &meta, preview.as_deref())?;
+        l.db.with(|c| {
             c.execute(
                 "UPDATE uploads SET finished = 1, item_id = ?2, updated_at = ?3 WHERE id = ?1",
-                params![uid, item, now_str()],
+                params![uid, res.item_id, now_str()],
             )
-        })
-        .await?;
+        })?;
+        Ok(res)
+    })
+    .await??;
     let _ = tokio::fs::remove_file(lib.cfg.uploads_dir().join(format!("{id}.preview"))).await;
     Ok(Json(res))
 }
