@@ -74,6 +74,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 | 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
+| 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -151,6 +152,20 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | SH reconcile bug (bubble matched by the 202's userItemId only) | 21 400 | 21 | `sh5` **violated** |
 | SH stuck bug (failed append → 500, no worker) | 14 504 | 21 | `sh6` **violated** |
 | SH ablation: no `X-Share-Gateway` check, lucina-rs reachable directly | 260 843 | 29 | `sh4` **violated** |
+| OTP1 phone reboot during the first send | 195 818 | 20 | all hold |
+| OTP1_bug_pre_ac9e7be (dedup and queue saved after the send) | 119 820 | 19 | `no_silent_loss`, `at_most_once`, `never_after_expiry` **violated** |
+| OTP2 `/otp arm` while a code waits; an MCP `/otp` | 86 552 | 19 | all hold |
+| OTP2_bug_pre_60472d9 (arm clears pending) | 117 836 | 19 | `no_silent_loss` **violated** |
+| OTP3 two `/otp` after a pause | 90 127 | 19 | all hold |
+| OTP3_bug_pre_60472d9 (auto-arm race) | 91 880 | 20 | `no_silent_loss` **violated** |
+| OTP4 relay restart, failed `seen.json` write (503 + rollback) | 1 017 387 | 25 | all hold |
+| OTP4_bug_pre_60472d9 (seen ids in memory only) | 506 657 | 22 | `at_most_once` **violated** |
+| OTP5 drops, reboot, relay restart | 2 406 551 | 24 | all hold |
+| OTP6 pause/arm, two `/otp`, self-test | 814 164 | 22 | all hold |
+| OTP7 timed windows: drops, reboot, restart | 2 022 712 | 26 | all hold |
+| OTP8 ablation: no private-owner guard | 60 064 | 18 | `owner_only` **violated** |
+| OTP9 ablation: Lucina skips its expiry check | 24 115 | 17 | `never_after_expiry` **violated** |
+| OTP10 ablation: relay without seen ids | 106 961 | 21 | `at_most_once` **violated** |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -162,6 +177,8 @@ bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the
 `MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
 `MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count). `Memos_fixed`: 24 930, the same space as Stateright's M + fixes.
+`OtpForwarding`: 950 738, `OtpForwarding_owner`: 1 877 816, `OtpForwarding_restart`: 1 017 387 (the failed
+`seen.json` write included); four `OtpForwarding_*_witness.cfg` and five `_bug` cfgs fail as required.
 
 ## Invariants, models and mapping
 
@@ -620,6 +637,51 @@ Witnesses: `unfixed_window_scan`, `unfixed_match_by_id_only`, `unfixed_sanitize_
 | `OtherAppend` | Node and other turns appending to `timeline.jsonl` |
 | `TimelineDeliver` | the app's timeline stream/poll (iOS `Timeline.merge`, web `mergeItems`/`matchItem`) |
 
+### 13. Lucina OTP forwarding
+
+Lucina's phone (S20 FE, `tech.getsecretary.lucinaotp`) forwards one-time codes from SMS and, when allowed, from
+notifications (`docs/lucina-android.md`). The Rust core parses first, dedups a code across sources for 120 s, writes
+the code with a stable event id to its encrypted queue, and sends one `POST /v1/phone/otp/incoming` to the relay on
+p1. The relay keeps codes in memory only (TTL 2 min, ≤ 8 pending, consume-once) and the seen event ids on disk.
+The owner gets a code by `/otp` in the Secretary app (Rust Lucina) or private Telegram (Node Lucina); MCP callers and
+other chats are refused.
+
+The model (two codes, code 0 by SMS and notification, code 1 by SMS; TTL 2 ticks; queue and pending scaled to 2) has
+phone reboots, lost requests and responses, relay restarts and a failing `seen.json` write, `/otp stop` and
+`/otp arm`, several concurrent `/otp`, an MCP caller, timed windows and the self-test. Clocks agree within a tick.
+
+Invariants (Stateright / TLA+): `at_most_once` / `AtMostOnce`, `never_after_expiry` / `NeverAfterExpiry` (from the
+first time the phone sees the code), `owner_only` / `OwnerOnly`, `test_never_delivered`, `no_silent_loss` (a
+received, unexpired, undelivered code that no explicit pause/unpaired/expired answer dropped is queued, in flight or
+pending), `pending_bounded`. Witnesses: a deduplicated retry, an expiry, a delivery after a reboot, a delivery from
+the notification.
+
+Verus (121 verified, no `assume`/`admit`/`external_body`):
+- `otp_extract.rs` (18): the result is one candidate (or Google's), has a digit, 4–10 characters, never all digits
+  over 8, never after `+`, never in a URL, within 64 bytes of a context and the nearest one; no context → None;
+  the fixed kernel never returns an amount or a date part.
+- `otp_expiry.rs` (53): `expires_at`'s four bounds; the relay store (exec = spec state machine, inductive invariant)
+  never returns a code at or after expiry, consumes it, keeps pending ≤ 8 and seen ≤ 64, never stores an id seen
+  within the TTL, and arm never drops a fresh code; the phone queue POSTs only fresh codes and writes ahead.
+- `otp_redact.rs` (33): merged spans cover exactly the union; every code `parse_otp` can select is covered in the
+  original bytes; text outside spans is kept; identity without spans.
+- `otp_owner.rs` (17): the exact `private_owner` truth table; `/otp` returns a code only to a private owner, never
+  to an MCP caller.
+Differential tests (`verification/verus/diff/otp_*.rs`, `diff/otp_run.sh`, default `REV=lucina-rs`): the kernels
+against the real crates on 30 000 bodies/texts, 24 000 askers, 600 random relay runs and 40 queue scenarios.
+Not covered: `restore_seen` after a restart (only the model covers it); the at-most-once lifetime proof assumes the
+relay clock never goes back (the diff test also steps it back).
+
+| Action (model) | Code |
+|---|---|
+| `Arrive` (SMS / notification), `Serve` | `SmsReceiver.kt`, `OtpNotificationListener.kt` → `Bridge::on_sms`/`on_notification` → `forward` (write-ahead, then `POST /incoming`) |
+| `Crash`, `Flush` | process death or reboot; `Core.ensure` + `BootReceiver` + `RetryJobService` → `Bridge::flush` |
+| `LoseRequest`, `LoseResponse` | `net.rs` (network error, 5xx → keep queued) |
+| `PhoneGets`, `SeenWriteFails`, `RelayRestart` | `lucina-otp-relay/src/http.rs` (`/incoming`, `seen.json` write with rollback + 503), `Relay::open` |
+| `OwnerAsks`, `LucinaStep` (take → status → arm), `OwnerStop`, `OwnerArm` | `lucina-server/src/otp.rs::secretary_chat` (Rust), `private-otp.js` + `otp-chat` (Node); relay `Store::{take,arm,disarm}` |
+| `OtherAsks` | an MCP caller or a non-owner chat: `reply::private_owner`, `secretary_chat`'s MCP refusal |
+| `SelfTest`, `Tick` | `selfTest(network=true)` (`test: true`, never stored); time |
+
 ## Bugs found
 
 Severity reflects today's deployment. **Fixed** means fixed on branch `verify-fixes` (from `main`, commit 1e19f27),
@@ -1052,6 +1114,42 @@ Refuted while checking: a shared location cannot make a 33rd part (`meta` is one
 
 Open, by design: a re-share after a lost 202 or a foreground kill (no App Group yet) is a new `shareId`, so it is
 answered again; files moved into lucina-media by a request killed before `status.json` stay in the Shared album.
+
+### OTP1: a phone reboot during the first send could lose a code or deliver it twice (medium). **Fixed.**
+
+`Bridge::forward` saved the dedup entry and the queue entry only after `send` returned. A process death during the
+send lost the code (`no_silent_loss`); the notification copy of the same code then got a new event id, and both were
+delivered (`at_most_once`), the second possibly after expiry. Fixed (`ac9e7be`, in `lucina-rs` dd7ec9e): the queue
+entry with its stable event id, then the dedup fingerprint, are written before any network call; only a network
+error or 5xx keeps the entry for `flush`; `open()` rebuilds fingerprints from the queue; the Kotlin shell schedules a
+flush at start-up when codes are queued (dc422ad).
+
+### OTP2/OTP3: arming dropped codes the relay had already accepted (medium). **Fixed.**
+
+`Store::arm` always ran `pending.clear()`. `/otp arm` while a code waited, or two `/otp` after a pause (both see "not
+armed", one arms, a code arrives, the other's arm drops it), lost a code. Fixed (`60472d9`): arm keeps unexpired
+pending codes and a live window's id; only disarm clears.
+
+### OTP4: a relay restart forgot seen event ids, so a retry was delivered twice (low-medium). **Fixed.**
+
+`Store.seen` lived in memory. A phone retry after a lost response, landing after a relay restart, was stored again
+after the owner had taken the first copy. Fixed (`60472d9`): seen ids are persisted as SHA-256 hashes with their
+expiry in `seen.json` (0600, atomic, before the 200); a failed write rolls the store back and answers 503 (retry).
+Codes still never touch the relay's disk.
+
+### X1: amounts and dates were returned as codes (medium). **Fixed.**
+
+`parse_otp` returned `1500` for "Your verification fee is 1500 DKK." and `2026` for "Your login on 2026-10-25…"
+(also "DKK 1500", "$1999", "EUR 1250,00"). Found by the Verus extraction kernel's differential test. Fixed
+(`52b9140`): all-digit candidates next to a currency marker, or joined to another number by `. , : / -`, are skipped;
+`294-728` and `294 728` still parse (Verus `otp_extract.rs`, fixed kernel; old behaviour kept as `parse_before_f4`).
+
+### X2/X3: redaction missed codes `parse_otp` finds (medium; codes could reach logs or model text). **Fixed.**
+
+`otp_spans` worked on the raw text, `parse_otp` on digit-normalised, URL-stripped text: a code in Arabic-Indic or
+full-width digits (`٢٩٤٧٢٨`), or one more than 64 bytes from its context word because of a URL in between, was parsed
+but not redacted. Fixed (`52b9140`): redaction also tokenises the normalised, stripped view and maps spans back to the
+original bytes (a superset of the raw spans); Verus `otp_redact.rs` proves every selectable code is covered.
 
 ## Modeling assumptions
 
