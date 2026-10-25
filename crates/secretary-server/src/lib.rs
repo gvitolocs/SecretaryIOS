@@ -11,6 +11,7 @@ pub mod avatar;
 pub mod calendar;
 pub mod cli;
 pub mod config;
+pub mod calls;
 pub mod device;
 pub mod devices;
 pub mod engines;
@@ -255,6 +256,7 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::account_routes())
         .merge(assets::routes())
         .merge(tts::routes())
+        .merge(calls::routes())
         .merge(timeline::routes())
         .merge(shopping::routes())
         .merge(device::routes())
