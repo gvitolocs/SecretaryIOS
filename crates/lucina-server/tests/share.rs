@@ -1,0 +1,536 @@
+//! Real multipart, disk manifests, planner turns, and timeline; external
+//! services are local axum servers and the existing fake LLM.
+mod common;
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::{
+    extract::State,
+    routing::{get, post, put},
+    Json, Router,
+};
+use common::{harness, script, H};
+use reqwest::multipart::{Form, Part};
+use serde_json::{json, Value};
+
+#[derive(Default)]
+struct Seen {
+    media: Mutex<Vec<Value>>,
+    stored: Mutex<Option<std::path::PathBuf>>,
+    vision: Mutex<Vec<Value>>,
+    pause_vision: std::sync::atomic::AtomicBool,
+    resume_vision: tokio::sync::Notify,
+}
+struct Services {
+    base: String,
+    seen: Arc<Seen>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for Services {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+async fn services() -> Services {
+    async fn media(State(s): State<Arc<Seen>>, Json(v): Json<Value>) -> Json<Value> {
+        s.media.lock().unwrap().push(v);
+        Json(json!({"item_id":"itm_test", "duplicate":false, "version":1}))
+    }
+    /// lucina-media's ingest: "moves" the file into a store dir next to it.
+    async fn ingest(State(s): State<Arc<Seen>>, Json(v): Json<Value>) -> Json<Value> {
+        let src = std::path::PathBuf::from(v["path"].as_str().unwrap());
+        let store = src.parent().unwrap().parent().unwrap().parent().unwrap().join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let dst = store.join("blob-itm_test");
+        std::fs::rename(&src, &dst).unwrap();
+        *s.stored.lock().unwrap() = Some(dst);
+        s.media.lock().unwrap().push(v);
+        Json(json!({"item_id":"itm_test", "duplicate":false, "version":1, "kind":"photo"}))
+    }
+    async fn item_path(State(s): State<Arc<Seen>>) -> Json<Value> {
+        Json(json!({"path": s.stored.lock().unwrap().clone(), "mime":"image/png", "kind":"photo"}))
+    }
+    async fn vision(State(s): State<Arc<Seen>>, Json(v): Json<Value>) -> Json<Value> {
+        s.vision.lock().unwrap().push(v);
+        if s.pause_vision.load(std::sync::atomic::Ordering::SeqCst) {
+            s.resume_vision.notified().await;
+        }
+        Json(
+            json!({"choices":[{"message":{"content":"", "reasoning_content":"A bright green square. VISION_EXTRACTED"}}]}),
+        )
+    }
+    let seen = Arc::new(Seen::default());
+    let router = Router::new()
+        .route("/page", get(|| async { axum::response::Html("<html><head><title>Test page title</title></head><body><nav>JUNK_NAV</nav><p>URL_EXTRACTED readable article.</p><script>JUNK_SCRIPT</script></body></html>") }))
+        .route("/redirect-private", get(|| async { axum::response::Redirect::temporary("http://169.254.169.254/latest/meta-data/") }))
+        .route("/v1/chat/completions", post(vision))
+        .route("/internal/v1/external/{source}/{id}", put(media))
+        .route("/internal/v1/ingest", post(ingest))
+        .route("/internal/v1/items/{id}/path", get(item_path))
+        .with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    Services { base, seen, task }
+}
+async fn setup(services: &Services) -> H {
+    harness(script(json!({"rules":[
+        {"kind":"intent", "content":"{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+        {"kind":"agent", "content":"I read your shared text, article and image."}
+    ]})), |c| {
+        c.share.dir = c.data_dir.join("shares");
+        c.share.key_file = Some(c.data_dir.join("share.key"));
+        std::fs::write(c.share.key_file.as_ref().unwrap(), "  gateway-test-secret\n").unwrap();
+        c.share.media_url = services.base.clone();
+        c.share.vision_url = Some(services.base.clone());
+        c.share.test_allow_loopback = true;
+    }).await
+}
+async fn submit(h: &H, form: Form) -> reqwest::Response {
+    h.http
+        .post(format!("{}/v1/share", h.base))
+        .header("x-share-gateway", "gateway-test-secret")
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+}
+async fn finished(h: &H, id: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let r = h
+                .http
+                .get(format!("{}/v1/share/{id}", h.base))
+                .header("x-share-gateway", "gateway-test-secret")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200);
+            let v: Value = r.json().await.unwrap();
+            if v["status"] != "processing" {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("share must finish")
+}
+#[tokio::test]
+async fn multipart_share_reads_everything_and_deduplicates_across_restart() {
+    let services = services().await;
+    let h = setup(&services).await;
+    services
+        .seen
+        .pause_vision
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // Generate a real PNG with the same installed conversion tool used by ingestion.
+    let png = h.dir.path().join("green.png");
+    assert!(tokio::process::Command::new("convert")
+        .args(["-size", "16x16", "xc:green"])
+        .arg(&png)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-integration-123")
+            .text("channel", "ios")
+            .text("note", "Please read these")
+            .text("source", "ios-share")
+            .text("text", "TEXT_EXTRACTED my short snippet")
+            .text("url", format!("{}/page", services.base))
+            .part(
+                "file",
+                Part::bytes(std::fs::read(&png).unwrap())
+                    .file_name("../../green.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            ),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let ack: Value = r.json().await.unwrap();
+    assert_eq!(ack["status"], "processing");
+    assert_eq!(ack["duplicate"], false);
+    assert_eq!(ack["stage"], "received");
+    let attachments = ack["attachments"].as_array().unwrap();
+    // Every part, with its index and reading state (the short text is also in the item text).
+    assert_eq!(attachments.len(), 3);
+    assert!(attachments
+        .iter()
+        .enumerate()
+        .all(|(i, a)| a["index"] == i && a["state"] == "pending"));
+    assert!(attachments.iter().any(|a| a["kind"] == "image"
+        && a["mediaId"] == "itm_test"
+        && a["mime"] == "image/png"
+        && a["bytes"].as_u64().unwrap() > 0));
+    let retry = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-integration-123")
+            .text("text", "retry during processing"),
+    )
+    .await;
+    assert_eq!(retry.status(), 202);
+    let retry: Value = retry.json().await.unwrap();
+    assert_eq!(retry["duplicate"], true);
+    assert_eq!(retry["status"], "processing");
+    assert_eq!(retry["userItemId"], ack["userItemId"]);
+    services.seen.resume_vision.notify_one();
+    let done = finished(&h, "share-integration-123").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["stage"], "done");
+    assert!(done["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["state"] == "read"), "{done}");
+    assert_eq!(done["userItemId"], ack["userItemId"]);
+    assert_eq!(done["reply"], "I read your shared text, article and image.");
+    assert!(done["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["name"] == "Test page title"));
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["role"], "user");
+    assert_eq!(lines[0]["channel"], "ios");
+    assert_eq!(
+        lines[0]["meta"],
+        json!({"kind":"share", "shareId":"share-integration-123", "intent":"ask"})
+    );
+    assert!(lines[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Please read these"));
+    assert!(lines[0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("TEXT_EXTRACTED"));
+    assert!(!lines[0]["text"].as_str().unwrap().contains("URL_EXTRACTED"));
+    assert_eq!(lines[1]["replyTo"], ack["userItemId"]);
+    // The timeline item keeps what was known at once: the library id, the link's host.
+    let item_attachments = lines[0]["attachments"].as_array().unwrap();
+    assert_eq!(item_attachments.len(), 2);
+    assert!(item_attachments
+        .iter()
+        .any(|a| a["kind"] == "image" && a["mediaId"] == "itm_test"));
+    assert!(item_attachments
+        .iter()
+        .any(|a| a["kind"] == "link" && a["name"] == "127.0.0.1"));
+    let requests = h.fake.requests();
+    let turn = requests.iter().find(|r| r["tools"].is_array()).unwrap();
+    let message = turn["messages"].to_string();
+    for marker in [
+        "TEXT_EXTRACTED",
+        "URL_EXTRACTED",
+        "VISION_EXTRACTED",
+        "<Shared content>",
+        "Owner's question or note: \\\"Please read these\\\"",
+        "How to handle it: Image",
+        "How to handle it: Web page",
+    ] {
+        assert!(message.contains(marker), "{marker}: {message}");
+    }
+    for marker in ["JUNK_NAV", "JUNK_SCRIPT"] {
+        assert!(!message.contains(marker));
+    }
+    assert_eq!(services.seen.vision.lock().unwrap().len(), 1);
+    assert_eq!(
+        services.seen.vision.lock().unwrap()[0]["chat_template_kwargs"]["enable_thinking"],
+        false
+    );
+    let media = services.seen.media.lock().unwrap().clone();
+    assert_eq!(media.len(), 1);
+    assert_eq!(media[0]["album"], "Shared");
+    assert_eq!(media[0]["caption"], "Please read these");
+    assert_eq!(media[0]["move"], true);
+    assert!(std::path::Path::new(media[0]["path"].as_str().unwrap()).is_absolute());
+    // Moved into the library; vision read it there through a link, and no work
+    // file was written next to the stored original.
+    let stored = services.seen.stored.lock().unwrap().clone().unwrap();
+    assert!(stored.exists());
+    assert_eq!(std::fs::read_dir(stored.parent().unwrap()).unwrap().count(), 1);
+    // What she read is in the attachment memory.
+    let memory = &h.state.share.memory;
+    let hits = memory.search("readable article", None, None, 5).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].kind, "link");
+    assert_eq!(hits[0].name, "Test page title");
+    assert_eq!(memory.recent(0, 10).unwrap().len(), 3);
+    let status_file = h
+        .state
+        .cfg
+        .share
+        .dir
+        .join(chrono::Utc::now().format("%Y-%m").to_string())
+        .join("share-integration-123/status.json");
+    let mut persisted: Value =
+        serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
+    persisted["status"] = json!("processing");
+    std::fs::write(&status_file, serde_json::to_vec(&persisted).unwrap()).unwrap();
+    // Build a fresh process state against the same persisted manifests.
+    let restarted = lucina_server::AppState::build(h.state.cfg.clone(), None).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, lucina_server::app(restarted))
+            .await
+            .unwrap()
+    });
+    let before = h.fake.requests().len();
+    assert_eq!(
+        finished(&h, "share-integration-123").await["status"],
+        "done"
+    );
+    let r = h
+        .http
+        .post(format!("{base}/v1/share"))
+        .header("x-share-gateway", "gateway-test-secret")
+        .multipart(
+            Form::new()
+                .text("shareId", "share-integration-123")
+                .text("text", "retry"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202);
+    let duplicate: Value = r.json().await.unwrap();
+    assert_eq!(duplicate["duplicate"], true);
+    assert_eq!(duplicate["userItemId"], ack["userItemId"]);
+    assert_eq!(duplicate["lucinaItemId"], done["lucinaItemId"]);
+    assert_eq!(h.fake.requests().len(), before);
+    assert_eq!(h.timeline_lines().len(), 2);
+    assert_eq!(services.seen.media.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn auth_validation_limits_and_library_without_llm() {
+    let services = services().await;
+    let h = setup(&services).await;
+    for method in [reqwest::Method::GET, reqwest::Method::POST] {
+        let endpoint = if method == reqwest::Method::POST {
+            "/v1/share"
+        } else {
+            "/v1/share/share-auth-test"
+        };
+        for token in [None, Some("wrong")] {
+            let mut request = h
+                .http
+                .request(method.clone(), format!("{}{endpoint}", h.base));
+            if let Some(token) = token {
+                request = request.header("x-share-gateway", token);
+            }
+            assert_eq!(request.send().await.unwrap().status(), 401);
+        }
+    }
+    for (name, value) in [
+        ("shareId", "../badid"),
+        ("intent", "delete"),
+        ("channel", "android"),
+        ("sessionId", "a b"),
+        ("note", &"x".repeat(4001)),
+    ] {
+        assert_eq!(
+            submit(
+                &h,
+                Form::new()
+                    .text("text", "input")
+                    .text(name, value.to_owned())
+            )
+            .await
+            .status(),
+            400,
+            "{name}"
+        );
+    }
+    assert_eq!(
+        submit(&h, Form::new().text("note", "no content"))
+            .await
+            .status(),
+        400
+    );
+    assert_eq!(
+        submit(
+            &h,
+            Form::new()
+                .text("intent", "ask")
+                .text("intent", "note")
+                .text("text", "input")
+        )
+        .await
+        .status(),
+        400
+    );
+    let mut form = Form::new();
+    for _ in 0..33 {
+        form = form.text("text", "hello");
+    }
+    assert_eq!(submit(&h, form).await.status(), 400);
+    // Known Content-Length is rejected before attempting to read its body.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = h.base.strip_prefix("http://").unwrap();
+    let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+    conn.write_all(format!("POST /v1/share HTTP/1.1\r\nHost: {addr}\r\nX-Share-Gateway: gateway-test-secret\r\nContent-Type: multipart/form-data; boundary=a\r\nContent-Length: 2147483649\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    let mut response = [0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(2), conn.read(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&response[..n]).starts_with("HTTP/1.1 413"));
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "library-test-123")
+            .text("intent", "library")
+            .text("lang", "it")
+            .text("text", "A saved library note"),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "library-test-123").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["stage"], "done");
+    assert!(done["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["state"] == "read"), "{done}");
+    assert_eq!(done["reply"], "Salvato nella raccolta Shared.");
+    assert!(
+        h.fake.requests().is_empty(),
+        "library must not call the chat model"
+    );
+    assert!(h
+        .state
+        .cfg
+        .data_dir
+        .join("notes/a-saved-library-note.md")
+        .exists());
+    let off = harness(script(json!({})), |c| {
+        c.share.dir = c.data_dir.join("shares")
+    })
+    .await;
+    for endpoint in ["/v1/share", "/v1/share/library-test-123"] {
+        assert_eq!(
+            off.http
+                .post(format!("{}{endpoint}", off.base))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            if endpoint == "/v1/share" { 503 } else { 405 }
+        );
+        if endpoint != "/v1/share" {
+            assert_eq!(
+                off.http
+                    .get(format!("{}{endpoint}", off.base))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                503
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn redirects_recheck_addresses_and_media_outage_keeps_original() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "redirect-test-123")
+            .text("url", format!("{}/redirect-private", services.base)),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    assert_eq!(finished(&h, "redirect-test-123").await["status"], "done");
+    assert!(h.fake.requests().iter().any(|r| r
+        .to_string()
+        .contains("URL resolves to a forbidden address")));
+    let blocked = harness(script(json!({"default":{"content":"Read failed"}})), |c| {
+        c.share.dir = c.data_dir.join("shares");
+        c.share.key_file = Some(c.data_dir.join("share.key"));
+        std::fs::write(c.share.key_file.as_ref().unwrap(), "gateway-test-secret").unwrap();
+        c.share.media_url = "http://127.0.0.1:1".into();
+    })
+    .await;
+    assert!(!blocked.state.cfg.share.test_allow_loopback);
+    let r = submit(
+        &blocked,
+        Form::new()
+            .text("shareId", "blocked-test-123")
+            .text("url", format!("{}/page", services.base))
+            .part(
+                "file",
+                Part::bytes(b"FILE_EXTRACTED".to_vec())
+                    .file_name("test.txt")
+                    .mime_str("text/plain")
+                    .unwrap(),
+            ),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let ack: Value = r.json().await.unwrap();
+    assert!(ack["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a.get("mediaId").is_none()));
+    let done = finished(&blocked, "blocked-test-123").await;
+    assert_eq!(done["status"], "done");
+    let all = blocked
+        .fake
+        .requests()
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(all.contains("URL resolves to a forbidden address"));
+    assert!(all.contains("FILE_EXTRACTED"));
+    let files = std::fs::read_dir(&blocked.state.cfg.share.dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        // Month folders only (attachments.db sits next to them).
+        .filter(|m| m.path().is_dir())
+        .flat_map(|m| std::fs::read_dir(m.path()).unwrap())
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].path().join("03-test.txt").exists());
+}
+
+#[tokio::test]
+async fn later_chat_turns_recall_earlier_attachments() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-recall-0001")
+            .text("lang", "it")
+            .text("text", "Bolletta Enel: totale da pagare 84,30 euro, scadenza 15/11/2026"),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    assert_eq!(finished(&h, "share-recall-0001").await["status"], "done");
+    let before = h.fake.requests().len();
+    // A message about something else gets no attachment block.
+    h.chat("come stai oggi?").await;
+    let unrelated = h.fake.requests()[before..].iter().map(|r| r.to_string()).collect::<String>();
+    assert!(!unrelated.contains("Earlier attachments"));
+    let before = h.fake.requests().len();
+    h.chat("quanto costava la bolletta che ti ho mandato?").await;
+    let asked = h.fake.requests()[before..].iter().map(|r| r.to_string()).collect::<String>();
+    assert!(asked.contains("Earlier attachments"), "{asked}");
+    assert!(asked.contains("84,30"), "{asked}");
+}

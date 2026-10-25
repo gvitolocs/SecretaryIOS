@@ -40,11 +40,33 @@ const MAX_NAME_CHARS: usize = 200;
 const MAX_CLIENT_MESSAGE_ID_CHARS: usize = 128;
 const MAX_META_STRING_CHARS: usize = 200;
 const MAX_COMMAND_ARGS_CHARS: usize = 2000;
-const ATTACHMENT_KINDS: [&str; 3] = ["image", "voice", "file"];
+const ATTACHMENT_KINDS: [&str; 11] = [
+    "image", "voice", "file", "video", "audio", "pdf", "document", "link", "text", "contact",
+    "location",
+];
 
-/// `{kind, name?}`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// `{kind, name?}`, plus `mime`, `mediaId`, `url`, `bytes`, `width`, `height`,
+/// `durationMs`, `thumbhash` on shared items (docs/share.md).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Attachment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// ThumbHash (base64) from lucina-media, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbhash: Option<String>,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -55,6 +77,10 @@ pub struct Attachment {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Meta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,7 +141,9 @@ impl Meta {
     }
 
     fn is_empty(&self) -> bool {
-        self.chat_title.is_none()
+        self.share_id.is_none()
+            && self.intent.is_none()
+            && self.chat_title.is_none()
             && self.guild_name.is_none()
             && self.channel_name.is_none()
             && self.kind.is_none()
@@ -152,6 +180,8 @@ impl Meta {
             ($($f:ident),*) => { $( if other.$f.is_some() { self.$f = other.$f; } )* };
         }
         take!(
+            share_id,
+            intent,
             chat_title,
             guild_name,
             channel_name,
@@ -274,6 +304,8 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
     let m = meta?;
     let s = |v: Option<String>| clean_string(v.as_deref(), MAX_META_STRING_CHARS);
     let out = Meta {
+        share_id: s(m.share_id),
+        intent: s(m.intent),
         chat_title: s(m.chat_title),
         guild_name: s(m.guild_name),
         channel_name: s(m.channel_name),
@@ -325,15 +357,30 @@ pub fn normalize(input: NewItem, now: i64) -> Result<TimelineItem> {
             input.role
         )));
     }
-    let text = clip_utf16(js_trim(&input.text), MAX_TEXT_CHARS);
+    let share = input
+        .meta
+        .as_ref()
+        .is_some_and(|m| m.kind.as_deref() == Some("share"));
+    let text = clip_utf16(
+        js_trim(&input.text),
+        if share { 40_000 } else { MAX_TEXT_CHARS },
+    );
     let attachments: Vec<Attachment> = input
         .attachments
         .into_iter()
         .filter(|a| ATTACHMENT_KINDS.contains(&a.kind.as_str()))
-        .take(MAX_ATTACHMENTS)
+        .take(if share { 32 } else { MAX_ATTACHMENTS })
         .map(|a| Attachment {
             name: clean_string(a.name.as_deref(), MAX_NAME_CHARS),
             kind: a.kind,
+            mime: clean_string(a.mime.as_deref(), 200),
+            media_id: clean_string(a.media_id.as_deref(), 200),
+            url: clean_string(a.url.as_deref(), 8000),
+            bytes: a.bytes,
+            width: a.width,
+            height: a.height,
+            duration_ms: a.duration_ms,
+            thumbhash: clean_string(a.thumbhash.as_deref(), 100),
         })
         .collect();
     if text.is_empty() && attachments.is_empty() {
@@ -1000,6 +1047,12 @@ impl TimelineTurn {
         self
     }
 
+    /// Resume a turn whose user item was durably written during share ingestion.
+    pub fn with_user_item(self, item: TimelineItem) -> Self {
+        *self.user_item.lock().unwrap_or_else(|e| e.into_inner()) = Some(Some(item));
+        self
+    }
+
     pub fn channel(&self) -> &str {
         &self.channel
     }
@@ -1106,10 +1159,12 @@ mod tests {
                     Attachment {
                         kind: "image".into(),
                         name: None,
+                        ..Attachment::default()
                     },
                     Attachment {
                         kind: "bogus".into(),
                         name: None,
+                        ..Attachment::default()
                     },
                 ],
                 meta: Some(Meta {
