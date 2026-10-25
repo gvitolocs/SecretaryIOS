@@ -1,0 +1,13 @@
+[package]
+name = "secretary-player-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The player core (secretary-player) as a WebAssembly module for the web app"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+secretary-player = { path = "../secretary-player" }
+serde_json.workspace = true

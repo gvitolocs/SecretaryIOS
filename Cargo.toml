@@ -9,6 +9,8 @@ members = [
     "crates/secretary-mcp",
     "crates/secretary-calendar",
     "crates/secretary-tasks",
+    "crates/secretary-player",
+    "crates/secretary-player-wasm",
     "verification/models",
 ]
 
