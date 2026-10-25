@@ -267,6 +267,20 @@ pub fn looks_random(s: &str) -> bool {
     lower && upper && digits >= 3 && shannon(core) >= 4.2
 }
 
+/// Prefix that marks a Google Drive file id (`gdrive:<id>`, written by
+/// Lucina's `drive` tool). Drive ids look random, so without it the entropy
+/// detector would mask every id she needs to pass back.
+pub const DRIVE_REF_PREFIX: &str = "gdrive:";
+
+/// `s` (a candidate at `start` in `text`) is a labelled Drive id: right
+/// after `gdrive:` and shaped like one (25-60 of `[A-Za-z0-9_-]`).
+fn is_drive_ref(text: &str, start: usize, s: &str) -> bool {
+    text[..start].ends_with(DRIVE_REF_PREFIX)
+        && (25..=60).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 fn mask_entropy(text: &str) -> Cow<'_, str> {
     let re = entropy_candidates();
     if !re.is_match(text) {
@@ -277,6 +291,9 @@ fn mask_entropy(text: &str) -> Cow<'_, str> {
     let mut changed = false;
     for m in re.find_iter(text) {
         let s = m.as_str();
+        if is_drive_ref(text, m.start(), s) {
+            continue;
+        }
         // Paths (`a/b/c`) are checked per segment unless it reads as base64.
         let base64ish = s.contains('+') || s.ends_with('=');
         if !base64ish && s.matches('/').count() >= 2 {
@@ -704,6 +721,7 @@ mod tests {
             "Domani a Copenaghen: pioggia leggera, 5-10 °C.",
             "ThisIsAnExtremelyLongCamelCaseIdentifierName",
             "secret://lucina/prod/lucina#OPEN_METEO_API_KEY",
+            "gdrive:150qHWei8cXQbw1ssTSWFjEgC-XsmyKX3",
             "[secret:TODOIST_TOKEN] and [secret:token]",
             "La password di Gmail la trovi in Infisical.",
             "token: set, password: missing",
@@ -822,5 +840,24 @@ mod overlap_tests {
         assert!(!admissible(b"ecret", &[b"[secret:K]".to_vec()]));
         assert!(!admissible(b"ab]cd", &[]));
         assert!(!admissible(b"", &[]));
+    }
+
+    #[test]
+    fn only_labelled_drive_ids_pass() {
+        let id = "150qHWei8cXQbw1ssTSWFjEgC-XsmyKX3";
+        assert_eq!(
+            mask_entropy(&format!("folder gdrive:{id} ok")),
+            format!("folder gdrive:{id} ok")
+        );
+        assert_ne!(
+            mask_entropy(&format!("folder {id} ok")),
+            format!("folder {id} ok")
+        );
+        // The label does not excuse other shapes.
+        let b64 = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MEFCQ0RFRkdISUpL+/AB==";
+        assert_ne!(
+            mask_entropy(&format!("gdrive:{b64}")),
+            format!("gdrive:{b64}")
+        );
     }
 }
