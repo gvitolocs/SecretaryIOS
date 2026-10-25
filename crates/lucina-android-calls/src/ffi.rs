@@ -7,12 +7,13 @@
 //! | `journal(filesDir: String, op: String, json: String): String` | Envelope around [`crate::journal::Op`]. |
 //! | `voiceTurn(filesDir: String, cookie: String, json: String): String` | Envelope around [`crate::net::voice_turn`]; `json` is `{"id", "text"}`. |
 //! | `transcribe(filesDir: String, cookie: String, json: String, audio: ByteArray): String` | Envelope around [`crate::net::transcribe`]. |
+//! | `shareUpload(filesDir: String, cookie: String, manifestPath: String): String` | Unwrapped [`crate::share::upload`] job result. |
 //! | `ui(op: String, json: String): String` | Envelope around [`crate::ui::run`]. |
 //!
-//! The envelope is `{"ok": true, "data": …}` or `{"ok": false, "error": "…"}`.
+//! For envelope-returning calls, the envelope is `{"ok": true, "data": …}` or `{"ok": false, "error": "…"}`.
 //! Every entry point catches panics, so Rust never unwinds into the JVM.
 //! `journal` and `ui` are fast enough for the main thread; `voiceTurn` and
-//! `transcribe` block on the network and must run on a worker thread.
+//! `transcribe` and `shareUpload` block on the network and must run on a worker thread.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -173,6 +174,38 @@ pub extern "system" fn Java_tech_getsecretary_secretary_Native_ui<'l>(
         let v = json_arg(env, &data)?;
         ui::run(&op, &v)
     })
+}
+
+/// `Native.shareUpload`: one streaming upload, with an unwrapped job result.
+#[no_mangle]
+pub extern "system" fn Java_tech_getsecretary_secretary_Native_shareUpload<'l>(
+    mut env: JNIEnv<'l>,
+    _class: JClass<'l>,
+    files_dir: JString<'l>,
+    cookie: JString<'l>,
+    manifest: JString<'l>,
+) -> jstring {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<Value> {
+        let dir = string(&mut env, &files_dir, "Storage unavailable.")?;
+        let cookie = string(&mut env, &cookie, "Please sign in.")?;
+        let manifest = string(&mut env, &manifest, "Share manifest unavailable.")?;
+        Ok(crate::share::upload(
+            &dir,
+            &cookie,
+            &manifest,
+            &crate::share::Https(&cookie),
+        ))
+    }));
+    let value = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            json!({"ok": false, "status": 400, "retry": false, "shareId": "", "error": e})
+        }
+        Err(_) => {
+            json!({"ok": false, "status": 0, "retry": true, "shareId": "", "error": "Upload interrupted."})
+        }
+    };
+    give(&mut env, value.to_string())
 }
 
 #[cfg(test)]

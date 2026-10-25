@@ -189,3 +189,70 @@ log a code, a token or a message body. `"result"` values are the snake_case stri
 - **Upgrade from 0.4.0:** done in place with the same signing key. RECEIVE_SMS and the Doze allowlist entry were kept. The legacy
   token moved into the encrypted `state.bin`, and the pref was deleted.
 - **Not yet verified:** a real carrier SMS, and a notification-sourced code.
+
+## Attachments in the chat WebView
+
+Secretary Android 0.4.0 (versionCode 5) lets the chat page attach photos, videos and files. A small
+`WebChromeClient` in `MainActivity` handles `<input type=file>`:
+
+- `onShowFileChooser` honours `FileChooserParams`: accept types become an `ACTION_OPEN_DOCUMENT` MIME filter
+  (`EXTRA_MIME_TYPES` when there is more than one), `MODE_OPEN_MULTIPLE` sets `EXTRA_ALLOW_MULTIPLE`, and
+  `isCaptureEnabled` adds `ACTION_IMAGE_CAPTURE` and/or `ACTION_VIDEO_CAPTURE` to a chooser beside the picker.
+- Camera output is written to a pending `MediaStore` content URI, so no `FileProvider` and no `CAMERA`
+  permission are needed. The unused camera entry is deleted, the captured entry is published
+  (`IS_PENDING = 0`), and the result Uris (including `ClipData` items) are returned through the callback.
+  Cancelling returns `null`.
+- `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` are declared. A geolocation prompt is granted only for
+  the exact `https://getsecretary.tech` origin, after the runtime permission is granted; the grant is not
+  retained, so a reload asks again.
+- `allowFileAccess` and `allowContentAccess` stay `false`; uploads use the chooser callback, not `file://` or
+  `content://` page access. `javaScriptEnabled` and `domStorageEnabled` were already on, and WebView's
+  Chromium paste events need no additional setting. The web composer owns paste and drag-and-drop handling.
+- The phase-1 `ShareActivity`, Direct Share shortcut and background upload are unchanged.
+
+## Share to Lucina
+
+Secretary Android 0.4.0 (versionCode 5) receives `ACTION_SEND` and `ACTION_SEND_MULTIPLE`, for `*/*` and
+`text/plain`, through the exported, dialog-themed `ShareActivity` labeled **Lucina**. It accepts text, links,
+photos, videos, PDFs, documents, audio, contacts, locations and files exposed by other apps as content URIs.
+The dark framework UI previews snippets, file names and sizes, and available content-provider thumbnails.
+The owner can add a note and choose **Send to Lucina** (`ask`), **Save to library**, **Add to shopping**,
+**Save as note**, or **Remind me**. Without a WebView session cookie it offers **Open Secretary and sign in first**.
+
+Kotlin only bridges Android APIs: intent extras and ClipData (deduplicated), ContentResolver metadata and
+streams, HEIC/HEIF-to-JPEG conversion with ImageDecoder, the views, ShortcutManager and JobScheduler. Files are
+copied with a bounded stream buffer into `cacheDir/shares/<UUID>/`; no whole-file byte arrays are created.
+A synced `manifest.json` contains the UUID, intent, note, language, subject/title, texts, URLs and staged file
+paths/names/MIME types. HTML is a fallback only when plain EXTRA_TEXT is absent. Rust classifies a text that
+is a single HTTP(S) URL as a `url` part. Unknown file MIME types use `application/octet-stream`.
+
+After staging, a network-required job is scheduled and the activity closes with **Sent to Lucina**. This means
+queued for upload; the reply appears asynchronously in the chat timeline after server acceptance. Each job reads
+the current WebView cookie, then calls `Native.shareUpload` on a worker thread. Rust validates canonical paths
+under the app's cache shares directory (also refusing `..` and symlinks escaping the share folder), UUID, intent,
+note and limits. It streams a multipart reader made of small headers/fields and open files, with a computed
+Content-Length, to `POST https://getsecretary.tech/v1/share`, using `Cookie`, `X-Secretary-CSRF: 1`,
+`channel=web`, and `source=android-share`. The connect timeout is 10 seconds; the upload timeout is 30 minutes.
+Redirects are disabled. No cookie, shared content or server response body enters the local journal; it records
+share ID, intent, part count and delivery status. The UUID stays the same across retries for server idempotency.
+
+Limits are **32 multipart parts including metadata**, **2 GB including multipart framing**, and **4000 note
+characters**. Rust enforces these before networking. JobScheduler retries network failures, 408, 429 and 5xx
+with exponential backoff; other 4xx are permanent, and 401 means sign in again. Staged files are removed after
+success or a permanent 4xx failure. No boot permission is added, so jobs are not persisted across reboot; Android
+may also reclaim cache storage. Once the server accepts the single request with 202, it owns storage and the
+asynchronous Lucina turn even if Android kills the client.
+
+### Direct Share
+
+`res/xml/shortcuts.xml`, linked from MainActivity's `android.app.shortcuts` metadata, declares the share target
+and category `tech.getsecretary.secretary.category.SHARE_LUCINA`. On app startup and after every queued share,
+Secretary publishes the long-lived dynamic shortcut **Lucina** (id `lucina`, bot Person `Lucina`, app icon,
+ACTION_VIEW to MainActivity). It uses `pushDynamicShortcut` on API 30+ and `addDynamicShortcuts` on API 29,
+and calls `reportShortcutUsed("lucina")` after each share. Direct Share's EXTRA_SHORTCUT_ID follows the same
+share intake as the ordinary chooser target.
+
+The chooser's order is the system's decision and cannot be forced. Direct Share ranks shortcuts using reported
+usage and other system signals. The owner can pin Lucina in the Samsung share sheet: long-press **Lucina** →
+**Pin**. Build with `bash android/secretary/build.sh`; installation remains the owner's separate
+`android/install.sh secretary` step.

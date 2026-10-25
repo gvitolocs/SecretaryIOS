@@ -41,7 +41,7 @@ mkdir -p "$out"
 chmod 700 "$keys" "$out"
 # Keep secretary-0.1.0.apk: it is the certificate reference.
 rm -rf "$out/classes" "$out/dex" "$out/native" "$out/res" "$out/raw.apk" "$out/aligned.apk" "$out/secretary.apk" "$out/secretary.apk.idsig"
-mkdir -p "$out/classes" "$out/dex" "$out/native/lib/arm64-v8a" "$out/res/drawable"
+mkdir -p "$out/classes" "$out/dex" "$out/native/lib/arm64-v8a" "$out/res/drawable" "$out/res/xml"
 
 # 1. Rust core. Size-optimised with fat LTO (Graviola's hot paths are assembly either way); panics
 #    still unwind, because every JNI entry point catches them.
@@ -54,13 +54,13 @@ fi
 lib="$out/native/lib/arm64-v8a/liblucina_calls.so"
 "$llvm/llvm-strip" --strip-unneeded -o "$lib" "$so"
 exports=$("$llvm/llvm-nm" -D --defined-only "$lib" | awk '{print $3}' | sort)
-expected=$(printf 'Java_tech_getsecretary_secretary_Native_%s\n' journal phoneCall transcribe ui voiceTurn | sort)
+expected=$(printf 'Java_tech_getsecretary_secretary_Native_%s\n' journal phoneCall shareUpload transcribe ui voiceTurn | sort)
 if [[ "$exports" != "$expected" ]]; then
   echo "ERROR: unexpected exports in liblucina_calls.so:" >&2
   echo "$exports" >&2
   exit 1
 fi
-echo "native: exports only the 5 JNI functions"
+echo "native: exports only the 6 JNI functions"
 
 # 2. Kotlin -> classes (against android.jar only, no JDK APIs).
 "$java" -Xmx1g -cp "$compiler_cp" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
@@ -71,6 +71,7 @@ echo "native: exports only the 5 JNI functions"
 
 # 3. Manifest + icon -> base APK, plus keep rules for the manifest components.
 cp "$repo/web/public/icon-192.png" "$out/res/drawable/lucina.png"
+cp "$app"/res/xml/*.xml "$out/res/xml/"
 "$tools/aapt2" compile --dir "$out/res" -o "$out/resources.zip"
 "$tools/aapt2" link -I "$android" --manifest "$app/AndroidManifest.xml" \
   --min-sdk-version 29 --target-sdk-version 33 --proguard "$out/aapt-rules.pro" -o "$out/raw.apk" "$out/resources.zip"
