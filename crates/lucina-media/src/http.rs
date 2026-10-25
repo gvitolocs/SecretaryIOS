@@ -73,6 +73,9 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/items/{id}/thumb", get(thumb))
         .route("/v1/media/items/{id}/poster", get(poster))
         .route("/v1/media/items/{id}/r/{rendition}", get(rendition))
+        // The same renditions behind a play token: p1 passes /v1/media/s/* straight through, so a
+        // gallery page costs no device-rate-limit tokens (60 a minute) and needs no header.
+        .route("/v1/media/s/{token}/{id}/r/{rendition}", get(signed_rendition))
         .route("/v1/media/summary", get(summary))
         .route("/v1/media/albums", get(list_albums).post(create_album))
         .route("/v1/media/albums/{id}", get(get_album).patch(patch_album).delete(delete_album))
@@ -143,11 +146,19 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         "large": has_thumb.then(|| format!("/v1/media/items/{id}/thumb?size=1024&v={v}")),
         "poster": (has_thumb && matches!(it.kind.as_str(), "video" | "audio")).then(|| format!("/v1/media/items/{id}/poster?v={v}")),
         // JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
-        "grid": has_thumb.then(|| format!("/v1/media/items/{id}/r/grid?v={v}")),
-        "preview": has_thumb.then(|| format!("/v1/media/items/{id}/r/preview?v={v}")),
+        // Tokenised when the play secret is configured (no device rate limit, no header).
+        "grid": has_thumb.then(|| rendition_url(lib, id, "grid", v)),
+        "preview": has_thumb.then(|| rendition_url(lib, id, "preview", v)),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
     ItemOut { item: it, urls, poster_url, thumb_url, album }
+}
+
+fn rendition_url(lib: &Library, id: &str, which: &str, v: i64) -> String {
+    match &lib.signer {
+        Some(s) => format!("{}/r/{which}?v={v}", s.base(id).0),
+        None => format!("/v1/media/items/{id}/r/{which}?v={v}"),
+    }
 }
 
 /// Album titles for items, user albums first, for `ItemOut.album`.
@@ -328,6 +339,18 @@ async fn thumb(
 ) -> ApiResult<Response> {
     let file = ThumbSize::from_px(q.size).file();
     thumb_file(lib, id, file, headers).await
+}
+
+async fn signed_rendition(
+    State(lib): State<Library>,
+    Path((token, id, which)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let Some(secret) = lib.cfg.play_secret.as_deref() else { return Err(not_found()) };
+    if !secretary_media_stream::token::verify(secret, &id, &token, secretary_media_stream::now_secs()) {
+        return Err(ApiError(StatusCode::FORBIDDEN, "bad or expired token".into()));
+    }
+    rendition(State(lib), Path((id, which)), headers).await
 }
 
 /// `grid` (g.jxl) or `preview` (p.jxl), `image/jxl`, cached for a year (the URL carries the version).

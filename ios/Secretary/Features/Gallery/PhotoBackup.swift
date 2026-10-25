@@ -184,6 +184,19 @@ final class PhotoBackup {
         running = nil
     }
 
+    /// Between two assets: 3 requests each at most, so a backup uses about 36 of the 60 a minute.
+    static let pace: Duration = .seconds(4)
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+
+    private func retry(after delay: Duration) {
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.kick()
+        }
+    }
+
     static func scheduleProcessing(chargingOnly: Bool) {
         let request = BGProcessingTaskRequest(identifier: processingIdentifier)
         request.requiresNetworkConnectivity = true
@@ -243,12 +256,29 @@ final class PhotoBackup {
                 done += 1
                 remaining = work.count - done
                 lastError = nil
+                // Every /v1/media request spends one of the device's 60 a minute (p1's login check):
+                // leave most of them to the app itself.
+                try await Task.sleep(for: Self.pace)
             } catch is CancellationError {
                 break
+            } catch let APIError.rateLimited(_, retryAfter, _) {
+                log.info("PhotoBackup rate limited, retry in \(retryAfter ?? 60) s")
+                status = .waiting(String(localized: "Pausing for the server"))
+                retry(after: .seconds(max(retryAfter ?? 60, 10)))
+                saveLedger()
+                return
+            } catch let error as APIError where error.isTransport {
+                // The server or the network is away: stop, and try the whole pass again later.
+                log.error("PhotoBackup paused: \(String(describing: error), privacy: .public)")
+                lastError = error.localizedDescription
+                status = .failed(error.localizedDescription)
+                retry(after: .seconds(120))
+                saveLedger()
+                return
             } catch {
                 log.error("PhotoBackup send failed: \(String(describing: error), privacy: .public)")
                 lastError = error.localizedDescription
-                // Skip this one for now; the next pass retries it.
+                // This asset only (export failed, odd file): skip it; the next pass retries it.
                 done += 1
             }
         }
@@ -364,8 +394,11 @@ final class PhotoBackup {
         entry.tempFile = kept.path
         ledger[w.key] = entry
         saveLedger()
-        if w.asset.mediaType == .image, !w.motion, let jpeg = await preview(w.asset) {
-            try? await api.putPreview(uploadId, jpeg: jpeg)
+        // The server decodes JPEG and PNG itself; only HEIC/HEIF needs the phone's rendering.
+        let uti = w.resource.uniformTypeIdentifier
+        if w.asset.mediaType == .image, !w.motion, uti.contains("heic") || uti.contains("heif"),
+           let jpeg = await preview(w.asset) {
+            try await api.putPreview(uploadId, jpeg: jpeg)
         }
         try await transfer(uploadId: uploadId, file: kept, offset: 0)
         try await complete(w, uploadId: uploadId, temp: kept, entry: &entry)
@@ -416,6 +449,7 @@ final class PhotoBackup {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         if let key = client.accessKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         let status = try await BackgroundUploader.shared.upload(request, fromFile: source, cellular: !settings.wifiOnly)
+        if status == 429 { throw APIError.rateLimited(code: "rate_limited", retryAfter: nil, message: "Too many requests") }
         guard (200..<300).contains(status) else { throw APIError.network(message: "Upload failed (HTTP \(status)).") }
     }
 
@@ -522,6 +556,17 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate, @unchecked Sen
         DispatchQueue.main.async {
             self.systemCompletion.removeValue(forKey: id)?()
             self.onFinishedEvents?()
+        }
+    }
+}
+
+private extension APIError {
+    /// The request never got a real answer (network, timeout, 5xx): pause the whole pass.
+    var isTransport: Bool {
+        switch self {
+        case .network, .timeout, .hostNotFound, .lucinaOffline: return true
+        case let .server(status, _, _): return status >= 500
+        default: return false
         }
     }
 }
