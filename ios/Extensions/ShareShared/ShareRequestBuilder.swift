@@ -14,7 +14,7 @@ struct SharePayload: Sendable {
 }
 
 enum ShareFailure: LocalizedError {
-    case signIn, empty, tooLarge, tooManyParts, preparation
+    case signIn, empty, tooLarge, tooManyParts, preparation, server(Int)
     var errorDescription: String? {
         switch self {
         case .signIn: return String(localized: "Open Secretary and sign in first")
@@ -22,6 +22,7 @@ enum ShareFailure: LocalizedError {
         case .tooLarge: return String(localized: "This share is larger than 2 GB.")
         case .tooManyParts: return String(localized: "This share has more than 32 parts.")
         case .preparation: return String(localized: "Couldn't prepare this share. Try again.")
+        case .server(let status): return String(localized: "Lucina's server didn't take it (\(status)). Try again.")
         }
     }
 }
@@ -40,8 +41,18 @@ enum ShareRequestBuilder {
     static let prefix = "tech.getsecretary.share."
     static let maxBytes: Int64 = 2_000_000_000
 
+    /// Above this the extension warns that a foreground upload must stay open.
+    static let foregroundWarningBytes: Int64 = 150_000_000
+
+    /// Whether the App Group is provisioned. Without it each process keeps its shares in its own caches,
+    /// and the extension uploads in the foreground (a background session needs a shared container).
+    static var hasAppGroup: Bool {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) != nil
+    }
+
     static func directory() throws -> URL {
-        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group) else {
+        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
+                ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             throw ShareFailure.preparation
         }
         let url = root.appendingPathComponent("Shares", isDirectory: true)

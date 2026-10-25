@@ -1,6 +1,17 @@
 import Foundation
 import UserNotifications
 
+/// Upload progress for `sendNow`.
+private final class UploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    let report: @Sendable (Double) -> Void
+    init(_ report: @escaping @Sendable (Double) -> Void) { self.report = report }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        report(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
+    }
+}
+
 /// Shared by Shortcuts, the share extension and the app's background-session delegate.
 @MainActor
 final class ShareUploads: NSObject, URLSessionTaskDelegate {
@@ -13,7 +24,8 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
     private func session(_ identifier: String) -> URLSession {
         if let existing = sessions[identifier] { return existing }
         let config = URLSessionConfiguration.background(withIdentifier: identifier)
-        config.sharedContainerIdentifier = ShareRequestBuilder.group
+        // The app can hand its own files to nsurlsessiond; an extension needs the App Group (see sendNow).
+        if ShareRequestBuilder.hasAppGroup { config.sharedContainerIdentifier = ShareRequestBuilder.group }
         config.sessionSendsLaunchEvents = true
         config.isDiscretionary = false
         let session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
@@ -27,6 +39,36 @@ final class ShareUploads: NSObject, URLSessionTaskDelegate {
         let task = session(ShareRequestBuilder.prefix + record.shareId)
             .uploadTask(with: request, fromFile: directory.appendingPathComponent(record.shareId + ".body"))
         task.resume()
+    }
+
+    /// Upload in this process now, trying every endpoint, reporting progress (0...1). The share extension uses it
+    /// while the App Group is not provisioned; the body file then lives in the extension's own container.
+    func sendNow(_ record: ShareRecord, credentials: BridgeCredentials,
+                 progress: @escaping @Sendable (Double) -> Void) async throws {
+        let directory = try ShareRequestBuilder.directory()
+        let body = directory.appendingPathComponent(record.shareId + ".body")
+        var lastStatus: Int?
+        var lastError: Error?
+        for endpoint in record.endpoints {
+            guard let request = request(record, endpoint: endpoint, token: credentials.token) else { continue }
+            do {
+                let (_, response) = try await URLSession.shared.upload(for: request, fromFile: body,
+                                                                       delegate: UploadProgress(progress))
+                lastStatus = (response as? HTTPURLResponse)?.statusCode
+                let decision = ShareRetryPolicy.decision(status: lastStatus, attempts: 0)
+                if decision == .success || decision == .discard { break }
+            } catch let error as URLError where [.cannotFindHost, .dnsLookupFailed, .cannotConnectToHost].contains(error.code) {
+                lastError = error
+                continue // the next endpoint (e.g. the Tailscale name)
+            }
+        }
+        let decision = ShareRetryPolicy.decision(status: lastStatus, attempts: record.attempts)
+        if decision == .success {
+            finish(record, status: lastStatus)
+            return
+        }
+        if let lastError, lastStatus == nil { throw lastError }
+        throw ShareFailure.server(lastStatus ?? 0)
     }
 
     func handleEvents(_ identifier: String, completion: @escaping () -> Void) {

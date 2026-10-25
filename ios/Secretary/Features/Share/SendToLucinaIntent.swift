@@ -15,7 +15,8 @@ struct SendToLucinaIntent: AppIntent {
     static let title: LocalizedStringResource = "Send to Lucina"
     static let openAppWhenRun = false
 
-    @Parameter(title: "Files", supportedContentTypes: [.item])
+    // `supportedTypeIdentifiers` (iOS 16+); `supportedContentTypes` needs iOS 18.
+    @Parameter(title: "Files", supportedTypeIdentifiers: ["public.item"])
     var files: [IntentFile]?
     @Parameter(title: "Text") var text: String?
     @Parameter(title: "Note") var note: String?

@@ -33,6 +33,10 @@ final class ShareSheetModel: ObservableObject {
     @Published var loaded = false
     @Published var sending = false
     @Published var sent = false
+    /// Foreground upload progress (no App Group yet), 0...1.
+    @Published var progress: Double?
+    /// Big payload and no background upload: the sheet must stay open.
+    @Published var keepOpenWarning = false
     private var staging: URL?
     var signedIn: Bool { BridgeCredentials.read() != nil }
 
@@ -48,6 +52,7 @@ final class ShareSheetModel: ObservableObject {
                 total + Int64(try file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
             }
             guard size <= ShareRequestBuilder.maxBytes else { throw ShareFailure.tooLarge }
+            keepOpenWarning = !ShareRequestBuilder.hasAppGroup && size > ShareRequestBuilder.foregroundWarningBytes
             loaded = !payload.files.isEmpty || !payload.urls.isEmpty || !payload.texts.isEmpty
             if !loaded { throw ShareFailure.empty }
         } catch { self.error = error.localizedDescription }
@@ -71,12 +76,23 @@ final class ShareSheetModel: ObservableObject {
                     try ShareRequestBuilder.build(payload: payload, intent: intent, note: note, source: "ios-share",
                                                   credentials: credentials, directory: ShareRequestBuilder.directory())
                 }.value
-                try ShareUploads.shared.enqueue(record, credentials: credentials)
+                if ShareRequestBuilder.hasAppGroup {
+                    try ShareUploads.shared.enqueue(record, credentials: credentials)
+                } else {
+                    progress = 0
+                    // A little extra time if the owner leaves the sheet while it uploads.
+                    let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
+                                                                         reason: "Sending a share to Lucina")
+                    defer { ProcessInfo.processInfo.endActivity(activity) }
+                    try await ShareUploads.shared.sendNow(record, credentials: credentials) { fraction in
+                        Task { @MainActor in self.progress = fraction }
+                    }
+                }
                 LucinaDonations.donate()
                 sent = true
                 try? await Task.sleep(for: .milliseconds(600))
                 close()
-            } catch { self.error = error.localizedDescription; sending = false }
+            } catch { self.error = error.localizedDescription; sending = false; progress = nil }
         }
     }
 }
@@ -110,6 +126,13 @@ private struct ShareSheet: View {
                     TextField("Add a note for Lucina", text: $model.note, axis: .vertical)
                         .lineLimit(2...4).padding().background(ShareStyle.card, in: RoundedRectangle(cornerRadius: ShareStyle.radius))
                         .onChange(of: model.note) { _, value in if value.count > 4000 { model.note = String(value.prefix(4000)) } }
+                    if model.keepOpenWarning {
+                        Label("This is large: keep this sheet open until it's sent.", systemImage: "exclamationmark.triangle")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if let progress = model.progress, !model.sent {
+                        ProgressView(value: progress) { Text("Sending…").font(.footnote) }
+                    }
                     Button { model.send("ask") } label: {
                         Text(LocalizedStringKey(model.sent ? "Sent ✓" : "Send to Lucina")).font(.headline).frame(maxWidth: .infinity).padding()
                     }.buttonStyle(.borderedProminent).tint(ShareStyle.button)

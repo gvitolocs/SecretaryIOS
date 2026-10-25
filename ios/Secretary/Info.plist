@@ -56,16 +56,20 @@
 	<string>To notice when you arrive at or leave a place, even when Secretary is closed.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Lucina learns which places you visit, so she can remind you of things where they matter.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Lucina listens when you tap the microphone, so you can talk to her instead of typing, and records your voice memos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Secretary backs up your photos and videos to your own server and shows them in the Gallery. Nothing is deleted from this iPhone.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
 	<string>Lucina adds, completes and reads your reminders when you ask.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Your words are turned into text so Lucina can answer them.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>SecretaryAPNsEnabled</key>
 	<false/>
 	<key>SecretaryKeychainGroup</key>
