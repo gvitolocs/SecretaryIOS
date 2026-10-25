@@ -142,6 +142,10 @@ struct GalleryScreen: View {
         .task {
             if store.items.isEmpty { await store.reload() }
             await store.loadAlbums()
+            // `-SecretaryGalleryOpenFirst YES` (device checks without UI tests): open the newest photo.
+            if UserDefaults.standard.bool(forKey: "SecretaryGalleryOpenFirst"), viewing == nil {
+                viewing = store.items.first { $0.kind == "photo" }
+            }
         }
         .sheet(isPresented: $showBackup) { NavigationStack { BackupSettingsView() }.lucinaSheet() }
         .sheet(isPresented: $showAlbums) {
