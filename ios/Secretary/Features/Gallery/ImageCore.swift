@@ -284,6 +284,9 @@ private enum GalleryRendition {
             }
             let (stream, response) = try await URLSession.shared.bytes(for: request)
             guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+            if offset > 0 {
+                log.notice("GalleryImages resume offset=\(offset) status=\(http.statusCode) key=\(key, privacy: .public)")
+            }
             if http.statusCode == 200 {
                 received = Data()
                 etag = http.value(forHTTPHeaderField: "ETag")
@@ -347,6 +350,9 @@ private enum GalleryRendition {
         } catch {
             if kind == .preview {
                 await disk.savePartial(received, etag: etag, key: key)
+                if !received.isEmpty {
+                    log.notice("GalleryImages partial saved bytes=\(received.count) key=\(key, privacy: .public)")
+                }
                 // A drop can happen before the next normal decoding threshold.
                 if !Task.isCancelled, !received.isEmpty, let prefixDecoder = ProgressiveDecoder(),
                    let (image, _) = try? prefixDecoder.feed(received, done: false) {
