@@ -2,7 +2,6 @@ import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
 import { CheckCircleIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon } from "../components/Icons";
 import { t } from "../i18n";
-import { requestPrefill } from "../state/chat";
 import { openWardrobe } from "../state/wardrobe";
 
 // The Plugins page (owner, 2026-10-24): every feature that is not Chat, Shopping or
@@ -35,11 +34,7 @@ export const PLUGINS: Plugin[] = [
     icon: GamepadIcon,
     title: () => t("plugins.pokemon"),
     detail: () => t("plugins.pokemonDetail"),
-    // Lucina plays on nezopt; the chat is where she reports and takes orders.
-    run: (navigate) => {
-      requestPrefill(t("plugins.pokemonAsk"));
-      navigate("/");
-    },
+    href: "/pokemon",
   },
   { id: "wardrobe", icon: HangerIcon, title: () => t("plugins.wardrobe"), detail: () => t("plugins.wardrobeDetail"), run: () => openWardrobe() },
   {
