@@ -500,6 +500,7 @@ impl ListQuery {
     pub fn q(&self) -> String {
         let mut q = vec!["trashed = false".to_owned()];
         if let Some(f) = self.folder_id.as_deref().filter(|s| !s.is_empty()) {
+            let f = f.strip_prefix("gdrive:").unwrap_or(f);
             q.push(format!("'{}' in parents", q_escape(f)));
         }
         if let Some(n) = self.name_contains.as_deref().filter(|s| !s.is_empty()) {
@@ -1096,6 +1097,11 @@ mod tests {
             q.q(),
             "trashed = false and 'F1' in parents and name contains 'it\\'s a \\\\ test'"
         );
+        let g = ListQuery {
+            folder_id: Some("gdrive:F1".into()),
+            ..Default::default()
+        };
+        assert_eq!(g.q(), "trashed = false and 'F1' in parents");
         let s = ListQuery {
             full_text: Some("outlook".into()),
             ..Default::default()

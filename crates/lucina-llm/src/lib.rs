@@ -173,6 +173,81 @@ pub struct ChatResponse {
     pub model: String,
 }
 
+/// DeepSeek sometimes writes its tool calls into the text in its own markup
+/// (`<｜DSML｜function_calls> <｜DSML｜invoke name="x"> <｜DSML｜parameter
+/// name="k" string="true">v</｜DSML｜parameter> …`, bars and spacing vary)
+/// instead of returning structured `tool_calls`. Turn such text back into
+/// tool calls so the loop runs them and the markup never reaches a user.
+/// Only when there are no structured calls and the text has DSML `invoke`s.
+pub fn recover_text_tool_calls(msg: &mut Message) {
+    if msg.tool_calls.as_ref().is_some_and(|c| !c.is_empty()) {
+        return;
+    }
+    let Some(text) = msg.content.as_deref() else {
+        return;
+    };
+    if !text.contains("DSML") || !text.contains("invoke name=\"") {
+        return;
+    }
+    let calls = parse_dsml_calls(text);
+    if calls.is_empty() {
+        return;
+    }
+    // Keep only what came before the markup (an intro sentence, if any).
+    let cut = text
+        .find("DSML")
+        .and_then(|i| text[..i].rfind('<'))
+        .unwrap_or(text.len());
+    let rest = text[..cut].trim();
+    msg.content = (!rest.is_empty()).then(|| rest.to_owned());
+    msg.tool_calls = Some(calls);
+}
+
+fn parse_dsml_calls(text: &str) -> Vec<ToolCall> {
+    const INVOKE: &str = "invoke name=\"";
+    const PARAM: &str = "parameter name=\"";
+    let mut calls = Vec::new();
+    let starts: Vec<usize> = text.match_indices(INVOKE).map(|(i, _)| i).collect();
+    for (n, &start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(text.len());
+        let seg = &text[start + INVOKE.len()..end];
+        let Some(q) = seg.find('"') else { continue };
+        let name = seg[..q].trim().to_owned();
+        if name.is_empty() {
+            continue;
+        }
+        let mut args = serde_json::Map::new();
+        let mut rest = &seg[q..];
+        while let Some(p) = rest.find(PARAM) {
+            rest = &rest[p + PARAM.len()..];
+            let Some(q) = rest.find('"') else { break };
+            let key = rest[..q].to_owned();
+            let Some(gt) = rest.find('>') else { break };
+            let attrs = &rest[q..gt];
+            let as_string = !attrs.contains("string=\"false\"");
+            let body = &rest[gt + 1..];
+            let close = body.find("</").unwrap_or(body.len());
+            let raw = &body[..close];
+            let value = if as_string {
+                Value::String(raw.to_owned())
+            } else {
+                serde_json::from_str(raw.trim()).unwrap_or_else(|_| Value::String(raw.to_owned()))
+            };
+            args.insert(key, value);
+            rest = &body[close..];
+        }
+        calls.push(ToolCall {
+            id: format!("call_dsml_{n}"),
+            kind: "function".into(),
+            function: FunctionCall {
+                name,
+                arguments: Value::Object(args).to_string(),
+            },
+        });
+    }
+    calls
+}
+
 impl ChatResponse {
     pub fn tool_calls(&self) -> &[ToolCall] {
         self.message.tool_calls.as_deref().unwrap_or(&[])
@@ -549,8 +624,10 @@ impl DeepSeek {
                 .into_iter()
                 .next()
                 .ok_or_else(|| LlmError::Decode("no choices".into()))?;
+            let mut message = choice.message;
+            recover_text_tool_calls(&mut message);
             Ok(ChatResponse {
-                message: choice.message,
+                message,
                 finish_reason: choice.finish_reason,
                 usage: wire.usage,
                 model: wire.model.unwrap_or_else(|| model.clone()),
@@ -712,14 +789,16 @@ impl StreamAccumulator {
             .into_iter()
             .filter(|c| !c.function.name.is_empty())
             .collect();
+        let mut message = Message {
+            role: Role::Assistant,
+            content: (!self.content.is_empty()).then_some(self.content),
+            tool_calls: (!calls.is_empty()).then_some(calls),
+            tool_call_id: None,
+            reasoning_content: (!self.reasoning.is_empty()).then_some(self.reasoning),
+        };
+        recover_text_tool_calls(&mut message);
         ChatResponse {
-            message: Message {
-                role: Role::Assistant,
-                content: (!self.content.is_empty()).then_some(self.content),
-                tool_calls: (!calls.is_empty()).then_some(calls),
-                tool_call_id: None,
-                reasoning_content: (!self.reasoning.is_empty()).then_some(self.reasoning),
-            },
+            message,
             finish_reason: self.finish_reason,
             usage: self.usage,
             model: self.model.unwrap_or_else(|| model.to_owned()),
@@ -802,5 +881,64 @@ impl ChatModel for ScriptedModel {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| Err(LlmError::Decode("scripted model exhausted".into())))
+    }
+}
+
+#[cfg(test)]
+mod dsml_tests {
+    use super::*;
+
+    fn assistant(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: Some(text.to_owned()),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    #[test]
+    fn recovers_calls_written_as_dsml_text() {
+        // As seen live on 2026-10-25 (full-width bars, spaced).
+        let mut m = assistant(
+            "<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} calls>\n<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} invoke name=\"drive\">\n<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} parameter name=\"action\" string=\"true\">search</\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} parameter>\n<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} parameter name=\"page_size\" string=\"false\">5</\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} parameter>\n</\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} invoke>\n</\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} calls>",
+        );
+        recover_text_tool_calls(&mut m);
+        let calls = m.tool_calls.expect("calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "drive");
+        let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(
+            args,
+            serde_json::json!({"action": "search", "page_size": 5})
+        );
+        assert!(m.content.is_none());
+    }
+
+    #[test]
+    fn keeps_the_intro_and_handles_two_calls() {
+        let mut m = assistant(
+            "Controllo.\n<\u{ff5c}DSML\u{ff5c}function_calls><\u{ff5c}DSML\u{ff5c}invoke name=\"a\"></\u{ff5c}DSML\u{ff5c}invoke><\u{ff5c}DSML\u{ff5c}invoke name=\"b\"><\u{ff5c}DSML\u{ff5c}parameter name=\"x\" string=\"true\">1</\u{ff5c}DSML\u{ff5c}parameter></\u{ff5c}DSML\u{ff5c}invoke></\u{ff5c}DSML\u{ff5c}function_calls>",
+        );
+        recover_text_tool_calls(&mut m);
+        let calls = m.tool_calls.expect("calls");
+        assert_eq!(
+            calls
+                .iter()
+                .map(|c| c.function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(calls[1].function.arguments, r#"{"x":"1"}"#);
+        assert_eq!(m.content.as_deref(), Some("Controllo."));
+    }
+
+    #[test]
+    fn leaves_normal_text_and_real_calls_alone() {
+        let mut m = assistant("Ho trovato la cartella Lucina.");
+        recover_text_tool_calls(&mut m);
+        assert!(m.tool_calls.is_none());
+        assert_eq!(m.content.as_deref(), Some("Ho trovato la cartella Lucina."));
     }
 }
