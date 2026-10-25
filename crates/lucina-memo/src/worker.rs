@@ -78,7 +78,8 @@ pub async fn process(app: &App, id: &str) -> Result<(), String> {
             let _ = app.store.update(id, |m| {
                 m.status = Status::Queued;
                 m.error = Some(why.clone());
-                m.next_attempt_at = Some(Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default());
+                m.next_attempt_at =
+                    Some(Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default());
             });
             Err(why)
         }
@@ -102,7 +103,9 @@ pub async fn process(app: &App, id: &str) -> Result<(), String> {
 
 async fn steps(app: &App, id: &str) -> Result<(), StepError> {
     let store = &app.store;
-    let mut m = store.get(id).ok_or_else(|| StepError::Failed("memo vanished".into()))?;
+    let mut m = store
+        .get(id)
+        .ok_or_else(|| StepError::Failed("memo vanished".into()))?;
     let work = store.dir(id).join("work");
     tokio::fs::create_dir_all(&work).await?;
     let tz = app.cfg.timezone;
@@ -124,24 +127,32 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             } else {
                 Duration::from_secs(120)
             };
-            let (t, source) = match transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, wait).await {
-                Ok(t) => (t, "whisper"),
-                Err(transcribe::SttError::GpuBusy(_)) => match device {
-                    Some(d) => {
-                        tracing::info!(%id, "GPU busy: using the iPhone's transcript for now");
-                        (d, "device")
-                    }
-                    None => {
-                        let _ = tokio::fs::remove_file(&wav).await;
-                        return Err(StepError::Later(Duration::from_secs(60), "waiting for the GPU".into()));
-                    }
-                },
-                Err(e) => return Err(e.into()),
-            };
+            let (t, source) =
+                match transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, wait).await {
+                    Ok(t) => (t, "whisper"),
+                    Err(transcribe::SttError::GpuBusy(_)) => match device {
+                        Some(d) => {
+                            tracing::info!(%id, "GPU busy: using the iPhone's transcript for now");
+                            (d, "device")
+                        }
+                        None => {
+                            let _ = tokio::fs::remove_file(&wav).await;
+                            return Err(StepError::Later(
+                                Duration::from_secs(60),
+                                "waiting for the GPU".into(),
+                            ));
+                        }
+                    },
+                    Err(e) => return Err(e.into()),
+                };
             write_json(&store.transcript_path(id), &t)?;
             let _ = tokio::fs::remove_file(&wav).await;
             m = store.update(id, |m| {
-                m.duration_sec = if t.duration_sec > 0.0 { t.duration_sec } else { dur };
+                m.duration_sec = if t.duration_sec > 0.0 {
+                    t.duration_sec
+                } else {
+                    dur
+                };
                 m.language = Some(t.language.clone());
                 m.engine = Some(t.engine.clone());
                 m.transcript_source = Some(source.into());
@@ -158,7 +169,15 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             m = set(app, id, Status::Summarizing)?;
             let extra_path = store.dir(id).join("resummarize.json");
             let extra: Resummarize = read_json(&extra_path)?.unwrap_or_default();
-            let s = summarize::summarize(app.llm.as_ref(), &app.llm_label, &m, &transcript, tz, extra.instructions.as_deref()).await?;
+            let s = summarize::summarize(
+                app.llm.as_ref(),
+                &app.llm_label,
+                &m,
+                &transcript,
+                tz,
+                extra.instructions.as_deref(),
+            )
+            .await?;
             write_json(&store.summary_path(id), &s)?;
             let _ = std::fs::remove_file(&extra_path);
             m = store.update(id, |m| {
@@ -181,7 +200,11 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
     };
     // The owner's title wins in every output.
     let summary = Summary {
-        title: if m.title_source == "owner" { m.title.clone() } else { summary.title },
+        title: if m.title_source == "owner" {
+            m.title.clone()
+        } else {
+            summary.title
+        },
         ..summary
     };
     let url = app.cfg.memo_url(id);
@@ -191,7 +214,13 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
         m = set(app, id, Status::Rendering)?;
         let html = render::html(&m, &summary, &transcript, tz, &url);
         write_atomic(&store.html_path(id), html.as_bytes())?;
-        render::print_pdf(&app.cfg.chrome, &store.html_path(id), &store.pdf_path(id), &work).await?;
+        render::print_pdf(
+            &app.cfg.chrome,
+            &store.html_path(id),
+            &store.pdf_path(id),
+            &work,
+        )
+        .await?;
         m = store.update(id, |m| m.steps.rendered_at = Some(Utc::now()))?;
     }
 
@@ -212,7 +241,13 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 .into_iter()
                 .filter(|x| x.id != m.id)
                 .filter_map(|x| {
-                    let b = x.obsidian_note.as_deref()?.rsplit('/').next()?.strip_suffix(".md")?.to_owned();
+                    let b = x
+                        .obsidian_note
+                        .as_deref()?
+                        .rsplit('/')
+                        .next()?
+                        .strip_suffix(".md")?
+                        .to_owned();
                     Some((x, b))
                 })
                 .collect();
@@ -264,7 +299,11 @@ async fn upgrade_one(app: &App) -> bool {
         .store
         .list()
         .into_iter()
-        .filter(|m| m.status == Status::Done && m.transcript_source.as_deref() == Some("device") && m.upgrade_attempts < 3)
+        .filter(|m| {
+            m.status == Status::Done
+                && m.transcript_source.as_deref() == Some("device")
+                && m.upgrade_attempts < 3
+        })
         .min_by_key(|m| m.created_at)
     else {
         return false;
@@ -278,7 +317,9 @@ async fn upgrade_one(app: &App) -> bool {
         tokio::fs::create_dir_all(&work).await?;
         let wav = work.join("audio.wav");
         let dur = transcribe::decode(&app.cfg.whisper, &app.store.audio_path(&m), &wav).await?;
-        let t = transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, Duration::from_secs(120)).await?;
+        let t =
+            transcribe::transcribe(&app.cfg.whisper, &wav, &work, dur, Duration::from_secs(120))
+                .await?;
         Ok::<_, anyhow::Error>(t)
     }
     .await;
@@ -290,7 +331,9 @@ async fn upgrade_one(app: &App) -> bool {
             let ours = t.text().chars().count();
             let theirs = device.as_ref().map_or(0, |d| d.text().chars().count());
             if ours * 2 < theirs {
-                let _ = app.store.update(&id, |m| m.transcript_source = Some("device-kept".into()));
+                let _ = app
+                    .store
+                    .update(&id, |m| m.transcript_source = Some("device-kept".into()));
                 tracing::info!(%id, ours, theirs, "Whisper heard less than the iPhone; kept the iPhone transcript");
                 return true;
             }
@@ -313,7 +356,9 @@ async fn upgrade_one(app: &App) -> bool {
             true
         }
         Err(e) => {
-            let busy = e.downcast_ref::<transcribe::SttError>().is_some_and(|e| matches!(e, transcribe::SttError::GpuBusy(_)));
+            let busy = e
+                .downcast_ref::<transcribe::SttError>()
+                .is_some_and(|e| matches!(e, transcribe::SttError::GpuBusy(_)));
             if !busy {
                 tracing::warn!(%id, error = %e, "Whisper upgrade failed");
                 let _ = app.store.update(&id, |m| m.upgrade_attempts += 1);
@@ -324,12 +369,24 @@ async fn upgrade_one(app: &App) -> bool {
 }
 
 /// Re-queues a memo for a new summary (and new PDF, note and notification).
-pub fn request_resummary(app: &App, id: &str, instructions: Option<String>) -> Result<Memo, crate::store::StoreError> {
-    let m = app.store.get(id).ok_or(crate::store::StoreError::NotFound)?;
+pub fn request_resummary(
+    app: &App,
+    id: &str,
+    instructions: Option<String>,
+) -> Result<Memo, crate::store::StoreError> {
+    let m = app
+        .store
+        .get(id)
+        .ok_or(crate::store::StoreError::NotFound)?;
     if m.status == Status::Uploading {
-        return Err(crate::store::StoreError::Conflict("the upload is not complete".into()));
+        return Err(crate::store::StoreError::Conflict(
+            "the upload is not complete".into(),
+        ));
     }
-    write_json(&app.store.dir(id).join("resummarize.json"), &Resummarize { instructions })?;
+    write_json(
+        &app.store.dir(id).join("resummarize.json"),
+        &Resummarize { instructions },
+    )?;
     let m = app.store.update(id, |m| {
         m.steps.summarized_at = None;
         m.steps.rendered_at = None;
@@ -346,7 +403,11 @@ pub fn request_resummary(app: &App, id: &str, instructions: Option<String>) -> R
 }
 
 /// Re-runs every step (e.g. after a failure, or with a better model).
-pub fn request_reprocess(app: &App, id: &str, from_transcript: bool) -> Result<Memo, crate::store::StoreError> {
+pub fn request_reprocess(
+    app: &App,
+    id: &str,
+    from_transcript: bool,
+) -> Result<Memo, crate::store::StoreError> {
     let m = app.store.update(id, |m| {
         if from_transcript {
             m.steps.transcribed_at = None;

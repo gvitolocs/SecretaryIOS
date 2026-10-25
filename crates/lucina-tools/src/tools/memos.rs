@@ -54,12 +54,14 @@ struct Args {
 pub struct MemosTool;
 
 fn server(ctx: &Ctx) -> Result<(String, String), ToolError> {
-    let url = ctx.env.memo_url.clone().ok_or_else(|| ToolError::new("voice memos are not configured (LUCINA_MEMO_URL)"))?;
-    let file = ctx
+    let url = ctx
         .env
-        .memo_token_file
-        .as_ref()
-        .ok_or_else(|| ToolError::new("voice memos are not configured (LUCINA_MEMO_SERVICE_TOKEN_FILE)"))?;
+        .memo_url
+        .clone()
+        .ok_or_else(|| ToolError::new("voice memos are not configured (LUCINA_MEMO_URL)"))?;
+    let file = ctx.env.memo_token_file.as_ref().ok_or_else(|| {
+        ToolError::new("voice memos are not configured (LUCINA_MEMO_SERVICE_TOKEN_FILE)")
+    })?;
     let token = std::fs::read_to_string(file)
         .map_err(|_| ToolError::new("voice memos: service token unreadable"))?
         .trim()
@@ -78,7 +80,10 @@ async fn send(req: reqwest::RequestBuilder) -> Result<Value, ToolError> {
         return Ok(body);
     }
     let message = body["error"]["message"].as_str().unwrap_or_default();
-    Err(ToolError::new(format!("lucina-memo answered {}: {message}", status.as_u16())))
+    Err(ToolError::new(format!(
+        "lucina-memo answered {}: {message}",
+        status.as_u16()
+    )))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -136,13 +141,22 @@ impl Tool for MemosTool {
             if valid_id(id) {
                 Ok(id.to_owned())
             } else {
-                Err(ToolError::new("id: a memo id like mm_0123456789abcdef (from list or search)"))
+                Err(ToolError::new(
+                    "id: a memo id like mm_0123456789abcdef (from list or search)",
+                ))
             }
         };
         match a.action {
             Action::List => {
-                let body = send(http.get(format!("{base}/v1/memos")).bearer_auth(&token).query(&[("limit", "30")])).await?;
-                let cutoff = a.days.map(|d| chrono::Utc::now() - chrono::Duration::days(d.clamp(1, 3650)));
+                let body = send(
+                    http.get(format!("{base}/v1/memos"))
+                        .bearer_auth(&token)
+                        .query(&[("limit", "30")]),
+                )
+                .await?;
+                let cutoff = a
+                    .days
+                    .map(|d| chrono::Utc::now() - chrono::Duration::days(d.clamp(1, 3650)));
                 let memos: Vec<Value> = body["memos"]
                     .as_array()
                     .into_iter()
@@ -173,19 +187,40 @@ impl Tool for MemosTool {
                 if let Some(d) = a.days {
                     q.push(("days", d.to_string()));
                 }
-                let body = send(http.get(format!("{base}/v1/memos/search")).bearer_auth(&token).query(&q)).await?;
+                let body = send(
+                    http.get(format!("{base}/v1/memos/search"))
+                        .bearer_auth(&token)
+                        .query(&q),
+                )
+                .await?;
                 let hits = body["memos"].as_array().cloned().unwrap_or_default();
-                Ok(json!({"memos": hits, "found": hits.len(), "timeZone": ctx.env.time_zone.name()}))
+                Ok(
+                    json!({"memos": hits, "found": hits.len(), "timeZone": ctx.env.time_zone.name()}),
+                )
             }
             Action::Read => {
                 let id = id()?;
-                let detail = send(http.get(format!("{base}/v1/memos/{id}")).bearer_auth(&token)).await?;
-                let transcript = send(http.get(format!("{base}/v1/memos/{id}/transcript")).bearer_auth(&token)).await.ok();
+                let detail = send(
+                    http.get(format!("{base}/v1/memos/{id}"))
+                        .bearer_auth(&token),
+                )
+                .await?;
+                let transcript = send(
+                    http.get(format!("{base}/v1/memos/{id}/transcript"))
+                        .bearer_auth(&token),
+                )
+                .await
+                .ok();
                 let mut text = String::new();
                 if let Some(t) = &transcript {
                     for s in t["transcript"]["segments"].as_array().into_iter().flatten() {
                         let at = s["start"].as_f64().unwrap_or(0.0) as u64;
-                        let line = format!("[{}:{:02}] {}\n", at / 60, at % 60, s["text"].as_str().unwrap_or(""));
+                        let line = format!(
+                            "[{}:{:02}] {}\n",
+                            at / 60,
+                            at % 60,
+                            s["text"].as_str().unwrap_or("")
+                        );
                         if text.chars().count() + line.chars().count() > READ_CHARS {
                             text.push_str("[…transcript cut]\n");
                             break;
@@ -202,7 +237,11 @@ impl Tool for MemosTool {
             }
             Action::Resummarize => {
                 let id = id()?;
-                let instructions = a.instructions.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                let instructions = a
+                    .instructions
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
                 let body = send(
                     http.post(format!("{base}/v1/memos/{id}/resummarize"))
                         .bearer_auth(&token)
@@ -228,6 +267,11 @@ mod tests {
         assert!(valid_id("mm_0123456789abcdef"));
         assert!(!valid_id("mm_../../etc"));
         let schema = MemosTool.parameters();
-        assert_eq!(schema["properties"]["action"]["enum"].as_array().map(Vec::len), Some(4));
+        assert_eq!(
+            schema["properties"]["action"]["enum"]
+                .as_array()
+                .map(Vec::len),
+            Some(4)
+        );
     }
 }

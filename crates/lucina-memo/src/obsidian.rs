@@ -33,7 +33,8 @@ pub struct VaultTarget {
 
 impl VaultTarget {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
-        let vault = get("LUCINA_MEMO_OBSIDIAN_VAULT").unwrap_or_else(|| "pi-cursor:/home/nes/Obsidian".into());
+        let vault = get("LUCINA_MEMO_OBSIDIAN_VAULT")
+            .unwrap_or_else(|| "pi-cursor:/home/nes/Obsidian".into());
         let vault = vault.trim().trim_end_matches('/').to_owned();
         if vault.is_empty() || vault == "off" {
             return None;
@@ -56,22 +57,41 @@ impl VaultTarget {
 pub fn safe_name(s: &str) -> String {
     let cleaned: String = s
         .chars()
-        .map(|c| if "/\\:*?\"<>|#^[]{}".contains(c) || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if "/\\:*?\"<>|#^[]{}".contains(c) || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     let squashed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let cut: String = squashed.chars().take(90).collect();
     let cut = cut.trim().trim_matches('.').trim().to_owned();
-    if cut.is_empty() { "Voice memo".into() } else { cut }
+    if cut.is_empty() {
+        "Voice memo".into()
+    } else {
+        cut
+    }
 }
 
 pub fn base_name(m: &Memo, s: &Summary, tz: Tz) -> String {
-    let tz = m.timezone.as_deref().and_then(|z| z.parse::<Tz>().ok()).unwrap_or(tz);
+    let tz = m
+        .timezone
+        .as_deref()
+        .and_then(|z| z.parse::<Tz>().ok())
+        .unwrap_or(tz);
     let when = m.recorded_at.with_timezone(&tz).format("%Y-%m-%d %H%M");
     safe_name(&format!("{when} {}", s.title))
 }
 
 fn yaml(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " "))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    )
 }
 
 /// Index of the transcript line an item points to: the one starting nearest
@@ -86,10 +106,18 @@ fn segment_for(t: &Transcript, at: f64) -> Option<usize> {
 }
 
 fn item_line(i: &Item, t: &Transcript, me: &str, due: &str, todo: bool) -> String {
-    let mut line = if todo { format!("- [ ] {}", i.text) } else { format!("- {}", i.text) };
+    let mut line = if todo {
+        format!("- [ ] {}", i.text)
+    } else {
+        format!("- {}", i.text)
+    };
     let mut meta = Vec::new();
     if let Some(o) = &i.owner {
-        meta.push(if o.eq_ignore_ascii_case("me") { me.to_owned() } else { o.clone() });
+        meta.push(if o.eq_ignore_ascii_case("me") {
+            me.to_owned()
+        } else {
+            o.clone()
+        });
     }
     if let Some(d) = &i.due {
         meta.push(format!("{due} {d}"));
@@ -106,7 +134,11 @@ fn item_line(i: &Item, t: &Transcript, me: &str, due: &str, todo: bool) -> Strin
 /// The note's markdown. `base` is the file name without extension.
 pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: &str) -> String {
     let l = labels(&s.language);
-    let ztz = m.timezone.as_deref().and_then(|z| z.parse::<Tz>().ok()).unwrap_or(tz);
+    let ztz = m
+        .timezone
+        .as_deref()
+        .and_then(|z| z.parse::<Tz>().ok())
+        .unwrap_or(tz);
     let local = m.recorded_at.with_timezone(&ztz);
     let mut tags = vec!["voice-memos".to_owned(), "lucina".to_owned()];
     for t in &s.tags {
@@ -124,8 +156,14 @@ pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: 
     o.push_str(&format!("title: {}\n", yaml(&s.title)));
     o.push_str(&format!("memo_id: {}\n", m.id));
     o.push_str("source: lucina\n");
-    o.push_str(&format!("audio: {}\n", yaml(&format!("[[Attachments/{base}.{}]]", m.ext))));
-    o.push_str(&format!("pdf: {}\n", yaml(&format!("[[Attachments/{base}.pdf]]"))));
+    o.push_str(&format!(
+        "audio: {}\n",
+        yaml(&format!("[[Attachments/{base}.{}]]", m.ext))
+    ));
+    o.push_str(&format!(
+        "pdf: {}\n",
+        yaml(&format!("[[Attachments/{base}.pdf]]"))
+    ));
     o.push_str(&format!("app: {}\n", yaml(app_url)));
     o.push_str(&format!("action_items: {}\n", s.action_items.len()));
     o.push_str("tags:\n");
@@ -165,12 +203,23 @@ pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: 
         }
         o.push('\n');
     }
-    o.push_str(&format!("PDF: [[Attachments/{base}.pdf]] · [{}]({app_url})\n\n", l.listen));
+    o.push_str(&format!(
+        "PDF: [[Attachments/{base}.pdf]] · [{}]({app_url})\n\n",
+        l.listen
+    ));
     o.push_str(&format!("## {}\n\n", l.transcript));
     o.push_str(&format!("*{} {}.*\n\n", l.machine_note, t.engine));
     for (n, seg) in t.segments.iter().enumerate() {
-        let who = seg.speaker.as_ref().map(|sp| format!("{sp}: ")).unwrap_or_default();
-        o.push_str(&format!("**{}** {who}{} ^s{n:03}\n\n", clock(seg.start), seg.text.trim()));
+        let who = seg
+            .speaker
+            .as_ref()
+            .map(|sp| format!("{sp}: "))
+            .unwrap_or_default();
+        o.push_str(&format!(
+            "**{}** {who}{} ^s{n:03}\n\n",
+            clock(seg.start),
+            seg.text.trim()
+        ));
     }
     o
 }
@@ -179,7 +228,11 @@ pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: 
 pub fn index(entries: &[(Memo, String)], tz: Tz) -> String {
     let mut o = String::from("---\ntype: moc\nsource: lucina\ntags:\n  - voice-memos\n  - lucina\n---\n\n# Lucina memos\n\nVoice memos recorded in the Secretary app; Lucina writes the summary, the PDF and these notes.\n\n");
     for (m, base) in entries {
-        let ztz = m.timezone.as_deref().and_then(|z| z.parse::<Tz>().ok()).unwrap_or(tz);
+        let ztz = m
+            .timezone
+            .as_deref()
+            .and_then(|z| z.parse::<Tz>().ok())
+            .unwrap_or(tz);
         let when = m.recorded_at.with_timezone(&ztz).format("%Y-%m-%d");
         let preview = m
             .preview
@@ -189,7 +242,11 @@ pub fn index(entries: &[(Memo, String)], tz: Tz) -> String {
                 format!(" — {}", p.replace('\n', " "))
             })
             .unwrap_or_default();
-        o.push_str(&format!("- {when} [[{base}|{}]] ({}){preview}\n", m.title, clock(m.duration_sec)));
+        o.push_str(&format!(
+            "- {when} [[{base}|{}]] ({}){preview}\n",
+            m.title,
+            clock(m.duration_sec)
+        ));
     }
     o
 }
@@ -225,10 +282,16 @@ pub async fn stage(
             Ok::<_, std::io::Error>(())
         }
     };
-    link(audio, stage.join("Attachments").join(format!("{base}.{ext}"))).await?;
+    link(
+        audio,
+        stage.join("Attachments").join(format!("{base}.{ext}")),
+    )
+    .await?;
     link(pdf, stage.join("Attachments").join(format!("{base}.pdf"))).await?;
     tokio::fs::write(stage.join("00 Lucina memos.md"), index_md).await?;
-    Ok(Bundle { stage: stage.to_path_buf() })
+    Ok(Bundle {
+        stage: stage.to_path_buf(),
+    })
 }
 
 /// Copies the stage into the vault folder (adds and updates, never deletes).
@@ -236,14 +299,25 @@ pub async fn push(target: &VaultTarget, bundle: &Bundle) -> Result<(), PublishEr
     let src = format!("{}/", bundle.stage.display());
     if !target.remote() {
         let dest = Path::new(&target.vault).join(&target.folder);
-        copy_tree(&bundle.stage, &dest).await.map_err(|e| PublishError(e.to_string()))?;
+        copy_tree(&bundle.stage, &dest)
+            .await
+            .map_err(|e| PublishError(e.to_string()))?;
         return Ok(());
     }
     let (host, path) = target.vault.split_once(':').unwrap_or((&target.vault, ""));
     let dest_dir = format!("{path}/{}", target.folder);
     // Create the folder first (rsync makes only the last level).
     let mk = Command::new("ssh")
-        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "mkdir", "-p", "--"])
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            host,
+            "mkdir",
+            "-p",
+            "--",
+        ])
         .arg(shell_quote(&dest_dir))
         .stdin(Stdio::null())
         .output();
@@ -252,10 +326,20 @@ pub async fn push(target: &VaultTarget, bundle: &Bundle) -> Result<(), PublishEr
         .map_err(|_| PublishError("ssh mkdir timed out".into()))?
         .map_err(|e| PublishError(format!("ssh: {e}")))?;
     if !mk.status.success() {
-        return Err(PublishError(format!("ssh mkdir: {}", String::from_utf8_lossy(&mk.stderr).trim())));
+        return Err(PublishError(format!(
+            "ssh mkdir: {}",
+            String::from_utf8_lossy(&mk.stderr).trim()
+        )));
     }
     let out = Command::new("rsync")
-        .args(["-rt", "--protect-args", "--chmod=D755,F644", "--timeout=60", "-e", &target.ssh_opts])
+        .args([
+            "-rt",
+            "--protect-args",
+            "--chmod=D755,F644",
+            "--timeout=60",
+            "-e",
+            &target.ssh_opts,
+        ])
         .arg(&src)
         .arg(format!("{host}:{dest_dir}/"))
         .stdin(Stdio::null())
@@ -342,8 +426,18 @@ mod tests {
             engine: "whisper.cpp large-v3 (GPU)".into(),
             duration_sec: 70.0,
             segments: vec![
-                Segment { start: 0.0, end: 30.0, text: "Allora, il preventivo.".into(), speaker: None },
-                Segment { start: 30.0, end: 70.0, text: "Chiamo Marco lunedì.".into(), speaker: None },
+                Segment {
+                    start: 0.0,
+                    end: 30.0,
+                    text: "Allora, il preventivo.".into(),
+                    speaker: None,
+                },
+                Segment {
+                    start: 30.0,
+                    end: 70.0,
+                    text: "Chiamo Marco lunedì.".into(),
+                    speaker: None,
+                },
             ],
             speakers: false,
             created_at: Utc::now(),
@@ -354,7 +448,12 @@ mod tests {
             overview: "Parli del preventivo.".into(),
             key_points: vec![],
             decisions: vec![],
-            action_items: vec![Item { text: "Chiamare Marco".into(), at: Some(31.0), owner: Some("me".into()), due: Some("2026-10-27".into()) }],
+            action_items: vec![Item {
+                text: "Chiamare Marco".into(),
+                at: Some(31.0),
+                owner: Some("me".into()),
+                due: Some("2026-10-27".into()),
+            }],
             tags: vec!["casa".into()],
             model: "deepseek".into(),
             created_at: Utc::now(),
@@ -362,11 +461,20 @@ mod tests {
         };
         let base = base_name(&m, &s, chrono_tz::Europe::Copenhagen);
         assert_eq!(base, "2026-10-24 1431 Preventivo cucina Marco");
-        let n = note(&m, &s, &t, chrono_tz::Europe::Copenhagen, &base, "https://getsecretary.tech/memos/mm_0123456789abcdef");
+        let n = note(
+            &m,
+            &s,
+            &t,
+            chrono_tz::Europe::Copenhagen,
+            &base,
+            "https://getsecretary.tech/memos/mm_0123456789abcdef",
+        );
         assert!(n.starts_with("---\ntype: voice-memo\ncreated: 2026-10-24\n"));
         assert!(n.contains("recorded: 2026-10-24T14:31:00+02:00"));
         assert!(n.contains("![[Attachments/2026-10-24 1431 Preventivo cucina Marco.m4a]]"));
-        assert!(n.contains("## Cose da fare\n\n- [ ] Chiamare Marco (tu, entro 2026-10-27, [[#^s001|0:30]])"));
+        assert!(n.contains(
+            "## Cose da fare\n\n- [ ] Chiamare Marco (tu, entro 2026-10-27, [[#^s001|0:30]])"
+        ));
         assert!(n.contains("**0:30** Chiamo Marco lunedì. ^s001"));
         assert!(n.contains("  - casa\n"));
         let idx = index(&[(m, base.clone())], chrono_tz::Europe::Copenhagen);

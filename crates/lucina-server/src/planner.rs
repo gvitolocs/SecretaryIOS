@@ -160,7 +160,10 @@ impl Planner {
         let r = self
             .model
             .complete(ChatRequest {
-                messages: vec![Message::system(with_turn_system(system, purpose)), Message::user(user)],
+                messages: vec![
+                    Message::system(with_turn_system(system, purpose)),
+                    Message::user(user),
+                ],
                 temperature: Some(temperature),
                 purpose,
                 ..ChatRequest::default()

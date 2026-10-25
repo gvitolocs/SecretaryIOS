@@ -57,7 +57,11 @@ pub fn fold(s: &str) -> String {
 }
 
 fn words(q: &str) -> Vec<String> {
-    fold(q).split_whitespace().filter(|w| w.chars().count() >= 2).map(str::to_owned).collect()
+    fold(q)
+        .split_whitespace()
+        .filter(|w| w.chars().count() >= 2)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn contains_word(hay: &str, w: &str) -> bool {
@@ -76,7 +80,9 @@ pub fn search(store: &Store, query: &Query<'_>, url: impl Fn(&str) -> String) ->
     let ws = query.q.map(words).unwrap_or_default();
     let mut out = Vec::new();
     for m in store.list() {
-        if query.from.is_some_and(|f| m.recorded_at < f) || query.to.is_some_and(|t| m.recorded_at >= t) {
+        if query.from.is_some_and(|f| m.recorded_at < f)
+            || query.to.is_some_and(|t| m.recorded_at >= t)
+        {
             continue;
         }
         if m.status == Status::Uploading {
@@ -94,11 +100,23 @@ pub fn search(store: &Store, query: &Query<'_>, url: impl Fn(&str) -> String) ->
     out
 }
 
-fn hit(m: &Memo, t: Option<&Transcript>, s: Option<&Summary>, ws: &[String], url: &impl Fn(&str) -> String) -> Option<Hit> {
+fn hit(
+    m: &Memo,
+    t: Option<&Transcript>,
+    s: Option<&Summary>,
+    ws: &[String],
+    url: &impl Fn(&str) -> String,
+) -> Option<Hit> {
     let summary_text = s
         .map(|s| {
             let mut v = vec![s.title.clone(), s.overview.clone()];
-            v.extend(s.key_points.iter().chain(&s.decisions).chain(&s.action_items).map(|i| i.text.clone()));
+            v.extend(
+                s.key_points
+                    .iter()
+                    .chain(&s.decisions)
+                    .chain(&s.action_items)
+                    .map(|i| i.text.clone()),
+            );
             v.extend(s.tags.iter().cloned());
             v.join(" ")
         })
@@ -117,7 +135,14 @@ fn hit(m: &Memo, t: Option<&Transcript>, s: Option<&Summary>, ws: &[String], url
             let f = fold(&seg.text);
             let n = ws.iter().filter(|w| contains_word(&f, w)).count();
             if n > 0 {
-                lines.push((n, Line { at: seg.start, clock: clock(seg.start), text: seg.text.clone() }));
+                lines.push((
+                    n,
+                    Line {
+                        at: seg.start,
+                        clock: clock(seg.start),
+                        text: seg.text.clone(),
+                    },
+                ));
             }
         }
         lines.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.at.total_cmp(&b.1.at)));
@@ -132,8 +157,12 @@ fn hit(m: &Memo, t: Option<&Transcript>, s: Option<&Summary>, ws: &[String], url
         status: m.status,
         language: m.language.clone(),
         overview: s.map(|s| s.overview.clone()),
-        key_points: s.map(|s| s.key_points.iter().map(|i| i.text.clone()).collect()).unwrap_or_default(),
-        action_items: s.map(|s| s.action_items.iter().map(|i| i.text.clone()).collect()).unwrap_or_default(),
+        key_points: s
+            .map(|s| s.key_points.iter().map(|i| i.text.clone()).collect())
+            .unwrap_or_default(),
+        action_items: s
+            .map(|s| s.action_items.iter().map(|i| i.text.clone()).collect())
+            .unwrap_or_default(),
         lines: lines.into_iter().map(|(_, l)| l).collect(),
         url: url(&m.id),
     })
@@ -146,7 +175,10 @@ mod tests {
     #[test]
     fn folding() {
         assert_eq!(fold("Perché? Ålborg, Æble!"), "perche  alborg  aeble ");
-        assert!(contains_word(&fold("il preventivo della cucina"), "preventiv"));
+        assert!(contains_word(
+            &fold("il preventivo della cucina"),
+            "preventiv"
+        ));
         assert!(!contains_word(&fold("anteprima"), "prima"));
         assert_eq!(words("a la Cucina"), vec!["la", "cucina"]);
     }

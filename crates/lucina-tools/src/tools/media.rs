@@ -71,15 +71,20 @@ fn base() -> String {
 }
 
 fn key() -> Result<String, ToolError> {
-    let path = std::env::var("LUCINA_MEDIA_KEY_FILE").ok().map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/nez".into()))
-            .join(".config/secretary-media/upstream.key")
-    });
+    let path = std::env::var("LUCINA_MEDIA_KEY_FILE")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/nez".into()))
+                .join(".config/secretary-media/upstream.key")
+        });
     std::fs::read_to_string(&path)
         .map(|k| k.trim().to_owned())
         .ok()
         .filter(|k| !k.is_empty())
-        .ok_or_else(|| ToolError::new("the media library is not configured (LUCINA_MEDIA_KEY_FILE)"))
+        .ok_or_else(|| {
+            ToolError::new("the media library is not configured (LUCINA_MEDIA_KEY_FILE)")
+        })
 }
 
 async fn send(req: reqwest::RequestBuilder) -> Result<Value, ToolError> {
@@ -87,12 +92,20 @@ async fn send(req: reqwest::RequestBuilder) -> Result<Value, ToolError> {
         .header("X-Media-Upstream-Key", key()?)
         .send()
         .await
-        .map_err(|e| ToolError::new(format!("the media library is unreachable: {}", e.without_url())))?;
+        .map_err(|e| {
+            ToolError::new(format!(
+                "the media library is unreachable: {}",
+                e.without_url()
+            ))
+        })?;
     let status = resp.status();
     let body: Value = resp.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
         let msg = body["error"].as_str().unwrap_or("request failed");
-        return Err(ToolError::new(format!("media library: {msg} (HTTP {})", status.as_u16())));
+        return Err(ToolError::new(format!(
+            "media library: {msg} (HTTP {})",
+            status.as_u16()
+        )));
     }
     Ok(body)
 }
@@ -181,7 +194,10 @@ impl Tool for MediaTool {
                     q.push(("to", v.clone()));
                 }
                 if let Some(n) = &a.near {
-                    q.push(("near", format!("{},{},{}", n.lat, n.lon, n.km.unwrap_or(25.0))));
+                    q.push((
+                        "near",
+                        format!("{},{},{}", n.lat, n.lon, n.km.unwrap_or(25.0)),
+                    ));
                 }
                 if let Some(v) = &a.kind {
                     q.push(("kind", v.clone()));
@@ -194,9 +210,15 @@ impl Tool for MediaTool {
                 let ids: Vec<Value> = items.iter().map(|i| i["id"].clone()).collect();
                 let shown = a.show.unwrap_or(true) && !items.is_empty();
                 if shown {
-                    send(http.put(format!("{b}/v1/media/albums/{PICKS_ALBUM}/items")).json(&json!({ "item_ids": ids })))
-                        .await?;
-                    ctx.push_effect(Effect::Gallery { path: format!("/gallery/album/{PICKS_ALBUM}"), count: items.len() });
+                    send(
+                        http.put(format!("{b}/v1/media/albums/{PICKS_ALBUM}/items"))
+                            .json(&json!({ "item_ids": ids })),
+                    )
+                    .await?;
+                    ctx.push_effect(Effect::Gallery {
+                        path: format!("/gallery/album/{PICKS_ALBUM}"),
+                        count: items.len(),
+                    });
                 }
                 let tz = ctx.env.time_zone;
                 Ok(json!({
@@ -218,39 +240,70 @@ impl Tool for MediaTool {
                 Ok(json!({ "albums": albums }))
             }
             Action::CreateAlbum => {
-                let title = a.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| ToolError::new("title is required"))?;
-                let album = send(
-                    http.post(format!("{b}/v1/media/albums"))
-                        .json(&json!({ "title": title, "item_ids": a.item_ids.unwrap_or_default() })),
+                let title = a
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| ToolError::new("title is required"))?;
+                let album =
+                    send(http.post(format!("{b}/v1/media/albums")).json(
+                        &json!({ "title": title, "item_ids": a.item_ids.unwrap_or_default() }),
+                    ))
+                    .await?;
+                ctx.push_effect(Effect::Gallery {
+                    path: format!("/gallery/album/{}", album["id"].as_str().unwrap_or("")),
+                    count: album["count"].as_u64().unwrap_or(0) as usize,
+                });
+                Ok(
+                    json!({ "album": { "id": album["id"], "title": album["title"], "count": album["count"] } }),
                 )
-                .await?;
-                ctx.push_effect(Effect::Gallery { path: format!("/gallery/album/{}", album["id"].as_str().unwrap_or("")), count: album["count"].as_u64().unwrap_or(0) as usize });
-                Ok(json!({ "album": { "id": album["id"], "title": album["title"], "count": album["count"] } }))
             }
             Action::AddToAlbum => {
-                let wanted = a.album.as_deref().map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| ToolError::new("album is required"))?;
+                let wanted = a
+                    .album
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| ToolError::new("album is required"))?;
                 let ids = a.item_ids.unwrap_or_default();
                 if ids.is_empty() {
                     return Err(ToolError::new("item_ids is required (ids from a search)"));
                 }
                 let list = send(http.get(format!("{b}/v1/media/albums"))).await?;
                 let found = list["albums"].as_array().into_iter().flatten().find(|x| {
-                    x["id"].as_str() == Some(wanted) || x["title"].as_str().is_some_and(|t| t.eq_ignore_ascii_case(wanted))
+                    x["id"].as_str() == Some(wanted)
+                        || x["title"]
+                            .as_str()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(wanted))
                 });
                 let id = match found {
                     Some(x) => x["id"].as_str().unwrap_or_default().to_owned(),
                     None => {
-                        let created = send(http.post(format!("{b}/v1/media/albums")).json(&json!({ "title": wanted, "item_ids": [] }))).await?;
+                        let created = send(
+                            http.post(format!("{b}/v1/media/albums"))
+                                .json(&json!({ "title": wanted, "item_ids": [] })),
+                        )
+                        .await?;
                         created["id"].as_str().unwrap_or_default().to_owned()
                     }
                 };
-                let r = send(http.post(format!("{b}/v1/media/albums/{id}/items")).json(&json!({ "item_ids": ids }))).await?;
-                ctx.push_effect(Effect::Gallery { path: format!("/gallery/album/{id}"), count: r["added"].as_u64().unwrap_or(0) as usize });
+                let r = send(
+                    http.post(format!("{b}/v1/media/albums/{id}/items"))
+                        .json(&json!({ "item_ids": ids })),
+                )
+                .await?;
+                ctx.push_effect(Effect::Gallery {
+                    path: format!("/gallery/album/{id}"),
+                    count: r["added"].as_u64().unwrap_or(0) as usize,
+                });
                 Ok(json!({ "album_id": id, "added": r["added"] }))
             }
             Action::Summary => {
                 let v = send(http.get(format!("{b}/v1/media/summary"))).await?;
-                Ok(json!({ "kinds": v["kinds"], "years": v["years"], "places": v["places"], "last_added_at": v["last_added_at"] }))
+                Ok(
+                    json!({ "kinds": v["kinds"], "years": v["years"], "places": v["places"], "last_added_at": v["last_added_at"] }),
+                )
             }
         }
     }
