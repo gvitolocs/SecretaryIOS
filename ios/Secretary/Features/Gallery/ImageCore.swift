@@ -167,8 +167,9 @@ struct RustTile: View {
             }
         }
         .onAppear {
-            let path = item.urls?.grid
-            remote.load(store.api().absolute(path), accessKey: store.api().client.accessKey, cacheKey: path)
+            // Signed URLs change with every listing: cache by item (the ThumbHash changes with each version).
+            remote.load(store.api().absolute(item.urls?.grid), accessKey: store.api().client.accessKey,
+                        cacheKey: "grid-\(item.id)-\(item.thumbhash ?? "")")
         }
         .onDisappear { if !remote.complete { remote.cancel() } }
     }

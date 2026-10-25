@@ -318,3 +318,28 @@ async fn internal_ingest_moves_a_shared_file_in() {
     assert_eq!(page["items"][0]["id"], id.as_str());
     let _ = lib;
 }
+
+#[tokio::test]
+async fn signed_renditions_need_no_upstream_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = Config::for_dirs(tmp.path().join("data"), tmp.path().join("store"));
+    cfg.quiet_start = 0;
+    cfg.quiet_end = 0;
+    cfg.upstream_key = Some(KEY.into());
+    cfg.play_secret = Some(b"0123456789abcdef0123456789abcdef".to_vec());
+    store::init_store(&cfg).unwrap();
+    let lib = Library::open(cfg).unwrap();
+    let app = http::router(lib.clone(), None);
+    upload(&app, "a.png", &png(300, 200, 3), json!({})).await;
+    wait_thumbs(&lib).await;
+    let (_, page) = get_json(&app, "/v1/media/items").await;
+    let grid = page["items"][0]["urls"]["grid"].as_str().unwrap().to_string();
+    assert!(grid.starts_with("/v1/media/s/"), "{grid}");
+    // No upstream key: the token is the auth.
+    let res = app.clone().oneshot(Request::builder().uri(&grid).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "image/jxl");
+    let forged = grid.replacen("/v1/media/s/", "/v1/media/s/x", 1);
+    let res = app.clone().oneshot(Request::builder().uri(&forged).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
