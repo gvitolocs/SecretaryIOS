@@ -26,6 +26,7 @@ export function inAndroidApp(): boolean {
 }
 
 export const PLUGINS: Plugin[] = [
+  { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
   { id: "notes", icon: NoteIcon, title: () => t("plugins.notes"), detail: () => t("plugins.notesDetail"), href: "/notes" },
   { id: "tasks", icon: CheckCircleIcon, title: () => t("plugins.tasks"), detail: () => t("plugins.tasksDetail"), href: "/tasks" },

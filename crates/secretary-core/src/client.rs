@@ -97,6 +97,16 @@ impl Call {
         Self::new(Method::GET, &["health"])
     }
 
+    /// `GET /hermes`: the Hermes desk settings.
+    pub fn hermes() -> Self {
+        Self::new(Method::GET, &["hermes"])
+    }
+
+    /// `PUT /hermes`.
+    pub fn hermes_update(body: Value) -> Result<Self> {
+        Ok(Self::new(Method::PUT, &["hermes"]).with_body(body))
+    }
+
     /// `POST /chat`.
     pub fn chat(req: &ChatRequest) -> Result<Self> {
         validate::text("message", &req.message, validate::MAX_MESSAGE_CHARS)?;

@@ -14,6 +14,9 @@ export interface JobRef {
 }
 
 export interface ChatResponse {
+  /** Private OTP reply: keep only in RAM, never speak or cache. */
+  sensitive?: boolean;
+  expiresAt?: number;
   reply: string;
   action?: string | null;
   job: JobRef | null;

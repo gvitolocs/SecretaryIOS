@@ -13,6 +13,7 @@ import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
 import { setAvatarPath, startAvatarSync, wardrobeOpen } from "../state/wardrobe";
+import "../styles/character-shell.css";
 
 // The Wardrobe panel is only fetched the first time it opens.
 const Wardrobe = lazy(() => import("../components/Wardrobe"));
@@ -20,7 +21,7 @@ const Wardrobe = lazy(() => import("../components/Wardrobe"));
 // The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
 // Training + Weight, Plugins. Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const PLUGIN_PATHS = ["/plugins", "/notes", "/tasks", "/links", "/models", "/memos"];
+const PLUGIN_PATHS = ["/plugins", "/notes", "/tasks", "/links", "/models", "/memos", "/desk"];
 
 function NavLinks(props: { class: string }) {
   const location = useLocation();
@@ -121,7 +122,7 @@ export default function Shell(props: { children?: JSX.Element }) {
   }
 
   return (
-    <div class="shell">
+    <div class="shell shell--character">
       <a class="skip-link" href="#main">
         {t("shell.skipToContent")}
       </a>

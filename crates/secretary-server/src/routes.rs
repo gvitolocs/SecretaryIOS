@@ -73,6 +73,13 @@ async fn chat(
     forward(&st, Call::chat(&req)?).await
 }
 
+async fn hermes(State(st): State<AppState>) -> ApiResult {
+    forward(&st, Call::hermes()).await
+}
+async fn hermes_update(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    forward(&st, Call::hermes_update(body)?).await
+}
+
 async fn job(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
     forward(&st, Call::job(&id)?).await
 }
@@ -174,6 +181,7 @@ pub fn public() -> Router<AppState> {
 pub fn protected() -> Router<AppState> {
     Router::new()
         .route("/v1/chat", axum::routing::post(chat))
+        .route("/v1/hermes", get(hermes).put(hermes_update))
         .route("/v1/jobs/{id}", get(job))
         .route("/v1/reminders", get(reminders).post(create_reminder))
         .route("/v1/reminders/{id}", delete(cancel_reminder))
