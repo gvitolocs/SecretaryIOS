@@ -527,6 +527,8 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         if !(-90.0..=90.0).contains(&loc.lat) || !(-180.0..=180.0).contains(&loc.lon) {
             return Err(bad("invalid meta.location"));
         }
+        // The location becomes a part of its own: it counts toward the limit.
+        check_parts(parts.len() + 1)?;
         let label = loc
             .name
             .clone()
@@ -826,10 +828,13 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
     Ok(())
 }
 /// Lucina's reply to the share's user item, if one was written before a
-/// restart (newest items only).
+/// restart. Every item is checked: other writers keep appending, so a reply
+/// can be far from the end (a "newest N" window answered twice; Stateright
+/// case and Verus `unfixed_window_scan` in docs/verification.md). Items that
+/// don't mention the id are skipped before any JSON parsing.
 fn existing_reply(st: &AppState, user_item: &str) -> Option<(String, String)> {
     let items = st.timeline.read_all().ok()?;
-    items.iter().rev().take(500).find_map(|i| {
+    items.iter().rev().filter(|i| i.raw.contains(user_item)).find_map(|i| {
         let v: Value = serde_json::from_str(&i.raw).ok()?;
         (v["role"] == "lucina" && v["replyTo"] == user_item).then(|| {
             (
