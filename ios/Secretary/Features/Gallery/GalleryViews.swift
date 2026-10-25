@@ -203,6 +203,7 @@ struct GalleryScreen: View {
         }
         .fullScreenCover(item: $viewing) { item in
             GalleryViewer(start: item)
+                .presentationBackground(.clear)
         }
     }
 }
@@ -434,8 +435,13 @@ struct GalleryViewer: View {
     @State private var meter = FrameMeter()
     /// One tap on the photo hides the bars and the status bar (black, picture only); another brings them back.
     @State private var chromeHidden = false
+    /// The photo is being swiped down or up (bars hidden, the grid fading in behind).
+    @State private var dragging = false
+    /// The photo that is zoomed, if any: there the drag pans instead of closing.
+    @State private var zoomedID: String?
 
     var body: some View {
+        let bare = chromeHidden || dragging
         let item = store.items.first { $0.id == current } ?? start
         NavigationStack {
             TabView(selection: $current) {
@@ -444,12 +450,14 @@ struct GalleryViewer: View {
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
-            .background(.black)
-            .ignoresSafeArea(edges: chromeHidden ? .all : .bottom)
+            // Google Photos: swipe down to close, up for the details.
+            .photoDragOut(enabled: zoomedID != current, dragging: $dragging, onDismiss: { dismiss() }, onInfo: { showInfo = true })
+            .clearNavigationBackground()
+            .ignoresSafeArea(edges: bare ? .all : .bottom)
             .toolbarBackground(.visible, for: .navigationBar, .bottomBar)
-            .toolbar(chromeHidden ? .hidden : .visible, for: .navigationBar, .bottomBar)
-            .statusBarHidden(chromeHidden)
-            .animation(.easeInOut(duration: 0.2), value: chromeHidden)
+            .toolbar(bare ? .hidden : .visible, for: .navigationBar, .bottomBar)
+            .statusBarHidden(bare)
+            .animation(.easeInOut(duration: 0.2), value: bare)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .principal) {
@@ -550,7 +558,9 @@ struct GalleryViewer: View {
                 .accessibilityIdentifier("galleryPlay")
             }
         } else {
-            RustPhoto(item: it) { chromeHidden.toggle() }
+            RustPhoto(item: it, onTap: { chromeHidden.toggle() }, onZoom: { zoomed in
+                if zoomed { zoomedID = it.id } else if zoomedID == it.id { zoomedID = nil }
+            })
         }
     }
 

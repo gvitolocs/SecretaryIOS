@@ -504,6 +504,8 @@ struct RustPhoto: View {
     let item: GalleryItem
     /// One tap (not a double tap): the viewer shows or hides its controls, as in Google Photos.
     var onTap: () -> Void = {}
+    /// The photo went from fitted to zoomed or back (the viewer's swipe down only works fitted).
+    var onZoom: (Bool) -> Void = { _ in }
     @State private var remote = RemoteImage()
     @State private var local = LocalGalleryImage()
     @State private var view: [String: Double]?
@@ -515,7 +517,8 @@ struct RustPhoto: View {
         GeometryReader { geo in
             let shown = localSharp ?? remote.image ?? local.image ?? (gallerySmooth ? GalleryImageCache.placeholder(item) : ImageCore.placeholder(item.thumbhash))
             ZStack {
-                Color.black
+                // Clear: the viewer draws the black, so a swipe down can fade it to the grid.
+                Color.clear
                 if let shown {
                     Image(decorative: shown, scale: 1)
                         .resizable()
@@ -608,7 +611,9 @@ struct RustPhoto: View {
               answer["ok"] as? Bool == true,
               let v = answer["view"] as? [String: Double],
               let r = answer["rect"] as? [String: Double] else { return }
+        let wasZoomed = zoomed
         view = v
+        if zoomed != wasZoomed { onZoom(zoomed) }
         if answer["wants_original"] as? Bool == true { local.requestOriginal() }
         rect = CGRect(x: r["x"] ?? 0, y: r["y"] ?? 0, width: r["w"] ?? 0, height: r["h"] ?? 0)
     }

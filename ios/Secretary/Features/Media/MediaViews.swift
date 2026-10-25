@@ -481,6 +481,7 @@ private struct PhotoViewer: View {
     @Environment(\.dismiss) private var dismiss
     let items: [MediaItem]
     @State private var selection: String
+    @State private var dragging = false
 
     init(items: [MediaItem], start: MediaItem) {
         self.items = items
@@ -489,7 +490,6 @@ private struct PhotoViewer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.black.ignoresSafeArea()
             TabView(selection: $selection) {
                 ForEach(items) { item in
                     AsyncImage(url: originalURL(item)) { phase in
@@ -506,13 +506,18 @@ private struct PhotoViewer: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.white).padding(12)
-                    .background(.black.opacity(0.4), in: Circle())
+            // Google Photos: swipe down to close.
+            .photoDragOut(dragging: $dragging, onDismiss: { dismiss() })
+            if !dragging {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.white).padding(12)
+                        .background(.black.opacity(0.4), in: Circle())
+                }
+                .padding()
+                .accessibilityLabel("Close")
             }
-            .padding()
-            .accessibilityLabel("Close")
         }
+        .presentationBackground(.clear)
     }
 
     /// `/v1/media/s/{token}/{id}/thumb.jpg` → `/v1/media/s/{token}/{id}/file` (same token).
