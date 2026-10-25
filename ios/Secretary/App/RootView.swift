@@ -103,6 +103,9 @@ struct MainTabs: View {
             }
             .lucinaSheet()
         }
+        .onReceive(NotificationCenter.default.publisher(for: ShareUploads.completed)) { _ in
+            if app.isForeground { Task { await app.chat.refresh() } }
+        }
         // The timeline stream runs only in the foreground; it pauses in the background.
         .onChange(of: scenePhase, initial: true) { _, phase in
             app.chat.setForeground(phase == .active)
@@ -116,6 +119,12 @@ struct MainTabs: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await withTaskGroup(of: Void.self) { group in
+                group.addTask { @MainActor in
+                    while !Task.isCancelled {
+                        await ShareUploads.shared.retryPending()
+                        try? await Task.sleep(for: .seconds(120))
+                    }
+                }
                 group.addTask { await app.health.poll() }
                 group.addTask { await app.watchPrimary() }
                 group.addTask { await app.wardrobe.load() }

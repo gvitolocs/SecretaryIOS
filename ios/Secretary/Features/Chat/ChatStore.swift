@@ -306,6 +306,7 @@ final class ChatStore {
     private func post(_ text: String) async -> String? {
         let message = Self.clean(text)
         guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return nil }
+        LucinaDonations.donate()
         let clientId = UUID().uuidString
         items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
                                   clientMessageId: clientId, localStatus: .sending))

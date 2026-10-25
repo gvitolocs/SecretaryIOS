@@ -268,11 +268,7 @@ private struct MessageRow: View {
                 }
                 if !item.attachments.isEmpty {
                     ForEach(Array(item.attachments.enumerated()), id: \.offset) { _, attachment in
-                        Label(attachment.name ?? attachment.kind.capitalized, systemImage: Self.symbol(for: attachment.kind))
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(Theme.field, in: Capsule())
+                        ShareAttachmentView(attachment: attachment)
                     }
                 }
                 if let job {
@@ -299,12 +295,7 @@ private struct MessageRow: View {
     }
 
     static func symbol(for kind: String) -> String {
-        switch kind.lowercased() {
-        case "image", "photo": return "photo"
-        case "audio", "voice": return "waveform"
-        case "video": return "video"
-        default: return "paperclip"
-        }
+        TimelineAttachment.symbol(for: kind)
     }
 }
 

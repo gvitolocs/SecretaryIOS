@@ -113,6 +113,8 @@ struct RecordMemoIntent: AppIntent {
 
 struct SecretaryShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: SendToLucinaIntent(), phrases: ["Send to Lucina with \(.applicationName)", "Share with Lucina in \(.applicationName)"],
+                    shortTitle: "Send to Lucina", systemImageName: "paperplane")
         AppShortcut(intent: AskLucinaIntent(), phrases: ["Ask \(.applicationName)", "Ask Lucina in \(.applicationName)"],
                     shortTitle: "Ask Lucina", systemImageName: "bubble.left.and.bubble.right")
         AppShortcut(intent: AddToShoppingIntent(), phrases: ["Add to shopping in \(.applicationName)", "Add to my list in \(.applicationName)"],

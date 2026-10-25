@@ -215,6 +215,9 @@ final class AppModel {
             return
         }
         phase = .signedIn
+        device.syncCredentials()
+        LucinaDonations.donate(daily: true)
+        Task { await ShareUploads.shared.retryPending() }
         if backup.settings.enabled { Task { await backup.requestAccessAndRun() } }
         await health.refresh()
         do {
@@ -257,6 +260,7 @@ final class AppModel {
             self.deviceName = session.deviceName ?? deviceName
             signedOutReason = nil
             phase = .signedIn
+            device.syncCredentials()
             await health.refresh()
         } catch {
             client.accessKey = previous

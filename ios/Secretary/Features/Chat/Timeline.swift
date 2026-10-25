@@ -35,7 +35,41 @@ enum TimelineChannel: String, Codable, CaseIterable, Sendable {
 
 struct TimelineAttachment: Codable, Equatable, Hashable, Sendable {
     let kind: String
-    let name: String?
+    var name: String?
+    var mime: String? = nil
+    var mediaId: String? = nil
+    var url: String? = nil
+    var bytes: Int64? = nil
+
+    init(kind: String, name: String? = nil, mime: String? = nil, mediaId: String? = nil, url: String? = nil, bytes: Int64? = nil) {
+        self.kind = kind; self.name = name; self.mime = mime; self.mediaId = mediaId; self.url = url; self.bytes = bytes
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, name, mime, mediaId, url, bytes }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decode(String.self, forKey: .kind)) ?? "file"
+        name = try? c.decode(String.self, forKey: .name)
+        mime = try? c.decode(String.self, forKey: .mime)
+        mediaId = try? c.decode(String.self, forKey: .mediaId)
+        url = try? c.decode(String.self, forKey: .url)
+        bytes = try? c.decode(Int64.self, forKey: .bytes)
+    }
+
+    static func symbol(for kind: String) -> String {
+        switch kind.lowercased() {
+        case "image", "photo": return "photo"
+        case "video": return "video"
+        case "audio", "voice": return "waveform"
+        case "pdf": return "doc.richtext"
+        case "document": return "doc.text"
+        case "contact": return "person.crop.circle"
+        case "location": return "mappin.and.ellipse"
+        case "text": return "text.quote"
+        case "link": return "link"
+        default: return "doc"
+        }
+    }
 }
 
 /// A button on a proactive message: a feedback tap (`useful`, `not_now`, `stop`) or an

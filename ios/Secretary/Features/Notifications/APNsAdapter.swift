@@ -67,6 +67,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// iOS relaunched the app because background photo uploads finished.
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
+        if identifier.hasPrefix(ShareRequestBuilder.prefix) {
+            ShareUploads.shared.handleEvents(identifier, completion: completionHandler)
+            return
+        }
         BackgroundUploader.shared.systemCompletion[identifier] = completionHandler
         BackgroundUploader.shared.reattach(identifier)
     }
