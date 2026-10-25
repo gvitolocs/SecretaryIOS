@@ -91,7 +91,7 @@ final class SecretaryFlowTests: XCTestCase {
     func testChatSendsAndShowsLucinasReply() {
         let app = launch()
         signIn(app)
-        let composer = app.textFields["chatComposer"]
+        let composer = app.textViews["chatComposer"]
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
         composer.typeText("hello Lucina\n")
