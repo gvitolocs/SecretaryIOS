@@ -70,7 +70,21 @@ final class PhotoBackup {
     private(set) var lastError: String?
 
     @ObservationIgnored private let api: () -> GalleryAPI
-    @ObservationIgnored private var ledger: [String: Entry] = [:]
+    @ObservationIgnored private var ledger: [String: Entry] = [:] {
+        didSet { rebuildLocalAssets() }
+    }
+    private var localAssets: [String: String] = [:]
+
+    func localAsset(for itemId: String) -> String? { localAssets[itemId] }
+
+    private func rebuildLocalAssets() {
+        var reverse: [String: String] = [:]
+        for (identifier, entry) in ledger where !identifier.hasSuffix("#motion") {
+            if let id = entry.itemId { reverse[id] = identifier }
+        }
+        // Assigned only on a real change: every view that asks `localAsset(for:)` observes it.
+        if reverse != localAssets { localAssets = reverse }
+    }
     @ObservationIgnored private var running: Task<Void, Never>?
     @ObservationIgnored private let path = NWPathMonitor()
     @ObservationIgnored private var currentPath: NWPath?
@@ -95,6 +109,7 @@ final class PhotoBackup {
             ledger = saved.entries
             lastBackup = saved.lastBackup
         }
+        rebuildLocalAssets()
         backedUp = ledger.values.filter { $0.itemId != nil }.count
         status = settings.enabled ? .idle : .off
         // A pass that waited for Wi-Fi (or for the first path update) starts again when the network allows it.

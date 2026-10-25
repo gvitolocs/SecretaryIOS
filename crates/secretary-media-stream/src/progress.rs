@@ -38,9 +38,12 @@ impl Store {
         let mut newer = Vec::new();
         let mut changed = false;
         for e in incoming {
+            // The same order as every device (`Entry::is_newer_than`, fix R1 in
+            // docs/verification.md): `(updated_at, device)`, so two devices writing in
+            // the same millisecond still agree on one winner.
             match entries.get(&e.id) {
-                Some(cur) if cur.updated_at >= e.updated_at => {
-                    if cur.updated_at > e.updated_at {
+                Some(cur) if !e.is_newer_than(cur) => {
+                    if cur.is_newer_than(&e) {
                         newer.push(cur.clone());
                     }
                 }
@@ -69,6 +72,21 @@ mod tests {
 
     fn e(id: &str, pos: u64, at: u64) -> Entry {
         Entry { id: id.into(), position_ms: pos, duration_ms: 100_000, finished: false, updated_at: at, device: None }
+    }
+
+    #[tokio::test]
+    async fn same_millisecond_writes_have_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path().join("progress.json")).unwrap();
+        let at = |device: &str, pos| Entry { device: Some(device.into()), ..e("a", pos, 5) };
+        // Whichever arrives first, the web's write (the later device name) is kept, and the
+        // iPhone, whose write lost, gets it back to adopt.
+        assert!(s.put(vec![at("iPhone", 10)]).await.unwrap().is_empty());
+        assert!(s.put(vec![at("web", 20)]).await.unwrap().is_empty());
+        assert_eq!(s.get("a").await.unwrap().position_ms, 20);
+        assert_eq!(s.put(vec![at("iPhone", 10)]).await.unwrap(), vec![at("web", 20)]);
+        // The same write delivered twice is neither stored again nor sent back.
+        assert!(s.put(vec![at("web", 20)]).await.unwrap().is_empty());
     }
 
     #[tokio::test]

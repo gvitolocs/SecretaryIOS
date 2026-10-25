@@ -2,8 +2,11 @@
 //! push a position to the server, and how local and server positions merge.
 //!
 //! Merge rule: last writer wins by `updated_at` (ms since the epoch, set by the
-//! device that played). A newer local position that has not reached the
-//! server yet is never overwritten by an older server one.
+//! device that played), ties broken by the device name, so every device and
+//! the server pick the same winner (`Entry::is_newer_than`). A newer local
+//! position that has not reached the server yet is never overwritten by an
+//! older server one. Proofs: verification/verus/player_kernels.rs; model of
+//! the sync between devices: verification/models/src/player.rs.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -25,6 +28,33 @@ pub struct Entry {
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+}
+
+impl Entry {
+    /// The last-writer-wins order: `updated_at`, then the device name. Two
+    /// devices writing in the same millisecond still have one winner.
+    pub fn is_newer_than(&self, other: &Entry) -> bool {
+        (self.updated_at, self.device.as_deref().unwrap_or("")) > (other.updated_at, other.device.as_deref().unwrap_or(""))
+    }
+}
+
+/// The stamp of a new write: the device clock, but always after the entry the device
+/// holds (fix R2). Clocks differ between devices, and a device that adopted a newer
+/// entry from a faster clock must not stamp its own next position as older than that.
+pub fn write_stamp(now: u64, held: Option<u64>) -> u64 {
+    match held {
+        Some(at) if at >= now => at.saturating_add(1),
+        _ => now,
+    }
+}
+
+/// A position never past the end of a known duration.
+pub fn clamp_position(position_ms: u64, duration_ms: u64) -> u64 {
+    if duration_ms > 0 {
+        position_ms.min(duration_ms)
+    } else {
+        position_ms
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,6 +122,7 @@ impl Book {
         now: u64,
         device: Option<String>,
     ) -> Tick {
+        let position_ms = clamp_position(position_ms, duration_ms);
         let local = self.entries.entry(id.to_string()).or_default();
         let previous = local.entry.as_ref().map(|e| e.position_ms);
         let finished = is_finished(position_ms, duration_ms)
@@ -102,7 +133,7 @@ impl Book {
             position_ms,
             duration_ms,
             finished,
-            updated_at: now,
+            updated_at: write_stamp(now, local.entry.as_ref().map(|e| e.updated_at)),
             device,
         };
         let changed = local.entry.as_ref().map(|e| (e.position_ms, e.finished)) != Some((position_ms, finished));
@@ -127,8 +158,9 @@ impl Book {
             .collect()
     }
 
-    /// The server stored these (id, updated_at). An entry changed after the
-    /// acknowledged write stays dirty.
+    /// The server stored these (id, updated_at), or kept a newer entry it
+    /// sends back for `merge`. An entry changed after the acknowledged write
+    /// stays dirty.
     pub fn acknowledge(&mut self, acks: &[(String, u64)]) {
         for (id, at) in acks {
             if let Some(l) = self.entries.get_mut(id) {
@@ -144,9 +176,11 @@ impl Book {
         let mut changed = Vec::new();
         for e in remote {
             let local = self.entries.entry(e.id.clone()).or_default();
-            let newer = local.entry.as_ref().is_none_or(|l| e.updated_at > l.updated_at);
+            let newer = local.entry.as_ref().is_none_or(|l| e.is_newer_than(l));
             if newer {
                 changed.push(e.id.clone());
+                let mut e = e;
+                e.position_ms = clamp_position(e.position_ms, e.duration_ms);
                 local.entry = Some(e);
                 local.dirty = false;
             }
@@ -227,6 +261,45 @@ mod tests {
         assert_eq!(b.merge(vec![remote(2_000)]), vec!["a".to_string()]);
         assert_eq!(b.get("a").unwrap().position_ms, 20 * MIN);
         assert!(b.pending().is_empty());
+    }
+
+    #[test]
+    fn same_millisecond_writes_have_one_winner() {
+        let at = |device: &str, pos| Entry { id: "a".into(), position_ms: pos, duration_ms: 60 * MIN, finished: false, updated_at: 5, device: Some(device.into()) };
+        let (iphone, web) = (at("iPhone", 10 * MIN), at("web", 20 * MIN));
+        assert!(web.is_newer_than(&iphone) && !iphone.is_newer_than(&web) && !web.is_newer_than(&web));
+        // The iPhone adopts the web's write from the same millisecond; the web keeps its own.
+        let mut phone = Book::default();
+        phone.tick("a", 10 * MIN, 60 * MIN, false, 5, Some("iPhone".into()));
+        assert_eq!(phone.merge(vec![web.clone()]), vec!["a".to_string()]);
+        assert_eq!(phone.get("a").unwrap().position_ms, 20 * MIN);
+        let mut browser = Book::default();
+        browser.tick("a", 20 * MIN, 60 * MIN, false, 5, Some("web".into()));
+        assert!(browser.merge(vec![iphone]).is_empty());
+    }
+
+    #[test]
+    fn a_write_after_adopting_a_faster_clock_still_wins() {
+        // The web's clock is ahead: its entry is stamped 9000 while the iPhone reads 5000.
+        let mut phone = Book::default();
+        let web = Entry { id: "a".into(), position_ms: 20 * MIN, duration_ms: 60 * MIN, finished: false, updated_at: 9_000, device: Some("web".into()) };
+        phone.merge(vec![web.clone()]);
+        let t = phone.tick("a", 21 * MIN, 60 * MIN, false, 5_000, Some("iPhone".into()));
+        assert_eq!(t.entry.updated_at, 9_001);
+        assert!(t.entry.is_newer_than(&web));
+        assert_eq!(write_stamp(5_000, None), 5_000);
+        assert_eq!(write_stamp(5_000, Some(4_000)), 5_000);
+        assert_eq!(write_stamp(5_000, Some(u64::MAX)), u64::MAX);
+    }
+
+    #[test]
+    fn positions_stay_within_the_duration() {
+        let mut b = Book::default();
+        assert_eq!(b.tick("a", 70 * MIN, 60 * MIN, false, 1, None).entry.position_ms, 60 * MIN);
+        let far = Entry { id: "b".into(), position_ms: 99 * MIN, duration_ms: 60 * MIN, finished: false, updated_at: 9, device: None };
+        b.merge(vec![far]);
+        assert_eq!(b.get("b").unwrap().position_ms, 60 * MIN);
+        assert_eq!(clamp_position(5, 0), 5);
     }
 
     #[test]
