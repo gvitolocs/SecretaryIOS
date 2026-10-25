@@ -163,6 +163,17 @@ impl Engine {
         Self { path: PathBuf::new(), state: State::default() }
     }
 
+    /// An in-memory engine from a saved state (the browser keeps it in
+    /// localStorage). Unreadable state starts empty, like `open`.
+    pub fn from_state_json(json: &str) -> Self {
+        Self { path: PathBuf::new(), state: serde_json::from_str(json).unwrap_or_default() }
+    }
+
+    /// The whole state, for callers that persist it themselves.
+    pub fn state_json(&self) -> String {
+        serde_json::to_string(&self.state).unwrap_or_else(|_| "{}".into())
+    }
+
     pub fn handle(&mut self, json: &str) -> Value {
         self.handle_at(json, now_ms())
     }
@@ -316,6 +327,16 @@ mod tests {
         let other = format!(r#"{{"cmd":"subtitle_pick","id":"b","tracks":{tracks}}}"#);
         assert_eq!(e.handle(&other)["track"], "x0");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn state_round_trips_through_json() {
+        let mut e = Engine::in_memory();
+        e.handle_at(r#"{"cmd":"position","id":"a","position_ms":600000,"duration_ms":3600000,"playing":false}"#, 1_000);
+        e.handle_at(r#"{"cmd":"subtitle_choose","id":"a","track":"x0","lang":"da"}"#, 1_000);
+        let mut back = Engine::from_state_json(&e.state_json());
+        assert_eq!(back.handle_at(r#"{"cmd":"resume","id":"a"}"#, 2_000)["position_ms"], 598_000);
+        assert_eq!(Engine::from_state_json("{not json").handle_at(r#"{"cmd":"pending"}"#, 1)["entries"], json!([]));
     }
 
     #[test]
