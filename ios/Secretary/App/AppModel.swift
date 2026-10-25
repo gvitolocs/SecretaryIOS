@@ -176,6 +176,10 @@ final class AppModel {
             selectedTab = .plugins
             showMedia = true
         }
+        if launch.openPokemon {
+            selectedTab = .plugins
+            showPokemon = true
+        }
 
         let onError: (APIError) -> Void = { [weak self] error in self?.handle(error) }
         let onSuccess: () -> Void = { [weak self] in self?.lucinaNotice = nil }
@@ -426,6 +430,8 @@ struct LaunchOptions {
     var openGallery = false
     /// `-SecretaryInitialTab memos`: start on the voice memos.
     var openMemos = false
+    /// `-SecretaryInitialTab pokemon`: start on Lucina's Pokémon game.
+    var openPokemon = false
 
     init(defaults: UserDefaults) {
         #if DEBUG || SCREENSHOTS
@@ -437,6 +443,7 @@ struct LaunchOptions {
         openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
+        openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
         #endif
     }
 }
