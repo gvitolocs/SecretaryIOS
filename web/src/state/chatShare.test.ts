@@ -4,6 +4,7 @@ import { draftFor } from "../lib/attachments";
 import {
   chat,
   clearChat,
+  receiveItem,
   reloadChatFromStorage,
   retryMessage,
   sendAttachmentMessage,
@@ -150,5 +151,25 @@ describe("chat attachment sends", () => {
     expect(fetched).toBe(2);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(calls.filter((c) => c.url.startsWith("/v1/share/")).length).toBe(2);
+  });
+
+  it("matches the server item to the local bubble by shareId when it arrives before the 202", async () => {
+    const pending = sendAttachmentMessage([draftFor(file())], "cosa vedi?");
+    const xhr = FakeXHR.instances[0]!;
+    const shareId = String(xhr.body?.get("shareId"));
+    // The timeline stream delivers the share's user item first (the 202 is late or lost).
+    receiveItem({
+      id: "01SRV",
+      ts: new Date().toISOString(),
+      channel: "web",
+      role: "user",
+      text: "cosa vedi?",
+      meta: { kind: "share", shareId },
+    } as never);
+    expect(chat.messages.filter((m) => m.role === "user")).toHaveLength(1);
+    xhr.finish(202, { ok: true, shareId, userItemId: "01SRV", status: "processing", stage: "received", attachments: [] });
+    await pending;
+    expect(chat.messages.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(chat.messages[0]!.itemId).toBe("01SRV");
   });
 });

@@ -61,3 +61,33 @@ fn ink_sync() {
 fn otp() {
     run("otp");
 }
+
+#[test]
+fn deploy() {
+    run("deploy");
+}
+
+#[test]
+fn game() {
+    run("game");
+}
+
+#[test]
+fn media_backup() {
+    run("media-backup");
+}
+
+#[test]
+fn memos() {
+    run("memos");
+}
+
+#[test]
+fn player() {
+    run("player");
+}
+
+#[test]
+fn share() {
+    run("share");
+}
