@@ -13,6 +13,9 @@ name = "secretary-server"
 path = "src/main.rs"
 
 [dependencies]
+ink-library = { path = "../ink-library" }
+ink-obsidian = { path = "../ink-obsidian" }
+ink-sync = { path = "../ink-sync" }
 secretary-core = { path = "../secretary-core" }
 secretary-gym = { path = "../secretary-gym" }
 secretary-body = { path = "../secretary-body" }

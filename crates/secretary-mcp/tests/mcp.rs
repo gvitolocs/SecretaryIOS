@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 20] = [
+const ALL_TOOLS: [&str; 30] = [
     "ask_lucina",
     "lucina_timeline",
     "shopping_list",
@@ -26,6 +26,16 @@ const ALL_TOOLS: [&str; 20] = [
     "task_add",
     "task_complete",
     "lucina_status",
+    "library_list_books",
+    "library_search",
+    "library_get_book",
+    "library_get_progress",
+    "library_get_highlights",
+    "library_get_recent_reading",
+    "library_get_brief",
+    "library_find_related_notes",
+    "library_sync_status",
+    "library_generate_brief",
 ];
 
 #[tokio::test]
@@ -982,4 +992,105 @@ async fn tasks_need_the_right_scopes() {
     let (err, text) = h.call(&reader, "task_add", json!({"text": "x"})).await;
     assert!(err && text.contains("lacks the `write` scope"), "{text}");
     assert!(h.mock.requests("/v1/tasks/command").is_empty());
+}
+
+#[tokio::test]
+async fn library_tools_refs_scopes_and_backend_calls() {
+    let h = start().await;
+    let read = h.issue("reader", "read");
+    for (name, args, expected) in [
+        (
+            "library_list_books",
+            json!({"q":"book","onKindle":true,"kind":"dictionary"}),
+            "[bk_0123456789abcdef, library]",
+        ),
+        (
+            "library_search",
+            json!({"q":"thought"}),
+            "[bk_0123456789abcdef p.12 loc 170-172, kindle-clippings]",
+        ),
+        (
+            "library_get_book",
+            json!({"id":"bk_0123456789abcdef"}),
+            "[bk_0123456789abcdef, library]",
+        ),
+        (
+            "library_get_progress",
+            json!({"id":"bk_0123456789abcdef"}),
+            "progress unknown",
+        ),
+        (
+            "library_get_highlights",
+            json!({"id":"bk_0123456789abcdef"}),
+            "[bk_0123456789abcdef p.12 loc 170-172, kindle-clippings]",
+        ),
+        (
+            "library_get_recent_reading",
+            json!({"days":7}),
+            "sessions unavailable",
+        ),
+        (
+            "library_get_brief",
+            json!({"id":"bk_0123456789abcdef"}),
+            "Generated extractive brief",
+        ),
+        (
+            "library_find_related_notes",
+            json!({"id":"bk_0123456789abcdef"}),
+            "[obsidian:Vault/Reading/Book.md#L2]",
+        ),
+        (
+            "library_find_related_notes",
+            json!({"id":"bk_fedcba9876543210"}),
+            "no Obsidian vault has been indexed",
+        ),
+        ("library_sync_status", json!({}), "imports log"),
+    ] {
+        let (err, text) = h.call(&read, name, args).await;
+        assert!(!err, "{name}: {text}");
+        assert!(text.contains(expected), "{name}: {text}");
+    }
+    assert!(h
+        .mock
+        .requests("/v1/library/books")
+        .iter()
+        .any(|r| r.query.contains("kind=dictionary")));
+    let notes = h
+        .mock
+        .requests("/v1/library/books/bk_0123456789abcdef/notes");
+    assert!(
+        !notes.is_empty()
+            && notes
+                .iter()
+                .all(|r| r.method == "GET" && r.query == "limit=20")
+    );
+    let args = json!({"id":"bk_0123456789abcdef"});
+    assert!(
+        h.call(&read, "library_generate_brief", args.clone())
+            .await
+            .0
+    );
+    let write = h.issue("writer", "write");
+    let (err, text) = h.call(&write, "library_generate_brief", args).await;
+    assert!(!err, "{text}");
+    assert!(text.contains("not the owner's words"));
+    assert!(text.contains("kindle-clippings]"));
+    let requests = h
+        .mock
+        .requests("/v1/library/books/bk_0123456789abcdef/brief");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(
+        requests[0].headers["authorization"],
+        format!("Bearer {DEVICE_TOKEN}")
+    );
+    for (name, args) in [
+        ("library_get_book", json!({"id":"../escape"})),
+        ("library_list_books", json!({"limit":0})),
+        ("library_get_recent_reading", json!({"days":0})),
+        ("library_list_books", json!({"status":"owned"})),
+        ("library_get_book", json!({})),
+    ] {
+        assert!(h.call(&read, name, args).await.0);
+    }
 }

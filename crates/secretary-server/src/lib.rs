@@ -18,6 +18,7 @@ pub mod error;
 pub mod google;
 pub mod health;
 pub mod insights;
+pub mod library;
 pub mod links;
 pub mod models;
 pub mod notes;
@@ -117,6 +118,7 @@ pub struct Inner {
     pub avatar: Arc<avatar::AvatarStore>,
     /// Notes and documents (notes/ in the data dir).
     pub notes: Arc<notes::NoteStore>,
+    pub library: Arc<library::LibraryStore>,
     /// The 3D model gallery (models/ in the data dir).
     pub models: Arc<models::ModelStore>,
     pub catalog_dir: PathBuf,
@@ -175,6 +177,7 @@ impl AppState {
             private_assets_dir: cfg.private_assets_dir.clone(),
             avatar: Arc::new(avatar::AvatarStore::new(&cfg.data_dir)),
             notes: notes::store(&cfg.data_dir),
+            library: library::store(&cfg.data_dir),
             models: models::store(&cfg.data_dir),
             catalog_dir: cfg.catalog_dir.clone(),
             maps: cfg.maps.clone(),
@@ -291,6 +294,7 @@ pub fn app(state: AppState) -> Router {
         .merge(notify::routes::service_routes(state.clone()))
         .merge(proactive::service_routes(state.clone()))
         .merge(notes::routes(state.clone()))
+        .merge(library::routes(state.clone()))
         .merge(models::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,

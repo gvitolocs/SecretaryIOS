@@ -1,0 +1,22 @@
+[package]
+name = "ink-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lucina-ink"
+path = "src/main.rs"
+
+[dependencies]
+ink-library = { path = "../ink-library" }
+ink-obsidian = { path = "../ink-obsidian" }
+clap = { version = "4", features = ["derive"] }
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"

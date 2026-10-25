@@ -55,6 +55,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 3 | Shopping v2 ops + client outbox | `shopping.rs` (S1–S3) | `shopping/ShoppingOps.tla` (+ `MigratedSync.tla`) | `protocol_kernels.rs` K3; `shopping_ops.rs`; `sync_kernel.rs` | Node `Lucina/src/grocery/shopping.js::applyShoppingOps`; Rust `lucina-grocery/src/lib.rs` (branch `lucina-rs`); `crates/secretary-server/src/shopping.rs`; web `web/src/state/shopping.ts`, `lib/shoppingOps.ts` (item objects: branch `shopping-items`) |
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
+| 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -99,10 +100,20 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | G Meshy credits (WIP) | 232 | 10 | `charged_within_daily_cap` **violated** |
 | G Meshy + MCP yes (G1 open) | 463 | 10 | `only_owner_confirms` **violated** |
 | G Meshy + fix G4 (per-step guard) | 115 | 10 | all hold |
+| I1 ink sync: progress/status races, owner edit | 2 949 071 | 30 | all hold (+ `all_ops_applied` eventually) |
+| I2 ink sync: highlights and a deletion request | 501 633 | 29 | all hold |
+| I3 ablation: no op-id gate | 20 617 | 24 | `applied_at_most_once` **violated** |
+| I4 ablation: acks in memory only | 30 891 | 26 | `never_resend_acked` **violated** |
+| I5 ablation: ops leave the outbox when sent | 8 731 | 20 | `acked_never_lost`, `all_ops_applied` **violated** |
+| I6 ablation: plain last-writer-wins status | 9 034 | 21 | `owner_completed_never_reverted`, `device_completed_sticky` **violated** |
+| I7 ablation: the last delivery wins (no stamps) | 9 418 | 21 | `converges` **violated** |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
-(`--deep`): 1 053 488.
+(`--deep`): 1 053 488. `InkSync_status`: 35 800 and `InkSync_highlights`: 17 556 (both with the liveness
+property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` (`--deep`, the Stateright I2
+bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
+1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
 
 ## Invariants, models and mapping
 
@@ -233,6 +244,58 @@ Invariants:
 | `Reserve` | `Service::start` → `Ledger::reserve` |
 | `StepRuns` | `Service::run` step loop (`consumed_credits`) |
 | `Settle` | `Ledger::settle` |
+
+### 6. Lucina Ink device sync
+
+Local-first sync of reader devices with the Library (`crates/ink-sync`, `docs/server-api.md` "Library",
+`POST /v1/library/sync`). Each device appends ops to a durable outbox (JSONL + fsync) before any network I/O and
+appends acks the same way; the server applies ops through a per-device watermark (largest contiguous counter plus a
+bounded sparse set) and joins them into registers: progress last-writer-wins by `(at, device, counter)`, status by
+`(completed, stamp)` with an owner freeze and owner floors, highlights a grow-only set, deletions unconfirmed
+tombstones, sessions min/max registers.
+
+Invariants (Stateright name / TLA+ name):
+
+- `acked_never_lost` / `AckedNeverLost`: an op the device dropped from its outbox as acked is applied on the server.
+- `never_resend_acked` / `NeverResendAcked`: after a durable ack (and any crash), the op is never sent again.
+- `applied_at_most_once` / `AppliedAtMostOnce`: duplicate deliveries never apply an op's effect twice.
+- `owner_completed_never_reverted` / `OwnerCompletedNeverReverted`: after the owner marks the book completed, no
+  device op changes the status.
+- `device_completed_sticky` / `DeviceCompletedSticky`: device ops never move a book back from completed.
+- `highlights_only_grow_and_deletes_are_recorded` / `HighlightsOnlyGrow`.
+- `converges` / `Converges`: the server's content equals what a server applying the same ops in another order shows
+  (Stateright: two replays, ascending and descending; TLA+: the registers are the max / union over the applied set).
+- `all_ops_applied` (eventually) / `EventuallyAllApplied` (`<>`, weak fairness): every recorded op reaches the
+  server. Witnesses: `all_synced` / `InkSync_witness.cfg`, `out_of_order_applied` / `InkSync_ooo_witness.cfg`,
+  `older_op_superseded`, `owner_protection_used`.
+
+The model client may pipeline two single-op requests, a superset of the real client (one batch at a time, oldest
+first), so out-of-order arrival and the sparse set are explored. Ablations I3–I7 (and `InkSync_nogate`,
+`_volatileacks`, `_plainstatus`) switch off one mechanism each and must fail: they show the properties are not
+vacuous. The real code is also checked directly by `cargo test -p ink-sync` (in the models section of `verify.sh`):
+512 proptest cases of random ops from three devices applied in a random permutation with duplicates (same content,
+replays are no-ops, highlights only grow) and 16 seeded runs of two devices with crashes, torn appends, dropped
+requests and responses, duplicate and delayed (reordered) deliveries and partitions, which must end with empty
+outboxes, every op applied once and the same content as an in-order replay.
+
+Verus (`library_merge.rs`, 25 verified): (a) `step` is idempotent per op id and the raw effect is idempotent;
+(b) highlights and tombstones only grow over any op sequence, a delete removes nothing; (c) the stamp order is a
+strict total order, distinct op ids never tie, `step` of two ops with distinct ids commutes (progress, status,
+highlights, deletes), including with a replayed op; the owner freeze holds over any sequence and device `completed`
+is sticky; (d) the import merge (`ink_library::import::merge`: files, clippings, the `kindle-usb` presence pass)
+never deletes a book or a highlight and never changes a reading status; (e) watermark insert/absorb membership.
+The model is one book's registers (ops on different books touch disjoint registers) with device ids as naturals.
+
+| Model action | Code |
+|---|---|
+| `Record` | `Outbox::record` (append + `sync_data`), `Syncer::record` |
+| `Send` | `ClientMachine::next` → `Syncer::step` (the batch from `Outbox::pending`) |
+| `Timeout` | `TransportError::Network` → `ClientMachine::on_failure` (same op ids; backoff `Backoff::delay`, equal jitter, capped) |
+| `Crash` | process restart: `Outbox::open` (torn last line truncated, acks replayed), a fresh `ClientMachine` |
+| `Deliver(Req)` | `transport::serve` → `state::apply_mut` (watermark gate, then `effect`); the server endpoint `LibraryStore::sync` writes `sync.json` before the records |
+| `Deliver(Resp)` | `Outbox::ack` (append + `sync_data`), `ClientMachine::on_response` |
+| `Drop`, `Dup` | `FlakyTransport` (`Faults`) |
+| `Owner` | `PATCH /v1/library/books/{id}` → `state::owner_set_status` / `owner_set_progress` |
 
 ## Bugs found
 

@@ -152,6 +152,7 @@ impl LucinaMcp {
             "note_append" => t.note_append(args).await,
             "note_get" => t.note_get(args).await,
             "notes_search" => t.notes_search(args).await,
+            name if name.starts_with("library_") => t.library(name, args).await,
             "tasks_list" => t.tasks_list(args).await,
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,

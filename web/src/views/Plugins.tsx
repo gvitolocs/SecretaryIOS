@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { CheckCircleIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon } from "../components/Icons";
+import { BookIcon, CheckCircleIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { openWardrobe } from "../state/wardrobe";
 
@@ -27,6 +27,7 @@ export function inAndroidApp(): boolean {
 export const PLUGINS: Plugin[] = [
   { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
+  { id: "library", icon: BookIcon, title: () => t("plugins.library"), detail: () => t("plugins.libraryDetail"), href: "/library" },
   { id: "notes", icon: NoteIcon, title: () => t("plugins.notes"), detail: () => t("plugins.notesDetail"), href: "/notes" },
   { id: "tasks", icon: CheckCircleIcon, title: () => t("plugins.tasks"), detail: () => t("plugins.tasksDetail"), href: "/tasks" },
   { id: "links", icon: LinkIcon, title: () => t("plugins.links"), detail: () => t("plugins.linksDetail"), href: "/links" },
