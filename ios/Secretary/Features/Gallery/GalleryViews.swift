@@ -428,7 +428,7 @@ struct GalleryViewer: View {
     @Environment(MediaPlayer.self) private var media
     @Environment(\.dismiss) private var dismiss
     let start: GalleryItem
-    @State private var current: String = ""
+    @State private var current: String
     @State private var showInfo = false
     @State private var addToAlbum = false
     @State private var confirmTrash = false
@@ -440,16 +440,16 @@ struct GalleryViewer: View {
     /// The photo that is zoomed, if any: there the drag pans instead of closing.
     @State private var zoomedID: String?
 
+    init(start: GalleryItem) {
+        self.start = start
+        _current = State(initialValue: start.id)
+    }
+
     var body: some View {
         let bare = chromeHidden || dragging
         let item = store.items.first { $0.id == current } ?? start
         NavigationStack {
-            TabView(selection: $current) {
-                ForEach(store.items) { it in
-                    page(it).tag(it.id)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            pager
             // Google Photos: swipe down to close, up for the details.
             .photoDragOut(enabled: zoomedID != current, dragging: $dragging, onDismiss: { dismiss() }, onInfo: { showInfo = true })
             .clearNavigationBackground()
@@ -482,7 +482,6 @@ struct GalleryViewer: View {
             }
         }
         .onAppear {
-            current = start.id
             meter.start()
             prefetchNeighbours(of: start.id)
             autoSwipe()
@@ -516,6 +515,37 @@ struct GalleryViewer: View {
             Text("It stays on this iPhone. The server keeps it in the trash for 30 days.")
         }
         .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
+    }
+
+    /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
+    /// (legacy) re-created every page from the first one to the current one on each change (seen
+    /// on the iPhone: 9 page loads for one swipe at the 9th photo, growing with the position).
+    @ViewBuilder
+    private var pager: some View {
+        if gallerySmooth {
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(store.items) { it in
+                        page(it)
+                            .containerRelativeFrame([.horizontal, .vertical])
+                            .id(it.id)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: Binding(get: { current }, set: { if let id = $0 { current = id } }))
+            .scrollIndicators(.hidden)
+            // A zoomed photo pans; the pager waits until it is fitted again.
+            .scrollDisabled(zoomedID == current)
+        } else {
+            TabView(selection: $current) {
+                ForEach(store.items) { it in
+                    page(it).tag(it.id)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+        }
     }
 
     /// `-SecretaryGalleryAutoSwipe N` (device measurements without UI tests): page forward through N
