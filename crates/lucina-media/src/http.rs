@@ -92,6 +92,7 @@ pub fn internal_router(lib: Library) -> Router {
     Router::new()
         .route("/internal/v1/external/{source}/{ext_id}", put(put_external).delete(delete_external))
         .route("/internal/v1/import", post(start_import))
+        .route("/internal/v1/ingest", post(ingest_local))
         .route("/internal/v1/items/{id}/path", get(item_path))
         .with_state(lib)
 }
@@ -967,6 +968,67 @@ async fn delete_external(
         Some(_) => Ok(StatusCode::NO_CONTENT),
         None => Err(not_found()),
     }
+}
+
+/// A file another service on nezopt hands over (shares to Lucina): moved or copied into the
+/// library, deduped, indexed; thumbnails follow in the background.
+#[derive(Deserialize)]
+struct IngestReq {
+    path: String,
+    mime: Option<String>,
+    name: Option<String>,
+    source: Option<String>,
+    album: Option<String>,
+    taken_at: Option<String>,
+    caption: Option<String>,
+    #[serde(default)]
+    r#move: bool,
+}
+
+async fn ingest_local(State(lib): State<Library>, Json(r): Json<IngestReq>) -> ApiResult<Json<Value>> {
+    let src = PathBuf::from(&r.path);
+    if !src.is_absolute() || !src.is_file() {
+        return Err(bad("path must be an existing absolute file"));
+    }
+    let name = r
+        .name
+        .clone()
+        .filter(|n| !n.is_empty() && !n.contains('/'))
+        .or_else(|| src.file_name().and_then(|n| n.to_str()).map(str::to_string));
+    let meta = ClientMeta {
+        filename: name,
+        mime: r.mime.clone(),
+        taken_at: r.taken_at.clone(),
+        source: Some(r.source.clone().unwrap_or_else(|| "share".into())),
+        album: r.album.clone(),
+        caption: r.caption.clone(),
+        ..Default::default()
+    };
+    let l = lib.clone();
+    let res = tokio::task::spawn_blocking(move || -> anyhow::Result<ingest::IngestResult> {
+        // The library consumes its own copy in the uploads area (same disk as the spool).
+        let tmp = l.cfg.uploads_dir().join(db::new_id("ing"));
+        if r.r#move {
+            crate::store::durable_move(&src, &tmp)?;
+        } else {
+            std::fs::copy(&src, &tmp)?;
+        }
+        ingest::ingest_file(&l, &tmp, None, &meta, None)
+    })
+    .await?
+    .map_err(|e| bad(e.to_string()))?;
+    let id = res.item_id.clone();
+    let it = lib.db.call(move |c| db::get_item(c, &id)).await?.ok_or_else(not_found)?;
+    let out = item_out(&lib, it, None);
+    Ok(Json(json!({
+        "item_id": res.item_id,
+        "duplicate": res.duplicate,
+        "version": res.version,
+        "kind": out.item.kind,
+        "mime": out.item.mime,
+        "thumb_state": out.item.thumb_state,
+        "urls": out.urls,
+    })))
 }
 
 #[derive(Deserialize)]

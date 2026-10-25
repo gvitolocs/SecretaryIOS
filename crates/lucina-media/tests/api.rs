@@ -292,3 +292,29 @@ fn urlencode(s: &str) -> String {
         .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
         .collect()
 }
+
+#[tokio::test]
+async fn internal_ingest_moves_a_shared_file_in() {
+    let (t, lib, app) = setup();
+    let src = t.path().join("shared photo.png");
+    std::fs::write(&src, png(64, 48, 7)).unwrap();
+    let (s, r) = json_call(&app, "POST", "/internal/v1/ingest",
+        json!({"path": src, "source": "share", "album": "Shared", "move": true})).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["kind"], "photo");
+    assert_eq!(r["duplicate"], false);
+    assert!(!src.exists(), "moved");
+    let id = r["item_id"].as_str().unwrap().to_string();
+    // Same bytes again (copied this time): a duplicate of the same item.
+    let again = t.path().join("again.png");
+    std::fs::write(&again, png(64, 48, 7)).unwrap();
+    let (_, r2) = json_call(&app, "POST", "/internal/v1/ingest", json!({"path": again})).await;
+    assert_eq!(r2["duplicate"], true);
+    assert_eq!(r2["item_id"], id.as_str());
+    assert!(again.exists(), "copied, not moved");
+    let (_, p) = json_call(&app, "GET", &format!("/internal/v1/items/{id}/path"), Value::Null).await;
+    assert!(std::path::Path::new(p["path"].as_str().unwrap()).is_file());
+    let (_, page) = get_json(&app, "/v1/media/items?album=Shared").await;
+    assert_eq!(page["items"][0]["id"], id.as_str());
+    let _ = lib;
+}
