@@ -56,11 +56,45 @@ The upload protocol's decisions (chunk offsets, finish once, dedupe or version) 
   - Results go to "Lucina's picks", and the reply gets a "Show in Gallery" route button (`/gallery/album/<id>`).
 - **Imports:** `lucina-media import <dir|takeout.zip> --source takeout|nextcloud --album …` copies files and never moves them. Takeout JSON sidecars supply dates and places. `lucina-media index-folder <label> <dir>` indexes in place.
 
+## Renditions and the Rust viewer (2026-10-25)
+
+| What | Where | Size (owner's photos) |
+|---|---|---|
+| ThumbHash | `items.thumbhash`, base64 in the item JSON (`thumbhash`) | about 18 bytes |
+| Grid tile | `g.jxl`, 256 px square crop, JPEG XL d2.5 | 8.8 KB (JPEG `s.jpg` was 38.7 KB) |
+| Preview | `p.jxl`, 1440 px long side, progressive JPEG XL d2.5 | 57 KB (JPEG `l.jpg` was 135 KB) |
+| Original | blake3 store, `urls.original` | unchanged, only on explicit open |
+
+- `urls.grid` / `urls.preview` are play-token URLs (`/v1/media/s/{token}/{id}/r/{grid|preview}`). p1 passes `/v1/media/s/*` without the login check, so tiles don't spend the device's 60 requests a minute. They expire with the token (12 h); clients cache by item id plus ThumbHash, not by URL.
+- `crates/secretary-image` decodes everything the apps show: the ThumbHash placeholder, progressive JPEG XL fed as bytes arrive (jxl-oxide; the first picture after about 13% of the bytes), and JPEG/PNG. It also holds zoom/pan as pure functions.
+- The C ABI is `secretary_image_*` in `secretary-ffi` (header block at the end of SecretaryCore.h).
+- iOS uses it in `Features/Gallery/ImageCore.swift` (`RustTile`, `RustPhoto`). Debug options:
+  - `-SecretaryImageThrottleKBps N` (slow feed, to watch the refinement);
+  - `-SecretaryGalleryOpenFirst YES` and `-SecretaryGalleryOpen <id>` (open the viewer at launch).
+- Formats compared on real photos: `tools/image-bench` (results in the side-session notes, gallery-image-formats.md). JPEG XL won as the only format with a pure-Rust progressive decoder.
+
+## Backup and the device rate limit
+
+Every `/v1/media/*` request outside `/s/` passes p1's forward_auth, which allows 60 requests a minute for each device. The backup therefore:
+- waits 4 s between assets (create, PUT, finish; the JPEG preview only for HEIC), about 36 requests a minute;
+- stops on 429 and comes back after `Retry-After`;
+- pauses the whole pass on network, timeout and 502–504 errors (retries after 120 s), and skips just the asset on anything else.
+
+An upload whose bytes are gone answers 410 on finish, and the phone starts that asset again. Ingest and the "finished" mark run in one blocking step, because a client hang-up drops the handler.
+
+## Internal API for other services on nezopt
+
+- `POST /internal/v1/ingest {path, mime?, name?, source?, album?, taken_at?, caption?, move?}`: a local file into the library (shares to Lucina). Answers `{item_id, duplicate, kind, mime, thumb_state, urls}`.
+- `PUT|DELETE /internal/v1/external/{source}/{id}`: index a file in place (voice memos, film folders).
+- `GET /internal/v1/items/{id}/path`: the original's path on disk.
+
 ## Not done yet
 
 - Web gallery tab.
 - Android upload: the Rust module for the Android app.
 - WebDAV upload endpoint.
-- HEIC decoding on the server (needs a user-space libde265 + libheif build).
+- HEIC decoding on the server (needs a user-space libde265 + libheif build); the phone's preview covers iPhone uploads.
+- Android and web bindings for `secretary-image` (JNI; wasm in the player's `ptr<<32|len` style).
+- Zoom/pan on the device is unit-tested only: XCUITest can't run on iOS 27 with Xcode 26.
 - Stateright/TLA+ model of the upload protocol.
 - HLS cache eviction.
