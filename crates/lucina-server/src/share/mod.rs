@@ -98,6 +98,9 @@ impl ShareConfig {
 }
 pub struct ShareRuntime {
     ingest: Mutex<()>,
+    /// Shares with a processing task right now (a `processing` share outside
+    /// this set has lost its worker and is respawned on the next request).
+    live: std::sync::Mutex<std::collections::HashSet<String>>,
     worker: Semaphore,
     recovered: AtomicBool,
     vision: Mutex<Option<vision::Server>>,
@@ -108,6 +111,7 @@ impl ShareRuntime {
     pub fn new(cfg: &ShareConfig) -> Self {
         Self {
             ingest: Mutex::new(()),
+            live: std::sync::Mutex::new(std::collections::HashSet::new()),
             worker: Semaphore::new(1),
             recovered: AtomicBool::new(false),
             vision: Mutex::new(None),
@@ -586,8 +590,14 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         }
     }
     let _lock = st.share.ingest.lock().await;
-    if let Some((_, job)) = find(root, &id).await {
-        return Ok((StatusCode::ACCEPTED, Json(job.public(true))).into_response());
+    if let Some((dir, job)) = find(root, &id).await {
+        let response = job.public(true);
+        // A share accepted earlier whose worker is gone (an error or panic
+        // after status.json): the retry restarts it (Stateright SH6).
+        if job.status == "processing" && !is_live(&st, &job.share_id) {
+            spawn(st.clone(), dir, job);
+        }
+        return Ok((StatusCode::ACCEPTED, Json(response)).into_response());
     }
     let month = root.join(Utc::now().format("%Y-%m").to_string());
     tokio::fs::create_dir_all(&month).await?;
@@ -712,7 +722,12 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
         error: None,
     };
     save(&dir, &job).await?;
-    ensure_user(&st, &job)?;
+    // status.json says processing now: the share must be processed even if
+    // the append fails here (`process` appends it again). Returning an error
+    // without spawning left it stuck until a restart (Stateright SH6).
+    if let Err(e) = ensure_user(&st, &job) {
+        tracing::warn!(share_id = %job.share_id, error = %e, "share user item not appended yet; processing retries it");
+    }
     let response = job.public(false);
     spawn(st.clone(), dir, job);
     Ok((StatusCode::ACCEPTED, Json(response)).into_response())
@@ -876,8 +891,36 @@ pub(crate) fn recover(st: AppState) {
         }
     });
 }
+fn is_live(st: &AppState, id: &str) -> bool {
+    st.share
+        .live
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(id)
+}
+
+/// Removes the share from the live set when its task ends, panics included.
+struct LiveGuard(AppState, String);
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        self.0
+            .share
+            .live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.1);
+    }
+}
+
 fn spawn(st: AppState, dir: PathBuf, mut job: Job) {
+    {
+        let mut live = st.share.live.lock().unwrap_or_else(|e| e.into_inner());
+        if !live.insert(job.share_id.clone()) {
+            return; // already being processed
+        }
+    }
     tokio::spawn(async move {
+        let _live = LiveGuard(st.clone(), job.share_id.clone());
         let _permit = st
             .share
             .worker

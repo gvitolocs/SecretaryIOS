@@ -601,3 +601,25 @@ async fn a_shared_location_counts_toward_the_part_limit() {
     let r = submit(&h, form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#)).await;
     assert_eq!(r.status(), 202);
 }
+
+#[tokio::test]
+async fn a_failed_append_still_processes_the_share() {
+    let services = services().await;
+    let h = setup(&services).await;
+    // The timeline's lock sidecar can't be opened (a directory): every append fails.
+    let lock = std::path::PathBuf::from(format!("{}.lock", h.state.cfg.timeline_path.display()));
+    let _ = std::fs::remove_file(&lock);
+    std::fs::create_dir_all(&lock).unwrap();
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-stuck-0001")
+            .text("text", "STUCK_TEXT"),
+    )
+    .await;
+    // Accepted (status.json is saved), not a 500 that leaves it processing forever.
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "share-stuck-0001").await;
+    assert_ne!(done["status"], "processing", "{done}");
+    std::fs::remove_dir(&lock).unwrap();
+}
