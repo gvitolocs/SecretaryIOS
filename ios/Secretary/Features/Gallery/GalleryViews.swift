@@ -171,7 +171,7 @@ struct GalleryGrid: View {
                     // A square cell whatever the picture's shape: the thumb fills it and is cropped.
                     Color.clear
                         .aspectRatio(1, contentMode: .fit)
-                        .overlay { GalleryThumb(item: item) }
+                        .overlay { RustTile(item: item) }
                         .clipped()
                         .contentShape(Rectangle())
                         .overlay(alignment: .bottomTrailing) {
@@ -461,7 +461,7 @@ struct GalleryViewer: View {
                 .accessibilityIdentifier("galleryPlay")
             }
         } else {
-            ZoomableImage(url: store.api().absolute(it.urls?.large ?? it.posterUrl ?? it.thumbUrl))
+            RustPhoto(item: it)
         }
     }
 
@@ -474,33 +474,6 @@ struct GalleryViewer: View {
                 store.replace(copy)
             }
         }
-    }
-}
-
-private struct ZoomableImage: View {
-    let url: URL?
-    @State private var scale: CGFloat = 1
-    @State private var base: CGFloat = 1
-
-    var body: some View {
-        AsyncImage(url: url) { phase in
-            if let image = phase.image {
-                image.resizable().scaledToFit()
-                    .scaleEffect(scale)
-                    .gesture(MagnifyGesture()
-                        .onChanged { scale = max(1, base * $0.magnification) }
-                        .onEnded { _ in base = scale })
-                    .onTapGesture(count: 2) {
-                        withAnimation { scale = scale > 1 ? 1 : 2.5 }
-                        base = scale
-                    }
-            } else if phase.error != nil {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.white)
-            } else {
-                ProgressView().tint(.white)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
