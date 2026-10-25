@@ -33,6 +33,9 @@ internal object Core {
             if (legacy != null && status.optBoolean("paired")) {
                 prefs.edit().remove("internetToken").commit()
             }
+            // A code persisted before a send that never finished (process killed mid-send, no reboot)
+            // must not wait for the next SMS: schedule the flush whenever the queue is not empty.
+            if (status.optInt("pending") > 0) RetryJobService.schedule(app)
             ready = true
         }
     }
