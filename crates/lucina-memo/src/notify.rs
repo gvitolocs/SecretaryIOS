@@ -19,7 +19,11 @@ pub struct NotifyConfig {
 
 impl NotifyConfig {
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
-        let on = |k: &str| get(k).map(|v| v.trim().to_ascii_lowercase()).is_none_or(|v| v != "off" && v != "false" && v != "0");
+        let on = |k: &str| {
+            get(k)
+                .map(|v| v.trim().to_ascii_lowercase())
+                .is_none_or(|v| v != "off" && v != "false" && v != "0")
+        };
         let telegram_token = get("TELEGRAM_BOT_TOKEN_LUCINA")
             .map(|t| t.trim().to_owned())
             .filter(|t| !t.is_empty())
@@ -34,11 +38,17 @@ impl NotifyConfig {
                 .then(|| get("LUCINA_SECRETARY_SERVER_URL"))
                 .flatten()
                 .map(|u| u.trim().trim_end_matches('/').to_owned()),
-            service_token_file: get("LUCINA_SECRETARY_SERVICE_TOKEN_FILE").map(|f| PathBuf::from(f.trim())),
-            telegram_token: on("LUCINA_MEMO_NOTIFY_TELEGRAM").then_some(telegram_token).flatten(),
+            service_token_file: get("LUCINA_SECRETARY_SERVICE_TOKEN_FILE")
+                .map(|f| PathBuf::from(f.trim())),
+            telegram_token: on("LUCINA_MEMO_NOTIFY_TELEGRAM")
+                .then_some(telegram_token)
+                .flatten(),
             telegram_chat: get("LUCINA_MEMO_TELEGRAM_CHAT_ID")
                 .or_else(|| get("TELEGRAM_OWNER_CHAT_ID"))
-                .or_else(|| get("TELEGRAM_ALLOWED_CHAT_IDS").and_then(|v| v.split(',').next().map(str::to_owned)))
+                .or_else(|| {
+                    get("TELEGRAM_ALLOWED_CHAT_IDS")
+                        .and_then(|v| v.split(',').next().map(str::to_owned))
+                })
                 .map(|v| v.trim().to_owned())
                 .filter(|v| !v.is_empty()),
         }
@@ -70,7 +80,12 @@ pub fn message(m: &Memo, s: &Summary, url: &str) -> (String, String) {
 
 /// Sends to every configured channel; Ok when at least one accepted it
 /// (or none is configured).
-pub async fn send(cfg: &NotifyConfig, m: &Memo, s: &Summary, url: &str) -> Result<Vec<&'static str>, String> {
+pub async fn send(
+    cfg: &NotifyConfig,
+    m: &Memo,
+    s: &Summary,
+    url: &str,
+) -> Result<Vec<&'static str>, String> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
@@ -115,7 +130,14 @@ pub async fn send(cfg: &NotifyConfig, m: &Memo, s: &Summary, url: &str) -> Resul
             Ok(r) if r.status().is_success() => sent.push("telegram"),
             Ok(r) => errors.push(format!("telegram HTTP {}", r.status())),
             // reqwest errors can carry the URL (with the bot token): keep only the kind.
-            Err(e) => errors.push(format!("telegram: {}", if e.is_timeout() { "timeout" } else { "transport error" })),
+            Err(e) => errors.push(format!(
+                "telegram: {}",
+                if e.is_timeout() {
+                    "timeout"
+                } else {
+                    "transport error"
+                }
+            )),
         }
     }
     if sent.is_empty() && !errors.is_empty() {

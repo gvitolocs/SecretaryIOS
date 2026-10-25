@@ -59,7 +59,10 @@ impl WhisperConfig {
                 "LUCINA_MEMO_WHISPER_CLI",
                 format!("{home}/Projects/whisper.cpp/build/bin/whisper-cli"),
             ),
-            model: path("LUCINA_MEMO_WHISPER_MODEL", format!("{models}/ggml-large-v3.bin")),
+            model: path(
+                "LUCINA_MEMO_WHISPER_MODEL",
+                format!("{models}/ggml-large-v3.bin"),
+            ),
             cpu_model: opt_path(
                 "LUCINA_MEMO_WHISPER_CPU_MODEL",
                 format!("{models}/ggml-large-v3-turbo-q8_0.bin"),
@@ -124,7 +127,14 @@ pub async fn decode(cfg: &WhisperConfig, input: &Path, wav: &Path) -> Result<f64
 
 pub async fn duration(cfg: &WhisperConfig, file: &Path) -> Result<f64, SttError> {
     let out = Command::new(&cfg.ffprobe)
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+        ])
         .arg(file)
         .stdin(Stdio::null())
         .output()
@@ -140,14 +150,22 @@ fn tail(b: &[u8]) -> String {
     let s = String::from_utf8_lossy(b);
     let s = s.trim();
     let start = s.len().saturating_sub(600);
-    let start = (start..=s.len()).find(|i| s.is_char_boundary(*i)).unwrap_or(0);
+    let start = (start..=s.len())
+        .find(|i| s.is_char_boundary(*i))
+        .unwrap_or(0);
     s[start..].to_owned()
 }
 
 /// True when a whisper lease would be granted now (`gpu-lease check`).
 pub async fn gpu_free(cfg: &WhisperConfig) -> bool {
     Command::new(&cfg.gpu_lease)
-        .args(["check", "--name", "whisper", "--mb", &cfg.gpu_mb.to_string()])
+        .args([
+            "check",
+            "--name",
+            "whisper",
+            "--mb",
+            &cfg.gpu_mb.to_string(),
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -158,7 +176,13 @@ pub async fn gpu_free(cfg: &WhisperConfig) -> bool {
 
 /// Transcribes a 16 kHz WAV in `work`: GPU (waiting up to `gpu_wait` for a lease), then
 /// the CPU model if one is configured.
-pub async fn transcribe(cfg: &WhisperConfig, wav: &Path, work: &Path, duration_sec: f64, gpu_wait: Duration) -> Result<Transcript, SttError> {
+pub async fn transcribe(
+    cfg: &WhisperConfig,
+    wav: &Path,
+    work: &Path,
+    duration_sec: f64,
+    gpu_wait: Duration,
+) -> Result<Transcript, SttError> {
     let prefix = work.join("whisper");
     let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait).await;
     let (out, engine) = match gpu {
@@ -194,7 +218,14 @@ enum RunError {
     Failed(String),
 }
 
-async fn run_whisper(cfg: &WhisperConfig, wav: &Path, prefix: &Path, model: &Path, gpu: bool, gpu_wait: Duration) -> Result<String, RunError> {
+async fn run_whisper(
+    cfg: &WhisperConfig,
+    wav: &Path,
+    prefix: &Path,
+    model: &Path,
+    gpu: bool,
+    gpu_wait: Duration,
+) -> Result<String, RunError> {
     let json = prefix.with_extension("json");
     let _ = tokio::fs::remove_file(&json).await;
     let mut cmd = Command::new(&cfg.cli);
@@ -218,8 +249,13 @@ async fn run_whisper(cfg: &WhisperConfig, wav: &Path, prefix: &Path, model: &Pat
         cmd.arg("--vad").arg("-vm").arg(vad);
     }
     cmd.arg("-of").arg(prefix).arg("-f").arg(wav);
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
-    let child = cmd.spawn().map_err(|e| RunError::Failed(format!("spawn {}: {e}", cfg.cli.display())))?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let child = cmd
+        .spawn()
+        .map_err(|e| RunError::Failed(format!("spawn {}: {e}", cfg.cli.display())))?;
     let out = tokio::time::timeout(cfg.timeout, child.wait_with_output())
         .await
         .map_err(|_| RunError::Failed(format!("timed out after {:?}", cfg.timeout)))?
@@ -227,7 +263,13 @@ async fn run_whisper(cfg: &WhisperConfig, wav: &Path, prefix: &Path, model: &Pat
     match out.status.code() {
         Some(0) => {}
         Some(75) if gpu => return Err(RunError::NoLease),
-        _ => return Err(RunError::Failed(format!("exit {:?}: {}", out.status.code(), tail(&out.stderr)))),
+        _ => {
+            return Err(RunError::Failed(format!(
+                "exit {:?}: {}",
+                out.status.code(),
+                tail(&out.stderr)
+            )))
+        }
     }
     tokio::fs::read_to_string(&json)
         .await
@@ -262,7 +304,8 @@ struct Offsets {
 
 /// whisper.cpp JSON → [`Transcript`], with hallucination filtering.
 pub fn parse_output(json: &str, engine: String, duration_sec: f64) -> Result<Transcript, SttError> {
-    let w: WhisperJson = serde_json::from_str(json).map_err(|e| SttError::Whisper(format!("bad JSON: {e}")))?;
+    let w: WhisperJson =
+        serde_json::from_str(json).map_err(|e| SttError::Whisper(format!("bad JSON: {e}")))?;
     let language = w
         .result
         .and_then(|r| r.language)
@@ -350,14 +393,21 @@ mod tests {
         assert_eq!(t.segments.len(), 2);
         assert_eq!(t.segments[0].end, 6.0);
         assert_eq!(t.segments[1].start, 9.0);
-        assert_eq!(t.text(), "Domani chiamo Marco per il preventivo. Poi la palestra alle sette.");
+        assert_eq!(
+            t.text(),
+            "Domani chiamo Marco per il preventivo. Poi la palestra alle sette."
+        );
     }
 
     #[test]
     fn hallucinations() {
         assert!(is_hallucination("Thank you."));
         assert!(is_hallucination("Teksting av Nicolai Winther"));
-        assert!(!is_hallucination("I wanted to say thank you to Anna for the help with the move."));
-        assert!(!is_hallucination("Okay, so the plan for tomorrow is simple."));
+        assert!(!is_hallucination(
+            "I wanted to say thank you to Anna for the help with the move."
+        ));
+        assert!(!is_hallucination(
+            "Okay, so the plan for tomorrow is simple."
+        ));
     }
 }
