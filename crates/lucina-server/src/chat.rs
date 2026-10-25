@@ -857,16 +857,15 @@ async fn json_turn(
             }
         }
     }
-    // Deal questions: the Node Lucina's deals engine answers (Node stays
-    // canonical for deals until the port); the Rust grocery path below is
-    // the fallback when Node cannot.
-    if let Some(intent) = grocery_intent.filter(|i| crate::node_deals::DEALS_INTENTS.contains(i)) {
-        if let Some((reply, node_intent)) = st.node_deals.answer(&t.message, &t.channel).await {
-            let intent = if node_intent.is_empty() {
-                intent.to_owned()
-            } else {
-                node_intent
-            };
+    // Deal questions: the deals engine answers (crate::deals); the grocery
+    // path below takes what it cannot (as Node's grocery process()).
+    if let (Some(engine), Some(_)) = (
+        st.deals.as_deref(),
+        grocery_intent.filter(|i| crate::deals::DEALS_INTENTS.contains(i)),
+    ) {
+        if let Some((reply, intent)) =
+            crate::deals::answer(engine, &st.cfg.grocery_user_id, &t.message).await
+        {
             return Finish::reply(reply, "grocery").with(intent, None);
         }
     }

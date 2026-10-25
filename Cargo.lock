@@ -1898,6 +1898,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-deals"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "libm",
+ "lucina-grocery",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "wiremock",
+]
+
+[[package]]
 name = "lucina-delegate"
 version = "0.1.0"
 dependencies = [
@@ -2138,6 +2161,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "futures-util",
+ "lucina-deals",
  "lucina-delegate",
  "lucina-discord",
  "lucina-grocery",

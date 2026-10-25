@@ -259,10 +259,28 @@ updated): Salling food-waste + Tjek flyer sources, the shopping-list matcher wit
 file `data/grocery/deal-synonyms.json`, the `grocery.deals.cheapest`/`grocery.deals.lunch` intents, and the Telegram
 digest/alert scheduler whose state file `data/grocery/deal-watch.json` must stay byte-compatible (INVENTORY §3). Port
 it with its recorded fixtures (`tests/fixtures/grocery-deals/`) as parity tests; until then only Node runs the watcher.
-Until then lucina-rs asks Node (`crates/lucina-server/src/node_deals.rs`, the reminder-forward token): it forwards
-`GET /api/secretary/grocery/deals/map` unchanged, and chat turns classified `grocery.offer.search`,
-`grocery.deals.cheapest` or `grocery.deals.lunch` take their reply from Node `POST /api/secretary/grocery/deals/answer`,
-with the Rust grocery reply as the fallback when Node cannot answer.
+Until 2026-10-25 lucina-rs asked Node for deals (`node_deals.rs`, removed): the map forward and
+`POST /api/secretary/grocery/deals/answer`.
+Ported 2026-10-24 (owner decision: deals are rewritten in Rust and the Node code is deleted): `crates/lucina-deals`
+(beside `lucina-grocery`, which it uses for canonical products and the shopping list) holds the sources, synonyms with
+hot reload, matcher, engine (list, cheapest, lunch, map data), formatters, and the watch run with its
+`deal-watch.json` state (byte-compatible). `tests/parity.rs` compares it with Node goldens from the recorded fixtures
+(digest/alerts/list/lunch/map text byte for byte, map/list/lunch/cheapest JSON value for value); `tests/node_suite.rs`
+ports `tests/grocery-deals.test.mjs`.
+Wired 2026-10-25 (`crates/lucina-server/src/deals.rs`): `GET /api/secretary/grocery/deals/map` is served natively
+(503 `deals_unavailable` without home coordinates, 400 for `radiusM` outside 500–15000); chat turns (MCP too) classified
+`grocery.offer.search`, `grocery.deals.cheapest` or `grocery.deals.lunch` answer from the engine with Node's texts,
+and what the engine cannot answer (a product offer without a deal) goes on to the Rust grocery path. The ShelfAtlas
+catalog fallback of Node's offer questions is not ported (it belongs to the catalog adapters above). The deal watch
+(`lucina_deals::Scheduler`: digest at `GROCERY_DEALS_DIGEST_TIME` until 11:00 once per local day, alerts every
+`GROCERY_DEALS_ALERT_INTERVAL_MIN` inside `GROCERY_DEALS_ALERT_WINDOW`, daily cap, 10-minute digest cooldown) runs in
+lucina-server with its own switch `GROCERY_OFFER_WATCH_ENABLED` (in `mode.env`; `env-from-node` does not copy it),
+independent of `LUCINA_SCHEDULER`, and delivers to the app only (`POST /v1/notify`, Node's body and dedup key;
+`GROCERY_DEALS_CHANNEL=telegram|both` is logged and delivered to the app). It keeps Node's
+`data/grocery/deal-watch.json`. `lucina deals list|cheapest|lunch|map|digest|alerts [--dry-run|--send]` mirrors
+`scripts/grocery-deals.mjs`. Cut-over: turn the Node watch off (`GROCERY_OFFER_WATCH_ENABLED=false` on lucina-nez)
+in the same step as turning the Rust one on, and give the state file to the lucina-rs user (Node wrote it as root, 0600).
+Then delete the Node deals code.
 
 Retirement: switch `lucina-nez` to a runtime without Lucina (`HERMES_RUNTIME` set to a value that disables
 `lucina`, for example `poko-routes`, after checking which OTHER-BOT pieces still need to run there), keep it on 8788

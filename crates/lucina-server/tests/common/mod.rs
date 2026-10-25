@@ -27,6 +27,15 @@ pub fn script(v: Value) -> Script {
 }
 
 pub async fn harness(s: Script, tweak: impl FnOnce(&mut Config)) -> H {
+    harness_with(s, tweak, |st| st).await
+}
+
+/// [`harness`] with a last change to the built state (e.g. a fixture deals engine).
+pub async fn harness_with(
+    s: Script,
+    tweak: impl FnOnce(&mut Config),
+    finish: impl FnOnce(AppState) -> AppState,
+) -> H {
     // Hermetic: never read the live Pokémon game server on this machine.
     std::env::set_var("LUCINA_GAME", "false");
     let dir = tempfile::tempdir().unwrap();
@@ -54,7 +63,7 @@ pub async fn harness(s: Script, tweak: impl FnOnce(&mut Config)) -> H {
         .ok()
         .filter(|u| u.contains("lucina_test"));
     tweak(&mut cfg);
-    let state = AppState::build(cfg, None).unwrap();
+    let state = finish(AppState::build(cfg, None).unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = app(state.clone());

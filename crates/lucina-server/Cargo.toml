@@ -18,6 +18,7 @@ lucina-llm = { path = "../lucina-llm" }
 lucina-store = { path = "../lucina-store" }
 lucina-memory = { path = "../lucina-memory" }
 lucina-grocery = { path = "../lucina-grocery" }
+lucina-deals = { path = "../lucina-deals" }
 lucina-tools = { path = "../lucina-tools" }
 lucina-meshy = { path = "../lucina-meshy" }
 lucina-delegate = { path = "../lucina-delegate" }

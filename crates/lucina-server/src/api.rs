@@ -258,7 +258,7 @@ pub fn optional_string(body: &Value, key: &str, max: usize) -> Result<String, Ap
     }
 }
 
-fn query_param(uri: &Uri, key: &str) -> Option<String> {
+pub(crate) fn query_param(uri: &Uri, key: &str) -> Option<String> {
     let q = uri.query()?;
     for pair in q.split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -426,7 +426,7 @@ async fn route(
         }
         return shopping_lists(st, method, uri, extra, fourth, body).await;
     }
-    // Deals stay on the Node Lucina until the port (PORT_PLAN phase 6).
+    // Grocery deals near home (crate::deals).
     if resource == Some("grocery")
         && id == Some("deals")
         && extra == Some("map")
@@ -435,7 +435,7 @@ async fn route(
         if method != Method::GET {
             return Err(ApiError::method_not_allowed(&["GET"]));
         }
-        return st.node_deals.map(uri.query()).await;
+        return crate::deals::map(st, uri).await;
     }
     // Lucina's Pokémon run for the apps (secretary-server /v1/game/*): live state, screen, start/pause.
     if resource == Some("game") && extra.is_none() {
