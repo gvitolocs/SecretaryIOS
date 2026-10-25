@@ -49,6 +49,8 @@ final class AppModel {
     var showGallery = false
     /// Voice memos, a plugin.
     var showMemos = false
+    /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
+    var showPokemon = false
 
     @ObservationIgnored let client: APIClient
     @ObservationIgnored let keychain: KeychainStore

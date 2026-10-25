@@ -25,11 +25,7 @@ struct Plugin: Identifiable {
             Plugin(id: "media", icon: "play.rectangle", title: "Media",
                    detail: String(localized: "Films, music and audio")) { app.showMedia = true },
             Plugin(id: "pokemon", icon: "gamecontroller", title: "Pokémon",
-                   detail: String(localized: "Lucina's game")) {
-                // Lucina plays on nezopt; the chat is where she reports and takes orders.
-                app.chat.requestPrefill(String(localized: "How is the Pokémon game going?"))
-                app.selectedTab = .chat
-            },
+                   detail: String(localized: "Lucina's game")) { app.showPokemon = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
             Plugin(id: "wardrobe", icon: "tshirt", title: "Wardrobe",
@@ -59,6 +55,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showMedia) { MediaLibraryView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
+        .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
     }
 }
 
