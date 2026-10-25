@@ -65,6 +65,26 @@ struct ShareMeta: Codable, Equatable, Sendable {
     var files: [File] = []
     var location: Location?
 
+    init(files: [File] = [], location: Location? = nil) {
+        self.files = files
+        self.location = location
+    }
+
+    private enum CodingKeys: String, CodingKey { case files, location }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        files = try c.decodeIfPresent([File].self, forKey: .files) ?? []
+        location = try c.decodeIfPresent(Location.self, forKey: .location)
+    }
+
+    /// `files` only when there are some (a location on its own is `{"location":…}`).
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if !files.isEmpty { try c.encode(files, forKey: .files) }
+        try c.encodeIfPresent(location, forKey: .location)
+    }
+
     static let maxBytes = 64 * 1024
 
     var isEmpty: Bool { !files.contains(where: \.hasFacts) && location == nil }

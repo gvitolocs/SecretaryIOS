@@ -22,9 +22,10 @@ enum AttachmentKind: String, Codable, Sendable, CaseIterable {
             if type.conforms(to: .audio) { return .audio }
             if type.conforms(to: .spreadsheet) || ["csv", "tsv", "xlsx", "xls", "ods", "numbers"].contains(ext) { return .spreadsheet }
             if type.conforms(to: .presentation) || ["pptx", "ppt", "odp", "key"].contains(ext) { return .presentation }
+            // Office files are zip packages underneath: decide them before archives.
+            if ["doc", "docx", "odt", "rtf", "pages"].contains(ext) || type.conforms(to: .rtf) { return .document }
             if type.conforms(to: .archive) || ["zip", "tar", "gz", "tgz", "7z", "rar", "bz2", "xz"].contains(ext) { return .archive }
             if type.conforms(to: .sourceCode) || Self.codeExtensions.contains(ext) { return .code }
-            if ["doc", "docx", "odt", "rtf", "pages"].contains(ext) || type.conforms(to: .rtf) { return .document }
             if type.conforms(to: .plainText) || ["md", "txt", "markdown"].contains(ext) { return .text }
         }
         if mime.hasPrefix("image/") { return .image }
