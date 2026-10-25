@@ -19,6 +19,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        ShareShortcut.publish(this)
         val ui = LucinaUi(this)
         val root = ui.frame(this)
         val header = LinearLayout(this)

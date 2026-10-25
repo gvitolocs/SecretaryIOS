@@ -9,6 +9,7 @@
 //! - [`number`]: which strings are voice-call numbers (never USSD or URIs).
 //! - [`journal`]: the private on-device call history and transcripts.
 //! - [`net`]: Lucina voice turns and recording transcription over HTTPS.
+//! - [`share`]: validated manifests and streaming multipart share uploads.
 //! - [`ui`]: what the in-call screen, notification, keypad, transcript list
 //!   and WebView router show or do.
 //! - [`phone`]: placing a call through Android Telecom, over JNI.
@@ -23,6 +24,7 @@ pub mod journal;
 pub mod net;
 pub mod number;
 pub mod phone;
+pub mod share;
 pub mod ui;
 
 /// Every fallible operation returns a short, owner-facing error message.

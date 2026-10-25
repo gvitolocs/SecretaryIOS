@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Secretary · Lucina 0.2.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
+<!-- Secretary · Lucina 0.3.0: Kotlin shell (src/*.kt) over liblucina_calls.so (crates/lucina-android-calls). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="tech.getsecretary.secretary"
-    android:versionCode="3" android:versionName="0.2.1">
+    android:versionCode="4" android:versionName="0.3.0">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
@@ -14,11 +14,24 @@
     <application android:label="Secretary · Lucina" android:allowBackup="false" android:usesCleartextTraffic="false"
         android:extractNativeLibs="false" android:theme="@android:style/Theme.DeviceDefault.NoActionBar" android:icon="@drawable/lucina">
         <activity android:name=".MainActivity" android:exported="true">
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity android:name=".ShareActivity" android:exported="true" android:label="Lucina"
+            android:icon="@drawable/lucina" android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar"
+            android:excludeFromRecents="true" android:taskAffinity="" android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="*/*"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+        </activity>
+        <service android:name=".ShareJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="true"/>
         <activity android:name=".CallsActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.DIAL"/>

@@ -4,8 +4,8 @@ import android.content.Context
 
 /**
  * JNI surface of liblucina_calls.so (crates/lucina-android-calls, see docs/lucina-android.md).
- * Every function returns JSON. All but [phoneCall] return the envelope `{"ok", "data" | "error"}`,
- * which [unwrap] opens. [journal] and [ui] are cheap; [voiceTurn] and [transcribe] block on the
+ * Every function returns JSON. All but [phoneCall] and [shareUpload] return the envelope `{"ok", "data" | "error"}`,
+ * which [unwrap] opens. [journal] and [ui] are cheap; [voiceTurn], [transcribe] and [shareUpload] block on the
  * network and must not run on the main thread.
  */
 object Native {
@@ -24,6 +24,9 @@ object Native {
 
     /** Transcribe a recording into the journal, `{"consent", "mimeType"?, "id"?}` -> `{"id", "saved", "partial"}`. */
     @JvmStatic external fun transcribe(filesDir: String, cookie: String, json: String, audio: ByteArray): String
+
+    /** Streaming upload of a staged share; returns {ok, status, retry, shareId, error?}. */
+    @JvmStatic external fun shareUpload(filesDir: String, cookie: String, manifestPath: String): String
 
     /** Screen decisions: `callView`, `dtmf`, `route`. */
     @JvmStatic external fun ui(op: String, json: String): String

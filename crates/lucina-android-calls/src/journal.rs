@@ -42,7 +42,7 @@ const APP_FILES_SUFFIX: &str = "/tech.getsecretary.secretary/files";
 static LOCK: Mutex<()> = Mutex::new(());
 
 /// What a record is.
-pub const KINDS: [&str; 3] = ["sim", "internet", "recording"];
+pub const KINDS: [&str; 4] = ["sim", "internet", "recording", "share"];
 /// Who spoke a turn.
 pub const ROLES: [&str; 3] = ["user", "lucina", "recording"];
 
