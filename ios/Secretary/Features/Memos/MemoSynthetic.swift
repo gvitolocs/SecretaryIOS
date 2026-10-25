@@ -1,4 +1,5 @@
 #if DEBUG
+import ActivityKit
 import AVFoundation
 import Foundation
 
@@ -65,6 +66,31 @@ enum MemoSynthetic {
             } catch {
                 MemoLog.write("synthetic failed: \(error)")
             }
+        }
+    }
+}
+
+/// Debug builds only: `-SecretaryMemoRecordTest YES` records about four seconds and checks the
+/// Live Activity through the same handler its Lock Screen buttons call (pause, resume), then
+/// DISCARDS the recording. Every step goes to Memos/memo-log.txt.
+@MainActor
+enum MemoRecordSelfTest {
+    static func runIfRequested(store: MemosStore, defaults: UserDefaults = .standard) {
+        guard defaults.bool(forKey: "SecretaryMemoRecordTest") else { return }
+        Task { @MainActor in
+            let rec = store.recorder
+            await store.record()
+            try? await Task.sleep(for: .seconds(1))
+            MemoLog.write("selftest: started state=\(rec.state) activities=\(Activity<MemoRecordingAttributes>.activities.count) live=\(rec.activityReport)")
+            MemoRecordingCommands.handle?(.pause)
+            try? await Task.sleep(for: .seconds(1.5))
+            MemoLog.write("selftest: after pause intent state=\(rec.state) live=\(rec.activityReport) elapsed=\(String(format: "%.1f", rec.elapsed))")
+            MemoRecordingCommands.handle?(.resume)
+            try? await Task.sleep(for: .seconds(1.5))
+            MemoLog.write("selftest: after resume intent state=\(rec.state) live=\(rec.activityReport)")
+            rec.discard()
+            try? await Task.sleep(for: .seconds(1.5))
+            MemoLog.write("selftest: discarded state=\(rec.state) activities=\(Activity<MemoRecordingAttributes>.activities.count)")
         }
     }
 }
