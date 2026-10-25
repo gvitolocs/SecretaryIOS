@@ -78,6 +78,9 @@ pub(super) fn public_ip(ip: IpAddr) -> bool {
     }
 }
 async fn download(st: &AppState, input: &str) -> anyhow::Result<(Vec<u8>, String)> {
+    // `st` only carries the test-only loopback override.
+    #[cfg(not(debug_assertions))]
+    let _ = st;
     tokio::time::timeout(Duration::from_secs(15), async {
         let mut url = reqwest::Url::parse(input)?;
         for redirects in 0..=5 {
