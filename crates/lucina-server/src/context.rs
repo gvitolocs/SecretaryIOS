@@ -22,6 +22,10 @@ pub struct Prepared {
     pub recent_context: String,
     pub classification: Classification,
     pub policy: Policy,
+    /// The live game block ("" when the game server is off). Not in `memory_context`: it goes into the system
+    /// part of every model call of the turn (`planner::TURN_SYSTEM`), so trimming never drops it; owner turns
+    /// also take the full planner so the model can choose game_hint.
+    pub game: String,
 }
 
 /// Node's `clipRecentTurns`: keep the header and the newest turns.
@@ -157,6 +161,8 @@ pub async fn prepare_with(
     let budgets = policy.budgets();
 
     let presence = presence_block(st, user_text);
+    // Her own Pokémon Red run, live, so she answers as the player and can pass it advice (game_hint).
+    let game = crate::bridges::game_context(&st.secretary.http).await;
     let calendar = if st.cfg.calendar_enabled {
         crate::bridges::calendar_context(&st.secretary, user_text, now, tz).await
     } else {
@@ -229,5 +235,6 @@ pub async fn prepare_with(
         recent_context,
         classification,
         policy,
+        game,
     }
 }

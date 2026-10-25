@@ -1,0 +1,40 @@
+[package]
+name = "lucina-memo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina voice memos: resumable uploads, local Whisper transcription, Lucina's summary, PDF, Obsidian note, notification"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lucina-memo"
+path = "src/main.rs"
+
+[dependencies]
+lucina-llm = { path = "../lucina-llm" }
+axum = "0.8"
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+subtle = "2"
+getrandom = "0.3"
+
+[dev-dependencies]
+# The upload protocol model (tests/upload_model.rs).
+stateright = "0.30"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

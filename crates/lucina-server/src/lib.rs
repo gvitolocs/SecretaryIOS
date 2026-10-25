@@ -18,6 +18,7 @@ pub mod delegation;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod node_deals;
 pub mod otp;
 pub mod parity;
 pub mod planner;
@@ -62,6 +63,8 @@ pub struct Inner {
     pub usage: Option<Arc<UsageTotals>>,
     pub deepseek_has_key: KeyProbe,
     pub grocery: Option<Arc<GroceryRepo>>,
+    /// The Node Lucina's deals engine (map forward, deals answers).
+    pub node_deals: node_deals::NodeDeals,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
@@ -182,6 +185,17 @@ impl AppState {
         env.secretary_url = cfg.secretary_url.clone();
         env.secretary_service_token_file = cfg.secretary_service_token_file.clone();
         env.secrets = secret_store.clone();
+        // Voice memos (lucina-memo on this host): on when its service token is readable.
+        let memo_token = std::env::var("LUCINA_MEMO_SERVICE_TOKEN_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var("HOME").ok().map(|h| std::path::Path::new(&h).join(".config/lucina-memo/service.token")))
+            .filter(|p| p.is_file());
+        if let Some(token) = memo_token {
+            env.memo_url = Some(std::env::var("LUCINA_MEMO_URL").unwrap_or_else(|_| "http://127.0.0.1:8795".into()));
+            env.memo_token_file = Some(token);
+        }
         let env_http = env.http.clone();
         let jobs = Arc::new(
             JobStore::new(&cfg.jobs_path).with_node_file(Some(cfg.node_jobs_path.clone())),
@@ -256,6 +270,11 @@ impl AppState {
             usage,
             deepseek_has_key: has_key,
             grocery,
+            node_deals: node_deals::NodeDeals::new(
+                &cfg.node_url,
+                cfg.node_token.clone(),
+                node_deals::TIMEOUT,
+            ),
             tool_env: Arc::new(env),
             registry,
             mcp_registry,
