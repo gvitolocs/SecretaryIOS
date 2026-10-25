@@ -355,7 +355,8 @@ struct RustPhoto: View {
                 }
             }
             .contentShape(Rectangle())
-            .gesture(MagnifyGesture()
+            // Simultaneous: a pinch must never hold back the pager's one-finger swipe.
+            .simultaneousGesture(MagnifyGesture()
                 .onChanged { g in
                     gesture(["op": "pinch", "factor": g.magnification / lastMagnify, "x": g.startLocation.x, "y": g.startLocation.y], geo.size)
                     lastMagnify = g.magnification
