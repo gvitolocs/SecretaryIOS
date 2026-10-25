@@ -72,6 +72,21 @@ fn identity(s: &ScannedBook) -> String {
         )
     }
 }
+/// A re-scan refreshes when the file was last seen on the Kindle; that alone is not a change, so it
+/// neither bumps `updatedAt` nor counts the book as updated (the new time is still kept).
+fn changed(old: &Book, new: &Book) -> bool {
+    match (&old.on_kindle, &new.on_kindle) {
+        (Some(o), Some(n)) if o.last_seen_at != n.last_seen_at => {
+            let mut same_seen = new.clone();
+            if let Some(p) = same_seen.on_kindle.as_mut() {
+                p.last_seen_at = o.last_seen_at.clone();
+            }
+            *old != same_seen
+        }
+        _ => old != new,
+    }
+}
+
 fn new_book(id: String, title: String, authors: Vec<String>, now: &str) -> Book {
     Book {
         kind: BookKind::Book,
@@ -387,7 +402,8 @@ pub fn merge(
         match existing.books.get(&b.id) {
             None => outcome.books_added += 1,
             Some(old) => {
-                if old != b || existing.highlights.get(&b.id) != state.highlights.get(&b.id) {
+                if changed(old, b) || existing.highlights.get(&b.id) != state.highlights.get(&b.id)
+                {
                     b.updated_at = now.into();
                     outcome.books_updated += 1;
                 } else {

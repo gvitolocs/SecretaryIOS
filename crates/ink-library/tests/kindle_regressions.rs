@@ -575,3 +575,39 @@ fn highlights_sort_in_reading_order() {
     assert_eq!(order[..3], ["a", "b", "c"]);
     assert_eq!(hs.len(), 4, "an entry without a position is kept, last");
 }
+
+#[test]
+fn rescan_that_only_refreshes_last_seen_is_unchanged() {
+    let f = file("I Malavoglia_B00685RMT8.kfx", 'a', &[]);
+    let first = batch(
+        vec![f.clone()],
+        &clip("I Malavoglia", Some("Verga, Giovanni"), "Quote."),
+    );
+    let (s1, o1) = merge(&LibraryState::default(), &first, NOW);
+    assert_eq!(o1.books_added, 1);
+    let mut later = first.clone();
+    later.scanned_at = "2026-10-26T09:00:00Z".into();
+    let (s2, o2) = merge(&s1, &later, "2026-10-26T09:00:01Z");
+    assert_eq!(
+        (o2.books_updated, o2.books_unchanged),
+        (0, 1),
+        "only lastSeenAt moved"
+    );
+    let (b1, b2) = (
+        s1.books.values().next().unwrap(),
+        s2.books.values().next().unwrap(),
+    );
+    assert_eq!(b2.updated_at, b1.updated_at, "updatedAt is not bumped");
+    assert_eq!(
+        b2.on_kindle.as_ref().unwrap().last_seen_at,
+        "2026-10-26T09:00:00Z",
+        "the new time is kept"
+    );
+    // A real change on a later scan still counts.
+    let mut moved = later.clone();
+    moved.scanned_at = "2026-10-27T09:00:00Z".into();
+    moved.books[0].size_bytes += 1;
+    let (s3, o3) = merge(&s2, &moved, "2026-10-27T09:00:01Z");
+    assert_eq!(o3.books_updated, 1);
+    assert_ne!(s3.books.values().next().unwrap().updated_at, b1.updated_at);
+}
