@@ -56,6 +56,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 4 | Lucina MCP OAuth 2.1 + PKCE + refresh rotation | `oauth.rs` | `oauth/OAuth.tla` | `protocol_kernels.rs` K4 | `crates/secretary-mcp/src/oauth.rs` |
 | 5 | Confirmation and approval gates | `gates.rs` (`Pending`, `Attention`, `Meshy`) | `gates/PendingActions.tla`, `AttentionBudget.tla`, `MeshyCredits.tla` | `protocol_kernels.rs` K5, K6; `confirmation_gate.rs`; `attention_engine.rs` | `lucina-tools/src/{pending,agent}.rs`, `lucina-server/src/chat.rs::tools_turn` (branch `lucina-rs`); `lucina-proactive/src/{attention,engine}.rs`; `lucina-meshy/src/{budget,service}.rs`, `lucina-tools/src/tools/meshy.rs` (uncommitted in `SecretaryIOS-meshy`) |
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
+| 7 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -107,6 +108,9 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | I5 ablation: ops leave the outbox when sent | 8 731 | 20 | `acked_never_lost`, `all_ops_applied` **violated** |
 | I6 ablation: plain last-writer-wins status | 9 034 | 21 | `owner_completed_never_reverted`, `device_completed_sticky` **violated** |
 | I7 ablation: the last delivery wins (no stamps) | 9 418 | 21 | `converges` **violated** |
+| M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
+| M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
+| M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -114,6 +118,8 @@ TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 
 property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` (`--deep`, the Stateright I2
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
+`MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
+`MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
 
 ## Invariants, models and mapping
 
@@ -296,6 +302,54 @@ The model is one book's registers (ops on different books touch disjoint registe
 | `Deliver(Resp)` | `Outbox::ack` (append + `sync_data`), `ClientMachine::on_response` |
 | `Drop`, `Dup` | `FlakyTransport` (`Faults`) |
 | `Owner` | `PATCH /v1/library/books/{id}` → `state::owner_set_status` / `owner_set_progress` |
+
+### 7. Lucina media library: photo backup
+
+The iPhone backs up its photo library to lucina-media on nezopt through p1 (`docs/media-library.md`). Per asset the
+phone sends `POST /v1/media/uploads`, `PUT /uploads/{id}?offset=N` with the rest of the file (a background
+URLSession, which resends a cut-off request from the offset it last heard), and `POST /finish`. The server stores
+the bytes content-addressed (blake3) and dedupes by hash; an edit of a known phone asset becomes a new version of
+its item. p1's forward_auth counts every request against the device's 60 a minute and answers 429 beyond.
+
+The model has two devices that both hold photo 0 (device 0 also has photo 1). Responses get lost, PUTs get cut,
+lucina-media restarts, and p1's window allows `limit` requests. Finish is three server steps, as in the code: decide
+(`known_for` + `ingest_decision` under the catalog lock), insert (`store::place_new`, then `insert_item` under the
+lock again), mark (`finished = 1`). A restart can fall between any two.
+
+Invariants (Stateright name / TLA+ name):
+
+- `stored_once` / `StoredOnce`: the catalog never holds two items made from the same bytes.
+- `no_partial_object` / `NoPartialObject`: every item's object is the whole file (declared size).
+- `no_dead_end_finish` / `NoDeadEndFinish`: a finish never meets a lost upload with an error the client cannot get
+  past (it gets 410 and starts the asset again).
+- `no_request_storm` / `NoRequestStorm`: a device sends at most `limit + 1` requests per window (one 429, then it
+  waits).
+- `done_means_backed_up` / `DoneMeansBackedUp`: when both queues are empty, every photo is in the catalog.
+
+Witnesses (`sometimes` / `MediaBackup_witness_*.cfg`): `resumed` (a resent PUT overlaps stored bytes), `rate_limited`
+(a 429), `dedupe_hit` (device 1 sends bytes device 0 stored), `lost_upload_restarted` (a 410 and a fresh upload),
+`all_backed_up`.
+
+Verus (`media_upload.rs`, 13 verified): (a) `accept_chunk` never accepts a chunk past the stored offset (no gap) or
+past the declared size, acknowledges a chunk wholly below the offset without storing it, and refuses a finished
+upload; (b) the merge: stored bytes ++ the chunk minus its `skip` overlap equals the file's longer prefix, so over
+any sequence of resent chunks the stored bytes stay a prefix: no gap, no duplicated byte; (c) `check_finish`
+needs every declared byte, so with (b) the stored object is the whole file; (d) `ingest_decision`: an edit of a
+known asset versions that item, known bytes are a duplicate, New only for unknown bytes and never shadows an
+earlier item; (e) the client's `after_error`: a 429 waits at least 10 s (Retry-After, or 60 s), transport errors 120
+s, 410 restarts the asset, anything else skips it; at 4 s per asset and at most 3 requests each, the backup uses 48
+of the 60 requests a minute.
+
+| Model action | Code |
+|---|---|
+| `Request(d, _)` at `Create` | `PhotoBackup.upload` → `GalleryAPI.createUpload` → `http::create_upload` |
+| `Request(d, _)` at `Put` | background `URLSession` upload task → `http::put_chunk` → `protocol::accept_chunk` (skips `skip` bytes of the body) |
+| `Request(d, _)` at `Finish` | `GalleryAPI.finish` → `http::finish_upload`: finished → same item; file missing → 410; `check_finish`; then `ingest::ingest_file` decide (`known_for`, `ingest_decision`; a duplicate's file is removed) |
+| `FinishStep` (insert) | `ingest_file`: `store::place_new`, `insert_item` |
+| `FinishStep` (mark) | `finish_upload`: `UPDATE uploads SET finished = 1, item_id` (same blocking task as the ingest since 8ee5623) |
+| `Delivery::Lost`, `Delivery::Cut` | background-session cut-offs, timeouts; the phone resends from `known` |
+| `Restart` | lucina-media restart (`systemctl --user restart lucina-media`, a crash) |
+| rate limit, `Tick` | p1 `forward_auth GET /v1/avatar` → `secretary-server` `ratelimit.rs` (token bucket, 60/min per device); `PhotoBackup.run` on `APIError.rateLimited` waits `max(retryAfter ?? 60, 10)` s |
 
 ## Bugs found
 
@@ -541,6 +595,51 @@ Confirm(0) Reserve(0)=20 StepRuns(0,10) StepRuns(0,13) Confirm(1) Reserve(1)=20 
 Fix: reserve the worst case per step (the estimate plus a margin bounding Meshy's drift), and before each step stop
 when consumed plus the next worst case would exceed the reservation. Verus K5 proves the arithmetic.
 
+### M1: a restart between ingest and the "finished" mark stalled the backup for good (medium). **Fixed.**
+
+Found live (the backup stopped at one asset; every retried finish was a 500), reproduced by the
+model (`M before fixes`, `no_dead_end_finish`):
+
+```
+Request(0, Ok) x3      device 0: create, put, finish (decide: new)
+FinishStep(0)          insert: the spool file moved into the store, the item written
+Restart                before `finished = 1`
+Tick Request(0, Ok)    the resent finish: the upload is unfinished and its file is gone → 500, forever
+```
+
+Fixed in 8ee5623 (branch `media-library`): the ingest and the mark run in one blocking task, so a client hang-up
+no longer drops the handler between them, and a finish without its file answers 410; the phone drops the upload
+and sends the asset again, which dedupe makes cheap. A crash can still fall between the two steps, which is why
+the 410 path matters: the model's `M current` case reaches `lost_upload_restarted` and keeps `no_dead_end_finish`.
+
+### M2: the backup retried a 429 at once (medium). **Fixed.**
+
+Found live (a 429 storm against p1's 60/min, which the gallery's tiles also spent), reproduced by the model
+(`no_request_storm`: 5 requests in a window of 3). Fixed in 19b1e63: the backup stops on 429 and waits
+`max(Retry-After ?? 60, 10)` s, pauses 120 s on gateway errors and paces 4 s per asset; renditions moved behind
+play tokens so tiles no longer spend the device's requests. Verus (e) proves the decision and the 48-per-minute
+budget.
+
+### M3: two finishes of the same bytes can both create an item (low; found by the model)
+
+`ingest::ingest_file` reads `known_for` (by hash, by asset) under one catalog lock, then moves the file into the
+store (`place_new`, a durable copy to the big disk: seconds for a video) and runs `insert_item` under the lock
+again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M current`):
+
+```
+Request(0, Ok) x3      device 0: create, put, finish photo 0 (decide: unknown bytes → New)
+Request(1, Ok) x3      device 1: the same for its copy of photo 0 (decide: still unknown → New)
+FinishStep(0)          insert item A
+FinishStep(1)          insert item B, the same hash: the photo shows twice
+```
+
+The two finishes can come from two devices or from a phone upload racing a Lucina ingest (`/internal/v1/ingest`:
+a Telegram or share-sheet attachment) of the same picture. There is no unique index on `items.hash` (an edit can
+legitimately bring two items to the same bytes), so nothing catches it. Proposed fix, modelled as `M + fix M3`
+(all hold): decide again inside `insert_item`'s transaction, and turn the insert into a duplicate when an item with
+this hash appeared meanwhile (the `by_asset` branch already has the unique `items_asset` index behind it). Not
+changed here: it is a lucina-media change with a deploy, outside this verification pass.
+
 ## Modeling assumptions
 
 - **Timeline.** A single `write()` of a whole line to an O_APPEND regular file is atomic (Linux; lines stay far
@@ -551,5 +650,10 @@ when consumed plus the next worst case would exceed the reservation. Verus K5 pr
 - **Shopping.** Each batch is one serialisable transaction (list row `FOR UPDATE`). The model has one list and two
   objects; `move`, `reorder` and `edit_item` are not modelled.
 - **OAuth.** The attacker cannot forge a PKCE verifier and cannot register an allowed redirect_uri.
+- **Media backup.** A file's hash is its identity (blake3 collisions are ignored); each photo is two bytes, so a
+  PUT can be cut once in the middle. Each server step is atomic under the catalog's `Mutex<Connection>`. p1's token
+  bucket is a fixed window of `limit` requests that `Tick` refills; the 4 s pacing is in Verus (e), not in the
+  model, so the model's client is more aggressive than the real one. Edits (NewVersion) are in Verus (d), not in
+  the model.
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels
   cover the per-step invariants for all inputs.
