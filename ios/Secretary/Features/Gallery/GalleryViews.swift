@@ -390,6 +390,7 @@ struct GalleryViewer: View {
     @State private var showInfo = false
     @State private var addToAlbum = false
     @State private var confirmTrash = false
+    @State private var meter = FrameMeter()
 
     var body: some View {
         let item = store.items.first { $0.id == current } ?? start
@@ -426,7 +427,13 @@ struct GalleryViewer: View {
                 }
             }
         }
-        .onAppear { current = start.id }
+        .onAppear {
+            current = start.id
+            meter.start()
+            prefetchNeighbours(of: start.id)
+        }
+        .onDisappear { meter.stop() }
+        .onChange(of: current) { _, id in prefetchNeighbours(of: id) }
         .sheet(isPresented: $showInfo) { NavigationStack { GalleryInfo(item: item) }.lucinaSheet().presentationDetents([.medium, .large]) }
         .sheet(isPresented: $addToAlbum) {
             NavigationStack {
@@ -451,6 +458,13 @@ struct GalleryViewer: View {
             Text("It stays on this iPhone. The server keeps it in the trash for 30 days.")
         }
         .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
+    }
+
+    /// The two photos either side of the one on screen, decoded ahead of the swipe.
+    private func prefetchNeighbours(of id: String) {
+        guard gallerySmooth, let i = store.items.firstIndex(where: { $0.id == id }) else { return }
+        let near = [i + 1, i - 1, i + 2, i - 2].filter { store.items.indices.contains($0) }.map { store.items[$0] }
+        PreviewPrefetcher.shared.prefetch(near, api: store.api())
     }
 
     @ViewBuilder
