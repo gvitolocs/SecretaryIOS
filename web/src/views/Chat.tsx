@@ -22,6 +22,8 @@ import {
   SparkleIcon,
   SpeakerIcon,
 } from "../components/Icons";
+import { ShareComposer } from "../components/ShareComposer";
+import { linkHost } from "../lib/share";
 import { LinkifiedText } from "../components/LinkifiedText";
 import { Markdown } from "../components/Markdown";
 import { RichReply } from "../components/RichReply";
@@ -84,6 +86,8 @@ const ATTACHMENT_LABELS: Record<Attachment["kind"], MessageKey> = {
   image: "chat.photo",
   voice: "chat.voice",
   file: "chat.file",
+  video: "share.video", audio: "share.audio", pdf: "share.pdf", document: "share.document",
+  link: "share.link", text: "share.text", contact: "share.contact", location: "share.location",
 };
 
 const PRIORITY_LABELS = {
@@ -367,19 +371,20 @@ export function SourceBadge(props: { message: ChatMessage }) {
   );
 }
 
-function Attachments(props: { items: Attachment[] }) {
-  return (
-    <ul class="attachments" aria-label={t("chat.attachments")}>
-      <For each={props.items}>
-        {(a) => (
-          <li class="attachment">
-            {t(ATTACHMENT_LABELS[a.kind])}
-            <Show when={a.name}>{(n) => <span class="attachment-name">: {n()}</span>}</Show>
-          </li>
-        )}
-      </For>
-    </ul>
-  );
+export function Attachments(props: { items: Attachment[] }) {
+  const icons: Record<Attachment["kind"], string> = { image: "📷", video: "🎬", voice: "🎙", audio: "🎵", pdf: "📕", document: "📄", file: "📎", link: "🔗", text: "📝", contact: "👤", location: "📍" };
+  return <ul class="attachments" aria-label={t("chat.attachments")}>
+    <For each={props.items}>{(a) => {
+      const media = a.mediaId ? `/v1/media/items/${encodeURIComponent(a.mediaId)}` : null;
+      const href = () => a.kind === "link" ? safeHref(a.url ?? "") : media ? `${media}/original` : null;
+      const label = () => a.name || (a.kind === "link" && a.url ? linkHost(a.url) : t(ATTACHMENT_LABELS[a.kind]));
+      const content = () => <>
+        <Show when={media && (a.kind === "image" || a.kind === "video")}><img src={`${media}/thumb?size=256`} alt={label()} loading="lazy" /></Show>
+        <span><span aria-hidden="true">{icons[a.kind]} </span>{label()}<Show when={a.bytes !== undefined}><small> ({a.bytes} B)</small></Show></span>
+      </>;
+      return <li class="attachment"><Show when={href()} fallback={content()}>{(url) => <a href={url()} target="_blank" rel="noopener noreferrer">{content()}</a>}</Show></li>;
+    }}</For>
+  </ul>;
 }
 
 function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string }) {
@@ -830,6 +835,7 @@ export default function ChatView() {
           void submit();
         }}
       >
+        <ShareComposer />
         <label class="sr-only" for="composer-input">
           {t("chat.composer")}
         </label>

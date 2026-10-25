@@ -11,8 +11,12 @@ export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"] 
 export type Channel = (typeof CHANNELS)[number];
 
 export interface Attachment {
-  kind: "image" | "voice" | "file";
+  kind: "image" | "voice" | "file" | "video" | "audio" | "pdf" | "document" | "link" | "text" | "contact" | "location";
   name?: string;
+  mime?: string;
+  mediaId?: string;
+  url?: string;
+  bytes?: number;
 }
 
 export interface ItemMeta {
@@ -184,9 +188,15 @@ function parseAttachments(v: unknown): Attachment[] | undefined {
   for (const a of v) {
     if (!a || typeof a !== "object") continue;
     const kind = (a as { kind?: unknown }).kind;
-    if (kind !== "image" && kind !== "voice" && kind !== "file") continue;
-    const name = str((a as { name?: unknown }).name);
-    out.push(name ? { kind, name } : { kind });
+    if (typeof kind !== "string" || !["image", "voice", "file", "video", "audio", "pdf", "document", "link", "text", "contact", "location"].includes(kind)) continue;
+    const raw = a as Record<string, unknown>;
+    const attachment: Attachment = { kind: kind as Attachment["kind"] };
+    for (const key of ["name", "mime", "mediaId", "url"] as const) {
+      const value = str(raw[key]);
+      if (value) attachment[key] = value;
+    }
+    if (typeof raw.bytes === "number" && Number.isFinite(raw.bytes) && raw.bytes >= 0) attachment.bytes = raw.bytes;
+    out.push(attachment);
   }
   return out.length ? out : undefined;
 }

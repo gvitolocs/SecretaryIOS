@@ -5,6 +5,7 @@ import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, Use
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
+import { listShares } from "../lib/share";
 import { t } from "../i18n";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
@@ -93,6 +94,9 @@ export default function Shell(props: { children?: JSX.Element }) {
   const navigate = useNavigate();
 
   onMount(() => {
+    if (typeof indexedDB !== "undefined") void listShares().then((entries) => {
+      if (entries.length && location.pathname !== "/") navigate("/" + location.search);
+    }).catch(() => undefined);
     onCleanup(startNotifications((route) => navigate(route)));
     void checkHealth();
     resumeJobPolling();
