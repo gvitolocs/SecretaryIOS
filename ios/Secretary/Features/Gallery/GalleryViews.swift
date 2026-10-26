@@ -207,8 +207,13 @@ struct GalleryScreen: View {
         }
         // Google Photos: behind the viewer the grid follows the photo on screen, so closing zooms
         // into its tile.
-        .onChange(of: shownID) { _, id in
-            if let id { proxy.scrollTo(id, anchor: .center) }
+        // After the swipe settles: scrolling the grid during the page animation dropped frames
+        // (worst 85 ms on the iPhone).
+        .task(id: shownID) {
+            guard let id = shownID else { return }
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo(id, anchor: .center)
         }
         }
         .fullScreenCover(item: $viewing) { item in
