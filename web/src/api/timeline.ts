@@ -4,7 +4,8 @@
 // Items from the network are untrusted: `parseItem` validates each one and
 // drops anything malformed instead of throwing.
 
-import { parseRich, type RichMessage } from "../lib/rich";
+import type { PlaceInfo } from "../lib/mapKit";
+import { parsePlace, parseRich, type RichMessage } from "../lib/rich";
 import { type Model3dBlock, parseModel3dBlocks } from "../lib/model3d";
 
 export const CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"] as const;
@@ -48,6 +49,8 @@ export interface ItemMeta {
   rich?: RichMessage;
   /** With kind "proactive": Lucina reached out on her own. */
   proactive?: ProactiveMeta;
+  /** With kind "proactive": the place of the event it is about (calendar reminders). */
+  place?: PlaceInfo;
   /** Message format v1 `model3d` blocks (3D models from the gallery). */
   blocks?: Model3dBlock[];
   /** With kind "share": the POST /v1/share idempotency key and the quick action. */
@@ -184,6 +187,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (p) {
       out.kind = "proactive";
       out.proactive = p;
+      const place = parsePlace(m.place);
+      if (place) out.place = place;
     }
   }
   if (m.kind === "note") {
