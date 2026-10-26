@@ -25,6 +25,9 @@ struct LocalMemo: Codable, Identifiable, Equatable, Sendable {
     var deviceTranscriptSent: Bool?
     /// The file's extension (`aac` for crash-safe recordings; nil = an older `.m4a`).
     var ext: String?
+    /// Wall-clock end of the recording and where it started, for the calendar match.
+    var endedAt: Date?
+    var location: MemoGeoFix?
 
     var file: URL { MemoFiles.audio(clientId, ext: ext ?? "m4a") }
     var mime: String { ext == "aac" ? "audio/aac" : "audio/mp4" }
@@ -75,7 +78,7 @@ final class MemoUploadQueue {
     func add(_ r: FinishedRecording, title: String? = nil) {
         let size = (try? FileManager.default.attributesOfItem(atPath: r.url.path)[.size] as? Int64) ?? 0
         items.append(LocalMemo(clientId: r.clientId, recordedAt: r.startedAt, duration: r.duration, sizeBytes: size, title: title,
-                               ext: r.url.pathExtension))
+                               ext: r.url.pathExtension, endedAt: r.endedAt, location: r.location))
         save()
         kick()
     }
@@ -87,16 +90,17 @@ final class MemoUploadQueue {
     /// `dryRun` (DEBUG device tests): only log what would be recovered, then delete the file.
     @discardableResult
     func recoverOrphans(dryRun: Bool = false) -> Int {
-        let known = Set(items.map(\.clientId))
+        // The recording in progress (started from the Lock Screen before this queue existed) is not an orphan.
+        let known = Set(items.map(\.clientId) + [MemoRecordingCenter.recorder.currentClientId].compactMap { $0 })
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: MemoFiles.directory, includingPropertiesForKeys: [.creationDateKey, .fileSizeKey]) else {
+        guard let files = try? fm.contentsOfDirectory(at: MemoFiles.directory, includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey, .fileSizeKey]) else {
             return 0
         }
         var recovered = 0
         for url in files where url.pathExtension == "aac" {
             let clientId = url.deletingPathExtension().lastPathComponent
             guard !known.contains(clientId) else { continue }
-            let values = try? url.resourceValues(forKeys: [.creationDateKey, .fileSizeKey])
+            let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey, .fileSizeKey])
             guard let audio = try? AVAudioFile(forReading: url), audio.processingFormat.sampleRate > 0 else {
                 MemoLog.write("recover \(clientId): unreadable, kept on disk")
                 continue
@@ -109,7 +113,7 @@ final class MemoUploadQueue {
             }
             guard duration >= 0.5 else { continue }
             items.append(LocalMemo(clientId: clientId, recordedAt: values?.creationDate ?? Date(), duration: duration,
-                                   sizeBytes: Int64(values?.fileSize ?? 0), ext: "aac"))
+                                   sizeBytes: Int64(values?.fileSize ?? 0), ext: "aac", endedAt: values?.contentModificationDate))
             recovered += 1
             MemoLog.write("recovered \(clientId): \(String(format: "%.1f", duration)) s cut off by iOS; queued")
         }
@@ -203,7 +207,8 @@ final class MemoUploadQueue {
         if serverId == nil {
             let created = try await api.create(.init(clientId: m.clientId, title: m.title, recordedAt: m.recordedAt,
                                                      timezone: TimeZone.current.identifier, durationSec: m.duration,
-                                                     mime: m.mime, sizeBytes: m.sizeBytes, source: "ios"))
+                                                     mime: m.mime, sizeBytes: m.sizeBytes, source: "ios",
+                                                     endedAt: m.endedAt, location: m.location))
             serverId = created.id
             offset = created.receivedBytes
             MemoLog.write("created \(created.id) for \(m.clientId) title=\(m.title ?? "nil")")

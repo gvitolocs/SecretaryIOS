@@ -26,7 +26,9 @@ struct MemoRow: Identifiable, Equatable {
 @Observable
 @MainActor
 final class MemosStore {
-    let recorder = MemoRecorder()
+    /// Shared with `MemoRecordingCenter`: a recording started from the Lock Screen before
+    /// AppModel existed is this same one.
+    let recorder = MemoRecordingCenter.recorder
     let player = MemoPlayer()
     let queue: MemoUploadQueue
     private(set) var memos: [ServerMemo] = []
@@ -117,6 +119,7 @@ final class MemosStore {
     }
 
     func finishRecording() {
+        MemoRecordingCenter.logCost()
         guard let r = recorder.stop() else { return }
         add(r)
     }
@@ -185,6 +188,18 @@ final class MemosStore {
             let m = try await api.resummarize(id, instructions: instructions)
             if let i = self.memos.firstIndex(where: { $0.id == id }) { self.memos[i] = m }
         }
+    }
+
+    func events(_ id: String) async throws -> MemoEventChoices {
+        guard let api = api() else { throw APIError.unauthorized(code: "unauthorized", message: "") }
+        return try await api.events(id)
+    }
+
+    /// Links a memo to another calendar event, or to none; Lucina summarises it again.
+    func setEvent(_ id: String, eventId: String?) async throws {
+        guard let api = api() else { throw APIError.unauthorized(code: "unauthorized", message: "") }
+        let m = try await api.setEvent(id, eventId: eventId)
+        if let i = memos.firstIndex(where: { $0.id == id }) { memos[i] = m }
     }
 
     func delete(_ row: MemoRow) async {

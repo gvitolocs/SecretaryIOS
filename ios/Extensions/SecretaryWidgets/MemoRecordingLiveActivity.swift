@@ -14,8 +14,8 @@ struct SecretaryWidgets: WidgetBundle {
 }
 
 /// A voice memo being recorded: Lock Screen banner and Dynamic Island. Laid out like an
-/// incoming call: two big round buttons (pause or resume, stop) side by side on the left,
-/// the title and the running timer beside them.
+/// incoming call: the title and the running timer on the left, two big round buttons (pause
+/// or resume, stop) side by side on the right.
 struct MemoRecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MemoRecordingAttributes.self) { context in
@@ -29,13 +29,11 @@ struct MemoRecordingLiveActivity: Widget {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(context.state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    ElapsedText(state: context.state).font(.title3.monospacedDigit()).foregroundStyle(LucinaTokens.Colors.text)
-                }
                 DynamicIslandExpandedRegion(.bottom) {
                     HStack {
-                        Controls(state: context.state, size: 50)
+                        ElapsedText(state: context.state).font(.title2.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
                         Spacer()
+                        Controls(state: context.state, size: 50)
                     }
                 }
             } compactLeading: {
@@ -111,16 +109,16 @@ private struct LockScreenView: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Controls(state: state)
             VStack(alignment: .leading, spacing: 2) {
                 Text(state.paused ? (state.interrupted ? "Paused by a call" : "Paused") : "Recording memo")
                     .font(.headline).foregroundStyle(LucinaTokens.Colors.text)
                     .lineLimit(1)
+                ElapsedText(state: state).font(.title2.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
                 Text("Secretary · Lucina").font(.caption).foregroundStyle(LucinaTokens.Colors.textSecondary)
             }
             .layoutPriority(1)
             Spacer(minLength: 4)
-            ElapsedText(state: state).font(.title2.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
+            Controls(state: state)
         }
         .padding(16)
     }

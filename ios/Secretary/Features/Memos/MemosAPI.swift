@@ -38,6 +38,56 @@ struct ServerMemo: Codable, Identifiable, Equatable, Sendable {
     var actionItems: Int?
     var tags: [String]?
     var obsidianNote: String?
+    /// The calendar event it was recorded in, if any.
+    var event: MemoEvent?
+    /// `auto` (linked by the server) or `owner` (chosen on the memo screen; with no event = "none").
+    var eventSource: String?
+}
+
+/// Where the iPhone was when a recording started (only with location access already granted).
+struct MemoGeoFix: Codable, Equatable, Sendable {
+    let lat: Double
+    let lon: Double
+    let accuracyM: Double?
+}
+
+/// The calendar event a memo belongs to: the server links the event that overlaps the
+/// recording (a lecture, a meeting); the owner can pick another one.
+struct MemoEvent: Codable, Equatable, Sendable, Hashable, Identifiable {
+    let id: String
+    let title: String
+    let calendar: String?
+    let startMs: Int64?
+    let endMs: Int64?
+    let location: String?
+    let attendees: [String]?
+    /// `lecture`, `meeting` or `other`.
+    let kind: String?
+
+    var start: Date? { startMs.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
+    var end: Date? { endMs.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
+
+    var kindLabel: String? {
+        switch kind {
+        case "lecture": String(localized: "Lecture")
+        case "meeting": String(localized: "Meeting")
+        default: nil
+        }
+    }
+}
+
+/// `GET /v1/memos/{id}/events`: the events around the recording, best match first.
+struct MemoEventChoices: Decodable, Sendable {
+    struct Candidate: Decodable, Sendable, Identifiable {
+        let event: MemoEvent
+        let overlapMs: Int64
+        let locMatch: Bool
+        var id: String { event.id }
+    }
+
+    let current: MemoEvent?
+    let eventSource: String?
+    let candidates: [Candidate]
 }
 
 struct MemoItem: Codable, Equatable, Sendable, Hashable {
@@ -55,6 +105,11 @@ struct MemoSummary: Codable, Equatable, Sendable {
     let decisions: [MemoItem]
     let actionItems: [MemoItem]
     let tags: [String]
+    /// `lecture` or `meeting` when the memo is linked to such an event.
+    let template: String?
+    let definitions: [MemoItem]?
+    /// Lectures: questions to review.
+    let questions: [MemoItem]?
 }
 
 struct MemoSegment: Codable, Equatable, Sendable, Identifiable {
@@ -148,6 +203,9 @@ struct MemosAPI: Sendable {
         let mime: String
         let sizeBytes: Int64
         let source: String
+        /// Wall-clock end (pauses included), for matching the calendar.
+        let endedAt: Date?
+        let location: MemoGeoFix?
     }
 
     func list(limit: Int = 100) async throws -> [ServerMemo] {
@@ -195,6 +253,28 @@ struct MemosAPI: Sendable {
     func rename(_ id: String, title: String) async throws -> ServerMemo {
         let data = try MemoTime.encoder.encode(["title": title])
         return try decode(One.self, try await client.send("PATCH", "/v1/memos/\(id)", query: [], body: data, headers: Self.headers)).memo
+    }
+
+    func events(_ id: String) async throws -> MemoEventChoices {
+        try decode(MemoEventChoices.self, try await client.send("GET", "/v1/memos/\(id)/events", query: [], body: nil, timeout: 30))
+    }
+
+    private struct EventChoice: Encodable {
+        let eventId: String?
+
+        enum CodingKeys: String, CodingKey { case eventId }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(eventId, forKey: .eventId) // null = "no event"
+        }
+    }
+
+    /// Links the memo to `eventId` (nil: to no event); the server writes the summary again.
+    func setEvent(_ id: String, eventId: String?) async throws -> ServerMemo {
+        let data = try MemoTime.encoder.encode(EventChoice(eventId: eventId))
+        return try decode(One.self, try await client.send("PUT", "/v1/memos/\(id)/event", query: [], body: data, timeout: 30,
+                                                          idempotent: true, headers: Self.headers)).memo
     }
 
     func delete(_ id: String) async throws {

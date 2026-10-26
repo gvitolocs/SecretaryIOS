@@ -10,6 +10,8 @@ import UIKit
 final class AppModel {
     /// One app model per process: views, App Intents and the Focus filter share it.
     static let shared = AppModel()
+    /// Whether `shared` exists yet: a Lock Screen recording launch runs without it.
+    private(set) static var isBuilt = false
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
@@ -101,6 +103,7 @@ final class AppModel {
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
     init(keychain: KeychainStore = .accessKey, defaults: UserDefaults = .standard) {
+        Self.isBuilt = true
         let launch = LaunchOptions(defaults: defaults)
         if launch.resetState {
             try? keychain.delete()
@@ -183,32 +186,13 @@ final class AppModel {
         ShareSelfTest.runIfRequested(app: self, defaults: defaults)
         #endif
         // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
-        MemoRecorder.endStaleActivities()
+        MemoRecorder.endStaleActivities(keeping: MemoRecordingCenter.recorder)
         // A recording iOS cut off last time is recovered and queued.
         #if DEBUG
         memos.queue.recoverOrphans(dryRun: defaults.bool(forKey: "SecretaryMemoRecoverDryRun"))
         #else
         memos.queue.recoverOrphans()
         #endif
-        let memoStore = memos
-        MemoRecordingCommands.handle = { command in
-            switch command {
-            case .pause: memoStore.recorder.pause()
-            case .resume: memoStore.recorder.resume()
-            case .stop: memoStore.finishRecording()
-            }
-        }
-        MemoRecordingCommands.start = { [client] in
-            let appState = UIApplication.shared.applicationState == .background ? "background" : "foreground"
-            guard client.accessKey?.isEmpty == false else {
-                MemoLog.write("start intent (\(appState)): no access key")
-                throw IntentFailure.message(String(localized: "Open Secretary and sign in first."))
-            }
-            if memoStore.recorder.isActive { return }
-            await memoStore.record()
-            MemoLog.write("start intent (\(appState)): state=\(memoStore.recorder.state) live=\(memoStore.recorder.activityReport) error=\(memoStore.recorder.error ?? "-")")
-            if let error = memoStore.recorder.error { throw IntentFailure.message(error) }
-        }
         if launch.openSettings { showSettings = true }
         if launch.openNotes {
             selectedTab = .plugins

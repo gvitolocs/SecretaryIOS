@@ -861,5 +861,21 @@
   "Lucina memo": ["Memo Lucina", "Lucina-memo"],
   "Starts a voice memo at once. Lucina transcribes and summarises it.": ["Avvia subito un memo vocale. Lucina lo trascrive e lo riassume.", "Starter et talememo med det samme. Lucina transskriberer og opsummerer det."],
   "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.": ["Apre Secretary e avvia la registrazione di un memo vocale. Lucina lo trascrive e lo riassume.", "Åbner Secretary og starter optagelsen af et talememo. Lucina transskriberer og opsummerer det."],
-  "Open Secretary once, then try again.": ["Apri Secretary una volta, poi riprova.", "Åbn Secretary én gang, og prøv igen."]
+  "Open Secretary once, then try again.": ["Apri Secretary una volta, poi riprova.", "Åbn Secretary én gang, og prøv igen."],
+  "Lecture": ["Lezione", "Forelæsning"],
+  "Meeting": ["Riunione", "Møde"],
+  "Event": ["Evento", "Begivenhed"],
+  "Not linked to an event": ["Non collegato a un evento", "Ikke knyttet til en begivenhed"],
+  "No calendar event at the time of the recording": ["Nessun evento in calendario all'ora della registrazione", "Ingen kalenderbegivenhed på tidspunktet for optagelsen"],
+  "Link an event": ["Collega un evento", "Knyt en begivenhed"],
+  "Change event": ["Cambia evento", "Skift begivenhed"],
+  "Lecture notes": ["Appunti della lezione", "Forelæsningsnoter"],
+  "Minutes": ["Verbale", "Referat"],
+  "Key concepts": ["Concetti chiave", "Nøglebegreber"],
+  "Definitions": ["Definizioni", "Definitioner"],
+  "Questions to review": ["Domande di ripasso", "Spørgsmål til repetition"],
+  "No calendar events around the time of this recording.": ["Nessun evento in calendario intorno all'ora di questa registrazione.", "Ingen kalenderbegivenheder omkring tidspunktet for denne optagelse."],
+  "Lucina writes the summary again for the event you pick: lecture notes for a lecture, minutes for a meeting.": ["Lucina riscrive il riassunto per l'evento che scegli: appunti per una lezione, verbale per una riunione.", "Lucina skriver resuméet igen til den begivenhed, du vælger: noter til en forelæsning, referat til et møde."],
+  "No event": ["Nessun evento", "Ingen begivenhed"],
+  "Here": ["Qui", "Her"]
 }

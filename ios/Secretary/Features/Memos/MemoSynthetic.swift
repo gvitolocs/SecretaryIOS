@@ -2,6 +2,7 @@
 import ActivityKit
 import AVFoundation
 import Foundation
+import SwiftUI
 import UIKit
 
 /// Debug builds only: a memo spoken by the iPhone's speech synthesizer, queued like a real
@@ -100,6 +101,7 @@ enum MemoRecordSelfTest {
                 try? await Task.sleep(for: .seconds(1))
                 MemoLog.write("quality: started by intent state=\(rec.state) live=\(rec.activityReport)")
                 try? await Task.sleep(for: .seconds(9))
+                MemoRecordingCenter.logCost()
                 guard let r = rec.stop() else { return MemoLog.write("quality: nothing recorded") }
                 let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
                 let kept = caches.appendingPathComponent("memo-quality-test.aac")
@@ -146,6 +148,30 @@ enum MemoRecordSelfTest {
             try? await Task.sleep(for: .seconds(1.5))
             MemoLog.write("selftest: discarded state=\(rec.state) activities=\(Activity<MemoRecordingAttributes>.activities.count)")
         }
+    }
+}
+/// Debug builds only: `-SecretaryMemoMinimalTest YES` opens a blank window without AppModel and
+/// starts a memo through the Lock Screen control's intent, as a background launch for it does;
+/// it records eight seconds, logs the cost (memo-log.txt) and discards the recording. Compare with
+/// `-SecretaryMemoQualityTest`, which runs with the whole app.
+@MainActor
+enum MemoMinimalLaunchTest {
+    static var requested: Bool { UserDefaults.standard.bool(forKey: "SecretaryMemoMinimalTest") }
+
+    struct Screen: View {
+        var body: some View {
+            Text(verbatim: "Memo minimal launch test").task { await MemoMinimalLaunchTest.run() }
+        }
+    }
+
+    static func run() async {
+        do { _ = try await StartMemoRecordingIntent().perform() } catch {
+            return MemoLog.write("minimal test: intent failed: \(error)")
+        }
+        try? await Task.sleep(for: .seconds(8))
+        MemoRecordingCenter.logCost()
+        MemoRecordingCenter.recorder.discard()
+        MemoLog.write("minimal test: done, app model \(AppModel.isBuilt ? "built" : "not built")")
     }
 }
 #endif
