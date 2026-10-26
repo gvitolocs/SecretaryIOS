@@ -86,6 +86,68 @@ struct LogWeightIntent: AppIntent {
     }
 }
 
+/// "What's next?": the next appointment, with the travel time when the server has one.
+struct NextAppointmentIntent: AppIntent {
+    static let title: LocalizedStringResource = "Next appointment"
+    static let description = IntentDescription("Tells you your next appointment, where it is and when to leave.")
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+        let app = AppModel.shared
+        guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+        let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient).appointment()
+        WidgetStore.write(section)
+        guard let event = section.next else {
+            let text = String(localized: "Nothing else today or tomorrow.")
+            return .result(value: text, dialog: IntentDialog(stringLiteral: text))
+        }
+        let when = event.allDay ? (Calendar.current.isDateInToday(event.start) ? String(localized: "today") : String(localized: "tomorrow"))
+            : event.start.formatted(.relative(presentation: .named))
+        var text = event.location.map { String(localized: "\(event.title), \(when), at \($0).") } ?? String(localized: "\(event.title), \(when).")
+        if let minutes = event.travelMinutes, let leave = event.leaveAt {
+            text += " " + String(localized: "It's \(minutes) minutes away: leave at \(leave.formatted(date: .omitted, time: .shortened)).")
+        }
+        return .result(value: text, dialog: IntentDialog(stringLiteral: text))
+    }
+}
+
+/// "What's on my shopping list?"
+struct ShoppingListIntent: AppIntent {
+    static let title: LocalizedStringResource = "Shopping list"
+    static let description = IntentDescription("Reads what is still on the shopping list.")
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<[String]> & ProvidesDialog {
+        let app = AppModel.shared
+        guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+        let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient)
+            .shopping(listId: nil, previous: WidgetStore.read(ShoppingSection.self))
+        WidgetStore.write(section)
+        let names = section.items.map { $0.spec.isEmpty ? $0.name : "\($0.name) (\($0.spec))" }
+        let text = names.isEmpty ? String(localized: "The list is empty.")
+            : String(localized: "\(names.count) to buy: \(names.formatted(.list(type: .and))).")
+        return .result(value: names, dialog: IntentDialog(stringLiteral: text))
+    }
+}
+
+/// "What do I have to do today?": Todoist tasks and Lucina's reminders due today.
+struct TodayTasksIntent: AppIntent {
+    static let title: LocalizedStringResource = "Today's tasks"
+    static let description = IntentDescription("Reads the tasks and reminders due today.")
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ReturnsValue<[String]> & ProvidesDialog {
+        let app = AppModel.shared
+        guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+        let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient).tasks()
+        WidgetStore.write(section)
+        let titles = section.items.map(\.title)
+        let text = titles.isEmpty ? String(localized: "Nothing due today.")
+            : String(localized: "\(titles.count) due today: \(titles.formatted(.list(type: .and))).")
+        return .result(value: titles, dialog: IntentDialog(stringLiteral: text))
+    }
+}
+
 enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
     case message(String)
 
@@ -97,7 +159,7 @@ enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
 }
 
 struct RecordMemoIntent: AppIntent {
-    static let title: LocalizedStringResource = "Record a memo"
+    static let title: LocalizedStringResource = "Open the memo recorder"
     static let description = IntentDescription("Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.")
     static let openAppWhenRun = true
 
@@ -123,8 +185,18 @@ struct SecretaryShortcuts: AppShortcutsProvider {
                     shortTitle: "Start workout", systemImageName: "dumbbell")
         AppShortcut(intent: LogWeightIntent(), phrases: ["Log my weight in \(.applicationName)"],
                     shortTitle: "Log weight", systemImageName: "scalemass")
-        AppShortcut(intent: RecordMemoIntent(), phrases: ["Record a memo in \(.applicationName)", "New voice memo in \(.applicationName)"],
+        // The owner calls the app Lucina (INAlternativeAppNames), so "Registra memo con Lucina" works.
+        AppShortcut(intent: StartMemoRecordingIntent(), phrases: ["Record a memo with \(.applicationName)", "New voice memo with \(.applicationName)"],
                     shortTitle: "Record memo", systemImageName: "waveform")
+        AppShortcut(intent: StopMemoRecordingIntent(), phrases: ["Stop the memo in \(.applicationName)", "Save the memo in \(.applicationName)"],
+                    shortTitle: "Stop memo", systemImageName: "stop.circle")
+        // At most 10 App Shortcuts: pause and resume stay plain Shortcuts actions.
+        AppShortcut(intent: NextAppointmentIntent(), phrases: ["What's next in \(.applicationName)", "My next appointment in \(.applicationName)"],
+                    shortTitle: "Next appointment", systemImageName: "calendar")
+        AppShortcut(intent: ShoppingListIntent(), phrases: ["What's on my shopping list in \(.applicationName)", "Read my list in \(.applicationName)"],
+                    shortTitle: "Shopping list", systemImageName: "cart")
+        AppShortcut(intent: TodayTasksIntent(), phrases: ["What do I have to do today in \(.applicationName)", "Today's tasks in \(.applicationName)"],
+                    shortTitle: "Today's tasks", systemImageName: "checklist")
     }
 }
 

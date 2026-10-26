@@ -59,6 +59,7 @@ enum Bring {
 struct ShoppingV2View: View {
     @Environment(ShoppingV2Store.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(AppModel.self) private var app
     @AppStorage(ShoppingLanguage.key) private var lang = ShoppingLanguage.preferred
     @AppStorage("secretary.shopping.openSections") private var openSectionsRaw = ""
     @State private var detail: ShopItem?
@@ -113,6 +114,12 @@ struct ShoppingV2View: View {
         }
         .sheet(isPresented: $showSearch) {
             SearchSheet(onAdded: { tapCount += 1 })
+        }
+        // The Add to shopping control and the widget's "+".
+        .onChange(of: app.showShoppingAdd, initial: true) { _, show in
+            guard show else { return }
+            app.showShoppingAdd = false
+            showSearch = true
         }
         .task { await store.load(lang: lang) }
         .onChange(of: lang) { _, value in Task { await store.loadCatalog(lang: value) } }

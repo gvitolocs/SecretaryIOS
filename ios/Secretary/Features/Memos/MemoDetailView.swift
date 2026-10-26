@@ -16,6 +16,10 @@ struct MemoDetailView: View {
     @State private var instructions = ""
     @State private var pdfURL: URL?
     @State private var addedTasks: Set<String> = []
+    @State private var choosingEvent = false
+    /// Whether this server links memos to calendar events (older lucina-memo builds don't).
+    @State private var eventsSupported = MemoDetailView.serverHasEvents ?? false
+    @MainActor private static var serverHasEvents: Bool?
 
     private var row: MemoRow? { store.rows.first { $0.serverId == memoId } }
 
@@ -46,15 +50,35 @@ struct MemoDetailView: View {
                     }
                     if let row { InlinePlayer(row: row) }
                 }
+                if d.memo.event != nil || (eventsSupported && (d.memo.status == .done || d.memo.status == .failed)) {
+                    Section("Event") {
+                        if let e = d.memo.event {
+                            MemoEventRow(event: e)
+                        } else {
+                            Text(d.memo.eventSource == "owner" ? "Not linked to an event" : "No calendar event at the time of the recording")
+                                .font(.footnote).foregroundStyle(Theme.textSecondary)
+                        }
+                        Button { choosingEvent = true } label: {
+                            Label(d.memo.event == nil ? "Link an event" : "Change event", systemImage: "calendar")
+                        }
+                        .accessibilityIdentifier("memoChangeEvent")
+                    }
+                }
                 if let s = d.summary {
-                    Section("Summary") {
+                    Section(s.template == "lecture" ? "Lecture notes" : s.template == "meeting" ? "Minutes" : "Summary") {
                         Text(s.overview).font(.body)
                         if !s.tags.isEmpty {
                             Text(s.tags.map { "#\($0)" }.joined(separator: "  ")).font(.footnote).foregroundStyle(Theme.accent)
                         }
                     }
                     if !s.keyPoints.isEmpty {
-                        Section("Key points") { ForEach(s.keyPoints, id: \.self) { ItemRow(item: $0, seek: seek) } }
+                        Section(s.template == "lecture" ? "Key concepts" : "Key points") { ForEach(s.keyPoints, id: \.self) { ItemRow(item: $0, seek: seek) } }
+                    }
+                    if let defs = s.definitions, !defs.isEmpty {
+                        Section("Definitions") { ForEach(defs, id: \.self) { ItemRow(item: $0, seek: seek) } }
+                    }
+                    if let qs = s.questions, !qs.isEmpty {
+                        Section("Questions to review") { ForEach(qs, id: \.self) { ItemRow(item: $0, seek: seek) } }
                     }
                     if !s.decisions.isEmpty {
                         Section("Decisions") { ForEach(s.decisions, id: \.self) { ItemRow(item: $0, seek: seek) } }
@@ -146,6 +170,9 @@ struct MemoDetailView: View {
         } message: {
             Text("Lucina writes the summary, PDF and Obsidian note again and tells you when it's done.")
         }
+        .sheet(isPresented: $choosingEvent) {
+            MemoEventPicker(memoId: memoId, current: detail?.memo.event) { await load() }
+        }
         .task(id: memoId) {
             await load()
             // Follow the pipeline until it is done.
@@ -160,6 +187,13 @@ struct MemoDetailView: View {
         do {
             let d = try await store.detail(memoId)
             detail = d
+            if Self.serverHasEvents == nil {
+                // One probe per launch: a 404 means this lucina-memo has no calendar link yet.
+                do { _ = try await store.events(memoId); Self.serverHasEvents = true } catch let e as APIError {
+                    Self.serverHasEvents = e.status != 404
+                } catch {}
+                eventsSupported = Self.serverHasEvents ?? false
+            }
             if d.summary != nil || [.done, .rendering, .publishing, .summarizing].contains(d.memo.status) {
                 if let t = try? await store.transcript(memoId) { transcript = t }
             }
@@ -194,6 +228,102 @@ struct MemoDetailView: View {
         let due = item.due.flatMap { d in d.count == 10 && d.dropFirst(4).first == "-" ? d : nil }
         let ok = await app.tasks.run(.quickAdd(text: item.text, defaultDue: due))
         if ok { addedTasks.insert(item.text) } else { error = app.tasks.actionError }
+    }
+}
+
+/// A linked calendar event: title, time, place, people.
+private struct MemoEventRow: View {
+    let event: MemoEvent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(event.title).font(.headline)
+                if let k = event.kindLabel {
+                    Text(k).font(.caption.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Theme.accent.opacity(0.15))).foregroundStyle(Theme.accent)
+                }
+            }
+            if let s = event.start, let e = event.end {
+                Text("\(s.formatted(.dateTime.weekday(.abbreviated).day().month().hour().minute()))–\(e.formatted(date: .omitted, time: .shortened))")
+                    .font(.footnote).foregroundStyle(Theme.textSecondary)
+            }
+            if let place = event.location, !place.isEmpty {
+                Label(place, systemImage: "mappin.and.ellipse").font(.footnote).foregroundStyle(Theme.textSecondary)
+            }
+            if let people = event.attendees, !people.isEmpty {
+                Label(people.prefix(6).joined(separator: ", ") + (people.count > 6 ? " +\(people.count - 6)" : ""), systemImage: "person.2")
+                    .font(.footnote).foregroundStyle(Theme.textSecondary).lineLimit(2)
+            }
+        }
+    }
+}
+
+/// Pick the event a memo belongs to (the server's best match first), or none.
+private struct MemoEventPicker: View {
+    @Environment(MemosStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let memoId: String
+    let current: MemoEvent?
+    let changed: () async -> Void
+
+    @State private var choices: MemoEventChoices?
+    @State private var error: String?
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let error { Section { ErrorBanner(message: error) { self.error = nil } } }
+                if let c = choices {
+                    Section {
+                        ForEach(c.candidates) { cand in
+                            Button { Task { await choose(cand.event.id) } } label: {
+                                HStack {
+                                    MemoEventRow(event: cand.event)
+                                    Spacer()
+                                    if cand.locMatch { Image(systemName: "location.fill").foregroundStyle(Theme.accent).accessibilityLabel("Here") }
+                                    if cand.event.id == current?.id { Image(systemName: "checkmark").foregroundStyle(Theme.accent) }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if c.candidates.isEmpty {
+                            Text("No calendar events around the time of this recording.").foregroundStyle(Theme.textSecondary)
+                        }
+                    } footer: {
+                        Text("Lucina writes the summary again for the event you pick: lecture notes for a lecture, minutes for a meeting.")
+                    }
+                    Section {
+                        Button("No event", role: .destructive) { Task { await choose(nil) } }
+                    }
+                } else if error == nil {
+                    ProgressView().frame(maxWidth: .infinity)
+                }
+            }
+            .lucinaList()
+            .disabled(saving)
+            .navigationTitle("Event")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .task {
+                do { choices = try await store.events(memoId) } catch let e as APIError { error = e.userMessage } catch { self.error = error.localizedDescription }
+            }
+        }
+    }
+
+    private func choose(_ id: String?) async {
+        saving = true
+        defer { saving = false }
+        do {
+            try await store.setEvent(memoId, eventId: id)
+            await changed()
+            dismiss()
+        } catch let e as APIError {
+            error = e.userMessage
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }
 

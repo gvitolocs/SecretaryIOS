@@ -10,6 +10,8 @@ import UIKit
 final class AppModel {
     /// One app model per process: views, App Intents and the Focus filter share it.
     static let shared = AppModel()
+    /// Whether `shared` exists yet: a Lock Screen recording launch runs without it.
+    private(set) static var isBuilt = false
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
@@ -48,6 +50,8 @@ final class AppModel {
     var openPlace: Place?
     /// The media library and player, a plugin.
     var showMedia = false
+    /// `/films/play/<id>` (a film Lucina found): Films opens and plays it.
+    var openFilmID: String?
     /// The Gallery, a plugin.
     var showGallery = false
     /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
@@ -56,6 +60,12 @@ final class AppModel {
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
     var showPokemon = false
+    /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
+    var showQuickWeight = false
+    /// The Shopping tab's add field (Add to shopping control, widget "+").
+    var showShoppingAdd = false
+    /// A widget link that arrived before sign-in finished; opened once the tabs show.
+    @ObservationIgnored var pendingWidgetRoute: String?
 
     @ObservationIgnored let client: APIClient
     /// /v1/media/* (Gallery, photo backup, player) lives in p1's Caddy, not in secretary-server, so it
@@ -101,6 +111,7 @@ final class AppModel {
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
     init(keychain: KeychainStore = .accessKey, defaults: UserDefaults = .standard) {
+        Self.isBuilt = true
         let launch = LaunchOptions(defaults: defaults)
         if launch.resetState {
             try? keychain.delete()
@@ -178,22 +189,22 @@ final class AppModel {
         MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
         MemoRecordSelfTest.runIfRequested(store: memos, defaults: defaults)
         #endif
+        #if DEBUG || SCREENSHOTS
+        // `-SecretaryShareSelfTest all|photo,pdf,…`: waits for sign-in, then logs to Documents/share-selftest.txt.
+        ShareSelfTest.runIfRequested(app: self, defaults: defaults)
+        #endif
         // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
-        MemoRecorder.endStaleActivities()
+        MemoRecorder.endStaleActivities(keeping: MemoRecordingCenter.recorder)
         // A recording iOS cut off last time is recovered and queued.
         #if DEBUG
         memos.queue.recoverOrphans(dryRun: defaults.bool(forKey: "SecretaryMemoRecoverDryRun"))
         #else
         memos.queue.recoverOrphans()
         #endif
-        let memoStore = memos
-        MemoRecordingCommands.handle = { command in
-            switch command {
-            case .pause: memoStore.recorder.pause()
-            case .resume: memoStore.recorder.resume()
-            case .stop: memoStore.finishRecording()
-            }
-        }
+        // Widget and control taps (OpenSecretaryIntent runs in this process).
+        WidgetRouter.open = { route in AppModel.shared.openWidgetRoute(route) }
+        pendingWidgetRoute = WidgetRouter.pending
+        WidgetRouter.pending = nil
         if launch.openSettings { showSettings = true }
         if launch.openNotes {
             selectedTab = .plugins
@@ -331,6 +342,8 @@ final class AppModel {
         lucina.stopEverything()
         device.bridge.reset()
         BridgeCredentials.write(nil)
+        WidgetStore.removeAll()
+        WidgetStore.reload()
         lucina.expanded = false
         chat.clear()
         shopping.reset()
@@ -489,7 +502,7 @@ struct LaunchOptions {
         openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
-        openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
+        openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"

@@ -17,8 +17,20 @@ struct RootView: View {
         }
         .animation(.default, value: app.phase)
         .onOpenURL { url in
+<<<<<<< HEAD
             if Place.fromRoute(url.absoluteString) != nil { app.open(route: url.absoluteString) }
         }
+=======
+            if let route = WidgetRoute.route(from: url) { app.openWidgetRoute(route) }
+        }
+        #if DEBUG || SCREENSHOTS
+        .overlay {
+            if let page = UserDefaults.standard.string(forKey: "SecretaryWidgetGallery").flatMap(Int.init) {
+                WidgetGallery(page: page)
+            }
+        }
+        #endif
+>>>>>>> ios-app
     }
 }
 
@@ -49,7 +61,14 @@ struct MainTabs: View {
         .onChange(of: scenePhase, initial: true) { _, phase in
             if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
         }
+<<<<<<< HEAD
         .modifier(OpenPlaceHost())
+=======
+        .onAppear { app.openPendingWidgetRoute() }
+        #if DEBUG || SCREENSHOTS
+        .task { await WidgetSelfTest.runIfRequested(app) }
+        #endif
+>>>>>>> ios-app
         // Lucina in the room (AR), over everything.
         .modifier(LucinaARHost(controller: app.lucina))
         #if SCREENSHOTS
@@ -119,6 +138,7 @@ struct MainTabs: View {
             app.chat.setForeground(phase == .active)
             app.isForeground = phase == .active
             if phase == .background {
+                app.publishWidgets()
                 BackgroundRefresh.schedule()
                 if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
                 Task { await app.notifications.reschedule() }

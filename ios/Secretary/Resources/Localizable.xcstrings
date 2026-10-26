@@ -1,6 +1,1318 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Next up" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prossimo"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Næste"
+          }
+        }
+      }
+    },
+    "%@ %@ · %lld🏅" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ %@ · %lld🏅"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ %@ · %lld🏅"
+          }
+        }
+      }
+    },
+    "%@ Lv %lld" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Lv %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Niv. %lld"
+          }
+        }
+      }
+    },
+    "%@ No appointments" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Nessun impegno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Ingen aftaler"
+          }
+        }
+      }
+    },
+    "%@ in progress" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ in corso"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ i gang"
+          }
+        }
+      }
+    },
+    "%@ this week" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ questa settimana"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ denne uge"
+          }
+        }
+      }
+    },
+    "%@, %@, at %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@, a %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@, på %@."
+          }
+        }
+      }
+    },
+    "%lld badges · %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld medaglie · %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld emblemer · %@"
+          }
+        }
+      }
+    },
+    "%lld done" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld fatte"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld klaret"
+          }
+        }
+      }
+    },
+    "%lld due today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld per oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld i dag"
+          }
+        }
+      }
+    },
+    "%lld due today: %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld per oggi: %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld i dag: %@."
+          }
+        }
+      }
+    },
+    "%lld min left" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "mancano %lld min"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min tilbage"
+          }
+        }
+      }
+    },
+    "%lld min · leave %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min · parti alle %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld min · tag af sted %@"
+          }
+        }
+      }
+    },
+    "%lld of %lld this week" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld di %lld questa settimana"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld af %lld denne uge"
+          }
+        }
+      }
+    },
+    "%lld to buy: %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld da comprare: %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld at købe: %@."
+          }
+        }
+      }
+    },
+    "/ %lld" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "/ %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "/ %lld"
+          }
+        }
+      }
+    },
+    "30 days" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 giorni"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "30 dage"
+          }
+        }
+      }
+    },
+    "All done for today." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tutto fatto per oggi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alt er klaret for i dag."
+          }
+        }
+      }
+    },
+    "Ask Lucina something, and see her last reply." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiedi qualcosa a Lucina e leggi la sua ultima risposta."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spørg Lucina om noget, og se hendes seneste svar."
+          }
+        }
+      }
+    },
+    "Ask Lucina…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiedi a Lucina…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spørg Lucina…"
+          }
+        }
+      }
+    },
+    "Ask her anything: plans, lists, reminders." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chiedile qualsiasi cosa: piani, liste, promemoria."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spørg hende om alt: planer, lister, påmindelser."
+          }
+        }
+      }
+    },
+    "Choose the list the widget shows." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scegli la lista che il widget mostra."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vælg den liste, widgetten viser."
+          }
+        }
+      }
+    },
+    "Complete %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Completa %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fuldfør %@"
+          }
+        }
+      }
+    },
+    "Complete a task" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Completa un'attività"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fuldfør en opgave"
+          }
+        }
+      }
+    },
+    "Day" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giorno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dag"
+          }
+        }
+      }
+    },
+    "Deals" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offerte"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tilbud"
+          }
+        }
+      }
+    },
+    "Event" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Evento"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Begivenhed"
+          }
+        }
+      }
+    },
+    "It's %lld minutes away: leave at %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ci vogliono %lld minuti: parti alle %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det er %lld minutter væk: tag af sted %@."
+          }
+        }
+      }
+    },
+    "Leave %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Parti alle %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afsted %@"
+          }
+        }
+      }
+    },
+    "Leave now · %lld min" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Parti ora · %lld min"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tag af sted nu · %lld min"
+          }
+        }
+      }
+    },
+    "List" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lista"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Liste"
+          }
+        }
+      }
+    },
+    "Logged today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registrato oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registreret i dag"
+          }
+        }
+      }
+    },
+    "Lucina is unreachable." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non è raggiungibile."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina kan ikke nås."
+          }
+        }
+      }
+    },
+    "Lucina is unreachable. Showing nothing until she's back." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina non è raggiungibile. Non mostro nulla finché non torna."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina kan ikke nås. Intet vises, før hun er tilbage."
+          }
+        }
+      }
+    },
+    "Lucina plays Pokémon" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina gioca a Pokémon"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina spiller Pokémon"
+          }
+        }
+      }
+    },
+    "Next appointment" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prossimo impegno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Næste aftale"
+          }
+        }
+      }
+    },
+    "No weigh-ins yet. Tap + to log one." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessuna pesata. Tocca + per registrarne una."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen vejninger endnu. Tryk på + for at registrere en."
+          }
+        }
+      }
+    },
+    "No workouts yet." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun allenamento."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen træninger endnu."
+          }
+        }
+      }
+    },
+    "Not logged today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non registrato oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke registreret i dag"
+          }
+        }
+      }
+    },
+    "Nothing due today." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niente in scadenza oggi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet i dag."
+          }
+        }
+      }
+    },
+    "Nothing else today or tomorrow." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nient'altro oggi o domani."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet andet i dag eller i morgen."
+          }
+        }
+      }
+    },
+    "Nothing in progress" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niente in corso"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet i gang"
+          }
+        }
+      }
+    },
+    "Nothing in progress. Start a film in Films." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niente in corso. Inizia un film in Film."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet i gang. Start en film i Film."
+          }
+        }
+      }
+    },
+    "Nothing to buy." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Niente da comprare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet at købe."
+          }
+        }
+      }
+    },
+    "Now" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ora"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nu"
+          }
+        }
+      }
+    },
+    "Now · until %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ora · fino alle %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nu · indtil %@"
+          }
+        }
+      }
+    },
+    "Open Secretary" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary"
+          }
+        }
+      }
+    },
+    "Open Secretary and sign in." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary e accedi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary, og log ind."
+          }
+        }
+      }
+    },
+    "Open Training once to show your week here." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Allenamento una volta per vedere qui la tua settimana."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Træning én gang for at se din uge her."
+          }
+        }
+      }
+    },
+    "Opens the chat ready to type." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre la chat pronta per scrivere."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner chatten klar til at skrive."
+          }
+        }
+      }
+    },
+    "Opens the quick weight entry." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre l'inserimento rapido del peso."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner den hurtige vægtregistrering."
+          }
+        }
+      }
+    },
+    "Opens the shopping list ready to add an item." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre la lista della spesa pronta per aggiungere un articolo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner indkøbslisten klar til at tilføje en vare."
+          }
+        }
+      }
+    },
+    "Pick up the film you were watching where you stopped." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprendi il film che stavi guardando da dove eri rimasto."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fortsæt filmen, du så, hvor du slap."
+          }
+        }
+      }
+    },
+    "Reads the tasks and reminders due today." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legge le attività e i promemoria di oggi."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Læser dagens opgaver og påmindelser op."
+          }
+        }
+      }
+    },
+    "Reads what is still on the shopping list." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Legge cosa c'è ancora sulla lista della spesa."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Læser op, hvad der stadig står på indkøbslisten."
+          }
+        }
+      }
+    },
+    "Route" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Percorso"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rute"
+          }
+        }
+      }
+    },
+    "Start" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inizia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start"
+          }
+        }
+      }
+    },
+    "Start recording a voice memo in one tap. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra un memo vocale con un tocco. Lucina lo trascrive e lo riassume."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start et stemmememo med ét tryk. Lucina transskriberer og opsummerer det."
+          }
+        }
+      }
+    },
+    "Starts recording a voice memo." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inizia a registrare un memo vocale."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Begynder at optage et stemmememo."
+          }
+        }
+      }
+    },
+    "Tap to ask her anything." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca per chiederle qualsiasi cosa."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk for at spørge hende om alt."
+          }
+        }
+      }
+    },
+    "Tap to log today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca per registrare oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk for at registrere i dag"
+          }
+        }
+      }
+    },
+    "Tap to record" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca per registrare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk for at optage"
+          }
+        }
+      }
+    },
+    "Task" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opgave"
+          }
+        }
+      }
+    },
+    "Tasks and reminders due today. Tick them off without opening the app." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività e promemoria di oggi. Spuntali senza aprire l'app."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagens opgaver og påmindelser. Sæt flueben uden at åbne appen."
+          }
+        }
+      }
+    },
+    "Tells you your next appointment, where it is and when to leave." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ti dice il prossimo impegno, dove si trova e quando partire."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fortæller din næste aftale, hvor den er, og hvornår du skal af sted."
+          }
+        }
+      }
+    },
+    "The game isn't reachable right now." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il gioco non è raggiungibile in questo momento."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spillet kan ikke nås lige nu."
+          }
+        }
+      }
+    },
+    "The library is unreachable." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La libreria non è raggiungibile."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Biblioteket kan ikke nås."
+          }
+        }
+      }
+    },
+    "The list is empty." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La lista è vuota."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Listen er tom."
+          }
+        }
+      }
+    },
+    "Then" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Derefter"
+          }
+        }
+      }
+    },
+    "This week's workouts and your goal. Start a workout in one tap." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gli allenamenti della settimana e il tuo obiettivo. Inizia un allenamento con un tocco."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ugens træninger og dit mål. Start en træning med ét tryk."
+          }
+        }
+      }
+    },
+    "Tick items off without opening the app, and see the deals for what's on your list." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spunta gli articoli senza aprire l'app e vedi le offerte per quello che hai in lista."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt flueben ved varer uden at åbne appen, og se tilbuddene på det, der står på listen."
+          }
+        }
+      }
+    },
+    "Tick off %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spunta %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt flueben ved %@"
+          }
+        }
+      }
+    },
+    "Tick off a shopping item" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spunta un articolo della spesa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt flueben ved en vare"
+          }
+        }
+      }
+    },
+    "Today's tasks" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attività di oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagens opgaver"
+          }
+        }
+      }
+    },
+    "Today's weight and the trend. Tap + to log a weigh-in." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il peso di oggi e l'andamento. Tocca + per registrare una pesata."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagens vægt og udviklingen. Tryk på + for at registrere en vejning."
+          }
+        }
+      }
+    },
+    "Voice memo" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memo vocale"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stemmememo"
+          }
+        }
+      }
+    },
+    "Where Lucina is in Pokémon Red, her badges and her team." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dove si trova Lucina in Pokémon Rosso, le sue medaglie e la sua squadra."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvor Lucina er i Pokémon Red, hendes emblemer og hendes hold."
+          }
+        }
+      }
+    },
+    "Your next appointment, with the travel time and when to leave." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il prossimo impegno, con il tempo di viaggio e quando partire."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Din næste aftale med rejsetiden, og hvornår du skal af sted."
+          }
+        }
+      }
+    },
+    "paused" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "in pausa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "på pause"
+          }
+        }
+      }
+    },
+    "playing" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "in gioco"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "spiller"
+          }
+        }
+      }
+    },
+    "today" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "oggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "i dag"
+          }
+        }
+      }
+    },
+    "tomorrow" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "domani"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "i morgen"
+          }
+        }
+      }
+    },
     "Lucina's game screen" : {
       "localizations" : {
         "it" : {
@@ -7755,7 +9067,22 @@
         }
       }
     },
-    "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it." : {},
+    "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner Secretary og starter optagelsen af et talememo. Lucina transskriberer og opsummerer det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre Secretary e avvia la registrazione di un memo vocale. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    },
     "Other" : {
       "localizations" : {
         "da" : {
@@ -7901,7 +9228,22 @@
         }
       }
     },
-    "Pause recording" : {},
+    "Pause recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt optagelsen på pause"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Metti in pausa la registrazione"
+          }
+        }
+      }
+    },
     "Paused" : {},
     "Paused by a call" : {},
     "Paused by another app or a call" : {},
@@ -8376,7 +9718,22 @@
     },
     "Record" : {},
     "Record a memo" : {},
-    "Record memo" : {},
+    "Record memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optag memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra memo"
+          }
+        }
+      }
+    },
     "Recording" : {
       "localizations" : {
         "it" : {
@@ -8880,7 +10237,22 @@
       }
     },
     "Resume" : {},
-    "Resume recording" : {},
+    "Resume recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genoptag optagelsen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprendi la registrazione"
+          }
+        }
+      }
+    },
     "Retry" : {
       "localizations" : {
         "da" : {
@@ -9848,7 +11220,22 @@
       }
     },
     "Stop and save" : {},
-    "Stop and save recording" : {},
+    "Stop and save recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop og gem optagelsen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferma e salva la registrazione"
+          }
+        }
+      }
+    },
     "Stop dancing" : {},
     "Stop listening" : {
       "localizations" : {
@@ -14036,7 +15423,407 @@
     "%@, %@, %@" : {
       "shouldTranslate" : false
     },
-    "%lld %%" : {}
+    "%lld %%" : {},
+    "Record a memo with Lucina" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optag memo med Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra memo con Lucina"
+          }
+        }
+      }
+    },
+    "Starts recording a voice memo at once, also from the Lock Screen. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starter optagelsen af et talememo med det samme, også fra låseskærmen. Lucina transskriberer og opsummerer det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvia subito la registrazione di un memo vocale, anche dalla schermata di blocco. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    },
+    "Open the memo recorder" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn memo-optageren"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri il registratore di memo"
+          }
+        }
+      }
+    },
+    "Stop memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferma memo"
+          }
+        }
+      }
+    },
+    "Pause memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pause memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausa memo"
+          }
+        }
+      }
+    },
+    "Resume memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genoptag memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprendi memo"
+          }
+        }
+      }
+    },
+    "Lucina memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina-memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memo Lucina"
+          }
+        }
+      }
+    },
+    "Starts a voice memo at once. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starter et talememo med det samme. Lucina transskriberer og opsummerer det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvia subito un memo vocale. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    },
+    "Open Secretary once, then try again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary én gang, og prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary una volta, poi riprova."
+          }
+        }
+      }
+    },
+    "Lecture" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forelæsning"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lezione"
+          }
+        }
+      }
+    },
+    "Meeting" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Møde"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riunione"
+          }
+        }
+      }
+    },
+    "Event" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Begivenhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Evento"
+          }
+        }
+      }
+    },
+    "Not linked to an event" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke knyttet til en begivenhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non collegato a un evento"
+          }
+        }
+      }
+    },
+    "No calendar event at the time of the recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen kalenderbegivenhed på tidspunktet for optagelsen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun evento in calendario all'ora della registrazione"
+          }
+        }
+      }
+    },
+    "Link an event" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Knyt en begivenhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Collega un evento"
+          }
+        }
+      }
+    },
+    "Change event" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skift begivenhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cambia evento"
+          }
+        }
+      }
+    },
+    "Lecture notes" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Forelæsningsnoter"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Appunti della lezione"
+          }
+        }
+      }
+    },
+    "Minutes" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Referat"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verbale"
+          }
+        }
+      }
+    },
+    "Key concepts" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nøglebegreber"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Concetti chiave"
+          }
+        }
+      }
+    },
+    "Definitions" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Definitioner"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Definizioni"
+          }
+        }
+      }
+    },
+    "Questions to review" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spørgsmål til repetition"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domande di ripasso"
+          }
+        }
+      }
+    },
+    "No calendar events around the time of this recording." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen kalenderbegivenheder omkring tidspunktet for denne optagelse."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun evento in calendario intorno all'ora di questa registrazione."
+          }
+        }
+      }
+    },
+    "Lucina writes the summary again for the event you pick: lecture notes for a lecture, minutes for a meeting." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina skriver resuméet igen til den begivenhed, du vælger: noter til en forelæsning, referat til et møde."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina riscrive il riassunto per l'evento che scegli: appunti per una lezione, verbale per una riunione."
+          }
+        }
+      }
+    },
+    "No event" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen begivenhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun evento"
+          }
+        }
+      }
+    },
+    "Here" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Her"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Qui"
+          }
+        }
+      }
+    }
   },
   "version" : "1.0"
 }

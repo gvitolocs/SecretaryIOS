@@ -459,6 +459,7 @@ final class ShoppingV2Store {
             guard await flush(listId) else { return }
         }
         syncProblem = nil
+        WidgetStore.changed(.shopping)
     }
 
     /// Returns false when the network is the problem (the rest waits for a retry).

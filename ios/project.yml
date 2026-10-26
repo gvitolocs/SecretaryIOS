@@ -5,6 +5,11 @@ options:
     iOS: "17.0"
   developmentLanguage: en
   createIntermediateGroups: true
+packages:
+  # The deals map (Features/Shopping/DealsMapView.swift). Exact tag: bump on purpose.
+  GoogleMaps:
+    url: https://github.com/googlemaps/ios-maps-sdk
+    exactVersion: 11.2.0
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -22,10 +27,16 @@ targets:
         excludes:
           - "Info.plist"
       - path: Extensions/ShareShared
+      # The widgets' views and buttons, for the in-app widget gallery (App/WidgetGallery.swift).
+      - path: Extensions/SecretaryWidgets
+        excludes: ["Info.plist", "*.entitlements", "SecretaryWidgetsBundle.swift", "SecretaryControls.swift", "MemoRecordControl.swift", "MemoRecordingLiveActivity.swift"]
     info:
       path: Secretary/Info.plist
       properties:
         CFBundleDisplayName: Secretary
+        # Siri and App Shortcuts also take "Lucina" for the app name ("Registra memo con Lucina").
+        INAlternativeAppNames:
+          - INAlternativeAppName: Lucina
         NSUserActivityTypes: [INSendMessageIntent]
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, it, da]
@@ -49,7 +60,7 @@ targets:
         # Only plain-HTTP to local hosts (the dev mock); everything else must be HTTPS.
         NSHealthShareUsageDescription: "Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing."
         NSHealthUpdateUsageDescription: "Your weigh-ins and gym workouts are saved to Apple Health."
-        NSLocationWhenInUseUsageDescription: "Lucina learns which places you visit, so she can remind you of things where they matter, and the maps show how far away a place is."
+        NSLocationWhenInUseUsageDescription: "Lucina learns which places you visit, so she can remind you of things where they matter."
         NSLocationAlwaysAndWhenInUseUsageDescription: "To notice when you arrive at or leave a place, even when Secretary is closed."
         NSCalendarsFullAccessUsageDescription: "Lucina sees your upcoming events and adds or removes them when you ask."
         NSRemindersFullAccessUsageDescription: "Lucina adds, completes and reads your reminders when you ask."
@@ -65,10 +76,11 @@ targets:
         NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        # The maps' Directions buttons open Google Maps when it is installed (canOpenURL).
+        # The deals map's Directions button opens Google Maps when it is installed (canOpenURL).
         LSApplicationQueriesSchemes: [comgooglemaps]
+        # secretary://open/<route>: the widgets' and controls' links into the app (Shared/Widgets/WidgetRoutes.swift).
         CFBundleURLTypes:
-          - CFBundleURLName: tech.getsecretary.app
+          - CFBundleURLName: tech.getsecretary.app.widgets
             CFBundleURLSchemes: [secretary]
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
         # local schedules; `audio` keeps the media player (and Picture in Picture) playing and voice
@@ -89,6 +101,8 @@ targets:
       - target: SecretaryScreenTimeMonitor
       - target: SecretaryWidgets
       - sdk: Security.framework
+      - package: GoogleMaps
+        product: GoogleMaps
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app
@@ -235,11 +249,20 @@ targets:
   SecretaryWidgets:
     type: app-extension
     platform: iOS
+    # Controls (ControlWidget) need iOS 18; the app itself still runs on 17.
+    deploymentTarget: "18.0"
     sources:
       - path: Extensions/SecretaryWidgets
-        excludes: ["Info.plist"]
+        excludes: ["Info.plist", "*.entitlements"]
       - path: Secretary/Shared/MemoRecordingActivity.swift
       - path: Secretary/Shared/LucinaTokens.swift
+      # Home Screen / Lock Screen widgets: sections, store, fetcher, routes, and the API client they use.
+      - path: Secretary/Shared/Widgets
+      - path: Secretary/Core/APIClient.swift
+      - path: Secretary/Core/APIError.swift
+      - path: Secretary/Core/JSONValue.swift
+      - path: Secretary/Core/Keychain.swift
+      - path: Secretary/Resources/Localizable.xcstrings
     dependencies:
       - sdk: WidgetKit.framework
       - sdk: SwiftUI.framework
@@ -249,6 +272,8 @@ targets:
       path: Extensions/SecretaryWidgets/Info.plist
       properties:
         CFBundleDisplayName: Secretary
+        CFBundleLocalizations: [en, it, da]
+        SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
@@ -257,6 +282,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app.widgets
         PRODUCT_NAME: SecretaryWidgets
+        CODE_SIGN_ENTITLEMENTS: Extensions/SecretaryWidgets/SecretaryWidgets.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"

@@ -116,7 +116,10 @@ final class WeightStore {
     func log(_ text: String, at date: Date = Date(), note: String = "") async -> Bool {
         guard let grams = grams(from: text) else { return false }
         let ok = await run(.logEntry(weightGrams: grams, measuredMs: Int(date.timeIntervalSince1970 * 1000), note: note))
-        if ok { onLogged?(grams, date) }
+        if ok {
+            onLogged?(grams, date)
+            WidgetStore.changed(.weight)
+        }
         return ok
     }
 
