@@ -80,6 +80,7 @@ struct Job {
     src: PathBuf,
     plan: Plan,
     out: PathBuf,
+    segment: u32,
 }
 
 /// Outputs still to make, in order, and how many are already finished.
@@ -99,7 +100,8 @@ async fn pending<S: MediaSource>(app: &App<S>, failed: &HashSet<PathBuf>) -> (Ve
             if out.join(hls::DONE_MARKER).exists() {
                 done += 1;
             } else if !failed.contains(&out) && !app.jobs.is_running(&out) {
-                jobs.push(Job { src: video.item.path.clone(), plan, out });
+                let segment = hls::segment_seconds(&plan, info.audio_lead_ms);
+                jobs.push(Job { src: video.item.path.clone(), plan, out, segment });
             }
         }
     }
@@ -121,7 +123,7 @@ pub(crate) async fn run<S: MediaSource>(app: Arc<App<S>>) {
             }
             continue;
         };
-        if let Err(e) = app.jobs.prepare(&job.src, &job.plan, &job.out).await {
+        if let Err(e) = app.jobs.prepare(&job.src, &job.plan, &job.out, job.segment).await {
             tracing::warn!(src = %job.src.display(), variant = %hls::variant_name(&job.plan), "prepare failed: {e}");
             failed.insert(job.out);
         }

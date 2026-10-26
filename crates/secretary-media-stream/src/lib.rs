@@ -343,9 +343,10 @@ async fn play<S: MediaSource>(
         let variant = hls::variant_name(&plan);
         // Start ffmpeg now: by the time the player asks, the first segment is there.
         let out = app.hls_dir(&item, &variant)?;
-        if let Err(e) = app.jobs.ensure(item.path.clone(), plan.clone(), out) {
+        let segment = hls::segment_seconds(&plan, info.audio_lead_ms);
+        if let Err(e) = app.jobs.ensure(item.path.clone(), plan.clone(), out, segment) {
             tracing::warn!(%id, "retrying failed hls job: {e}");
-            app.jobs.ensure(item.path.clone(), plan.clone(), app.hls_dir(&item, &variant)?).map_err(internal)?;
+            app.jobs.ensure(item.path.clone(), plan.clone(), app.hls_dir(&item, &variant)?, segment).map_err(internal)?;
         }
         Some(format!("{base}/hls/{variant}/index.m3u8"))
     };
@@ -440,7 +441,8 @@ async fn hls_file<S: MediaSource>(
     let out = app.hls_dir(&item, &variant)?;
     if name == "index.m3u8" {
         // Starts the job again if the cache was cleared since /play.
-        app.jobs.ensure(item.path.clone(), plan, out.clone()).map_err(internal)?;
+        let segment = hls::segment_seconds(&plan, app.probe(&item).await?.audio_lead_ms);
+        app.jobs.ensure(item.path.clone(), plan, out.clone(), segment).map_err(internal)?;
         app.jobs.wait_ready(&out, Duration::from_secs(60)).await.map_err(internal)?;
         let text = tokio::fs::read_to_string(out.join("index.m3u8")).await.map_err(internal)?;
         // ffmpeg writes the end of the list just before it exits, a moment before the marker.

@@ -71,7 +71,59 @@ pub fn parse_variant(name: &str) -> Option<Plan> {
 /// and a fresh transcode has its first segment within a second or two. Outputs
 /// cached with the earlier 6 s segments stay valid: the playlist says how long
 /// each segment is.
-const SEGMENT_SECONDS: u32 = 2;
+pub const SEGMENT_SECONDS: u32 = 2;
+
+/// The segment length for one file. ffmpeg writes the fMP4 init when it cuts the first segment,
+/// and a copied AC-3/E-AC-3 track needs one of its packets by then, or the init gets an empty
+/// sample description that no player reads ("Up": audio from 5.8 s). So with copied audio the
+/// first cut must come after the audio starts: longer segments when it starts late, the old 6 s
+/// when the lead is unknown. Re-encoded (AAC) or no audio: the short default.
+pub fn segment_seconds(plan: &Plan, audio_lead_ms: Option<u64>) -> u32 {
+    if plan.audio != Stream::Copy {
+        return SEGMENT_SECONDS;
+    }
+    match audio_lead_ms {
+        Some(lead) if lead <= 1000 => SEGMENT_SECONDS,
+        Some(lead) => (lead.div_ceil(1000) as u32 + 2).max(SEGMENT_SECONDS),
+        None => 6,
+    }
+}
+
+/// Whether an fMP4 init is usable: it has a `moov`, and every `stsd` (one per track) holds a
+/// sample entry. ffmpeg exits 0 even when it wrote an empty one (see `segment_seconds`).
+pub fn init_is_complete(bytes: &[u8]) -> bool {
+    fn walk(b: &[u8], moov: &mut bool, ok: &mut bool) {
+        let mut i = 0usize;
+        while i + 8 <= b.len() {
+            let size = u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) as usize;
+            let kind = &b[i + 4..i + 8];
+            if size < 8 || i + size > b.len() {
+                *ok = false;
+                return;
+            }
+            let body = &b[i + 8..i + size];
+            match kind {
+                b"moov" => {
+                    *moov = true;
+                    walk(body, moov, ok);
+                }
+                b"trak" | b"mdia" | b"minf" | b"stbl" => walk(body, moov, ok),
+                // Full box: version/flags (4), entry_count (4), then entries.
+                b"stsd" => {
+                    let count = body.get(4..8).map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or(0);
+                    if count == 0 || body.len() < 8 + 8 {
+                        *ok = false;
+                    }
+                }
+                _ => {}
+            }
+            i += size;
+        }
+    }
+    let (mut moov, mut ok) = (false, true);
+    walk(bytes, &mut moov, &mut ok);
+    moov && ok
+}
 
 /// Who asked for a job: a viewer now, or the background preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +137,7 @@ pub enum Priority {
 pub const BACKGROUND_NICE: &str = "19";
 pub const BACKGROUND_THREADS: u32 = 4;
 
-pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority) -> Vec<String> {
+pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority, segment: u32) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"].map(String::from).to_vec();
     a.push(src.display().to_string());
     if plan.video != Stream::None {
@@ -114,7 +166,7 @@ pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority) -> V
             );
             // A keyframe at every segment boundary, so segments cut evenly.
             a.push("-force_key_frames".into());
-            a.push(format!("expr:gte(t,n_forced*{SEGMENT_SECONDS})"));
+            a.push(format!("expr:gte(t,n_forced*{segment})"));
         }
         _ => {}
     }
@@ -132,7 +184,7 @@ pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority) -> V
             "-f",
             "hls",
             "-hls_time",
-            &SEGMENT_SECONDS.to_string(),
+            &segment.to_string(),
             "-hls_playlist_type",
             "event",
             "-hls_segment_type",
@@ -197,7 +249,7 @@ impl Jobs {
 
     /// Starts the job for `out` unless it is finished or running. Returns an
     /// error when an earlier run failed (the next call retries).
-    pub fn ensure(self: &Arc<Self>, src: PathBuf, plan: Plan, out: PathBuf) -> Result<(), String> {
+    pub fn ensure(self: &Arc<Self>, src: PathBuf, plan: Plan, out: PathBuf, segment: u32) -> Result<(), String> {
         if out.join(DONE_MARKER).exists() {
             return Ok(());
         }
@@ -215,7 +267,7 @@ impl Jobs {
         drop(jobs);
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let result = this.run(&src, &plan, &out).await;
+            let result = this.run(&src, &plan, &out, segment).await;
             let mut jobs = this.jobs.lock().expect("jobs lock");
             match result {
                 Ok(()) => {
@@ -235,7 +287,7 @@ impl Jobs {
     /// is finished or already running (a viewer's job is left to finish on its
     /// own). Returns whether it ran; an error when it, or a viewer's run, failed. A viewer who asks for the same variant
     /// meanwhile is served from this job, as from their own.
-    pub async fn prepare(&self, src: &Path, plan: &Plan, out: &Path) -> Result<bool, String> {
+    pub async fn prepare(&self, src: &Path, plan: &Plan, out: &Path, segment: u32) -> Result<bool, String> {
         // The slot first, then the claim: a viewer never finds a Running job
         // that is still waiting for a background slot.
         let _slot = self.background.acquire().await.map_err(|e| e.to_string())?;
@@ -252,7 +304,7 @@ impl Jobs {
             }
             jobs.insert(out.to_path_buf(), JobState::Running);
         }
-        let result = self.exec(src, plan, out, Priority::Background).await;
+        let result = self.exec(src, plan, out, Priority::Background, segment).await;
         // A failure is not recorded for the viewer: their next play retries at full speed.
         self.jobs.lock().expect("jobs lock").remove(out);
         if result.is_err() {
@@ -261,16 +313,16 @@ impl Jobs {
         result.map(|()| true)
     }
 
-    async fn run(&self, src: &Path, plan: &Plan, out: &Path) -> Result<(), String> {
+    async fn run(&self, src: &Path, plan: &Plan, out: &Path, segment: u32) -> Result<(), String> {
         let _slot = self.slots.acquire().await.map_err(|e| e.to_string())?;
-        self.exec(src, plan, out, Priority::Interactive).await
+        self.exec(src, plan, out, Priority::Interactive, segment).await
     }
 
-    async fn exec(&self, src: &Path, plan: &Plan, out: &Path, priority: Priority) -> Result<(), String> {
+    async fn exec(&self, src: &Path, plan: &Plan, out: &Path, priority: Priority, segment: u32) -> Result<(), String> {
         // Start clean: a half-written run from before a restart is not resumable.
         let _ = tokio::fs::remove_dir_all(out).await;
         tokio::fs::create_dir_all(out).await.map_err(|e| e.to_string())?;
-        let (program, args) = command_line(&self.ffmpeg, ffmpeg_args(src, plan, out, priority), priority);
+        let (program, args) = command_line(&self.ffmpeg, ffmpeg_args(src, plan, out, priority, segment), priority);
         tracing::info!(src = %src.display(), variant = %variant_name(plan), ?priority, "hls job started");
         let output = Command::new(&program).args(&args).kill_on_drop(true).output().await.map_err(|e| format!("ffmpeg: {e}"))?;
         if !output.status.success() {
@@ -278,8 +330,13 @@ impl Jobs {
             let tail: String = err.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             return Err(format!("ffmpeg exited with {}: {tail}", output.status));
         }
+        // A broken init plays nowhere: not done, so the output is removed and made again.
+        let init = tokio::fs::read(out.join("init.mp4")).await.unwrap_or_default();
+        if !init_is_complete(&init) {
+            return Err(format!("ffmpeg wrote an incomplete init.mp4 ({} bytes, segments of {segment} s)", init.len()));
+        }
         tokio::fs::write(out.join(DONE_MARKER), b"").await.map_err(|e| e.to_string())?;
-        tracing::info!(src = %src.display(), variant = %variant_name(plan), ?priority, "hls job finished");
+        tracing::info!(src = %src.display(), variant = %variant_name(plan), ?priority, segment, "hls job finished");
         Ok(())
     }
 
@@ -397,7 +454,7 @@ mod tests {
     #[test]
     fn ffmpeg_args_for_transcode() {
         let p = parse_variant("h264-copy").unwrap();
-        let args = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Interactive);
+        let args = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Interactive, SEGMENT_SECONDS);
         let joined = args.join(" ");
         assert!(joined.contains("-i /m/up.mkv -map 0:v:0 -map 0:a:0 -vf"));
         assert!(joined.contains("-c:v libx264"));
@@ -411,12 +468,12 @@ mod tests {
     fn only_background_jobs_are_niced_and_capped() {
         let p = parse_variant("h264-aac").unwrap();
         let ffmpeg = Path::new("/usr/bin/ffmpeg");
-        let fg = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Interactive);
+        let fg = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Interactive, SEGMENT_SECONDS);
         assert!(!fg.iter().any(|a| a == "-threads"));
         let (program, args) = command_line(ffmpeg, fg.clone(), Priority::Interactive);
         assert_eq!((program.as_path(), args), (ffmpeg, fg));
 
-        let bg = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Background);
+        let bg = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Background, SEGMENT_SECONDS);
         assert!(bg.join(" ").contains("-threads 4 -f hls"));
         let (program, args) = command_line(ffmpeg, bg.clone(), Priority::Background);
         assert_eq!(program, Path::new("nice"));
@@ -481,16 +538,74 @@ mod tests {
         }
     }
 
+    /// MP4 boxes: `size kind body`.
+    fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut b = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(kind);
+        b.extend_from_slice(body);
+        b
+    }
+
+    /// An init with one track whose `stsd` holds `entries` sample entries.
+    fn init_with(entries: u32) -> Vec<u8> {
+        let mut stsd = vec![0, 0, 0, 0];
+        stsd.extend_from_slice(&entries.to_be_bytes());
+        for _ in 0..entries {
+            stsd.extend_from_slice(&mp4_box(b"avc1", &[0; 8]));
+        }
+        let stbl = mp4_box(b"stbl", &mp4_box(b"stsd", &stsd));
+        let trak = mp4_box(b"trak", &mp4_box(b"mdia", &mp4_box(b"minf", &stbl)));
+        let mut init = mp4_box(b"ftyp", b"iso5");
+        init.extend(mp4_box(b"moov", &trak));
+        init
+    }
+
+    #[test]
+    fn an_init_needs_a_sample_entry_in_every_track() {
+        assert!(init_is_complete(&init_with(1)));
+        // What ffmpeg wrote for "Up" with 2 s segments: an stsd with no entry.
+        assert!(!init_is_complete(&init_with(0)));
+        assert!(!init_is_complete(&mp4_box(b"ftyp", b"iso5")), "no moov");
+        assert!(!init_is_complete(&[0, 0, 0, 4]), "a truncated box");
+        assert!(!init_is_complete(b""));
+        let mut cut = init_with(1);
+        cut.truncate(cut.len() - 3);
+        assert!(!init_is_complete(&cut));
+    }
+
+    #[test]
+    fn copied_audio_that_starts_late_gets_longer_segments() {
+        let copy = parse_variant("h264-copy").unwrap();
+        let aac = parse_variant("h264-aac").unwrap();
+        assert_eq!(segment_seconds(&copy, Some(0)), 2);
+        assert_eq!(segment_seconds(&copy, Some(1000)), 2);
+        // "Up": the AC-3 starts 5.8 s in; the first cut has to come after it.
+        assert_eq!(segment_seconds(&copy, Some(5800)), 8);
+        assert_eq!(segment_seconds(&copy, Some(1001)), 4);
+        // Unknown: the 6 s every earlier output used.
+        assert_eq!(segment_seconds(&copy, None), 6);
+        // Re-encoded audio carries its own setup: short segments whatever the lead.
+        assert_eq!(segment_seconds(&aac, Some(5800)), 2);
+        assert_eq!(segment_seconds(&aac, None), 2);
+        let args = ffmpeg_args(Path::new("/m/up.mkv"), &copy, Path::new("/c/x"), Priority::Interactive, 8).join(" ");
+        assert!(args.contains("-hls_time 8 ") && args.contains("n_forced*8"), "{args}");
+    }
+
     /// A fake ffmpeg: a background run (it has `-threads`) marks itself started
-    /// and runs for a while; a viewer's run writes its first segment at once.
+    /// and runs for a while; a viewer's run writes a complete init and its first segment at once.
     fn fake_ffmpeg(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
+        std::fs::write(dir.join("init.ok"), init_with(1)).unwrap();
         let path = dir.join("ffmpeg");
         std::fs::write(
             &path,
-            "#!/bin/sh\nfor a; do last=$a; case $a in -threads) bg=1;; esac; done\n\
-             if [ -n \"$bg\" ]; then touch \"$(dirname \"$last\")/started\"; exec sleep 30; fi\n\
-             printf '#EXTM3U\\n#EXTINF:2.0,\\nseg_00000.m4s\\n' > \"$last\"\n",
+            format!(
+                "#!/bin/sh\nfor a; do last=$a; case $a in -threads) bg=1;; esac; done\n\
+                 if [ -n \"$bg\" ]; then touch \"$(dirname \"$last\")/started\"; exec sleep 30; fi\n\
+                 cp {} \"$(dirname \"$last\")/init.mp4\"\n\
+                 printf '#EXTM3U\\n#EXTINF:2.0,\\nseg_00000.m4s\\n' > \"$last\"\n",
+                dir.join("init.ok").display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -507,7 +622,7 @@ mod tests {
         let src = PathBuf::from("/m/a.mkv");
         let bg = {
             let (jobs, plan, src, out) = (Arc::clone(&jobs), plan.clone(), src.clone(), bg_out.clone());
-            tokio::spawn(async move { jobs.prepare(&src, &plan, &out).await })
+            tokio::spawn(async move { jobs.prepare(&src, &plan, &out, SEGMENT_SECONDS).await })
         };
         for _ in 0..100 {
             if bg_out.join("started").exists() {
@@ -518,11 +633,11 @@ mod tests {
         assert!(bg_out.join("started").exists(), "background job did not start");
         assert!(jobs.is_running(&bg_out));
 
-        jobs.ensure(src.clone(), plan.clone(), fg_out.clone()).unwrap();
+        jobs.ensure(src.clone(), plan.clone(), fg_out.clone(), SEGMENT_SECONDS).unwrap();
         jobs.wait_ready(&fg_out, Duration::from_secs(5)).await.unwrap();
 
         // The same variant as the background job: served from it, not started again.
-        jobs.ensure(src, plan, bg_out.clone()).unwrap();
+        jobs.ensure(src, plan, bg_out.clone(), SEGMENT_SECONDS).unwrap();
         assert!(jobs.is_running(&bg_out));
         assert!(!bg.is_finished());
         bg.abort();
@@ -533,12 +648,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let jobs = Arc::new(Jobs::new(dir.path().join("no-ffmpeg"), 1));
         let (plan, out, src) = (parse_variant("h264-aac").unwrap(), dir.path().join("x"), PathBuf::from("/m/a.mkv"));
-        jobs.ensure(src.clone(), plan.clone(), out.clone()).unwrap();
+        jobs.ensure(src.clone(), plan.clone(), out.clone(), SEGMENT_SECONDS).unwrap();
         assert!(jobs.wait_ready(&out, Duration::from_secs(5)).await.is_err());
         // Not "nothing to do": the worker would pick the same output again at once.
-        assert!(jobs.prepare(&src, &plan, &out).await.is_err());
+        assert!(jobs.prepare(&src, &plan, &out, SEGMENT_SECONDS).await.is_err());
         // The viewer still gets their failure once, then a retry.
-        assert!(jobs.ensure(src.clone(), plan.clone(), out.clone()).is_err());
+        assert!(jobs.ensure(src.clone(), plan.clone(), out.clone(), SEGMENT_SECONDS).is_err());
     }
 
     #[test]
