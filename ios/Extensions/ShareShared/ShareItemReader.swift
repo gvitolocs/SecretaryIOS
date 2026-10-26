@@ -62,15 +62,18 @@ enum ShareItemReader {
                         else if let text = value as? String, webURL(text) != nil { addText(text, to: &payload) }
                     }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                    let value = try await provider.loadItem(forTypeIdentifier: UTType.url.identifier)
-                    let url = (value as? URL) ?? (value as? NSURL).map { $0 as URL }
-                    if let url, url.isFileURL { payload.files.append(try copiedFile(url, directory: directory)) }
-                    else if let url { addText(url.absoluteString, to: &payload) }
-                    else if let text = value as? String { addText(text, to: &payload) }
+                    let value = try await urlValue(provider)
+                    if let url = value.url, url.isFileURL { payload.files.append(try copiedFile(url, directory: directory)) }
+                    else if let url = value.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                        addText(url.absoluteString, to: &payload)
+                    }
+                    // A plain string also loads as an NSURL ("Comprare:%20latte…"): read it as the text it is.
+                    else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
+                            let text = try? await textValue(provider) { addText(text, to: &payload) }
+                    else if let url = value.url { addText(url.absoluteString, to: &payload) } // geo:, maps: …
+                    else if let text = value.text { addText(text, to: &payload) }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-                    let value = try await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier)
-                    if let text = value as? String { addText(text, to: &payload) }
-                    else if let text = value as? NSAttributedString { addText(text.string, to: &payload) }
+                    if let text = try await textValue(provider) { addText(text, to: &payload) }
                 } else if let type = types.first {
                     payload.files.append(try await file(provider, type: type, directory: directory))
                 }
@@ -78,6 +81,39 @@ enum ShareItemReader {
             if (item.attachments ?? []).isEmpty, let text = item.attributedContentText?.string { addText(text, to: &payload) }
         }
         return payload
+    }
+
+    /// A provider backed by an object (`NSItemProvider(object: url as NSURL)`, and some apps) hands `loadItem` a
+    /// `Data` archive, not a URL: ask for the object first, then decode what `loadItem` gave.
+    static func urlValue(_ provider: NSItemProvider) async throws -> (url: URL?, text: String?) {
+        if provider.canLoadObject(ofClass: NSURL.self) {
+            let object: NSURL? = await withCheckedContinuation { continuation in
+                _ = provider.loadObject(ofClass: NSURL.self) { value, _ in continuation.resume(returning: value as? NSURL) }
+            }
+            if let object { return (object as URL, nil) }
+        }
+        let value = try await provider.loadItem(forTypeIdentifier: UTType.url.identifier)
+        if let url = (value as? URL) ?? (value as? NSURL).map({ $0 as URL }) { return (url, nil) }
+        if let text = value as? String { return (nil, text) }
+        if let data = value as? Data {
+            if let url = URL(dataRepresentation: data, relativeTo: nil), url.scheme != nil { return (url, nil) }
+            if let text = String(data: data, encoding: .utf8) { return (nil, text) }
+        }
+        return (nil, nil)
+    }
+
+    static func textValue(_ provider: NSItemProvider) async throws -> String? {
+        if provider.canLoadObject(ofClass: NSString.self) {
+            let object: String? = await withCheckedContinuation { continuation in
+                _ = provider.loadObject(ofClass: NSString.self) { value, _ in continuation.resume(returning: (value as? NSString) as String?) }
+            }
+            if let object { return object }
+        }
+        let value = try await provider.loadItem(forTypeIdentifier: UTType.plainText.identifier)
+        if let text = value as? String { return text }
+        if let text = value as? NSAttributedString { return text.string }
+        if let data = value as? Data { return String(data: data, encoding: .utf8) }
+        return nil
     }
 
     private static func file(_ provider: NSItemProvider, type: UTType, directory: URL) async throws -> ShareFile {

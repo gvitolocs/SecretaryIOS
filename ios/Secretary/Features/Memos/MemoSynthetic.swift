@@ -84,6 +84,33 @@ enum MemoRecordSelfTest {
             }
             return
         }
+        // `-SecretaryMemoQualityTest YES`: start through the Lock Screen control's intent, record
+        // ten seconds, and keep the file as Caches/memo-quality-test.aac (never uploaded) with
+        // its format in the log.
+        if defaults.bool(forKey: "SecretaryMemoQualityTest") {
+            Task { @MainActor in
+                let rec = store.recorder
+                do {
+                    _ = try await StartMemoRecordingIntent().perform()
+                } catch {
+                    MemoLog.write("quality: intent failed: \(error)")
+                    return
+                }
+                try? await Task.sleep(for: .seconds(1))
+                MemoLog.write("quality: started by intent state=\(rec.state) live=\(rec.activityReport)")
+                try? await Task.sleep(for: .seconds(9))
+                guard let r = rec.stop() else { return MemoLog.write("quality: nothing recorded") }
+                let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                let kept = caches.appendingPathComponent("memo-quality-test.aac")
+                try? FileManager.default.removeItem(at: kept)
+                try? FileManager.default.moveItem(at: r.url, to: kept)
+                let format = (try? AVAudioFile(forReading: kept)).map { "\($0.fileFormat.channelCount)ch \(Int($0.fileFormat.sampleRate)) Hz" } ?? "unreadable"
+                MemoLog.write("quality: kept \(kept.lastPathComponent) \(String(format: "%.1f", r.duration)) s \(format)")
+                // The on-device transcriber reads the stereo 48 kHz file ("failed" would be a format problem).
+                _ = await MemoOnDeviceTranscriber.transcribe(kept, clientId: "quality-test", language: "it")
+            }
+            return
+        }
         guard defaults.bool(forKey: "SecretaryMemoRecordTest") else { return }
         Task { @MainActor in
             let rec = store.recorder

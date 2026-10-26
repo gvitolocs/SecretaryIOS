@@ -3,7 +3,8 @@ import SwiftUI
 import WidgetKit
 
 // Control Center, Lock Screen and Action button controls (iOS 18): each opens Secretary where the
-// action happens (the compose field, the add field, the recorder, the weight sheet).
+// action happens (the compose field, the add field, the weight sheet). Recording a memo is the
+// memos feature's own control (MemoRecordControl), which records without opening the app.
 
 struct AskLucinaControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
@@ -26,18 +27,6 @@ struct AddToShoppingControl: ControlWidget {
         }
         .displayName("Add to shopping")
         .description("Opens the shopping list ready to add an item.")
-    }
-}
-
-struct RecordMemoControl: ControlWidget {
-    var body: some ControlWidgetConfiguration {
-        StaticControlConfiguration(kind: "tech.getsecretary.control.memo") {
-            ControlWidgetButton(action: OpenSecretaryIntent("memos/record")) {
-                Label("Record memo", systemImage: "mic.fill")
-            }
-        }
-        .displayName("Record memo")
-        .description("Starts recording a voice memo.")
     }
 }
 

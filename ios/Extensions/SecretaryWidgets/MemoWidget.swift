@@ -1,8 +1,8 @@
 import SwiftUI
 import WidgetKit
 
-/// One tap to record a voice memo (the recorder, its Live Activity and its intents belong to the
-/// memos feature; this only opens it recording).
+/// One tap to record a voice memo: the memos feature's StartMemoRecordingIntent (an
+/// AudioRecordingIntent) records in the background with its Live Activity, without opening the app.
 struct MemoWidget: Widget {
     struct Provider: TimelineProvider {
         struct Entry: TimelineEntry { let date: Date }
@@ -34,11 +34,13 @@ struct MemoWidgetView: View {
     var body: some View {
         switch family {
         case .accessoryCircular:
-            ZStack {
-                AccessoryWidgetBackground()
-                Image(systemName: "mic.fill").font(.title3)
+            Button(intent: StartMemoRecordingIntent()) {
+                ZStack {
+                    AccessoryWidgetBackground()
+                    Image(systemName: "mic.fill").font(.title3)
+                }
             }
-            .widgetURL(url)
+            .buttonStyle(.plain)
             .accessibilityLabel("Record a memo")
         case .accessoryInline:
             Label("Record memo", systemImage: "mic.fill").widgetURL(url)
@@ -46,6 +48,7 @@ struct MemoWidgetView: View {
             VStack(alignment: .leading, spacing: LucinaTokens.Space.sm) {
                 WidgetHeader(title: "Voice memo", symbol: "waveform", tint: LucinaTokens.Colors.negative)
                 Spacer(minLength: 0)
+                Button(intent: StartMemoRecordingIntent()) {
                 HStack {
                     Spacer()
                     ZStack {
@@ -56,6 +59,9 @@ struct MemoWidgetView: View {
                     .widgetAccentable()
                     Spacer()
                 }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Record a memo")
                 Spacer(minLength: 0)
                 Text("Tap to record").font(LucinaTokens.Fonts.caption2).foregroundStyle(LucinaTokens.Colors.textSecondary)
                     .frame(maxWidth: .infinity)

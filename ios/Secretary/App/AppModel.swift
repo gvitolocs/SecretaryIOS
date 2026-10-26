@@ -184,6 +184,10 @@ final class AppModel {
         MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
         MemoRecordSelfTest.runIfRequested(store: memos, defaults: defaults)
         #endif
+        #if DEBUG || SCREENSHOTS
+        // `-SecretaryShareSelfTest all|photo,pdf,…`: waits for sign-in, then logs to Documents/share-selftest.txt.
+        ShareSelfTest.runIfRequested(app: self, defaults: defaults)
+        #endif
         // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
         MemoRecorder.endStaleActivities()
         // A recording iOS cut off last time is recovered and queued.
@@ -201,6 +205,12 @@ final class AppModel {
             case .resume: memoStore.recorder.resume()
             case .stop: memoStore.finishRecording()
             }
+        }
+        MemoRecordingCommands.start = { [client] in
+            guard client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+            if memoStore.recorder.isActive { return }
+            await memoStore.record()
+            if let error = memoStore.recorder.error { throw IntentFailure.message(error) }
         }
         if launch.openSettings { showSettings = true }
         if launch.openNotes {

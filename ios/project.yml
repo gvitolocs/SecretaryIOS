@@ -29,11 +29,14 @@ targets:
       - path: Extensions/ShareShared
       # The widgets' views and buttons, for the in-app widget gallery (App/WidgetGallery.swift).
       - path: Extensions/SecretaryWidgets
-        excludes: ["Info.plist", "*.entitlements", "SecretaryWidgetsBundle.swift", "SecretaryControls.swift", "MemoRecordingLiveActivity.swift"]
+        excludes: ["Info.plist", "*.entitlements", "SecretaryWidgetsBundle.swift", "SecretaryControls.swift", "MemoRecordControl.swift", "MemoRecordingLiveActivity.swift"]
     info:
       path: Secretary/Info.plist
       properties:
         CFBundleDisplayName: Secretary
+        # Siri and App Shortcuts also take "Lucina" for the app name ("Registra memo con Lucina").
+        INAlternativeAppNames:
+          - INAlternativeAppName: Lucina
         NSUserActivityTypes: [INSendMessageIntent]
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, it, da]

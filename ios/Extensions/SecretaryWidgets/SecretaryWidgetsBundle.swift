@@ -17,7 +17,7 @@ struct SecretaryWidgets: WidgetBundle {
         FilmsWidget()
         AskLucinaControl()
         AddToShoppingControl()
-        RecordMemoControl()
+        MemoRecordControl()
         LogWeightControl()
         MemoRecordingLiveActivity()
     }
