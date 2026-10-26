@@ -18,9 +18,9 @@ struct DriveScreen: View {
     var body: some View {
         @Bindable var store = store
         List {
-            if store.filter.album == nil, store.filter.query.isEmpty, !store.albums.isEmpty {
+            if store.filter.album == nil, store.filter.query.isEmpty, !folders.isEmpty {
                 Section("Folders") {
-                    ForEach(store.albums) { album in
+                    ForEach(folders) { album in
                         Button { store.filter.album = album.id } label: { folderRow(album) }
                             .accessibilityIdentifier("drive-folder-\(album.id)")
                     }
@@ -71,6 +71,12 @@ struct DriveScreen: View {
         }
         .quickLookPreview($preview)
         .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
+    }
+
+    /// The imported folders (Nextcloud, Lyd, Video…) and the voice memos; not the other system albums
+    /// ("Videos" repeats the Video folder).
+    private var folders: [GalleryAlbum] {
+        store.albums.filter { $0.systemKey == nil || $0.systemKey == "voice-memos" }
     }
 
     private var folderTitle: String? {
