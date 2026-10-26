@@ -45,3 +45,5 @@ chrono = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 url = "2"
+# Stateright model of device-event delivery (tests/device_events_model.rs), checked by `cargo test`.
+stateright = { version = "=0.31.0", default-features = false }
