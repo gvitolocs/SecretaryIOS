@@ -231,14 +231,15 @@ async fn a_failed_digest_is_retried_after_the_cooldown() {
 async fn app_delivery_needs_the_flag_the_url_and_the_token() {
     let server = MockServer::start().await;
     notify_mock(&server, 400).await;
-    // A 4xx is not retried.
+    // A 4xx is not retried, and the refused message is dropped (recorded, not pending).
     let rig = rig_with(Some(&server), true, None);
-    assert_eq!(rig.at("12:00").await.alerts.unwrap().reason, "send failed");
+    assert_eq!(
+        rig.at("12:00").await.alerts.unwrap().reason,
+        "send rejected"
+    );
     assert_eq!(bodies(&server).await.len(), 1);
-    // F1: a failed send stays pending (re-sent by the next run); nothing acknowledged.
     let saved = state(&rig.state_path());
-    assert_eq!(saved["pending"]["kind"], "alert");
-    assert_eq!(saved["alertCounts"], json!({}));
+    assert!(saved.get("pending").is_none(), "{saved}");
 
     // LUCINA_APP_NOTIFY off, or no server URL: never posted, nothing recorded.
     let off = rig_with(Some(&server), false, None);
@@ -326,4 +327,39 @@ fn settings_read_nodes_variables_and_defaults() {
         (3000.0, 50.0, 8000)
     );
     assert_eq!(d.salling_api_key, None);
+}
+
+/// F1 drops (b): a send refused with a non-retryable status (400, 401, 403, 404, 413,
+/// 422) is dropped, not re-sent by every run; 5xx and 429 stay pending.
+#[tokio::test]
+async fn a_rejected_send_is_dropped_and_a_retryable_one_stays_pending() {
+    for status in [400u16, 401, 403, 404, 413, 422] {
+        let server = MockServer::start().await;
+        notify_mock(&server, status).await;
+        let rig = rig_with(Some(&server), true, None);
+        let first = rig.at("12:00").await.alerts.unwrap();
+        assert!(!first.sent, "{status}: {first:?}");
+        assert_eq!(bodies(&server).await.len(), 1, "{status}");
+        let saved = state(&rig.state_path());
+        assert!(saved.get("pending").is_none(), "{status}: {saved}");
+        let r = rig.at("13:30").await.alerts.unwrap();
+        assert_eq!(
+            bodies(&server).await.len(),
+            1,
+            "{status}: re-sent after a rejection ({r:?})"
+        );
+    }
+    for status in [429u16, 500, 503] {
+        let server = MockServer::start().await;
+        notify_mock(&server, status).await;
+        let rig = rig_with(Some(&server), true, None);
+        assert_eq!(rig.at("12:00").await.alerts.unwrap().reason, "send failed");
+        let saved = state(&rig.state_path());
+        assert_eq!(saved["pending"]["kind"], "alert", "{status}");
+        let sent = bodies(&server).await.len();
+        assert_eq!(rig.at("13:30").await.alerts.unwrap().reason, "send failed");
+        let again = bodies(&server).await;
+        assert!(again.len() > sent, "{status}: not re-sent");
+        assert_eq!(again[sent]["dedupKey"], again[0]["dedupKey"], "{status}");
+    }
 }

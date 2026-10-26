@@ -385,7 +385,10 @@ async fn cli_run(mut args: Vec<String>) -> anyhow::Result<i32> {
             let dry_run = !send || args.iter().any(|a| a == "--dry-run");
             let outcome = watch.run(kind, dry_run).await?;
             println!("{}", outcome.display());
-            if send && !outcome.sent && outcome.reason == "send failed" {
+            if send
+                && !outcome.sent
+                && matches!(outcome.reason.as_str(), "send failed" | "send rejected")
+            {
                 return Ok(1);
             }
         }

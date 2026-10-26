@@ -22,6 +22,8 @@ const DAY: i64 = 86_400_000;
 enum Fault {
     /// The server stores the notification, the response is lost (`Delivery::Failed`).
     Lost,
+    /// The server is down: nothing stored (`Delivery::Failed`).
+    Down,
 }
 
 /// `POST /v1/notify` with the server's dedup: a known key is answered `duplicate`
@@ -68,6 +70,11 @@ impl Deliver for Server {
     async fn deliver(&self, n: &Notification) -> Delivery {
         self.attempts.lock().unwrap().push(n.clone());
         let fault = self.script.lock().unwrap().pop_front();
+        if fault == Some(Fault::Down) {
+            return Delivery::Failed {
+                reason: "send failed".into(),
+            };
+        }
         if self.keys.lock().unwrap().insert(n.dedup_key.clone()) {
             self.inbox.lock().unwrap().push(n.clone());
         }
@@ -75,6 +82,7 @@ impl Deliver for Server {
             Some(Fault::Lost) => Delivery::Failed {
                 reason: "send failed".into(),
             },
+            Some(Fault::Down) => unreachable!(),
             None => Delivery::Delivered,
         }
     }
@@ -242,6 +250,7 @@ async fn f1_the_pending_message_is_saved_before_sending_and_cleared_after() {
         Some(rig.server.attempts()[0].dedup_key.as_str())
     );
     assert_eq!(pending["notified"]["ham|fw:store:ean"]["price"], 10);
+    assert_eq!(pending["attempts"], 1);
     assert!(file["notified"].as_object().unwrap().is_empty());
     assert_eq!(file["alertCounts"], serde_json::json!({}));
 
@@ -311,4 +320,60 @@ async fn dw3_an_alternative_that_becomes_the_best_offer_is_alerted() {
         "the alternative was never shown: {alert:?}"
     );
     assert_eq!(rig.server.received("Skinke flyer"), 1);
+}
+
+/// F1 drops (a): a message still pending on a later local date is dropped without being
+/// sent (a stale digest or alert is worse than none). It is recorded as handled, so a copy
+/// the server may already have is never repeated.
+#[tokio::test]
+async fn f1_a_pending_message_from_an_earlier_day_is_dropped_not_sent() {
+    let rig = Rig::new(result_of(vec![ham(vec![clearance(10.0)])]));
+    rig.server.fail_next(Fault::Lost);
+    assert!(!rig.watch.run_alerts(false).await.unwrap().sent);
+    assert_eq!(rig.file()["pending"]["date"], "2026-10-24");
+    rig.clock.set(fixed() + DAY);
+    let next = rig.watch.run_alerts(false).await.unwrap();
+    assert_eq!(
+        rig.server.attempts().len(),
+        1,
+        "yesterday's alert was sent again: {:#?}",
+        rig.server.attempts()
+    );
+    assert!(!next.sent, "{next:?}");
+    let file = rig.file();
+    assert!(file.get("pending").is_none(), "{file}");
+    assert_eq!(rig.server.received("Skinke clearance"), 1);
+    // Today's digest still lists the offer.
+    assert!(rig.watch.run_digest(false).await.unwrap().sent);
+    assert_eq!(rig.server.received("Skinke clearance"), 2);
+}
+
+/// F1 drops (c): after five failed attempts on the same pending message it is dropped
+/// instead of being retried by every run.
+#[tokio::test]
+async fn f1_a_pending_message_is_dropped_after_five_failed_attempts() {
+    let rig = Rig::new(result_of(vec![ham(vec![clearance(10.0)])]));
+    for _ in 0..5 {
+        rig.server.fail_next(Fault::Down);
+    }
+    for attempt in 1..=5 {
+        let run = rig.watch.run_alerts(false).await.unwrap();
+        assert_eq!(run.reason, "send failed", "attempt {attempt}");
+    }
+    let sixth = rig.watch.run_alerts(false).await.unwrap();
+    assert_eq!(
+        rig.server.attempts().len(),
+        5,
+        "a sixth attempt: {:#?}",
+        rig.server.attempts()
+    );
+    assert!(!sixth.sent, "{sixth:?}");
+    assert!(rig.file().get("pending").is_none());
+    let keys: HashSet<String> = rig
+        .server
+        .attempts()
+        .iter()
+        .map(|n| n.dedup_key.clone())
+        .collect();
+    assert_eq!(keys.len(), 1, "every attempt is the same message");
 }

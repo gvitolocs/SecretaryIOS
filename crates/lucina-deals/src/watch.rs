@@ -24,7 +24,12 @@
 //!   that finds one re-sends exactly that message first (same dedup key, so
 //!   secretary-server answers `duplicate` if it already has it), acknowledges
 //!   it, then continues. The field is absent when nothing is pending, so a
-//!   file without it is the old format.
+//!   file without it is the old format. A pending message never blocks the
+//!   watch: it is dropped (recorded as handled without sending, one log line)
+//!   when its local date is not today, when the server refuses it with a
+//!   non-retryable status ([`Delivery::Rejected`]), or after
+//!   [`MAX_SEND_ATTEMPTS`] attempts. Recording it keeps a copy the server may
+//!   already have from being repeated; its offers are skipped by that decision.
 //! - F2: only the delivered best offers (and their `relatedKeys`) are
 //!   acknowledged, not every active offer.
 //! - F3: a notified price never goes up ([`WatchState::set_notified`] keeps
@@ -49,6 +54,9 @@ use crate::{Clock, DealsError};
 pub const NOTIFY_CATEGORY: &str = "shopping";
 pub const NOTIFY_ROUTE: &str = "/shopping/map";
 pub const NOTIFY_CHANNEL: &str = "lucina";
+
+/// F1: send attempts on one pending message before it is dropped.
+pub const MAX_SEND_ATTEMPTS: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchKind {
@@ -387,6 +395,7 @@ impl Prepared {
                 JsValue::String(self.fingerprint.clone()),
             ),
             ("notified".into(), JsValue::Object(self.acks.clone())),
+            ("attempts".into(), JsValue::Number(1.0)),
         ])
     }
 
@@ -416,6 +425,37 @@ impl Prepared {
             date: text("date")?,
         })
     }
+}
+
+/// The send attempts a `pending` field records (1 when it has none).
+fn pending_attempts(p: &JsValue) -> u32 {
+    let n = p.get("attempts").map_or(1.0, JsValue::to_number);
+    if n.is_finite() && n >= 0.0 {
+        n as u32
+    } else {
+        1
+    }
+}
+
+fn with_attempts(p: &JsValue, attempts: u32) -> JsValue {
+    let mut p = p.clone();
+    if let JsValue::Object(fields) = &mut p {
+        set_entry(fields, "attempts", JsValue::Number(f64::from(attempts)));
+    }
+    p
+}
+
+/// Drop a pending (or just refused) message: record it as handled without
+/// sending it, so a copy the server may have is never repeated.
+fn drop_pending(state: &mut WatchState, pending: &Prepared, why: &str) {
+    acknowledge(state, pending);
+    tracing::warn!(
+        kind = kind_name(pending.notification.kind),
+        date = %pending.date,
+        dedup_key = %pending.notification.dedup_key,
+        why,
+        "grocery deal watch: dropped a pending notification without sending it"
+    );
 }
 
 fn kind_name(kind: WatchKind) -> &'static str {
@@ -625,8 +665,14 @@ pub fn acknowledge(state: &mut WatchState, prepared: &Prepared) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
     Delivered,
-    /// Not delivered; `reason` is `send failed` or `owner chat unavailable`.
+    /// Not delivered, may be retried (network error, timeout, 5xx, 429); the
+    /// server may have it. `reason` is `send failed` or `owner chat unavailable`.
     Failed {
+        reason: String,
+    },
+    /// Refused for good (400, 401, 403, 404, 413, 422): retrying the same
+    /// message cannot succeed.
+    Rejected {
         reason: String,
     },
     /// App notifications are disabled or not configured.
@@ -752,39 +798,62 @@ impl DealWatch {
         if let (false, Some(p)) = (dry_run, state.pending().cloned()) {
             match Prepared::from_pending(&p) {
                 Some(pending) => {
-                    if kind == WatchKind::Digest {
-                        if cooling(*last_digest_attempt) {
-                            return Ok(RunOutcome::no("digest retry cooldown"));
+                    let attempts = pending_attempts(&p);
+                    let stale = pending.date != date;
+                    if stale || attempts >= MAX_SEND_ATTEMPTS {
+                        let why = if stale {
+                            "stale: composed on an earlier day"
+                        } else {
+                            "too many failed attempts"
+                        };
+                        drop_pending(&mut state, &pending, why);
+                        state.save(&s.state_path)?;
+                    } else {
+                        if kind == WatchKind::Digest {
+                            if cooling(*last_digest_attempt) {
+                                return Ok(RunOutcome::no("digest retry cooldown"));
+                            }
+                            *last_digest_attempt = Some(time);
+                            attempted = true;
                         }
-                        *last_digest_attempt = Some(time);
-                        attempted = true;
-                    }
-                    let text = pending.notification.text.clone();
-                    match self.deliver.deliver(&pending.notification).await {
-                        Delivery::Delivered => {
-                            acknowledge(&mut state, &pending);
-                            state.save(&s.state_path)?;
-                            tracing::info!(
-                                kind = kind_name(pending.notification.kind),
-                                "grocery deal watch: pending notification re-sent"
-                            );
-                            resent = Some(RunOutcome {
-                                sent: true,
-                                text,
-                                reason: "sent".into(),
-                            });
-                        }
-                        // It may have reached the server: keep it for the next run.
-                        Delivery::Failed { reason } => {
-                            return Ok(RunOutcome {
-                                sent: false,
-                                text,
-                                reason,
-                            })
-                        }
-                        Delivery::NotConfigured => {
-                            tracing::warn!("Grocery deal watch: app notifications not configured");
-                            return Ok(RunOutcome::no("app notifications not configured"));
+                        state.set_pending(Some(with_attempts(&p, attempts + 1)));
+                        state.save(&s.state_path)?;
+                        let text = pending.notification.text.clone();
+                        match self.deliver.deliver(&pending.notification).await {
+                            Delivery::Delivered => {
+                                acknowledge(&mut state, &pending);
+                                state.save(&s.state_path)?;
+                                tracing::info!(
+                                    kind = kind_name(pending.notification.kind),
+                                    "grocery deal watch: pending notification re-sent"
+                                );
+                                resent = Some(RunOutcome {
+                                    sent: true,
+                                    text,
+                                    reason: "sent".into(),
+                                });
+                            }
+                            // It may have reached the server: keep it for the next run.
+                            Delivery::Failed { reason } => {
+                                return Ok(RunOutcome {
+                                    sent: false,
+                                    text,
+                                    reason,
+                                })
+                            }
+                            Delivery::Rejected { reason } => {
+                                drop_pending(&mut state, &pending, &reason);
+                                state.save(&s.state_path)?;
+                            }
+                            // Never posted: not an attempt.
+                            Delivery::NotConfigured => {
+                                state.set_pending(Some(p.clone()));
+                                state.save(&s.state_path)?;
+                                tracing::warn!(
+                                    "Grocery deal watch: app notifications not configured"
+                                );
+                                return Ok(RunOutcome::no("app notifications not configured"));
+                            }
                         }
                     }
                 }
@@ -853,6 +922,16 @@ impl DealWatch {
                 text,
                 reason,
             }),
+            // Refused for good: dropped, not retried.
+            Delivery::Rejected { reason } => {
+                drop_pending(&mut state, &prepared, &reason);
+                state.save(&s.state_path)?;
+                Ok(RunOutcome {
+                    sent: false,
+                    text,
+                    reason,
+                })
+            }
             // Never posted: put the file back as it was.
             Delivery::NotConfigured => {
                 match before {
