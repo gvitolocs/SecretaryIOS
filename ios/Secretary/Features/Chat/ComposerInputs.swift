@@ -241,11 +241,11 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate {
 
 /// Transcribes an attached audio file on the iPhone (never on Apple's servers), so Lucina gets the words
 /// without running Whisper. Nil when speech recognition isn't allowed, on-device recognition isn't
-/// available for the language, or it takes longer than 60 s.
+/// available for the language, or it takes longer than the limit (60 s; 30 s for chat voice notes).
 enum AudioTranscriber {
     static let timeout: Duration = .seconds(60)
 
-    static func transcribe(_ url: URL) async -> String? {
+    static func transcribe(_ url: URL, limit: Duration = timeout) async -> String? {
         guard await authorized() else { return nil }
         let locale = Locale(identifier: Locale.preferredLanguages.first ?? "it-IT")
         guard let recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(), recognizer.isAvailable,
@@ -267,7 +267,7 @@ enum AudioTranscriber {
             }
             box.task = task
             Task {
-                try? await Task.sleep(for: timeout)
+                try? await Task.sleep(for: limit)
                 box.finish(nil)
             }
         }

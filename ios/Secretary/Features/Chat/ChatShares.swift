@@ -37,9 +37,13 @@ struct ShareStatus: Decodable, Equatable, Sendable {
         var state: String?
         var summary: String?
         var thumbhash: String?
+        /// A voice note's words (on-device, or Whisper's once the server has run it).
+        var transcript: String?
 
-        init(index: Int? = nil, kind: String? = nil, mediaId: String? = nil, state: String? = nil, summary: String? = nil, thumbhash: String? = nil) {
+        init(index: Int? = nil, kind: String? = nil, mediaId: String? = nil, state: String? = nil, summary: String? = nil, thumbhash: String? = nil,
+             transcript: String? = nil) {
             self.index = index; self.kind = kind; self.mediaId = mediaId; self.state = state; self.summary = summary; self.thumbhash = thumbhash
+            self.transcript = transcript
         }
 
         init(from decoder: Decoder) throws {
@@ -50,9 +54,10 @@ struct ShareStatus: Decodable, Equatable, Sendable {
             state = c.lenientOptional(String.self, .state)
             summary = c.lenientOptional(String.self, .summary)
             thumbhash = c.lenientOptional(String.self, .thumbhash)
+            transcript = c.lenientOptional(String.self, .transcript)
         }
 
-        private enum CodingKeys: String, CodingKey { case index, kind, mediaId, state, summary, thumbhash }
+        private enum CodingKeys: String, CodingKey { case index, kind, mediaId, state, summary, thumbhash, transcript }
     }
 
     /// `received` → `reading` → `thinking` → `done` | `error`
@@ -97,6 +102,11 @@ struct OutgoingShare: Codable, Equatable, Sendable {
         var durationMs: Int?
         var transcript: String?
         var takenAt: String?
+        /// A voice note from the mic button: sent with `meta.files[i].voice` and shown as a voice bubble.
+        var voice: Bool?
+        var waveform: String?
+
+        var isVoice: Bool { voice == true }
     }
 
     var shareId: String
@@ -111,7 +121,8 @@ struct OutgoingShare: Codable, Equatable, Sendable {
     var meta: ShareMeta {
         ShareMeta(files: files.enumerated().map { index, file in
             ShareMeta.File(index: index, transcript: file.transcript, width: file.width, height: file.height,
-                           durationMs: file.durationMs, takenAt: file.takenAt)
+                           durationMs: file.durationMs, takenAt: file.takenAt, voice: file.isVoice ? true : nil,
+                           waveform: file.isVoice ? file.waveform : nil)
         }, location: location)
     }
 
@@ -122,8 +133,13 @@ struct OutgoingShare: Codable, Equatable, Sendable {
     /// The optimistic bubble: files first (in part order), then links and the location.
     func localItem(ts: Date = Date()) -> TimelineItem {
         var attachments = files.map { file in
-            TimelineAttachment(kind: file.kind, name: file.name, mime: file.mime, bytes: file.size,
-                               width: file.width, height: file.height, durationMs: file.durationMs)
+            var attachment = TimelineAttachment(kind: file.isVoice ? "voice" : file.kind, name: file.name, mime: file.mime, bytes: file.size,
+                                                width: file.width, height: file.height, durationMs: file.durationMs)
+            if file.isVoice {
+                attachment.waveform = file.waveform
+                attachment.transcript = file.transcript
+            }
+            return attachment
         }
         attachments += urls.map { TimelineAttachment(kind: "link", name: URL(string: $0)?.host, url: $0) }
         if let location {
@@ -263,7 +279,8 @@ enum ChatShareOutbox {
         return OutgoingShare.File(fileName: fileName, name: attachment.name, mime: attachment.mime, kind: attachment.kind.rawValue,
                                   size: attachment.size, width: attachment.width, height: attachment.height,
                                   durationMs: attachment.durationMs, transcript: attachment.transcript,
-                                  takenAt: attachment.takenAt.map { ISO8601DateFormatter().string(from: $0) })
+                                  takenAt: attachment.takenAt.map { ISO8601DateFormatter().string(from: $0) },
+                                  voice: attachment.voice ? true : nil, waveform: attachment.voice ? attachment.waveform : nil)
     }
 }
 

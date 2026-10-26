@@ -8924,7 +8924,22 @@
         }
       }
     },
-    "Resume" : {},
+    "Resume" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprendi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fortsæt"
+          }
+        }
+      }
+    },
     "Resume recording" : {
       "localizations" : {
         "da" : {
@@ -12309,7 +12324,22 @@
         }
       }
     },
-    "Watched" : {},
+    "Watched" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Visto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Set"
+          }
+        }
+      }
+    },
     "Watching. Lucina hears “%@” when it happens." : {
       "localizations" : {
         "da" : {
@@ -14236,6 +14266,374 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Avvia subito un memo vocale. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    },
+    "A voice memo is recording. Stop it first." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sta registrando un memo vocale. Fermalo prima."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Et talememo optager. Stop det først."
+          }
+        }
+      }
+    },
+    "A voice note for Lucina is recording. Finish it first." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sta registrando un vocale per Lucina. Finiscilo prima."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En talebesked til Lucina optager. Gør den færdig først."
+          }
+        }
+      }
+    },
+    "Couldn't play Lucina's voice." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Impossibile riprodurre la voce di Lucina."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kunne ikke afspille Lucinas stemme."
+          }
+        }
+      }
+    },
+    "Discard voice note" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Elimina il vocale"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kassér talebeskeden"
+          }
+        }
+      }
+    },
+    "Double-tap to send." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca due volte per inviare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk to gange for at sende."
+          }
+        }
+      }
+    },
+    "Double-tap to show all" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca due volte per vedere tutto"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk to gange for at vise det hele"
+          }
+        }
+      }
+    },
+    "Double-tap to show less" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca due volte per vedere meno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk to gange for at vise mindre"
+          }
+        }
+      }
+    },
+    "Double-tap to start recording, double-tap again to send." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tocca due volte per registrare, poi di nuovo due volte per inviare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tryk to gange for at optage, og to gange igen for at sende."
+          }
+        }
+      }
+    },
+    "Finish the recording first." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Prima finisci la registrazione."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gør optagelsen færdig først."
+          }
+        }
+      }
+    },
+    "Hold the mic in the chat to send Lucina a voice note. When she answers one, she reads the answer aloud while Secretary is open; tap the speaker under it to hear it again." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tieni premuto il microfono nella chat per mandare un vocale a Lucina. Quando risponde a un vocale, legge la risposta ad alta voce mentre Secretary è aperta; tocca l'altoparlante sotto la risposta per riascoltarla."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold mikrofonen nede i chatten for at sende Lucina en talebesked. Når hun svarer på en, læser hun svaret højt, mens Secretary er åben; tryk på højttaleren under svaret for at høre det igen."
+          }
+        }
+      }
+    },
+    "Hold to record" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tieni premuto per registrare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hold nede for at optage"
+          }
+        }
+      }
+    },
+    "Lucina answers voice notes with her voice" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina risponde ai vocali con la sua voce"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina svarer på talebeskeder med sin stemme"
+          }
+        }
+      }
+    },
+    "Play Lucina's voice" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riproduci la voce di Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afspil Lucinas stemme"
+          }
+        }
+      }
+    },
+    "Playback speed" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Velocità di riproduzione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afspilningshastighed"
+          }
+        }
+      }
+    },
+    "Record voice note" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra un vocale"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optag en talebesked"
+          }
+        }
+      }
+    },
+    "Recording, %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registrazione, %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optager, %@"
+          }
+        }
+      }
+    },
+    "Recording. Double-tap to send." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registrazione in corso. Tocca due volte per inviare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optager. Tryk to gange for at sende."
+          }
+        }
+      }
+    },
+    "Send voice note" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Invia il vocale"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send talebeskeden"
+          }
+        }
+      }
+    },
+    "Slide to cancel" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scorri per annullare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skub for at annullere"
+          }
+        }
+      }
+    },
+    "Stop Lucina's voice" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferma la voce di Lucina"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop Lucinas stemme"
+          }
+        }
+      }
+    },
+    "Transcript: %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trascrizione: %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Udskrift: %@"
+          }
+        }
+      }
+    },
+    "Voice note, %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vocale, %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Talebesked, %@"
+          }
+        }
+      }
+    },
+    "Voice notes" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vocali"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Talebeskeder"
           }
         }
       }

@@ -2,6 +2,7 @@
 #if DEBUG || SCREENSHOTS
 import Foundation
 import OSLog
+import AVFoundation
 import Photos
 import PhotosUI
 import SwiftUI
@@ -9,12 +10,12 @@ import UIKit
 import UniformTypeIdentifiers
 
 /// Debug builds only: an on-device self-test of "Share to Lucina" (XCUITest can't drive the iPhone).
-/// `-SecretaryShareSelfTest all` (or a comma list of `photo,pdf,url,text,album,paste,intent`) feeds real
+/// `-SecretaryShareSelfTest all` (or a comma list of `photo,pdf,url,text,album,paste,intent,voice,voice-whisper`) feeds real
 /// items through the code the share extension, the chat composer and the Shortcuts intent run, and logs
 /// every step to `Documents/share-selftest.txt` (and os_log `tech.getsecretary.app` / `ShareSelfTest`).
 @MainActor
 enum ShareSelfTest {
-    static let allCases = ["photo", "pdf", "url", "text", "album", "paste", "intent"]
+    static let allCases = ["photo", "pdf", "url", "text", "album", "paste", "intent", "voice", "voice-whisper"]
     private static var runner: ShareSelfTestRunner?
 
     static func runIfRequested(app: AppModel, defaults: UserDefaults = .standard) {
@@ -161,6 +162,8 @@ final class ShareSelfTestRunner {
         case "album": return try await caseAlbum()
         case "paste": return try await casePaste()
         case "intent": return try await caseIntent()
+        case "voice": return try await caseVoice(whisper: false)
+        case "voice-whisper": return try await caseVoice(whisper: true)
         default: return Outcome(pass: false, reason: "unknown case")
         }
     }
@@ -275,6 +278,12 @@ final class ShareSelfTestRunner {
             return Outcome(pass: false, reason: "sendShare took it but no new outgoing share appeared")
         }
         log("send: ChatStore.sendShare share \(shareId) caption \"\(text)\" (source ios-chat, background session)")
+        return await awaitChatUpload(shareId)
+    }
+
+    /// Follows a chat share's bubble until the upload's outcome, then polls its status (as the composer does).
+    private func awaitChatUpload(_ shareId: String) async -> Outcome {
+        let chat = app.chat
         let localId = TimelineItem.localPrefix + shareId
         var lastBubble = ""
         func bubbleState() -> String {
@@ -481,6 +490,144 @@ final class ShareSelfTestRunner {
             return Outcome(pass: false, reason: "paste(_:) pasted as text instead of attaching (text view: \"\(view.text ?? "")\")")
         }
         return await composerShare(model, caption: "[selftest] cosa significa questo errore?")
+    }
+
+    // MARK: - Case: voice note (the mic button's send path)
+
+    /// A spoken Italian clip made on the iPhone, sent through `ChatStore.sendVoiceNote` exactly as the mic
+    /// button sends a recording (waveform from the file, on-device transcript unless `whisper`).
+    private func caseVoice(whisper: Bool) async throws -> Outcome {
+        let phrase = "Ciao Lucina, ricordami di comprare il latte domani mattina"
+        let clip = try await synthesizeClip(phrase)
+        log("voice: synthesized \"\(phrase)\" with AVSpeechSynthesizer.write (voice \(clip.voice)) into "
+            + "\"\(clip.url.lastPathComponent)\" ADTS AAC, \(String(format: "%.2f", clip.duration)) s, \(clip.bytes) bytes")
+        let chat = app.chat
+        let before = Set(chat.outgoing.keys)
+        let note = VoiceNote(url: clip.url, duration: clip.duration, levels: [], recordedAt: Date())
+        log("send: ChatStore.sendVoiceNote (the mic button's path) transcribe \(!whisper)")
+        guard await chat.sendVoiceNote(note, transcribe: !whisper) else {
+            try? FileManager.default.removeItem(at: clip.url)
+            return Outcome(pass: false, reason: "ChatStore.sendVoiceNote returned false")
+        }
+        guard let shareId = Set(chat.outgoing.keys).subtracting(before).first, let share = chat.outgoing[shareId] else {
+            return Outcome(pass: false, reason: "sendVoiceNote took it but no new outgoing share appeared")
+        }
+        let file = share.files.first
+        log("send: share \(shareId) part \"\(file?.name ?? "?")\" \(file?.mime ?? "?") \(file?.size ?? 0) bytes, "
+            + "meta \((try? share.meta.json()) ?? "-")")
+        if whisper {
+            log("voice: on-device transcript left out on purpose: the server's Whisper transcribes it")
+        } else {
+            log("voice: on-device transcript \(file?.transcript.map { "\"\($0)\"" } ?? "none (speech recognition not authorized, unavailable on device, or timed out)")")
+        }
+        var outcome = await awaitChatUpload(shareId)
+        // What the bubble shows under the note, and what Lucina's reply carries.
+        let user = chat.items.first { $0.meta?.shareId == shareId && $0.role == .user }
+        let userItemId = chat.outgoing[shareId]?.userItemId ?? user.flatMap { $0.isLocal ? nil : $0.id }
+        if let user, let voice = BubbleEntry.entries(user.attachments).first(where: { $0.attachment.isVoice }) {
+            let seen = chat.voiceTranscript(for: user, attachment: voice.attachment, fileIndex: voice.fileIndex)
+            log("voice: bubble kind voice, waveform \(voice.attachment.waveform.map { "\(Data(base64Encoded: $0)?.count ?? 0) bytes" } ?? "none"), "
+                + "transcript shown \(seen.map { "\"\($0)\"" } ?? "none")")
+        } else {
+            log("voice: no voice bubble found for share \(shareId) (user item \(user?.id ?? "none"))")
+        }
+        if let userItemId, let reply = chat.items.first(where: { $0.role == .lucina && $0.replyTo == userItemId }) {
+            log("voice: reply \(reply.id) meta.transcript \(reply.meta?.transcript.map { "\"\($0)\"" } ?? "none"), "
+                + "meta.voiceReply \(reply.meta?.voiceReply.map(String.init) ?? "absent"), "
+                + "spoken by the app \(chat.voiceReplies.playedIds.contains(reply.id) ? "yes" : "no") "
+                + "(setting \(LucinaVoiceReplies.isEnabled() ? "on" : "off"))")
+        } else {
+            log("voice: Lucina's reply item for \(userItemId ?? "?") is not in the timeline")
+        }
+        if outcome.pass { outcome.reason += whisper ? " (Whisper path)" : " (on-device transcript path)" }
+        return outcome
+    }
+
+    private struct SpokenClip {
+        var url: URL
+        var duration: TimeInterval
+        var bytes: Int
+        var voice: String
+    }
+
+    /// Writes the synthesizer's PCM buffers straight into an ADTS AAC file in Caches/ChatNotes (where the
+    /// mic button's recordings go), so the clip is the same kind of file a recording is.
+    private func synthesizeClip(_ text: String) async throws -> SpokenClip {
+        let utterance = AVSpeechUtterance(string: text)
+        let voice = AVSpeechSynthesisVoice(language: "it-IT")
+        utterance.voice = voice
+        let url = VoiceNoteFiles.directory.appendingPathComponent("selftest-\(UUID().uuidString.lowercased()).aac")
+        let writer = SpokenClipWriter(url: url)
+        let synthesizer = AVSpeechSynthesizer()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            writer.continuation = continuation
+            synthesizer.write(utterance) { buffer in writer.append(buffer) }
+            Task {
+                // Some iOS versions never send the empty end-of-audio buffer: keep what was written.
+                try? await Task.sleep(for: .seconds(30))
+                writer.end()
+            }
+        }
+        withExtendedLifetime(synthesizer) {}
+        let file = try AVAudioFile(forReading: url)
+        let duration = Double(file.length) / file.fileFormat.sampleRate
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard duration > 0.5, bytes > 0 else { throw SelfTestError("the synthesized clip is empty (\(bytes) bytes)") }
+        return SpokenClip(url: url, duration: duration, bytes: bytes, voice: voice.map { "\($0.name) \($0.language)" } ?? "default")
+    }
+
+    /// Collects the synthesizer's buffers (on its own queue) into the AAC file; resumes once.
+    private final class SpokenClipWriter: @unchecked Sendable {
+        private let lock = NSLock()
+        private let url: URL
+        private var file: AVAudioFile?
+        var continuation: CheckedContinuation<Void, Error>?
+
+        init(url: URL) { self.url = url }
+
+        func append(_ buffer: AVAudioBuffer) {
+            guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+            if pcm.frameLength == 0 {
+                end()
+                return
+            }
+            lock.lock()
+            var failure: Error?
+            do {
+                if file == nil {
+                    let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                                                   AVSampleRateKey: pcm.format.sampleRate,
+                                                   AVNumberOfChannelsKey: pcm.format.channelCount,
+                                                   AVEncoderBitRateKey: 64_000]
+                    file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: pcm.format.commonFormat,
+                                           interleaved: pcm.format.isInterleaved)
+                }
+                try file?.write(from: pcm)
+            } catch {
+                file = nil
+                failure = error
+            }
+            lock.unlock()
+            if let failure { finish(failure) }
+        }
+
+        /// Closes the file and resumes: success when audio was written.
+        func end() {
+            lock.lock()
+            let written = file != nil
+            file = nil // closes it
+            lock.unlock()
+            finish(written ? nil : SelfTestError("the synthesizer produced no audio"))
+        }
+
+        func finish(_ error: Error?) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            lock.unlock()
+            guard let pending else { return }
+            if let error { pending.resume(throwing: error) } else { pending.resume() }
+        }
     }
 
     // MARK: - Case: Shortcuts intent

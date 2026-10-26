@@ -237,6 +237,8 @@ final class AppModel {
         // Attachments sent from the chat report their upload progress and outcome to its bubbles.
         ShareUploads.shared.observer = chat
         AttachmentStore.purgePending()
+        // Voice notes that never left (the app was killed while recording or before sending).
+        VoiceNoteFiles.purge()
         let device = device
         let wardrobe = wardrobe
         let notes = notes

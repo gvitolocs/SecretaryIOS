@@ -98,10 +98,14 @@ struct PendingAttachment: Identifiable, Equatable, @unchecked Sendable {
     var height: Int?
     var durationMs: Int?
     var takenAt: Date?
+    /// A voice note recorded with the chat's mic button (`meta.files[i].voice`).
+    var voice = false
+    /// The voice note's waveform: base64 of up to 64 bytes (`meta.files[i].waveform`).
+    var waveform: String?
 
     init(id: UUID = UUID(), url: URL, name: String, mime: String, kind: AttachmentKind? = nil, size: Int64 = 0,
          thumbnail: UIImage? = nil, transcript: String? = nil, width: Int? = nil, height: Int? = nil,
-         durationMs: Int? = nil, takenAt: Date? = nil) {
+         durationMs: Int? = nil, takenAt: Date? = nil, voice: Bool = false, waveform: String? = nil) {
         self.id = id
         self.url = url
         self.name = name
@@ -114,11 +118,14 @@ struct PendingAttachment: Identifiable, Equatable, @unchecked Sendable {
         self.height = height
         self.durationMs = durationMs
         self.takenAt = takenAt
+        self.voice = voice
+        self.waveform = waveform
     }
 
     static func == (a: PendingAttachment, b: PendingAttachment) -> Bool {
         a.id == b.id && a.url == b.url && a.transcript == b.transcript && a.isTranscribing == b.isTranscribing
             && a.thumbnail === b.thumbnail && a.width == b.width && a.height == b.height && a.durationMs == b.durationMs
+            && a.voice == b.voice && a.waveform == b.waveform
     }
 
     var shareFile: ShareFile { ShareFile(url: url, name: name, mime: mime) }
@@ -135,7 +142,8 @@ struct PendingAttachment: Identifiable, Equatable, @unchecked Sendable {
     /// `meta.files[index]` for this file.
     func metaFile(index: Int) -> ShareMeta.File {
         ShareMeta.File(index: index, transcript: transcript.flatMap { $0.isEmpty ? nil : $0 }, width: width, height: height,
-                       durationMs: durationMs, takenAt: takenAt.map { ISO8601DateFormatter().string(from: $0) })
+                       durationMs: durationMs, takenAt: takenAt.map { ISO8601DateFormatter().string(from: $0) },
+                       voice: voice ? true : nil, waveform: voice ? waveform : nil)
     }
 
     static func meta(for attachments: [PendingAttachment], location: ShareMeta.Location? = nil) -> ShareMeta {

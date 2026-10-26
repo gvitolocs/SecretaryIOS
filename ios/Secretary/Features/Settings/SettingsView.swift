@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var showPassword = false
     @State private var developerTaps = 0
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
+    @AppStorage(LucinaVoiceReplies.settingKey) private var voiceReplies = true
     @State private var serverDraft = ""
     @State private var serverError: String?
     @State private var languageChanged = false
@@ -21,6 +22,17 @@ struct SettingsView: View {
                 if !lastShareResult.isEmpty { Text(lastShareResult).font(.caption).foregroundStyle(.secondary) }
                 Text("Lucina is in the share sheet. To keep her first: Share → scroll the app row to the end → More → Edit → add Lucina to Favorites and drag her to the top. iOS orders the rest by how often you use them.")
                     .font(.footnote).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle(isOn: $voiceReplies) {
+                    Label("Lucina answers voice notes with her voice", systemImage: "speaker.wave.2")
+                }
+                .accessibilityIdentifier("voiceRepliesToggle")
+            } header: {
+                Text("Voice notes")
+            } footer: {
+                Text("Hold the mic in the chat to send Lucina a voice note. When she answers one, she reads the answer aloud while Secretary is open; tap the speaker under it to hear it again.")
             }
 
             Section {

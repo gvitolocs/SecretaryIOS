@@ -253,7 +253,7 @@ private struct MessageRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 RichReplyView(item: item, rich: rich, inferredChoice: store.inferredChoice(after: item))
                 if let job { JobCard(job: job) }
-                SourceBadge(item: item).padding(.horizontal, 4)
+                badge.padding(.horizontal, 4)
             }
             Spacer(minLength: 24)
         }
@@ -320,11 +320,20 @@ private struct MessageRow: View {
                     }
                     .font(.caption2).foregroundStyle(.secondary)
                 } else {
-                    SourceBadge(item: item)
-                        .padding(.horizontal, 4)
+                    badge.padding(.horizontal, 4)
                 }
             }
             if !isUser { Spacer(minLength: 48) }
+        }
+    }
+
+    /// The source line; on a reply Lucina wanted read aloud (a voice note's answer), the speaker to replay it.
+    private var badge: some View {
+        HStack(spacing: 2) {
+            SourceBadge(item: item)
+            if item.role == .lucina, item.meta?.voiceReply == true {
+                VoiceReplyButton(item: item)
+            }
         }
     }
 

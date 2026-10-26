@@ -50,9 +50,14 @@ struct ShareMeta: Codable, Equatable, Sendable {
         var takenAt: String?
         var lat: Double?
         var lon: Double?
+        /// A voice note recorded in Lucina's chat (Telegram style), not an audio file.
+        var voice: Bool?
+        /// Base64 of up to 64 bytes: the note's loudness in 64 buckets, 0-255.
+        var waveform: String?
 
         var hasFacts: Bool {
             transcript != nil || width != nil || height != nil || durationMs != nil || takenAt != nil || lat != nil || lon != nil
+                || voice != nil || waveform != nil
         }
     }
 

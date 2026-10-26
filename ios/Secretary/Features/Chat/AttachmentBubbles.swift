@@ -126,7 +126,9 @@ struct AttachmentMessage: View {
 
     @ViewBuilder private func card(_ entry: BubbleEntry) -> some View {
         let kind = entry.attachment.normalizedKind
-        if entry.attachment.isAudio {
+        if entry.attachment.isVoice {
+            VoiceNoteBubble(item: item, entry: entry, shareId: shareId, isUser: isUser)
+        } else if entry.attachment.isAudio {
             AudioBubble(entry: entry, shareId: shareId, isUser: isUser)
         } else if kind == "link", let url = entry.attachment.url.flatMap(ShareItemReader.webURL) {
             ChatLinkCard(entry: entry, url: url, isUser: isUser)
@@ -376,6 +378,10 @@ final class ChatAudio {
     private(set) var isPlaying = false
     private(set) var position: Double = 0
     private(set) var duration: Double = 0
+    /// Voice notes' speed (1×, 1.5×, 2×), for every bubble like Telegram.
+    private(set) var rate: Float = 1
+    /// Why the last play didn't start (a recording has the microphone).
+    private(set) var notice: String?
     @ObservationIgnored private let player = AVPlayer()
     @ObservationIgnored private var timeObserver: Any?
     @ObservationIgnored private var endObserver: NSObjectProtocol?
@@ -391,7 +397,43 @@ final class ChatAudio {
         }
     }
 
+    static let rates: [Float] = [1, 1.5, 2]
+
+    /// 1× → 1.5× → 2× → 1×.
+    func cycleRate() {
+        let index = Self.rates.firstIndex(of: rate) ?? 0
+        rate = Self.rates[(index + 1) % Self.rates.count]
+        player.defaultRate = rate
+        if isPlaying { player.rate = rate }
+    }
+
+    /// Jumps within the bubble that is playing (0...1).
+    func seek(_ key: String, fraction: Double) {
+        guard key == currentKey, duration > 0 else { return }
+        let target = max(0, min(1, fraction)) * duration
+        position = target
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+    }
+
+    /// Stops whatever plays (a voice note is about to be recorded, or Lucina is about to speak).
+    func stop() {
+        guard currentKey != nil || isPlaying else { return }
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        currentKey = nil
+        loadingKey = nil
+        isPlaying = false
+        position = 0
+        deactivate()
+    }
+
     func toggle(_ key: String, resolve: @escaping () async -> URL?) {
+        // Playing would take the audio session from the recorder (the memo or the voice note would stop).
+        if MemoRecorder.isAnyActive, !(key == currentKey && isPlaying) {
+            notice = String(localized: "Finish the recording first.")
+            return
+        }
+        notice = nil
         if key == currentKey, player.currentItem != nil {
             if isPlaying { player.pause() } else { activate(); player.play() }
             isPlaying.toggle()
@@ -406,7 +448,7 @@ final class ChatAudio {
             let url = await resolve()
             guard currentKey == key else { return }
             loadingKey = nil
-            guard let url else { currentKey = nil; return }
+            guard let url, !MemoRecorder.isAnyActive else { currentKey = nil; return }
             let item = AVPlayerItem(url: url)
             if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
             endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
@@ -414,9 +456,12 @@ final class ChatAudio {
                     self?.player.seek(to: .zero)
                     self?.isPlaying = false
                     self?.position = 0
+                    self?.deactivate()
                 }
             }
+            item.audioTimePitchAlgorithm = .spectral
             player.replaceCurrentItem(with: item)
+            player.defaultRate = rate
             activate()
             player.play()
             isPlaying = true
@@ -426,6 +471,12 @@ final class ChatAudio {
     private func activate() {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
         try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    /// Hands the session back (other apps' audio resumes; the recorder sets its own category when it starts).
+    private func deactivate() {
+        guard !MemoRecorder.isAnyActive else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 

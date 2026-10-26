@@ -59,7 +59,12 @@ final class ChatStore {
     /// Shares sent from this phone's composer, by share id (Shares/Chat/<id>/outgoing.json).
     @ObservationIgnored private(set) var outgoing: [String: OutgoingShare] = [:]
     @ObservationIgnored private var sharePollers: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored private var isForeground = false
+    @ObservationIgnored private(set) var isForeground = false
+    /// The mic button's recorder: voice notes go to Caches/ChatNotes, without a Live Activity. Separate from
+    /// the memos' recorder; only one of the two may hold the microphone.
+    let noteRecorder = MemoRecorder(directory: VoiceNoteFiles.directory, liveActivity: false)
+    /// Lucina's spoken answers to voice notes (`meta.voiceReply`).
+    let voiceReplies: LucinaVoiceReplies
 
     struct PrefillRequest: Equatable {
         let text: String
@@ -87,6 +92,7 @@ final class ChatStore {
         self.fileURL = fileURL
         self.defaults = defaults
         self.pollInterval = pollInterval
+        voiceReplies = LucinaVoiceReplies(defaults: defaults)
         let cache = Self.load(from: fileURL)
         items = cache.items
         jobs = cache.jobs
@@ -210,6 +216,7 @@ final class ChatStore {
             if let job = jobs.removeValue(forKey: old), jobs[new] == nil { jobs[new] = job }
         }
         if persistAfter { persist() }
+        voiceReplies.consider(incoming, items: items, foreground: isForeground, api: api)
     }
 
     // MARK: - Live stream
@@ -480,6 +487,8 @@ final class ChatStore {
     // MARK: - Persistence
 
     func clear() {
+        if noteRecorder.isActive { noteRecorder.discard() }
+        voiceReplies.stop()
         stopPolling()
         stopStream()
         stopSharePolling()
@@ -558,8 +567,71 @@ extension ChatStore: ShareUploadObserver {
     /// Sends the tray (files, links, the location) with the caption. Returns false when nothing was sent.
     @discardableResult
     func sendShare(caption: String, attachments: [PendingAttachment], urls: [String] = [], location: ShareMeta.Location? = nil) -> Bool {
+        guard let share = stageShare(caption: caption, attachments: attachments, urls: urls, location: location) else { return false }
+        upload(share, retry: false)
+        return true
+    }
+
+    /// Sends a voice note from the mic button (and the self-test) through the same share pipeline as a
+    /// composer attachment: one `audio/aac` part `voice-<timestamp>.aac`, no caption, and `meta.files[0]`
+    /// with `voice`, `durationMs`, `waveform` and, for notes up to a minute, the on-device `transcript`
+    /// (`transcribe: false` leaves it out so the server's Whisper runs). The bubble shows at once; the
+    /// upload starts once the transcript is in. Returns false when nothing was sent.
+    @discardableResult
+    func sendVoiceNote(_ note: VoiceNote, transcribe: Bool = true) async -> Bool {
+        let size = Int64((try? note.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        guard size > 0 else { return false }
+        let url = note.url
+        let levels = note.levels.isEmpty ? await Task.detached(priority: .userInitiated) { VoiceWaveform.levels(from: url) }.value : note.levels
+        let attachment = PendingAttachment(url: note.url, name: VoiceNoteFiles.fileName(for: note.recordedAt), mime: "audio/aac", kind: .audio,
+                                           size: size, durationMs: Int((note.duration * 1000).rounded()), voice: true,
+                                           waveform: VoiceWaveform.base64(levels))
+        guard var share = stageShare(caption: "", attachments: [attachment]) else { return false }
+        // The note now lives in the share's folder (until the server has it); nothing stays in ChatNotes.
+        try? FileManager.default.removeItem(at: note.url)
+        if transcribe, note.duration <= VoiceNote.transcribeLimit,
+           let folder = try? ChatShareOutbox.directory(share.shareId), let file = share.localFile(at: 0, in: folder) {
+            let transcript = await AudioTranscriber.transcribe(file, limit: VoiceNote.transcribeTimeout)
+            // Signed out (or cleared) meanwhile: nothing left to send.
+            guard let current = outgoing[share.shareId] else { return false }
+            share = current
+            if let transcript, !transcript.isEmpty {
+                share.files[0].transcript = transcript
+                outgoing[share.shareId] = share
+                try? ChatShareOutbox.save(share)
+                if let index = items.firstIndex(where: { $0.id == TimelineItem.localPrefix + share.shareId }),
+                   let voice = items[index].attachments.firstIndex(where: \.isVoice) {
+                    items[index].attachments[voice].transcript = transcript
+                }
+                persist()
+            }
+        }
+        upload(share, retry: false)
+        return true
+    }
+
+    /// The words of a voice note: its own `transcript` (on-device, known at once), else what Lucina heard
+    /// (`meta.transcript` on her reply), else the share status's attachment while it is being read.
+    func voiceTranscript(for item: TimelineItem, attachment: TimelineAttachment, fileIndex: Int?) -> String? {
+        if let text = attachment.transcript?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+        let shareId = item.meta?.shareId
+        let userItemId = item.isLocal ? shareId.flatMap { outgoing[$0]?.userItemId } : item.id
+        if let userItemId, let reply = items.first(where: { $0.role == .lucina && $0.replyTo == userItemId }),
+           let text = reply.meta?.transcript?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+            return text
+        }
+        guard let shareId, let status = shareStatus[shareId] else { return nil }
+        let match = status.attachments.first { $0.index == fileIndex }
+            ?? (status.attachments.count == 1 ? status.attachments.first : nil)
+        guard let text = match?.transcript?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// Writes the share's folder and record and shows the optimistic bubble; the caller starts the upload.
+    private func stageShare(caption: String, attachments: [PendingAttachment], urls: [String] = [],
+                            location: ShareMeta.Location? = nil) -> OutgoingShare? {
         let text = Self.clean(caption)
-        guard !attachments.isEmpty || !urls.isEmpty || location != nil, text.count <= Self.maxCharacters else { return false }
+        guard !attachments.isEmpty || !urls.isEmpty || location != nil, text.count <= Self.maxCharacters else { return nil }
         let shareId = UUID().uuidString
         let files: [OutgoingShare.File]
         do {
@@ -567,7 +639,7 @@ extension ChatStore: ShareUploadObserver {
             files = try attachments.enumerated().map { try ChatShareOutbox.adopt($0.element, index: $0.offset, into: folder) }
         } catch {
             ChatShareOutbox.remove(shareId)
-            return false
+            return nil
         }
         for (index, attachment) in attachments.enumerated() where attachment.kind.isVisual {
             if let thumbnail = attachment.thumbnail { ChatPreviews.store(thumbnail, shareId: shareId, index: index) }
@@ -578,8 +650,7 @@ extension ChatStore: ShareUploadObserver {
         LucinaDonations.donate()
         items.append(share.localItem())
         persist()
-        upload(share, retry: false)
-        return true
+        return share
     }
 
     /// "Not sent — Retry": the same share id, a fresh body from the kept files.
