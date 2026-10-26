@@ -86,6 +86,8 @@ final class PhotoBackup {
         if reverse != localAssets { localAssets = reverse }
     }
     @ObservationIgnored private var running: Task<Void, Never>?
+    /// The ledger read at launch, until it has landed.
+    @ObservationIgnored private var ledgerLoad: Task<Void, Never>?
     @ObservationIgnored private let path = NWPathMonitor()
     @ObservationIgnored private var currentPath: NWPath?
     @ObservationIgnored private var observer: LibraryObserver?
@@ -104,14 +106,19 @@ final class PhotoBackup {
         self.api = api
         settings = (defaults.data(forKey: Self.settingsKey)).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) } ?? Settings()
         deviceId = Self.stableDeviceId()
-        if let data = try? Data(contentsOf: Self.ledgerURL),
-           let saved = try? JSONDecoder().decode(Ledger.self, from: data) {
-            ledger = saved.entries
-            lastBackup = saved.lastBackup
-        }
-        rebuildLocalAssets()
-        backedUp = ledger.values.filter { $0.itemId != nil }.count
         status = settings.enabled ? .idle : .off
+        // One entry per photo ever sent: decoded off the main thread, not at launch. A pass waits for it.
+        let url = Self.ledgerURL
+        ledgerLoad = Task { [weak self] in
+            let saved = await Task.detached(priority: .utility) { () -> Ledger? in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? JSONDecoder().decode(Ledger.self, from: data)
+            }.value
+            guard let self, let saved else { return }
+            self.ledger = saved.entries
+            self.lastBackup = saved.lastBackup
+            self.backedUp = self.ledger.values.filter { $0.itemId != nil }.count
+        }
         // A pass that waited for Wi-Fi (or for the first path update) starts again when the network allows it.
         path.pathUpdateHandler = { [weak self] p in
             Task { @MainActor in
@@ -249,6 +256,7 @@ final class PhotoBackup {
     }
 
     private func run() async {
+        await ledgerLoad?.value
         status = .scanning
         let work = scan()
         log.info("PhotoBackup scan found \(work.count) to send, \(self.ledger.count) known")
