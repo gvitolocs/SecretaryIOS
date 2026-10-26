@@ -21,6 +21,8 @@ use crate::{schema_for, Ctx, Effect, SideEffect, Tool, ToolError, ToolResult};
 
 const PICKS_ALBUM: &str = "sys-lucina";
 const MAX_LIST: usize = 30;
+/// The longest route path the apps' chat buttons accept (iOS).
+const MAX_ROUTE_CHARS: usize = 121;
 /// Characters of a document the model sees (the attachment pipeline's long-document threshold).
 pub const READ_MAX_CHARS: usize = 12_000;
 /// Characters of a search snippet.
@@ -224,7 +226,18 @@ fn is_drive_document(item: &Value) -> bool {
 
 /// The apps' Drive route for Drive results: `/drive/file/<id>` for one file,
 /// `/drive/folder/<folder>/<dir…>` of the first when all share a Drive folder, else `/drive`.
+/// (Longer routes fall back to `/drive`: the apps' route buttons take at most
+/// [`MAX_ROUTE_CHARS`] characters.)
 fn drive_path(items: &[Value]) -> String {
+    let path = drive_path_unbounded(items);
+    if path.chars().count() <= MAX_ROUTE_CHARS {
+        path
+    } else {
+        "/drive".into()
+    }
+}
+
+fn drive_path_unbounded(items: &[Value]) -> String {
     match items {
         [one] => match one["id"].as_str().filter(|id| !id.is_empty()) {
             Some(id) => format!("/drive/file/{}", encode_segment(id)),
@@ -1176,6 +1189,31 @@ mod tests {
         assert_eq!(drive_path(&[one, other]), "/drive");
         assert_eq!(drive_path(&[]), "/drive");
         assert_eq!(drive_path(&[json!({"id": "a b"})]), "/drive/file/a%20b");
+    }
+
+    #[test]
+    fn drive_folder_routes_longer_than_the_apps_accept_fall_back_to_the_drive() {
+        let item = |id: &str, dir: &str| {
+            let mut i = slides_item();
+            i["id"] = json!(id);
+            i["drive"]["dir"] = json!(dir);
+            i
+        };
+        // "/drive/folder/Lezioni/" is 22 characters: a 99-character dir is exactly 121.
+        let fits = "d".repeat(99);
+        let path = drive_path(&[item("a", &fits), item("b", &fits)]);
+        assert_eq!(path.chars().count(), MAX_ROUTE_CHARS);
+        assert!(path.starts_with("/drive/folder/Lezioni/"));
+        let long = "d".repeat(100);
+        assert_eq!(drive_path(&[item("a", &long), item("b", &long)]), "/drive");
+        // Percent-encoding counts: 40 spaces become 120 characters.
+        let spaces = format!("x{}x", " ".repeat(40));
+        assert_eq!(
+            drive_path(&[item("a", &spaces), item("b", &spaces)]),
+            "/drive"
+        );
+        // One file keeps its short route even in a deep folder.
+        assert_eq!(drive_path(&[item("itm_df5", &long)]), "/drive/file/itm_df5");
     }
 
     #[test]
