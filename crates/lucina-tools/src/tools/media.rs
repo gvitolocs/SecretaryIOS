@@ -581,11 +581,35 @@ fn excerpt_note(x: &Excerpt) -> &'static str {
     }
 }
 
-/// Remove a downloaded copy when `read` is done with it.
+/// Remove a downloaded copy (and its own directory) when `read` is done with it.
 struct TempFile(PathBuf);
 impl Drop for TempFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+/// A file name safe to create (the handlers name tables and titles after it).
+fn safe_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || " -_.".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(120)
+        .collect();
+    let s = s.trim().trim_start_matches('.').to_owned();
+    if s.is_empty() {
+        "file".into()
+    } else {
+        s
     }
 }
 
@@ -595,7 +619,7 @@ async fn download(
     base: &str,
     key: &str,
     id: &str,
-    ext: &str,
+    name: &str,
 ) -> Result<TempFile, String> {
     let resp = http
         .get(format!(
@@ -617,16 +641,13 @@ async fn download(
         .bytes()
         .await
         .map_err(|e| e.without_url().to_string())?;
-    let dir = std::env::temp_dir().join("lucina-media-read");
+    let dir = std::env::temp_dir()
+        .join("lucina-media-read")
+        .join(uuid::Uuid::new_v4().to_string());
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| e.to_string())?;
-    let ext: String = ext
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(10)
-        .collect();
-    let file = TempFile(dir.join(format!("{}.{}", uuid::Uuid::new_v4(), ext)));
+    let file = TempFile(dir.join(safe_name(name)));
     tokio::fs::write(&file.0, &bytes)
         .await
         .map_err(|e| e.to_string())?;
@@ -645,23 +666,13 @@ async fn read_with_handlers(
     name: &str,
     question: Option<&str>,
 ) -> Result<DocumentText, String> {
-    let ext = item["drive"]["ext"]
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            Path::new(name)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase()
-        });
     let (path, _copy) = match reader.local_path(id).await {
         Some(p) => (p, None),
         None if item["size"].as_u64().is_some_and(|n| n > MAX_DOWNLOAD) => {
             return Err("the original is too large to download".into())
         }
         None => {
-            let t = download(http, base, key, id, &ext).await?;
+            let t = download(http, base, key, id, name).await?;
             (t.0.clone(), Some(t))
         }
     };
@@ -1387,8 +1398,11 @@ mod tests {
             ("L05 slides.pdf", "application/pdf")
         );
         assert_eq!(question.as_deref(), Some("carving"));
-        assert!(tmp.extension().is_some_and(|e| e == "pdf"));
+        assert_eq!(tmp.file_name().unwrap(), "L05 slides.pdf");
         assert!(!tmp.exists(), "the downloaded copy is removed");
+        assert!(!tmp.parent().unwrap().exists());
+        assert_eq!(safe_name("../a/b:c.pdf"), "_a_b_c.pdf");
+        assert_eq!(safe_name("..."), "file");
         // Handlers failing: the library's text answers.
         let failing = FakeReader {
             seen: Mutex::new(None),
