@@ -424,6 +424,15 @@ final class MediaPlayer {
         await pushProgress()
     }
 
+    #if DEBUG || SCREENSHOTS
+    // For MediaSelfTest.
+    var cueCount: Int { cues.count }
+    func cueStart(after seconds: TimeInterval) -> TimeInterval? {
+        cues.first { $0.startMs >= Int(seconds * 1000) }.map { TimeInterval($0.startMs) / 1000 }
+    }
+    func savedPositionMs(id: String) -> Int? { core?.entry(id: id)?.positionMs }
+    #endif
+
     /// Saved position for a list row: fraction played, or nil when unseen/finished.
     func progress(of item: MediaItem) -> Double? {
         _ = progressRevision

@@ -61,7 +61,13 @@ struct MediaLibraryView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if media.current != nil, !media.presented { MiniPlayer() }
         }
-        .task(id: kind) { await load() }
+        .task(id: kind) {
+            await load()
+            #if DEBUG || SCREENSHOTS
+            // Not cancelled when the player cover hides this list.
+            if kind == .video { Task { @MainActor in await MediaSelfTest.runIfRequested(media: media, items: items) } }
+            #endif
+        }
         .task { await media.syncProgress() }
         .refreshable {
             await load()
