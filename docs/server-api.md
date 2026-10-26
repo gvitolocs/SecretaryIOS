@@ -223,6 +223,7 @@ answered with an error).
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
 | `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+| `replyTo` | Optional, `[A-Za-z0-9_-]{1,64}`: the timeline id of the earlier message this one replies to (swipe to reply, see [Replies](#replies)). Empty = absent. |
 
 The channel comes from the `X-Secretary-Client: web|ios` request header,
 else from the body's `channel`, else defaults to `web`; the header wins when
@@ -251,6 +252,29 @@ and of Lucina's reply (present when Lucina records the timeline). The same
 items also arrive on [`/v1/timeline/stream`](#get-v1timelinestream);
 de-duplicate by `id` (or by `clientMessageId` for the optimistic copy of
 your own message).
+
+#### Replies
+
+Swiping a timeline message (the owner's or Lucina's) replies to it: send its
+`id` as `replyTo`.
+
+```json
+{ "message": "Cosa intendevi?", "sessionId": "iphone", "replyTo": "01K83ZK4Q6X1V9W2D3E4F5G6H7" }
+```
+
+- Lucina gets the quoted message in the turn, marked as the message being
+  replied to: its text, who wrote it and when, its attachments (names and
+  kinds, plus what Lucina read from them), and a voice note's transcript
+  (the attachment's `transcript`, else the one on Lucina's reply to it).
+  The block is clipped to 4000 characters.
+- The stored user item carries `"replyTo": "<that id>"`, so every client can
+  draw the quote by looking the item up; Lucina's answer keeps
+  `replyTo` = the owner's item, as for every turn.
+- An id that names no stored item is ignored (normal turn, no `replyTo` on
+  the item). A malformed one is `400 bad_request`. The response shape is
+  unchanged.
+- A shared file or voice note can be a reply too: `replyTo` form field on
+  `POST /v1/share` (docs/share.md, "Replies").
 
 `action` is `reply`, `grocery`, `list_reminders`, `schedule_reminder`
 (with `reminder` when one was created or already existed), or an async
@@ -309,7 +333,7 @@ Timeline item:
 | `role` | `user` or `lucina`. Skip items with any other role. |
 | `text` | May be empty (for example an attachment-only message). |
 | `clientMessageId` | Optional; set on messages sent through `POST /v1/chat` with one. |
-| `replyTo` | Optional id of the item this answers. |
+| `replyTo` | Optional id of the item this answers: on Lucina's items the owner's message; on the owner's items the message he replied to (swipe to reply). |
 | `attachments` | Optional `[{kind: image\|voice\|file, name?}]`. |
 | `meta` | Optional `{chatTitle?, guildName?, channelName?, isDm?, kind?}` (`kind: "reminder"` for a delivered reminder). |
 | `backfilled` | Optional `true` for history imported after the fact. |

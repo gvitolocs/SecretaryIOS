@@ -475,6 +475,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 "text",
                 "url",
                 "meta",
+                "replyTo",
             ]
             .contains(&name.as_str())
             {
@@ -583,6 +584,21 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
+    // Swipe to reply: the earlier timeline item this share answers.
+    let reply_to = field("replyTo", "").trim().to_owned();
+    if !reply_to.is_empty() && !crate::chat::reply::valid_id(&reply_to) {
+        return Err(bad("invalid replyTo"));
+    }
+    // An id that names no stored item is ignored (the share is still taken).
+    let reply_to = (!reply_to.is_empty()).then_some(reply_to).filter(|id| {
+        match st.timeline.get(id) {
+            Ok(Some(_)) => true,
+            _ => {
+                tracing::debug!(reply_to = %id, "share replyTo names no timeline item; ignored");
+                false
+            }
+        }
+    });
     for (key, max) in [
         ("note", 4000),
         ("lang", 32),
@@ -718,6 +734,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             channel,
             role: "user".into(),
             text,
+            reply_to,
             attachments,
             meta: Some(Meta {
                 share_id: Some(id.clone()),
@@ -877,6 +894,7 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
             channel: item.channel.clone(),
             role: "user".into(),
             text: item.text.clone(),
+            reply_to: item.reply_to.clone(),
             attachments: item.attachments.clone().unwrap_or_default(),
             meta: item.meta.clone(),
             ..NewItem::default()

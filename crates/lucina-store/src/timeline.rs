@@ -1015,6 +1015,18 @@ impl TimelineStore {
         Ok(inner.arrival.back().map(|(_, id)| id.clone()))
     }
 
+    /// One stored item by id (`None` when the index does not hold it, e.g.
+    /// rotated away or never written).
+    pub fn get(&self, id: &str) -> Result<Option<StoredItem>> {
+        let mut inner = self.lock();
+        let found = inner.refresh()?;
+        self.publish(found);
+        let Some(entry) = inner.entry(id).cloned() else {
+            return Ok(None);
+        };
+        Ok(inner.read_entries(&[entry])?.into_iter().next())
+    }
+
     /// Every stored item, oldest first.
     pub fn read_all(&self) -> Result<Vec<StoredItem>> {
         let mut inner = self.lock();
@@ -1066,6 +1078,8 @@ pub struct TimelineTurn {
     /// On every item of the turn (Lucina items merge their own on top), as
     /// Node's `createTimelineTurn({meta})`: `{via: "mcp", caller}`.
     meta: Option<Meta>,
+    /// The earlier item the owner's message replies to (swipe to reply).
+    reply_to: Option<String>,
     user_item: Mutex<Option<Option<TimelineItem>>>,
 }
 
@@ -1080,8 +1094,15 @@ impl TimelineTurn {
             channel: channel.to_owned(),
             client_message_id,
             meta: None,
+            reply_to: None,
             user_item: Mutex::new(None),
         }
+    }
+
+    /// The owner's message replies to this earlier item (its `replyTo`).
+    pub fn with_reply_to(mut self, reply_to: Option<String>) -> Self {
+        self.reply_to = reply_to;
+        self
     }
 
     /// Meta for every item of this turn.
@@ -1111,6 +1132,7 @@ impl TimelineTurn {
             role: "user".into(),
             text: text.to_owned(),
             client_message_id: self.client_message_id.clone(),
+            reply_to: self.reply_to.clone(),
             attachments,
             meta: self.meta.clone(),
             ..NewItem::default()
@@ -1419,6 +1441,52 @@ mod tests {
         assert_eq!(u.client_message_id.as_deref(), Some("cm1"));
         assert_eq!(rx.try_recv().unwrap().id, u.id);
         assert_eq!(rx.try_recv().unwrap().id, l.id);
+    }
+
+    #[test]
+    fn owner_reply_records_reply_to_in_node_key_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Arc::new(store(dir.path(), DEFAULT_MAX_BYTES));
+        let first = TimelineTurn::new(s.clone(), "ios", None);
+        first.record_user("hello", vec![]).unwrap();
+        let quoted = first.record_lucina("hi there", vec![], None).unwrap();
+        let turn = TimelineTurn::new(s.clone(), "ios", Some("cm2".into()))
+            .with_reply_to(Some(quoted.id.clone()));
+        let u = turn.record_user("what did you mean?", vec![]).unwrap();
+        assert_eq!(u.reply_to.as_deref(), Some(quoted.id.as_str()));
+        let raw = s.get(&u.id).unwrap().unwrap().raw;
+        assert_eq!(
+            &*raw,
+            format!(
+                "{{\"id\":\"{}\",\"ts\":\"{}\",\"channel\":\"ios\",\"role\":\"user\",\"text\":\"what did you mean?\",\"clientMessageId\":\"cm2\",\"replyTo\":\"{}\"}}",
+                u.id, u.ts, quoted.id
+            )
+        );
+        // Lucina's answer still replies to the owner's message.
+        let l = turn.record_lucina("I meant…", vec![], None).unwrap();
+        assert_eq!(l.reply_to.as_deref(), Some(u.id.as_str()));
+        // A reply target that is not a timeline id is dropped, not stored.
+        let odd = TimelineTurn::new(s.clone(), "ios", None).with_reply_to(Some("tl_x".into()));
+        assert_eq!(odd.record_user("x", vec![]).unwrap().reply_to, None);
+    }
+
+    #[test]
+    fn get_finds_one_item_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), DEFAULT_MAX_BYTES);
+        let a = s.append(item("a")).unwrap();
+        let b = s.append(item("b")).unwrap();
+        assert_eq!(s.get(&a.id).unwrap().unwrap().id, a.id);
+        assert!(s
+            .get(&b.id)
+            .unwrap()
+            .unwrap()
+            .raw
+            .contains("\"text\":\"b\""));
+        assert!(s.get("01K83ZK4Q6X1V9W2D3E4F5G6H7").unwrap().is_none());
+        // Another store on the same file sees it too.
+        let fresh = store(dir.path(), DEFAULT_MAX_BYTES);
+        assert_eq!(fresh.get(&b.id).unwrap().unwrap().id, b.id);
     }
 
     #[test]

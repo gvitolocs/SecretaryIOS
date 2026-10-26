@@ -1000,3 +1000,136 @@ async fn long_voice_transcripts_skip_summary_and_reach_planner_without_timeline_
                     .as_str()
                     .is_some_and(|s| s.ends_with("END_OF_VOICE")))));
 }
+
+const REPLY_HEADER: &str = "The owner is replying to this earlier message";
+
+/// Swipe to reply on an image share: the chat turn gets what was read from it.
+#[tokio::test]
+async fn a_chat_reply_to_an_image_share_quotes_what_was_read() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let png = h.dir.path().join("green.png");
+    assert!(tokio::process::Command::new("convert")
+        .args(["-size", "16x16", "xc:green"])
+        .arg(&png)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    let ack: Value = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-reply-image-1")
+            .text("channel", "ios")
+            .text("note", "Guarda qui")
+            .part(
+                "file",
+                Part::bytes(std::fs::read(&png).unwrap())
+                    .file_name("green.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            ),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(finished(&h, "share-reply-image-1").await["status"], "done");
+    let before = h.fake.requests().len();
+    let (s, b) = h
+        .post(
+            "/chat",
+            json!({"message": "ok, e quindi?", "sessionId": "test", "channel": "ios",
+                   "replyTo": ack["userItemId"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let asked = h.fake.requests()[before..]
+        .iter()
+        .map(|r| r.to_string())
+        .collect::<String>();
+    assert!(asked.contains(REPLY_HEADER), "{asked}");
+    assert!(asked.contains("«Guarda qui»"), "{asked}");
+    assert!(
+        asked.contains(r#"- image \"green.png\", read from it: "#),
+        "{asked}"
+    );
+    assert!(asked.contains("VISION_EXTRACTED"), "{asked}");
+    // From the quote, not from the "Earlier attachments" recall.
+    assert!(!asked.contains("Earlier attachments"), "{asked}");
+    let user = h
+        .timeline_lines()
+        .into_iter()
+        .find(|l| l["id"] == b["data"]["userItemId"])
+        .unwrap();
+    assert_eq!(user["replyTo"], ack["userItemId"]);
+}
+
+/// `replyTo` on `/v1/share`: the share's user item records it and the share
+/// turn quotes the earlier message; a malformed one is refused, an unknown
+/// one ignored.
+#[tokio::test]
+async fn a_share_can_reply_to_an_earlier_message() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let quoted = h
+        .state
+        .timeline
+        .append(lucina_store::timeline::NewItem {
+            channel: "ios".into(),
+            role: "lucina".into(),
+            text: "QUOTED_LINE: mandami la ricevuta".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let bad = submit(&h, Form::new().text("text", "x").text("replyTo", "../etc")).await;
+    assert_eq!(bad.status(), 400);
+    let ack: Value = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-reply-text-1")
+            .text("channel", "ios")
+            .text("text", "TEXT_EXTRACTED ricevuta 12 euro")
+            .text("replyTo", quoted.id.clone()),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(finished(&h, "share-reply-text-1").await["status"], "done");
+    let lines = h.timeline_lines();
+    let user = lines.iter().find(|l| l["id"] == ack["userItemId"]).unwrap();
+    assert_eq!(user["replyTo"], quoted.id.as_str());
+    let turn = h
+        .fake
+        .requests()
+        .into_iter()
+        .find(|r| r["tools"].is_array() && r.to_string().contains("TEXT_EXTRACTED"))
+        .unwrap();
+    let message = turn["messages"].to_string();
+    assert!(message.contains(REPLY_HEADER), "{message}");
+    assert!(message.contains("(from Lucina, "), "{message}");
+    assert!(
+        message.contains("«QUOTED_LINE: mandami la ricevuta»"),
+        "{message}"
+    );
+    // An id that names nothing: the share goes through without replyTo.
+    let ack: Value = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-reply-text-2")
+            .text("text", "TEXT_EXTRACTED altro")
+            .text("replyTo", "01K83ZK4Q6X1V9W2D3E4F5G6H7"),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(finished(&h, "share-reply-text-2").await["status"], "done");
+    let user = h
+        .timeline_lines()
+        .into_iter()
+        .find(|l| l["id"] == ack["userItemId"])
+        .unwrap();
+    assert!(user.get("replyTo").is_none(), "{user}");
+}
