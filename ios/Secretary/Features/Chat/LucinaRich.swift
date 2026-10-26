@@ -519,6 +519,8 @@ extension AppModel {
         case "media", "films":
             selectedTab = .plugins
             showMedia = true
+            let parts = path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
+            if parts.count >= 3, parts[0] == "films", parts[1] == "play" { openFilmID = parts[2] }
         case "plugins": selectedTab = .plugins
         case "gallery": openGallery(path)
         default: selectedTab = .chat

@@ -6,6 +6,7 @@ import SwiftUI
 struct FilmsView: View {
     @Environment(MediaPlayer.self) private var media
     @Environment(GalleryStore.self) private var gallery
+    @Environment(AppModel.self) private var app
     @State private var folders: [Folder] = []
     @State private var query = ""
     @State private var loading = false
@@ -66,6 +67,7 @@ struct FilmsView: View {
         }
         .task {
             await load()
+            playRequested()
             #if DEBUG || SCREENSHOTS
             // Not cancelled when the player cover hides this screen.
             Task { @MainActor in
@@ -75,6 +77,7 @@ struct FilmsView: View {
             #endif
         }
         .task { await media.syncProgress() }
+        .onChange(of: app.openFilmID) { _, _ in playRequested() }
         .refreshable {
             await load()
             await media.syncProgress()
@@ -92,6 +95,13 @@ struct FilmsView: View {
         guard !q.isEmpty else { return folders }
         return folders.map { Folder(id: $0.id, title: $0.title, films: $0.films.filter { $0.title.localizedCaseInsensitiveContains(q) }) }
             .filter { !$0.films.isEmpty }
+    }
+
+    /// The film a `/films/play/<id>` link asked for, once the folders are loaded.
+    private func playRequested() {
+        guard let id = app.openFilmID, !loading else { return }
+        app.openFilmID = nil
+        if let film = allFilms.first(where: { $0.id == id }) { play(film) }
     }
 
     /// One film at a time: the next file in a folder is another film, not a next episode.

@@ -46,6 +46,8 @@ final class AppModel {
     var showDealsMap = false
     /// The media library and player, a plugin.
     var showMedia = false
+    /// `/films/play/<id>` (a film Lucina found): Films opens and plays it.
+    var openFilmID: String?
     /// The Gallery, a plugin.
     var showGallery = false
     /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
