@@ -64,7 +64,13 @@ enum ShareItemReader {
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                     let value = try await urlValue(provider)
                     if let url = value.url, url.isFileURL { payload.files.append(try copiedFile(url, directory: directory)) }
-                    else if let url = value.url { addText(url.absoluteString, to: &payload) }
+                    else if let url = value.url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                        addText(url.absoluteString, to: &payload)
+                    }
+                    // A plain string also loads as an NSURL ("Comprare:%20latte…"): read it as the text it is.
+                    else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier),
+                            let text = try? await textValue(provider) { addText(text, to: &payload) }
+                    else if let url = value.url { addText(url.absoluteString, to: &payload) } // geo:, maps: …
                     else if let text = value.text { addText(text, to: &payload) }
                 } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
                     if let text = try await textValue(provider) { addText(text, to: &payload) }
