@@ -200,8 +200,10 @@ at their first violation.
 
 `formal/drive/`: `DriveIndex_fixed` (MUST PASS), `DriveIndex_fixed_deep` (`--deep`), three `MUST FAIL` bug cfgs
 (`nofs_bug`, `noguard_bug`, `dedupe_bug`, the Stateright ablations) and four witnesses (pruned, stray, walk error,
-upgrade). Written on 2026-10-26 in a cloud session without TLC: the first `verify-gate` run on nezopt records their
-state counts here.
+upgrade). First `verify-gate` run on nezopt (2026-10-26): `DriveIndex_fixed` 9 090 distinct states (the same as
+Stateright DI current); `dedupe_bug` 62 (`PhoneOriginalKept` violated), `nofs_bug` 885 and `noguard_bug` 521
+(`UnmountNeverTrashes` violated); witnesses pruned 924, stray 570, upgraded 15, walk error 251; each under 2 s.
+`DriveIndex_fixed_deep` not run.
 
 ## Invariants, models and mapping
 
@@ -904,7 +906,7 @@ paths and the walk's paths all stay inside the folder); DK2 `scope_of` / `in_sco
 gallery, films and drive (`db::scope_condition` is that predicate in SQL; `tests/drive.rs::scope_sql_matches_the_kernel`
 checks all four combinations through the API); DK3 `blob_action`; DK4 `may_prune` / `may_adopt_fs`; DK5
 `drive_may_work` (Tctl at or above `LUCINA_MEDIA_DRIVE_MAX_TEMP`, 90 °C, or the load limit pauses the hashing, text
-extraction, PDF pages and Office conversion). Not yet run by Verus: the first `verify-gate` on nezopt does.
+extraction, PDF pages and Office conversion). Verus on nezopt (2026-10-26, through `verify-gate`): 15 verified, 0 errors.
 
 | Model action | Code |
 |---|---|
