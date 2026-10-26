@@ -34,18 +34,33 @@ struct GalleryItem: Codable, Identifiable, Hashable, Sendable {
     var urls: URLs?
     /// ThumbHash (base64): decoded by the Rust core into the placeholder.
     var thumbhash: String?
+    /// Where a Drive folder file lives and how to preview it (DriveAPI.swift); nil for everything else
+    /// and on servers before the Drive browser.
+    var drive: DriveInfo?
+    /// Search results that matched the file's content: plain text around the match.
+    var snippet: String?
 
     struct URLs: Codable, Hashable, Sendable {
         var original: String?
         var thumb: String?
         var large: String?
         /// JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
+        /// For PDFs and converted Office files: the first page.
         var grid: String?
         var preview: String?
+        /// The original as an attachment (`?download=1`).
+        var download: String?
+        /// PDFs, and Office files the server converted.
+        var pdf: String?
+        /// Text and code files, and the extracted text of PDF/Office files (`DriveText`).
+        var text: String?
+        /// zip/tar/tgz/7z listing (`DriveArchive`).
+        var archive: String?
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, title, caption, mime, size, width, height, place, camera, favorite, albums, album, urls, thumbhash
+        case drive, snippet
         case takenAt = "taken_at"
         case createdAt = "created_at"
         case durationMs = "duration_ms"
@@ -99,12 +114,15 @@ struct GalleryAPI: Sendable {
         var album: String?
         var query: String = ""
         var favorites = false
+        /// A Drive file type (`DriveFileType`): filters by `drive.type` (servers before the Drive browser ignore it).
+        var type: String?
     }
 
     func items(_ filter: Filter, cursor: String? = nil, limit: Int = 200) async throws -> GalleryPage {
         var q: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
         if let scope = filter.scope { q.append(URLQueryItem(name: "scope", value: scope)) }
         if let kind = filter.kind { q.append(URLQueryItem(name: "kind", value: kind)) }
+        if let type = filter.type { q.append(URLQueryItem(name: "type", value: type)) }
         if let album = filter.album { q.append(URLQueryItem(name: "album", value: album)) }
         if !filter.query.trimmingCharacters(in: .whitespaces).isEmpty { q.append(URLQueryItem(name: "q", value: filter.query)) }
         if filter.favorites { q.append(URLQueryItem(name: "favorite", value: "true")) }

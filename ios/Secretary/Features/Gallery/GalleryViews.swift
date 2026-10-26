@@ -31,10 +31,15 @@ final class GalleryStore {
             .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI, scope: String? = nil) {
+    /// `items`: a fixed list for the viewer (the photos and videos of a Drive folder), not the saved listing.
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil, items fixed: [GalleryItem]? = nil) {
         self.api = api
         self.scope = scope
         filter = GalleryAPI.Filter(scope: scope)
+        if let fixed {
+            items = fixed
+            return
+        }
         if let data = try? Data(contentsOf: listingURL),
            let saved = try? JSONDecoder().decode(Listing.self, from: data) {
             items = saved.items
