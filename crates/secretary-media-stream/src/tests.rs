@@ -176,8 +176,12 @@ async fn films_are_prepared_in_the_background() {
         "-c:v", "libx264", "-g", "25", "-c:a", "ac3", mkv.to_str().unwrap()]);
     ffmpeg(&["-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2", "-c:v", "libx264", "-movflags", "+faststart",
         media.join("Clip.mp4").to_str().unwrap()]);
-    let cfg = StreamConfig::new(vec![7; 32], tmp.path().join("cache"), tmp.path().join("progress.json"));
+    let mut cfg = StreamConfig::new(vec![7; 32], tmp.path().join("cache"), tmp.path().join("progress.json"));
     assert!(cfg.prepare, "on by default");
+    // This test is about the worker, not the thermal/load gate: keep it open
+    // whatever the box is doing. (The gate itself is tested in `gate.rs`.)
+    cfg.prepare_max_temp_c = 200;
+    cfg.prepare_max_load = 10_000;
     let src = Arc::new(DirSource::new(vec![Root { label: "Test".into(), path: media.clone() }]));
     let _app = router(src, cfg.clone()).unwrap();
 

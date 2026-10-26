@@ -20,6 +20,24 @@ Uploads that arrive in the quiet hours (22:00–09:00 Copenhagen, like Nextcloud
 NVMe spool. A mover takes them to mybook in the day window: copy, fsync, rename, flip the catalog row, then
 remove the spool copy, so it is safe to interrupt.
 
+## Background film preparation
+
+Only the film folders (`scope=films`) get HLS outputs ahead of time; phone videos are left alone. One job at a
+time runs beside (but never ahead of) a viewer's job:
+
+- It runs in `systemd-run --user --scope -p CPUQuota=100%` (`LUCINA_MEDIA_PREPARE_SCOPE=0` turns the scope off,
+  `LUCINA_MEDIA_PREPARE_CPU_QUOTA` changes the quota), so preparation cannot take more than one core.
+- Re-encodes use VAAPI when `/dev/dri/renderD128` and ffmpeg's `h264_vaapi` exist, under
+  `~/bin/gpu-lease run --name media-prepare --mb 512`; tone-mapping and the fallback use libx264 with two
+  decode/encode threads. `LUCINA_MEDIA_VAAPI=0|<device>` and `LUCINA_MEDIA_GPU_LEASE=<path>|0` override.
+- libx264 and tone-mapping jobs wait for the night window (`LUCINA_MEDIA_PREPARE_WINDOW`, default `1-7`,
+  `[start, end)` local, wraps past midnight). VAAPI and remux jobs may start any hour.
+- No job starts at or above `LUCINA_MEDIA_PREPARE_MAX_TEMP` (k10temp Tctl, default 80 °C) or
+  `LUCINA_MEDIA_PREPARE_MAX_LOAD` (one-minute load, default 16); the worker re-checks every minute and logs a
+  pause once. A running job is sampled every 10 s and stopped after three over-limit samples (85 °C or the max
+  load), its output removed, and it returns to the queue as paused, not failed. A failed VAAPI job is retried
+  once on libx264 in the night window. Viewers pressing play are not throttled by any of this.
+
 ## API (all under `/v1/media`)
 
 - `GET items?scope=&kind=&from=&to=&q=&near=lat,lon,km&album=&favorite=&trashed=&cursor=&limit=` gives newest first

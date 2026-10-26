@@ -9,14 +9,16 @@
 //! Jobs come from a viewer (`/play`, the playlist) or from the background
 //! preparation (`prepare`). The two have separate slot pools, and background
 //! ffmpeg runs niced with fewer threads, so a viewer never waits behind it.
+use crate::gate::{Gate, Watchdog};
 use secretary_player::playback::{Plan, Stream};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{process::Command, sync::Semaphore};
+use tokio::{io::AsyncReadExt, process::Command, sync::Semaphore};
 
 /// The variant name in URLs and cache paths: `<video>-<audio>[-hvc1][-tm]`,
 /// e.g. `copy-aac-hvc1`. Parsed back strictly, so a URL cannot inject flags.
@@ -132,13 +134,73 @@ pub enum Priority {
     Background,
 }
 
-/// Background ffmpeg: the lowest CPU priority, and a thread cap so a viewer's
-/// own transcode (and everything else on the box) keeps most of the cores.
+/// Background ffmpeg: the lowest CPU priority and a small thread pool, so a
+/// viewer's own transcode (and everything else on the box) keeps the cores.
 pub const BACKGROUND_NICE: &str = "19";
-pub const BACKGROUND_THREADS: u32 = 4;
+pub const BACKGROUND_THREADS: u32 = 2;
 
-pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority, segment: u32) -> Vec<String> {
-    let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-i"].map(String::from).to_vec();
+/// The wrappers a background job runs under. The defaults are all off, so the
+/// library (or tests) opt in; lucina-media detects them at startup.
+#[derive(Debug, Clone)]
+pub struct BackgroundConfig {
+    /// Run in `systemd-run --user --scope` so the CPU quota can be enforced.
+    pub scope: bool,
+    /// The scope's CPU quota in percent (100 = one core).
+    pub cpu_quota: u32,
+    /// VAAPI render node; None keeps every encode on libx264.
+    pub vaapi_device: Option<PathBuf>,
+    /// The GPU VRAM semaphore VAAPI jobs run under.
+    pub gpu_lease: Option<PathBuf>,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self { scope: false, cpu_quota: 100, vaapi_device: None, gpu_lease: None }
+    }
+}
+
+impl From<&crate::StreamConfig> for BackgroundConfig {
+    fn from(cfg: &crate::StreamConfig) -> Self {
+        Self {
+            scope: cfg.background_scope,
+            cpu_quota: cfg.background_cpu_quota,
+            vaapi_device: cfg.vaapi_device.clone(),
+            gpu_lease: cfg.gpu_lease.clone(),
+        }
+    }
+}
+
+/// Whether this background job can use the VAAPI encoder. Tone-mapping needs
+/// zscale on the CPU, so it stays on libx264 (and so does everything when no
+/// render node is configured, or after a VAAPI failure).
+pub fn uses_vaapi(plan: &Plan, background: &BackgroundConfig, allow: bool) -> bool {
+    allow && plan.video == Stream::H264 && !plan.tonemap && background.vaapi_device.is_some()
+}
+
+/// Whether a background job is on the CPU path: libx264 or tone-mapping. Only
+/// these wait for the night window; VAAPI and remux jobs may start any hour.
+pub fn is_cpu_path(plan: &Plan, background: &BackgroundConfig, allow_vaapi: bool) -> bool {
+    plan.video == Stream::H264 && !uses_vaapi(plan, background, allow_vaapi)
+}
+
+pub fn ffmpeg_args(
+    src: &Path,
+    plan: &Plan,
+    out: &Path,
+    priority: Priority,
+    segment: u32,
+    background: &BackgroundConfig,
+    use_vaapi: bool,
+) -> Vec<String> {
+    let is_background = priority == Priority::Background;
+    let vaapi = use_vaapi && is_background && plan.video == Stream::H264 && !plan.tonemap && background.vaapi_device.is_some();
+    let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"].map(String::from).to_vec();
+    // Software decode with a small pool: the RX 7900 XTX has no MPEG-2 decoder,
+    // and the CPU budget belongs to the rest of the box.
+    if is_background && plan.video == Stream::H264 {
+        a.extend(["-threads".to_string(), BACKGROUND_THREADS.to_string()]);
+    }
+    a.push("-i".into());
     a.push(src.display().to_string());
     if plan.video != Stream::None {
         a.extend(["-map", "0:v:0"].map(String::from));
@@ -153,6 +215,16 @@ pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority, segm
                 a.extend(["-tag:v", "hvc1"].map(String::from));
             }
         }
+        Stream::H264 if vaapi => {
+            let device = background.vaapi_device.as_ref().expect("vaapi device checked above");
+            a.push("-vaapi_device".into());
+            a.push(device.display().to_string());
+            a.extend(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=nv12,hwupload"].map(String::from));
+            a.extend(["-c:v", "h264_vaapi", "-qp", "21", "-profile:v", "high", "-bf", "0"].map(String::from));
+            // A keyframe at every segment boundary, so segments cut evenly.
+            a.push("-force_key_frames".into());
+            a.push(format!("expr:gte(t,n_forced*{segment})"));
+        }
         Stream::H264 => {
             if plan.tonemap {
                 a.push("-vf".into());
@@ -164,6 +236,9 @@ pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority, segm
             a.extend(
                 ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-profile:v", "high", "-level:v", "4.1"].map(String::from),
             );
+            if is_background {
+                a.extend(["-threads".to_string(), BACKGROUND_THREADS.to_string()]);
+            }
             // A keyframe at every segment boundary, so segments cut evenly.
             a.push("-force_key_frames".into());
             a.push(format!("expr:gte(t,n_forced*{segment})"));
@@ -174,10 +249,6 @@ pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority, segm
         Stream::Copy => a.extend(["-c:a", "copy"].map(String::from)),
         Stream::Aac => a.extend(["-c:a", "aac", "-b:a", "192k", "-ac", "2"].map(String::from)),
         _ => {}
-    }
-    if priority == Priority::Background {
-        a.push("-threads".into());
-        a.push(BACKGROUND_THREADS.to_string());
     }
     a.extend(
         [
@@ -202,16 +273,50 @@ pub fn ffmpeg_args(src: &Path, plan: &Plan, out: &Path, priority: Priority, segm
     a
 }
 
-/// The program and arguments to run: background jobs go through `nice`.
-pub fn command_line(ffmpeg: &Path, args: Vec<String>, priority: Priority) -> (PathBuf, Vec<String>) {
-    match priority {
-        Priority::Interactive => (ffmpeg.to_path_buf(), args),
-        Priority::Background => {
-            let mut a = vec!["-n".to_string(), BACKGROUND_NICE.to_string(), ffmpeg.display().to_string()];
-            a.extend(args);
-            ("nice".into(), a)
-        }
+/// The program and arguments to run. Interactive jobs are untouched. Background
+/// jobs are niced, optionally under `gpu-lease` (VAAPI) and always in the CPU
+/// scope when one is configured.
+pub fn command_line(
+    ffmpeg: &Path,
+    args: Vec<String>,
+    priority: Priority,
+    background: &BackgroundConfig,
+    use_vaapi: bool,
+) -> (PathBuf, Vec<String>) {
+    if priority == Priority::Interactive {
+        return (ffmpeg.to_path_buf(), args);
     }
+    let mut nice: Vec<String> = ["-n", BACKGROUND_NICE, &ffmpeg.display().to_string()].map(String::from).to_vec();
+    nice.extend(args);
+    let (mut program, mut program_args) = if use_vaapi {
+        match &background.gpu_lease {
+            Some(lease) => {
+                let mut a: Vec<String> =
+                    ["run".into(), "--name".into(), "media-prepare".into(), "--mb".into(), "512".into(), "--".into(), "nice".into()]
+                        .to_vec();
+                a.extend(nice);
+                (lease.clone(), a)
+            }
+            None => (PathBuf::from("nice"), nice),
+        }
+    } else {
+        (PathBuf::from("nice"), nice)
+    };
+    if background.scope {
+        let mut a: Vec<String> = vec![
+            "--user".into(),
+            "--scope".into(),
+            "--quiet".into(),
+            "-p".into(),
+            format!("CPUQuota={}%", background.cpu_quota),
+            "--".into(),
+            program.display().to_string(),
+        ];
+        a.extend(program_args);
+        program = PathBuf::from("systemd-run");
+        program_args = a;
+    }
+    (program, program_args)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,24 +325,43 @@ enum JobState {
     Failed(String),
 }
 
+/// A background job that did not finish: a failure is remembered, while a
+/// watchdog stop is a pause and the output goes back in the queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobError {
+    Failed(String),
+    Stopped(String),
+}
+
+impl std::fmt::Display for JobError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(e) | Self::Stopped(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Runs ffmpeg jobs: at most `limit` a viewer asked for at once, and one
 /// background job beside them.
 pub struct Jobs {
     ffmpeg: PathBuf,
+    /// The wrappers background jobs use (scope, VAAPI, gpu-lease).
+    background: BackgroundConfig,
     slots: Arc<Semaphore>,
     /// Background preparation's own pool, so a viewer's job never queues behind it.
-    background: Arc<Semaphore>,
+    prepare_slot: Arc<Semaphore>,
     jobs: Mutex<HashMap<PathBuf, JobState>>,
 }
 
 pub const DONE_MARKER: &str = "done";
 
 impl Jobs {
-    pub fn new(ffmpeg: PathBuf, limit: usize) -> Self {
+    pub fn new(ffmpeg: PathBuf, limit: usize, background: BackgroundConfig) -> Self {
         Self {
             ffmpeg,
+            background,
             slots: Arc::new(Semaphore::new(limit.max(1))),
-            background: Arc::new(Semaphore::new(1)),
+            prepare_slot: Arc::new(Semaphore::new(1)),
             jobs: Mutex::new(HashMap::new()),
         }
     }
@@ -287,10 +411,35 @@ impl Jobs {
     /// is finished or already running (a viewer's job is left to finish on its
     /// own). Returns whether it ran; an error when it, or a viewer's run, failed. A viewer who asks for the same variant
     /// meanwhile is served from this job, as from their own.
-    pub async fn prepare(&self, src: &Path, plan: &Plan, out: &Path, segment: u32) -> Result<bool, String> {
+    pub async fn prepare(&self, src: &Path, plan: &Plan, out: &Path, segment: u32) -> Result<bool, JobError> {
+        self.prepare_with(src, plan, out, segment, true, None).await
+    }
+
+    /// Like [`prepare`](Self::prepare), with the temperature/load watchdog.
+    pub async fn prepare_watched(
+        &self,
+        src: &Path,
+        plan: &Plan,
+        out: &Path,
+        segment: u32,
+        allow_vaapi: bool,
+        gate: &Gate,
+    ) -> Result<bool, JobError> {
+        self.prepare_with(src, plan, out, segment, allow_vaapi, Some(gate)).await
+    }
+
+    async fn prepare_with(
+        &self,
+        src: &Path,
+        plan: &Plan,
+        out: &Path,
+        segment: u32,
+        allow_vaapi: bool,
+        gate: Option<&Gate>,
+    ) -> Result<bool, JobError> {
         // The slot first, then the claim: a viewer never finds a Running job
         // that is still waiting for a background slot.
-        let _slot = self.background.acquire().await.map_err(|e| e.to_string())?;
+        let _slot = self.prepare_slot.acquire().await.map_err(|e| JobError::Failed(e.to_string()))?;
         if out.join(DONE_MARKER).exists() {
             return Ok(false);
         }
@@ -299,12 +448,14 @@ impl Jobs {
             match jobs.get(out) {
                 Some(JobState::Running) => return Ok(false),
                 // A viewer's run failed: left for their retry, and the worker moves on.
-                Some(JobState::Failed(e)) => return Err(e.clone()),
+                Some(JobState::Failed(e)) => return Err(JobError::Failed(e.clone())),
                 None => {}
             }
             jobs.insert(out.to_path_buf(), JobState::Running);
         }
-        let result = self.exec(src, plan, out, Priority::Background, segment).await;
+        let result = self
+            .exec(src, plan, out, Priority::Background, segment, &self.background, allow_vaapi, gate)
+            .await;
         // A failure is not recorded for the viewer: their next play retries at full speed.
         self.jobs.lock().expect("jobs lock").remove(out);
         if result.is_err() {
@@ -315,27 +466,45 @@ impl Jobs {
 
     async fn run(&self, src: &Path, plan: &Plan, out: &Path, segment: u32) -> Result<(), String> {
         let _slot = self.slots.acquire().await.map_err(|e| e.to_string())?;
-        self.exec(src, plan, out, Priority::Interactive, segment).await
+        self.exec(src, plan, out, Priority::Interactive, segment, &self.background, false, None)
+            .await
+            .map_err(|e| e.to_string())
     }
 
-    async fn exec(&self, src: &Path, plan: &Plan, out: &Path, priority: Priority, segment: u32) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    async fn exec(
+        &self,
+        src: &Path,
+        plan: &Plan,
+        out: &Path,
+        priority: Priority,
+        segment: u32,
+        background: &BackgroundConfig,
+        allow_vaapi: bool,
+        gate: Option<&Gate>,
+    ) -> Result<(), JobError> {
         // Start clean: a half-written run from before a restart is not resumable.
         let _ = tokio::fs::remove_dir_all(out).await;
-        tokio::fs::create_dir_all(out).await.map_err(|e| e.to_string())?;
-        let (program, args) = command_line(&self.ffmpeg, ffmpeg_args(src, plan, out, priority, segment), priority);
-        tracing::info!(src = %src.display(), variant = %variant_name(plan), ?priority, "hls job started");
-        let output = Command::new(&program).args(&args).kill_on_drop(true).output().await.map_err(|e| format!("ffmpeg: {e}"))?;
+        tokio::fs::create_dir_all(out).await.map_err(|e| JobError::Failed(e.to_string()))?;
+        let use_vaapi = priority == Priority::Background && uses_vaapi(plan, background, allow_vaapi);
+        let args = ffmpeg_args(src, plan, out, priority, segment, background, use_vaapi);
+        let (program, args) = command_line(&self.ffmpeg, args, priority, background, use_vaapi);
+        tracing::info!(src = %src.display(), variant = %variant_name(plan), ?priority, ?use_vaapi, "hls job started");
+        let output = run_command(&program, &args, gate).await?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             let tail: String = err.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-            return Err(format!("ffmpeg exited with {}: {tail}", output.status));
+            return Err(JobError::Failed(format!("ffmpeg exited with {}: {tail}", output.status)));
         }
         // A broken init plays nowhere: not done, so the output is removed and made again.
         let init = tokio::fs::read(out.join("init.mp4")).await.unwrap_or_default();
         if !init_is_complete(&init) {
-            return Err(format!("ffmpeg wrote an incomplete init.mp4 ({} bytes, segments of {segment} s)", init.len()));
+            return Err(JobError::Failed(format!(
+                "ffmpeg wrote an incomplete init.mp4 ({} bytes, segments of {segment} s)",
+                init.len()
+            )));
         }
-        tokio::fs::write(out.join(DONE_MARKER), b"").await.map_err(|e| e.to_string())?;
+        tokio::fs::write(out.join(DONE_MARKER), b"").await.map_err(|e| JobError::Failed(e.to_string()))?;
         tracing::info!(src = %src.display(), variant = %variant_name(plan), ?priority, segment, "hls job finished");
         Ok(())
     }
@@ -358,6 +527,68 @@ impl Jobs {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
+}
+
+struct CommandOutput {
+    status: ExitStatus,
+    stderr: Vec<u8>,
+}
+
+/// Runs one ffmpeg command. A background command is put in its own process group
+/// and watched: three over-limit samples kill the whole group (systemd-run,
+/// gpu-lease, nice, ffmpeg), not just the first process.
+async fn run_command(program: &Path, args: &[String], gate: Option<&Gate>) -> Result<CommandOutput, JobError> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).kill_on_drop(true);
+    let Some(gate) = gate else {
+        let output = cmd.output().await.map_err(|e| JobError::Failed(format!("ffmpeg: {e}")))?;
+        return Ok(CommandOutput { status: output.status, stderr: output.stderr });
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).process_group(0);
+    let mut child = cmd.spawn().map_err(|e| JobError::Failed(format!("ffmpeg: {e}")))?;
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let reader = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf).await;
+        buf
+    });
+    let mut watchdog = Watchdog::default();
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + Duration::from_secs(10), Duration::from_secs(10));
+    let status = loop {
+        enum Event {
+            Done(std::io::Result<ExitStatus>),
+            Stop(crate::gate::Reading),
+        }
+        let event = tokio::select! {
+            status = child.wait() => Event::Done(status),
+            _ = ticker.tick() => {
+                let reading = gate.reading();
+                if watchdog.sample(gate.over(reading)) {
+                    Event::Stop(reading)
+                } else {
+                    continue;
+                }
+            }
+        };
+        match event {
+            Event::Done(status) => break status.map_err(|e| JobError::Failed(format!("ffmpeg: {e}")))?,
+            Event::Stop(reading) => {
+                if let Some(pid) = child.id() {
+                    // SAFETY: the child leads the process group made by
+                    // `process_group(0)`; a negative pid signals the group.
+                    unsafe {
+                        libc::kill(-(pid as i32), libc::SIGKILL);
+                    }
+                }
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                reader.abort();
+                return Err(JobError::Stopped(gate.stop_reason(reading)));
+            }
+        }
+    };
+    let stderr = reader.await.unwrap_or_default();
+    Ok(CommandOutput { status, stderr })
 }
 
 /// `start_ms` from the playlist URL: an integer (sign and digits only), else
@@ -451,10 +682,27 @@ mod tests {
         }
     }
 
+    fn bg(scope: bool, vaapi: Option<&str>) -> BackgroundConfig {
+        BackgroundConfig {
+            scope,
+            cpu_quota: 100,
+            vaapi_device: vaapi.map(PathBuf::from),
+            gpu_lease: vaapi.map(|_| PathBuf::from("/usr/bin/gpu-lease")),
+        }
+    }
+
     #[test]
     fn ffmpeg_args_for_transcode() {
         let p = parse_variant("h264-copy").unwrap();
-        let args = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Interactive, SEGMENT_SECONDS);
+        let args = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &p,
+            Path::new("/c/x"),
+            Priority::Interactive,
+            SEGMENT_SECONDS,
+            &BackgroundConfig::default(),
+            false,
+        );
         let joined = args.join(" ");
         assert!(joined.contains("-i /m/up.mkv -map 0:v:0 -map 0:a:0 -vf"));
         assert!(joined.contains("-c:v libx264"));
@@ -465,20 +713,119 @@ mod tests {
     }
 
     #[test]
-    fn only_background_jobs_are_niced_and_capped() {
+    fn interactive_jobs_are_untouched() {
         let p = parse_variant("h264-aac").unwrap();
         let ffmpeg = Path::new("/usr/bin/ffmpeg");
-        let fg = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Interactive, SEGMENT_SECONDS);
+        let fg = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &p,
+            Path::new("/c/x"),
+            Priority::Interactive,
+            SEGMENT_SECONDS,
+            &bg(true, Some("/dev/dri/renderD128")),
+            false,
+        );
         assert!(!fg.iter().any(|a| a == "-threads"));
-        let (program, args) = command_line(ffmpeg, fg.clone(), Priority::Interactive);
+        assert!(!fg.iter().any(|a| a == "-vaapi_device"));
+        let (program, args) = command_line(ffmpeg, fg.clone(), Priority::Interactive, &bg(true, None), false);
         assert_eq!((program.as_path(), args), (ffmpeg, fg));
+    }
 
-        let bg = ffmpeg_args(Path::new("/m/up.mkv"), &p, Path::new("/c/x"), Priority::Background, SEGMENT_SECONDS);
-        assert!(bg.join(" ").contains("-threads 4 -f hls"));
-        let (program, args) = command_line(ffmpeg, bg.clone(), Priority::Background);
+    #[test]
+    fn vaapi_background_jobs_run_in_a_scope_under_a_lease() {
+        let p = parse_variant("h264-aac").unwrap();
+        let ffmpeg = Path::new("/usr/bin/ffmpeg");
+        let background = bg(true, Some("/dev/dri/renderD128"));
+        let args = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &p,
+            Path::new("/c/x"),
+            Priority::Background,
+            SEGMENT_SECONDS,
+            &background,
+            true,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-threads 2 -i /m/up.mkv"), "{joined}");
+        assert!(joined.contains("-vaapi_device /dev/dri/renderD128"), "{joined}");
+        assert!(joined.contains("-vf scale=trunc(iw/2)*2:trunc(ih/2)*2,format=nv12,hwupload"), "{joined}");
+        assert!(joined.contains("-c:v h264_vaapi -qp 21 -profile:v high -bf 0"), "{joined}");
+        assert!(!joined.contains("libx264"), "{joined}");
+        let (program, command) = command_line(ffmpeg, args, Priority::Background, &background, true);
+        assert_eq!(program, Path::new("systemd-run"));
+        assert_eq!(command[..7], ["--user", "--scope", "--quiet", "-p", "CPUQuota=100%", "--", "/usr/bin/gpu-lease"]);
+        assert!(
+            command.join(" ").contains("/usr/bin/gpu-lease run --name media-prepare --mb 512 -- nice -n 19 /usr/bin/ffmpeg"),
+            "{command:?}"
+        );
+    }
+
+    #[test]
+    fn cpu_background_jobs_cap_threads_and_tone_map() {
+        let p = parse_variant("h264-copy-tm").unwrap();
+        let ffmpeg = Path::new("/usr/bin/ffmpeg");
+        let background = bg(true, Some("/dev/dri/renderD128"));
+        // A tone-mapping job cannot use VAAPI, so it stays on libx264 in the scope.
+        assert!(!uses_vaapi(&p, &background, true));
+        let args = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &p,
+            Path::new("/c/x"),
+            Priority::Background,
+            SEGMENT_SECONDS,
+            &background,
+            false,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-threads 2 -i /m/up.mkv"), "{joined}");
+        assert!(joined.contains("-c:v libx264"), "{joined}");
+        assert_eq!(joined.matches("-threads 2").count(), 2, "{joined}");
+        assert!(joined.contains("zscale=t=linear"), "{joined}");
+        let (program, command) = command_line(ffmpeg, args, Priority::Background, &background, false);
+        assert_eq!(program, Path::new("systemd-run"));
+        assert!(command.join(" ").contains("nice -n 19 /usr/bin/ffmpeg"), "{command:?}");
+        assert!(!command.join(" ").contains("gpu-lease"), "{command:?}");
+    }
+
+    #[test]
+    fn remux_background_jobs_run_in_the_scope_without_an_encoder() {
+        let p = parse_variant("copy-copy").unwrap();
+        let ffmpeg = Path::new("/usr/bin/ffmpeg");
+        let background = bg(true, None);
+        let args = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &p,
+            Path::new("/c/x"),
+            Priority::Background,
+            SEGMENT_SECONDS,
+            &background,
+            false,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-c:v copy"), "{joined}");
+        assert!(!joined.contains("-threads"), "{joined}");
+        assert!(!joined.contains("libx264"), "{joined}");
+        let (program, command) = command_line(ffmpeg, args, Priority::Background, &background, false);
+        assert_eq!(program, Path::new("systemd-run"));
+        assert_eq!(command[..7], ["--user", "--scope", "--quiet", "-p", "CPUQuota=100%", "--", "nice"]);
+    }
+
+    #[test]
+    fn without_a_scope_a_background_job_is_only_niced() {
+        let p = parse_variant("h264-aac").unwrap();
+        let ffmpeg = Path::new("/usr/bin/ffmpeg");
+        let args = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &p,
+            Path::new("/c/x"),
+            Priority::Background,
+            SEGMENT_SECONDS,
+            &BackgroundConfig::default(),
+            false,
+        );
+        let (program, command) = command_line(ffmpeg, args, Priority::Background, &BackgroundConfig::default(), false);
         assert_eq!(program, Path::new("nice"));
-        assert_eq!(args[..3], ["-n", "19", "/usr/bin/ffmpeg"]);
-        assert_eq!(args[3..], bg[..]);
+        assert_eq!(command[..3], ["-n", "19", "/usr/bin/ffmpeg"]);
     }
 
     const RUNNING: &str = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2.000000,\nseg_00000.m4s\n#EXTINF:2.000000,\nseg_00001.m4s\n#EXTINF:1.500000,\nseg_00002.m4s\n";
@@ -587,7 +934,16 @@ mod tests {
         // Re-encoded audio carries its own setup: short segments whatever the lead.
         assert_eq!(segment_seconds(&aac, Some(5800)), 2);
         assert_eq!(segment_seconds(&aac, None), 2);
-        let args = ffmpeg_args(Path::new("/m/up.mkv"), &copy, Path::new("/c/x"), Priority::Interactive, 8).join(" ");
+        let args = ffmpeg_args(
+            Path::new("/m/up.mkv"),
+            &copy,
+            Path::new("/c/x"),
+            Priority::Interactive,
+            8,
+            &BackgroundConfig::default(),
+            false,
+        )
+        .join(" ");
         assert!(args.contains("-hls_time 8 ") && args.contains("n_forced*8"), "{args}");
     }
 
@@ -616,7 +972,7 @@ mod tests {
     async fn a_background_job_never_holds_up_a_viewer() {
         let dir = tempfile::tempdir().unwrap();
         // One viewer slot: if the background job took it, the viewer would time out.
-        let jobs = Arc::new(Jobs::new(fake_ffmpeg(dir.path()), 1));
+        let jobs = Arc::new(Jobs::new(fake_ffmpeg(dir.path()), 1, BackgroundConfig::default()));
         let plan = parse_variant("h264-aac").unwrap();
         let (bg_out, fg_out) = (dir.path().join("bg"), dir.path().join("fg"));
         let src = PathBuf::from("/m/a.mkv");
@@ -646,7 +1002,7 @@ mod tests {
     #[tokio::test]
     async fn a_viewers_failed_run_is_a_failure_for_the_worker_too() {
         let dir = tempfile::tempdir().unwrap();
-        let jobs = Arc::new(Jobs::new(dir.path().join("no-ffmpeg"), 1));
+        let jobs = Arc::new(Jobs::new(dir.path().join("no-ffmpeg"), 1, BackgroundConfig::default()));
         let (plan, out, src) = (parse_variant("h264-aac").unwrap(), dir.path().join("x"), PathBuf::from("/m/a.mkv"));
         jobs.ensure(src.clone(), plan.clone(), out.clone(), SEGMENT_SECONDS).unwrap();
         assert!(jobs.wait_ready(&out, Duration::from_secs(5)).await.is_err());

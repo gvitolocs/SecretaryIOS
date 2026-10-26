@@ -153,6 +153,14 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             sc.ffmpeg = cfg.ffmpeg.clone();
             sc.ffprobe = cfg.ffprobe.clone();
             sc.prepare = cfg.prepare;
+            sc.background_scope = cfg.prepare_scope;
+            sc.background_cpu_quota = cfg.prepare_cpu_quota;
+            sc.vaapi_device = cfg.vaapi_device.clone();
+            sc.gpu_lease = cfg.gpu_lease.clone();
+            sc.prepare_window_start = cfg.prepare_window_start;
+            sc.prepare_window_end = cfg.prepare_window_end;
+            sc.prepare_max_temp_c = cfg.prepare_max_temp_c;
+            sc.prepare_max_load = cfg.prepare_max_load;
             let src = std::sync::Arc::new(lucina_media::source::CatalogSource(lib.clone()));
             Some(secretary_media_stream::router(src, sc).map_err(anyhow::Error::msg)?)
         }

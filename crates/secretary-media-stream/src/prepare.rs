@@ -1,11 +1,27 @@
-//! Background preparation: every video gets a finished HLS output for the
-//! variants the apps play, so a film starts at once, and a resume starts at its
-//! own segment, instead of waiting for ffmpeg to get there.
+//! Background preparation: every film gets a finished HLS output for the
+//! variants the apps play, so it starts at once, and a resume starts at its own
+//! segment, instead of waiting for ffmpeg to get there.
 //!
-//! One job at a time, in its own slot pool and niced (`hls::Jobs::prepare`), so
-//! a viewer never waits behind it. The queue is read again after every job: a
-//! film the owner starts watching, or one just added, moves to the front.
-use crate::{hls, kernel, probe, App, MediaSource, Video};
+//! Only the film folders (`scope=films`) are prepared: phone videos are not.
+//! One job at a time, in its own slot pool, so a viewer never waits behind it.
+//! The queue is read again after every job: a film the owner starts watching,
+//! or one just added, moves to the front.
+//!
+//! Where the CPU is protected, in order:
+//! - `systemd-run --user --scope -p CPUQuota=…` caps a background job at one core
+//!   (config: `background_scope`, `background_cpu_quota`); viewers' jobs are untouched.
+//! - Re-encodes use VAAPI under `gpu-lease` when a render node is configured;
+//!   otherwise libx264 with a two-thread decode and encode.
+//! - libx264 and tone-mapping wait for the night window (`prepare_window_*`).
+//!   VAAPI and remux jobs may start any hour.
+//! - Nothing starts at or above `prepare_max_temp_c` (k10temp Tctl) or
+//!   `prepare_max_load`. A running job is stopped after three over-limit samples
+//!   (`max_temp_c + 5` or max load), its output removed, and it goes back in the
+//!   queue as paused, not failed.
+use crate::{
+    gate::{self, Gate},
+    hls, kernel, probe, App, MediaSource, Video,
+};
 use secretary_player::{
     playback::{self, Client, Mode, Plan, Probe},
     progress::{resume_point, Entry},
@@ -81,10 +97,12 @@ struct Job {
     plan: Plan,
     out: PathBuf,
     segment: u32,
+    /// Its VAAPI run failed: retry once on the CPU path, in the night window.
+    cpu_only: bool,
 }
 
 /// Outputs still to make, in order, and how many are already finished.
-async fn pending<S: MediaSource>(app: &App<S>, failed: &HashSet<PathBuf>) -> (Vec<Job>, usize) {
+async fn pending<S: MediaSource>(app: &App<S>, failed: &HashSet<PathBuf>, cpu_only: &HashSet<PathBuf>) -> (Vec<Job>, usize) {
     let progress: HashMap<String, Entry> = app.progress.since(0).await.into_iter().map(|e| (e.id.clone(), e)).collect();
     let (mut jobs, mut done) = (Vec::new(), 0);
     for video in order(app.src.videos().await, &progress) {
@@ -101,31 +119,80 @@ async fn pending<S: MediaSource>(app: &App<S>, failed: &HashSet<PathBuf>) -> (Ve
                 done += 1;
             } else if !failed.contains(&out) && !app.jobs.is_running(&out) {
                 let segment = hls::segment_seconds(&plan, info.audio_lead_ms);
-                jobs.push(Job { src: video.item.path.clone(), plan, out, segment });
+                let cpu_only = cpu_only.contains(&out);
+                jobs.push(Job { src: video.item.path.clone(), plan, out, segment, cpu_only });
             }
         }
     }
     (jobs, done)
 }
 
-/// The worker: one job, then a fresh look at the queue; a nap when it is empty.
+/// The worker: one job, then a fresh look at the queue; a nap when it is empty,
+/// and a minute's wait while the gate is closed.
 pub(crate) async fn run<S: MediaSource>(app: Arc<App<S>>) {
     // Outputs that failed since the start: tried again after a restart (or when the file changes,
     // which changes its cache key), not every few minutes.
     let mut failed: HashSet<PathBuf> = HashSet::new();
+    // Outputs whose VAAPI run failed: once on the CPU path, never VAAPI again.
+    let mut cpu_only: HashSet<PathBuf> = HashSet::new();
+    let background = hls::BackgroundConfig::from(&app.cfg);
+    let gate = Gate::from(&app.cfg);
+    gate.log_missing();
+    // Log a pause when it starts (or its reason changes), not every minute.
+    let mut paused: Option<String> = None;
     loop {
-        let (jobs, done) = pending(&app, &failed).await;
+        let (jobs, done) = pending(&app, &failed, &cpu_only).await;
         tracing::info!("prepare queued={} done={done}", jobs.len());
-        let Some(job) = jobs.into_iter().next() else {
+        if jobs.is_empty() {
+            paused = None;
             tokio::select! {
                 _ = tokio::time::sleep(RESCAN) => {}
                 _ = app.src.changed() => tokio::time::sleep(SETTLE).await,
             }
             continue;
+        }
+        let cpu_path = |job: &Job| hls::is_cpu_path(&job.plan, &background, !job.cpu_only);
+        let (chosen, blocked) = gate::choose(&jobs, &gate, cpu_path);
+        let Some(index) = chosen else {
+            if let Some(reason) = blocked {
+                if paused.as_deref() != Some(reason.as_str()) {
+                    tracing::info!("prepare paused: {reason}");
+                    paused = Some(reason);
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(gate::PAUSE_RECHECK) => {}
+                _ = app.src.changed() => tokio::time::sleep(SETTLE).await,
+            }
+            continue;
         };
-        if let Err(e) = app.jobs.prepare(&job.src, &job.plan, &job.out, job.segment).await {
-            tracing::warn!(src = %job.src.display(), variant = %hls::variant_name(&job.plan), "prepare failed: {e}");
-            failed.insert(job.out);
+        paused = None;
+        let job = jobs.into_iter().nth(index).expect("chosen index exists");
+        let allow_vaapi = !job.cpu_only;
+        match app
+            .jobs
+            .prepare_watched(&job.src, &job.plan, &job.out, job.segment, allow_vaapi, &gate)
+            .await
+        {
+            Ok(_) => {
+                cpu_only.remove(&job.out);
+            }
+            // Paused, not failed: the output is gone and the next loop queues it again.
+            Err(hls::JobError::Stopped(reason)) => {
+                tracing::info!(src = %job.src.display(), variant = %hls::variant_name(&job.plan), "prepare stopped: {reason}");
+            }
+            Err(hls::JobError::Failed(e)) => {
+                if hls::uses_vaapi(&job.plan, &background, allow_vaapi) {
+                    tracing::warn!(
+                        src = %job.src.display(),
+                        "prepare: VAAPI failed, retrying on the CPU path in the night window: {e}"
+                    );
+                    cpu_only.insert(job.out);
+                } else {
+                    tracing::warn!(src = %job.src.display(), variant = %hls::variant_name(&job.plan), "prepare failed: {e}");
+                    failed.insert(job.out);
+                }
+            }
         }
     }
 }

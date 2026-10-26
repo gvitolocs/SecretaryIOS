@@ -30,4 +30,28 @@ verified_kernel! {
     ensures { result == prepare_before_spec(a_unfinished, a_recency as int, b_unfinished, b_recency as int) }
     proof {}
     body { (a_unfinished && !b_unfinished) || (a_unfinished == b_unfinished && a_recency >= b_recency) }
+
+    // The night window: `[start, end)` in local hours 0–23. `start == end` never opens;
+    // `start > end` wraps past midnight (22–6).
+    pub fn in_window(start_h: u32, end_h: u32, hour: u32) -> (result: bool)
+    requires { start_h <= 23, end_h <= 23, hour <= 23 }
+    ensures { result == in_window_spec(start_h as int, end_h as int, hour as int) }
+    proof {}
+    body {
+        if start_h == end_h {
+            false
+        } else if start_h < end_h {
+            start_h <= hour && hour < end_h
+        } else {
+            hour >= start_h || hour < end_h
+        }
+    }
+
+    // Whether a background job may start: CPU-path jobs only inside the window, and no
+    // job at all while the temperature or load is over its limit.
+    pub fn may_start(cpu_path: bool, in_window: bool, temp_ok: bool, load_ok: bool) -> (result: bool)
+    requires { true }
+    ensures { result == may_start_spec(cpu_path, in_window, temp_ok, load_ok) }
+    proof {}
+    body { (!cpu_path || in_window) && temp_ok && load_ok }
 }

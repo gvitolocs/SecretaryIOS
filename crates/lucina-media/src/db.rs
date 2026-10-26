@@ -321,6 +321,18 @@ pub fn video_ids(c: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     rows.collect()
 }
 
+/// The videos in the film folders (`scope=films`), newest added first: `(id, added_at)`.
+/// The background preparation only prepares these; phone videos are left alone.
+pub fn film_video_ids(c: &Connection, films: &[String]) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut args = Vec::new();
+    let cond = scope_condition(Some("films"), films, &mut args).expect("films always has a condition");
+    let mut st = c.prepare(&format!(
+        "SELECT i.id, i.added_at FROM items i WHERE i.kind = 'video' AND i.hidden = 0 AND i.trashed_at IS NULL AND {cond} ORDER BY i.added_at DESC, i.id DESC"
+    ))?;
+    let rows = st.query_map(rusqlite::params_from_iter(args), |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
 pub fn item_albums(c: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
     let mut st =
         c.prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY added_at")?;

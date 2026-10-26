@@ -14,6 +14,7 @@
 //! `/play` and `/progress` trust the caller: the server in front (p1's
 //! secretary-server) authenticates them. `/s/...` URLs carry their own token.
 pub mod dir;
+pub mod gate;
 pub mod hls;
 pub mod kernel;
 pub mod ocr;
@@ -105,8 +106,24 @@ pub struct StreamConfig {
     pub ffprobe: PathBuf,
     /// ffmpeg HLS jobs at once for viewers (background preparation has one slot of its own).
     pub max_jobs: usize,
-    /// Prepare every video's HLS output in the background, so films start at once.
+    /// Prepare films' HLS output in the background, so they start at once.
     pub prepare: bool,
+    /// Run background jobs in `systemd-run --user --scope` with a CPU quota.
+    pub background_scope: bool,
+    /// The background scope's CPU quota in percent (100 = one core).
+    pub background_cpu_quota: u32,
+    /// VAAPI render node for background H.264 (None: libx264).
+    pub vaapi_device: Option<PathBuf>,
+    /// The GPU VRAM semaphore VAAPI jobs run under (None: no lease).
+    pub gpu_lease: Option<PathBuf>,
+    /// First local hour background CPU jobs may start (`[start, end)`, wraps past midnight).
+    pub prepare_window_start: u32,
+    /// The hour the background CPU window ends (excluded).
+    pub prepare_window_end: u32,
+    /// Tctl at which no background job starts.
+    pub prepare_max_temp_c: u32,
+    /// One-minute load at which no background job starts.
+    pub prepare_max_load: u32,
     /// tesseract for image subtitles (DVD, Blu-ray); None hides those tracks.
     pub ocr: Option<ocr::OcrConfig>,
 }
@@ -122,6 +139,14 @@ impl StreamConfig {
             ffprobe: "ffprobe".into(),
             max_jobs: 2,
             prepare: true,
+            background_scope: false,
+            background_cpu_quota: 100,
+            vaapi_device: None,
+            gpu_lease: None,
+            prepare_window_start: 1,
+            prepare_window_end: 7,
+            prepare_max_temp_c: 80,
+            prepare_max_load: 16,
             ocr: Some(ocr::OcrConfig {
                 tesseract: "tesseract".into(),
                 // tessdata_fast languages installed for the user (dan, eng, ita...), else tesseract's own.
@@ -183,9 +208,10 @@ struct App<S> {
 }
 
 pub fn router<S: MediaSource>(src: Arc<S>, cfg: StreamConfig) -> Result<Router, String> {
+    let background = hls::BackgroundConfig::from(&cfg);
     let app = Arc::new(App {
         signer: Signer::new(&cfg.secret, cfg.token_ttl),
-        jobs: Arc::new(hls::Jobs::new(cfg.ffmpeg.clone(), cfg.max_jobs)),
+        jobs: Arc::new(hls::Jobs::new(cfg.ffmpeg.clone(), cfg.max_jobs, background)),
         progress: progress::Store::open(cfg.progress_path.clone())?,
         subs: Arc::new(subs::Jobs::new(subs::Converter {
             ffmpeg: cfg.ffmpeg.clone(),

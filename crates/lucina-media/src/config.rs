@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::Tz;
@@ -34,6 +34,20 @@ pub struct Config {
     pub prepare: bool,
     /// The folder labels that are films (the Films plugin, `scope=films`), out of the Drive.
     pub film_folders: Vec<String>,
+    /// Background jobs run in a `systemd-run --user --scope` CPU quota.
+    pub prepare_scope: bool,
+    /// That scope's CPU quota in percent (100 = one core).
+    pub prepare_cpu_quota: u32,
+    /// VAAPI render node for background H.264, when the box has one.
+    pub vaapi_device: Option<PathBuf>,
+    /// The GPU VRAM semaphore VAAPI jobs run under.
+    pub gpu_lease: Option<PathBuf>,
+    /// `[start, end)` local hours for background CPU jobs.
+    pub prepare_window_start: u32,
+    pub prepare_window_end: u32,
+    /// Tctl and one-minute load at which preparation pauses.
+    pub prepare_max_temp_c: u32,
+    pub prepare_max_load: u32,
 }
 
 /// `LUCINA_MEDIA_FILM_FOLDERS` when unset.
@@ -78,6 +92,39 @@ impl Config {
         let data_dir: PathBuf = var("LUCINA_MEDIA_DATA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join("data/lucina-media"));
+        let ffmpeg: PathBuf = var("LUCINA_MEDIA_FFMPEG")
+            .unwrap_or_else(|| "ffmpeg".into())
+            .into();
+        let ffprobe: PathBuf = var("LUCINA_MEDIA_FFPROBE")
+            .unwrap_or_else(|| "ffprobe".into())
+            .into();
+        let prepare_scope = match var("LUCINA_MEDIA_PREPARE_SCOPE") {
+            Some(v) => !matches!(v.as_str(), "0" | "false" | "off"),
+            None => systemd_scope_works(),
+        };
+        let prepare_cpu_quota = var("LUCINA_MEDIA_PREPARE_CPU_QUOTA")
+            .map(|v| v.parse())
+            .transpose()?
+            .unwrap_or(100);
+        let (prepare_window_start, prepare_window_end) = var("LUCINA_MEDIA_PREPARE_WINDOW")
+            .as_deref()
+            .and_then(parse_window)
+            .unwrap_or((1, 7));
+        // The render node is only useful when this ffmpeg can encode with it.
+        let render_node = Path::new("/dev/dri/renderD128");
+        let vaapi_device = match var("LUCINA_MEDIA_VAAPI") {
+            Some(v) if matches!(v.as_str(), "0" | "false" | "off") => None,
+            Some(v) => Some(PathBuf::from(v)),
+            None if render_node.exists() && ffmpeg_has_vaapi(&ffmpeg) => Some(render_node.into()),
+            None => None,
+        };
+        let default_lease = home.join("bin/gpu-lease");
+        let gpu_lease = match var("LUCINA_MEDIA_GPU_LEASE") {
+            Some(v) if matches!(v.as_str(), "0" | "false" | "off") => None,
+            Some(v) => Some(PathBuf::from(v)),
+            None if is_executable(&default_lease) => Some(default_lease),
+            None => None,
+        };
         Ok(Self {
             listen: var("LUCINA_MEDIA_LISTEN")
                 .unwrap_or_else(|| "127.0.0.1:8830".into())
@@ -120,12 +167,22 @@ impl Config {
                 .unwrap_or_else(|| "Europe/Copenhagen".into())
                 .parse()
                 .map_err(anyhow::Error::msg)?,
-            ffmpeg: var("LUCINA_MEDIA_FFMPEG")
-                .unwrap_or_else(|| "ffmpeg".into())
-                .into(),
-            ffprobe: var("LUCINA_MEDIA_FFPROBE")
-                .unwrap_or_else(|| "ffprobe".into())
-                .into(),
+            prepare_scope,
+            prepare_cpu_quota,
+            vaapi_device,
+            gpu_lease,
+            prepare_window_start,
+            prepare_window_end,
+            prepare_max_temp_c: var("LUCINA_MEDIA_PREPARE_MAX_TEMP")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(80),
+            prepare_max_load: var("LUCINA_MEDIA_PREPARE_MAX_LOAD")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(16),
+            ffmpeg,
+            ffprobe,
         })
     }
 
@@ -148,6 +205,14 @@ impl Config {
             folders: Vec::new(),
             prepare: false,
             film_folders: default_film_folders(),
+            prepare_scope: false,
+            prepare_cpu_quota: 100,
+            vaapi_device: None,
+            gpu_lease: None,
+            prepare_window_start: 1,
+            prepare_window_end: 7,
+            prepare_max_temp_c: 80,
+            prepare_max_load: 16,
         }
     }
 
@@ -174,6 +239,36 @@ impl Config {
     }
 }
 
+/// `"1-7"` as `(1, 7)`, clamped to real hours. A malformed value keeps the default.
+fn parse_window(value: &str) -> Option<(u32, u32)> {
+    let (start, end) = value.split_once('-')?;
+    Some((
+        start.trim().parse::<u32>().ok()?.min(23),
+        end.trim().parse::<u32>().ok()?.min(23),
+    ))
+}
+
+/// Whether `systemd-run --user --scope` works here (the user cgroup is delegated).
+fn systemd_scope_works() -> bool {
+    std::process::Command::new("systemd-run")
+        .args(["--user", "--scope", "--quiet", "--", "true"])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Whether this ffmpeg lists the VAAPI H.264 encoder.
+fn ffmpeg_has_vaapi(ffmpeg: &Path) -> bool {
+    std::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("h264_vaapi"))
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 /// `[start, end)` in hours, wrapping past midnight when `start > end`. `start == end` means never quiet.
 pub fn is_quiet_hour(hour: u32, start: u32, end: u32) -> bool {
     if start == end {
@@ -188,6 +283,15 @@ pub fn is_quiet_hour(hour: u32, start: u32, end: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepare_window_parses_and_clamps() {
+        assert_eq!(parse_window("1-7"), Some((1, 7)));
+        assert_eq!(parse_window("22-6"), Some((22, 6)));
+        assert_eq!(parse_window(" 0 - 24 "), Some((0, 23)));
+        assert_eq!(parse_window("7"), None);
+        assert_eq!(parse_window("a-b"), None);
+    }
 
     #[test]
     fn quiet_window_wraps_midnight() {

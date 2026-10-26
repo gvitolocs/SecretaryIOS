@@ -45,10 +45,12 @@ impl MediaSource for CatalogSource {
     }
 }
 
-/// The catalog's videos (not hidden, not trashed), newest added first.
+/// The catalog's films (not hidden, not trashed), newest added first. Only the
+/// film folders are prepared: phone videos would be a lot of 4K tone-mapping.
 pub fn videos(lib: &Library) -> Vec<Video> {
-    let ids = lib.db.with(|c| db::video_ids(c)).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "listing videos failed");
+    let films = lib.cfg.film_folders.clone();
+    let ids = lib.db.with(move |c| db::film_video_ids(c, &films)).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "listing films failed");
         Vec::new()
     });
     ids.into_iter()
@@ -182,6 +184,26 @@ mod tests {
             "2026-10-03T00:00:00.000Z",
         );
         film("memo", "audio", 0, None, "2026-10-04T00:00:00.000Z");
+        // A phone video is a video a viewer can open, but not a film: it is not
+        // in the film folder and must not be prepared.
+        film("phone", "video", 0, None, "2026-10-05T00:00:00.000Z");
+        lib.db
+            .with(|c| {
+                c.execute(
+                    "INSERT INTO albums (id, title, system_key, created_at, updated_at)
+                     VALUES ('film-album', 'Film', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+                for id in ["old", "new"] {
+                    c.execute(
+                        "INSERT INTO album_items (album_id, item_id, added_at)
+                         VALUES ('film-album', ?1, '2026-01-01T00:00:00.000Z')",
+                        rusqlite::params![id],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
         let got: Vec<(String, u64)> = videos(&lib)
             .into_iter()
             .map(|v| (v.item.id, v.added_at))
