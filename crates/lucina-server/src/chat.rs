@@ -1565,9 +1565,21 @@ fn remember_job(
 
 // ---------------------------------------------------------------- tools mode
 
-/// "Show in Gallery", or for films "Play the film" / "Show N in Films" (the app opens the path;
-/// web and older clients ignore unknown routes).
-fn gallery_action(path: &str, count: usize) -> Value {
+/// "Open in Drive" (in the reply's language: it/en/da) for Drive documents.
+fn drive_label(lang: &str) -> &'static str {
+    match lang {
+        "en" => "Open in Drive",
+        "da" => "Åbn i Drive",
+        _ => "Apri nel Drive",
+    }
+}
+
+/// "Show in Gallery", for films "Play the film" / "Show N in Films", for Drive documents
+/// "Open in Drive" (the app opens the path; web and older clients ignore unknown routes).
+fn gallery_action(path: &str, count: usize, lang: &str) -> Value {
+    if path == "/drive" || path.starts_with("/drive/") {
+        return json!({"id": "drive", "label": drive_label(lang), "emoji": "📁", "kind": "route", "payload": {"path": path}});
+    }
     if path.starts_with("/films") {
         let label = if path.starts_with("/films/play/") {
             "Play the film".to_owned()
@@ -1602,12 +1614,13 @@ fn with_routes(
 }
 
 fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
+    let lang = crate::rich::guess_language(&reply, "");
     let mut f = Finish::reply(reply, "reply");
     if let Some((path, count)) = effects.iter().rev().find_map(|e| match e {
         Effect::Gallery { path, count } => Some((path.clone(), *count)),
         _ => None,
     }) {
-        f.routes.push(gallery_action(&path, count));
+        f.routes.push(gallery_action(&path, count, lang));
     }
     f.calendar_events = effects
         .iter()
@@ -1937,22 +1950,49 @@ mod tests {
 
     #[test]
     fn film_results_get_a_films_button() {
-        let one = gallery_action("/films/play/itm_up", 1);
+        let one = gallery_action("/films/play/itm_up", 1, "en");
         assert_eq!(
             (one["id"].as_str(), one["label"].as_str()),
             (Some("films"), Some("Play the film"))
         );
         assert_eq!(one["payload"]["path"], "/films/play/itm_up");
-        let many = gallery_action("/films", 3);
+        let many = gallery_action("/films", 3, "en");
         assert_eq!(many["label"], "Show 3 in Films");
         assert_eq!(
-            gallery_action("/gallery/album/sys-lucina", 4)["label"],
+            gallery_action("/gallery/album/sys-lucina", 4, "it")["label"],
             "Show 4 in Gallery"
         );
         assert_eq!(
-            gallery_action("/gallery/album/sys-lucina", 1)["label"],
+            gallery_action("/gallery/album/sys-lucina", 1, "en")["label"],
             "Show the photo"
         );
+    }
+
+    #[test]
+    fn drive_documents_get_an_open_in_drive_button_in_the_reply_language() {
+        let one = gallery_action("/drive/file/itm_df5", 1, "en");
+        assert_eq!(
+            (
+                one["id"].as_str(),
+                one["label"].as_str(),
+                one["kind"].as_str()
+            ),
+            (Some("drive"), Some("Open in Drive"), Some("route"))
+        );
+        assert_eq!(one["payload"]["path"], "/drive/file/itm_df5");
+        let folder = gallery_action("/drive/folder/Lezioni/Digital%20Forensics", 4, "it");
+        assert_eq!(folder["label"], "Apri nel Drive");
+        assert_eq!(gallery_action("/drive", 9, "da")["label"], "Åbn i Drive");
+        assert_eq!(gallery_action("/driveway", 2, "en")["id"], "gallery");
+        let f = effects_to_finish(
+            &[Effect::Gallery {
+                path: "/drive/file/itm_df5".into(),
+                count: 1,
+            }],
+            "Ho trovato le slide della lezione 5 di Digital Forensics: è il PDF più recente."
+                .into(),
+        );
+        assert_eq!(f.routes[0]["label"], "Apri nel Drive");
     }
     use chrono::TimeZone;
 
