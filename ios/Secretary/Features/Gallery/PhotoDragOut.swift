@@ -1,6 +1,9 @@
+import os
 import SecretaryCore
 import SwiftUI
 import UIKit
+
+private let dragLog = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
 
 /// Google Photos' swipe on a full-screen photo: dragged down, the photo follows the finger and
 /// shrinks while the black fades to what is behind the viewer; let go far or fast enough and the
@@ -59,9 +62,15 @@ struct PhotoDragOut: ViewModifier {
 
     private func changed(_ t: CGSize, _ vy: CGFloat, _ size: CGSize) {
         guard axis == "undecided" || axis == "out" else { return }
-        guard let d = Self.ask(t, vy, size, ended: false) else { return }
+        guard let d = Self.ask(t, vy, size, ended: false) else {
+            dragLog.error("GalleryDrag no drag answer from the core (an old SecretaryCore?)")
+            return
+        }
         if axis == "undecided" {
             axis = d.axis
+            if axis != "undecided" {
+                dragLog.notice("GalleryDrag axis=\(d.axis, privacy: .public) dx=\(Int(t.width)) dy=\(Int(t.height))")
+            }
             if axis == "out" { dragging = true }
         }
         if axis == "out" { out = d.out }
@@ -70,7 +79,9 @@ struct PhotoDragOut: ViewModifier {
     private func ended(_ t: CGSize, _ vy: CGFloat, _ size: CGSize) {
         defer { axis = "undecided" }
         guard axis == "out" else { return }
-        switch Self.ask(t, vy, size, ended: true)?.end {
+        let end = Self.ask(t, vy, size, ended: true)?.end
+        dragLog.notice("GalleryDrag end=\(end ?? "none", privacy: .public) dy=\(Int(t.height)) vy=\(Int(vy)) h=\(Int(size.height))")
+        switch end {
         case "dismiss":
             // Carry on down and fade out, then close without the cover's slide.
             withAnimation(.easeOut(duration: 0.18)) {
@@ -130,7 +141,9 @@ struct VerticalPan: UIGestureRecognizerRepresentable {
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
             guard enabled, let pan = gesture as? UIPanGestureRecognizer else { return false }
             let v = pan.velocity(in: pan.view)
-            return abs(v.y) > abs(v.x)
+            let begin = abs(v.y) > abs(v.x)
+            dragLog.notice("GalleryDrag pan should_begin=\(begin) vx=\(Int(v.x)) vy=\(Int(v.y))")
+            return begin
         }
 
         func gestureRecognizer(_ gesture: UIGestureRecognizer,
