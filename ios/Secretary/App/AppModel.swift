@@ -155,6 +155,8 @@ final class AppModel {
         #if DEBUG
         MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
         MemoRecordSelfTest.runIfRequested(store: memos, defaults: defaults)
+        // `-SecretaryShareSelfTest all|photo,pdf,…`: waits for sign-in, then logs to Documents/share-selftest.txt.
+        ShareSelfTest.runIfRequested(app: self, defaults: defaults)
         #endif
         // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
         MemoRecorder.endStaleActivities()

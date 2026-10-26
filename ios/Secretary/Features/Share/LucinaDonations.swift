@@ -5,7 +5,8 @@ import UIKit
 enum LucinaDonations {
     static var avatar: UIImage? { UIImage(named: "LucinaShareIcon") ?? UIImage(named: "AppIcon") }
 
-    static func donate(daily: Bool = false) {
+    /// `completion` gets the donation's outcome (the share self-test logs it); it is not called when a daily donation is skipped.
+    static func donate(daily: Bool = false, completion: (@Sendable (Error?) -> Void)? = nil) {
         let defaults = UserDefaults(suiteName: ShareRequestBuilder.group)
         if daily, let date = defaults?.object(forKey: "share.lastDonation") as? Date,
            Date().timeIntervalSince(date) < 24 * 60 * 60 { return }
@@ -20,6 +21,7 @@ enum LucinaDonations {
         interaction.direction = .outgoing
         interaction.donate { error in
             if error == nil { defaults?.set(Date(), forKey: "share.lastDonation") }
+            completion?(error)
         }
     }
 }
