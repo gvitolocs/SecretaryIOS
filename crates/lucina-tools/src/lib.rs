@@ -109,7 +109,8 @@ pub enum Effect {
         outfit: Option<String>,
         hair: Option<String>,
     },
-    /// Photos to show: the reply gets a button that opens this Gallery path in the app.
+    /// Photos to show: the reply gets a button that opens this path in the app (the Gallery,
+    /// `/films…` for films, `/drive…` for Drive documents).
     Gallery {
         path: String,
         count: usize,
