@@ -6,6 +6,13 @@
 (* verification/models/src/share.rs, with the same state, so TLC's        *)
 (* distinct-state count equals Stateright's for the same bounds.           *)
 (*                                                                         *)
+(* Voice (branch voice-notes): the composer's share is one audio part      *)
+(* flagged voice with an empty caption; onDevice says whether the body has *)
+(* a transcript, else ProcHear runs whisper, which may fail ("unheard": a  *)
+(* "couldn't hear it" item, with replyTo iff UnheardReplyTo). With         *)
+(* ToolsPlanner the turn is tools_turn: ProcTool runs a tool, whose        *)
+(* progress item ("tool", role lucina + replyTo) is written only with      *)
+(* VoiceToolItems (the ablation; the code suppresses it for share turns).  *)
 (* Clients: 0 = the chat composer (share 0, an album of AlbumFiles files,  *)
 (* background upload, Retry with the same shareId); 1 = a share extension  *)
 (* (share 1), "bg" with an App Group (background upload: survives a kill,  *)
@@ -31,37 +38,47 @@ CONSTANTS ExtKinds,         \* subset of {"bg", "fg"}: one initial state each ({
           Window,           \* existing_reply scans the newest Window items; 0 = every item (fix)
           ReconcileByShareId, \* the chat view matches the server item by meta.shareId too
           KeyCheck,         \* lucina-rs checks X-Share-Gateway (the attacker may reach it directly)
+          Voice,            \* composer sends one audio part flagged voice, with an empty caption
+          UnheardReplyTo,   \* the unheard item carries replyTo (FALSE = ablation)
+          ToolsPlanner,     \* LUCINA_PLANNER=tools: a voice-only share runs tools_turn
+          VoiceToolItems,   \* on_tool writes progress items for share turns (TRUE = ablation)
           FixSpawn          \* receive spawns process even when ensure_user failed
 
 Shares == 0..3
 OwnerShares == {0, 1, 2}
 Attacker == 9
 NoReq == [client |-> Attacker, share |-> 0, owner |-> FALSE, direct |-> FALSE]
-NoProc == [share |-> 0, read |-> 0, written |-> "idle"]
+NoProc == [share |-> 0, read |-> 0, written |-> "idle", heard |-> "none", tooled |-> FALSE]
+NoVoiceRun == [heard |-> "none", tooled |-> FALSE]
 Composer == [kind |-> "composer", share |-> 0, phase |-> "ready", killed |-> FALSE]
 
 VARIABLES clients, net, rxStep, rxReq, status, media, timeline, work, proc, up, recovered,
           view, sent, crashes, netFaults, appendFaults, procFaults, others, reshares, attacks,
-          dupHit, revived, attackRejected
+          dupHit, revived, attackRejected, onDevice, voiceRun
 vars == <<clients, net, rxStep, rxReq, status, media, timeline, work, proc, up, recovered,
           view, sent, crashes, netFaults, appendFaults, procFaults, others, reshares, attacks,
-          dupHit, revived, attackRejected>>
+          dupHit, revived, attackRejected, onDevice, voiceRun>>
 budgets == <<crashes, netFaults, appendFaults, procFaults, others, reshares, attacks>>
 
-Files(x) == IF x = 0 THEN AlbumFiles ELSE 1
+Files(x) == IF x = 0 /\ ~Voice THEN AlbumFiles ELSE 1
 Range(t) == {t[i] : i \in DOMAIN t}
+IsVoice(x) == Voice /\ x = 0
 Count(t, e) == Cardinality({i \in DOMAIN t : t[i] = e})
+Answers(t, x) == Count(t, <<"lucina", x>>) + Count(t, <<"unheard", x>>) + Count(t, <<"tool", x>>)
 EnsureUser(t, x) == IF <<"user", x>> \in Range(t) THEN t ELSE Append(t, <<"user", x>>)
 ExistingReply(t, x) ==
     LET n == IF Window = 0 \/ Window > Len(t) THEN Len(t) ELSE Window
-    IN \E i \in (Len(t) - n + 1)..Len(t) : t[i] = <<"lucina", x>>
+    IN \E i \in (Len(t) - n + 1)..Len(t) :
+           t[i] \in {<<"lucina", x>>, <<"tool", x>>} \/ (UnheardReplyTo /\ t[i] = <<"unheard", x>>)
 
 ClientsInit ==
     IF ExtKinds = {} THEN {[i \in {0} |-> Composer]}
     ELSE {[i \in {0, 1} |-> IF i = 0 THEN Composer
                             ELSE [kind |-> k, share |-> 1, phase |-> "ready", killed |-> FALSE]] : k \in ExtKinds}
 
-Init == /\ clients \in ClientsInit
+Init == /\ onDevice \in (IF Voice THEN BOOLEAN ELSE {FALSE})
+        /\ voiceRun = NoVoiceRun
+        /\ clients \in ClientsInit
         /\ net = {} /\ rxStep = "none" /\ rxReq = NoReq
         /\ status = [x \in Shares |-> "none"] /\ media = {} /\ timeline = <<>>
         /\ work = <<>> /\ proc = NoProc /\ up = TRUE /\ recovered = TRUE
@@ -93,7 +110,7 @@ Send(i) ==
     /\ view' = IF c.kind = "composer" /\ c.phase = "ready" THEN [view EXCEPT !.local = TRUE] ELSE view
     /\ sent' = [sent EXCEPT ![c.share] = @ + 1]
     /\ net' = net \cup {Req(i, c.share)}
-    /\ UNCHANGED <<rxStep, rxReq, status, media, timeline, work, proc, up, recovered, budgets,
+    /\ UNCHANGED <<onDevice, voiceRun, rxStep, rxReq, status, media, timeline, work, proc, up, recovered, budgets,
                    dupHit, revived, attackRejected>>
 
 Reshare(i) ==
@@ -103,7 +120,7 @@ Reshare(i) ==
     /\ clients' = [clients EXCEPT ![i].share = 2, ![i].phase = "inflight"]
     /\ sent' = [sent EXCEPT ![2] = @ + 1]
     /\ net' = net \cup {Req(i, 2)}
-    /\ UNCHANGED <<rxStep, rxReq, status, media, timeline, work, proc, up, recovered, view,
+    /\ UNCHANGED <<onDevice, voiceRun, rxStep, rxReq, status, media, timeline, work, proc, up, recovered, view,
                    crashes, netFaults, appendFaults, procFaults, others, attacks,
                    dupHit, revived, attackRejected>>
 
@@ -119,14 +136,14 @@ Kill(i) ==
                ELSE UNCHANGED <<rxStep, rxReq>>
        ELSE /\ clients' = [clients EXCEPT ![i].killed = TRUE]
             /\ UNCHANGED <<net, rxStep, rxReq>>
-    /\ UNCHANGED <<status, media, timeline, work, proc, up, recovered, view, sent, budgets,
+    /\ UNCHANGED <<onDevice, voiceRun, status, media, timeline, work, proc, up, recovered, view, sent, budgets,
                    dupHit, revived, attackRejected>>
 
 Attack(direct) ==
     /\ attacks > 0
     /\ attacks' = attacks - 1
     /\ net' = net \cup {[client |-> Attacker, share |-> 3, owner |-> FALSE, direct |-> direct]}
-    /\ UNCHANGED <<clients, rxStep, rxReq, status, media, timeline, work, proc, up, recovered,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, rxStep, rxReq, status, media, timeline, work, proc, up, recovered,
                    view, sent, crashes, netFaults, appendFaults, procFaults, others, reshares,
                    dupHit, revived, attackRejected>>
 
@@ -135,7 +152,7 @@ DropRequest(r) ==
     /\ netFaults' = netFaults - 1
     /\ net' = net \ {r}
     /\ RespondTo(r.client, FALSE, FALSE)
-    /\ UNCHANGED <<rxStep, rxReq, status, media, timeline, work, proc, up, recovered, sent,
+    /\ UNCHANGED <<onDevice, voiceRun, rxStep, rxReq, status, media, timeline, work, proc, up, recovered, sent,
                    crashes, appendFaults, procFaults, others, reshares, attacks,
                    revived, attackRejected>>
 
@@ -152,18 +169,18 @@ Deliver(r) ==
                     THEN RespondTo(r.client, TRUE, TRUE) /\ UNCHANGED <<rxStep, rxReq>>
                     ELSE /\ rxStep' = "new" /\ rxReq' = r
                          /\ UNCHANGED <<clients, dupHit, view>>
-    /\ UNCHANGED <<status, media, timeline, work, proc, up, recovered, sent, budgets, revived>>
+    /\ UNCHANGED <<onDevice, voiceRun, status, media, timeline, work, proc, up, recovered, sent, budgets, revived>>
 
 RxIngest ==
     /\ rxStep = "new"
     /\ media' = media \cup {rxReq.share} /\ rxStep' = "ingested"
-    /\ UNCHANGED <<clients, net, rxReq, status, timeline, work, proc, up, recovered, view, sent,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxReq, status, timeline, work, proc, up, recovered, view, sent,
                    budgets, dupHit, revived, attackRejected>>
 
 RxSave ==
     /\ rxStep = "ingested"
     /\ status' = [status EXCEPT ![rxReq.share] = "processing"] /\ rxStep' = "saved"
-    /\ UNCHANGED <<clients, net, rxReq, media, timeline, work, proc, up, recovered, view, sent,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxReq, media, timeline, work, proc, up, recovered, view, sent,
                    budgets, dupHit, revived, attackRejected>>
 
 \* ensure_user, spawn, 202 (ok = FALSE: the 202 is lost on the way back)
@@ -174,7 +191,7 @@ RxFinish(ok) ==
     /\ netFaults' = IF ok THEN netFaults ELSE netFaults - 1
     /\ RespondTo(rxReq.client, ok, FALSE)
     /\ rxStep' = "none" /\ rxReq' = NoReq
-    /\ UNCHANGED <<net, status, media, proc, up, recovered, sent, crashes, appendFaults,
+    /\ UNCHANGED <<onDevice, voiceRun, net, status, media, proc, up, recovered, sent, crashes, appendFaults,
                    procFaults, others, reshares, attacks, revived, attackRejected>>
 
 \* ensure_user fails (timeline I/O): 500; today without spawning process.
@@ -184,7 +201,7 @@ RxAppendFails ==
     /\ work' = IF FixSpawn THEN Append(work, rxReq.share) ELSE work
     /\ RespondTo(rxReq.client, FALSE, FALSE)
     /\ rxStep' = "none" /\ rxReq' = NoReq
-    /\ UNCHANGED <<net, status, media, timeline, proc, up, recovered, sent, crashes, netFaults,
+    /\ UNCHANGED <<onDevice, voiceRun, net, status, media, timeline, proc, up, recovered, sent, crashes, netFaults,
                    procFaults, others, reshares, attacks, revived, attackRejected>>
 
 \* ---- process (one worker) -------------------------------------------------
@@ -195,38 +212,61 @@ ProcBegin ==
        IN /\ work' = Tail(work) /\ timeline' = t
           /\ IF ExistingReply(t, x)
              THEN status' = [status EXCEPT ![x] = "done"] /\ UNCHANGED proc
-             ELSE proc' = [share |-> x, read |-> 0, written |-> "none"] /\ UNCHANGED status
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, media, up, recovered, view, sent, budgets,
+             ELSE proc' = [share |-> x, read |-> 0, written |-> "none", heard |-> "none",
+                           tooled |-> FALSE] /\ UNCHANGED status
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, media, up, recovered, view, sent, budgets,
                    dupHit, revived, attackRejected>>
 
 ProcRead ==
     /\ up /\ proc # NoProc /\ proc.written = "none" /\ proc.read < Files(proc.share)
+    /\ ~IsVoice(proc.share)
     /\ proc' = [proc EXCEPT !.read = @ + 1]
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, status, media, timeline, work, up, recovered,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, timeline, work, up, recovered,
                    view, sent, budgets, dupHit, revived, attackRejected>>
+
+\* Reading a single audio part flagged voice, with an empty caption.
+ProcHear(h) ==
+    /\ up /\ proc # NoProc /\ proc.written = "none" /\ proc.read < Files(proc.share)
+    /\ IsVoice(proc.share)
+    /\ h \in (IF onDevice THEN {"device"} ELSE {"server", "failed"})
+    /\ proc' = [proc EXCEPT !.read = @ + 1, !.heard = h]
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, timeline, work,
+                   up, recovered, view, sent, budgets, dupHit, revived, attackRejected>>
+
+\* tools_turn runs a tool for a heard voice note; on_tool's progress item.
+ProcTool ==
+    /\ up /\ proc # NoProc /\ proc.written = "none" /\ proc.read = Files(proc.share)
+    /\ ToolsPlanner /\ IsVoice(proc.share) /\ ~proc.tooled /\ proc.heard \in {"device", "server"}
+    /\ proc' = [proc EXCEPT !.tooled = TRUE]
+    /\ timeline' = IF VoiceToolItems THEN Append(timeline, <<"tool", proc.share>>) ELSE timeline
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, work,
+                   up, recovered, view, sent, budgets, dupHit, revived, attackRejected>>
 
 \* The Lucina turn (written = "done") or an error before it (written = "error").
 ProcWrite(w) ==
     /\ up /\ proc # NoProc /\ proc.written = "none"
     /\ IF w = "done" THEN proc.read = Files(proc.share) /\ UNCHANGED procFaults
        ELSE procFaults > 0 /\ procFaults' = procFaults - 1
-    /\ timeline' = Append(timeline, <<"lucina", proc.share>>)
+    /\ timeline' = Append(timeline, <<IF w = "done" /\ IsVoice(proc.share) /\ proc.heard = "failed"
+                                    THEN "unheard" ELSE "lucina", proc.share>>)
+    /\ voiceRun' = IF w = "done" /\ IsVoice(proc.share)
+                   THEN [heard |-> proc.heard, tooled |-> proc.tooled] ELSE voiceRun
     /\ proc' = [proc EXCEPT !.written = w]
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, status, media, work, up, recovered, view, sent,
+    /\ UNCHANGED <<onDevice, clients, net, rxStep, rxReq, status, media, work, up, recovered, view, sent,
                    crashes, netFaults, appendFaults, others, reshares, attacks,
                    dupHit, revived, attackRejected>>
 
 ProcSave ==
     /\ up /\ proc.written \in {"done", "error"}
     /\ status' = [status EXCEPT ![proc.share] = proc.written] /\ proc' = NoProc
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, media, timeline, work, up, recovered, view, sent,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, media, timeline, work, up, recovered, view, sent,
                    budgets, dupHit, revived, attackRejected>>
 
 \* ---- environment -------------------------------------------------------------
 OtherAppend ==
     /\ others > 0
     /\ others' = others - 1 /\ timeline' = Append(timeline, <<"other", 0>>)
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, status, media, work, proc, up, recovered, view,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, work, proc, up, recovered, view,
                    sent, crashes, netFaults, appendFaults, procFaults, reshares, attacks,
                    dupHit, revived, attackRejected>>
 
@@ -237,12 +277,12 @@ Crash ==
        ELSE UNCHANGED <<clients, dupHit, view>>
     /\ rxStep' = "none" /\ rxReq' = NoReq /\ work' = <<>> /\ proc' = NoProc
     /\ up' = FALSE /\ recovered' = FALSE
-    /\ UNCHANGED <<net, status, media, timeline, sent, netFaults, appendFaults, procFaults,
+    /\ UNCHANGED <<onDevice, voiceRun, net, status, media, timeline, sent, netFaults, appendFaults, procFaults,
                    others, reshares, attacks, revived, attackRejected>>
 
 Restart ==
     /\ ~up /\ up' = TRUE
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, status, media, timeline, work, proc, recovered,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, timeline, work, proc, recovered,
                    view, sent, budgets, dupHit, revived, attackRejected>>
 
 Recover ==
@@ -250,7 +290,7 @@ Recover ==
     /\ recovered' = TRUE
     /\ work' = work \o SelectSeq(<<0, 1, 2, 3>>, LAMBDA x : status[x] = "processing")
     /\ revived' = revived \cup {x \in Shares : status[x] = "processing"}
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, status, media, timeline, proc, up, view, sent,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, timeline, proc, up, view, sent,
                    budgets, dupHit, attackRejected>>
 
 \* The chat's timeline stream delivers the composer share's user item.
@@ -258,14 +298,15 @@ TimelineDeliver ==
     /\ ~view.delivered /\ <<"user", 0>> \in Range(timeline)
     /\ view' = [local |-> IF ReconcileByShareId THEN FALSE ELSE view.local,
                 server |-> TRUE, delivered |-> TRUE]
-    /\ UNCHANGED <<clients, net, rxStep, rxReq, status, media, timeline, work, proc, up,
+    /\ UNCHANGED <<onDevice, voiceRun, clients, net, rxStep, rxReq, status, media, timeline, work, proc, up,
                    recovered, sent, budgets, dupHit, revived, attackRejected>>
 
 Next == \/ \E i \in DOMAIN clients : Send(i) \/ Reshare(i) \/ Kill(i)
         \/ \E d \in BOOLEAN : Attack(d)
         \/ \E r \in net : Deliver(r) \/ DropRequest(r)
         \/ RxIngest \/ RxSave \/ RxFinish(TRUE) \/ RxFinish(FALSE) \/ RxAppendFails
-        \/ ProcBegin \/ ProcRead \/ ProcWrite("done") \/ ProcWrite("error") \/ ProcSave
+        \/ (\E h \in {"device", "server", "failed"} : ProcHear(h))
+        \/ ProcBegin \/ ProcRead \/ ProcTool \/ ProcWrite("done") \/ ProcWrite("error") \/ ProcSave
         \/ OtherAppend \/ Crash \/ Restart \/ Recover \/ TimelineDeliver
 Spec == Init /\ [][Next]_vars
 
@@ -276,18 +317,25 @@ OneUserItem == \A x \in OwnerShares :
     LET n == Count(timeline, <<"user", x>>) IN n <= 1 /\ (Done(x) => n = 1)
 \* SH2 [sh2_answered_once]
 AnsweredOnce == \A x \in OwnerShares :
-    LET n == Count(timeline, <<"lucina", x>>) IN n <= 1 /\ (Done(x) => n = 1)
+    LET n == Answers(timeline, x) IN n <= 1 /\ (Done(x) => n = 1)
 \* SH3 [sh3_retry_idempotent]
 RetryIdempotent == \A x \in OwnerShares :
-    sent[x] >= 2 => Count(timeline, <<"user", x>>) <= 1 /\ Count(timeline, <<"lucina", x>>) <= 1
+    sent[x] >= 2 => Count(timeline, <<"user", x>>) <= 1 /\ Answers(timeline, x) <= 1
 \* SH4 [sh4_owner_only]
 OwnerOnly == /\ 3 \notin media /\ status[3] = "none"
-             /\ Count(timeline, <<"user", 3>>) = 0 /\ Count(timeline, <<"lucina", 3>>) = 0
+             /\ Count(timeline, <<"user", 3>>) = 0 /\ Answers(timeline, 3) = 0
 \* SH5 [sh5_one_bubble]
 OneBubble == ~(view.local /\ view.server)
 \* SH6 [sh6_accepted_completes]
 Quiet == up /\ recovered /\ rxStep = "none" /\ work = <<>> /\ proc = NoProc /\ net = {}
 AcceptedCompletes == Quiet => \A x \in Shares : status[x] # "processing"
+
+\* SH7 [sh7_voice_one_item]: a voice note has one Lucina item (exactly one once
+\* done) for every transcript outcome, and it is "couldn't hear it" exactly
+\* when the answering run had no transcript.
+VoiceOneItem == ~Voice \/ (Answers(timeline, 0) <= 1
+    /\ (Done(0) => Answers(timeline, 0) = 1)
+    /\ ((Count(timeline, <<"unheard", 0>>) = 1) = (voiceRun.heard = "failed")))
 
 \* ---- witnesses (MUST FAIL cfgs: the interesting state is reached) -------------
 NoRetryDuplicate == ~dupHit
@@ -298,7 +346,15 @@ NoForegroundKillLost ==
                                /\ status[clients[i].share] = "none"
                                /\ (rxStep = "none" \/ rxReq.share # clients[i].share)
 NoCrashRecoveryCompleted == ~\E x \in revived : status[x] = "done"
-NoAlbumAnsweredOnce == ~(AlbumFiles >= 2 /\ status[0] = "done"
+NoAlbumAnsweredOnce == ~(~Voice /\ AlbumFiles >= 2 /\ status[0] = "done"
                          /\ Count(timeline, <<"user", 0>>) = 1 /\ Count(timeline, <<"lucina", 0>>) = 1)
 NoUnauthenticatedRefused == ~attackRejected
+NoVoiceNoteAnswered == ~(Voice /\ voiceRun.heard \in {"device", "server"} /\ status[0] = "done"
+    /\ Count(timeline, <<"user", 0>>) = 1 /\ Answers(timeline, 0) = 1)
+NoVoiceUnheardAnswered == ~(Voice /\ status[0] = "done" /\ Count(timeline, <<"user", 0>>) = 1
+    /\ Answers(timeline, 0) = 1 /\ Count(timeline, <<"unheard", 0>>) = 1)
+NoVoiceDeviceAnswered == ~(Voice /\ voiceRun.heard = "device" /\ status[0] = "done" /\ Answers(timeline, 0) = 1)
+NoVoiceServerAnswered == ~(Voice /\ voiceRun.heard = "server" /\ status[0] = "done" /\ Answers(timeline, 0) = 1)
+NoVoiceToolAnswered == ~(ToolsPlanner /\ voiceRun.tooled /\ status[0] = "done"
+    /\ Count(timeline, <<"user", 0>>) = 1 /\ Answers(timeline, 0) = 1)
 =============================================================================

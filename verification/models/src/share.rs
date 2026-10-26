@@ -31,6 +31,20 @@
 //!   the newest `window`; `None` = every item), reading each part, ONE turn
 //!   writing ONE Lucina item (`replyTo` = the user item), then `status.json`
 //!   done. An error before the turn writes one Lucina error item;
+//! - voice notes (branch `voice-notes`): with `voice` the composer's share is
+//!   one audio part flagged `meta.files[0].voice` with an empty caption. The
+//!   device may have put a `transcript` in the meta (one initial state with,
+//!   one without); without it `process` runs whisper, which may fail. The
+//!   share is answered as if the transcript were typed (one Lucina item), and
+//!   a failed transcription gets one "couldn't hear it" Lucina item instead,
+//!   which `existing_reply` must find after a crash like any reply (it carries
+//!   `replyTo` = the user item; `unheard_reply_to: false` is the ablation).
+//!   With `LUCINA_PLANNER=tools` (`tools_planner`) a voice-only share runs
+//!   `chat::tools_turn`, whose `on_tool` writes a Lucina progress item
+//!   (`replyTo` = the user item) per tool call; for a share turn it writes
+//!   nothing (`voice_tool_items: false`; `true` is the ablation), so there is
+//!   still one Lucina item. A progress item would also be what
+//!   `existing_reply` finds after a crash;
 //! - restart: `recover` (under the mutex) respawns every `status.json` with
 //!   status processing. It is spawned at router build, so a request can take
 //!   the mutex before it (the same share is then queued twice);
@@ -95,8 +109,25 @@ pub struct Req {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Item {
     User(u8),
+    /// Lucina's answer or error item (`replyTo` = the share's user item).
     Lucina(u8),
+    /// A voice note's "couldn't hear it" item.
+    Unheard(u8),
+    /// A tools-planner progress item (`on_tool`: role lucina, `replyTo` =
+    /// the user item).
+    Tool(u8),
     Other,
+}
+
+/// Where a voice note's transcript came from in a `process` run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Heard {
+    /// `meta.files[0].transcript` from the device.
+    Device,
+    /// whisper on the server.
+    Server,
+    /// whisper failed (or timed out): no transcript.
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,6 +155,10 @@ pub struct Proc {
     pub read: u8,
     /// The Lucina item (answer or error) is written; `status.json` next.
     pub written: Option<Status>,
+    /// A voice note's transcript, once its part is read.
+    pub heard: Option<Heard>,
+    /// The tools planner ran a tool in this turn.
+    pub tooled: bool,
 }
 
 /// The composer share's bubbles in the chat view.
@@ -152,6 +187,12 @@ pub struct State {
     pub up: bool,
     pub recovered: bool,
     pub view: View,
+    /// The voice note's body carries an on-device transcript.
+    pub on_device: bool,
+    /// Ghost: how the voice note was heard by the run that answered it.
+    pub voice_heard: Option<Heard>,
+    /// Ghost: the run that answered the voice note ran a tool first.
+    pub voice_tooled: bool,
     /// Requests sent per share id (ghost).
     pub sent: [u8; SHARES],
     pub crashes: u8,
@@ -195,7 +236,13 @@ pub enum Action {
     /// `process`: `ensure_user` + `existing_reply`.
     ProcBegin,
     ProcRead,
-    /// The Lucina turn writes its item.
+    /// A voice note's part is read: its transcript from the device, from
+    /// whisper, or none.
+    ProcHear(Heard),
+    /// The tools planner runs a tool for a heard voice note (`on_tool`).
+    ProcTool,
+    /// The Lucina turn writes its item (a voice note without a transcript:
+    /// the "couldn't hear it" item).
     ProcTurn,
     /// An error before the turn: one Lucina error item.
     ProcFail,
@@ -237,19 +284,39 @@ pub struct Share {
     /// Fix: `receive` spawns `process` even when `ensure_user` failed
     /// (process starts with `ensure_user`); today it returns 500 first.
     pub fix_spawn_on_append_error: bool,
+    /// The composer's share is one voice note instead of the album.
+    pub voice: bool,
+    /// The "couldn't hear it" item carries `replyTo` (so `existing_reply`
+    /// finds it); `false` is the ablation.
+    pub unheard_reply_to: bool,
+    /// `LUCINA_PLANNER=tools`: a voice-only share runs the tool loop.
+    pub tools_planner: bool,
+    /// `on_tool` writes progress items for a share turn too (the ablation;
+    /// the code returns early when the turn carries `reply_meta`).
+    pub voice_tool_items: bool,
 }
 
 fn count(t: &[Item], x: Item) -> usize {
     t.iter().filter(|i| **i == x).count()
 }
 
+/// Lucina items for a share: answers, errors, "couldn't hear it" and tool
+/// progress items.
+fn answers(t: &[Item], x: u8) -> usize {
+    count(t, Item::Lucina(x)) + count(t, Item::Unheard(x)) + count(t, Item::Tool(x))
+}
+
 impl Share {
     fn files(&self, share: u8) -> u8 {
-        if share == COMPOSER_SHARE {
+        if share == COMPOSER_SHARE && !self.voice {
             self.album_files
         } else {
             1
         }
+    }
+
+    fn is_voice(&self, share: u8) -> bool {
+        self.voice && share == COMPOSER_SHARE
     }
 
     fn ensure_user(s: &mut State, share: u8) {
@@ -260,11 +327,11 @@ impl Share {
 
     fn existing_reply(&self, s: &State, share: u8) -> bool {
         let n = self.window.map_or(s.timeline.len(), usize::from);
-        s.timeline
-            .iter()
-            .rev()
-            .take(n)
-            .any(|i| *i == Item::Lucina(share))
+        s.timeline.iter().rev().take(n).any(|i| {
+            *i == Item::Lucina(share)
+                || *i == Item::Tool(share)
+                || (self.unheard_reply_to && *i == Item::Unheard(share))
+        })
     }
 
     /// A response reaches the client that is still waiting for it.
@@ -328,9 +395,11 @@ impl Model for Share {
         if variants.is_empty() {
             variants.push(vec![composer]);
         }
+        let devices: &[bool] = if self.voice { &[false, true] } else { &[false] };
         variants
             .into_iter()
-            .map(|clients| State {
+            .flat_map(|clients| devices.iter().map(move |&d| (clients.clone(), d)))
+            .map(|(clients, on_device)| State {
                 clients,
                 net: Vec::new(),
                 rx: None,
@@ -346,6 +415,9 @@ impl Model for Share {
                     server: false,
                     delivered: false,
                 },
+                on_device,
+                voice_heard: None,
+                voice_tooled: false,
                 sent: [0; SHARES],
                 crashes: self.crashes,
                 net_faults: self.net_faults,
@@ -414,9 +486,23 @@ impl Model for Share {
                 Some(p) => match p.written {
                     None => {
                         if p.read < self.files(p.share) {
-                            a.push(Action::ProcRead);
+                            if !self.is_voice(p.share) {
+                                a.push(Action::ProcRead);
+                            } else if s.on_device {
+                                a.push(Action::ProcHear(Heard::Device));
+                            } else {
+                                a.push(Action::ProcHear(Heard::Server));
+                                a.push(Action::ProcHear(Heard::Failed));
+                            }
                         } else {
                             a.push(Action::ProcTurn);
+                            if self.tools_planner
+                                && self.is_voice(p.share)
+                                && !p.tooled
+                                && matches!(p.heard, Some(Heard::Device | Heard::Server))
+                            {
+                                a.push(Action::ProcTool);
+                            }
                         }
                         if s.proc_faults > 0 {
                             a.push(Action::ProcFail);
@@ -570,11 +656,26 @@ impl Model for Share {
                         share,
                         read: 0,
                         written: None,
+                        heard: None,
+                        tooled: false,
                     });
                 }
             }
             Action::ProcRead => {
                 s.proc.as_mut()?.read += 1;
+            }
+            Action::ProcHear(h) => {
+                let p = s.proc.as_mut()?;
+                p.read += 1;
+                p.heard = Some(h);
+            }
+            Action::ProcTool => {
+                let p = s.proc.as_mut()?;
+                p.tooled = true;
+                let share = p.share;
+                if self.voice_tool_items {
+                    s.timeline.push(Item::Tool(share));
+                }
             }
             Action::ProcTurn | Action::ProcFail => {
                 let p = s.proc.as_mut()?;
@@ -584,10 +685,23 @@ impl Model for Share {
                 } else {
                     Status::Error
                 });
+                let heard = p.heard;
+                let tooled = p.tooled;
                 if action == Action::ProcFail {
                     s.proc_faults -= 1;
+                    s.timeline.push(Item::Lucina(share));
+                } else if self.is_voice(share) {
+                    // Answered as if the transcript were typed, or "couldn't hear it".
+                    s.voice_heard = heard;
+                    s.voice_tooled = tooled;
+                    s.timeline.push(if heard == Some(Heard::Failed) {
+                        Item::Unheard(share)
+                    } else {
+                        Item::Lucina(share)
+                    });
+                } else {
+                    s.timeline.push(Item::Lucina(share));
                 }
-                s.timeline.push(Item::Lucina(share));
             }
             Action::ProcSave => {
                 let p = s.proc.take()?;
@@ -642,7 +756,7 @@ impl Model for Share {
             // SH2: Lucina answers each share at most once, exactly once when done.
             Property::always("sh2_answered_once", |_, s: &State| {
                 Share::owner_shares().iter().all(|&x| {
-                    let n = count(&s.timeline, Item::Lucina(x));
+                    let n = answers(&s.timeline, x);
                     n <= 1
                         && (!matches!(s.status[x as usize], Some(Status::Done | Status::Error))
                             || n == 1)
@@ -652,8 +766,7 @@ impl Model for Share {
             Property::always("sh3_retry_idempotent", |_, s: &State| {
                 Share::owner_shares().iter().all(|&x| {
                     s.sent[x as usize] < 2
-                        || (count(&s.timeline, Item::User(x)) <= 1
-                            && count(&s.timeline, Item::Lucina(x)) <= 1)
+                        || (count(&s.timeline, Item::User(x)) <= 1 && answers(&s.timeline, x) <= 1)
                 })
             }),
             // SH4: nothing ingested, stored or answered without owner auth.
@@ -664,7 +777,7 @@ impl Model for Share {
                     && !s
                         .timeline
                         .iter()
-                        .any(|i| *i == Item::User(x) || *i == Item::Lucina(x))
+                        .any(|i| matches!(i, Item::User(y) | Item::Lucina(y) | Item::Unheard(y) | Item::Tool(y) if *y == x))
             }),
             // SH5: the chat view shows the composer's share once.
             Property::always("sh5_one_bubble", |_, s: &State| {
@@ -674,6 +787,20 @@ impl Model for Share {
             // `processing` (it would wait for an unrelated restart).
             Property::always("sh6_accepted_completes", |_, s: &State| {
                 !Share::quiet(s) || s.status.iter().all(|x| *x != Some(Status::Processing))
+            }),
+            // SH7: a voice note gets exactly one Lucina item once it is done,
+            // whether its transcript came from the device, from whisper or
+            // nowhere; it is "couldn't hear it" exactly when the answering run
+            // had no transcript.
+            Property::always("sh7_voice_one_item", |m: &Share, s: &State| {
+                let x = COMPOSER_SHARE;
+                let n = answers(&s.timeline, x);
+                !m.voice
+                    || (n <= 1
+                        && (!matches!(s.status[x as usize], Some(Status::Done | Status::Error))
+                            || n == 1)
+                        && (count(&s.timeline, Item::Unheard(x)) == 1)
+                            == (s.voice_heard == Some(Heard::Failed)))
             }),
             Property::sometimes("retry_hit_duplicate", |_, s: &State| s.dup_hit),
             Property::sometimes("background_kill_delivered", |_, s: &State| {
@@ -696,12 +823,49 @@ impl Model for Share {
             }),
             Property::sometimes("album_answered_once", |m: &Share, s: &State| {
                 let x = COMPOSER_SHARE;
-                m.album_files >= 2
+                !m.voice
+                    && m.album_files >= 2
                     && s.status[x as usize] == Some(Status::Done)
                     && count(&s.timeline, Item::User(x)) == 1
                     && count(&s.timeline, Item::Lucina(x)) == 1
             }),
             Property::sometimes("unauthenticated_refused", |_, s: &State| s.attack_rejected),
+            Property::sometimes("voice_note_answered", |m: &Share, s: &State| {
+                let x = COMPOSER_SHARE;
+                m.voice
+                    && matches!(s.voice_heard, Some(Heard::Device | Heard::Server))
+                    && s.status[x as usize] == Some(Status::Done)
+                    && count(&s.timeline, Item::User(x)) == 1
+                    && answers(&s.timeline, x) == 1
+            }),
+            Property::sometimes("voice_device_answered", |m: &Share, s: &State| {
+                m.voice
+                    && s.voice_heard == Some(Heard::Device)
+                    && s.status[COMPOSER_SHARE as usize] == Some(Status::Done)
+                    && answers(&s.timeline, COMPOSER_SHARE) == 1
+            }),
+            Property::sometimes("voice_server_answered", |m: &Share, s: &State| {
+                m.voice
+                    && s.voice_heard == Some(Heard::Server)
+                    && s.status[COMPOSER_SHARE as usize] == Some(Status::Done)
+                    && answers(&s.timeline, COMPOSER_SHARE) == 1
+            }),
+            Property::sometimes("voice_tool_answered", |m: &Share, s: &State| {
+                let x = COMPOSER_SHARE;
+                m.tools_planner
+                    && s.voice_tooled
+                    && s.status[x as usize] == Some(Status::Done)
+                    && count(&s.timeline, Item::User(x)) == 1
+                    && answers(&s.timeline, x) == 1
+            }),
+            Property::sometimes("voice_unheard_answered", |m: &Share, s: &State| {
+                let x = COMPOSER_SHARE;
+                m.voice
+                    && s.status[x as usize] == Some(Status::Done)
+                    && count(&s.timeline, Item::User(x)) == 1
+                    && answers(&s.timeline, x) == 1
+                    && count(&s.timeline, Item::Unheard(x)) == 1
+            }),
         ]
     }
 }
@@ -726,6 +890,10 @@ pub fn cases(deep: bool) -> Vec<Case> {
         reconcile_by_share_id: true,
         key_check: true,
         fix_spawn_on_append_error: true,
+        voice: false,
+        unheard_reply_to: true,
+        tools_planner: false,
+        voice_tool_items: false,
     };
     // The composer next to one share extension (with / without App Group);
     // the append and process faults are covered by `solo`.
@@ -738,17 +906,25 @@ pub fn cases(deep: bool) -> Vec<Case> {
         attacks: 0,
         ..solo.clone()
     };
-    let invariants = |sh2: Expect, sh3: Expect, sh4: Expect, sh5: Expect, sh6: Expect| {
-        vec![
-            ("sh1_one_user_item", Holds),
-            ("sh2_answered_once", sh2),
-            ("sh3_retry_idempotent", sh3),
-            ("sh4_owner_only", sh4),
-            ("sh5_one_bubble", sh5),
-            ("sh6_accepted_completes", sh6),
-        ]
+    let invariants =
+        |sh2: Expect, sh3: Expect, sh4: Expect, sh5: Expect, sh6: Expect, sh7: Expect| {
+            vec![
+                ("sh1_one_user_item", Holds),
+                ("sh2_answered_once", sh2),
+                ("sh3_retry_idempotent", sh3),
+                ("sh4_owner_only", sh4),
+                ("sh5_one_bubble", sh5),
+                ("sh6_accepted_completes", sh6),
+                ("sh7_voice_one_item", sh7),
+            ]
+        };
+    let all_hold = || invariants(Holds, Holds, Holds, Holds, Holds, Holds);
+    // The composer sends one voice note (transcript on the device, from
+    // whisper, or none) with every server-side fault and the attacker.
+    let voice = Share {
+        voice: true,
+        ..solo.clone()
     };
-    let all_hold = || invariants(Holds, Holds, Holds, Holds, Holds);
     vec![
         Case::new(
             PROTOCOL,
@@ -806,7 +982,7 @@ pub fn cases(deep: bool) -> Vec<Case> {
             },
             None,
             [
-                invariants(Violated, Violated, Holds, Holds, Holds),
+                invariants(Violated, Violated, Holds, Holds, Holds, Holds),
                 vec![
                     ("retry_hit_duplicate", Reached),
                     ("crash_recovery_completed", Reached),
@@ -823,7 +999,7 @@ pub fn cases(deep: bool) -> Vec<Case> {
             },
             None,
             [
-                invariants(Holds, Holds, Holds, Violated, Holds),
+                invariants(Holds, Holds, Holds, Violated, Holds, Holds),
                 vec![
                     ("retry_hit_duplicate", Reached),
                     ("album_answered_once", Reached),
@@ -840,7 +1016,7 @@ pub fn cases(deep: bool) -> Vec<Case> {
             },
             None,
             [
-                invariants(Holds, Holds, Holds, Holds, Violated),
+                invariants(Holds, Holds, Holds, Holds, Violated, Holds),
                 vec![
                     ("retry_hit_duplicate", Reached),
                     ("crash_recovery_completed", Reached),
@@ -857,8 +1033,80 @@ pub fn cases(deep: bool) -> Vec<Case> {
             },
             None,
             [
-                invariants(Holds, Holds, Violated, Holds, Holds),
+                invariants(Holds, Holds, Violated, Holds, Holds, Holds),
                 vec![("unauthenticated_refused", Reached)],
+            ]
+            .concat(),
+        ),
+        Case::new(
+            PROTOCOL,
+            "SH fixed: voice note (device / whisper / no transcript), faults",
+            voice.clone(),
+            None,
+            [
+                all_hold(),
+                vec![
+                    ("retry_hit_duplicate", Reached),
+                    ("crash_recovery_completed", Reached),
+                    ("voice_note_answered", Reached),
+                    ("voice_device_answered", Reached),
+                    ("voice_server_answered", Reached),
+                    ("voice_unheard_answered", Reached),
+                    ("unauthenticated_refused", Reached),
+                ],
+            ]
+            .concat(),
+        ),
+        Case::new(
+            PROTOCOL,
+            "SH ablation: \"couldn't hear it\" item without replyTo",
+            Share {
+                unheard_reply_to: false,
+                ..voice.clone()
+            },
+            None,
+            [
+                invariants(Violated, Violated, Holds, Holds, Holds, Violated),
+                vec![
+                    ("voice_note_answered", Reached),
+                    ("voice_device_answered", Reached),
+                    ("voice_server_answered", Reached),
+                    ("voice_unheard_answered", Reached),
+                ],
+            ]
+            .concat(),
+        ),
+        Case::new(
+            PROTOCOL,
+            "SH fixed: voice note with the tools planner (no progress items)",
+            Share {
+                tools_planner: true,
+                ..voice.clone()
+            },
+            None,
+            [
+                all_hold(),
+                vec![
+                    ("voice_note_answered", Reached),
+                    ("voice_tool_answered", Reached),
+                    ("voice_unheard_answered", Reached),
+                    ("crash_recovery_completed", Reached),
+                ],
+            ]
+            .concat(),
+        ),
+        Case::new(
+            PROTOCOL,
+            "SH ablation: tool progress items on a voice note",
+            Share {
+                tools_planner: true,
+                voice_tool_items: true,
+                ..voice
+            },
+            None,
+            [
+                invariants(Violated, Violated, Holds, Holds, Holds, Violated),
+                vec![("voice_unheard_answered", Reached)],
             ]
             .concat(),
         ),

@@ -73,7 +73,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
 | 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
-| 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
+| 12 | Share to Lucina (`POST /v1/share`: clients, voice notes, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); voice notes: `share/{mod.rs,router.rs,extract.rs}`, `chat.rs` (`ShareTurn`, `tools_turn`), `timeline.rs::valid_waveform` (branch `voice-notes`, 438d748); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 | 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
 | 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
 | 15 | In-app maps (place blocks, the map server: tiles, assets, geocoder, routes) | – | – | `map_kernels.rs` (MK1–MK7) | `crates/secretary-maps/src/{kernel,lib,geocode,routes,provider,cache}.rs` (reference `normalize_place`; lucina-rs and the web app mirror it), `deploy/secretary-maps.service`; differential test `crates/secretary-maps/tests/kernel_model.rs` |
@@ -154,6 +154,10 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | SH reconcile bug (bubble matched by the 202's userItemId only) | 21 400 | 21 | `sh5` **violated** |
 | SH stuck bug (failed append → 500, no worker) | 14 504 | 21 | `sh6` **violated** |
 | SH ablation: no `X-Share-Gateway` check, lucina-rs reachable directly | 260 843 | 29 | `sh4` **violated** |
+| SH fixed: voice note (on-device / whisper / failed transcript), faults | 44 720 | 20 | all hold; voice/device/server/unheard/retry/crash/auth witnesses |
+| SH ablation: "couldn't hear it" item without `replyTo` | 52 936 | 23 | `sh2`, `sh3`, `sh7` **violated** |
+| SH fixed: voice note with the tools planner (progress items suppressed) | 62 000 | 21 | all hold; voice/tool/unheard/crash witnesses |
+| SH ablation: tool progress items on a voice note | 78 656 | 21 | `sh2`, `sh3`, `sh7` **violated** |
 | OTP1 phone reboot during the first send | 195 818 | 20 | all hold |
 | OTP1_bug_pre_ac9e7be (dedup and queue saved after the send) | 119 820 | 19 | `no_silent_loss`, `at_most_once`, `never_after_expiry` **violated** |
 | OTP2 `/otp arm` while a code waits; an MCP `/otp` | 86 552 | 19 | all hold |
@@ -619,40 +623,94 @@ The model has the composer's two-file album (retried with the same id), a share 
 Group (without it, a kill loses the body and the owner re-shares under a new id), an attacker with no owner auth,
 lost requests and responses, crashes between any two server steps, other timeline writers, and the chat view.
 
+Voice notes (branch `voice-notes`, 438d748): the chat composer sends a voice note as one audio `file` part with
+`meta.files[i].voice = true`, an optional on-device `transcript` and a `waveform`. `receive` routes it with
+`router::route_for` and stores timeline kind `voice` (`timeline_kind_for`, only for audio); `process` reads it with
+the audio handler, subtype `voice`. A share that is exactly one voice note with an empty caption is answered as if
+the transcript had been typed: one user item and one Lucina item carrying `meta.transcript` and `meta.voiceReply`.
+A failed transcription writes one "couldn't hear it" Lucina item (`replyTo` = the user item) instead. With
+`LUCINA_PLANNER=tools` the turn is `tools_turn`, and its `on_tool` progress items (role lucina, `replyTo` = the user
+item) are suppressed for share turns. The voice cases replace the album with that voice note: one initial state
+with an on-device transcript and one without, where whisper (`ProcHear`) succeeds or fails, re-run after a crash;
+the tools-planner case adds `ProcTool`. Transcript text and metadata are abstracted (Verus covers them).
+
 Invariants (Stateright name / TLA+ name):
 
 - `sh1_one_user_item` / `OneUserItem`: each accepted share has exactly one user item in the timeline.
-- `sh2_answered_once` / `AnsweredOnce`: Lucina answers each share at most once (exactly once when it completes).
+- `sh2_answered_once` / `AnsweredOnce`: Lucina answers each share at most once (exactly once when it completes);
+  "couldn't hear it" and tool progress items count as Lucina items.
 - `sh3_retry_idempotent` / `RetryIdempotent`: a retry with the same id never adds a user item or an answer.
 - `sh4_owner_only` / `OwnerOnly`: nothing is stored, ingested or answered for a request without owner auth.
 - `sh5_one_bubble` / `OneBubble`: the chat shows each share once after reconciliation.
 - `sh6_accepted_completes` / `AcceptedCompletes`: with nothing in flight, no accepted share is left processing.
+- `sh7_voice_one_item` / `VoiceOneItem`: a voice note has at most one Lucina item, exactly one once done, whether
+  the transcript came from the device, from whisper or nowhere (and, with the tools planner, whether a tool ran);
+  it is "couldn't hear it" exactly when the run that answered had no transcript.
 
 Witnesses (`sometimes` / `Share_fixed_*_witness.cfg`): a retry answered `duplicate`, a background-upload kill that
 still delivers, a foreground kill that loses the share, a crash and recovery that completes, a two-file album with
-one item and one answer, and a refused unauthenticated request.
+one item and one answer, and a refused unauthenticated request. Voice: `voice_note_answered` /
+`Share_fixed_voice_witness.cfg` (a voice note heard on the device or by whisper is done with one user item and one
+Lucina item), `voice_device_answered`, `voice_server_answered`, `voice_unheard_answered` (the
+`Share_fixed_voice_{device,server,unheard}_witness.cfg`) and `voice_tool_answered` /
+`Share_fixed_voice_tools_witness.cfg` (answered after a tool ran, still one Lucina item).
 
-Verus (`share_kernels.rs`, 57 verified; `share_reconcile.rs`, 24 verified; no `assume`/`admit`/`external_body`):
+TLC matches Stateright state for state: `Share_fixed_voice.cfg` 44 720, `Share_fixed_voice_tools.cfg` 62 000, and
+the album, background and foreground cases keep 21 400, 58 514 and 306 346 (all under 10 s). The ablations
+`Share_voice_noreply.cfg` (the "couldn't hear it" item without `replyTo`: written, crash before `done`, recovery
+misses it and answers again) and `Share_voice_tool_items.cfg` (progress items not suppressed: the progress item
+plus the answer are two Lucina items; after a crash the progress item alone would pass for the answer) MUST FAIL
+`VoiceOneItem`. The code has neither: the "couldn't hear it" item carries `reply_to`, and `on_tool` returns early
+when the turn carries `reply_meta`.
+
+Verus (`share_kernels.rs`, 77 verified; `share_reconcile.rs`, 25 verified; no `assume`/`admit`/`external_body`):
 - SK1 the router is total and returns one kind of `KINDS`; a decisive sniff wins over name and mime; zip containers
   route to document/sheet/slides/archive; text-like claims on non-text bytes fall to `other`; every timeline kind
   passes `normalize`'s whitelist and `take(32)`.
+- SK1.6 (`voice_routing`, `timeline_kind_for_whitelisted`) the voice flag keeps `route_for` total and in `KINDS`;
+  it changes the handler only for an audio-MIME MP4/Matroska container that sniff calls video (to `audio`); a part
+  gets timeline kind `voice` exactly when it is flagged and routed audio; a flagged part that is not routed audio
+  gets the timeline kind of the same upload without the flag (the flag is ignored); every result is whitelisted.
+- SK1.7 (`receive_and_extract_agree`) `extract::read`, which re-routes with the flag read back from the stored
+  kind, picks the handler `receive` picked, and exactly the parts stored as `voice` run the audio handler with
+  subtype `voice`.
 - SK2 one userItemId and at most one user item per shareId across crashes before or after the save, recovery and
   other writers; every 202 (fresh or duplicate) carries it; matching bubbles by the 202's userItemId OR
   `meta.shareId` gives one bubble per share in any order.
-- SK3 the full-scan recovery answers at most once; the `raw.contains(id)` prefilter is sound.
+- SK3 the full-scan recovery answers at most once; the `raw.contains(id)` prefilter is sound. SK3.3
+  (`voice_recovery_once`): the answer to an on-device or whisper transcript, "couldn't hear it" and a tool
+  progress item are all role lucina with `replyTo` = the user item, so each is found after a crash (which is why
+  progress items must not be written for a share turn).
 - SK4 receive limits: ≤ 32 parts (the location check never fires: `meta` is itself a counted field), ≤ 2 GiB, the
   per-field caps, id/session/character limits, and the fixed `sanitize` (non-empty, ≤ 120 bytes, no separators,
   control characters or `..`).
-Witnesses: `unfixed_window_scan`, `unfixed_match_by_id_only`, `unfixed_sanitize_keeps_dotdot`. Differential test:
-`crates/lucina-server/tests/verus_share.rs` (branch `lucina-rs`) runs the real `route`/`sniff`/`timeline_kind`/
-`normalize`/`sanitize` and the `/v1/share` limits against the kernels.
+- SK4.5 voice-note fields. `valid_waveform_exactly`: `valid_waveform` keeps exactly the (trimmed) strings that
+  base64-decode (STANDARD, padding optional, trailing bits rejected, as base64 0.22.1) to 1..=64 bytes; the
+  88-character pre-check never rejects one of them, so a stored waveform is 1..=88 characters for 1..=64 levels.
+  `waveform_limits_witness`: 88 characters can decode to 66 bytes (both checks are needed); 86 unpadded and 88
+  padded characters decode to exactly 64 and are kept. `voice_transcript_bounded`: a stored transcript (on the
+  attachment or as `meta.transcript`) is non-empty, ≤ 4000 UTF-16 units (so ≤ 4000 characters) and a prefix of
+  its input; the 4000-character clip of `receive`/`process` before it never cuts what the UTF-16 clip keeps.
+Witnesses: `unfixed_window_scan`, `unfixed_match_by_id_only`, `unfixed_sanitize_keeps_dotdot`,
+`waveform_limits_witness`. Differential test: `crates/lucina-server/tests/verus_share.rs` (branch `lucina-rs`) runs
+the real `route`/`sniff`/`timeline_kind`/`normalize`/`sanitize` and the `/v1/share` limits against the kernels; on
+branch `voice-notes` (0ce757c) it also runs the real `route_for`/`timeline_kind_for` over every header ×
+extension × mime × flag (and extract's re-route), `valid_waveform` and the base64 engine against
+`b64_decoded_len`/`valid_waveform` (every string of up to 4 symbols, 20 000 random strings, the 64/66-byte edges),
+and the transcripts `normalize` stores against `clip16`.
+
+Observations (no invariant broken): the `status.json` copy of a transcript is clipped to 4000 characters, the
+timeline copy to 4000 UTF-16 units, so an emoji-heavy transcript is shorter on the timeline than in the status.
+In the JSON planner a voice note whose transcript starts a background job gets the job's result as a later Lucina
+item (`spawn_job`, `meta.jobId`), as a typed message does; the models count only the share pipeline's items.
 
 | Action (model) | Code |
 |---|---|
 | `Send` / `Reshare` / `Kill` | iOS `ShareRequestBuilder.build` + `ShareUploads.enqueue`/`sendNow`, `ChatShares`; Android `ShareActivity` + `ShareJobService`; web `sendAttachmentMessage` |
 | `Attack` / gateway | p1 Caddy `@share` (`forward_auth`, CSRF, `X-Share-Gateway`); `share::authenticate` |
 | `Deliver`, `RxIngest`, `RxSave`, `RxFinish`, `RxAppendFails` | `share::receive` (`find`, `store_in_library`, `save`, `ensure_user`, `spawn`) |
-| `ProcBegin`, `ProcRead`, `ProcTurn`, `ProcFail`, `ProcSave` | `share::process` (`ensure_user`, `existing_reply`, `extract::read`, `chat::share_turn`), `spawn`'s error path |
+| `ProcBegin`, `ProcRead` / `ProcHear`, `ProcTurn`, `ProcFail`, `ProcSave` | `share::process` (`ensure_user`, `existing_reply`, `extract::read` / `extract::audio`, the "couldn't hear it" branch, `chat::share_turn`), `spawn`'s error path |
+| `ProcTool` | `chat::tools_turn`'s `on_tool` (returns early for a share turn: `reply_meta`) |
 | `Crash`, `Restart`, `Recover` | lucina-rs restart; `share::recover` |
 | `OtherAppend` | Node and other turns appending to `timeline.jsonl` |
 | `TimelineDeliver` | the app's timeline stream/poll (iOS `Timeline.merge`, web `mergeItems`/`matchItem`) |
