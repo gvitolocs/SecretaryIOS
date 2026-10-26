@@ -75,7 +75,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 | 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 | 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
-| 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`; fixes F1–F3 at `b6a1dd8` on branch `deals-fixes`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
+| 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`; fixes F1–F3 at `b6a1dd8` and the pending drops at `c4672a9` on branch `deals-fixes`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -167,12 +167,12 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | OTP8 ablation: no private-owner guard | 60 064 | 18 | `owner_only` **violated** |
 | OTP9 ablation: Lucina skips its expiry check | 24 115 | 17 | `never_after_expiry` **violated** |
 | OTP10 ablation: relay without seen ids | 106 961 | 21 | `at_most_once` **violated** |
-| G0 Rust (F1 F2 F3), no faults | 163 875 | 33 | all hold |
-| G1 Rust (F1 F2 F3), one fault | 1 149 598 | 33 | all hold |
-| G2 stop at any step, start, same file (F1 F2 F3 in both) | 958 309 | 35 | all hold |
-| G3 two watchers at once (rule witness) | 3 100 375 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
+| G0 Rust (F1 F2 F3, drops), no faults | 163 875 | 33 | all hold |
+| G1 Rust (F1 F2 F3, drops), one fault | 2 011 228 | 33 | all hold; stale, rejected and give-up drops reached |
+| G2 stop at any step, start, same file (fixes in both) | 1 542 294 | 35 | all hold; stale and give-up drops reached |
+| G3 two watchers at once (rule witness) | 4 921 808 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
 | G4 no server dedup, no faults | 163 875 | 33 | all hold |
-| G5 no server dedup, one fault (rule witness) | 1 188 512 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
+| G5 no server dedup, one fault (rule witness) | 2 050 142 | 33 | `no_repeat`, `one_digest_per_day`, `silent_when_unchanged` **violated** |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -187,9 +187,9 @@ bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the
 `OtpForwarding`: 950 738, `OtpForwarding_owner`: 1 877 816, `OtpForwarding_restart`: 1 017 387 (the failed
 `seen.json` write included); four `OtpForwarding_*_witness.cfg` and five `_bug` cfgs fail as required.
 
-`formal/deals/`: `DealWatch_fixed` 1 149 598, `DealWatch_cutover_fixed` 958 309, `DealWatch_current_nofaults` and
+`formal/deals/`: `DealWatch_fixed` 2 011 228, `DealWatch_cutover_fixed` 1 542 294, `DealWatch_current_nofaults` and
 `DealWatch_nodedup_nofaults` 163 875 distinct states each (the same counts as Stateright G1, G2, G0 and G4), each under
-10 s; the `MUST FAIL` cfgs stop at their first violation.
+20 s; the `MUST FAIL` cfgs stop at their first violation.
 
 ## Invariants, models and mapping
 
@@ -703,7 +703,14 @@ both runtimes. Each run loads the file, polls Salling food waste and Tjek flyers
 writes the composed message into the file as `pending` (F1), sends it through secretary-server `POST /v1/notify`
 with `dedupKey` `grocery-deals:<digest|alert>:<date>:<hash of the delivered keys and prices>`, and after a
 successful send acknowledges it and clears `pending`. A run that finds a `pending` message re-sends exactly that one
-first (same key), acknowledges it, then continues. The cutover (2026-10-25) stopped Node (container restart without
+first (same key), acknowledges it, then continues. A pending message never blocks the watch (`c4672a9`): it is
+dropped, i.e. acknowledged without being sent, with one warn line (kind, date, dedup key, why), when its local date
+is not today, when `/v1/notify` refuses it for good (400, 401, 403, 404, 413, 422 or a client-side
+`bad_notification`: `Delivery::Rejected`, "send rejected"; network errors, timeouts, 5xx and 429 stay
+`Delivery::Failed` and keep it pending), or after `MAX_SEND_ATTEMPTS` = 5 attempts (`attempts` in the pending entry: 1
+at the claim, +1 before each re-send). Acknowledging is what keeps a copy the server may already have from being
+repeated; the offers it carried are skipped by that logged decision (the next digest still lists them). A stale digest
+also records its fingerprint, so an unchanged offer set the next day gives no digest. The cutover (2026-10-25) stopped Node (container restart without
 the deals code) before the Rust watcher started. Before `b6a1dd8` the Rust watcher (like Node) wrote the file only after
 a successful send and had the bugs DW1–DW3 below.
 
@@ -732,6 +739,12 @@ since `b6a1dd8` (every case runs with them; `deals.rs::pre_fix` is the code befo
   by a `Load`, one of the model's orders. A failed re-send stays pending and ends the run.
 - **F2** acknowledge only the delivered best offers (and their `relatedKeys`), not every active offer.
 - **F3** a notified price never goes up (`set_notified` keeps the lower price).
+- **Drops** (`fix_drop` / `FixDrop`, with F1): `Load` drops a pending message from an earlier day (`stale_dropped`) and
+  then loads normally; `GiveUp(actor, kind)` is a `Load` that drops a pending message of today first, at any time
+  after a failed attempt (an over-approximation of the five-attempt limit, which the one-fault bound cannot reach);
+  `Send(actor, Rejected)` is not admitted and drops the message (`rejected_dropped`). A drop is `ack` without a send;
+  the ghost `dropped` records the (offer, price) pairs dropped messages carried. A day can end with a message pending
+  (`Tick` only needs the runs to be idle).
 
 Invariants (Stateright / TLA+), checked over the owner's receipts (ghost state), not over the file:
 
@@ -744,27 +757,35 @@ Invariants (Stateright / TLA+), checked over the owner's receipts (ghost state),
   message's run. "Observed": a failed source shows fewer offers.
 - `no_skip` / `NoSkip`, safety over the history: when an alert run ends successfully (no source failed, and it either
   skipped or delivered and saved), every item whose best offer has been the same since before the previous alert
-  tick, and which the run saw, has reached the owner at that price or lower. A capped run never starts.
-- `acked_only_after_admission` / `AckedOnlyAfterAdmission`: the file records a message only after the server has its
-  key (a failed send writes nothing). It holds in every case.
+  tick, and which the run saw, has reached the owner at that price or lower, or was carried by a message the watcher
+  dropped (an explicit, logged decision; ghost `dropped`). A capped run never starts. Without the drop clause G1
+  fails `no_skip` in 10 actions (`Tick; Tick; Load(1,Alert); Poll(1,0); Decide(1); Claim(1); Send(1,Down);
+  GiveUp(1,Alert); Poll(1,0); Decide(1)`): that skip is the documented drop.
+- `acked_only_after_admission` / `AckedOnlyAfterAdmission`: a `Save` records a message as delivered only after the
+  server has its key (a failed send leaves it pending). It holds in every case. A drop is not a `Save`: it is the
+  explicit decision above, not a delivery.
 
 Witnesses: `new_alert` / `NeverNewAlert` (an offer added or repriced by an edit reaches the owner in an alert),
 `restart_continues` / `NeverRestartContinues` (after a send whose save was lost, a later run saves), `cutover` /
-`NeverCutover` (Rust loads the file after Node stopped; in G3 both load), `digest_relists` / `NeverDigestRelists`.
-TLC: one `MUST PASS` cfg per holding case with all its invariants (G0 `current_nofaults`, G1 `fixed`, G2
-`cutover_fixed`, G4 `nodedup_nofaults`), `_witness` cfgs for them, and one `MUST FAIL` cfg per rule witness, with the
-invariant it breaks (G3 `overlap_bug`, G5 `nodedup_fixed_bug`): 12 cfgs. The five DW1–DW3 bug cfgs of the pre-fix code
+`NeverCutover` (Rust loads the file after Node stopped; in G3 both load), `digest_relists` / `NeverDigestRelists`,
+`stale_dropped` / `NeverStaleDrop` (a message still pending on a later day is dropped, not sent; G1, G2 and G5),
+`rejected_dropped` / `NeverRejectDrop` (G1, G5), `gave_up` / `NeverGiveUp` (G1, G2, G5). TLC: one `MUST PASS` cfg per
+holding case with all its invariants (G0 `current_nofaults`, G1 `fixed`, G2 `cutover_fixed`, G4 `nodedup_nofaults`),
+`_witness` cfgs for them (`fixed_stale_witness`, `fixed_reject_witness`, `fixed_giveup_witness`,
+`cutover_fixed_stale_witness` among them), and one `MUST FAIL` cfg per rule witness, with the invariant it breaks (G3
+`overlap_bug`, G5 `nodedup_fixed_bug`): 16 cfgs. The five DW1–DW3 bug cfgs of the pre-fix code
 were removed with the fix; their cases are the `MUST PASS` cfgs above.
 
 | Model action | Code (`crates/lucina-deals/src/` on `lucina-rs` unless noted) |
 |---|---|
 | `Tick` | `schedule.rs::Scheduler::tick`: digest from `GROCERY_DEALS_DIGEST_TIME` until 11:00, alerts in `GROCERY_DEALS_ALERT_WINDOW` every `GROCERY_DEALS_ALERT_INTERVAL_MIN` |
 | `Edit(offer, price)` | Salling / Tjek upstream changes (source caches: food waste 15 min, search 30 min, shorter than the alert interval) |
-| `Load(actor, kind)` | `watch.rs::DealWatch::run`: queue mutex, `time`/`date`, `WatchState::load`, `prune`; F1: a `pending` message (`Prepared::from_pending`) is re-sent first (the digest cooldown applies to a digest run); else `already digested today`, `daily alert cap` |
+| `Load(actor, kind)` | `watch.rs::DealWatch::run`: queue mutex, `time`/`date`, `WatchState::load`, `prune`; F1: a `pending` message (`Prepared::from_pending`) is re-sent first (`attempts` + 1 saved before; the digest cooldown applies to a digest run), or dropped first when its date is not today (`drop_pending`, then the run goes on); then `already digested today`, `daily alert cap` |
+| `GiveUp(actor, kind)` | `run`: a pending message with `attempts >= MAX_SEND_ATTEMPTS` (5) is dropped (`drop_pending`), then the run goes on |
 | `Poll(actor, mask)` | `engine.rs::list_matches` → `collect` (`sources.rs::food_waste`, `flyers`; a failure gives no deals of that source), `validity`, `match_names` (`matcher.rs::match_deal`, `group_deals`) |
 | `Decide(actor)` | `watch.rs::compose`: active offers, `digest_fingerprint`, `no active matches`, `unchanged digest`, best offer per item, the alert `notified_price <= price` filter, `dedup_key` |
 | `Claim(actor)` | F1: `run` saves the composed message as `pending` (`Prepared::to_pending`, `WatchState::set_pending`, `save`) before `deliver` |
-| `Send(actor, outcome)` | `notify.rs::AppNotify::deliver` (one retry on network error, timeout or 5xx) → secretary-server `notify/routes.rs::notify` → `Notifier::publish`/`admit`; `Lost` = admitted but the response failed (`Delivery::Failed`), `Down` = not admitted |
+| `Send(actor, outcome)` | `notify.rs::AppNotify::deliver` (one retry on network error, timeout or 5xx) → secretary-server `notify/routes.rs::notify` → `Notifier::publish`/`admit`; `Lost` = admitted but the response failed (`Delivery::Failed`), `Down` = not admitted (`Failed`: 5xx, 429, network), `Rejected` = refused for good (`Delivery::Rejected`: 400, 401, 403, 404, 413, 422): `drop_pending`, from the claim or from a re-send (which then goes on) |
 | `Save(actor)` | `watch.rs::acknowledge` (F2: the delivered best offers' keys, `Prepared::acks` from `compose`; F3: `WatchState::set_notified` keeps a lower price; clears `pending`) + `WatchState::save` (tmp file, rename). `Delivery::NotConfigured` (never posted, not modelled) restores the file as it was |
 | `SkipSave(actor)` | `run`: a skipped digest sets `lastDigestDate` and saves |
 | `Crash(actor)` | the process dies anywhere; the queue and the digest cooldown are lost, the file and the inbox stay |
@@ -772,12 +793,12 @@ were removed with the fix; their cases are the `MUST PASS` cfgs above.
 
 | Case | Node / Rust | Faults | Dedup | Fixes |
 |---|---|---|---|---|
-| G0 | Rust | none | on | F1 F2 F3 |
-| G1 | Rust | one | on | F1 F2 F3 |
-| G2 | old watcher (actor 0), `StopNode` at any step, `StartRust` | the stop | on | F1 F2 F3 in both |
-| G3 | two watchers at once | none | on | F1 F2 F3 |
-| G4 | Rust | none | off | F1 F2 F3 |
-| G5 | Rust | one | off | F1 F2 F3 |
+| G0 | Rust | none | on | F1 F2 F3, drops |
+| G1 | Rust | one (also `Rejected`) | on | F1 F2 F3, drops |
+| G2 | old watcher (actor 0), `StopNode` at any step, `StartRust` | the stop | on | F1 F2 F3, drops in both |
+| G3 | two watchers at once | none | on | F1 F2 F3, drops |
+| G4 | Rust | none | off | F1 F2 F3, drops |
+| G5 | Rust | one (also `Rejected`) | off | F1 F2 F3, drops |
 
 Verus (`deals_kernel.rs`, 64 verified, no `assume`/`external_body`): (a) validity: active, upcoming and expired
 partition every (from, to, now), an offer is never active at or after `to`, `validity_exec` is the code's branch
@@ -1362,7 +1383,11 @@ acknowledged without being shown, so an alternative that becomes the best offer 
 digest. Fixed in lucina-deals `watch.rs` at `b6a1dd8` (branch `deals-fixes` from `lucina-rs` dd7ec9e): F1 save the
 composed message and its dedup key as `pending` before sending and re-send it first; F2 acknowledge only the delivered
 best offers; F3 never raise a notified price. G0–G2 model the fixed code and hold; regression tests in
-`crates/lucina-deals/tests/watch_fixes.rs` fail on dd7ec9e and pass at `b6a1dd8`.
+`crates/lucina-deals/tests/watch_fixes.rs` fail on dd7ec9e and pass at `b6a1dd8`. `c4672a9` keeps a pending message
+from blocking the watch: it is dropped (acknowledged unsent, logged) when stale, refused for good or after five
+attempts; tests `f1_a_pending_message_from_an_earlier_day_is_dropped_not_sent`,
+`f1_a_pending_message_is_dropped_after_five_failed_attempts` and `schedule.rs::
+a_rejected_send_is_dropped_and_a_retryable_one_stays_pending` fail on `b6a1dd8`.
 
 ## Modeling assumptions
 
@@ -1390,7 +1415,8 @@ best offers; F3 never raise a notified price. G0–G2 model the fixed code and h
   inbox deduplicates by key (secretary-server `NewNotification::keys`). Liveness assumes the other GPU job and
   the network eventually let go (bounded budgets).
 - **Deal watch.** A run takes seconds, so clock windows and source changes happen between runs; the digest
-  cooldown (10 min) is not modelled (a retry may come at any later time). Item names, body length and the five-item
+  cooldown (10 min) is not modelled (a retry may come at any later time). The five-attempt limit is modelled as a
+  give-up allowed after any failed attempt (more behaviours than the code). Item names, body length and the five-item
   limit are not modelled (the real-code tests keep `compose` exact). The server keeps every dedup key (true for a few
   watch messages: 4096 LRU keys, 500 inbox items, no deletions).
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels

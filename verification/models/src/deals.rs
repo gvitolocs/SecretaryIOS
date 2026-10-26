@@ -27,7 +27,11 @@
 //! (both run at once), `dedup` (server dedup on), and the fixes `fix_pending` (F1: write
 //! the composed message to the state file before sending; a run that finds it re-sends it
 //! with the same key, then acknowledges it), `fix_ack_delivered` (F2: acknowledge only the
-//! delivered best offers) and `fix_min_price` (F3: a notified price never goes up). The
+//! delivered best offers), `fix_min_price` (F3: a notified price never goes up) and
+//! `fix_drop` (a pending message never blocks the watch: it is dropped, acknowledged
+//! without being sent, when it is from an earlier day, when the server refuses it for
+//! good (`Send(.., Rejected)`), or when its attempts run out (`GiveUp`, any time after a
+//! failed attempt: the code's limit of five, over-approximated)). The
 //! code has all three since the commit in `deals-revision` (bugs DW1-DW3 fixed), so every
 //! case runs with them; `pre_fix` is the dd7ec9e watcher, whose DW1-DW3 traces the
 //! `pre_fix_traces` tests replay.
@@ -141,13 +145,16 @@ pub const BAD_SILENT: u8 = 4;
 pub const BAD_SKIP: u8 = 8;
 pub const BAD_ACK: u8 = 16;
 // ghost witness flags
-pub const SEEN_NEW_ALERT: u8 = 1;
-pub const SEEN_GAP: u8 = 2;
-pub const SEEN_RESUMED: u8 = 4;
-pub const SEEN_CUTOVER: u8 = 8;
-pub const SEEN_RELIST: u8 = 16;
-pub const SEEN_NODE_LOAD: u8 = 32;
-pub const SEEN_RUST_LOAD: u8 = 64;
+pub const SEEN_NEW_ALERT: u16 = 1;
+pub const SEEN_GAP: u16 = 2;
+pub const SEEN_RESUMED: u16 = 4;
+pub const SEEN_CUTOVER: u16 = 8;
+pub const SEEN_RELIST: u16 = 16;
+pub const SEEN_NODE_LOAD: u16 = 32;
+pub const SEEN_RUST_LOAD: u16 = 64;
+pub const SEEN_STALE_DROP: u16 = 128;
+pub const SEEN_REJECT_DROP: u16 = 256;
+pub const SEEN_GAVE_UP: u16 = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct State {
@@ -165,6 +172,9 @@ pub struct State {
     // ---- ghosts: what the owner received and the property bookkeeping
     /// Per offer, bit p set when the owner received it at price p.
     pub recv: [u8; 3],
+    /// Per offer, bit p set when a dropped message carried it at price p (an explicit,
+    /// logged decision not to send it).
+    pub dropped: [u8; 3],
     /// Digests received per date (saturating at 2).
     pub digests: [u8; 2],
     pub last_digest_obs: Option<[u8; 3]>,
@@ -172,7 +182,7 @@ pub struct State {
     /// Alert ticks since the item's best offer last changed (saturating at 2).
     pub since: [u8; 2],
     pub bad: u8,
-    pub seen: u8,
+    pub seen: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +190,8 @@ pub enum Outcome {
     Delivered,
     Lost,
     Down,
+    /// Refused for good (400, 401, 403, 404, 413, 422): not admitted.
+    Rejected,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +199,8 @@ pub enum Action {
     Tick,
     Edit(u8, u8),
     Load(usize, Kind),
+    /// `Load` that finds a pending message whose attempts ran out: drop it, then load.
+    GiveUp(usize, Kind),
     /// actor, bit 0 = food waste failed, bit 1 = flyers failed
     Poll(usize, u8),
     Decide(usize),
@@ -207,6 +221,7 @@ pub struct Deals {
     pub fix_pending: bool,
     pub fix_ack_delivered: bool,
     pub fix_min_price: bool,
+    pub fix_drop: bool,
     pub max_runs: u8,
     pub max_edits: u8,
     pub max_faults: u8,
@@ -328,12 +343,24 @@ impl Deals {
                 let mask = (bit(p + 1) - 1) & !1; // prices 1..=p
                 if s.since[i] >= 2
                     && best(&r.obs, i) == Some((o, p))
-                    && s.recv[o as usize] & mask == 0
+                    && (s.recv[o as usize] | s.dropped[o as usize]) & mask == 0
                 {
                     s.bad |= BAD_SKIP;
                 }
             }
         }
+    }
+
+    /// Drop `m` (pending in `f`): acknowledge it without sending it.
+    fn drop_msg(&self, s: &mut State, f: &File, m: &Msg) -> File {
+        for &(o, p) in &m.batch {
+            if p > 0 {
+                s.dropped[o as usize] |= bit(p);
+            }
+        }
+        let n = self.ack(f, m);
+        s.file = n;
+        n
     }
 
     fn admit(&self, s: &mut State, m: &Msg) {
@@ -391,6 +418,7 @@ impl Model for Deals {
             node_stopped: false,
             server: Vec::new(),
             recv: [0; 3],
+            dropped: [0; 3],
             digests: [0; 2],
             last_digest_obs: None,
             last_obs: None,
@@ -435,6 +463,11 @@ impl Model for Deals {
                         for kind in [Kind::Digest, Kind::Alert] {
                             if self.kind_due(s.t, kind) {
                                 out.push(Action::Load(a, kind));
+                                if self.fix_drop
+                                    && s.file.pending.is_some_and(|p| p.date == day(s.t))
+                                {
+                                    out.push(Action::GiveUp(a, kind));
+                                }
                             }
                         }
                     }
@@ -454,6 +487,9 @@ impl Model for Deals {
                     if s.faults < self.max_faults {
                         out.push(Action::Send(a, Outcome::Down));
                         out.push(Action::Send(a, Outcome::Lost));
+                        if self.fix_drop {
+                            out.push(Action::Send(a, Outcome::Rejected));
+                        }
                     }
                 }
                 Phase::Sent => out.push(Action::Save(a)),
@@ -497,9 +533,9 @@ impl Model for Deals {
                 n.node_stopped = true;
             }
             Action::StartRust => n.up[RUST] = true,
-            Action::Load(a, kind) => {
+            Action::Load(a, kind) | Action::GiveUp(a, kind) => {
                 let date = day(s.t);
-                let f = s.file;
+                let mut f = s.file;
                 n.runs += 1;
                 n.seen |= if a == NODE {
                     SEEN_NODE_LOAD
@@ -512,23 +548,35 @@ impl Model for Deals {
                 {
                     n.seen |= SEEN_CUTOVER;
                 }
+                let mut dropped = false;
                 if let (true, Some(p)) = (self.fix_pending, f.pending) {
-                    n.run[a] = Run {
-                        phase: Phase::Ready,
-                        kind: p.kind,
-                        date: p.date,
-                        snap: f,
-                        obs: p.obs,
-                        failed: false,
-                        polled: false,
-                        msg: Some(p),
-                    };
-                    return Some(n);
+                    let stale = self.fix_drop && p.date != date;
+                    let give_up = matches!(action, Action::GiveUp(..));
+                    if stale || give_up {
+                        f = self.drop_msg(&mut n, &f, &p);
+                        n.seen |= if stale { SEEN_STALE_DROP } else { SEEN_GAVE_UP };
+                        dropped = true;
+                    } else {
+                        n.run[a] = Run {
+                            phase: Phase::Ready,
+                            kind: p.kind,
+                            date: p.date,
+                            snap: f,
+                            obs: p.obs,
+                            failed: false,
+                            polled: false,
+                            msg: Some(p),
+                        };
+                        return Some(n);
+                    }
                 }
-                match kind {
-                    Kind::Digest if f.digest_date == date + 1 => return None,
-                    Kind::Alert if f.counts[date as usize] >= CAP => return None,
-                    _ => {}
+                let blocked = match kind {
+                    Kind::Digest => f.digest_date == date + 1,
+                    Kind::Alert => f.counts[date as usize] >= CAP,
+                };
+                if blocked {
+                    // A drop is saved even when the run then stops at its guard.
+                    return dropped.then_some(n);
                 }
                 n.run[a] = Run {
                     phase: Phase::Loaded,
@@ -578,7 +626,8 @@ impl Model for Deals {
             Action::Send(a, outcome) => {
                 let m = s.run[a].msg.expect("composed");
                 let known = s.server.contains(&m.key());
-                if outcome != Outcome::Down && (!self.dedup || !known) {
+                let admitted = matches!(outcome, Outcome::Delivered | Outcome::Lost);
+                if admitted && (!self.dedup || !known) {
                     if !known {
                         let at = n.server.partition_point(|k| *k < m.key());
                         n.server.insert(at, m.key());
@@ -595,6 +644,14 @@ impl Model for Deals {
                     Outcome::Down => {
                         n.faults += 1;
                         n.run[a] = Run::default();
+                    }
+                    Outcome::Rejected => {
+                        n.faults += 1;
+                        n.run[a] = Run::default();
+                        if self.fix_drop {
+                            let _ = self.drop_msg(&mut n, &s.run[a].snap, &m);
+                            n.seen |= SEEN_REJECT_DROP;
+                        }
                     }
                 }
             }
@@ -648,6 +705,13 @@ impl Model for Deals {
             }),
             Property::sometimes("cutover", |_, s: &State| s.seen & SEEN_CUTOVER != 0),
             Property::sometimes("digest_relists", |_, s: &State| s.seen & SEEN_RELIST != 0),
+            Property::sometimes("stale_dropped", |_, s: &State| {
+                s.seen & SEEN_STALE_DROP != 0
+            }),
+            Property::sometimes("rejected_dropped", |_, s: &State| {
+                s.seen & SEEN_REJECT_DROP != 0
+            }),
+            Property::sometimes("gave_up", |_, s: &State| s.seen & SEEN_GAVE_UP != 0),
         ]
     }
 }
@@ -661,6 +725,7 @@ fn current() -> Deals {
         fix_pending: true,
         fix_ack_delivered: true,
         fix_min_price: true,
+        fix_drop: true,
         max_runs: 4,
         max_edits: 2,
         max_faults: 1,
@@ -673,6 +738,7 @@ pub fn pre_fix() -> Deals {
         fix_pending: false,
         fix_ack_delivered: false,
         fix_min_price: false,
+        fix_drop: false,
         ..current()
     }
 }
@@ -711,12 +777,23 @@ pub fn cases(_deep: bool) -> Vec<Case> {
         v.extend(reached.iter().map(|w| (*w, Reached)));
         v
     };
-    let rust_witnesses = ["new_alert", "restart_continues", "digest_relists"];
+    let rust_witnesses = [
+        "new_alert",
+        "restart_continues",
+        "digest_relists",
+        "stale_dropped",
+        "rejected_dropped",
+        "gave_up",
+    ];
+    // No faults: nothing is refused; a stop between `Claim` and `Send` leaves a pending
+    // message for the next watcher to drop.
     let cutover_witnesses = [
         "new_alert",
         "restart_continues",
         "cutover",
         "digest_relists",
+        "stale_dropped",
+        "gave_up",
     ];
     vec![
         Case::new(

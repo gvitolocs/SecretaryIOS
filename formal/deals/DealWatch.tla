@@ -10,11 +10,14 @@
 (* digest window, 1 digest catch-up + first alert tick, 2 later alerts;    *)
 (* t = 6 is the second evening. Actor 0 is the Node watcher, 1 the Rust    *)
 (* one. "None" values are sentinels (price 3) so that TLC compares values  *)
-(* of one type.                                                            *)
+(* of one type. FixDrop: a pending message is dropped (acknowledged      *)
+(* without sending) when it is from an earlier day, when the server      *)
+(* refuses it for good (Send "rejected"), or when its attempts run out    *)
+(* (Load with giveup); `dropped` records what dropped messages carried.   *)
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS Node, Overlap, Dedup, FixPending, FixAckDelivered, FixMinPrice,
+CONSTANTS Node, Overlap, Dedup, FixPending, FixAckDelivered, FixMinPrice, FixDrop,
           MaxRuns, MaxEdits, MaxFaults
 
 Offers == 0..2
@@ -41,9 +44,9 @@ IdleRun == [phase |-> "idle", kind |-> "digest", date |-> 0, snap |-> EmptyFile,
             obs |-> Zero, failed |-> FALSE, polled |-> FALSE, msg |-> NoMsg]
 
 VARIABLES t, src, edits, faults, runs, file, run, up, nodeStopped, server,
-          recv, digests, lastDigestObs, lastObs, since, bad, seen
+          recv, dropped, digests, lastDigestObs, lastObs, since, bad, seen
 vars == <<t, src, edits, faults, runs, file, run, up, nodeStopped, server,
-          recv, digests, lastDigestObs, lastObs, since, bad, seen>>
+          recv, dropped, digests, lastDigestObs, lastObs, since, bad, seen>>
 
 (* The item's best active offer <<offer, price>> (a tie keeps offer 0), NoBest if none. *)
 Best(v, i) ==
@@ -92,13 +95,17 @@ Ack(f, m) ==
                    ELSE f.counts,
         !.pending = NoMsg]
 
-(* no_skip at the end of a successful alert run. *)
+(* What dropping m adds to `dropped`. *)
+Dropped(m) == [o \in Offers |-> dropped[o] \cup
+                 (IF DeliveredPrice(m, o) > 0 THEN {DeliveredPrice(m, o)} ELSE {})]
+
+(* no_skip at the end of a successful alert run (a dropped message is an explicit skip). *)
 Skip(r) ==
     IF r.kind = "alert" /\ r.polled /\ ~r.failed /\
        \E i \in Items :
           LET b == Best(src, i)
           IN b[2] > 0 /\ since[i] >= 2 /\ Best(r.obs, i) = b /\
-             ~(\E p \in recv[b[1]] : p <= b[2])
+             ~(\E p \in recv[b[1]] \cup dropped[b[1]] : p <= b[2])
     THEN {"skip"} ELSE {}
 
 Quiet == \A a \in Actors : run[a].phase = "idle"
@@ -115,6 +122,7 @@ Init ==
     /\ nodeStopped = FALSE
     /\ server = {}
     /\ recv = [o \in Offers |-> {}]
+    /\ dropped = [o \in Offers |-> {}]
     /\ digests = [d \in Dates |-> 0]
     /\ lastDigestObs = NoVec
     /\ lastObs = NoVec
@@ -129,7 +137,7 @@ Tick ==
                 THEN [i \in Items |-> IF Best(src, i)[2] > 0 THEN Min(since[i] + 1, 2) ELSE since[i]]
                 ELSE since
     /\ UNCHANGED <<src, edits, faults, runs, file, run, up, nodeStopped, server,
-                   recv, digests, lastDigestObs, lastObs, bad, seen>>
+                   recv, dropped, digests, lastDigestObs, lastObs, bad, seen>>
 
 Edit(o, p) ==
     /\ Quiet /\ edits < MaxEdits /\ p # src[o]
@@ -137,7 +145,7 @@ Edit(o, p) ==
     /\ edits' = edits + 1
     /\ since' = [i \in Items |-> IF Best(src', i) # Best(src, i) THEN 0 ELSE since[i]]
     /\ UNCHANGED <<t, faults, runs, file, run, up, nodeStopped, server,
-                   recv, digests, lastDigestObs, lastObs, bad, seen>>
+                   recv, dropped, digests, lastDigestObs, lastObs, bad, seen>>
 
 StopNode ==
     /\ Node /\ ~Overlap /\ up[NODE]
@@ -145,34 +153,43 @@ StopNode ==
     /\ run' = [run EXCEPT ![NODE] = IdleRun]
     /\ up' = [up EXCEPT ![NODE] = FALSE]
     /\ nodeStopped' = TRUE
-    /\ UNCHANGED <<t, src, edits, faults, runs, file, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, faults, runs, file, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since, bad>>
 
 StartRust ==
     /\ Node /\ ~Overlap /\ ~up[NODE] /\ ~up[RUST]
     /\ up' = [up EXCEPT ![RUST] = TRUE]
     /\ UNCHANGED <<t, src, edits, faults, runs, file, run, nodeStopped, server,
-                   recv, digests, lastDigestObs, lastObs, since, bad, seen>>
+                   recv, dropped, digests, lastDigestObs, lastObs, since, bad, seen>>
 
-Load(a, kind) ==
+Load(a, kind, giveup) ==
     /\ up[a] /\ run[a].phase = "idle" /\ runs < MaxRuns /\ KindDue(t, kind)
+    /\ giveup => (FixDrop /\ file.pending # NoMsg /\ file.pending.date = Day(t))
     /\ LET date == Day(t)
-           f == file
-           resend == FixPending /\ f.pending # NoMsg
-       IN /\ resend \/ ~(kind = "digest" /\ f.dd = date + 1)
-          /\ resend \/ ~(kind = "alert" /\ f.counts[date] >= CAP)
+           p == file.pending
+           has == FixPending /\ p # NoMsg
+           stale == has /\ FixDrop /\ p.date # date
+           drop == has /\ (stale \/ giveup)
+           resend == has /\ ~drop
+           f == IF drop THEN Ack(file, p) ELSE file
+           blocked == (kind = "digest" /\ f.dd = date + 1) \/ (kind = "alert" /\ f.counts[date] >= CAP)
+       IN /\ resend \/ drop \/ ~blocked
+          /\ file' = f
+          /\ dropped' = IF drop THEN Dropped(p) ELSE dropped
           /\ run' = [run EXCEPT ![a] =
                 IF resend
-                THEN [phase |-> "ready", kind |-> f.pending.kind, date |-> f.pending.date,
-                      snap |-> f, obs |-> f.pending.obs, failed |-> FALSE,
-                      polled |-> FALSE, msg |-> f.pending]
+                THEN [phase |-> "ready", kind |-> p.kind, date |-> p.date,
+                      snap |-> f, obs |-> p.obs, failed |-> FALSE,
+                      polled |-> FALSE, msg |-> p]
+                ELSE IF blocked THEN IdleRun
                 ELSE [IdleRun EXCEPT !.phase = "loaded", !.kind = kind, !.date = date,
                       !.snap = f]]
-    /\ runs' = runs + 1
-    /\ seen' = seen \cup {IF a = NODE THEN "nodeLoad" ELSE "rustLoad"}
+          /\ seen' = seen \cup {IF a = NODE THEN "nodeLoad" ELSE "rustLoad"}
                     \cup (IF a = RUST /\ (nodeStopped \/ Overlap) /\ (~Overlap \/ "nodeLoad" \in seen)
                           THEN {"cutover"} ELSE {})
-    /\ UNCHANGED <<t, src, edits, faults, file, up, nodeStopped, server, recv, digests,
+                    \cup (IF stale THEN {"staleDrop"} ELSE IF drop THEN {"gaveUp"} ELSE {})
+    /\ runs' = runs + 1
+    /\ UNCHANGED <<t, src, edits, faults, up, nodeStopped, server, recv, digests,
                    lastDigestObs, lastObs, since, bad>>
 
 (* mask bit 0: food waste failed, bit 1: flyers failed. *)
@@ -184,7 +201,7 @@ Poll(a, mask) ==
     /\ run' = [run EXCEPT ![a].obs = [o \in Offers |-> IF Lost(mask, Source(o)) THEN 0 ELSE src[o]],
                           ![a].failed = (mask # 0), ![a].polled = TRUE, ![a].phase = "polled"]
     /\ faults' = IF mask # 0 THEN faults + 1 ELSE faults
-    /\ UNCHANGED <<t, src, edits, runs, file, up, nodeStopped, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, runs, file, up, nodeStopped, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since, bad, seen>>
 
 Decide(a) ==
@@ -200,7 +217,7 @@ Decide(a) ==
                /\ bad' = bad
           ELSE /\ run' = [run EXCEPT ![a] = IdleRun]
                /\ bad' = bad \cup Skip(r)
-    /\ UNCHANGED <<t, src, edits, faults, runs, file, up, nodeStopped, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, faults, runs, file, up, nodeStopped, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since, seen>>
 
 Claim(a) ==
@@ -208,7 +225,7 @@ Claim(a) ==
     /\ file' = [run[a].snap EXCEPT !.pending = run[a].msg]
     /\ run' = [run EXCEPT ![a].snap = [run[a].snap EXCEPT !.pending = run[a].msg],
                           ![a].phase = "ready"]
-    /\ UNCHANGED <<t, src, edits, faults, runs, up, nodeStopped, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, faults, runs, up, nodeStopped, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since, bad, seen>>
 
 (* What an admitted message shows the witnesses (the owner receives it in Send). *)
@@ -221,8 +238,9 @@ AdmitSeen(m) ==
 Send(a, outcome) ==
     /\ up[a] /\ run[a].phase = "ready"
     /\ outcome = "delivered" \/ faults < MaxFaults
+    /\ outcome = "rejected" => FixDrop
     /\ LET m == run[a].msg
-           admitted == outcome # "down" /\ (~Dedup \/ Key(m) \notin server)
+           admitted == outcome \in {"delivered", "lost"} /\ (~Dedup \/ Key(m) \notin server)
            seen1 == IF admitted THEN seen \cup AdmitSeen(m) ELSE seen
        IN /\ server' = IF admitted THEN server \cup {Key(m)} ELSE server
           /\ IF admitted
@@ -244,15 +262,24 @@ Send(a, outcome) ==
                     /\ run' = [run EXCEPT ![a].phase = "sent"]
                     /\ faults' = faults
                     /\ seen' = seen1
+                    /\ UNCHANGED <<file, dropped>>
                [] outcome = "lost" ->
                     /\ run' = [run EXCEPT ![a] = IdleRun]
                     /\ faults' = faults + 1
                     /\ seen' = seen1 \cup {"gap"}
+                    /\ UNCHANGED <<file, dropped>>
                [] outcome = "down" ->
                     /\ run' = [run EXCEPT ![a] = IdleRun]
                     /\ faults' = faults + 1
                     /\ seen' = seen1
-    /\ UNCHANGED <<t, src, edits, runs, file, up, nodeStopped, since>>
+                    /\ UNCHANGED <<file, dropped>>
+               [] outcome = "rejected" ->
+                    /\ run' = [run EXCEPT ![a] = IdleRun]
+                    /\ faults' = faults + 1
+                    /\ file' = Ack(run[a].snap, m)
+                    /\ dropped' = Dropped(m)
+                    /\ seen' = seen1 \cup {"rejectDrop"}
+    /\ UNCHANGED <<t, src, edits, runs, up, nodeStopped, since>>
 
 Save(a) ==
     /\ up[a] /\ run[a].phase = "sent"
@@ -262,14 +289,14 @@ Save(a) ==
           /\ bad' = bad \cup (IF Key(m) \notin server THEN {"ack"} ELSE {}) \cup Skip(r)
     /\ run' = [run EXCEPT ![a] = IdleRun]
     /\ seen' = IF "gap" \in seen THEN seen \cup {"resumed"} ELSE seen
-    /\ UNCHANGED <<t, src, edits, faults, runs, up, nodeStopped, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, faults, runs, up, nodeStopped, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since>>
 
 SkipSave(a) ==
     /\ up[a] /\ run[a].phase = "skipsave"
     /\ file' = [run[a].snap EXCEPT !.dd = run[a].date + 1]
     /\ run' = [run EXCEPT ![a] = IdleRun]
-    /\ UNCHANGED <<t, src, edits, faults, runs, up, nodeStopped, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, faults, runs, up, nodeStopped, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since, bad, seen>>
 
 Crash(a) ==
@@ -277,7 +304,7 @@ Crash(a) ==
     /\ seen' = IF run[a].phase = "sent" THEN seen \cup {"gap"} ELSE seen
     /\ faults' = faults + 1
     /\ run' = [run EXCEPT ![a] = IdleRun]
-    /\ UNCHANGED <<t, src, edits, runs, file, up, nodeStopped, server, recv, digests,
+    /\ UNCHANGED <<t, src, edits, runs, file, up, nodeStopped, server, recv, dropped, digests,
                    lastDigestObs, lastObs, since, bad>>
 
 Next ==
@@ -285,10 +312,10 @@ Next ==
     \/ \E o \in Offers, p \in 0..2 : Edit(o, p)
     \/ StopNode \/ StartRust
     \/ \E a \in Actors :
-          \/ \E kind \in {"digest", "alert"} : Load(a, kind)
+          \/ \E kind \in {"digest", "alert"}, giveup \in BOOLEAN : Load(a, kind, giveup)
           \/ \E mask \in 0..3 : Poll(a, mask)
           \/ Decide(a) \/ Claim(a) \/ Save(a) \/ SkipSave(a) \/ Crash(a)
-          \/ \E outcome \in {"delivered", "lost", "down"} : Send(a, outcome)
+          \/ \E outcome \in {"delivered", "lost", "down", "rejected"} : Send(a, outcome)
 
 Spec == Init /\ [][Next]_vars
 
@@ -305,4 +332,7 @@ NeverNewAlert == "newAlert" \notin seen
 NeverRestartContinues == "resumed" \notin seen
 NeverCutover == "cutover" \notin seen
 NeverDigestRelists == "relist" \notin seen
+NeverStaleDrop == "staleDrop" \notin seen
+NeverRejectDrop == "rejectDrop" \notin seen
+NeverGiveUp == "gaveUp" \notin seen
 =============================================================================
