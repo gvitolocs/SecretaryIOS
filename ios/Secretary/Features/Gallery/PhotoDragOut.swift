@@ -26,20 +26,35 @@ struct PhotoDragOut: ViewModifier {
 
     func body(content: Content) -> some View {
         GeometryReader { geo in
-            ZStack {
+            dismissGesture(ZStack {
                 Color.black.opacity(out.backdrop).ignoresSafeArea()
                 content
                     .scaleEffect(out.scale)
                     .offset(x: out.x, y: out.y)
                     // The pager stands still while the photo is out (setting it cancels its pan).
                     .scrollDisabled(axis == "out")
-            }
-            // A UIKit pan, not a SwiftUI DragGesture: above the pager's scroll view a DragGesture never
-            // got the touch (the scroll view's pan won), so a swipe down did nothing on the iPhone.
-            .gesture(VerticalPan(enabled: enabled,
-                                 changed: { t, vy in changed(t, vy, geo.size) },
-                                 ended: { t, vy in ended(t, vy, geo.size) }))
+            }, geo.size)
         }
+    }
+
+    /// iOS 18+: a UIKit pan, not a SwiftUI DragGesture: above the pager's scroll view a DragGesture
+    /// never got the touch (the scroll view's pan won), so a swipe down did nothing on the iPhone.
+    @ViewBuilder
+    private func dismissGesture<V: View>(_ view: V, _ size: CGSize) -> some View {
+        if #available(iOS 18.0, *) {
+            view.gesture(VerticalPan(enabled: enabled,
+                                     changed: { t, vy in changed(t, vy, size) },
+                                     ended: { t, vy in ended(t, vy, size) }))
+        } else {
+            view.simultaneousGesture(DragGesture(minimumDistance: 10)
+                .onChanged { g in changed(g.translation, Self.velocity(g), size) }
+                .onEnded { g in ended(g.translation, Self.velocity(g), size) }, including: enabled ? .all : .subviews)
+        }
+    }
+
+    /// The vertical velocity that `ask` turns back into SwiftUI's predicted end.
+    private static func velocity(_ g: DragGesture.Value) -> CGFloat {
+        (g.predictedEndTranslation.height - g.translation.height) / 0.25
     }
 
     private func changed(_ t: CGSize, _ vy: CGFloat, _ size: CGSize) {
@@ -103,6 +118,7 @@ struct PhotoDragOut: ViewModifier {
 
 /// One finger, mostly vertical at the start, recognised together with the pager's scroll pan (which
 /// then stays put: `scrollDisabled` while the photo is out). Off while the photo is zoomed.
+@available(iOS 18.0, *)
 struct VerticalPan: UIGestureRecognizerRepresentable {
     var enabled: Bool
     var changed: (CGSize, CGFloat) -> Void
