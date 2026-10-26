@@ -70,7 +70,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 6 | Lucina Ink device sync (outbox, `POST /v1/library/sync`) | `ink_sync.rs` (I1–I7) | `inksync/InkSync.tla` | `library_merge.rs` | `crates/ink-sync` (`outbox.rs`, `client.rs`, `state.rs`, `transport.rs`); `crates/secretary-server/src/library.rs::sync`; `crates/ink-library/src/import.rs::merge` |
 | 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 | 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
-| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
+| 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift`; p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
 | 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 | 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
@@ -135,8 +135,8 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | Pk game control, lucina-game-link 2f837e0 | 26 628 | 40 | `no_clock_frame_during_input`, `pause_within_one_step`, `no_save_during_input` **violated**; one driver holds |
 | Pk + fixes Pk1 (clock under lock), Pk2 (no save while busy) | 2 582 | 17 | all hold (+ `paused_in_battle_then_resumed` reached) |
 | M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
-| M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
-| M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
+| M before fix M3 (ingest decided once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
+| M current (M3 fixed in cc5e663) | 2 000 522 | 25 | all hold |
 | V voice memos, current code (before 2026-10-25) | 26 253 | 43 | `no_duplicate_notes`, `telegram_at_most_once`, `whisper_never_downgraded`, `no_lost_audio`, `finished_…` **violated** |
 | V + fixes (kernel K1/K6/K7, iPhone recovery) | 24 930 | 37 | all hold |
 | V fixed, gpu-lease without dead-holder pruning | 21 906 | 36 | `finished_with_one_note_pdf_notification` **violated** |
@@ -183,7 +183,7 @@ property `EventuallyAllApplied` under weak fairness); `InkSync_highlights_deep` 
 bounds): 501 634, the same space as I2 (about 5 min); `InkSync_status_deep` (the I1 bounds, with liveness):
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count).
 `GameControl_fixed`: 11 208; `GameControl_current_driver` (one driver in the current code): 116 344.
-`MediaBackup_current`: 3 019 895 and `MediaBackup_fixed`: 2 000 522, the same spaces as the Stateright M cases;
+`MediaBackup_fixed` (the current code): 2 000 522, the same space as the Stateright `M current` case;
 `MediaBackup_fixed_deep` (`--deep`, the deep M bounds): 8 518 209, the same space as the deep Stateright case (about 80 s).
 1 715 162 (about 20 min; TLC's state differs from Stateright's in ghost variables, hence the different count). `Memos_fixed`: 24 930, the same space as Stateright's M + fixes.
 `OtpForwarding`: 950 738, `OtpForwarding_owner`: 1 877 816, `OtpForwarding_restart`: 1 017 387 (the failed
@@ -1170,11 +1170,11 @@ Found live (a 429 storm against p1's 60/min, which the gallery's tiles also spen
 play tokens so tiles no longer spend the device's requests. Verus (e) proves the decision and the 48-per-minute
 budget.
 
-### M3: two finishes of the same bytes can both create an item (low; found by the model)
+### M3: two finishes of the same bytes could both create an item (low; found by the model). **Fixed.**
 
 `ingest::ingest_file` reads `known_for` (by hash, by asset) under one catalog lock, then moves the file into the
 store (`place_new`, a durable copy to the big disk: seconds for a video) and runs `insert_item` under the lock
-again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M current`):
+again. Two finishes of the same bytes in that window both decide New. Shortest trace (`M before fix M3`):
 
 ```
 Request(0, Ok) x3      device 0: create, put, finish photo 0 (decide: unknown bytes → New)
@@ -1185,10 +1185,13 @@ FinishStep(1)          insert item B, the same hash: the photo shows twice
 
 The two finishes can come from two devices or from a phone upload racing a Lucina ingest (`/internal/v1/ingest`:
 a Telegram or share-sheet attachment) of the same picture. There is no unique index on `items.hash` (an edit can
-legitimately bring two items to the same bytes), so nothing catches it. Proposed fix, modelled as `M + fix M3`
-(all hold): decide again inside `insert_item`'s transaction, and turn the insert into a duplicate when an item with
-this hash appeared meanwhile (the `by_asset` branch already has the unique `items_asset` index behind it). Not
-changed here: it is a lucina-media change with a deploy, outside this verification pass.
+legitimately bring two items to the same bytes), so nothing catches it.
+
+Fixed in cc5e663 (modelled as `M current`, all hold): `insert_new_or_duplicate` looks for an item with this hash
+again in the same `Db::with` as the insert and turns the insert into a duplicate of that item when one appeared
+meanwhile (recording the phone asset on it, as the Duplicate branch does). Regression tests in `ingest.rs`: the
+decided-then-raced insert, and two threads ingesting the same new bytes 20 times, which fails 3 runs out of 3 on
+the old code.
 ### B1: a crash after the vault copy, then a rename, makes a second note (low). **Fixed.**
 
 The worker recorded the note's path only after the rsync. If it crashed in between and the owner renamed the memo
