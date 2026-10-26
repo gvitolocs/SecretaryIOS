@@ -34,6 +34,7 @@ members = [
     "crates/lucina-android",
     "crates/lucina-android-calls",
     "crates/lucina-memo",
+    "crates/lucina-diagnostics",
     "crates/secretary-tasks",
     "crates/secretary-player",
     "crates/secretary-player-wasm",
