@@ -226,7 +226,9 @@ struct GalleryGrid: View {
     let open: (GalleryItem) -> Void
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 2)], spacing: 2) {
+        // Google Photos on a phone: 4 columns (photos_photogrid_calculator_compact_column_count);
+        // wider screens get more, about 90 pt each.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 2)], spacing: 2) {
             ForEach(items) { item in
                 Button { open(item) } label: {
                     // A square cell whatever the picture's shape: the thumb fills it and is cropped.
@@ -442,7 +444,8 @@ private struct ViewerScrim: View {
     var body: some View {
         LinearGradient(colors: [.black.opacity(0.75), .black.opacity(0)], startPoint: top ? .top : .bottom,
                        endPoint: top ? .bottom : .top)
-            .frame(height: top ? 140 : 170)
+            // Google Photos' lightbox_top_gradient_height and lightbox_bottom_gradient_height.
+            .frame(height: top ? 140 : 300)
             .frame(maxWidth: .infinity)
             .ignoresSafeArea()
             .allowsHitTesting(false)
@@ -577,27 +580,37 @@ struct GalleryViewer: View {
         media.presented = true
     }
 
+    private static let pageGap: CGFloat = 24
+
     /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
     /// (legacy) re-created every page from the first one to the current one on each change (seen
     /// on the iPhone: 9 page loads for one swipe at the 9th photo, growing with the position).
     @ViewBuilder
     private var pager: some View {
         if gallerySmooth {
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 0) {
-                    ForEach(store.items) { it in
-                        page(it)
-                            .containerRelativeFrame([.horizontal, .vertical])
-                            .id(it.id)
+            // Google Photos leaves a 24 dp gap between photos while swiping (photos_pager_page_margin):
+            // each page is the screen plus 12 pt of black on both sides, and the scroll view is that
+            // much wider than the screen, so paging still lands on whole photos.
+            GeometryReader { geo in
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 0) {
+                        ForEach(store.items) { it in
+                            page(it)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .padding(.horizontal, Self.pageGap / 2)
+                                .id(it.id)
+                        }
                     }
+                    .scrollTargetLayout()
                 }
-                .scrollTargetLayout()
+                .frame(width: geo.size.width + Self.pageGap)
+                .offset(x: -Self.pageGap / 2)
+                .scrollTargetBehavior(.paging)
+                .scrollPosition(id: Binding(get: { current }, set: { if let id = $0 { current = id } }))
+                .scrollIndicators(.hidden)
+                // A zoomed photo pans; the pager waits until it is fitted again.
+                .scrollDisabled(zoomedID == current)
             }
-            .scrollTargetBehavior(.paging)
-            .scrollPosition(id: Binding(get: { current }, set: { if let id = $0 { current = id } }))
-            .scrollIndicators(.hidden)
-            // A zoomed photo pans; the pager waits until it is fitted again.
-            .scrollDisabled(zoomedID == current)
         } else {
             TabView(selection: $current) {
                 ForEach(store.items) { it in
