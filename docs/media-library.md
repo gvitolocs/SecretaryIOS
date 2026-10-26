@@ -38,6 +38,35 @@ time runs beside (but never ahead of) a viewer's job:
   load), its output removed, and it returns to the queue as paused, not failed. A failed VAAPI job is retried
   once on libx264 in the night window. Viewers pressing play are not throttled by any of this.
 
+## The Drive (2026-10-26)
+
+Nextcloud is gone; its files live in Drive folders on mybook (`Lezioni`: university lectures, `Tracer`: a code and
+data project, …), listed in `LUCINA_MEDIA_FOLDERS` like the film folders. Every folder that is not a film folder is
+the Drive, and **every regular file** in it is indexed in place (`drive.rs`): documents, code, archives and anything
+else, not only media. Nothing is copied: the catalog keeps type, size, mtime, the path within the folder and the
+blake3 of the bytes (the `blobs` row references the file; a phone copy of the same bytes becomes the owned original,
+kernel DK3).
+
+- **Scans** every 30 minutes (and `lucina-media index-folder <label> <dir>`). Skipped: hidden files and
+  `LUCINA_MEDIA_DRIVE_IGNORE` (`;`-separated names, `*` at either end; default `.git`, `node_modules`, `target`,
+  `__pycache__`, `.DS_Store`, `.venv`, `*.pyc`, Office lock files, …), and symlinks (a link in a project must not pull
+  the rest of the disk in). `LUCINA_MEDIA_DRIVE_HIDDEN=1` indexes hidden files too. An unchanged file (same size and
+  mtime) costs one lookup; a new or changed one is hashed. A file gone from the folder is trashed in the catalog,
+  never on disk, and only after a clean walk of the folder on the filesystem it was indexed from (DK4: an unmounted
+  mybook never empties the Drive).
+- **Types** (`doctype.rs`): pdf, document, spreadsheet, presentation, text, code, archive, image, video, audio,
+  other. Each has a preview: `pdf`, `office`, `text`, `code`, `archive`, the media viewers, or `none`.
+- **Background work** (`drive_worker`, one job at a time, newest first): the text of PDFs (poppler `pdftotext`, else
+  pure-Rust `pdf-extract`), Office files (docx/xlsx/pptx/odt/ods/odp read from their XML in Rust; RTF), text and
+  code goes into a full-text index (`drive_fts`); a PDF's first page (`pdftoppm`) becomes its thumbnail; Office files
+  become PDFs with LibreOffice (`soffice --headless`) when installed. External tools and the extractor run in
+  `systemd-run --user --scope -p CPUQuota=50% -p MemoryMax=2G` under `nice -n 19`
+  (`LUCINA_MEDIA_DRIVE_CPU_QUOTA`), with a timeout; the worker and the hashing wait while Tctl ≥ 90 °C
+  (`LUCINA_MEDIA_DRIVE_MAX_TEMP`) or the load is over `LUCINA_MEDIA_PREPARE_MAX_LOAD`. Tools are found on `PATH`;
+  `LUCINA_MEDIA_PDFTOTEXT`, `LUCINA_MEDIA_PDFTOPPM`, `LUCINA_MEDIA_SOFFICE` take a path or `0`.
+- **Scopes stay apart** (DK2): the Gallery is the phones' backups only, Films the film folders, the Drive everything
+  else. A phone backup is in the Gallery even if filed in a film album.
+
 ## API (all under `/v1/media`)
 
 - `GET items?scope=&kind=&from=&to=&q=&near=lat,lon,km&album=&favorite=&trashed=&cursor=&limit=` gives newest first
@@ -61,6 +90,19 @@ time runs beside (but never ahead of) a viewer's job:
   3. Optionally `PUT uploads/{id}/preview` (JPEG).
   4. Then `POST uploads/{id}/finish`, which is idempotent.
   - The same device + asset id with new bytes makes a new version of the same item.
+- The Drive:
+  - `GET drive`: the Drive folders (files, bytes, last change), the other Drive collections (voice memos, imports,
+    shares: open them with `items?album=`), and which converters exist.
+  - `GET drive/browse?folder=&path=&sort=name|modified|size|type&order=asc|desc&type=&q=&recursive=1&offset=&limit=`:
+    breadcrumbs, the subfolders (with recursive counts), then the files. `q` searches the subtree (names, folder
+    names, content). An unsafe `path` (`..`, `.`, empty segments, `/` at either end, `\`, NUL) is 400 (DK1).
+  - Items carry `drive` (`folder`, `path`, `dir`, `name`, `ext`, `type`, `preview`, `language`, `modified`, `text`)
+    and, on searches that matched the content, `snippet`. `items?type=` filters by Drive type; `q` also matches content.
+  - `GET items/{id}/text?highlight=1&max_bytes=`: a text or code file (with syntax tokens: syntect, classes `kw`,
+    `str`, `com`, …), or the extracted text of a PDF or Office file (read on demand when the worker has not been
+    there). `GET items/{id}/pdf`: a PDF, or an Office file converted (503 without LibreOffice).
+    `GET items/{id}/archive`: zip, tar, tar.gz and 7z listings (nothing is extracted). `GET items/{id}/original?download=1`:
+    `Content-Disposition: attachment` with the real name.
 - `GET devices/{device}/assets`, `GET summary`, `GET events` (SSE: `item.added|updated|trashed`).
 - Internal: `PUT|DELETE /internal/v1/external/{source}/{id}` indexes a file in place (voice memos, the film folders), `POST /internal/v1/import {path, source, album}`.
 
@@ -72,8 +114,10 @@ The upload protocol's decisions (chunk offsets, finish once, dedupe or version) 
   - The Gallery (a plugin card, `GalleryScreen` via `app.showGallery`, `scope=gallery`) shows the phones' photos and
     videos: a timeline by month, search, albums, and a viewer that zooms out of its tile and back. Phone photos come
     from PhotoKit; server renditions are cached on disk and a cut-off preview resumes with `Range`.
-  - The Drive (`DriveScreen`, `app.showDrive`, `scope=drive`) lists the archive as folders and files; photos and
-    videos open in the same viewer, audio in the player, other files in Quick Look. Films have their own plugin
+  - The Drive (`DriveScreen`, `app.showDrive`) browses the Drive folders with breadcrumbs, sort, type chips and search
+    (`GET drive`, `drive/browse`); PDFs and Office files open in Quick Look, text and code in a highlighted viewer,
+    archives as a listing, media in the viewers; every preview has Share and Download. Links: `/drive`,
+    `/drive/folder/<folder>/<path>`, `/drive/file/<id>` (branch `cloud/drive-ios`). Films have their own plugin
     (the player session's, `scope=films`).
   - Photo backup (`PhotoBackup.swift`) reads PhotoKit newest first.
     - It sends originals (edited renderings as new versions, both halves of Live Photos) and a JPEG preview, because the server cannot decode HEIC.
