@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::attention::{self, Device, Gate, GateInput, Ledger, Presence, Quiet};
-use crate::channels::{Channels, Outgoing};
+use crate::channels::{event_place, Channels, Outgoing};
 use crate::compose::{ComposeRequest, Composer};
 use crate::config::Config;
 use crate::lang;
@@ -544,6 +544,7 @@ impl Engine {
             why: why.clone(),
             language: language.to_owned(),
             now,
+            place: p.get("event").and_then(event_place),
         };
         let delivery = self.d.channels.deliver(&out, dry).await;
         if let (Some(r), Some(o)) = (delivery.result.as_object(), result.as_object_mut()) {
@@ -720,6 +721,7 @@ impl Engine {
             why: why.clone(),
             language: language.to_owned(),
             now,
+            place: None,
         };
         let delivery = self.d.channels.deliver(&out, cfg.dry_run).await;
         let mut result = delivery.result;

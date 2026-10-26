@@ -151,7 +151,11 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 Err(e) if e.is_transient() => kernel::Gpu::Busy,
                 Err(_) => kernel::Gpu::Failed,
             };
-            let (t, source) = match (kernel::transcript_choice(existing, gpu, device.is_some()), result, device) {
+            let (t, source) = match (
+                kernel::transcript_choice(existing, gpu, device.is_some()),
+                result,
+                device,
+            ) {
                 (kernel::Choice::UseWhisper, Ok(t), _) => (t, "whisper"),
                 (kernel::Choice::UseDevice, Err(e), Some(d)) => {
                     tracing::info!(%id, reason = %e, "using the iPhone's transcript for now");
@@ -160,13 +164,19 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 (kernel::Choice::Wait, Err(e), _) => {
                     let _ = tokio::fs::remove_file(&wav).await;
                     let why = match e {
-                        transcribe::SttError::ModelMissing(_) => "waiting for the Whisper model (MyBook locked?)",
+                        transcribe::SttError::ModelMissing(_) => {
+                            "waiting for the Whisper model (MyBook locked?)"
+                        }
                         _ => "waiting for the GPU",
                     };
                     return Err(StepError::Later(Duration::from_secs(60), why.into()));
                 }
                 (_, Err(e), _) => return Err(e.into()),
-                (c, Ok(_), _) => return Err(StepError::Failed(format!("transcript choice {c:?} without a transcript"))),
+                (c, Ok(_), _) => {
+                    return Err(StepError::Failed(format!(
+                        "transcript choice {c:?} without a transcript"
+                    )))
+                }
             };
             write_json(&store.transcript_path(id), &t)?;
             let _ = tokio::fs::remove_file(&wav).await;
@@ -318,7 +328,9 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
         app.cfg.vault.is_some(),
         m.steps.notified_at.is_some(),
     ) {
-        return Err(StepError::Failed("a step is missing; not marking done".into()));
+        return Err(StepError::Failed(
+            "a step is missing; not marking done".into(),
+        ));
     }
 
     let m = store.update(id, |m| {

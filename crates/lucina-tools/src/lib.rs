@@ -114,6 +114,11 @@ pub enum Effect {
         path: String,
         count: usize,
     },
+    /// Calendar events the tool returned (secretary-server shape, RFC 3339
+    /// times): the reply gets a map card for those it names that have a location.
+    CalendarEvents {
+        events: Vec<Value>,
+    },
 }
 
 /// External endpoints (overridable for tests).

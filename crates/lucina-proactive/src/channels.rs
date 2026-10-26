@@ -197,6 +197,24 @@ pub struct Outgoing {
     pub why: String,
     pub language: String,
     pub now: DateTime<Utc>,
+    /// `meta.place` (an event with a location; see [`event_place`]).
+    pub place: Option<Value>,
+}
+
+/// The map card under a calendar reminder (`docs/lucina-message-format.md`,
+/// `place` without `type`): the event's title, location, start, end and id,
+/// checked by the v1 block normalizer. `None` without a location.
+pub fn event_place(event: &Value) -> Option<Value> {
+    let address = event["location"].as_str().map(str::trim).unwrap_or("");
+    if address.is_empty() {
+        return None;
+    }
+    let mut place = lucina_store::rich::normalize_block(&json!({
+        "type": "place", "kind": "event", "title": event["title"], "address": address,
+        "when": event["start"], "end": event["end"], "eventId": event["id"],
+    }))?;
+    place.as_object_mut()?.remove("type");
+    Some(place)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -225,7 +243,7 @@ impl Channels {
 
     /// The timeline line (Node's item format, plus the proactive meta).
     pub fn timeline_item(&self, m: &Outgoing, id: &str) -> Value {
-        json!({
+        let mut item = json!({
             "id": id,
             "ts": m.now.to_rfc3339_opts(SecondsFormat::Millis, true),
             "channel": "other",
@@ -239,7 +257,11 @@ impl Channels {
                 "why": text::clip(&m.why, 400),
                 "actions": m.actions,
             },
-        })
+        });
+        if let Some(place) = &m.place {
+            item["meta"]["place"] = place.clone();
+        }
+        item
     }
 
     pub fn notify_body(&self, m: &Outgoing, timeline_id: Option<&str>) -> Value {

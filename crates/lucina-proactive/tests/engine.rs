@@ -13,7 +13,7 @@ use lucina_proactive::channels::{Channels, Telegram, TimelineSink};
 use lucina_proactive::compose::TemplateComposer;
 use lucina_proactive::config::{Config, TelegramMode};
 use lucina_proactive::engine::{Deps, Engine};
-use lucina_proactive::model::{Decision, Kind};
+use lucina_proactive::model::{Decision, Kind, Outreach};
 use lucina_proactive::secretary::{ApiError, CalEvent, NoteSummary, SecretaryApi};
 use lucina_proactive::sources::calendar::CalendarSource;
 use lucina_proactive::sources::health::HealthSource;
@@ -981,4 +981,69 @@ async fn a_tick_is_skipped_while_another_tick_holds_the_lock() {
     assert!(!r.skipped);
     assert_eq!(r.outreach.len(), 1);
     assert!(w.store.try_tick_lock().await.unwrap().is_some(), "released");
+}
+
+/// A meeting with prep material, optionally at a place: the outreach and,
+/// when sent, the timeline item.
+async fn meeting_outreach(dry_run: bool, location: Option<&str>) -> (Outreach, Option<Value>) {
+    let w = world(config(dry_run));
+    let now = at(NOON_ISH);
+    let mut e = event(
+        "iphone:42",
+        "Hack Night: Rust meets AI",
+        now + Duration::minutes(60),
+    );
+    e.location = location.map(str::to_owned);
+    w.api.events.lock().unwrap().push(e);
+    w.api.notes.lock().unwrap().push(note(
+        "hack-night",
+        "Hack Night: Rust meets AI — talk ideas",
+        true,
+    ));
+    let r = w.engine.tick(now, false).await.unwrap();
+    assert_eq!(r.outreach.len(), 1, "{:#?}", r.decisions);
+    let item = w
+        .sink
+        .0
+        .lock()
+        .unwrap()
+        .first()
+        .map(|l| serde_json::from_str(l).unwrap());
+    if !dry_run {
+        // The push text is unchanged: the place is only in the timeline meta.
+        let n = w.api.notified.lock().unwrap().clone();
+        assert!(n[0].get("place").is_none() && n[0]["data"].get("place").is_none());
+        assert!(!n[0]["body"].as_str().unwrap().contains("📍"));
+    }
+    (r.outreach[0].clone(), item)
+}
+
+#[tokio::test]
+async fn a_reminder_for_an_event_with_a_location_carries_its_place() {
+    let start = at(NOON_ISH) + Duration::minutes(60);
+    let (_, item) = meeting_outreach(false, Some(" Folkehuset Møllestien ")).await;
+    let item = item.unwrap();
+    assert_eq!(item["meta"]["place"]["address"], "Folkehuset Møllestien");
+    assert_eq!(item["meta"]["place"]["kind"], "event");
+    assert!(item["meta"]["place"].get("type").is_none());
+    let (o, _) = meeting_outreach(true, Some("Folkehuset Møllestien")).await;
+    assert_eq!(
+        o.result["wouldAppend"]["meta"]["place"],
+        json!({
+            "title": "Hack Night: Rust meets AI", "address": "Folkehuset Møllestien",
+            "when": start.to_rfc3339(), "end": (start + Duration::hours(1)).to_rfc3339(),
+            "eventId": "iphone:42", "kind": "event"
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_reminder_without_a_location_has_no_place() {
+    let (_, item) = meeting_outreach(false, None).await;
+    let item = item.unwrap();
+    assert_eq!(item["meta"]["kind"], "proactive");
+    assert!(item["meta"].get("place").is_none());
+    let (o, _) = meeting_outreach(true, Some("   ")).await;
+    assert_eq!(o.result["wouldAppend"]["meta"]["kind"], "proactive");
+    assert!(o.result["wouldAppend"]["meta"].get("place").is_none());
 }

@@ -183,6 +183,8 @@ struct Finish {
     job_plan: Option<Value>,
     /// Buttons the tools asked for (a Gallery page with what Lucina found).
     routes: Vec<Value>,
+    /// Calendar events the turn read: the reply gets map cards for those it names.
+    calendar_events: Vec<Value>,
 }
 
 impl Finish {
@@ -196,6 +198,7 @@ impl Finish {
             job: None,
             job_plan: None,
             routes: Vec::new(),
+            calendar_events: Vec::new(),
         }
     }
 
@@ -420,6 +423,7 @@ async fn run_turn_inner(
         &finish.action_result,
         // Secrets replies are fixed texts: no model rewrite.
         !finish.action.starts_with("secrets_"),
+        &finish.calendar_events,
     )
     .await;
     let rich_msg = with_routes(rich_msg, &finish.routes);
@@ -470,7 +474,10 @@ async fn run_turn_inner(
 
 /// `LUCINA_RICH_REPLIES=true`: the reply as Lucina message format v1, plus the
 /// plain fallback text (timeline, `reply`, MCP callers, old clients) and the
-/// text to remember (without the button hints). Off: the reply unchanged.
+/// text to remember (without the button hints). Calendar events the reply
+/// names get place blocks, and places get coordinates when the map server's
+/// geocoder is configured. Off: the reply unchanged.
+#[allow(clippy::too_many_arguments)]
 async fn rich_reply(
     st: &AppState,
     reply: &str,
@@ -478,6 +485,7 @@ async fn rich_reply(
     action: &str,
     action_result: &str,
     use_model: bool,
+    calendar_events: &[Value],
 ) -> (Option<lucina_store::rich::RichMessage>, String, String) {
     if !st.cfg.rich_replies {
         return (None, reply.to_owned(), reply.to_owned());
@@ -490,7 +498,12 @@ async fn rich_reply(
         use_model,
     };
     match crate::rich::compose(&st.model, draft, st.cfg.rich_compose_timeout).await {
-        Some(m) => {
+        Some(mut m) => {
+            let final_text = m.plain_text(false);
+            crate::places::add_calendar_places(&mut m, calendar_events, &final_text);
+            if let Some(g) = &st.geocoder {
+                g.fill(&mut m.blocks).await;
+            }
             let (text, remembered) = (m.plain_text(true), m.plain_text(false));
             (Some(m), text, remembered)
         }
@@ -881,7 +894,11 @@ async fn json_turn(
                 tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
                 return Finish::refusal(&persona, blocked);
             }
-            Some(Ok(o)) => return Finish::reply(o.reply, &o.action).with(o.action_result, o.meta),
+            Some(Ok(o)) => {
+                let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
+                f.calendar_events = o.events;
+                return f;
+            }
             None => {}
         }
     }
@@ -1442,7 +1459,7 @@ fn spawn_job(
                 };
                 // Job results are formatted without another model call.
                 let (rich_msg, text, _) =
-                    rich_reply(&st, &result, &message, &action, "", false).await;
+                    rich_reply(&st, &result, &message, &action, "", false, &[]).await;
                 let item = record(text, rich_msg.as_ref());
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
@@ -1567,6 +1584,14 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
     }) {
         f.routes.push(gallery_action(&path, count));
     }
+    f.calendar_events = effects
+        .iter()
+        .flat_map(|e| match e {
+            Effect::CalendarEvents { events } => events.as_slice(),
+            _ => &[],
+        })
+        .cloned()
+        .collect();
     if let Some((reminder, created)) = effects.iter().rev().find_map(|e| match e {
         Effect::ReminderCreated { reminder, created } => Some((reminder.clone(), *created)),
         _ => None,
@@ -1816,6 +1841,7 @@ async fn tools_turn(
         &finish.action_result,
         // Secrets replies are fixed texts: no model rewrite.
         !finish.action.starts_with("secrets_"),
+        &finish.calendar_events,
     )
     .await;
     st.recent

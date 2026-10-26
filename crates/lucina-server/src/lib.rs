@@ -17,10 +17,12 @@ pub mod context;
 pub mod deals;
 pub mod delegation;
 pub mod fake;
+pub mod geocode;
 pub mod grocery_turn;
 pub mod jobs;
 pub mod otp;
 pub mod parity;
+pub mod places;
 pub mod planner;
 pub mod prompts;
 pub mod rich;
@@ -68,6 +70,8 @@ pub struct Inner {
     pub grocery: Option<Arc<GroceryRepo>>,
     /// The grocery deals engine (`crate::deals`); `None` without home coordinates.
     pub deals: Option<Arc<lucina_deals::DealsEngine>>,
+    /// Coordinates for place blocks (`LUCINA_MAPS_GEOCODE_URL`); `None`: off.
+    pub geocoder: Option<Arc<geocode::Geocoder>>,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
@@ -282,7 +286,12 @@ impl AppState {
         let registry = Arc::new(registry);
         let prompts = prompts::Prompts::load(&cfg);
         let deals = deals::engine(&cfg, grocery.clone());
+        let geocoder = cfg
+            .maps_geocode
+            .clone()
+            .map(|c| Arc::new(geocode::Geocoder::new(c)));
         let inner = Inner {
+            geocoder,
             share,
             timeline,
             reminders,

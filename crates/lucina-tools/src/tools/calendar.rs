@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{schema_for, Ctx, SideEffect, Tool, ToolEnv, ToolError, ToolResult};
+use crate::{schema_for, Ctx, Effect, SideEffect, Tool, ToolEnv, ToolError, ToolResult};
 
 #[derive(Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -246,6 +246,9 @@ impl Tool for CalendarTool {
                 )
                 .await?;
                 let events = v["events"].as_array().cloned().unwrap_or_default();
+                ctx.push_effect(Effect::CalendarEvents {
+                    events: events.clone(),
+                });
                 let mut out = json!({
                     "from": from, "to": to, "timeZone": tz.name(),
                     "count": events.len(), "events": compact(&events, tz),
@@ -301,6 +304,11 @@ impl Tool for CalendarTool {
                         .json(&body),
                 )
                 .await?;
+                if v["event"].is_object() {
+                    ctx.push_effect(Effect::CalendarEvents {
+                        events: vec![v["event"].clone()],
+                    });
+                }
                 Ok(json!({"created": true, "event": compact(&[v["event"].clone()], tz).first()}))
             }
             Action::Move => {
@@ -317,6 +325,11 @@ impl Tool for CalendarTool {
                         .json(&body),
                 )
                 .await?;
+                if v["event"].is_object() {
+                    ctx.push_effect(Effect::CalendarEvents {
+                        events: vec![v["event"].clone()],
+                    });
+                }
                 Ok(json!({"moved": true, "event": compact(&[v["event"].clone()], tz).first()}))
             }
             Action::Delete => {
@@ -451,6 +464,17 @@ mod tests {
         assert_eq!(out["count"], 1);
         assert_eq!(out["events"][0]["start"], "Fri 23 Oct 09:30");
         assert_eq!(out["events"][0]["id"], "google:abc");
+        // The raw events (RFC 3339 times, location) go to the reply as an effect.
+        let listed: Vec<Value> = ctx
+            .effects()
+            .into_iter()
+            .filter_map(|e| match e {
+                Effect::CalendarEvents { events } => Some(events),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(listed, vec![ev()]);
         let line = today_context(&e, now()).await.unwrap();
         assert_eq!(line, "Giuseppe's calendar today (2026-10-22, Europe/Rome): 18:00–19:00 Gym; all day Anna's birthday.");
     }
@@ -534,6 +558,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(f["next"]["start"], "Thu 22 Oct 11:00");
+        let returned: Vec<Vec<Value>> = ctx
+            .effects()
+            .into_iter()
+            .filter_map(|effect| match effect {
+                Effect::CalendarEvents { events } => Some(events),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(returned, vec![vec![ev()], vec![ev()]]);
         assert!(CalendarTool
             .call(json!({"action": "delete", "id": "../x"}), &ctx)
             .await

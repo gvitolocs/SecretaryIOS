@@ -88,7 +88,11 @@ pub fn route_on_device(duration_ms: u64, max_ms: u64, model_available: bool) -> 
 fn pipeline(s: Status) -> bool {
     matches!(
         s,
-        Status::Queued | Status::Transcribing | Status::Summarizing | Status::Rendering | Status::Publishing
+        Status::Queued
+            | Status::Transcribing
+            | Status::Summarizing
+            | Status::Rendering
+            | Status::Publishing
     )
 }
 
@@ -144,11 +148,17 @@ mod tests {
     fn whisper_never_downgraded() {
         for gpu in [Gpu::Done, Gpu::Busy, Gpu::Failed] {
             for dev in [false, true] {
-                assert_ne!(transcript_choice(Some(Source::Whisper), gpu, dev), Choice::UseDevice);
+                assert_ne!(
+                    transcript_choice(Some(Source::Whisper), gpu, dev),
+                    Choice::UseDevice
+                );
             }
         }
         assert_eq!(transcript_choice(None, Gpu::Busy, true), Choice::UseDevice);
-        assert_eq!(transcript_choice(Some(Source::Whisper), Gpu::Busy, true), Choice::Wait);
+        assert_eq!(
+            transcript_choice(Some(Source::Whisper), Gpu::Busy, true),
+            Choice::Wait
+        );
     }
 
     #[test]
