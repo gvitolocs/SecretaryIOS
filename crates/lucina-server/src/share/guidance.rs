@@ -67,6 +67,8 @@ mod tests {
         assert!(for_kind("pdf", Some("invoice")).contains("due date"));
         assert!(for_kind("image", Some("screenshot_error")).contains("error"));
         assert!(intent_instruction("ask").is_none());
-        assert!(intent_instruction("remind").unwrap().contains("reminders tool"));
+        assert!(intent_instruction("remind")
+            .unwrap()
+            .contains("reminders tool"));
     }
 }

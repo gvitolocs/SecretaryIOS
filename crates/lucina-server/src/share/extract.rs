@@ -217,11 +217,17 @@ fn structured_xml_text(xml: &str) -> String {
         };
         let tag = &rest[start + 1..start + end];
         let closing = tag.starts_with('/');
-        let name = tag.trim_start_matches('/').split([' ', '/']).next().unwrap_or("");
+        let name = tag
+            .trim_start_matches('/')
+            .split([' ', '/'])
+            .next()
+            .unwrap_or("");
         match (closing, name) {
             (true, "w:p" | "a:p" | "text:p" | "text:h" | "si") => out.push('\n'),
             (false, "w:pStyle")
-                if ["Heading", "Title", "Titolo", "Overskrift"].iter().any(|h| tag.contains(h)) =>
+                if ["Heading", "Title", "Titolo", "Overskrift"]
+                    .iter()
+                    .any(|h| tag.contains(h)) =>
             {
                 out.push_str("# ")
             }
@@ -336,7 +342,8 @@ async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
             description
         }
         Err(e) => {
-            x.warnings.push(format!("vision could not read the image: {e}"));
+            x.warnings
+                .push(format!("vision could not read the image: {e}"));
             String::new()
         }
     };
@@ -356,7 +363,9 @@ async fn image(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
                 .unwrap_or(Value::Null)
         }
         Some("document_photo") if super::structured::looks_like_invoice(&text) => {
-            x.structured = super::structured::invoice(model, &text).await.unwrap_or(Value::Null);
+            x.structured = super::structured::invoice(model, &text)
+                .await
+                .unwrap_or(Value::Null);
             if !x.structured.is_null() {
                 x.subtype = Some("invoice".into());
             }
@@ -572,14 +581,16 @@ async fn video(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::R
     let duration = x.structured["duration_s"].as_f64().unwrap_or(0.0);
     let frames = key_frames(path, duration).await;
     if frames.is_empty() {
-        x.warnings.push("no frames could be taken from the video".into());
+        x.warnings
+            .push("no frames could be taken from the video".into());
     }
     for (i, frame) in frames.iter().enumerate() {
         let described = match super::vision::describe(st, frame).await {
             Ok(s) => super::vision::split_category(&s).1,
             Err(e) => format!("could not be read: {e}"),
         };
-        x.text.push_str(&format!("\n## Frame {}\n{described}", i + 1));
+        x.text
+            .push_str(&format!("\n## Frame {}\n{described}", i + 1));
     }
     x.structured["frames"] = serde_json::json!(frames.len());
     Ok(x)
@@ -604,7 +615,8 @@ async fn youtube(st: &AppState, url: &str, lang: &str) -> anyhow::Result<Extract
         x.structured["video_id"] = Value::String(id);
     }
     if x.structured["has_transcript"] != Value::Bool(true) {
-        x.warnings.push("no captions were available for this video".into());
+        x.warnings
+            .push("no captions were available for this video".into());
     }
     Ok(x)
 }
@@ -650,7 +662,11 @@ pub(super) async fn read(
         }
         let (bytes, mime) = download(st, &url).await?;
         if mime.starts_with("image/") || mime.starts_with("application/pdf") {
-            let ext = if mime.starts_with("image/") { "jpg" } else { "pdf" };
+            let ext = if mime.starts_with("image/") {
+                "jpg"
+            } else {
+                "pdf"
+            };
             let path = dir.join(format!("fetched-{}.{}", uuid::Uuid::new_v4(), ext));
             tokio::fs::write(&path, &bytes).await?;
             part.path = Some(path);
@@ -690,7 +706,14 @@ pub(super) async fn read(
         return Ok(x);
     }
     let blocking = |f: fn(&Path, &str) -> anyhow::Result<Extracted>| {
-        let (path, arg) = (path.clone(), if routed == "code" { name.clone() } else { ext.clone() });
+        let (path, arg) = (
+            path.clone(),
+            if routed == "code" {
+                name.clone()
+            } else {
+                ext.clone()
+            },
+        );
         tokio::task::spawn_blocking(move || f(&path, &arg))
     };
     let mut x = match routed {
@@ -745,7 +768,10 @@ pub(super) async fn read(
         "video" => video(st, &path, on_device).await?,
         _ => {
             let mut x = Extracted::new("other");
-            let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+            let size = tokio::fs::metadata(&path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
             let mut head = vec![0u8; 16];
             if let Ok(mut f) = std::fs::File::open(&path) {
                 let n = f.read(&mut head).unwrap_or(0);
@@ -867,16 +893,29 @@ mod tests {
     #[test]
     fn word_headings_and_slides() {
         let xml = r#"<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Contratto</w:t></w:r></w:p><w:p><w:r><w:t>Canone &amp; spese</w:t></w:r><w:r><w:tab/><w:t>€ 900</w:t></w:r></w:p></w:body></w:document>"#;
-        assert_eq!(structured_xml_text(xml), "# Contratto\nCanone & spese € 900");
+        assert_eq!(
+            structured_xml_text(xml),
+            "# Contratto\nCanone & spese € 900"
+        );
         let temp = tempfile::NamedTempFile::new().unwrap();
         let mut zip = zip::ZipWriter::new(temp.reopen().unwrap());
-        for (name, title) in [("ppt/slides/slide10.xml", "Ten"), ("ppt/slides/slide2.xml", "Two")] {
-            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
-            zip.write_all(format!("<p:sld><a:p><a:r><a:t>{title}</a:t></a:r></a:p></p:sld>").as_bytes()).unwrap();
+        for (name, title) in [
+            ("ppt/slides/slide10.xml", "Ten"),
+            ("ppt/slides/slide2.xml", "Two"),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(
+                format!("<p:sld><a:p><a:r><a:t>{title}</a:t></a:r></a:p></p:sld>").as_bytes(),
+            )
+            .unwrap();
         }
         zip.finish().unwrap();
         let text = document(temp.path()).unwrap();
-        assert!(text.find("## Slide 2").unwrap() < text.find("## Slide 10").unwrap(), "{text}");
+        assert!(
+            text.find("## Slide 2").unwrap() < text.find("## Slide 10").unwrap(),
+            "{text}"
+        );
         assert!(text.contains("Two") && text.contains("Ten"));
     }
     pub(super) fn small_pdf(path: &Path) {

@@ -12,9 +12,23 @@ const MAX_CHUNKS: usize = 8;
 
 /// Words that mark a bill or invoice (it, da, en).
 const INVOICE_WORDS: &[&str] = &[
-    "fattura", "totale da pagare", "importo da pagare", "scadenza", "iban", "bolletta",
-    "faktura", "at betale", "beløb", "forfald", "betalingsfrist", "invoice", "amount due",
-    "due date", "total due", "payment reference", "bill to",
+    "fattura",
+    "totale da pagare",
+    "importo da pagare",
+    "scadenza",
+    "iban",
+    "bolletta",
+    "faktura",
+    "at betale",
+    "beløb",
+    "forfald",
+    "betalingsfrist",
+    "invoice",
+    "amount due",
+    "due date",
+    "total due",
+    "payment reference",
+    "bill to",
 ];
 
 /// Whether a document's text reads like an invoice or bill.
@@ -190,9 +204,15 @@ mod tests {
 
     #[test]
     fn invoice_words() {
-        assert!(looks_like_invoice("FATTURA n. 12 — Totale da pagare € 84,30 — Scadenza 15/11/2026"));
-        assert!(looks_like_invoice("Faktura 991. At betale: 1.250,00 kr. Forfald 01.12.2026"));
-        assert!(!looks_like_invoice("Meeting notes: the invoice tool is broken"));
+        assert!(looks_like_invoice(
+            "FATTURA n. 12 — Totale da pagare € 84,30 — Scadenza 15/11/2026"
+        ));
+        assert!(looks_like_invoice(
+            "Faktura 991. At betale: 1.250,00 kr. Forfald 01.12.2026"
+        ));
+        assert!(!looks_like_invoice(
+            "Meeting notes: the invoice tool is broken"
+        ));
     }
 
     #[test]

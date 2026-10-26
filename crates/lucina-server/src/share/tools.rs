@@ -57,16 +57,20 @@ impl Tool for AttachmentsSearch {
     }
     async fn call(&self, args: Value, _ctx: &Ctx) -> ToolResult {
         let query = args["query"].as_str().unwrap_or("").to_owned();
-        let kind = args["kind"].as_str().filter(|k| !k.is_empty()).map(str::to_owned);
+        let kind = args["kind"]
+            .as_str()
+            .filter(|k| !k.is_empty())
+            .map(str::to_owned);
         let since = match args["since"].as_str().filter(|s| !s.is_empty()) {
             Some(s) => Some(since_ms(s)?),
             None => None,
         };
         let memory = self.0.clone();
-        let found = tokio::task::spawn_blocking(move || memory.search(&query, kind.as_deref(), since, 8))
-            .await
-            .map_err(|e| ToolError::new(e.to_string()))?
-            .map_err(|e| ToolError::new(e.to_string()))?;
+        let found =
+            tokio::task::spawn_blocking(move || memory.search(&query, kind.as_deref(), since, 8))
+                .await
+                .map_err(|e| ToolError::new(e.to_string()))?
+                .map_err(|e| ToolError::new(e.to_string()))?;
         let items: Vec<Value> = found
             .into_iter()
             .map(|r| {

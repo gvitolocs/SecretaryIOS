@@ -28,6 +28,28 @@ enum Action {
     Summary,
 }
 
+/// The owner's three places in the library (2026-10-26): never mix them.
+#[derive(Deserialize, JsonSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Scope {
+    /// The Gallery: only what his phones backed up (photos and videos he took). The default.
+    Gallery,
+    /// Films: the film folders (Film, Dansk film).
+    Films,
+    /// The Drive: the archive (old Nextcloud files, computer photo backups, audio, other folders, shared files).
+    Drive,
+}
+
+impl Scope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Scope::Gallery => "gallery",
+            Scope::Films => "films",
+            Scope::Drive => "drive",
+        }
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 struct Near {
     lat: f64,
@@ -39,6 +61,9 @@ struct Near {
 #[derive(Deserialize, JsonSchema)]
 struct Args {
     action: Action,
+    /// Where to search (search; default gallery): gallery = photos and videos from his phones ("le foto di ieri");
+    /// films = his films ("il film Up"); drive = the archive (old files, computer backups, audio, other folders).
+    scope: Option<Scope>,
     /// Words to match: place names, country, month ("July 2025"), album, title, caption.
     query: Option<String>,
     /// Start date: YYYY, YYYY-MM, YYYY-MM-DD or RFC 3339 (search).
@@ -152,7 +177,10 @@ impl Tool for MediaTool {
         "media"
     }
     fn description(&self) -> &'static str {
-        "Giuseppe's own photo, video and audio library (his server; the app's Gallery tab, where his iPhone backs up). \
+        "Giuseppe's own photo, video and audio library (his server), in three places: scope gallery (the default: the \
+         photos and videos his phones backed up, the app's Gallery), films (his films: Film, Dansk film) and drive (the \
+         archive: old Nextcloud files, computer photo backups, audio, other folders). \"Le foto di ieri\" → gallery; \
+         \"il film Up\" → films, query Up; an old document or song → drive. \
          search: by date (from/to: YYYY, YYYY-MM, YYYY-MM-DD), place (near: coordinates + km; you know the coordinates of \
          cities), words (query: place names, country, \"July 2025\", album, title) and kind (photo/video/audio). \
          \"Photos from Copenhagen last summer\" → near {lat:55.676, lon:12.568, km:30}, from 2026-06, to 2026-08, kind photo. \
@@ -183,7 +211,11 @@ impl Tool for MediaTool {
         match a.action {
             Action::Search => {
                 let limit = a.limit.unwrap_or(MAX_LIST as u32).clamp(1, 200);
-                let mut q: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+                let scope = a.scope.unwrap_or(Scope::Gallery);
+                let mut q: Vec<(&str, String)> = vec![
+                    ("limit", limit.to_string()),
+                    ("scope", scope.as_str().into()),
+                ];
                 if let Some(v) = a.query.as_deref().filter(|v| !v.trim().is_empty()) {
                     q.push(("q", v.to_owned()));
                 }
@@ -323,6 +355,20 @@ mod tests {
         assert_eq!(b["place"], "Copenhagen, Capital Region, DK");
         assert!(b.get("urls").is_none());
         assert_eq!(b["favorite"], true);
+    }
+
+    #[test]
+    fn scope_defaults_to_the_gallery_and_names_the_three_places() {
+        let a: Args =
+            serde_json::from_value(json!({"action": "search", "query": "Up", "scope": "films"}))
+                .unwrap();
+        assert!(a.scope == Some(Scope::Films));
+        let b: Args = serde_json::from_value(json!({"action": "search"})).unwrap();
+        assert_eq!(b.scope.unwrap_or(Scope::Gallery).as_str(), "gallery");
+        let schema = MediaTool.parameters().to_string();
+        for place in ["gallery", "films", "drive"] {
+            assert!(schema.contains(place), "{place} missing from the schema");
+        }
     }
 
     #[test]

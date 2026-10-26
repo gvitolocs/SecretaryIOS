@@ -259,7 +259,15 @@ pub async fn prepare_with(
         String::new()
     };
     let memory_context = [
-        metadata, presence, calendar, notes, attachments, tasks, shopping, recent, reminders,
+        metadata,
+        presence,
+        calendar,
+        notes,
+        attachments,
+        tasks,
+        shopping,
+        recent,
+        reminders,
         honcho,
     ]
     .into_iter()

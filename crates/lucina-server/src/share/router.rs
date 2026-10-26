@@ -35,7 +35,9 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
     if at(4, b"ftyp") {
         let brand = head.get(8..12).unwrap_or(b"");
         return Some(match brand {
-            b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1" | b"avif" => "image",
+            b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1" | b"avif" => {
+                "image"
+            }
             b"M4A " | b"M4B " | b"M4P " => "audio",
             _ => "video",
         });
@@ -109,7 +111,8 @@ fn zip_kind(path: &Path) -> Option<&'static str> {
 
 fn ext_kind(ext: &str) -> Option<&'static str> {
     Some(match ext {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "bmp" | "tif" | "tiff" | "avif" => "image",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "bmp" | "tif" | "tiff"
+        | "avif" => "image",
         "mp4" | "mov" | "m4v" | "mkv" | "webm" | "avi" | "3gp" => "video",
         "mp3" | "wav" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "flac" | "amr" | "caf" => "audio",
         "pdf" => "pdf",
@@ -117,7 +120,9 @@ fn ext_kind(ext: &str) -> Option<&'static str> {
         "pptx" | "ppt" | "odp" | "key" => "slides",
         "xlsx" | "xlsm" | "xls" | "ods" | "numbers" | "csv" | "tsv" => "sheet",
         "txt" | "md" | "markdown" | "log" | "text" => "text",
-        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2" | "jar" | "apk" | "epub" => "archive",
+        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2" | "jar" | "apk" | "epub" => {
+            "archive"
+        }
         "ics" | "ical" | "ifb" => "calendar",
         "vcf" | "vcard" => "contact",
         _ => return super::handlers::code::language(&format!("x.{ext}")).map(|_| "code"),
@@ -125,18 +130,31 @@ fn ext_kind(ext: &str) -> Option<&'static str> {
 }
 
 fn mime_kind(mime: &str) -> Option<&'static str> {
-    let m = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let m = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     Some(match m.as_str() {
         "application/pdf" => "pdf",
         "text/calendar" => "calendar",
         "text/vcard" | "text/x-vcard" | "text/directory" => "contact",
         "text/csv" | "text/tab-separated-values" => "sheet",
         "text/plain" | "text/markdown" => "text",
-        "application/zip" | "application/gzip" | "application/x-tar" | "application/x-7z-compressed" => "archive",
+        "application/zip"
+        | "application/gzip"
+        | "application/x-tar"
+        | "application/x-7z-compressed" => "archive",
         m if m.starts_with("image/") => "image",
         m if m.starts_with("video/") => "video",
         m if m.starts_with("audio/") => "audio",
-        m if m.contains("wordprocessingml") || m.contains("opendocument.text") || m == "application/rtf" => "document",
+        m if m.contains("wordprocessingml")
+            || m.contains("opendocument.text")
+            || m == "application/rtf" =>
+        {
+            "document"
+        }
         m if m.contains("spreadsheetml") || m.contains("opendocument.spreadsheet") => "sheet",
         m if m.contains("presentationml") || m.contains("opendocument.presentation") => "slides",
         m if m.starts_with("text/") || m == "application/json" || m == "application/xml" => "code",
@@ -236,7 +254,10 @@ mod tests {
         let wav = file(d, "x.dat", b"RIFF\x24\0\0\0WAVEfmt ");
         assert_eq!(route(&wav, "x.dat", ""), "audio");
         let ics = file(d, "invite", b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
-        assert_eq!(route(&ics, "invite", "application/octet-stream"), "calendar");
+        assert_eq!(
+            route(&ics, "invite", "application/octet-stream"),
+            "calendar"
+        );
         let vcf = file(d, "card.txt", b"\xef\xbb\xbfBEGIN:VCARD\r\nVERSION:3.0\r\n");
         assert_eq!(route(&vcf, "card.txt", "text/plain"), "contact");
         let gz = file(d, "logs.bin", b"\x1f\x8b\x08\0\0\0\0\0");
@@ -250,19 +271,29 @@ mod tests {
             let p = d.path().join(name);
             let mut z = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
             for (n, c) in entries {
-                z.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+                z.start_file(*n, zip::write::SimpleFileOptions::default())
+                    .unwrap();
                 z.write_all(c.as_bytes()).unwrap();
             }
             z.finish().unwrap();
             p
         };
         let docx = make("download", &[("word/document.xml", "<w/>")]);
-        assert_eq!(route(&docx, "download", "application/octet-stream"), "document");
+        assert_eq!(
+            route(&docx, "download", "application/octet-stream"),
+            "document"
+        );
         let xlsx = make("data.zip", &[("xl/workbook.xml", "<w/>")]);
         assert_eq!(route(&xlsx, "data.zip", "application/zip"), "archive");
         let xlsx = make("data", &[("xl/workbook.xml", "<w/>")]);
         assert_eq!(route(&xlsx, "data", ""), "sheet");
-        let odp = make("talk", &[("mimetype", "application/vnd.oasis.opendocument.presentation")]);
+        let odp = make(
+            "talk",
+            &[(
+                "mimetype",
+                "application/vnd.oasis.opendocument.presentation",
+            )],
+        );
         assert_eq!(route(&odp, "talk", ""), "slides");
         let plain = make("photos", &[("a.jpg", "x")]);
         assert_eq!(route(&plain, "photos", ""), "archive");

@@ -40,7 +40,14 @@ async fn services() -> Services {
     /// lucina-media's ingest: "moves" the file into a store dir next to it.
     async fn ingest(State(s): State<Arc<Seen>>, Json(v): Json<Value>) -> Json<Value> {
         let src = std::path::PathBuf::from(v["path"].as_str().unwrap());
-        let store = src.parent().unwrap().parent().unwrap().parent().unwrap().join("store");
+        let store = src
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("store");
         std::fs::create_dir_all(&store).unwrap();
         let dst = store.join("blob-itm_test");
         std::fs::rename(&src, &dst).unwrap();
@@ -184,11 +191,14 @@ async fn multipart_share_reads_everything_and_deduplicates_across_restart() {
     let done = finished(&h, "share-integration-123").await;
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(done["stage"], "done");
-    assert!(done["attachments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|a| a["state"] == "read"), "{done}");
+    assert!(
+        done["attachments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["state"] == "read"),
+        "{done}"
+    );
     assert_eq!(done["userItemId"], ack["userItemId"]);
     assert_eq!(done["reply"], "I read your shared text, article and image.");
     assert!(done["attachments"]
@@ -255,7 +265,10 @@ async fn multipart_share_reads_everything_and_deduplicates_across_restart() {
     // file was written next to the stored original.
     let stored = services.seen.stored.lock().unwrap().clone().unwrap();
     assert!(stored.exists());
-    assert_eq!(std::fs::read_dir(stored.parent().unwrap()).unwrap().count(), 1);
+    assert_eq!(
+        std::fs::read_dir(stored.parent().unwrap()).unwrap().count(),
+        1
+    );
     // What she read is in the attachment memory.
     let memory = &h.state.share.memory;
     let hits = memory.search("readable article", None, None, 5).unwrap();
@@ -397,11 +410,14 @@ async fn auth_validation_limits_and_library_without_llm() {
     let done = finished(&h, "library-test-123").await;
     assert_eq!(done["status"], "done", "{done}");
     assert_eq!(done["stage"], "done");
-    assert!(done["attachments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|a| a["state"] == "read"), "{done}");
+    assert!(
+        done["attachments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["state"] == "read"),
+        "{done}"
+    );
     assert_eq!(done["reply"], "Salvato nella raccolta Shared.");
     assert!(
         h.fake.requests().is_empty(),
@@ -518,7 +534,10 @@ async fn later_chat_turns_recall_earlier_attachments() {
         Form::new()
             .text("shareId", "share-recall-0001")
             .text("lang", "it")
-            .text("text", "Bolletta Enel: totale da pagare 84,30 euro, scadenza 15/11/2026"),
+            .text(
+                "text",
+                "Bolletta Enel: totale da pagare 84,30 euro, scadenza 15/11/2026",
+            ),
     )
     .await;
     assert_eq!(r.status(), 202);
@@ -526,11 +545,18 @@ async fn later_chat_turns_recall_earlier_attachments() {
     let before = h.fake.requests().len();
     // A message about something else gets no attachment block.
     h.chat("come stai oggi?").await;
-    let unrelated = h.fake.requests()[before..].iter().map(|r| r.to_string()).collect::<String>();
+    let unrelated = h.fake.requests()[before..]
+        .iter()
+        .map(|r| r.to_string())
+        .collect::<String>();
     assert!(!unrelated.contains("Earlier attachments"));
     let before = h.fake.requests().len();
-    h.chat("quanto costava la bolletta che ti ho mandato?").await;
-    let asked = h.fake.requests()[before..].iter().map(|r| r.to_string()).collect::<String>();
+    h.chat("quanto costava la bolletta che ti ho mandato?")
+        .await;
+    let asked = h.fake.requests()[before..]
+        .iter()
+        .map(|r| r.to_string())
+        .collect::<String>();
     assert!(asked.contains("Earlier attachments"), "{asked}");
     assert!(asked.contains("84,30"), "{asked}");
 }
@@ -569,7 +595,8 @@ async fn recovery_finds_a_reply_far_behind_newer_items() {
         .dir
         .join(chrono::Utc::now().format("%Y-%m").to_string())
         .join("share-window-0001/status.json");
-    let mut persisted: Value = serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
+    let mut persisted: Value =
+        serde_json::from_slice(&std::fs::read(&status_file).unwrap()).unwrap();
     persisted["status"] = json!("processing");
     std::fs::write(&status_file, serde_json::to_vec(&persisted).unwrap()).unwrap();
     let lines_before = h.timeline_lines().len();
@@ -577,11 +604,20 @@ async fn recovery_finds_a_reply_far_behind_newer_items() {
     let restarted = lucina_server::AppState::build(h.state.cfg.clone(), None).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, lucina_server::app(restarted)).await.unwrap()
+        axum::serve(listener, lucina_server::app(restarted))
+            .await
+            .unwrap()
     });
-    assert_eq!(finished(&h, "share-window-0001").await["lucinaItemId"], done["lucinaItemId"]);
+    assert_eq!(
+        finished(&h, "share-window-0001").await["lucinaItemId"],
+        done["lucinaItemId"]
+    );
     assert_eq!(h.timeline_lines().len(), lines_before, "no second answer");
-    assert_eq!(h.fake.requests().len(), calls_before, "no second model call");
+    assert_eq!(
+        h.fake.requests().len(),
+        calls_before,
+        "no second model call"
+    );
 }
 
 #[tokio::test]
@@ -592,13 +628,21 @@ async fn a_shared_location_counts_toward_the_part_limit() {
     for i in 0..32 {
         form = form.text("text", format!("part {i}"));
     }
-    let r = submit(&h, form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#)).await;
+    let r = submit(
+        &h,
+        form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#),
+    )
+    .await;
     assert_eq!(r.status(), 400);
     let mut form = Form::new().text("shareId", "share-limit-0002");
     for i in 0..30 {
         form = form.text("text", format!("part {i}"));
     }
-    let r = submit(&h, form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#)).await;
+    let r = submit(
+        &h,
+        form.text("meta", r#"{"location":{"lat":55.6,"lon":12.5}}"#),
+    )
+    .await;
     assert_eq!(r.status(), 202);
 }
 

@@ -20,7 +20,9 @@ use super::{gallery_action, Finish, Turn, SECRETARY_EXTRA_SYSTEM};
 use crate::api::PLATFORM_LABEL;
 use crate::prompts::Prompts;
 
-const GUIDE: &str = "Giuseppe's photos, videos and audio are in his own library (the Gallery tab), reachable with the media tool. \
+const GUIDE: &str = "Giuseppe's photos, videos and audio are in his own library, reachable with the media tool, in three places: \
+the Gallery (scope gallery, the default: what his phones backed up), Films (scope films) and the Drive (scope drive: the archive). \
+Photos and videos he took go to gallery, a film to films, old files, computer backups or audio to drive. \
 For a request about them call media with action=search: turn relative dates into from/to (YYYY-MM or YYYY-MM-DD; \"last summer\" = June to August of last year, \
 \"this summer\" = this year's), and places into near with the coordinates you know (city: km 20-30; country: query with its name). \
 Then answer in one or two short sentences: how many you found, when and where, and that the button below shows them. \

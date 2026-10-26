@@ -624,7 +624,10 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     let title = field("title", "");
     for (i, part) in parts.iter_mut().enumerate() {
         if let Some(path) = &mut part.path {
-            let name = path.file_name().context("staged file has a name")?.to_owned();
+            let name = path
+                .file_name()
+                .context("staged file has a name")?
+                .to_owned();
             *path = tokio::fs::canonicalize(dir.join(name)).await?;
             let (p, n, m) = (
                 path.clone(),
@@ -775,7 +778,12 @@ async fn store_in_library(
                 .await;
             match stored {
                 Ok(r) if r.status().is_success() => {
-                    if let Some(p) = r.json::<Value>().await.ok().and_then(|v| v["path"].as_str().map(PathBuf::from)) {
+                    if let Some(p) = r
+                        .json::<Value>()
+                        .await
+                        .ok()
+                        .and_then(|v| v["path"].as_str().map(PathBuf::from))
+                    {
                         part.path = Some(p);
                     }
                 }
@@ -795,8 +803,12 @@ async fn store_in_library(
         Ok(r) if matches!(r.status().as_u16(), 404 | 405) => {
             register_in_place(&http, &base, id, i, source, note, part).await
         }
-        Ok(r) => tracing::warn!(share_id = %id, status = %r.status(), "lucina-media ingest refused the file; keeping it"),
-        Err(e) => tracing::warn!(share_id = %id, error = %e, "lucina-media unavailable; keeping the file"),
+        Ok(r) => {
+            tracing::warn!(share_id = %id, status = %r.status(), "lucina-media ingest refused the file; keeping it")
+        }
+        Err(e) => {
+            tracing::warn!(share_id = %id, error = %e, "lucina-media unavailable; keeping the file")
+        }
     }
 }
 async fn register_in_place(
@@ -811,8 +823,10 @@ async fn register_in_place(
     let result = http
         .put(format!("{base}/internal/v1/external/{source}/{id}-{i}"))
         .timeout(Duration::from_secs(30))
-        .json(&json!({"path":part.path,"title":part.attachment.name,"mime":part.attachment.mime,
-            "caption":note,"album":"Shared","created_at":Utc::now().to_rfc3339()}))
+        .json(
+            &json!({"path":part.path,"title":part.attachment.name,"mime":part.attachment.mime,
+            "caption":note,"album":"Shared","created_at":Utc::now().to_rfc3339()}),
+        )
         .send()
         .await;
     match result {
@@ -821,7 +835,9 @@ async fn register_in_place(
                 part.attachment.media_id = v["item_id"].as_str().map(str::to_owned);
             }
         }
-        _ => tracing::warn!(share_id = %id, "share media registration unavailable; keeping original"),
+        _ => {
+            tracing::warn!(share_id = %id, "share media registration unavailable; keeping original")
+        }
     }
 }
 
@@ -854,15 +870,19 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
 /// don't mention the id are skipped before any JSON parsing.
 fn existing_reply(st: &AppState, user_item: &str) -> Option<(String, String)> {
     let items = st.timeline.read_all().ok()?;
-    items.iter().rev().filter(|i| i.raw.contains(user_item)).find_map(|i| {
-        let v: Value = serde_json::from_str(&i.raw).ok()?;
-        (v["role"] == "lucina" && v["replyTo"] == user_item).then(|| {
-            (
-                i.id.to_string(),
-                v["text"].as_str().unwrap_or_default().to_owned(),
-            )
+    items
+        .iter()
+        .rev()
+        .filter(|i| i.raw.contains(user_item))
+        .find_map(|i| {
+            let v: Value = serde_json::from_str(&i.raw).ok()?;
+            (v["role"] == "lucina" && v["replyTo"] == user_item).then(|| {
+                (
+                    i.id.to_string(),
+                    v["text"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
         })
-    })
 }
 /// Resume acknowledged shares after a server restart, including a crash between
 /// saving the manifest and appending its user item.
@@ -978,7 +998,10 @@ fn section(n: usize, part: &Part, x: &Extracted, budget: &mut usize) -> String {
         "\n### {n}. {} — {}{}{}{}\n",
         part.attachment.name.as_deref().unwrap_or("shared text"),
         x.kind,
-        x.subtype.as_deref().map(|t| format!("/{t}")).unwrap_or_default(),
+        x.subtype
+            .as_deref()
+            .map(|t| format!("/{t}"))
+            .unwrap_or_default(),
         part.attachment
             .mime
             .as_deref()
@@ -997,7 +1020,10 @@ fn section(n: usize, part: &Part, x: &Extracted, budget: &mut usize) -> String {
         s.push_str(&format!("Could not read: {w}\n"));
     }
     if !x.structured.is_null() {
-        s.push_str(&format!("Data: {}\n", clip(&x.structured.to_string(), 4000)));
+        s.push_str(&format!(
+            "Data: {}\n",
+            clip(&x.structured.to_string(), 4000)
+        ));
     }
     if let Some(summary) = &x.summary {
         s.push_str(&format!("Summary: {summary}\n"));
@@ -1050,7 +1076,14 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         let lang = job.lang.clone();
         let result = tokio::time::timeout(
             Duration::from_secs(seconds),
-            extract::read(st, dir, &mut job.parts[i], extract_files, on_device.as_deref(), &lang),
+            extract::read(
+                st,
+                dir,
+                &mut job.parts[i],
+                extract_files,
+                on_device.as_deref(),
+                &lang,
+            ),
         )
         .await;
         // A fetched link file is new (keep it); a stored original keeps its real path.
@@ -1144,7 +1177,10 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     } else {
         let note = job.note.trim();
         let owner = if note.is_empty() {
-            format!("(no note: react as rule 2 says; the app's default line was \"{}\")", default_note(&job.lang))
+            format!(
+                "(no note: react as rule 2 says; the app's default line was \"{}\")",
+                default_note(&job.lang)
+            )
         } else {
             format!("\"{note}\"")
         };
@@ -1264,6 +1300,9 @@ mod tests {
         assert_eq!(m.files[0].transcript.as_deref(), Some("ciao"));
         assert_eq!(m.files[0].duration_ms, Some(4200));
         assert_eq!(m.location.unwrap().name.as_deref(), Some("Home"));
-        assert!(serde_json::from_str::<ShareMeta>("{}").unwrap().files.is_empty());
+        assert!(serde_json::from_str::<ShareMeta>("{}")
+            .unwrap()
+            .files
+            .is_empty());
     }
 }

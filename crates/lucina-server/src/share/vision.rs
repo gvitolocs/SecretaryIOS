@@ -11,8 +11,15 @@ use crate::AppState;
 
 /// Image subtypes the vision model picks from (first line of its answer).
 pub(super) const CATEGORIES: &[&str] = &[
-    "photo", "screenshot_chat", "screenshot_error", "screenshot_other", "receipt",
-    "document_photo", "whiteboard", "meme", "other",
+    "photo",
+    "screenshot_chat",
+    "screenshot_error",
+    "screenshot_other",
+    "receipt",
+    "document_photo",
+    "whiteboard",
+    "meme",
+    "other",
 ];
 const PROMPT: &str = "First line exactly: CATEGORY: <one of photo, screenshot_chat, screenshot_error, screenshot_other, receipt, document_photo, whiteboard, meme, other>. Then describe this image for an assistant who cannot see it: what it shows, people/objects/places, and transcribe any visible text exactly (for an error screenshot, the full error message; for a chat screenshot, who wrote each message).";
 
@@ -193,7 +200,8 @@ mod tests {
 
     #[test]
     fn categories() {
-        let (c, d) = split_category("CATEGORY: screenshot_error\nA terminal showing `error[E0425]`.");
+        let (c, d) =
+            split_category("CATEGORY: screenshot_error\nA terminal showing `error[E0425]`.");
         assert_eq!(c.as_deref(), Some("screenshot_error"));
         assert_eq!(d, "A terminal showing `error[E0425]`.");
         let (c, d) = split_category("**CATEGORY: Receipt.**\nA Netto receipt.");

@@ -72,10 +72,11 @@ impl Memory {
     }
 
     fn conn(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
-        match self
-            .conn
-            .get_or_init(|| Self::connect(&self.path).map(Mutex::new).map_err(|e| e.to_string()))
-        {
+        match self.conn.get_or_init(|| {
+            Self::connect(&self.path)
+                .map(Mutex::new)
+                .map_err(|e| e.to_string())
+        }) {
             Ok(m) => Ok(m.lock().unwrap_or_else(|e| e.into_inner())),
             Err(e) => anyhow::bail!("attachment memory unavailable: {e}"),
         }
@@ -141,10 +142,7 @@ impl Memory {
                  WHERE (?1 IS NULL OR kind = ?1) AND created_at >= ?2
                  ORDER BY created_at DESC LIMIT ?3"
             ))?;
-            let rows = stmt.query_map(
-                params![kind, since_ms.unwrap_or(0), limit as i64],
-                row,
-            )?;
+            let rows = stmt.query_map(params![kind, since_ms.unwrap_or(0), limit as i64], row)?;
             for r in rows {
                 out.push(r?);
             }
@@ -155,10 +153,7 @@ impl Memory {
              WHERE attachments_fts MATCH ?1 AND (?2 IS NULL OR a.kind = ?2) AND a.created_at >= ?3
              ORDER BY bm25(attachments_fts), a.created_at DESC LIMIT ?4"
         ))?;
-        let rows = stmt.query_map(
-            params![fts, kind, since_ms.unwrap_or(0), limit as i64],
-            row,
-        )?;
+        let rows = stmt.query_map(params![fts, kind, since_ms.unwrap_or(0), limit as i64], row)?;
         for r in rows {
             out.push(r?);
         }
@@ -178,10 +173,10 @@ impl Memory {
             return true;
         };
         conn.query_row("SELECT EXISTS (SELECT 1 FROM attachments)", [], |r| {
-                r.get::<_, bool>(0)
-            })
-            .map(|any| !any)
-            .unwrap_or(true)
+            r.get::<_, bool>(0)
+        })
+        .map(|any| !any)
+        .unwrap_or(true)
     }
 
     /// The "Earlier attachments" block for a normal chat turn, or "" when the
@@ -207,7 +202,11 @@ impl Memory {
             if budget < 200 {
                 break;
             }
-            let body = r.summary.clone().filter(|s| !s.is_empty()).unwrap_or(r.text.clone());
+            let body = r
+                .summary
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(r.text.clone());
             let body: String = body.chars().take(CONTEXT_PER_ITEM.min(budget)).collect();
             budget = budget.saturating_sub(body.chars().count());
             let when = chrono::DateTime::from_timestamp_millis(r.created_at)
@@ -218,7 +217,10 @@ impl Memory {
                 r.id,
                 r.name,
                 r.kind,
-                r.subtype.as_deref().map(|s| format!(", {s}")).unwrap_or_default(),
+                r.subtype
+                    .as_deref()
+                    .map(|s| format!(", {s}"))
+                    .unwrap_or_default(),
             ));
             if !r.structured.is_null() {
                 let s: String = r.structured.to_string().chars().take(800).collect();
@@ -262,9 +264,43 @@ fn fts_query(text: &str) -> String {
 }
 
 const STOP_WORDS: &[&str] = &[
-    "the", "and", "that", "this", "what", "with", "from", "for", "you", "your", "sent", "che", "per",
-    "con", "del", "della", "nel", "una", "uno", "cosa", "come", "sono", "hai", "ieri", "mio", "mia",
-    "det", "der", "som", "jeg", "har", "til", "hvad", "med", "yesterday", "file", "send",
+    "the",
+    "and",
+    "that",
+    "this",
+    "what",
+    "with",
+    "from",
+    "for",
+    "you",
+    "your",
+    "sent",
+    "che",
+    "per",
+    "con",
+    "del",
+    "della",
+    "nel",
+    "una",
+    "uno",
+    "cosa",
+    "come",
+    "sono",
+    "hai",
+    "ieri",
+    "mio",
+    "mia",
+    "det",
+    "der",
+    "som",
+    "jeg",
+    "har",
+    "til",
+    "hvad",
+    "med",
+    "yesterday",
+    "file",
+    "send",
 ];
 
 /// Whether a chat message talks about something the owner shared.
@@ -278,15 +314,55 @@ pub fn mentions_attachment(message: &str) -> bool {
 
 const WORDS: &[&str] = &[
     // it
-    "pdf", "foto", "fotografia", "immagine", "screenshot", "allegato", "allegati", "file",
-    "documento", "fattura", "bolletta", "scontrino", "ricevuta", "video", "audio", "vocale",
-    "link", "articolo", "contratto", "tabella", "foglio", "condiviso", "mandato", "inviato",
+    "pdf",
+    "foto",
+    "fotografia",
+    "immagine",
+    "screenshot",
+    "allegato",
+    "allegati",
+    "file",
+    "documento",
+    "fattura",
+    "bolletta",
+    "scontrino",
+    "ricevuta",
+    "video",
+    "audio",
+    "vocale",
+    "link",
+    "articolo",
+    "contratto",
+    "tabella",
+    "foglio",
+    "condiviso",
+    "mandato",
+    "inviato",
     // en
-    "photo", "picture", "image", "attachment", "document", "invoice", "receipt", "bill",
-    "spreadsheet", "recording", "voice", "shared", "screenshots", "slides",
+    "photo",
+    "picture",
+    "image",
+    "attachment",
+    "document",
+    "invoice",
+    "receipt",
+    "bill",
+    "spreadsheet",
+    "recording",
+    "voice",
+    "shared",
+    "screenshots",
+    "slides",
     // da
-    "billede", "vedhæft", "dokument", "faktura", "kvittering", "regning", "optagelse",
-    "delte", "artikel",
+    "billede",
+    "vedhæft",
+    "dokument",
+    "faktura",
+    "kvittering",
+    "regning",
+    "optagelse",
+    "delte",
+    "artikel",
 ];
 
 #[cfg(test)]
@@ -314,34 +390,82 @@ mod tests {
         assert!(m.is_empty());
         assert_eq!(m.context_block("cosa dice il pdf?", 10), "");
         let day = 24 * 3600 * 1000;
-        m.put(&rec("a1", "bolletta-enel.pdf", "pdf", "Totale da pagare € 84,30 Scadenza 15/11/2026", 10 * day))
-            .unwrap();
-        m.put(&rec("a2", "IMG_1.jpg", "image", "A cat on a sofa", 11 * day)).unwrap();
-        m.put(&rec("a3", "old.docx", "document", "Contratto di affitto, canone mensile", day))
-            .unwrap();
+        m.put(&rec(
+            "a1",
+            "bolletta-enel.pdf",
+            "pdf",
+            "Totale da pagare € 84,30 Scadenza 15/11/2026",
+            10 * day,
+        ))
+        .unwrap();
+        m.put(&rec(
+            "a2",
+            "IMG_1.jpg",
+            "image",
+            "A cat on a sofa",
+            11 * day,
+        ))
+        .unwrap();
+        m.put(&rec(
+            "a3",
+            "old.docx",
+            "document",
+            "Contratto di affitto, canone mensile",
+            day,
+        ))
+        .unwrap();
         assert!(!m.is_empty());
         // Replacing keeps one row and one index entry.
-        m.put(&rec("a2", "IMG_1.jpg", "image", "A grey cat on a sofa", 11 * day)).unwrap();
+        m.put(&rec(
+            "a2",
+            "IMG_1.jpg",
+            "image",
+            "A grey cat on a sofa",
+            11 * day,
+        ))
+        .unwrap();
         assert_eq!(m.search("cat", None, None, 10).unwrap().len(), 1);
 
-        let hits = m.search("quanto devo pagare la bolletta?", None, None, 5).unwrap();
+        let hits = m
+            .search("quanto devo pagare la bolletta?", None, None, 5)
+            .unwrap();
         assert_eq!(hits[0].id, "a1");
-        assert!(m.search("contratto", Some("pdf"), None, 5).unwrap().is_empty());
-        assert_eq!(m.search("contratto", Some("document"), None, 5).unwrap()[0].id, "a3");
+        assert!(m
+            .search("contratto", Some("pdf"), None, 5)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            m.search("contratto", Some("document"), None, 5).unwrap()[0].id,
+            "a3"
+        );
         // Quotes and FTS operators in the message are just words.
         assert!(m.search("\"NEAR( OR * -", None, None, 5).is_ok());
 
-        let ctx = m.context_block("nel PDF che ti ho mandato ieri, quanto devo pagare?", 12 * day);
-        assert!(ctx.contains("bolletta-enel.pdf") && ctx.contains("84,30"), "{ctx}");
+        let ctx = m.context_block(
+            "nel PDF che ti ho mandato ieri, quanto devo pagare?",
+            12 * day,
+        );
+        assert!(
+            ctx.contains("bolletta-enel.pdf") && ctx.contains("84,30"),
+            "{ctx}"
+        );
         // The recent photo comes along (last 48 h), the old contract does not.
-        assert!(ctx.contains("IMG_1.jpg") && !ctx.contains("old.docx"), "{ctx}");
+        assert!(
+            ctx.contains("IMG_1.jpg") && !ctx.contains("old.docx"),
+            "{ctx}"
+        );
         assert_eq!(m.context_block("come stai oggi?", 12 * day), "");
         assert_eq!(m.get("a1").unwrap().unwrap().structured["total"], "84,30");
     }
 
     #[test]
     fn attachment_words() {
-        for s in ["Il PDF di ieri?", "the invoice I sent", "den vedhæftede faktura", "quella fotografia"] {
+        for s in [
+            "Il PDF di ieri?",
+            "the invoice I sent",
+            "den vedhæftede faktura",
+            "quella fotografia",
+        ] {
             assert!(mentions_attachment(s), "{s}");
         }
         for s in ["ciao Lucina", "remind me at 9", "hvordan går det"] {

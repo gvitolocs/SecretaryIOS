@@ -42,20 +42,43 @@ mod kernel {
     ];
 
     pub fn sniff_range(w: &str) -> bool {
-        matches!(w, "pdf" | "image" | "video" | "audio" | "archive" | "document" | "calendar" | "contact")
+        matches!(
+            w,
+            "pdf" | "image" | "video" | "audio" | "archive" | "document" | "calendar" | "contact"
+        )
     }
     pub fn ext_range(w: &str) -> bool {
         matches!(
             w,
-            "image" | "video" | "audio" | "pdf" | "document" | "slides" | "sheet" | "text" | "archive"
-                | "calendar" | "contact" | "code"
+            "image"
+                | "video"
+                | "audio"
+                | "pdf"
+                | "document"
+                | "slides"
+                | "sheet"
+                | "text"
+                | "archive"
+                | "calendar"
+                | "contact"
+                | "code"
         )
     }
     pub fn mime_range(w: &str) -> bool {
         matches!(
             w,
-            "pdf" | "calendar" | "contact" | "sheet" | "text" | "archive" | "image" | "video" | "audio"
-                | "document" | "slides" | "code"
+            "pdf"
+                | "calendar"
+                | "contact"
+                | "sheet"
+                | "text"
+                | "archive"
+                | "image"
+                | "video"
+                | "audio"
+                | "document"
+                | "slides"
+                | "code"
         )
     }
 
@@ -110,7 +133,9 @@ mod kernel {
             return k;
         }
         match i.ext.or(i.mime) {
-            Some(k) if matches!(k, "text" | "code" | "sheet" | "calendar" | "contact") && !i.texty => {
+            Some(k)
+                if matches!(k, "text" | "code" | "sheet" | "calendar" | "contact") && !i.texty =>
+            {
                 if k == "sheet" && i.xls_numbers {
                     k
                 } else {
@@ -183,7 +208,10 @@ mod kernel {
         }
     }
     pub fn sanitize(raw: &str, fixed: bool) -> String {
-        let m: Vec<char> = raw.chars().map(|c| if char_ok(c) { c } else { '_' }).collect();
+        let m: Vec<char> = raw
+            .chars()
+            .map(|c| if char_ok(c) { c } else { '_' })
+            .collect();
         let r = replace_dd(&m);
         let mut a = 0;
         while a < r.len() && trimmed(r[a]) {
@@ -340,7 +368,8 @@ fn texty(head: &[u8]) -> bool {
 }
 fn ext_table(ext: &str) -> Option<&'static str> {
     Some(match ext {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "bmp" | "tif" | "tiff" | "avif" => "image",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "bmp" | "tif" | "tiff"
+        | "avif" => "image",
         "mp4" | "mov" | "m4v" | "mkv" | "webm" | "avi" | "3gp" => "video",
         "mp3" | "wav" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "flac" | "amr" | "caf" => "audio",
         "pdf" => "pdf",
@@ -348,25 +377,40 @@ fn ext_table(ext: &str) -> Option<&'static str> {
         "pptx" | "ppt" | "odp" | "key" => "slides",
         "xlsx" | "xlsm" | "xls" | "ods" | "numbers" | "csv" | "tsv" => "sheet",
         "txt" | "md" | "markdown" | "log" | "text" => "text",
-        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2" | "jar" | "apk" | "epub" => "archive",
+        "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2" | "jar" | "apk" | "epub" => {
+            "archive"
+        }
         "ics" | "ical" | "ifb" => "calendar",
         "vcf" | "vcard" => "contact",
         _ => return code::language(&format!("x.{ext}")).map(|_| "code"),
     })
 }
 fn mime_table(mime: &str) -> Option<&'static str> {
-    let m = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let m = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     Some(match m.as_str() {
         "application/pdf" => "pdf",
         "text/calendar" => "calendar",
         "text/vcard" | "text/x-vcard" | "text/directory" => "contact",
         "text/csv" | "text/tab-separated-values" => "sheet",
         "text/plain" | "text/markdown" => "text",
-        "application/zip" | "application/gzip" | "application/x-tar" | "application/x-7z-compressed" => "archive",
+        "application/zip"
+        | "application/gzip"
+        | "application/x-tar"
+        | "application/x-7z-compressed" => "archive",
         m if m.starts_with("image/") => "image",
         m if m.starts_with("video/") => "video",
         m if m.starts_with("audio/") => "audio",
-        m if m.contains("wordprocessingml") || m.contains("opendocument.text") || m == "application/rtf" => "document",
+        m if m.contains("wordprocessingml")
+            || m.contains("opendocument.text")
+            || m == "application/rtf" =>
+        {
+            "document"
+        }
         m if m.contains("spreadsheetml") || m.contains("opendocument.spreadsheet") => "sheet",
         m if m.contains("presentationml") || m.contains("opendocument.presentation") => "slides",
         m if m.starts_with("text/") || m == "application/json" || m == "application/xml" => "code",
@@ -378,7 +422,8 @@ fn zip_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
     use std::io::Write;
     let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for (n, c) in entries {
-        z.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+        z.start_file(*n, zip::write::SimpleFileOptions::default())
+            .unwrap();
         z.write_all(c.as_bytes()).unwrap();
     }
     z.finish().unwrap().into_inner()
@@ -442,18 +487,51 @@ fn heads() -> Vec<(&'static str, Vec<u8>, Option<kernel::Zip>)> {
     ];
     let mut out: Vec<(&'static str, Vec<u8>, Option<Zip>)> = raw
         .into_iter()
-        .map(|(n, b)| (n, b.to_vec(), b.starts_with(b"PK\x03\x04").then_some(Zip::Unreadable)))
+        .map(|(n, b)| {
+            (
+                n,
+                b.to_vec(),
+                b.starts_with(b"PK\x03\x04").then_some(Zip::Unreadable),
+            )
+        })
         .collect();
     for (label, entries, class) in [
         ("docx", vec![("word/document.xml", "<w/>")], Zip::WordDir),
         ("xlsx", vec![("xl/workbook.xml", "<w/>")], Zip::XlDir),
         ("pptx", vec![("ppt/presentation.xml", "<p/>")], Zip::PptDir),
-        ("word+xl", vec![("xl/a.xml", "x"), ("word/b.xml", "w")], Zip::WordDir),
-        ("odt", vec![("mimetype", "application/vnd.oasis.opendocument.text")], Zip::OdText),
-        ("ods", vec![("mimetype", "application/vnd.oasis.opendocument.spreadsheet")], Zip::OdSheet),
-        ("odp", vec![("mimetype", "application/vnd.oasis.opendocument.presentation")], Zip::OdPresentation),
-        ("epub", vec![("mimetype", "application/epub+zip")], Zip::OdOther),
-        ("plain-zip", vec![("a.jpg", "x"), ("b.txt", "y")], Zip::Plain),
+        (
+            "word+xl",
+            vec![("xl/a.xml", "x"), ("word/b.xml", "w")],
+            Zip::WordDir,
+        ),
+        (
+            "odt",
+            vec![("mimetype", "application/vnd.oasis.opendocument.text")],
+            Zip::OdText,
+        ),
+        (
+            "ods",
+            vec![("mimetype", "application/vnd.oasis.opendocument.spreadsheet")],
+            Zip::OdSheet,
+        ),
+        (
+            "odp",
+            vec![(
+                "mimetype",
+                "application/vnd.oasis.opendocument.presentation",
+            )],
+            Zip::OdPresentation,
+        ),
+        (
+            "epub",
+            vec![("mimetype", "application/epub+zip")],
+            Zip::OdOther,
+        ),
+        (
+            "plain-zip",
+            vec![("a.jpg", "x"), ("b.txt", "y")],
+            Zip::Plain,
+        ),
     ] {
         out.push((label, zip_bytes(&entries), Some(class)));
     }
@@ -461,10 +539,11 @@ fn heads() -> Vec<(&'static str, Vec<u8>, Option<kernel::Zip>)> {
 }
 
 const EXTS: &[&str] = &[
-    "", "jpg", "JPEG", "png", "heic", "webp", "mp4", "MOV", "mkv", "mp3", "m4a", "wav", "opus", "pdf",
-    "PDF", "docx", "doc", "odt", "rtf", "pages", "pptx", "key", "odp", "xlsx", "xls", "numbers", "Numbers",
-    "ods", "csv", "tsv", "txt", "md", "log", "zip", "gz", "tar", "7z", "epub", "apk", "ics", "vcf", "rs",
-    "py", "json", "yml", "html", "sh", "bin", "dat", "xyz", "exe",
+    "", "jpg", "JPEG", "png", "heic", "webp", "mp4", "MOV", "mkv", "mp3", "m4a", "wav", "opus",
+    "pdf", "PDF", "docx", "doc", "odt", "rtf", "pages", "pptx", "key", "odp", "xlsx", "xls",
+    "numbers", "Numbers", "ods", "csv", "tsv", "txt", "md", "log", "zip", "gz", "tar", "7z",
+    "epub", "apk", "ics", "vcf", "rs", "py", "json", "yml", "html", "sh", "bin", "dat", "xyz",
+    "exe",
 ];
 
 const MIMES: &[&str] = &[
@@ -517,7 +596,11 @@ fn kernel_input(head: &[u8], zip: Option<kernel::Zip>, name: &str, mime: &str) -
         .unwrap_or("")
         .to_ascii_lowercase();
     let input = kernel::Input {
-        zip: if head.starts_with(b"PK\x03\x04") { zip } else { None },
+        zip: if head.starts_with(b"PK\x03\x04") {
+            zip
+        } else {
+            None
+        },
         sniff: sniff(head).map(as_static),
         ext: ext_table(&ext),
         xls_numbers: matches!(ext.as_str(), "xls" | "numbers"),
@@ -528,11 +611,21 @@ fn kernel_input(head: &[u8], zip: Option<kernel::Zip>, name: &str, mime: &str) -
     input
 }
 
-fn check_route(path: &Path, head: &[u8], zip: Option<kernel::Zip>, name: &str, mime: &str, label: &str) {
+fn check_route(
+    path: &Path,
+    head: &[u8],
+    zip: Option<kernel::Zip>,
+    name: &str,
+    mime: &str,
+    label: &str,
+) {
     let real = route(path, name, mime);
     let k = kernel::route(&kernel_input(head, zip, name, mime));
     assert_eq!(real, k, "route({label}, {name:?}, {mime:?})");
-    assert!(KINDS.contains(&real) && kernel::KINDS.contains(&real), "{real} not in KINDS");
+    assert!(
+        KINDS.contains(&real) && kernel::KINDS.contains(&real),
+        "{real} not in KINDS"
+    );
     assert_eq!(timeline_kind(real), kernel::timeline_kind(real));
     assert!(kernel::ATTACHMENT_KINDS.contains(&timeline_kind(real)));
 }
@@ -547,7 +640,11 @@ fn sk1_route_matches_the_kernel_on_every_header_extension_and_mime() {
         let path = dir.path().join(format!("h{i:02}"));
         std::fs::write(&path, bytes).unwrap();
         for ext in EXTS {
-            let name = if ext.is_empty() { "upload".to_owned() } else { format!("file.{ext}") };
+            let name = if ext.is_empty() {
+                "upload".to_owned()
+            } else {
+                format!("file.{ext}")
+            };
             for mime in MIMES {
                 check_route(&path, bytes, *zip, &name, mime, label);
                 checked += 1;
@@ -580,7 +677,11 @@ fn sk1_route_matches_the_kernel_on_random_names() {
                 name.extend((0..1 + rng.below(5)).map(|_| *rng.pick(&alphabet)));
             } else {
                 let e = rng.pick(EXTS);
-                name.push_str(&if rng.below(2) == 0 { e.to_ascii_uppercase() } else { e.to_string() });
+                name.push_str(&if rng.below(2) == 0 {
+                    e.to_ascii_uppercase()
+                } else {
+                    e.to_string()
+                });
             }
         }
         let h = rng.below(heads.len());
@@ -595,7 +696,11 @@ fn share_item(kinds: &[&str]) -> NewItem {
         role: "user".into(),
         attachments: kinds
             .iter()
-            .map(|k| Attachment { kind: (*k).into(), name: Some("x".into()), ..Attachment::default() })
+            .map(|k| Attachment {
+                kind: (*k).into(),
+                name: Some("x".into()),
+                ..Attachment::default()
+            })
             .collect(),
         meta: Some(Meta::kind("share")),
         ..NewItem::default()
@@ -621,7 +726,12 @@ fn sk1_every_timeline_kind_survives_normalize() {
     // 32 attachments (SK4.1's bound) all survive take(32), in order
     let many: Vec<&str> = (0..32).map(|i| kept[i % kept.len()]).collect();
     let item = normalize(share_item(&many), 1_760_000_000_000).unwrap();
-    let got: Vec<String> = item.attachments.unwrap().into_iter().map(|a| a.kind).collect();
+    let got: Vec<String> = item
+        .attachments
+        .unwrap()
+        .into_iter()
+        .map(|a| a.kind)
+        .collect();
     assert_eq!(got, many);
     // the whitelist is real: a raw handler kind that timeline_kind maps away is dropped
     let item = normalize(share_item(&["code", "image"]), 1_760_000_000_000).unwrap();
@@ -632,11 +742,18 @@ fn sk1_every_timeline_kind_survives_normalize() {
 
 fn check_sanitize(raw: &str) {
     let real = lucina_server::share::sanitize(raw);
-    assert_eq!(real, kernel::sanitize(raw, SANITIZE_FIXED), "sanitize({raw:?})");
+    assert_eq!(
+        real,
+        kernel::sanitize(raw, SANITIZE_FIXED),
+        "sanitize({raw:?})"
+    );
     assert!(!real.is_empty() && real.len() <= 120, "{raw:?} -> {real:?}");
     assert!(real.chars().all(kernel::char_ok), "{raw:?} -> {real:?}");
     let fixed = kernel::sanitize(raw, true);
-    assert!(!fixed.contains("..") && !fixed.is_empty() && fixed.len() <= 120, "{raw:?} -> {fixed:?}");
+    assert!(
+        !fixed.contains("..") && !fixed.is_empty() && fixed.len() <= 120,
+        "{raw:?} -> {fixed:?}"
+    );
 }
 
 #[test]
@@ -649,14 +766,33 @@ fn sk4_is_control_is_category_cc() {
 #[test]
 fn sk4_sanitize_matches_the_kernel() {
     for raw in [
-        "../../etc/passwd", "a\\b\n.jpg", "...", "", "/", " . . ", ".hidden", "..hidden..", "a....b",
-        "a.:b", "C:\\x.txt", "\u{7f}\u{85}\u{9f}\u{a0}", "photo.JPEG", "😀.png",
+        "../../etc/passwd",
+        "a\\b\n.jpg",
+        "...",
+        "",
+        "/",
+        " . . ",
+        ".hidden",
+        "..hidden..",
+        "a....b",
+        "a.:b",
+        "C:\\x.txt",
+        "\u{7f}\u{85}\u{9f}\u{a0}",
+        "photo.JPEG",
+        "😀.png",
     ] {
         check_sanitize(raw);
     }
     // the cut: dots and multi-byte chars at every position near the 120-byte boundary
     for k in 90..=125usize {
-        for ext in ["", ".jpg", ".jpeg", ".tar.gz", ".abcdefghijklmnopqrstu", ".é"] {
+        for ext in [
+            "",
+            ".jpg",
+            ".jpeg",
+            ".tar.gz",
+            ".abcdefghijklmnopqrstu",
+            ".é",
+        ] {
             check_sanitize(&format!("{}.{}{ext}", "a".repeat(k), "b".repeat(10)));
             check_sanitize(&format!("{}.{}{ext}", "é".repeat(k / 2), "c".repeat(5)));
             check_sanitize(&format!("{} .x{ext}", "日".repeat(k / 3)));
@@ -679,8 +815,14 @@ fn sk4_unfixed_sanitize_keeps_dotdot() {
     let real = lucina_server::share::sanitize(&witness);
     assert_eq!(real, kernel::sanitize(&witness, SANITIZE_FIXED));
     assert_eq!(real.contains(".."), !SANITIZE_FIXED, "{real}");
-    assert_eq!(kernel::sanitize(&witness, false), format!("{}..jpg", "a".repeat(115)));
-    assert_eq!(kernel::sanitize(&witness, true), format!("{}.jpg", "a".repeat(115)));
+    assert_eq!(
+        kernel::sanitize(&witness, false),
+        format!("{}..jpg", "a".repeat(115))
+    );
+    assert_eq!(
+        kernel::sanitize(&witness, true),
+        format!("{}.jpg", "a".repeat(115))
+    );
 }
 
 // ================================================================ SK4.1-SK4.3: receive
@@ -729,7 +871,16 @@ struct Field {
 fn field(kind: kernel::Kind, name: &'static str, value: String) -> Field {
     let blank = value.trim().is_empty();
     let location = value.contains("location");
-    Field { k: kernel::FieldIn { kind, bytes: value.len(), blank, location }, name, value }
+    Field {
+        k: kernel::FieldIn {
+            kind,
+            bytes: value.len(),
+            blank,
+            location,
+        },
+        name,
+        value,
+    }
 }
 fn text(v: &str) -> Field {
     field(kernel::Kind::Text, "text", v.into())
@@ -738,7 +889,11 @@ fn file(i: usize) -> Field {
     field(kernel::Kind::File, "file", format!("file {i}\n"))
 }
 fn meta(location: bool) -> Field {
-    let v = if location { r#"{"location":{"lat":55.6,"lon":12.5}}"# } else { r#"{"files":[]}"# };
+    let v = if location {
+        r#"{"location":{"lat":55.6,"lon":12.5}}"#
+    } else {
+        r#"{"files":[]}"#
+    };
     field(kernel::Kind::Meta, "meta", v.into())
 }
 fn scalar(name: &'static str, v: &str) -> Field {
@@ -765,15 +920,26 @@ fn form(fields: &[Field]) -> Form {
 async fn check_receive(h: &H, fields: &[Field], label: &str) -> (u16, Value) {
     let ks: Vec<kernel::FieldIn> = fields.iter().map(|f| f.k.clone()).collect();
     let expected = kernel::accepted_parts(&ks, true);
-    assert_eq!(expected, kernel::accepted_parts(&ks, false), "SK4.1: the location check never fires");
+    assert_eq!(
+        expected,
+        kernel::accepted_parts(&ks, false),
+        "SK4.1: the location check never fires"
+    );
     let (status, body) = submit(h, form(fields)).await;
     match expected {
         Some(n) => {
             assert_eq!(status, 202, "{label}: kernel accepts {n} parts: {body}");
-            assert_eq!(body["attachments"].as_array().map(Vec::len), Some(n), "{label}: {body}");
+            assert_eq!(
+                body["attachments"].as_array().map(Vec::len),
+                Some(n),
+                "{label}: {body}"
+            );
             assert!(n <= kernel::MAX_PARTS);
         }
-        None => assert!((400..500).contains(&status), "{label}: kernel refuses, got {status} {body}"),
+        None => assert!(
+            (400..500).contains(&status),
+            "{label}: kernel refuses, got {status} {body}"
+        ),
     }
     (status, body)
 }
@@ -782,7 +948,11 @@ async fn check_receive(h: &H, fields: &[Field], label: &str) -> (u16, Value) {
 async fn sk4_part_limit_with_a_location() {
     let h = setup().await;
     let id = |n: usize| scalar("shareId", &format!("diff-parts-{n:04}"));
-    let texts = |n: usize| (0..n).map(|i| text(&format!("part {i}"))).collect::<Vec<_>>();
+    let texts = |n: usize| {
+        (0..n)
+            .map(|i| text(&format!("part {i}")))
+            .collect::<Vec<_>>()
+    };
     // shareId + 30 texts + meta(location) = 32 fields -> 30 + 1 = 31 parts
     let mut f = vec![id(1)];
     f.extend(texts(30));
@@ -820,14 +990,60 @@ async fn sk4_field_caps_and_scalar_limits() {
     let cases: Vec<(Vec<Field>, &str)> = vec![
         (vec![text(&"x".repeat(3 * mib))], "text at 3 MiB"),
         (vec![text(&"x".repeat(3 * mib + 1))], "text over 3 MiB"),
-        (vec![text("a"), field(kernel::Kind::Meta, "meta", format!("{{\"files\":[]{}}}", " ".repeat(64 * 1024 - 12)))], "meta at 64 KiB"),
-        (vec![text("a"), field(kernel::Kind::Meta, "meta", format!("{{\"files\":[]{}}}", " ".repeat(64 * 1024 - 11)))], "meta over 64 KiB"),
-        (vec![text("a"), scalar("note", &"n".repeat(16 * 1024))], "note bytes at 16 KiB but over 4000 chars"),
-        (vec![text("a"), scalar("note", &"n".repeat(16 * 1024 + 1))], "note over 16 KiB"),
-        (vec![field(kernel::Kind::Url, "url", format!("http://127.0.0.1:9/{}", "p".repeat(8192 - 19)))], "url at 8192"),
-        (vec![field(kernel::Kind::Url, "url", format!("http://127.0.0.1:9/{}", "p".repeat(8192 - 18)))], "url over 8192"),
-        (vec![text("a"), field(kernel::Kind::Unknown, "evil", "x".into())], "unknown field"),
-        (vec![text("a"), scalar("lang", "en"), scalar("lang", "it")], "repeated scalar"),
+        (
+            vec![
+                text("a"),
+                field(
+                    kernel::Kind::Meta,
+                    "meta",
+                    format!("{{\"files\":[]{}}}", " ".repeat(64 * 1024 - 12)),
+                ),
+            ],
+            "meta at 64 KiB",
+        ),
+        (
+            vec![
+                text("a"),
+                field(
+                    kernel::Kind::Meta,
+                    "meta",
+                    format!("{{\"files\":[]{}}}", " ".repeat(64 * 1024 - 11)),
+                ),
+            ],
+            "meta over 64 KiB",
+        ),
+        (
+            vec![text("a"), scalar("note", &"n".repeat(16 * 1024))],
+            "note bytes at 16 KiB but over 4000 chars",
+        ),
+        (
+            vec![text("a"), scalar("note", &"n".repeat(16 * 1024 + 1))],
+            "note over 16 KiB",
+        ),
+        (
+            vec![field(
+                kernel::Kind::Url,
+                "url",
+                format!("http://127.0.0.1:9/{}", "p".repeat(8192 - 19)),
+            )],
+            "url at 8192",
+        ),
+        (
+            vec![field(
+                kernel::Kind::Url,
+                "url",
+                format!("http://127.0.0.1:9/{}", "p".repeat(8192 - 18)),
+            )],
+            "url over 8192",
+        ),
+        (
+            vec![text("a"), field(kernel::Kind::Unknown, "evil", "x".into())],
+            "unknown field",
+        ),
+        (
+            vec![text("a"), scalar("lang", "en"), scalar("lang", "it")],
+            "repeated scalar",
+        ),
         (vec![text("a"), meta(false), meta(true)], "repeated meta"),
     ];
     for (fields, label) in &cases {
@@ -836,12 +1052,22 @@ async fn sk4_field_caps_and_scalar_limits() {
         let loop_ok = kernel::accepted_parts(&ks, true).is_some();
         // the note case passes the loop and fails the 4000-character check after it
         let chars_ok = !label.starts_with("note bytes");
-        assert_eq!(status == 202, loop_ok && chars_ok, "{label}: {status} {body}");
+        assert_eq!(
+            status == 202,
+            loop_ok && chars_ok,
+            "{label}: {status} {body}"
+        );
     }
     // SK4.3: character limits (multi-byte chars: the limits count chars, not bytes)
-    for (key, max) in [("note", 4000usize), ("lang", 32), ("source", 120), ("title", 1000)] {
+    for (key, max) in [
+        ("note", 4000usize),
+        ("lang", 32),
+        ("source", 120),
+        ("title", 1000),
+    ] {
         for (n, ok) in [(max, true), (max + 1, false)] {
-            let (status, body) = submit(&h, Form::new().text("text", "a").text(key, "è".repeat(n))).await;
+            let (status, body) =
+                submit(&h, Form::new().text("text", "a").text(key, "è".repeat(n))).await;
             assert_eq!(status == 202, ok, "{key} with {n} chars: {status} {body}");
         }
     }
@@ -859,8 +1085,16 @@ async fn sk4_share_and_session_ids() {
             // make sure plenty are valid and distinct
             id = format!("ok-{i:03}-{}", "a".repeat(rng.below(60)));
         }
-        let (status, body) = submit(&h, Form::new().text("shareId", id.clone()).text("text", "a")).await;
-        assert_eq!(status == 202, kernel::valid_id(id.as_bytes()), "shareId {id:?}: {status} {body}");
+        let (status, body) = submit(
+            &h,
+            Form::new().text("shareId", id.clone()).text("text", "a"),
+        )
+        .await;
+        assert_eq!(
+            status == 202,
+            kernel::valid_id(id.as_bytes()),
+            "shareId {id:?}: {status} {body}"
+        );
         if kernel::valid_id(id.as_bytes()) {
             assert!(!id.contains('/') && !id.contains('.') && id.len() >= 8);
         } else {
@@ -870,8 +1104,18 @@ async fn sk4_share_and_session_ids() {
         if i % 3 == 0 {
             session = "s_1-".repeat(rng.below(18));
         }
-        let (status, body) = submit(&h, Form::new().text("sessionId", session.clone()).text("text", "a")).await;
-        assert_eq!(status == 202, kernel::valid_session(session.as_bytes()), "sessionId {session:?}: {status} {body}");
+        let (status, body) = submit(
+            &h,
+            Form::new()
+                .text("sessionId", session.clone())
+                .text("text", "a"),
+        )
+        .await;
+        assert_eq!(
+            status == 202,
+            kernel::valid_session(session.as_bytes()),
+            "sessionId {session:?}: {status} {body}"
+        );
     }
 }
 
@@ -949,7 +1193,11 @@ async fn sk2_repeated_receives_share_one_user_item() {
     let id = "diff-idem-0001";
     let mut ids = Vec::new();
     for n in 0..4 {
-        let (status, body) = submit(&h, Form::new().text("shareId", id).text("text", "same share")).await;
+        let (status, body) = submit(
+            &h,
+            Form::new().text("shareId", id).text("text", "same share"),
+        )
+        .await;
         assert_eq!(status, 202, "{body}");
         assert_eq!(body["duplicate"], n > 0, "{body}");
         ids.push(body["userItemId"].as_str().unwrap().to_owned());
@@ -958,7 +1206,11 @@ async fn sk2_repeated_receives_share_one_user_item() {
     let done = wait_done(&h, id).await;
     assert_eq!(done["userItemId"], ids[0].as_str());
     // a retry after completion still answers the same id
-    let (_, again) = submit(&h, Form::new().text("shareId", id).text("text", "same share")).await;
+    let (_, again) = submit(
+        &h,
+        Form::new().text("shareId", id).text("text", "same share"),
+    )
+    .await;
     assert_eq!(again["userItemId"], ids[0].as_str());
     let items = user_items_for(&h, id);
     assert_eq!(items.len(), 1, "SK2.3: {items:?}");
@@ -984,12 +1236,24 @@ async fn sk2_a_dir_left_by_a_crash_before_the_save_is_replaced() {
     let stale = month.join(id);
     std::fs::create_dir_all(&stale).unwrap();
     std::fs::write(stale.join("01-partial.txt"), "half a file").unwrap();
-    let (status, body) = submit(&h, Form::new().text("shareId", id).text("text", "after a crash")).await;
+    let (status, body) = submit(
+        &h,
+        Form::new()
+            .text("shareId", id)
+            .text("text", "after a crash"),
+    )
+    .await;
     assert_eq!(status, 202, "{body}");
     assert_eq!(body["duplicate"], false);
     assert!(!stale.join("01-partial.txt").exists());
     assert!(stale.join("status.json").exists());
-    let (_, dup) = submit(&h, Form::new().text("shareId", id).text("text", "after a crash")).await;
+    let (_, dup) = submit(
+        &h,
+        Form::new()
+            .text("shareId", id)
+            .text("text", "after a crash"),
+    )
+    .await;
     assert_eq!(dup["duplicate"], true);
     assert_eq!(dup["userItemId"], body["userItemId"]);
     assert_eq!(user_items_for(&h, id).len(), 1);
