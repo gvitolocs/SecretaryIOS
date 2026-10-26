@@ -3,13 +3,6 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-@main
-struct SecretaryWidgets: WidgetBundle {
-    var body: some Widget {
-        MemoRecordingLiveActivity()
-    }
-}
-
 /// A voice memo being recorded: Lock Screen banner and Dynamic Island.
 struct MemoRecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {
