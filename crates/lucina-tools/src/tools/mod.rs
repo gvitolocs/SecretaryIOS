@@ -37,7 +37,7 @@ pub fn builtin() -> Vec<Arc<dyn Tool>> {
         Arc::new(calendar::CalendarTool),
         Arc::new(tasks::TasksTool),
         Arc::new(memos::MemosTool),
-        Arc::new(media::MediaTool),
+        Arc::new(media::MediaTool::new()),
         Arc::new(shopping::ShoppingTool),
         Arc::new(presence::PresenceTool),
         Arc::new(avatar::AvatarOutfitTool),
