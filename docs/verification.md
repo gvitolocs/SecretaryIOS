@@ -454,7 +454,13 @@ P1 a legal move lands on floor, on a Cut tree only with Cut, on a card-key door 
 wall or a blocked cell (people, the Saffron guards, Snorlax, learned stops); a two-cell move hops a ledge in its own
 direction from floor. P2 every route `plan` returns is a chain of legal moves from the start to the goal. P3 the
 search and the route rebuild terminate (decreases on the rounds and on the parent distance). P4 the story step
-`progress` shows next has every prerequisite done, for the `STORY_REQUIRES` table. Warps, edge connections, spinners
+`progress` shows next has every prerequisite done, for the `STORY_REQUIRES` table. P5 a Strength push is allowed only onto free
+floor at the player's elevation (never stairs, a wall, a sprite or another boulder), moves exactly the boulder in front,
+and a refused push changes nothing; P6 any push sequence keeps every boulder on a floor cell and no two in one cell.
+The boulder search itself (`world.rs::solve_boulders_to`, a Sokoban search over boulder cells, switches and the
+player's region, with Victory Road's switches, its 3F hole and the boulders that hole toggles) is tied to P5/P6 by
+`victory_road_route`, which solves Victory Road from the ROM (1F 18 pushes, 2F 5, 3F 28 including the hole, 2F 15,
+then the exit to Route 23) and replays every push through the kernel's push rule. Warps, edge connections, spinners
 and the Mansion holes change maps and are outside the kernel. Two differential tests in the Lucina repo tie it to the
 code: `world.rs::routes_only_enter_walkable_cells` checks every step of planned ROM routes (Diglett's Cave, Rocket
 Hideout spinners, Viridian Gym, Silph Co. card-key doors, Cut on Route 9, ledges on Route 3, the Mansion with the
