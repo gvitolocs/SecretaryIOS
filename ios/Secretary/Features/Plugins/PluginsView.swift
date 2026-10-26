@@ -19,7 +19,7 @@ struct Plugin: Identifiable {
                    detail: app.backup.backedUp > 0 ? String(localized: "\(app.backup.backedUp) backed up") : nil,
                    isActive: app.backup.remaining > 0) { app.showGallery = true },
             Plugin(id: "drive", icon: "externaldrive", title: "Drive",
-                   detail: String(localized: "Films, files and shares")) { app.showDrive = true },
+                   detail: String(localized: "Archive, files and audio")) { app.showDrive = true },
             Plugin(id: "memos", icon: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform",
                    title: "Voice memos",
                    detail: app.memos.recorder.isActive ? String(localized: "Recording") : nil,

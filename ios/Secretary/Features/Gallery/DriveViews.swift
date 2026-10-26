@@ -1,11 +1,11 @@
 import QuickLook
 import SwiftUI
 
-// The Drive plugin (owner, 2026-10-26): what is not the phones' own photos and videos (imported
-// folders such as the films, files shared to Lucina, voice memos) as folders and a file list, as
-// in Google Drive. The Gallery shows only the phone backups; the server splits them with
-// `scope=gallery` / `scope=drive`. Photos and videos open in the Gallery's viewer, audio in the
-// media player, other files in Quick Look.
+// The Drive plugin (owner, 2026-10-26): the archive (old Nextcloud files, photo backups from the
+// computer, audio, other folders, files shared to Lucina) as folders and a file list, as in Google
+// Drive. The library is three places that never mix: the Gallery (the phones' backups), Films (the
+// player's plugin) and this; the server splits them with `scope=gallery|films|drive`. Photos and
+// videos open in the Gallery's viewer, audio in the media player, other files in Quick Look.
 
 struct DriveScreen: View {
     @Environment(GalleryStore.self) private var store
@@ -42,7 +42,7 @@ struct DriveScreen: View {
         .overlay {
             if store.items.isEmpty, !store.loading {
                 ContentUnavailableView("Nothing here yet", systemImage: "externaldrive",
-                                       description: Text("Films, imported folders and files shared to Lucina appear here."))
+                                       description: Text("Old files, computer backups, audio and files shared to Lucina appear here."))
             }
         }
         .navigationTitle(folderTitle.map { LocalizedStringKey($0) } ?? "Drive")
