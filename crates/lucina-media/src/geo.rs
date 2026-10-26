@@ -14,7 +14,10 @@ fn geocoder() -> &'static ReverseGeocoder {
 
 /// Nearest named place for a coordinate. `None` for null-island and out-of-range values.
 pub fn place_for(lat: f64, lon: f64) -> Option<Place> {
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) || (lat == 0.0 && lon == 0.0) {
+    if !(-90.0..=90.0).contains(&lat)
+        || !(-180.0..=180.0).contains(&lon)
+        || (lat == 0.0 && lon == 0.0)
+    {
         return None;
     }
     let r = geocoder().search((lat, lon)).record;

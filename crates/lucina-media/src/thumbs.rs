@@ -22,7 +22,9 @@ pub const LARGE_LONG_SIDE: u32 = 1600;
 
 pub fn dir_for(cfg: &Config, item_id: &str) -> PathBuf {
     let shard = item_id.rsplit('_').next().unwrap_or(item_id);
-    cfg.thumbs_dir().join(&shard[..2.min(shard.len())]).join(item_id)
+    cfg.thumbs_dir()
+        .join(&shard[..2.min(shard.len())])
+        .join(item_id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +71,13 @@ impl ThumbState {
 }
 
 /// `duration_ms` picks the video frame: 10% in (at most 5 min), past the black opening of films.
-pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path, duration_ms: Option<i64>) -> anyhow::Result<ThumbState> {
+pub fn generate(
+    cfg: &Config,
+    item_id: &str,
+    kind: &str,
+    original: &Path,
+    duration_ms: Option<i64>,
+) -> anyhow::Result<ThumbState> {
     let dir = dir_for(cfg, item_id);
     std::fs::create_dir_all(&dir)?;
     let preview = dir.join("preview.jpg");
@@ -88,7 +96,10 @@ pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path, durati
             if !poster.is_file() {
                 video_poster(cfg, original, &poster, duration_ms)?;
             }
-            poster.is_file().then(|| poster.clone()).or_else(|| preview.is_file().then(|| preview.clone()))
+            poster
+                .is_file()
+                .then(|| poster.clone())
+                .or_else(|| preview.is_file().then(|| preview.clone()))
         }
         "audio" => {
             if !poster.is_file() {
@@ -98,13 +109,24 @@ pub fn generate(cfg: &Config, item_id: &str, kind: &str, original: &Path, durati
         }
         _ => None,
     };
-    let Some(src) = source else { return Ok(ThumbState::None) };
+    let Some(src) = source else {
+        return Ok(ThumbState::None);
+    };
     let img = load_oriented(&src)?;
-    write_jpeg(&resize_short(&img, SMALL_SHORT_SIDE), &dir.join(ThumbSize::Small.file()))?;
-    write_jpeg(&resize_long(&img, LARGE_LONG_SIDE), &dir.join(ThumbSize::Large.file()))?;
+    write_jpeg(
+        &resize_short(&img, SMALL_SHORT_SIDE),
+        &dir.join(ThumbSize::Small.file()),
+    )?;
+    write_jpeg(
+        &resize_long(&img, LARGE_LONG_SIDE),
+        &dir.join(ThumbSize::Large.file()),
+    )?;
     let grid = img.resize_to_fill(GRID_PX, GRID_PX, image::imageops::FilterType::Lanczos3);
     write_atomic(&dir.join("g.jxl"), &encode_jxl(&grid, false)?)?;
-    write_atomic(&dir.join("p.jxl"), &encode_jxl(&resize_long(&img, PREVIEW_PX), true)?)?;
+    write_atomic(
+        &dir.join("p.jxl"),
+        &encode_jxl(&resize_long(&img, PREVIEW_PX), true)?,
+    )?;
     Ok(ThumbState::Ready(thumb_hash(&img)))
 }
 
@@ -116,7 +138,9 @@ fn decodable(p: &Path) -> bool {
 }
 
 pub fn load_oriented(p: &Path) -> anyhow::Result<DynamicImage> {
-    let mut decoder = ImageReader::open(p)?.with_guessed_format()?.into_decoder()?;
+    let mut decoder = ImageReader::open(p)?
+        .with_guessed_format()?
+        .into_decoder()?;
     let orientation = decoder.orientation()?;
     let mut img = DynamicImage::from_decoder(decoder)?;
     img.apply_orientation(orientation);
@@ -147,7 +171,11 @@ fn resize_long(img: &DynamicImage, long: u32) -> DynamicImage {
 /// ThumbHash of a picture (from a copy no larger than 100 px, as the format wants).
 pub fn thumb_hash(img: &DynamicImage) -> Vec<u8> {
     let small = img.thumbnail(100, 100).to_rgba8();
-    thumbhash::rgba_to_thumb_hash(small.width() as usize, small.height() as usize, small.as_raw())
+    thumbhash::rgba_to_thumb_hash(
+        small.width() as usize,
+        small.height() as usize,
+        small.as_raw(),
+    )
 }
 
 /// JPEG XL at [`JXL_DISTANCE`]; `progressive` orders the data so a partial file renders (DC first).
@@ -165,7 +193,8 @@ pub fn encode_jxl(img: &DynamicImage, progressive: bool) -> anyhow::Result<Vec<u
         enc.set_frame_option(Opt::ProgressiveAc, 1);
         enc.set_frame_option(Opt::ProgressiveDc, 1);
     }
-    enc.encode::<u8>(rgb.as_raw(), rgb.width(), rgb.height()).map_err(|e| anyhow::anyhow!("jxl encode: {e}"))
+    enc.encode::<u8>(rgb.as_raw(), rgb.width(), rgb.height())
+        .map_err(|e| anyhow::anyhow!("jxl encode: {e}"))
 }
 
 fn write_atomic(dst: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -188,15 +217,30 @@ fn write_jpeg(img: &DynamicImage, dst: &Path) -> anyhow::Result<()> {
 
 /// A frame 10% in (at most 5 min; 1 s when the length is unknown, then the first frame),
 /// scaled to 1600 px on the long side.
-fn video_poster(cfg: &Config, src: &Path, dst: &Path, duration_ms: Option<i64>) -> anyhow::Result<()> {
+fn video_poster(
+    cfg: &Config,
+    src: &Path,
+    dst: &Path,
+    duration_ms: Option<i64>,
+) -> anyhow::Result<()> {
     let tmp = dst.with_extension("part.jpg");
-    let at = duration_ms.filter(|d| *d > 20_000).map(|d| (d / 10).min(300_000)).unwrap_or(1000);
+    let at = duration_ms
+        .filter(|d| *d > 20_000)
+        .map(|d| (d / 10).min(300_000))
+        .unwrap_or(1000);
     let first = format!("{}.{:03}", at / 1000, at % 1000);
     for seek in [first.as_str(), "0"] {
         let status = Command::new(&cfg.ffmpeg)
             .args(["-nostdin", "-v", "error", "-y", "-ss", seek, "-i"])
             .arg(src)
-            .args(["-frames:v", "1", "-vf", "scale='min(1600,iw)':-2", "-q:v", "3"])
+            .args([
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale='min(1600,iw)':-2",
+                "-q:v",
+                "3",
+            ])
             .arg(&tmp)
             .stderr(Stdio::null())
             .status()?;
@@ -236,7 +280,10 @@ mod tests {
         let cfg = Config::for_dirs(tmp.path().join("data"), tmp.path().join("store"));
         let src = tmp.path().join("in.png");
         DynamicImage::new_rgb8(2000, 1000).save(&src).unwrap();
-        let ThumbState::Ready(hash) = generate(&cfg, "itm_abcdef", "photo", &src, None).unwrap() else { panic!("no thumbs") };
+        let ThumbState::Ready(hash) = generate(&cfg, "itm_abcdef", "photo", &src, None).unwrap()
+        else {
+            panic!("no thumbs")
+        };
         assert!((5..=40).contains(&hash.len()), "{}", hash.len());
         let dir = dir_for(&cfg, "itm_abcdef");
         let s = image::image_dimensions(dir.join("s.jpg")).unwrap();
@@ -249,6 +296,9 @@ mod tests {
         assert!(!p.is_empty() && p.len() < 200_000);
         let bogus = tmp.path().join("x.heic");
         std::fs::write(&bogus, b"not an image").unwrap();
-        assert!(matches!(generate(&cfg, "itm_zz", "photo", &bogus, None).unwrap(), ThumbState::None));
+        assert!(matches!(
+            generate(&cfg, "itm_zz", "photo", &bogus, None).unwrap(),
+            ThumbState::None
+        ));
     }
 }

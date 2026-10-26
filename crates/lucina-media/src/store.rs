@@ -21,7 +21,10 @@ use crate::db::{BlobLoc, Db};
 pub const STORE_MARKER: &str = ".lucina-media-store";
 
 pub fn object_rel(hash: &str, ext: &str) -> PathBuf {
-    PathBuf::from("objects").join(&hash[0..2]).join(&hash[2..4]).join(format!("{hash}.{ext}"))
+    PathBuf::from("objects")
+        .join(&hash[0..2])
+        .join(&hash[2..4])
+        .join(format!("{hash}.{ext}"))
 }
 
 pub fn store_available(cfg: &Config) -> bool {
@@ -31,7 +34,10 @@ pub fn store_available(cfg: &Config) -> bool {
 /// Create the store layout and its marker. Run once by `lucina-media init`.
 pub fn init_store(cfg: &Config) -> io::Result<()> {
     fs::create_dir_all(cfg.store_dir.join("objects"))?;
-    fs::write(cfg.store_dir.join(STORE_MARKER), b"lucina-media originals\n")?;
+    fs::write(
+        cfg.store_dir.join(STORE_MARKER),
+        b"lucina-media originals\n",
+    )?;
     for d in [cfg.spool_dir(), cfg.uploads_dir(), cfg.thumbs_dir()] {
         fs::create_dir_all(d)?;
     }
@@ -50,7 +56,10 @@ pub fn path_of(cfg: &Config, b: &BlobLoc) -> PathBuf {
 pub fn durable_copy(src: &Path, dst: &Path) -> io::Result<()> {
     let dir = dst.parent().ok_or_else(|| io::Error::other("no parent"))?;
     fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{}.part", dst.file_name().and_then(|n| n.to_str()).unwrap_or("obj")));
+    let tmp = dir.join(format!(
+        ".{}.part",
+        dst.file_name().and_then(|n| n.to_str()).unwrap_or("obj")
+    ));
     {
         let mut from = File::open(src)?;
         let mut to = File::create(&tmp)?;
@@ -85,7 +94,11 @@ pub fn durable_move(src: &Path, dst: &Path) -> io::Result<()> {
 /// The source file is consumed.
 pub fn place_new(cfg: &Config, src: &Path, hash: &str, ext: &str) -> io::Result<&'static str> {
     let to_store = store_available(cfg) && !cfg.is_quiet(Utc::now());
-    let (root, loc) = if to_store { (cfg.store_dir.clone(), "store") } else { (cfg.spool_dir(), "spool") };
+    let (root, loc) = if to_store {
+        (cfg.store_dir.clone(), "store")
+    } else {
+        (cfg.spool_dir(), "spool")
+    };
     let dst = root.join(object_rel(hash, ext));
     if dst.exists() && fs::metadata(&dst)?.len() == fs::metadata(src)?.len() {
         fs::remove_file(src)?;
@@ -114,7 +127,8 @@ pub fn flush_spool(cfg: &Config, db: &Db) -> anyhow::Result<usize> {
         let rel = object_rel(&hash, &ext);
         let src = cfg.spool_dir().join(&rel);
         let dst = cfg.store_dir.join(&rel);
-        let have_dst = dst.is_file() && (!src.is_file() || fs::metadata(&dst)?.len() == fs::metadata(&src)?.len());
+        let have_dst = dst.is_file()
+            && (!src.is_file() || fs::metadata(&dst)?.len() == fs::metadata(&src)?.len());
         if !have_dst {
             if !src.is_file() {
                 tracing::warn!(%hash, "spooled object missing from spool and store");
@@ -122,7 +136,12 @@ pub fn flush_spool(cfg: &Config, db: &Db) -> anyhow::Result<usize> {
             }
             durable_copy(&src, &dst)?;
         }
-        db.with(|c| c.execute("UPDATE blobs SET location = 'store' WHERE hash = ?1", params![hash]))?;
+        db.with(|c| {
+            c.execute(
+                "UPDATE blobs SET location = 'store' WHERE hash = ?1",
+                params![hash],
+            )
+        })?;
         if src.is_file() {
             fs::remove_file(&src)?;
         }
@@ -169,7 +188,9 @@ mod tests {
         let rel = object_rel(&hash, "jpg");
         assert_eq!(fs::read(cfg.store_dir.join(&rel)).unwrap(), b"hello");
         assert!(!cfg.spool_dir().join(&rel).exists());
-        let loc: String = db.with(|c| c.query_row("SELECT location FROM blobs", [], |r| r.get(0))).unwrap();
+        let loc: String = db
+            .with(|c| c.query_row("SELECT location FROM blobs", [], |r| r.get(0)))
+            .unwrap();
         assert_eq!(loc, "store");
     }
 }

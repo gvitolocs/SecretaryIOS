@@ -40,7 +40,9 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
     let cli = Cli::parse();
     let cfg = Config::from_env()?;
@@ -50,7 +52,11 @@ async fn main() -> anyhow::Result<()> {
             Library::open(cfg)?;
             println!("initialised");
         }
-        Cmd::Import { path, source, album } => {
+        Cmd::Import {
+            path,
+            source,
+            album,
+        } => {
             let lib = Library::open(cfg)?;
             let stats = tokio::task::spawn_blocking(move || {
                 import::import_path(&lib, &path, &import::ImportOpts { source, album })
@@ -71,16 +77,22 @@ async fn main() -> anyhow::Result<()> {
             })?;
             for id in &ids {
                 // The old poster would be reused; drop it so a new frame is picked.
-                let _ = std::fs::remove_file(lucina_media::thumbs::dir_for(&cfg, id).join("poster.jpg"));
+                let _ = std::fs::remove_file(
+                    lucina_media::thumbs::dir_for(&cfg, id).join("poster.jpg"),
+                );
             }
             let n = lib.db.with(|c| {
-                c.execute("UPDATE items SET thumb_state = 'pending' WHERE ?1 IS NULL OR kind = ?1", [&kind])
+                c.execute(
+                    "UPDATE items SET thumb_state = 'pending' WHERE ?1 IS NULL OR kind = ?1",
+                    [&kind],
+                )
             })?;
             println!("{n} items queued");
         }
         Cmd::IndexFolder { label, path } => {
             let lib = Library::open(cfg)?;
-            let r = tokio::task::spawn_blocking(move || ingest::index_folder(&lib, &label, &path)).await??;
+            let r = tokio::task::spawn_blocking(move || ingest::index_folder(&lib, &label, &path))
+                .await??;
             println!("added {}, unchanged {}", r.0, r.1);
         }
         Cmd::Serve => serve(cfg).await?,
@@ -90,7 +102,10 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(cfg: Config) -> anyhow::Result<()> {
     if cfg.upstream_key.is_none() && !cfg.listen.ip().is_loopback() {
-        anyhow::bail!("refusing to listen on {} without an upstream key", cfg.listen);
+        anyhow::bail!(
+            "refusing to listen on {} without an upstream key",
+            cfg.listen
+        );
     }
     if !store::store_available(&cfg) {
         tracing::warn!(store = %cfg.store_dir.display(), "store marker missing: uploads stay in the spool");
@@ -114,7 +129,11 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             loop {
                 for (label, path) in l.cfg.folders.clone() {
                     let l2 = l.clone();
-                    match tokio::task::spawn_blocking(move || ingest::index_folder(&l2, &label, &path)).await {
+                    match tokio::task::spawn_blocking(move || {
+                        ingest::index_folder(&l2, &label, &path)
+                    })
+                    .await
+                    {
                         Ok(Ok((a, _))) if a > 0 => tracing::info!(added = a, "folder indexed"),
                         Ok(Err(e)) => tracing::warn!(error = %e, "folder index failed"),
                         _ => {}
@@ -150,7 +169,10 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
     } else {
         let pl = tokio::net::TcpListener::bind(cfg.listen).await?;
         let il = tokio::net::TcpListener::bind(cfg.internal_listen).await?;
-        anyhow::ensure!(cfg.internal_listen.ip().is_loopback(), "internal listener must be loopback");
+        anyhow::ensure!(
+            cfg.internal_listen.ip().is_loopback(),
+            "internal listener must be loopback"
+        );
         tracing::info!(public = %cfg.listen, internal = %cfg.internal_listen, "serving");
         let a = tokio::spawn(async move { axum::serve(pl, public).await });
         let b = tokio::spawn(async move { axum::serve(il, internal).await });

@@ -140,7 +140,10 @@ impl Db {
                 params![format!("sys-{key}"), title, key, now],
             )?;
         }
-        Ok(Self { conn: Arc::new(Mutex::new(conn)), path: path.to_path_buf() })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: path.to_path_buf(),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -164,7 +167,10 @@ impl Db {
     }
 
     /// Synchronous access, for the CLI and tests.
-    pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T, rusqlite::Error>) -> Result<T, DbError> {
+    pub fn with<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, rusqlite::Error>,
+    ) -> Result<T, DbError> {
         let mut guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         f(&mut guard).map_err(DbError::from)
     }
@@ -269,7 +275,10 @@ pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
         width: r.get(9)?,
         height: r.get(10)?,
         duration_ms: r.get(11)?,
-        codecs: Codecs { video: r.get(12)?, audio: r.get(13)? },
+        codecs: Codecs {
+            video: r.get(12)?,
+            audio: r.get(13)?,
+        },
         place,
         camera: r.get(20)?,
         source: r.get(21)?,
@@ -277,7 +286,9 @@ pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
         favorite: r.get::<_, i64>(23)? != 0,
         version: r.get(24)?,
         albums: Vec::new(),
-        links: links.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or(serde_json::Value::Null),
+        links: links
+            .and_then(|l| serde_json::from_str(&l).ok())
+            .unwrap_or(serde_json::Value::Null),
         trashed_at: r.get(26)?,
         thumb_state: r.get(27)?,
         thumbhash: r.get::<_, Option<Vec<u8>>>(28)?.map(|h| {
@@ -289,7 +300,11 @@ pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
 
 pub fn get_item(c: &Connection, id: &str) -> rusqlite::Result<Option<Item>> {
     let mut item = c
-        .query_row(&format!("SELECT {ITEM_COLS} FROM items WHERE id = ?1"), [id], item_from_row)
+        .query_row(
+            &format!("SELECT {ITEM_COLS} FROM items WHERE id = ?1"),
+            [id],
+            item_from_row,
+        )
         .optional()?;
     if let Some(it) = item.as_mut() {
         it.albums = item_albums(c, id)?;
@@ -298,7 +313,8 @@ pub fn get_item(c: &Connection, id: &str) -> rusqlite::Result<Option<Item>> {
 }
 
 pub fn item_albums(c: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut st = c.prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY added_at")?;
+    let mut st =
+        c.prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY added_at")?;
     let rows = st.query_map([id], |r| r.get(0))?;
     rows.collect()
 }
@@ -314,16 +330,28 @@ pub struct BlobLoc {
 }
 
 pub fn blob(c: &Connection, hash: &str) -> rusqlite::Result<Option<BlobLoc>> {
-    c.query_row("SELECT hash, ext, location, path, bytes FROM blobs WHERE hash = ?1", [hash], |r| {
-        Ok(BlobLoc { hash: r.get(0)?, ext: r.get(1)?, location: r.get(2)?, path: r.get(3)?, bytes: r.get(4)? })
-    })
+    c.query_row(
+        "SELECT hash, ext, location, path, bytes FROM blobs WHERE hash = ?1",
+        [hash],
+        |r| {
+            Ok(BlobLoc {
+                hash: r.get(0)?,
+                ext: r.get(1)?,
+                location: r.get(2)?,
+                path: r.get(3)?,
+                bytes: r.get(4)?,
+            })
+        },
+    )
     .optional()
 }
 
 /// Rebuild the search text of one item: title, caption, place, camera, albums, date words.
 pub fn reindex(c: &Connection, id: &str) -> rusqlite::Result<()> {
     c.execute("DELETE FROM items_fts WHERE item_id = ?1", [id])?;
-    let Some(it) = get_item(c, id)? else { return Ok(()) };
+    let Some(it) = get_item(c, id)? else {
+        return Ok(());
+    };
     let mut body = vec![it.title.clone()];
     body.extend(it.caption.clone());
     if let Some(p) = &it.place {
@@ -337,17 +365,27 @@ pub fn reindex(c: &Connection, id: &str) -> rusqlite::Result<()> {
     }
     body.extend(it.camera.clone());
     body.push(it.kind.clone());
-    if let Some(t) = it.taken_at.as_deref().and_then(|t| DateTime::parse_from_rfc3339(t).ok()) {
+    if let Some(t) = it
+        .taken_at
+        .as_deref()
+        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+    {
         body.push(t.format("%B %Y").to_string());
     }
     for a in &it.albums {
-        if let Some(title) =
-            c.query_row("SELECT title FROM albums WHERE id = ?1", [a], |r| r.get::<_, String>(0)).optional()?
+        if let Some(title) = c
+            .query_row("SELECT title FROM albums WHERE id = ?1", [a], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
         {
             body.push(title);
         }
     }
-    c.execute("INSERT INTO items_fts (item_id, body) VALUES (?1, ?2)", params![id, body.join(" ")])?;
+    c.execute(
+        "INSERT INTO items_fts (item_id, body) VALUES (?1, ?2)",
+        params![id, body.join(" ")],
+    )?;
     Ok(())
 }
 
@@ -406,7 +444,8 @@ pub fn parse_near(s: &str) -> Option<(f64, f64, f64)> {
     let lat = it.next()?.ok()?;
     let lon = it.next()?.ok()?;
     let km = it.next().map(|k| k.ok()).unwrap_or(Some(25.0))?;
-    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) && km > 0.0).then_some((lat, lon, km))
+    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) && km > 0.0)
+        .then_some((lat, lon, km))
 }
 
 /// Accepts `YYYY`, `YYYY-MM`, `YYYY-MM-DD` or RFC 3339; `end` rounds partial dates up.
@@ -414,27 +453,51 @@ pub fn normalize_bound(s: &str, end: bool) -> Option<String> {
     use chrono::NaiveDate;
     let s = s.trim();
     if let Ok(t) = DateTime::parse_from_rfc3339(s) {
-        return Some(t.with_timezone(&Utc).to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        return Some(
+            t.with_timezone(&Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        );
     }
     let date = match s.len() {
         4 => {
             let y: i32 = s.parse().ok()?;
-            if end { NaiveDate::from_ymd_opt(y + 1, 1, 1)? } else { NaiveDate::from_ymd_opt(y, 1, 1)? }
+            if end {
+                NaiveDate::from_ymd_opt(y + 1, 1, 1)?
+            } else {
+                NaiveDate::from_ymd_opt(y, 1, 1)?
+            }
         }
         7 => {
             let d = NaiveDate::parse_from_str(&format!("{s}-01"), "%Y-%m-%d").ok()?;
-            if end { d.checked_add_months(chrono::Months::new(1))? } else { d }
+            if end {
+                d.checked_add_months(chrono::Months::new(1))?
+            } else {
+                d
+            }
         }
         10 => {
             let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
-            if end { d.succ_opt()? } else { d }
+            if end {
+                d.succ_opt()?
+            } else {
+                d
+            }
         }
         _ => return None,
     };
-    Some(date.and_hms_opt(0, 0, 0)?.and_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    Some(
+        date.and_hms_opt(0, 0, 0)?
+            .and_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
 }
 
-fn add(wh: &mut Vec<String>, args: &mut Vec<rusqlite::types::Value>, cond: &str, v: rusqlite::types::Value) {
+fn add(
+    wh: &mut Vec<String>,
+    args: &mut Vec<rusqlite::types::Value>,
+    cond: &str,
+    v: rusqlite::types::Value,
+) {
     args.push(v);
     wh.push(cond.replace('?', &format!("?{}", args.len())));
 }
@@ -477,7 +540,12 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         ));
     }
     if let Some(fq) = q.q.as_deref().and_then(fts_query) {
-        add(&mut wh, &mut args, "i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?)", fq.into());
+        add(
+            &mut wh,
+            &mut args,
+            "i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?)",
+            fq.into(),
+        );
     }
     let near = q.near.as_deref().and_then(parse_near);
     if let Some((lat, lon, km)) = near {
@@ -500,10 +568,16 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         let a = args.len();
         args.push(id.to_string().into());
         let b = args.len();
-        wh.push(format!("(i.sort_at < ?{a} OR (i.sort_at = ?{a} AND i.id < ?{b}))"));
+        wh.push(format!(
+            "(i.sort_at < ?{a} OR (i.sort_at = ?{a} AND i.id < ?{b}))"
+        ));
     }
     let fetch = if near.is_some() { limit * 5 } else { limit } + 1;
-    let cols: String = ITEM_COLS.split(", ").map(|c| format!("i.{}", c.trim())).collect::<Vec<_>>().join(", ");
+    let cols: String = ITEM_COLS
+        .split(", ")
+        .map(|c| format!("i.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "SELECT {cols}, i.sort_at FROM items i WHERE {} ORDER BY i.sort_at DESC, i.id DESC LIMIT {fetch}",
         wh.join(" AND ")
@@ -539,7 +613,11 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
     for it in items.iter_mut() {
         it.albums = item_albums(c, &it.id)?;
     }
-    Ok(ItemPage { items, next_cursor: if more { last_key } else { None }, total })
+    Ok(ItemPage {
+        items,
+        next_cursor: if more { last_key } else { None },
+        total,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -568,7 +646,9 @@ pub fn list_albums(c: &Connection) -> rusqlite::Result<Vec<Album>> {
 
 /// Albums with their counts in one scope (`gallery`, `drive`); the ones with nothing there are left out.
 pub fn list_albums_in(c: &Connection, scope: Option<&str>) -> rusqlite::Result<Vec<Album>> {
-    let extra = scope_condition(scope).map(|s| format!(" AND {s}")).unwrap_or_default();
+    let extra = scope_condition(scope)
+        .map(|s| format!(" AND {s}"))
+        .unwrap_or_default();
     let mut st = c.prepare(&format!(
         "SELECT a.id, a.title, a.system_key, a.cover_item, \
            (SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \
@@ -577,7 +657,11 @@ pub fn list_albums_in(c: &Connection, scope: Option<&str>) -> rusqlite::Result<V
     ))?;
     let rows = st.query_map([], album_from_row)?;
     let albums: Vec<Album> = rows.collect::<rusqlite::Result<_>>()?;
-    Ok(if scope.is_some() { albums.into_iter().filter(|a| a.count > 0).collect() } else { albums })
+    Ok(if scope.is_some() {
+        albums.into_iter().filter(|a| a.count > 0).collect()
+    } else {
+        albums
+    })
 }
 
 pub fn get_album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
@@ -610,17 +694,35 @@ mod tests {
 
     #[test]
     fn bounds_round_partial_dates() {
-        assert_eq!(normalize_bound("2025", false).unwrap(), "2025-01-01T00:00:00.000Z");
-        assert_eq!(normalize_bound("2025", true).unwrap(), "2026-01-01T00:00:00.000Z");
-        assert_eq!(normalize_bound("2025-12", true).unwrap(), "2026-01-01T00:00:00.000Z");
-        assert_eq!(normalize_bound("2025-06-30", true).unwrap(), "2025-07-01T00:00:00.000Z");
-        assert_eq!(normalize_bound("2025-06-30T12:00:00+02:00", false).unwrap(), "2025-06-30T10:00:00.000Z");
+        assert_eq!(
+            normalize_bound("2025", false).unwrap(),
+            "2025-01-01T00:00:00.000Z"
+        );
+        assert_eq!(
+            normalize_bound("2025", true).unwrap(),
+            "2026-01-01T00:00:00.000Z"
+        );
+        assert_eq!(
+            normalize_bound("2025-12", true).unwrap(),
+            "2026-01-01T00:00:00.000Z"
+        );
+        assert_eq!(
+            normalize_bound("2025-06-30", true).unwrap(),
+            "2025-07-01T00:00:00.000Z"
+        );
+        assert_eq!(
+            normalize_bound("2025-06-30T12:00:00+02:00", false).unwrap(),
+            "2025-06-30T10:00:00.000Z"
+        );
         assert!(normalize_bound("June", false).is_none());
     }
 
     #[test]
     fn fts_query_quotes_words() {
-        assert_eq!(fts_query("Copenhagen, summer").unwrap(), "\"Copenhagen\"* \"summer\"*");
+        assert_eq!(
+            fts_query("Copenhagen, summer").unwrap(),
+            "\"Copenhagen\"* \"summer\"*"
+        );
         assert!(fts_query(" ,; ").is_none());
     }
 

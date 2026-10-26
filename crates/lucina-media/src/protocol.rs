@@ -45,12 +45,18 @@ pub fn accept_chunk(s: UploadState, offset: u64, len: u64) -> Result<ChunkOutcom
         return Err(ChunkError::TooLarge);
     }
     if offset > s.received {
-        return Err(ChunkError::OffsetMismatch { offset, expected: s.received });
+        return Err(ChunkError::OffsetMismatch {
+            offset,
+            expected: s.received,
+        });
     }
     if end <= s.received && len > 0 {
         return Ok(ChunkOutcome::AlreadyHave { offset: s.received });
     }
-    Ok(ChunkOutcome::Append { skip: s.received - offset, new_offset: end.max(s.received) })
+    Ok(ChunkOutcome::Append {
+        skip: s.received - offset,
+        new_offset: end.max(s.received),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -64,12 +70,18 @@ pub enum FinishError {
 }
 
 /// Whether an upload may be finished. `expected` is the client's hash (if it sent one).
-pub fn check_finish(s: UploadState, computed: &str, expected: Option<&str>) -> Result<(), FinishError> {
+pub fn check_finish(
+    s: UploadState,
+    computed: &str,
+    expected: Option<&str>,
+) -> Result<(), FinishError> {
     if s.finished {
         return Err(FinishError::Finished);
     }
     if s.received < s.declared {
-        return Err(FinishError::Incomplete { missing: s.declared - s.received });
+        return Err(FinishError::Incomplete {
+            missing: s.declared - s.received,
+        });
     }
     match expected {
         Some(e) if !e.eq_ignore_ascii_case(computed) => Err(FinishError::HashMismatch),
@@ -89,24 +101,34 @@ pub struct Known {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IngestDecision {
     /// Same bytes are already in the library.
-    Duplicate { item_id: String },
+    Duplicate {
+        item_id: String,
+    },
     /// The phone edited an asset we have: the item keeps its id and gets a new current version.
     /// The previous original stays in the store.
-    NewVersion { item_id: String },
+    NewVersion {
+        item_id: String,
+    },
     New,
 }
 
 pub fn ingest_decision(known: &Known, hash: &str) -> IngestDecision {
     if let Some((item_id, current)) = &known.by_asset {
         if current == hash {
-            return IngestDecision::Duplicate { item_id: item_id.clone() };
+            return IngestDecision::Duplicate {
+                item_id: item_id.clone(),
+            };
         }
         // Edited on the phone. If another item already has these exact bytes we still version
         // the asset's own item, so edits never jump between items.
-        return IngestDecision::NewVersion { item_id: item_id.clone() };
+        return IngestDecision::NewVersion {
+            item_id: item_id.clone(),
+        };
     }
     match &known.by_hash {
-        Some(item_id) => IngestDecision::Duplicate { item_id: item_id.clone() },
+        Some(item_id) => IngestDecision::Duplicate {
+            item_id: item_id.clone(),
+        },
         None => IngestDecision::New,
     }
 }
@@ -116,55 +138,140 @@ mod tests {
     use super::*;
 
     fn st(declared: u64, received: u64) -> UploadState {
-        UploadState { declared, received, finished: false }
+        UploadState {
+            declared,
+            received,
+            finished: false,
+        }
     }
 
     #[test]
     fn chunks_append_in_order() {
-        assert_eq!(accept_chunk(st(10, 0), 0, 4), Ok(ChunkOutcome::Append { skip: 0, new_offset: 4 }));
-        assert_eq!(accept_chunk(st(10, 4), 4, 6), Ok(ChunkOutcome::Append { skip: 0, new_offset: 10 }));
+        assert_eq!(
+            accept_chunk(st(10, 0), 0, 4),
+            Ok(ChunkOutcome::Append {
+                skip: 0,
+                new_offset: 4
+            })
+        );
+        assert_eq!(
+            accept_chunk(st(10, 4), 4, 6),
+            Ok(ChunkOutcome::Append {
+                skip: 0,
+                new_offset: 10
+            })
+        );
     }
 
     #[test]
     fn retried_chunk_is_acknowledged_not_duplicated() {
-        assert_eq!(accept_chunk(st(10, 8), 4, 4), Ok(ChunkOutcome::AlreadyHave { offset: 8 }));
+        assert_eq!(
+            accept_chunk(st(10, 8), 4, 4),
+            Ok(ChunkOutcome::AlreadyHave { offset: 8 })
+        );
     }
 
     #[test]
     fn a_whole_file_retried_after_a_cut_skips_what_is_stored() {
         // iOS background session: PUT of the whole file at 0 after 131 071 bytes arrived.
-        assert_eq!(accept_chunk(st(2_878_381, 131_071), 0, 2_878_381), Ok(ChunkOutcome::Append { skip: 131_071, new_offset: 2_878_381 }));
-        assert_eq!(accept_chunk(st(10, 4), 2, 4), Ok(ChunkOutcome::Append { skip: 2, new_offset: 6 }));
+        assert_eq!(
+            accept_chunk(st(2_878_381, 131_071), 0, 2_878_381),
+            Ok(ChunkOutcome::Append {
+                skip: 131_071,
+                new_offset: 2_878_381
+            })
+        );
+        assert_eq!(
+            accept_chunk(st(10, 4), 2, 4),
+            Ok(ChunkOutcome::Append {
+                skip: 2,
+                new_offset: 6
+            })
+        );
     }
 
     #[test]
     fn gaps_and_overflow_are_refused() {
-        assert_eq!(accept_chunk(st(10, 4), 6, 2), Err(ChunkError::OffsetMismatch { offset: 6, expected: 4 }));
+        assert_eq!(
+            accept_chunk(st(10, 4), 6, 2),
+            Err(ChunkError::OffsetMismatch {
+                offset: 6,
+                expected: 4
+            })
+        );
         assert_eq!(accept_chunk(st(10, 4), 4, 7), Err(ChunkError::TooLarge));
-        assert_eq!(accept_chunk(st(10, 4), u64::MAX, 2), Err(ChunkError::TooLarge));
-        let done = UploadState { declared: 10, received: 10, finished: true };
+        assert_eq!(
+            accept_chunk(st(10, 4), u64::MAX, 2),
+            Err(ChunkError::TooLarge)
+        );
+        let done = UploadState {
+            declared: 10,
+            received: 10,
+            finished: true,
+        };
         assert_eq!(accept_chunk(done, 10, 0), Err(ChunkError::Finished));
     }
 
     #[test]
     fn finish_needs_all_bytes_and_matching_hash() {
-        assert_eq!(check_finish(st(10, 9), "ab", None), Err(FinishError::Incomplete { missing: 1 }));
-        assert_eq!(check_finish(st(10, 10), "ab", Some("cd")), Err(FinishError::HashMismatch));
+        assert_eq!(
+            check_finish(st(10, 9), "ab", None),
+            Err(FinishError::Incomplete { missing: 1 })
+        );
+        assert_eq!(
+            check_finish(st(10, 10), "ab", Some("cd")),
+            Err(FinishError::HashMismatch)
+        );
         assert_eq!(check_finish(st(10, 10), "ab", Some("AB")), Ok(()));
         assert_eq!(check_finish(st(0, 0), "ab", None), Ok(()));
     }
 
     #[test]
     fn ingest_dedupes_and_versions_edits() {
-        let none = Known { by_hash: None, by_asset: None };
+        let none = Known {
+            by_hash: None,
+            by_asset: None,
+        };
         assert_eq!(ingest_decision(&none, "h1"), IngestDecision::New);
-        let dup = Known { by_hash: Some("i1".into()), by_asset: None };
-        assert_eq!(ingest_decision(&dup, "h1"), IngestDecision::Duplicate { item_id: "i1".into() });
-        let same = Known { by_hash: Some("i1".into()), by_asset: Some(("i1".into(), "h1".into())) };
-        assert_eq!(ingest_decision(&same, "h1"), IngestDecision::Duplicate { item_id: "i1".into() });
-        let edited = Known { by_hash: None, by_asset: Some(("i1".into(), "h0".into())) };
-        assert_eq!(ingest_decision(&edited, "h1"), IngestDecision::NewVersion { item_id: "i1".into() });
-        let edited_to_other = Known { by_hash: Some("i2".into()), by_asset: Some(("i1".into(), "h0".into())) };
-        assert_eq!(ingest_decision(&edited_to_other, "h1"), IngestDecision::NewVersion { item_id: "i1".into() });
+        let dup = Known {
+            by_hash: Some("i1".into()),
+            by_asset: None,
+        };
+        assert_eq!(
+            ingest_decision(&dup, "h1"),
+            IngestDecision::Duplicate {
+                item_id: "i1".into()
+            }
+        );
+        let same = Known {
+            by_hash: Some("i1".into()),
+            by_asset: Some(("i1".into(), "h1".into())),
+        };
+        assert_eq!(
+            ingest_decision(&same, "h1"),
+            IngestDecision::Duplicate {
+                item_id: "i1".into()
+            }
+        );
+        let edited = Known {
+            by_hash: None,
+            by_asset: Some(("i1".into(), "h0".into())),
+        };
+        assert_eq!(
+            ingest_decision(&edited, "h1"),
+            IngestDecision::NewVersion {
+                item_id: "i1".into()
+            }
+        );
+        let edited_to_other = Known {
+            by_hash: Some("i2".into()),
+            by_asset: Some(("i1".into(), "h0".into())),
+        };
+        assert_eq!(
+            ingest_decision(&edited_to_other, "h1"),
+            IngestDecision::NewVersion {
+                item_id: "i1".into()
+            }
+        );
     }
 }
