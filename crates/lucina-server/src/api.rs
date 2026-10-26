@@ -339,6 +339,7 @@ async fn health(State(st): State<AppState>) -> Response {
             "channels": {"telegram": false, "discord": false},
             "grocery": st.grocery.is_some(),
             "delegation": {"enabled": st.delegator.is_some()},
+            "botHospital": crate::bot_hospital::health_value(&st.hospital_health),
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
             "timelineStreams": st.streams.load(Ordering::Relaxed),

@@ -170,6 +170,8 @@ pub struct Config {
     /// OTP requests in chat (`LUCINA_OTP_OWNER_TOKEN_FILE`, unset by default:
     /// "the OTP bridge is unavailable"), see [`crate::otp`].
     pub otp: crate::otp::OtpConfig,
+    /// Bot Hospital daily Poko-news audit (`BOT_HOSPITAL_*`), see [`crate::bot_hospital`].
+    pub hospital: crate::bot_hospital::HospitalConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -349,6 +351,7 @@ impl Config {
             secretary_url.clone(),
             secretary_service_token_file.clone(),
         );
+        let hospital = crate::bot_hospital::HospitalConfig::from_lookup(&get, &data_dir);
         Ok(Self {
             share: crate::share::ShareConfig::from_lookup(&get),
             bind,
@@ -477,6 +480,7 @@ impl Config {
             delegate_enabled: flag("LUCINA_DELEGATE", false),
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
+            hospital,
             drive_enabled: flag("LUCINA_DRIVE", false),
             google_client_file: PathBuf::from(
                 get("LUCINA_GOOGLE_CLIENT_FILE")

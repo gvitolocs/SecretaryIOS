@@ -9,6 +9,7 @@
 //! only. See `README` in the crate docs of [`config`].
 
 pub mod api;
+pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
 pub mod chat;
@@ -93,6 +94,7 @@ pub struct Inner {
     pub streams: AtomicUsize,
     pub started: Instant,
     pub scheduler_health: Arc<Mutex<lucina_store::scheduler::SchedulerHealth>>,
+    pub hospital_health: Arc<Mutex<bot_hospital::HospitalHealth>>,
 }
 
 #[derive(Clone)]
@@ -338,6 +340,10 @@ impl AppState {
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),
+            hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
+                enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
+                ..Default::default()
+            })),
             scheduler_health: Arc::new(Mutex::new(lucina_store::scheduler::SchedulerHealth {
                 enabled: cfg.scheduler && cfg.reminders_writer == WriterKind::Local,
                 ..Default::default()
@@ -379,6 +385,14 @@ impl AppState {
         }
         // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
         deals::spawn_watch(self);
+        bot_hospital::spawn(
+            self,
+            Arc::new(bot_hospital::Hospital {
+                cfg: self.cfg.hospital.clone(),
+                http: reqwest::Client::new(),
+                health: self.hospital_health.clone(),
+            }),
+        );
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {
                 tracing::warn!("LUCINA_SCHEDULER=true ignored: reminders.json is owned by the Node Lucina (LUCINA_REMINDERS_WRITER=node)");
