@@ -15,8 +15,21 @@
 //! [`DealWatch::run`] is Node's `run(kind, { dryRun })`; delivery is a
 //! [`Deliver`] (app notification, Telegram or both), and the scheduler
 //! (digest time, alert window and interval) calls it.
+//!
+//! Three changes from Node, found by the deal watch model (SecretaryIOS
+//! `docs/verification.md` §14, bugs DW1-DW3):
+//!
+//! - F1: the composed message is written to the file as `pending` (with its
+//!   dedup key, kind, date and what it acknowledges) before it is sent. A run
+//!   that finds one re-sends exactly that message first (same dedup key, so
+//!   secretary-server answers `duplicate` if it already has it), acknowledges
+//!   it, then continues. The field is absent when nothing is pending, so a
+//!   file without it is the old format.
+//! - F2: only the delivered best offers (and their `relatedKeys`) are
+//!   acknowledged, not every active offer.
+//! - F3: a notified price never goes up ([`WatchState::set_notified`] keeps
+//!   the lower price).
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -117,24 +130,7 @@ impl WatchState {
 
     /// Atomic write (`<file>.<pid>.tmp`, mode 0600, rename), like Node.
     pub fn save(&self, path: &Path) -> Result<(), DealsError> {
-        let err = |e: std::io::Error| DealsError::State(e.to_string());
-        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-            std::fs::create_dir_all(dir).map_err(err)?;
-        }
-        let tmp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
-        {
-            use std::io::Write;
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(&tmp).map_err(err)?;
-            file.write_all(self.to_json().as_bytes()).map_err(err)?;
-        }
-        std::fs::rename(&tmp, path).map_err(err)
+        write_atomic(path, self.to_json().as_bytes())
     }
 
     fn get(&self, key: &str) -> Option<&JsValue> {
@@ -187,16 +183,37 @@ impl WatchState {
         });
     }
 
+    /// Record that `id` reached the owner at `price` (F3: keeping a lower
+    /// price already recorded, so a price that rises and falls back is not
+    /// new again). `validTo` is the latest offer's.
     pub fn set_notified(&mut self, id: &str, price: f64, valid_to: Option<&Value>) {
-        let mut entry = vec![("price".to_owned(), JsValue::Number(price))];
-        if let Some(v) = valid_to {
-            entry.push(("validTo".into(), to_js(v)));
+        self.set_notified_entry(id, &notified_entry(price, valid_to.map(to_js)));
+    }
+
+    /// `set_notified` with a `{price, validTo}` entry as `notified_entry` built it.
+    fn set_notified_entry(&mut self, id: &str, entry: &JsValue) {
+        let mut entry = entry.clone();
+        let price = entry.get("price").map_or(f64::NAN, JsValue::to_number);
+        if let (Some(old), JsValue::Object(fields)) = (self.notified_price(id), &mut entry) {
+            if old < price {
+                set_entry(fields, "price", JsValue::Number(old));
+            }
         }
-        set_entry(
-            object_mut(&mut self.root, "notified"),
-            id,
-            JsValue::Object(entry),
-        );
+        set_entry(object_mut(&mut self.root, "notified"), id, entry);
+    }
+
+    /// F1: the message being sent, if a run wrote one and did not acknowledge it.
+    pub fn pending(&self) -> Option<&JsValue> {
+        self.get("pending").filter(|p| !matches!(p, JsValue::Null))
+    }
+
+    /// F1: set or clear `pending`. Cleared, the key is removed, so the file is
+    /// the format Node wrote.
+    pub fn set_pending(&mut self, pending: Option<JsValue>) {
+        match pending {
+            Some(p) => set_entry(&mut self.root, "pending", p),
+            None => self.root.retain(|(k, _)| k != "pending"),
+        }
     }
 
     pub fn set_last_digest_date(&mut self, date: &str) {
@@ -227,6 +244,37 @@ impl WatchState {
     fn keep_alert_counts_from(&mut self, date: &str) {
         object_mut(&mut self.root, "alertCounts").retain(|(d, _)| d.as_str() >= date);
     }
+}
+
+/// Atomic write (`<file>.<pid>.tmp`, mode 0600, rename), like Node.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DealsError> {
+    let err = |e: std::io::Error| DealsError::State(e.to_string());
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
+    let tmp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
+    {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp).map_err(err)?;
+        file.write_all(bytes).map_err(err)?;
+    }
+    std::fs::rename(&tmp, path).map_err(err)
+}
+
+/// A `notified` entry: `{price, validTo?}`.
+fn notified_entry(price: f64, valid_to: Option<JsValue>) -> JsValue {
+    let mut entry = vec![("price".to_owned(), JsValue::Number(price))];
+    if let Some(v) = valid_to {
+        entry.push(("validTo".into(), v));
+    }
+    JsValue::Object(entry)
 }
 
 fn to_js(value: &Value) -> JsValue {
@@ -317,10 +365,64 @@ pub enum Composed {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prepared {
     pub notification: Notification,
-    active: Vec<MatchItem>,
-    omitted: Vec<MatchItem>,
+    /// F2: `<ruleId>|<key>` → `{price, validTo}` of each delivered best offer
+    /// and its related keys (what [`acknowledge`] records).
+    acks: Vec<(String, JsValue)>,
     fingerprint: String,
     date: String,
+}
+
+impl Prepared {
+    /// F1: the `pending` field of the state file.
+    fn to_pending(&self) -> JsValue {
+        let n = &self.notification;
+        JsValue::Object(vec![
+            ("kind".into(), JsValue::String(kind_name(n.kind).into())),
+            ("date".into(), JsValue::String(self.date.clone())),
+            ("dedupKey".into(), JsValue::String(n.dedup_key.clone())),
+            ("title".into(), JsValue::String(n.title.clone())),
+            ("body".into(), JsValue::String(n.body.clone())),
+            (
+                "fingerprint".into(),
+                JsValue::String(self.fingerprint.clone()),
+            ),
+            ("notified".into(), JsValue::Object(self.acks.clone())),
+        ])
+    }
+
+    /// The message a `pending` field holds (`None` when it is malformed).
+    fn from_pending(p: &JsValue) -> Option<Self> {
+        let text = |key: &str| p.get(key).and_then(JsValue::as_str).map(str::to_owned);
+        let kind = match p.get("kind").and_then(JsValue::as_str)? {
+            "digest" => WatchKind::Digest,
+            "alert" => WatchKind::Alerts,
+            _ => return None,
+        };
+        let (title, body) = (text("title")?, text("body")?);
+        let acks = match p.get("notified")? {
+            JsValue::Object(entries) => entries.clone(),
+            _ => return None,
+        };
+        Some(Self {
+            notification: Notification {
+                kind,
+                text: format!("{title}\n{body}"),
+                title,
+                body,
+                dedup_key: text("dedupKey")?,
+            },
+            acks,
+            fingerprint: text("fingerprint")?,
+            date: text("date")?,
+        })
+    }
+}
+
+fn kind_name(kind: WatchKind) -> &'static str {
+    match kind {
+        WatchKind::Digest => "digest",
+        WatchKind::Alerts => "alert",
+    }
 }
 
 fn header(kind: WatchKind, count: usize, time: i64, settings: &WatchSettings) -> String {
@@ -439,6 +541,24 @@ pub fn compose(
         WatchKind::Alerts => Vec::new(),
     };
     let title = header(kind, count, time, settings);
+    // F2: acknowledge what the message shows, each best offer under all its keys.
+    let mut acks: Vec<(String, JsValue)> = Vec::new();
+    for item in &delivered {
+        let best = &item.deals[0];
+        for key in deal_keys(best) {
+            let id = format!("{}|{key}", item.rule_id);
+            let entry = notified_entry(best.price_dkk, best.valid_to.as_ref().map(to_js));
+            match acks.iter_mut().find(|(k, _)| *k == id) {
+                Some(slot) => {
+                    let old = slot.1.get("price").map_or(f64::NAN, JsValue::to_number);
+                    if old.is_nan() || old >= best.price_dkk {
+                        slot.1 = entry;
+                    }
+                }
+                None => acks.push((id, entry)),
+            }
+        }
+    }
     let delivered_fingerprint = fingerprint(delivered.iter().flat_map(|item| {
         let best = &item.deals[0];
         deal_keys(best)
@@ -467,14 +587,7 @@ pub fn compose(
         .map(|b| format!("{b:02x}"))
         .collect::<String>()[..24]
         .to_owned();
-    let dedup_key = format!(
-        "grocery-deals:{}:{date}:{hash}",
-        if kind == WatchKind::Digest {
-            "digest"
-        } else {
-            "alert"
-        }
-    );
+    let dedup_key = format!("grocery-deals:{}:{date}:{hash}", kind_name(kind));
     Composed::Ready(Box::new(Prepared {
         notification: Notification {
             kind,
@@ -483,35 +596,19 @@ pub fn compose(
             body,
             dedup_key,
         },
-        active,
-        omitted,
+        acks,
         fingerprint: digest_fingerprint,
         date,
     }))
 }
 
-/// Record a delivered notification: every active offer is known (omitted
-/// items' best offers stay eligible), the digest day and fingerprint or
-/// the alert count, and alert counts of past days are dropped.
+/// Record a delivered notification: its best offers are known (F2: not the
+/// alternatives it did not show; omitted items stay eligible), the digest day
+/// and fingerprint or the alert count, alert counts of past days are dropped,
+/// and nothing is pending any more (F1).
 pub fn acknowledge(state: &mut WatchState, prepared: &Prepared) {
-    let pending: HashSet<String> = prepared
-        .omitted
-        .iter()
-        .flat_map(|item| {
-            deal_keys(&item.deals[0])
-                .into_iter()
-                .map(move |key| format!("{}|{key}", item.rule_id))
-        })
-        .collect();
-    for item in &prepared.active {
-        for deal in &item.deals {
-            for key in deal_keys(deal) {
-                let id = format!("{}|{key}", item.rule_id);
-                if !pending.contains(&id) {
-                    state.set_notified(&id, deal.price_dkk, deal.valid_to.as_ref());
-                }
-            }
-        }
+    for (id, entry) in &prepared.acks {
+        state.set_notified_entry(id, entry);
     }
     match prepared.notification.kind {
         WatchKind::Digest => {
@@ -521,6 +618,7 @@ pub fn acknowledge(state: &mut WatchState, prepared: &Prepared) {
         WatchKind::Alerts => state.count_alert(&prepared.date),
     }
     state.keep_alert_counts_from(&prepared.date);
+    state.set_pending(None);
 }
 
 /// The outcome of a delivery attempt.
@@ -635,6 +733,11 @@ impl DealWatch {
     }
 
     /// Persist completed digest checks or successful deliveries.
+    ///
+    /// F1: a composed message is saved as `pending` before it is sent, and a
+    /// run that finds one re-sends it (same dedup key) before anything else:
+    /// delivered, it is acknowledged and the run continues; not delivered, it
+    /// stays pending and the run ends.
     pub async fn run(&self, kind: WatchKind, dry_run: bool) -> Result<RunOutcome, DealsError> {
         let mut last_digest_attempt = self.queue.lock().await;
         let s = &self.settings;
@@ -642,15 +745,67 @@ impl DealWatch {
         let date = local_date(time, s.zone);
         let mut state = WatchState::load(&s.state_path)?;
         state.prune(time);
+        let cooling = |at: Option<i64>| at.is_some_and(|at| time - at < 600_000);
+        // The digest retry cooldown counts this run once, also when it re-sent.
+        let mut attempted = false;
+        let mut resent = None;
+        if let (false, Some(p)) = (dry_run, state.pending().cloned()) {
+            match Prepared::from_pending(&p) {
+                Some(pending) => {
+                    if kind == WatchKind::Digest {
+                        if cooling(*last_digest_attempt) {
+                            return Ok(RunOutcome::no("digest retry cooldown"));
+                        }
+                        *last_digest_attempt = Some(time);
+                        attempted = true;
+                    }
+                    let text = pending.notification.text.clone();
+                    match self.deliver.deliver(&pending.notification).await {
+                        Delivery::Delivered => {
+                            acknowledge(&mut state, &pending);
+                            state.save(&s.state_path)?;
+                            tracing::info!(
+                                kind = kind_name(pending.notification.kind),
+                                "grocery deal watch: pending notification re-sent"
+                            );
+                            resent = Some(RunOutcome {
+                                sent: true,
+                                text,
+                                reason: "sent".into(),
+                            });
+                        }
+                        // It may have reached the server: keep it for the next run.
+                        Delivery::Failed { reason } => {
+                            return Ok(RunOutcome {
+                                sent: false,
+                                text,
+                                reason,
+                            })
+                        }
+                        Delivery::NotConfigured => {
+                            tracing::warn!("Grocery deal watch: app notifications not configured");
+                            return Ok(RunOutcome::no("app notifications not configured"));
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!("grocery deal watch: dropping a malformed pending notification");
+                    state.set_pending(None);
+                    state.save(&s.state_path)?;
+                }
+            }
+        }
+        // After a re-send, a run with nothing more to send reports the re-send.
+        let ended = |outcome: RunOutcome| Ok(resent.clone().unwrap_or(outcome));
         if kind == WatchKind::Digest && state.last_digest_date() == Some(date.as_str()) {
-            return Ok(RunOutcome::no("already digested today"));
+            return ended(RunOutcome::no("already digested today"));
         }
         if kind == WatchKind::Alerts && state.alert_count(&date) >= s.alert_max_per_day {
-            return Ok(RunOutcome::no("daily alert cap"));
+            return ended(RunOutcome::no("daily alert cap"));
         }
-        if kind == WatchKind::Digest && !dry_run {
-            if last_digest_attempt.is_some_and(|at| time - at < 600_000) {
-                return Ok(RunOutcome::no("digest retry cooldown"));
+        if kind == WatchKind::Digest && !dry_run && !attempted {
+            if cooling(*last_digest_attempt) {
+                return ended(RunOutcome::no("digest retry cooldown"));
             }
             *last_digest_attempt = Some(time);
         }
@@ -661,9 +816,9 @@ impl DealWatch {
                     state.set_last_digest_date(&date);
                     state.save(&s.state_path)?;
                 }
-                return Ok(RunOutcome::no(reason));
+                return ended(RunOutcome::no(reason));
             }
-            Composed::TooLong => return Ok(RunOutcome::no("offers exceed message limit")),
+            Composed::TooLong => return ended(RunOutcome::no("offers exceed message limit")),
             Composed::Ready(prepared) => prepared,
         };
         let text = prepared.notification.text.clone();
@@ -674,6 +829,14 @@ impl DealWatch {
                 reason: "dry run".into(),
             });
         }
+        // F1: the file knows the message before the server can have it.
+        let before = match std::fs::read(&s.state_path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(DealsError::State(e.to_string())),
+        };
+        state.set_pending(Some(prepared.to_pending()));
+        state.save(&s.state_path)?;
         match self.deliver.deliver(&prepared.notification).await {
             Delivery::Delivered => {
                 acknowledge(&mut state, &prepared);
@@ -684,14 +847,21 @@ impl DealWatch {
                     reason: "sent".into(),
                 })
             }
+            // It may have reached the server: the next run re-sends it.
             Delivery::Failed { reason } => Ok(RunOutcome {
                 sent: false,
                 text,
                 reason,
             }),
+            // Never posted: put the file back as it was.
             Delivery::NotConfigured => {
+                match before {
+                    Some(bytes) => write_atomic(&s.state_path, &bytes)?,
+                    None => std::fs::remove_file(&s.state_path)
+                        .map_err(|e| DealsError::State(e.to_string()))?,
+                }
                 tracing::warn!("Grocery deal watch: app notifications not configured");
-                Ok(RunOutcome::no("app notifications not configured"))
+                ended(RunOutcome::no("app notifications not configured"))
             }
         }
     }

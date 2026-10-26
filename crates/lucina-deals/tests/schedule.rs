@@ -206,9 +206,14 @@ async fn a_failed_digest_is_retried_after_the_cooldown() {
         (digest.sent, digest.reason.as_str()),
         (false, "send failed")
     );
-    // One retry after a 5xx; nothing recorded.
+    // One retry after a 5xx; nothing acknowledged, the digest is pending (F1).
     assert_eq!(bodies(&server).await.len(), 2);
-    assert!(!rig.state_path().exists());
+    let saved = state(&rig.state_path());
+    assert_eq!(saved["lastDigestDate"], Value::Null);
+    assert_eq!(
+        saved["pending"]["dedupKey"],
+        bodies(&server).await[0]["dedupKey"]
+    );
 
     assert_eq!(
         rig.at("07:50").await.digest.unwrap().reason,
@@ -216,7 +221,10 @@ async fn a_failed_digest_is_retried_after_the_cooldown() {
     );
     assert_eq!(bodies(&server).await.len(), 2);
     assert_eq!(rig.at("07:56").await.digest.unwrap().reason, "send failed");
-    assert_eq!(bodies(&server).await.len(), 4);
+    // The retry re-sends the pending digest unchanged.
+    let sent = bodies(&server).await;
+    assert_eq!(sent.len(), 4);
+    assert_eq!(sent[2], sent[0]);
 }
 
 #[tokio::test]
@@ -227,7 +235,10 @@ async fn app_delivery_needs_the_flag_the_url_and_the_token() {
     let rig = rig_with(Some(&server), true, None);
     assert_eq!(rig.at("12:00").await.alerts.unwrap().reason, "send failed");
     assert_eq!(bodies(&server).await.len(), 1);
-    assert!(!rig.state_path().exists());
+    // F1: a failed send stays pending (re-sent by the next run); nothing acknowledged.
+    let saved = state(&rig.state_path());
+    assert_eq!(saved["pending"]["kind"], "alert");
+    assert_eq!(saved["alertCounts"], json!({}));
 
     // LUCINA_APP_NOTIFY off, or no server URL: never posted, nothing recorded.
     let off = rig_with(Some(&server), false, None);
