@@ -78,7 +78,7 @@ const TIMES: &[&str] = &[
 
 #[test]
 fn quiet_hours_and_device_rules_agree_with_the_kernel() {
-    let mut rng = Rng(0x0901_e7);
+    let mut rng = Rng(0x0009_01e7);
     let t0: i64 = 1_792_702_800_000; // 2026-10-22T21:00:00Z
     let mut quiet_count = 0;
     for _ in 0..100_000 {
@@ -123,7 +123,7 @@ fn quiet_hours_and_device_rules_agree_with_the_kernel() {
 
 #[test]
 fn device_rules_agree_with_the_kernel() {
-    let mut rng = Rng(0xde71_ce);
+    let mut rng = Rng(0x00de_71ce);
     for _ in 0..20_000 {
         let mut s = Settings::default();
         s.categories.lucina_message = rng.below(4) != 0;

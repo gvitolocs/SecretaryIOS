@@ -209,7 +209,7 @@ fn hard_terms() -> Vec<Vec<u8>> {
 #[test]
 fn random_refs_agree_with_the_kernel() {
     let terms = hard_terms();
-    let mut rng = Rng(0x5ec2_e75);
+    let mut rng = Rng(0x05ec_2e75);
     let mut counts = [0usize; 4];
     let mut parsed = 0;
     for _ in 0..60_000 {

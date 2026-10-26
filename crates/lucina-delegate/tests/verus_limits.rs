@@ -350,7 +350,7 @@ fn caps(b: &Budget, a: usize) -> kernel::Caps {
 #[test]
 fn budget_operations_agree_with_the_kernel() {
     let b = budget();
-    let mut rng = Rng(0xb0d9_e7);
+    let mut rng = Rng(0x00b0_d9e7);
     let mut seen = [0usize; 5];
     for run in 0..40u32 {
         let store = StateStore::new(None, chrono_tz::UTC);

@@ -127,7 +127,7 @@ const SEG0: &[u16] = &[
 
 #[test]
 fn ipv4_literals_agree_with_the_kernel() {
-    let mut rng = Rng(0xadd2_e55);
+    let mut rng = Rng(0x0add_2e55);
     let mut n_refused = 0;
     for &a in EDGES1 {
         for &b in EDGES2 {
