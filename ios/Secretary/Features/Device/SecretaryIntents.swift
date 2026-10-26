@@ -97,7 +97,7 @@ enum IntentFailure: Error, CustomLocalizedStringResourceConvertible {
 }
 
 struct RecordMemoIntent: AppIntent {
-    static let title: LocalizedStringResource = "Record a memo"
+    static let title: LocalizedStringResource = "Open the memo recorder"
     static let description = IntentDescription("Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.")
     static let openAppWhenRun = true
 
@@ -123,8 +123,15 @@ struct SecretaryShortcuts: AppShortcutsProvider {
                     shortTitle: "Start workout", systemImageName: "dumbbell")
         AppShortcut(intent: LogWeightIntent(), phrases: ["Log my weight in \(.applicationName)"],
                     shortTitle: "Log weight", systemImageName: "scalemass")
-        AppShortcut(intent: RecordMemoIntent(), phrases: ["Record a memo in \(.applicationName)", "New voice memo in \(.applicationName)"],
+        // The owner calls the app Lucina (INAlternativeAppNames), so "Registra memo con Lucina" works.
+        AppShortcut(intent: StartMemoRecordingIntent(), phrases: ["Record a memo with \(.applicationName)", "New voice memo with \(.applicationName)"],
                     shortTitle: "Record memo", systemImageName: "waveform")
+        AppShortcut(intent: StopMemoRecordingIntent(), phrases: ["Stop the memo in \(.applicationName)", "Save the memo in \(.applicationName)"],
+                    shortTitle: "Stop memo", systemImageName: "stop.circle")
+        AppShortcut(intent: PauseMemoRecordingIntent(), phrases: ["Pause the memo in \(.applicationName)"],
+                    shortTitle: "Pause memo", systemImageName: "pause.circle")
+        AppShortcut(intent: ResumeMemoRecordingIntent(), phrases: ["Resume the memo in \(.applicationName)"],
+                    shortTitle: "Resume memo", systemImageName: "record.circle")
     }
 }
 

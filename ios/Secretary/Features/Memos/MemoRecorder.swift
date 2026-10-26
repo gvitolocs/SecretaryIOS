@@ -58,9 +58,10 @@ struct FinishedRecording: Sendable {
     let duration: TimeInterval
 }
 
-/// Records one memo at a time like Voice Memos: AAC mono, live level meter, pause and
-/// resume, and it keeps going with the screen locked or the app in the background
-/// (`UIBackgroundModes: audio`). A phone call or Siri pauses it; it resumes when iOS says so.
+/// Records one memo at a time like Voice Memos: 48 kHz AAC from the iPhone's own microphones,
+/// in stereo where they have a stereo pattern, live level meter, pause and resume, and it keeps
+/// going with the screen locked or the app in the background (`UIBackgroundModes: audio`).
+/// A phone call or Siri pauses it; it resumes when iOS says so.
 @Observable
 @MainActor
 final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
@@ -89,13 +90,48 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
     /// The file being recorded (diagnostics).
     var currentFileName: String? { current?.url.lastPathComponent }
 
-    static let settings: [String: Any] = [
-        AVFormatIDKey: kAudioFormatMPEG4AAC,
-        AVSampleRateKey: 44_100,
-        AVNumberOfChannelsKey: 1,
-        AVEncoderBitRateKey: 96_000,
-        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-    ]
+    /// Voice Memos' quality: 48 kHz AAC, 128 kbps per channel. The server keeps this file as the
+    /// memo and only decodes a 16 kHz copy for Whisper.
+    static func settings(channels: Int) -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: channels,
+            AVEncoderBitRateKey: 128_000 * channels,
+            AVEncoderAudioQualityKey: AVAudioQuality.max.rawValue,
+        ]
+    }
+
+    /// Sets the session up the way Voice Memos records: record only (no Bluetooth headset's
+    /// narrowband HFP microphone), the built-in microphones, and their stereo polar pattern
+    /// when the iPhone has one. Returns the channel count to record and a line for the log.
+    private func configureSession(_ session: AVAudioSession) throws -> (channels: Int, route: String) {
+        try session.setCategory(.record, mode: .default)
+        try? session.setPreferredSampleRate(48_000)
+        // An incoming call's ringtone would otherwise interrupt the recording.
+        try? session.setPrefersNoInterruptionsFromSystemAlerts(true)
+        try session.setActive(true)
+        guard let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else {
+            return (1, "no built-in mic")
+        }
+        try? session.setPreferredInput(mic)
+        let stereo = (mic.dataSources ?? []).filter { $0.supportedPolarPatterns?.contains(.stereo) == true }
+        // The screen-side microphones first: the phone is held or lies face up while you talk.
+        if let source = stereo.first(where: { $0.orientation == .front }) ?? stereo.first {
+            do {
+                try source.setPreferredPolarPattern(.stereo)
+                try mic.setPreferredDataSource(source)
+                try session.setPreferredInputOrientation(.portrait)
+            } catch {
+                MemoLog.write("record: stereo pattern refused: \(error)")
+            }
+        }
+        let input = session.currentRoute.inputs.first
+        let source = input?.selectedDataSource
+        let route = "\(input?.portType.rawValue ?? "?") \(source?.dataSourceName ?? "-") \(source?.selectedPolarPattern?.rawValue ?? "-")"
+            + " \(session.inputNumberOfChannels)ch \(Int(session.sampleRate)) Hz"
+        return (min(2, max(1, session.inputNumberOfChannels)), route)
+    }
 
     func start() async {
         guard state == .idle else { return }
@@ -105,17 +141,18 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             return
         }
         let session = AVAudioSession.sharedInstance()
+        let setup: (channels: Int, route: String)
         do {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
-            try session.setActive(true)
+            setup = try configureSession(session)
         } catch {
             self.error = String(localized: "The microphone is busy: \(error.localizedDescription)")
             return
         }
         let clientId = UUID().uuidString.lowercased()
         let url = MemoFiles.audio(clientId, ext: "aac")
+        MemoLog.write("record: \(setup.route)")
         do {
-            let r = try AVAudioRecorder(url: url, settings: Self.settings)
+            let r = try AVAudioRecorder(url: url, settings: Self.settings(channels: setup.channels))
             r.isMeteringEnabled = true
             r.delegate = self
             guard r.prepareToRecord(), r.record() else {
@@ -190,6 +227,7 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
         current = nil
         state = .idle
         interrupted = false
+        try? AVAudioSession.sharedInstance().setPrefersNoInterruptionsFromSystemAlerts(false)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 

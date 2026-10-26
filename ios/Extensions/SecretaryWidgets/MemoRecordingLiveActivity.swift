@@ -7,6 +7,9 @@ import WidgetKit
 struct SecretaryWidgets: WidgetBundle {
     var body: some Widget {
         MemoRecordingLiveActivity()
+        if #available(iOS 18.0, *) {
+            MemoRecordControl()
+        }
     }
 }
 
