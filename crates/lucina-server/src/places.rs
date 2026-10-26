@@ -130,7 +130,7 @@ mod tests {
                              "start": "2026-11-02T07:00:00Z", "location": "5789-003B Seminarrum"});
         let reply = "Lunedì alle 8 hai Security and Privacy.";
         let mut m = from_plain_text(reply, "it", 3, Vec::new());
-        add_calendar_places(&mut m, &[lecture.clone()], reply);
+        add_calendar_places(&mut m, std::slice::from_ref(&lecture), reply);
         assert_eq!(m.blocks.len(), 1);
         let reply = "Hai lezione in 5789-003B Seminarrum.";
         let mut m = from_plain_text(reply, "it", 3, Vec::new());
