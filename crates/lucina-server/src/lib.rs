@@ -226,6 +226,24 @@ impl AppState {
             );
             env.memo_token_file = Some(token);
         }
+        // Crash reports (lucina-diagnostics on this host): on when its service token is readable.
+        let diagnostics_token = std::env::var("LUCINA_DIAGNOSTICS_SERVICE_TOKEN_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME").ok().map(|h| {
+                    std::path::Path::new(&h).join(".config/lucina-diagnostics/service.token")
+                })
+            })
+            .filter(|p| p.is_file());
+        if let Some(token) = diagnostics_token {
+            env.diagnostics_url = Some(
+                std::env::var("LUCINA_DIAGNOSTICS_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:8794".into()),
+            );
+            env.diagnostics_token_file = Some(token);
+        }
         // Lucina's own Google Drive: only with a grant (`lucina google-auth drive`).
         if cfg.drive_enabled {
             match lucina_tools::google::Drive::open(
