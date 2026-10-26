@@ -1,3 +1,4 @@
+#![allow(clippy::all, unused_mut)] // the parity vectors are kept as written
 //! Golden parity tests: Rust output must equal the JVM output of the
 //! original NClientV3 Java logic (java-goldens/JavaGolden.java →
 //! java-goldens/goldens.json).
@@ -6,7 +7,7 @@ use nclientv3_core as core;
 use serde_json::Value;
 
 fn goldens() -> Value {
-    let path = format!("{}/../java-goldens/goldens.json", env!("CARGO_MANIFEST_DIR"));
+    let path = format!("{}/java-goldens/goldens.json", env!("CARGO_MANIFEST_DIR"));
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 

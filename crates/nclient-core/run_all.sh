@@ -8,7 +8,7 @@ echo "== 1. Java golden generation (JVM runs the ORIGINAL NClientV3 logic) =="
 ( cd java-goldens && javac JavaGolden.java && java JavaGolden goldens.json )
 
 echo "== 2. Rust build + golden parity tests =="
-cargo test
+cargo test -p nclient-core
 
 echo "== 3. Verus verification of core invariants =="
 VERUS_BIN="${VERUS_BIN:-$HOME/tools/verus/verus-x86-linux/verus}"

@@ -5,8 +5,8 @@ Port of the portable (non-Android) core of [NClientV3](https://github.com/maxwai
 to Rust, with **JVM-enforced parity** and **Verus verification**.
 
 ```
-nclientv3-rust/
-├── core/                 the port (pure, no I/O, no Android)
+crates/nclient-core/
+├── src/                  the port (pure, no I/O, no Android)
 │   └── tests/parity.rs   golden parity tests vs JVM outputs
 ├── java-goldens/
 │   ├── JavaGolden.java   harness: original Java logic, method bodies copied

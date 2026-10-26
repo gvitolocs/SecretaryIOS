@@ -13,6 +13,8 @@
 //! identical key handling), SQLite `Queries.*` (replaced by a `TagProvider`
 //! trait), image/cache/file layers, OkHttp client (caller supplies HTTP).
 
+#![allow(clippy::all)] // a line-by-line port: the Java shape is kept on purpose (parity)
+
 pub mod comments;
 pub mod enums;
 pub mod gallery;
