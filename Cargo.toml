@@ -13,6 +13,7 @@ members = [
     "crates/secretary-server",
     "crates/secretary-gym",
     "crates/secretary-body",
+    "crates/secretary-avatar-com3d2",
     "crates/secretary-ffi",
     "crates/secretary-mcp",
     "crates/secretary-calendar",
