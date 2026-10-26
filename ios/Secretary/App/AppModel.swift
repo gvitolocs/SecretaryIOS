@@ -44,6 +44,8 @@ final class AppModel {
     var showTasks = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
+    /// A place opened by a widget, notification or rich route action.
+    var openPlace: Place?
     /// The media library and player, a plugin.
     var showMedia = false
     /// The Gallery, a plugin.

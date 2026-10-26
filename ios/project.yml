@@ -67,6 +67,9 @@ targets:
           NSAllowsLocalNetworking: true
         # The maps' Directions buttons open Google Maps when it is installed (canOpenURL).
         LSApplicationQueriesSchemes: [comgooglemaps]
+        CFBundleURLTypes:
+          - CFBundleURLName: tech.getsecretary.app
+            CFBundleURLSchemes: [secretary]
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
         # local schedules; `audio` keeps the media player (and Picture in Picture) playing and voice
         # memos recording with the screen locked. APNs stays off on the free Personal Team; with a paid

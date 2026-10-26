@@ -96,6 +96,27 @@ struct Place: Codable, Hashable, Sendable {
         return formatter.date(from: text)
     }
 
+    /// Widget, notification and custom-scheme destinations share the message validator.
+    static func fromRoute(_ route: String) -> Place? {
+        guard let components = URLComponents(string: route) else { return nil }
+        let path: String
+        if components.scheme != nil {
+            guard components.scheme?.lowercased() == "secretary", components.host == "map" else { return nil }
+            path = "/map" + components.path
+        } else {
+            guard components.host == nil else { return nil }
+            path = components.path
+        }
+        guard path == "/map/place" else { return nil }
+        let allowed: Set<String> = ["title", "address", "lat", "lng", "when", "end", "eventId"]
+        var fields: [String: JSONValue] = [:]
+        for item in components.queryItems ?? [] where allowed.contains(item.name) {
+            if let value = item.value, fields[item.name] == nil { fields[item.name] = .string(value) }
+        }
+        if fields["when"] != nil || fields["eventId"] != nil { fields["kind"] = .string("event") }
+        return parse(.object(fields))
+    }
+
     // MARK: Maps links
 
     /// A shared Apple Maps or Google Maps link that carries coordinates (`ll=`, `q=lat,lng`,

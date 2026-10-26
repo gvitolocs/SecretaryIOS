@@ -3,7 +3,7 @@ import MapKit
 import Observation
 import UIKit
 
-// Where a place is, where the owner is, and how far: MKLocalSearch for places without
+// Where a place is, where the owner is, and how far: the server geocoder, then MKLocalSearch without
 // coordinates (biased to the current region, else home, else Denmark), the when-in-use location,
 // home from `GET /v1/maps/config`, distances and MKDirections travel times. Nothing here talks
 // to anyone but Apple's MapKit services and the app's own server.
@@ -35,7 +35,7 @@ extension SecretaryAPI {
 final class PlaceResolver {
     static let shared = PlaceResolver()
 
-    /// What MKLocalSearch found (or the place's own coordinate).
+    /// What the server geocoder or MKLocalSearch found (or the place's own coordinate).
     struct Resolved: Equatable, Sendable {
         let lat: Double
         let lng: Double
@@ -57,7 +57,7 @@ final class PlaceResolver {
     private static let denmark = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 56.0, longitude: 10.6),
                                                     span: MKCoordinateSpan(latitudeDelta: 4, longitudeDelta: 7))
 
-    /// The place's coordinate, else the first MKLocalSearch result for its address (or title); nil when not found.
+    /// The place's coordinate, else server geocoding with MKLocalSearch as a fallback.
     func resolve(_ place: Place, api: SecretaryAPI) async -> Resolved? {
         if let lat = place.lat, let lng = place.lng { return Resolved(lat: lat, lng: lng, name: nil, address: nil) }
         let query = place.searchQuery
@@ -65,7 +65,10 @@ final class PlaceResolver {
         if let running = searches[query] { return await running.value }
         await loadHome(api: api)
         let region = biasRegion()
-        let task = Task<Resolved?, Never> { await Self.search(query, region: region) }
+        let task = Task<Resolved?, Never> {
+            if let result = try? await api.mapsGeocode(q: query, near: region.center).results.first { return result }
+            return await Self.search(query, region: region)
+        }
         searches[query] = task
         let found = await task.value
         searches[query] = nil

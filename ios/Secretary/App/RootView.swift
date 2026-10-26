@@ -16,6 +16,9 @@ struct RootView: View {
             }
         }
         .animation(.default, value: app.phase)
+        .onOpenURL { url in
+            if Place.fromRoute(url.absoluteString) != nil { app.open(route: url.absoluteString) }
+        }
     }
 }
 
@@ -46,10 +49,11 @@ struct MainTabs: View {
         .onChange(of: scenePhase, initial: true) { _, phase in
             if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
         }
+        .modifier(OpenPlaceHost())
         // Lucina in the room (AR), over everything.
         .modifier(LucinaARHost(controller: app.lucina))
         #if SCREENSHOTS
-        // `-SecretaryMapSelfTest place|card|deals` (Features/Places/MapSelfTest.swift).
+        // `-SecretaryMapSelfTest place|card|deals|route` (Features/Places/MapSelfTest.swift).
         .modifier(MapSelfTestHost())
         #endif
         // Lucina asks before deleting something or changing the calendar.

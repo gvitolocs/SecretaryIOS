@@ -6,7 +6,7 @@ import os
 
 private let log = Logger(subsystem: "tech.getsecretary.app", category: "MapSelfTest")
 
-/// `-SecretaryMapSelfTest place|card|deals`: the maps on the iPhone without UI tests (XCUITest can't
+/// `-SecretaryMapSelfTest place|card|deals|route`: the maps on the iPhone without UI tests (XCUITest can't
 /// drive iOS 27 from Xcode 26.6). A full-screen cover runs one check and stays up for a screenshot:
 /// - `card`: a proactive message's `meta.place` through TimelineMeta, its PlaceCard geocoded, then
 ///   opened like a tap; checks the camera, the distance and the travel times;
@@ -15,22 +15,45 @@ private let log = Logger(subsystem: "tech.getsecretary.app", category: "MapSelfT
 /// Each step writes `PASS …` or `FAIL <step> <reason>` to the log and to Documents/map-selftest.txt.
 enum MapSelfTest {
     static var mode: String? {
-        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals"].contains($0) ? $0 : nil }
+        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route"].contains($0) ? $0 : nil }
     }
 
     /// A proactive message's meta (a calendar reminder with the event's place).
-    static let sampleMeta = """
-    {"kind":"proactive","place":{"title":"Hack Night: Rust meets AI","address":"Folkehuset Møllestien, Aarhus","when":"2026-10-27T17:00:00Z","kind":"event"}}
-    """
+    static var sampleMeta: String {
+        let calendar = Calendar.current
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: Date())!
+        let when = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: tomorrow)!
+        let timestamp = ISO8601DateFormatter().string(from: when)
+        return """
+        {"kind":"proactive","place":{"title":"Hack Night: Rust meets AI","address":"Folkehuset Møllestien, Aarhus","when":"\(timestamp)","kind":"event"}}
+        """
+    }
+
+    static var sampleRoute: String {
+        var components = URLComponents()
+        components.path = "/map/place"
+        let meta = try? JSONDecoder().decode(TimelineMeta.self, from: Data(sampleMeta.utf8))
+        components.queryItems = [URLQueryItem(name: "title", value: "Hack Night: Rust meets AI"),
+                                 URLQueryItem(name: "address", value: "Folkehuset Møllestien, Aarhus"),
+                                 URLQueryItem(name: "when", value: meta?.place?.when.map { ISO8601DateFormatter().string(from: $0) })]
+        return components.string!
+    }
 
     static let homeTest = Place(title: "Home test", coordinate: CLLocationCoordinate2D(latitude: 56.19633, longitude: 10.2011))
 
     @MainActor
-    static func run(mode: String, show: (Place) -> Void) async {
+    static func run(mode: String, openRoute: (String) -> Void, show: (Place) -> Void) async {
         let report = Report()
         report.line("START \(mode)")
         switch mode {
         case "card": await runCard(report, show: show)
+        case "route":
+            openRoute(sampleRoute)
+            if await wait(45, until: { MapSelfTestProbe.shared.mapShown }) {
+                report.pass("route opened")
+            } else {
+                report.fail("route", "the routed place screen did not appear")
+            }
         case "place":
             guard await wait(15, until: { MapSelfTestProbe.shared.mapShown }) else {
                 return report.fail("open map", "the place screen did not appear")
@@ -61,11 +84,12 @@ enum MapSelfTest {
             return report.fail("parse", "kind=\(place.kind.rawValue) when=\(place.when != nil) address=\(place.address ?? "-")")
         }
         report.pass("parse \(place.title) | \(place.address ?? "") | \(place.timeText ?? "")")
+        probe.requiresLeaveAt = true
         probe.targetTitle = place.title
         show(place)
 
-        guard await wait(30, until: { probe.resolved != nil || probe.notFound }), let resolved = probe.resolved else {
-            return report.fail("geocode", probe.notFound ? "not found" : "no answer in 30 s")
+        guard await wait(60, until: { probe.resolved != nil || probe.notFound }), let resolved = probe.resolved else {
+            return report.fail("geocode", probe.notFound ? "not found" : "no answer in 60 s")
         }
         let found = String(format: "%.4f,%.4f", resolved.lat, resolved.lng)
         if (56.10...56.25).contains(resolved.lat) && (10.05...10.30).contains(resolved.lng) {
@@ -86,12 +110,14 @@ enum MapSelfTest {
     private static func checkMap(_ report: Report, target: CLLocationCoordinate2D) async {
         let probe = MapSelfTestProbe.shared
         guard await wait(15, until: { probe.camera != nil }) else { return report.fail("centred", "the camera never settled") }
+        // Routes can arrive after the first camera fit; wait before checking the final line fit.
+        _ = await wait(45, until: { probe.etaDone })
         // Time for the position to arrive and the camera to refit to the place and the owner.
         try? await Task.sleep(for: .seconds(4))
         if let camera = probe.camera {
             let expected = probe.expected ?? target
             let off = meters(camera, expected)
-            let what = probe.fitsUser ? "on the place and you" : "on the place"
+            let what = probe.routesText != nil ? "on the selected route" : (probe.fitsUser ? "on the place and you" : "on the place")
             let place = meters(expected, target)
             if off <= 150 {
                 report.pass("centred \(Int(off.rounded())) m \(what) (fit centre \(Int(place.rounded())) m from the place)")
@@ -105,6 +131,16 @@ enum MapSelfTest {
         }
         if let distance = probe.distanceText { report.pass("distance \(distance)") } else { report.fail("distance", "no text") }
         if let eta = probe.etaText, !eta.isEmpty { report.pass("eta \(eta)") } else { report.fail("eta", "no route for any mode") }
+        if let reason = probe.fallbackReason {
+            report.line("INFO routes fallback mapkit \(reason)")
+        } else if let modes = probe.routesText {
+            report.pass("routes \(modes)")
+            if let leaveAt = probe.leaveAt {
+                report.pass("leaveAt \(leaveAt.formatted(date: .omitted, time: .shortened))")
+            } else if probe.requiresLeaveAt {
+                report.fail("leaveAt", "appointment route has no departure time")
+            }
+        }
     }
 
     private static func meters(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Double {
@@ -167,16 +203,25 @@ final class MapSelfTestProbe {
     var distanceText: String?
     var etaText: String?
     var etaDone = false
+    var routesText: String?
+    var fallbackReason: String?
+    var leaveAt: Date?
+    var requiresLeaveAt = false
     var dealsPins: Int?
 }
 
 /// The cover the self-test runs in (MainTabs, when `-SecretaryMapSelfTest` is set).
 struct MapSelfTestHost: ViewModifier {
+    @Environment(AppModel.self) private var app
     @State private var mode = MapSelfTest.mode
 
     func body(content: Content) -> some View {
-        content.fullScreenCover(isPresented: Binding(get: { mode != nil }, set: { if !$0 { mode = nil } })) {
-            if let mode { MapSelfTestScreen(mode: mode) }
+        if mode == "route" {
+            content.task { await MapSelfTest.run(mode: "route", openRoute: { app.open(route: $0) }) { _ in } }
+        } else {
+            content.fullScreenCover(isPresented: Binding(get: { mode != nil }, set: { if !$0 { mode = nil } })) {
+                if let mode { MapSelfTestScreen(mode: mode) }
+            }
         }
     }
 }
@@ -211,7 +256,7 @@ private struct MapSelfTestScreen: View {
             }
         }
         .tint(Theme.accent)
-        .task { await MapSelfTest.run(mode: mode) { place = $0 } }
+        .task { await MapSelfTest.run(mode: mode, openRoute: { app.open(route: $0) }) { place = $0 } }
     }
 }
 #endif

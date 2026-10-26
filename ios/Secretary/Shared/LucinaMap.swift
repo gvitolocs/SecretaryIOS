@@ -61,6 +61,9 @@ struct LucinaMap: View {
     /// The camera's centre after each move.
     var onCameraChange: ((CLLocationCoordinate2D) -> Void)?
 
+    /// Selected route as latitude/longitude pairs; fitted together with the pins.
+    var polyline: [[Double]] = []
+
     @State private var position: MapCameraPosition
     @State private var fitKey: FitKey
     @State private var cameraDistance: Double?
@@ -69,26 +72,30 @@ struct LucinaMap: View {
     static let singlePinDistance: Double = 1500
 
     init(pins: [MapPin], selectedId: Binding<String?>? = nil, showsUserLocation: Bool = false, focus: MapFocus? = nil,
-         interactive: Bool = true, alsoFit: CLLocationCoordinate2D? = nil, onCameraChange: ((CLLocationCoordinate2D) -> Void)? = nil) {
+         interactive: Bool = true, polyline: [[Double]] = [], alsoFit: CLLocationCoordinate2D? = nil,
+         onCameraChange: ((CLLocationCoordinate2D) -> Void)? = nil) {
         self.pins = pins
+        self.polyline = polyline
         self.selectedId = selectedId
         self.showsUserLocation = showsUserLocation
         self.focus = focus
         self.interactive = interactive
         self.alsoFit = alsoFit
         self.onCameraChange = onCameraChange
-        _position = State(initialValue: Self.fit(pins, also: alsoFit))
-        _fitKey = State(initialValue: FitKey(pins: pins, also: alsoFit))
+        _position = State(initialValue: Self.fit(pins, also: alsoFit, polyline: polyline))
+        _fitKey = State(initialValue: FitKey(pins: pins, also: alsoFit, polyline: polyline))
     }
 
     /// The fit changes only when the set of pins (or the extra point) does, not on a new label or selection.
     private struct FitKey: Equatable {
         let ids: [String]
         let also: Bool
+        let polyline: [[Double]]
 
-        init(pins: [MapPin], also: CLLocationCoordinate2D?) {
+        init(pins: [MapPin], also: CLLocationCoordinate2D?, polyline: [[Double]]) {
             ids = pins.map(\.id).sorted()
             self.also = also != nil
+            self.polyline = polyline
         }
     }
 
@@ -102,6 +109,10 @@ struct LucinaMap: View {
 
     var body: some View {
         Map(position: $position, interactionModes: interactive ? .all : []) {
+            if polyline.count > 1 {
+                MapPolyline(coordinates: Self.lineCoordinates(polyline))
+                    .stroke(Theme.accent, lineWidth: 4)
+            }
             ForEach(ordered) { pin in
                 Annotation(pin.title, coordinate: pin.coordinate, anchor: pin.label == nil ? .center : .bottom) {
                     LucinaMapPinView(pin: pin, selected: pin.id == selected)
@@ -127,10 +138,10 @@ struct LucinaMap: View {
             cameraDistance = context.camera.distance
             onCameraChange?(context.camera.centerCoordinate)
         }
-        .onChange(of: FitKey(pins: pins, also: alsoFit)) { _, key in
+        .onChange(of: FitKey(pins: pins, also: alsoFit, polyline: polyline)) { _, key in
             guard key != fitKey else { return }
             fitKey = key
-            withAnimation(.easeInOut(duration: 0.35)) { position = Self.fit(pins, also: alsoFit) }
+            withAnimation(.easeInOut(duration: 0.35)) { position = Self.fit(pins, also: alsoFit, polyline: polyline) }
         }
         .onChange(of: focus) { _, focus in
             guard let focus, let pin = pins.first(where: { $0.id == focus.id }) else { return }
@@ -146,11 +157,18 @@ struct LucinaMap: View {
         selectedId.wrappedValue = pin.id
     }
 
+    private static func lineCoordinates(_ line: [[Double]]) -> [CLLocationCoordinate2D] {
+        line.compactMap { pair in
+            guard pair.count == 2 else { return nil }
+            return Place.validCoordinate(pair[0], pair[1])
+        }
+    }
+
     // MARK: Fit
 
     /// Every pin (and the extra point) in view with ~20 % padding; one point: the camera 1.5 km above it.
-    static func fit(_ pins: [MapPin], also: CLLocationCoordinate2D? = nil) -> MapCameraPosition {
-        guard let rect = fitRect(pins, also: also) else {
+    static func fit(_ pins: [MapPin], also: CLLocationCoordinate2D? = nil, polyline: [[Double]] = []) -> MapCameraPosition {
+        guard let rect = fitRect(pins, also: also, polyline: polyline) else {
             guard let only = pins.first?.coordinate ?? also else { return .automatic }
             return .camera(MapCamera(centerCoordinate: only, distance: singlePinDistance))
         }
@@ -158,14 +176,14 @@ struct LucinaMap: View {
     }
 
     /// Where `fit` puts the camera's centre (the self-test compares it with the real camera).
-    static func fitCenter(_ pins: [MapPin], also: CLLocationCoordinate2D? = nil) -> CLLocationCoordinate2D? {
-        guard let rect = fitRect(pins, also: also) else { return pins.first?.coordinate ?? also }
+    static func fitCenter(_ pins: [MapPin], also: CLLocationCoordinate2D? = nil, polyline: [[Double]] = []) -> CLLocationCoordinate2D? {
+        guard let rect = fitRect(pins, also: also, polyline: polyline) else { return pins.first?.coordinate ?? also }
         return MKMapPoint(x: rect.midX, y: rect.midY).coordinate
     }
 
     /// The padded rectangle around two or more points (at least ~1 km across); nil for fewer.
-    private static func fitRect(_ pins: [MapPin], also: CLLocationCoordinate2D?) -> MKMapRect? {
-        let coordinates = pins.map(\.coordinate) + (also.map { [$0] } ?? [])
+    private static func fitRect(_ pins: [MapPin], also: CLLocationCoordinate2D?, polyline: [[Double]]) -> MKMapRect? {
+        let coordinates = pins.map(\.coordinate) + (also.map { [$0] } ?? []) + lineCoordinates(polyline)
         guard coordinates.count > 1 else { return nil }
         var rect = MKMapRect.null
         for coordinate in coordinates {

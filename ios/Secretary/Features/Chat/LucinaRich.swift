@@ -523,6 +523,10 @@ struct RichActionsView: View {
 extension AppModel {
     /// In-app navigation for a `route` button (web paths mapped to tabs).
     func open(route path: String) {
+        if let place = Place.fromRoute(path) {
+            openPlace = place
+            return
+        }
         let first = path.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": selectedTab = .shopping

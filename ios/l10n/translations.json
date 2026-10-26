@@ -1,4 +1,7 @@
 {
+  "By bike": ["In bicicletta", "På cykel"],
+  "%@ with traffic": ["%@ con traffico", "%@ med trafik"],
+  "Leave at %@ to be on time": ["Parti alle %@ per arrivare in orario", "Tag af sted kl. %@ for at nå frem til tiden"],
   "%@ · %lld sets · %@": ["%@ · %lld serie · %@", "%@ · %lld sæt · %@"],
   "%@ / reps": ["%@ / ripetizioni", "%@ / gentagelser"],
   "%@, via %@: %@": ["%@, da %@: %@", "%@, via %@: %@"],
