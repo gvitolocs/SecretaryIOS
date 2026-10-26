@@ -207,14 +207,16 @@ struct GalleryScreen: View {
         }
         // Google Photos: behind the viewer the grid follows the photo on screen, so closing zooms
         // into its tile.
+        // No anchor: the grid moves only when that tile is off screen. Centring a visible tile moved
+        // it while the zoom ran from it, and the zoom lost its source both ways.
         .onChange(of: shownID) { _, id in
-            if let id { proxy.scrollTo(id, anchor: .center) }
+            if let id { proxy.scrollTo(id) }
         }
         }
         .fullScreenCover(item: $viewing) { item in
             GalleryViewer(start: item, shown: $shownID)
                 .presentationBackground(.clear)
-                .zoomTransition(from: shownID ?? item.id, in: zoom, enabled: !Self.noZoom)
+                .zoomTransition(from: shownID ?? item.id, in: zoom)
         }
     }
 
@@ -224,9 +226,6 @@ struct GalleryScreen: View {
         shownID = item.id
         viewing = item
     }
-
-    /// `-SecretaryGalleryNoZoom YES` / `-SecretaryGalleryNoGap YES`: frame-time comparisons.
-    static let noZoom = UserDefaults.standard.bool(forKey: "SecretaryGalleryNoZoom")
 }
 
 /// Square cells, 3 across on iPhone.
@@ -595,7 +594,7 @@ struct GalleryViewer: View {
         media.presented = true
     }
 
-    private static let pageGap: CGFloat = UserDefaults.standard.bool(forKey: "SecretaryGalleryNoGap") ? 0 : 24
+    private static let pageGap: CGFloat = 24
 
     /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
     /// (legacy) re-created every page from the first one to the current one on each change (seen
