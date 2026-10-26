@@ -143,7 +143,7 @@ struct GalleryScreen: View {
             LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
                 ForEach(store.sections, id: \.title) { section in
                     Section {
-                        GalleryGrid(items: section.items, zoom: zoom) { viewing = $0 }
+                        GalleryGrid(items: section.items, zoom: zoom) { open($0) }
                     } header: {
                         Text(section.title)
                             .font(LucinaTokens.Fonts.headline)
@@ -188,11 +188,11 @@ struct GalleryScreen: View {
             await store.loadAlbums()
             // `-SecretaryGalleryOpenFirst YES` (device checks without UI tests): open the newest photo.
             if UserDefaults.standard.bool(forKey: "SecretaryGalleryOpenFirst"), viewing == nil {
-                viewing = store.items.first { $0.kind == "photo" }
+                if let first = store.items.first(where: { $0.kind == "photo" }) { open(first) }
             }
             // `-SecretaryGalleryOpen <item id>`: open that item (it must be on the first page).
             if let id = UserDefaults.standard.string(forKey: "SecretaryGalleryOpen"), viewing == nil {
-                viewing = store.items.first { $0.id == id }
+                if let item = store.items.first(where: { $0.id == id }) { open(item) }
             }
         }
         .sheet(isPresented: $showBackup) { NavigationStack { BackupSettingsView() }.lucinaSheet() }
@@ -214,9 +214,19 @@ struct GalleryScreen: View {
         .fullScreenCover(item: $viewing) { item in
             GalleryViewer(start: item, shown: $shownID)
                 .presentationBackground(.clear)
-                .zoomTransition(from: shownID ?? item.id, in: zoom)
+                .zoomTransition(from: shownID ?? item.id, in: zoom, enabled: !Self.noZoom)
         }
     }
+
+    /// The viewer grows out of the tapped tile: the zoom source must be that tile before it opens
+    /// (it still held the last photo viewed, which was off screen, so the open did not zoom).
+    private func open(_ item: GalleryItem) {
+        shownID = item.id
+        viewing = item
+    }
+
+    /// `-SecretaryGalleryNoZoom YES` / `-SecretaryGalleryNoGap YES`: frame-time comparisons.
+    static let noZoom = UserDefaults.standard.bool(forKey: "SecretaryGalleryNoZoom")
 }
 
 /// Square cells, 3 across on iPhone.
@@ -585,7 +595,7 @@ struct GalleryViewer: View {
         media.presented = true
     }
 
-    private static let pageGap: CGFloat = 24
+    private static let pageGap: CGFloat = UserDefaults.standard.bool(forKey: "SecretaryGalleryNoGap") ? 0 : 24
 
     /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
     /// (legacy) re-created every page from the first one to the current one on each change (seen

@@ -204,8 +204,8 @@ extension View {
 
     /// On a presented viewer: open from, and close into, the source with this id.
     @ViewBuilder
-    func zoomTransition(from id: String, in namespace: Namespace.ID) -> some View {
-        if #available(iOS 18.0, *) {
+    func zoomTransition(from id: String, in namespace: Namespace.ID, enabled: Bool = true) -> some View {
+        if #available(iOS 18.0, *), enabled {
             navigationTransition(.zoom(sourceID: id, in: namespace))
         } else {
             self
