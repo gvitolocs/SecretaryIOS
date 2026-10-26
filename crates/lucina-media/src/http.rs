@@ -23,6 +23,8 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
 use crate::db::{self, now_str, Item, ListQuery};
+use crate::doctype::{self, DocType};
+use crate::drive::{self, DriveInfo};
 use crate::ingest::{self, ExternalReq, Library};
 use crate::meta::ClientMeta;
 use crate::protocol::{self, ChunkOutcome, UploadState};
@@ -76,6 +78,11 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/items/{id}/thumb", get(thumb))
         .route("/v1/media/items/{id}/poster", get(poster))
         .route("/v1/media/items/{id}/r/{rendition}", get(rendition))
+        .route("/v1/media/items/{id}/text", get(item_text))
+        .route("/v1/media/items/{id}/pdf", get(item_pdf))
+        .route("/v1/media/items/{id}/archive", get(item_archive))
+        .route("/v1/media/drive", get(drive_roots))
+        .route("/v1/media/drive/browse", get(drive_browse))
         // The same renditions behind a play token: p1 passes /v1/media/s/* straight through, so a
         // gallery page costs no device-rate-limit tokens (60 a minute) and needs no header.
         .route(
@@ -149,9 +156,31 @@ pub struct ItemOut {
     pub thumb_url: Option<String>,
     /// First album title, for the player's grouping.
     pub album: Option<String>,
+    /// The file's place in a Drive folder; `null` for other items.
+    pub drive: Option<DriveInfo>,
+    /// Text around the search words, when a search matched the file's content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
+    item_out_full(lib, it, album, None, None)
+}
+
+/// The document type of an item: its Drive type, or what its name says.
+fn doc_type_of(it: &Item, drive: Option<&DriveInfo>) -> DocType {
+    drive
+        .and_then(|d| DocType::parse(&d.doc_type))
+        .unwrap_or_else(|| doctype::classify(&it.title, &it.kind))
+}
+
+pub fn item_out_full(
+    lib: &Library,
+    it: Item,
+    album: Option<String>,
+    drive: Option<DriveInfo>,
+    snippet: Option<String>,
+) -> ItemOut {
     let (poster_url, thumb_url) = match &lib.signer {
         Some(s) => {
             let (base, _) = s.base(&it.id);
@@ -178,12 +207,34 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         "preview": has_thumb.then(|| rendition_url(lib, id, "preview", v)),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
+    let mut urls = urls;
+    let doc = doc_type_of(&it, drive.as_ref());
+    let name = drive
+        .as_ref()
+        .map_or(it.title.as_str(), |d| d.name.as_str());
+    let office = matches!(
+        doc,
+        DocType::Document | DocType::Spreadsheet | DocType::Presentation
+    );
+    let texty = doc.has_text() || drive.as_ref().is_some_and(|d| d.preview == "text");
+    urls["download"] = json!(format!("/v1/media/items/{id}/original?download=1"));
+    urls["pdf"] = json!(
+        (doc == DocType::Pdf || (office && lib.cfg.soffice.is_some()))
+            .then(|| format!("/v1/media/items/{id}/pdf"))
+    );
+    urls["text"] = json!(texty.then(|| format!("/v1/media/items/{id}/text")));
+    urls["archive"] = json!(
+        (doc == DocType::Archive && crate::archive::format_of(name).is_some())
+            .then(|| format!("/v1/media/items/{id}/archive"))
+    );
     ItemOut {
         item: it,
         urls,
         poster_url,
         thumb_url,
         album,
+        drive,
+        snippet,
     }
 }
 
@@ -214,7 +265,14 @@ async fn list_items(
     Query(mut q): Query<ListQuery>,
 ) -> ApiResult<Json<Value>> {
     q.film_folders = lib.cfg.film_folders.clone();
-    let (page, titles, albums) = lib
+    if q.doc_type
+        .as_deref()
+        .is_some_and(|t| DocType::parse(t).is_none())
+    {
+        return Err(bad("unknown type"));
+    }
+    let words = search_words(q.q.as_deref());
+    let (page, titles, albums, infos) = lib
         .db
         .call(move |c| {
             let page = db::list_items(c, &q)?;
@@ -224,12 +282,18 @@ async fn list_items(
                 .filter(|a| a.count > 0)
                 .map(|a| a.title)
                 .collect();
-            Ok((page, titles, albums))
+            let infos = page
+                .items
+                .iter()
+                .map(|it| drive::info_for(c, &it.id))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((page, titles, albums, infos))
         })
         .await?;
+    let out = with_snippets(&lib, page.items.into_iter().zip(infos).collect(), words).await;
     Ok(Json(json!({
         "ok": true,
-        "items": page.items.into_iter().zip(titles).map(|(it, a)| item_out(&lib, it, a)).collect::<Vec<_>>(),
+        "items": out.into_iter().zip(titles).map(|((it, d, sn), a)| item_out_full(&lib, it, a, d, sn)).collect::<Vec<_>>(),
         "next_cursor": page.next_cursor,
         "total": page.total,
         "albums": albums,
@@ -237,7 +301,7 @@ async fn list_items(
 }
 
 async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<ItemOut>> {
-    let (it, album) = lib
+    let (it, album, info) = lib
         .db
         .call(move |c| {
             let Some(it) = db::get_item(c, &id)? else {
@@ -246,11 +310,50 @@ async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResu
             let a = first_album_titles(c, std::slice::from_ref(&it))?
                 .pop()
                 .flatten();
-            Ok(Some((it, a)))
+            let info = drive::info_for(c, &id)?;
+            Ok(Some((it, a, info)))
         })
         .await?
         .ok_or_else(not_found)?;
-    Ok(Json(item_out(&lib, it, album)))
+    Ok(Json(item_out_full(&lib, it, album, info, None)))
+}
+
+/// The words of a search, for snippets.
+fn search_words(q: Option<&str>) -> Vec<String> {
+    q.map(|s| {
+        s.split(|ch: char| !ch.is_alphanumeric())
+            .filter(|w| w.chars().count() >= 2)
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Snippets for the first results of a search that are Drive files with text (read from disk).
+async fn with_snippets(
+    lib: &Library,
+    items: Vec<(Item, Option<DriveInfo>)>,
+    words: Vec<String>,
+) -> Vec<(Item, Option<DriveInfo>, Option<String>)> {
+    if words.is_empty() {
+        return items.into_iter().map(|(i, d)| (i, d, None)).collect();
+    }
+    let l = lib.clone();
+    tokio::task::spawn_blocking(move || {
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(n, (it, d))| {
+                let sn = d
+                    .as_ref()
+                    .filter(|_| n < 50)
+                    .and_then(|info| drive::snippet_for(&l, &it.id, info, &words));
+                (it, d, sn)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -391,15 +494,44 @@ async fn serve_file(
     Ok(res)
 }
 
+#[derive(Deserialize)]
+struct OriginalQuery {
+    download: Option<String>,
+}
+
+/// `inline` or `attachment` with the file's name: ASCII for old clients, UTF-8 (RFC 5987) for the rest.
+fn content_disposition(kind: &str, name: &str) -> Option<HeaderValue> {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\' && *c != '/')
+        .collect();
+    let ascii = clean.replace(|c: char| !c.is_ascii(), "_");
+    let mut encoded = String::new();
+    for b in clean.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    HeaderValue::from_str(&format!(
+        "{kind}; filename=\"{ascii}\"; filename*=UTF-8''{encoded}"
+    ))
+    .ok()
+}
+
 async fn original(
     State(lib): State<Library>,
     Path(id): Path<String>,
+    Query(oq): Query<OriginalQuery>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let l = lib.clone();
-    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &id))
+    let iid = id.clone();
+    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &iid))
         .await??
         .ok_or_else(not_found)?;
+    let info = lib.db.call(move |c| drive::info_for(c, &id)).await?;
     if !path.is_file() {
         return Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -414,18 +546,316 @@ async fn original(
         "private, max-age=31536000, immutable",
     )
     .await?;
-    let name: String = item
-        .title
-        .chars()
-        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
-        .collect();
-    if let Ok(v) = HeaderValue::from_str(&format!(
-        "inline; filename=\"{}\"",
-        name.replace(|c: char| !c.is_ascii(), "_")
-    )) {
+    let kind = if matches!(oq.download.as_deref(), Some("1" | "true")) {
+        "attachment"
+    } else {
+        "inline"
+    };
+    let name = info
+        .as_ref()
+        .map_or(item.title.as_str(), |d| d.name.as_str());
+    if let Some(v) = content_disposition(kind, name) {
         res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(res)
+}
+
+fn valid_item_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// An item, its Drive info, its document type, its name and its original's path.
+async fn doc_item(
+    lib: &Library,
+    id: &str,
+) -> ApiResult<(Item, Option<DriveInfo>, DocType, String, PathBuf)> {
+    if !valid_item_id(id) {
+        return Err(not_found());
+    }
+    let l = lib.clone();
+    let iid = id.to_string();
+    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &iid))
+        .await??
+        .ok_or_else(not_found)?;
+    if item.trashed_at.is_some() {
+        return Err(not_found());
+    }
+    let iid = id.to_string();
+    let info = lib.db.call(move |c| drive::info_for(c, &iid)).await?;
+    let doc = doc_type_of(&item, info.as_ref());
+    let name = info
+        .as_ref()
+        .map_or_else(|| item.title.clone(), |d| d.name.clone());
+    if !path.is_file() {
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "original is not reachable right now".into(),
+        ));
+    }
+    Ok((item, info, doc, name, path))
+}
+
+#[derive(Deserialize)]
+struct TextQuery {
+    highlight: Option<String>,
+    max_bytes: Option<usize>,
+}
+
+/// The text of a text or code file (as it is, optionally highlighted), or the extracted text of a
+/// PDF or Office file.
+async fn item_text(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    Query(q): Query<TextQuery>,
+) -> ApiResult<Response> {
+    let (item, info, doc, name, path) = doc_item(&lib, &id).await?;
+    let max = q
+        .max_bytes
+        .unwrap_or(1 << 20)
+        .clamp(1024, crate::extract::MAX_TEXT_BYTES);
+    let highlight = matches!(q.highlight.as_deref(), Some("1" | "true"));
+    let extracted = matches!(
+        doc,
+        DocType::Pdf | DocType::Document | DocType::Spreadsheet | DocType::Presentation
+    );
+    if extracted {
+        let out = thumbs::dir_for(&lib.cfg, &item.id).join("text.txt");
+        if !out.is_file() {
+            // Not read yet: read it now (one heavy job at a time; a busy worker means "later").
+            let permit = match tokio::time::timeout(
+                Duration::from_secs(30),
+                lib.jobs.clone().acquire_owned(),
+            )
+            .await
+            {
+                Ok(p) => p.map_err(|e| ApiError::from(e.to_string()))?,
+                Err(_) => {
+                    return Ok(
+                        (StatusCode::ACCEPTED, Json(json!({ "state": "pending" }))).into_response()
+                    )
+                }
+            };
+            let (cfg, o, n) = (lib.cfg.clone(), out.clone(), name.clone());
+            let res = tokio::task::spawn_blocking(move || {
+                std::fs::create_dir_all(o.parent().unwrap_or(std::path::Path::new(".")))?;
+                crate::extract::extract_text(&cfg, &path, &n, doc, &o)
+            })
+            .await?;
+            drop(permit);
+            match res {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(ApiError(
+                        StatusCode::NOT_FOUND,
+                        "no text in this file".into(),
+                    ))
+                }
+                Err(e) => {
+                    tracing::warn!(item = %item.id, error = %e, "text extraction failed");
+                    return Err(ApiError(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "the text can't be read".into(),
+                    ));
+                }
+            }
+        }
+        let read = tokio::task::spawn_blocking(move || crate::extract::read_text_prefix(&out, max))
+            .await??;
+        let (text, truncated) =
+            read.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no text".into()))?;
+        return Ok(Json(json!({
+            "language": null, "source": "extracted", "truncated": truncated,
+            "bytes": text.len(), "text": text,
+        }))
+        .into_response());
+    }
+    let texty = doc.has_text()
+        || info.as_ref().is_some_and(|d| d.preview == "text")
+        || doc == DocType::Other;
+    if !texty {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no text in this file".into(),
+        ));
+    }
+    let language = doctype::language_for(&name);
+    let body = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Value>> {
+        let Some((text, truncated)) = crate::extract::read_text_prefix(&path, max)? else {
+            return Ok(None);
+        };
+        let lines = if highlight {
+            language.and_then(|l| crate::highlight::highlight(&text, l))
+        } else {
+            None
+        };
+        let mut v = json!({
+            "language": language, "source": "file", "truncated": truncated,
+            "bytes": text.len(), "text": text,
+        });
+        if let Some(lines) = lines {
+            v["lines"] = json!(lines
+                .into_iter()
+                .map(|l| l
+                    .into_iter()
+                    .map(|(c, t)| json!([c, t]))
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>());
+        }
+        Ok(Some(v))
+    })
+    .await??;
+    match body {
+        Some(v) => Ok(Json(v).into_response()),
+        None => Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no text in this file".into(),
+        )),
+    }
+}
+
+/// A PDF to show inline: the original of a PDF, a converted copy of an Office file.
+async fn item_pdf(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let (item, _info, doc, name, path) = doc_item(&lib, &id).await?;
+    let etag = format!("{}-pdf", item.hash);
+    let cache = "private, max-age=604800";
+    match doc {
+        DocType::Pdf => serve_file(headers, path, "application/pdf", &etag, cache).await,
+        DocType::Document | DocType::Spreadsheet | DocType::Presentation => {
+            let out = thumbs::dir_for(&lib.cfg, &item.id).join("doc.pdf");
+            if !out.is_file() {
+                if lib.cfg.soffice.is_none() {
+                    return Err(ApiError(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "no converter".into(),
+                    ));
+                }
+                let permit = lib
+                    .jobs
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| ApiError::from(e.to_string()))?;
+                let (cfg, o) = (lib.cfg.clone(), out.clone());
+                let made = tokio::task::spawn_blocking(move || {
+                    std::fs::create_dir_all(o.parent().unwrap_or(std::path::Path::new(".")))?;
+                    crate::extract::office_pdf(&cfg, &path, &name, &o)
+                })
+                .await?;
+                drop(permit);
+                if !matches!(made, Ok(true)) {
+                    return Err(ApiError(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "the file can't be converted".into(),
+                    ));
+                }
+            }
+            serve_file(headers, out, "application/pdf", &etag, cache).await
+        }
+        _ => Err(not_found()),
+    }
+}
+
+async fn item_archive(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Response> {
+    let (_item, _info, doc, name, path) = doc_item(&lib, &id).await?;
+    if doc != DocType::Archive {
+        return Err(not_found());
+    }
+    let res = tokio::task::spawn_blocking(move || crate::archive::list(&path, &name)).await?;
+    match res {
+        Ok(l) => Ok(Json(l).into_response()),
+        Err(crate::archive::ArchiveError::Unsupported) => Err(ApiError(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "this archive format can't be listed".into(),
+        )),
+        Err(crate::archive::ArchiveError::Corrupt(e)) => Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("the archive can't be read: {e}"),
+        )),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The Drive's top level: its folders, the other Drive collections, and which converters exist.
+async fn drive_roots(State(lib): State<Library>) -> ApiResult<Json<Value>> {
+    let folders: Vec<String> = drive::drive_folders(&lib)
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect();
+    let films = lib.cfg.film_folders.clone();
+    let f2 = folders.clone();
+    let (roots, albums) = lib
+        .db
+        .call(move |c| {
+            let roots = drive::roots(c, &f2)?;
+            let albums: Vec<Value> = db::list_albums_in(c, Some("drive"), &films)?
+                .into_iter()
+                .filter(|a| {
+                    !f2.contains(&a.title)
+                        && a.system_key.as_deref().is_none_or(|k| k == "voice-memos")
+                })
+                .map(|a| json!({ "id": a.id, "title": a.title, "count": a.count }))
+                .collect();
+            Ok((roots, albums))
+        })
+        .await?;
+    Ok(Json(json!({
+        "folders": roots,
+        "albums": albums,
+        "converters": {
+            "pdf_thumbs": lib.cfg.pdftoppm.is_some(),
+            "office_pdf": lib.cfg.soffice.is_some(),
+            "pdf_text": true,
+        },
+    })))
+}
+
+async fn drive_browse(
+    State(lib): State<Library>,
+    Query(q): Query<drive::BrowseQuery>,
+) -> ApiResult<Json<Value>> {
+    if !drive::drive_folders(&lib)
+        .iter()
+        .any(|(l, _)| *l == q.folder)
+    {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no such Drive folder".into(),
+        ));
+    }
+    let (folder, path) = (q.folder.clone(), q.path.clone());
+    let b = lib
+        .db
+        .call(move |c| Ok(drive::browse(c, &q)))
+        .await?
+        .map_err(|e| match e {
+            drive::BrowseError::BadPath => bad("unsafe path"),
+            drive::BrowseError::BadQuery => bad("unknown sort, order or type"),
+            drive::BrowseError::Sql(e) => ApiError::from(e),
+        })?;
+    let words = b.words.clone();
+    let files = with_snippets(
+        &lib,
+        b.files.into_iter().map(|(i, d)| (i, Some(d))).collect(),
+        words,
+    )
+    .await;
+    Ok(Json(json!({
+        "folder": folder,
+        "path": path,
+        "breadcrumbs": b.breadcrumbs.iter().map(|(n, p)| json!({ "name": n, "path": p })).collect::<Vec<_>>(),
+        "folders": b.folders,
+        "files": files.into_iter().map(|(it, d, sn)| item_out_full(&lib, it, Some(folder.clone()), d, sn)).collect::<Vec<_>>(),
+        "total": b.total,
+        "next_offset": b.next_offset,
+    })))
 }
 
 #[derive(Deserialize)]

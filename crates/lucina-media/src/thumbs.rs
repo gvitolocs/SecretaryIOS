@@ -2,6 +2,7 @@
 //! - `s.jpg`: short side 360 px, for the grid;
 //! - `l.jpg`: long side 1600 px, for the viewer;
 //! - `poster.jpg`: a frame of a video (or an audio file's cover art);
+//! - `page1.jpg`: the first page of a Drive PDF or converted Office file (`drive.rs`);
 //! - `preview.jpg`: the rendering the phone sent with the upload, used as the source for formats
 //!   we can't decode here (HEIC: nezopt's libheif has no HEVC plugin);
 //! - `g.jxl`: the grid tile, 256 px square (centre crop), JPEG XL d2.5 (about 9 KB);
@@ -107,7 +108,8 @@ pub fn generate(
             }
             poster.is_file().then(|| poster.clone())
         }
-        _ => None,
+        // A Drive document's first page (`drive.rs`: pdftoppm, LibreOffice), when it has one.
+        _ => Some(dir.join("page1.jpg")).filter(|p| p.is_file()),
     };
     let Some(src) = source else {
         return Ok(ThumbState::None);

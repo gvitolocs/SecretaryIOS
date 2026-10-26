@@ -48,6 +48,21 @@ pub struct Config {
     /// Tctl and one-minute load at which preparation pauses.
     pub prepare_max_temp_c: u32,
     pub prepare_max_load: u32,
+    /// Names the Drive leaves out (`LUCINA_MEDIA_DRIVE_IGNORE`, `;`-separated, `*` at either end).
+    pub drive_ignore: Vec<String>,
+    /// Index hidden files (`.name`) in the Drive too (`LUCINA_MEDIA_DRIVE_HIDDEN=1`).
+    pub drive_hidden: bool,
+    /// Tctl at which the Drive's background work pauses (`LUCINA_MEDIA_DRIVE_MAX_TEMP`, 90 °C).
+    pub drive_max_temp_c: u32,
+    /// CPU quota of a Drive job's scope in percent (`LUCINA_MEDIA_DRIVE_CPU_QUOTA`, 50).
+    pub drive_cpu_quota: u32,
+    /// Run the pure-Rust extractors in a capped child process (`lucina-media extract-text`).
+    pub drive_isolate: bool,
+    /// poppler's `pdftotext` and `pdftoppm`, LibreOffice's `soffice`, when installed
+    /// (`LUCINA_MEDIA_PDFTOTEXT`, `LUCINA_MEDIA_PDFTOPPM`, `LUCINA_MEDIA_SOFFICE`: a path, or 0).
+    pub pdftotext: Option<PathBuf>,
+    pub pdftoppm: Option<PathBuf>,
+    pub soffice: Option<PathBuf>,
 }
 
 /// `LUCINA_MEDIA_FILM_FOLDERS` when unset.
@@ -118,6 +133,14 @@ impl Config {
             None if render_node.exists() && ffmpeg_has_vaapi(&ffmpeg) => Some(render_node.into()),
             None => None,
         };
+        let tool = |env: &str, names: &[&str]| match var(env) {
+            Some(v) if matches!(v.as_str(), "0" | "false" | "off") => None,
+            Some(v) => Some(PathBuf::from(v)),
+            None => names.iter().find_map(|n| on_path(n)),
+        };
+        let pdftotext = tool("LUCINA_MEDIA_PDFTOTEXT", &["pdftotext"]);
+        let pdftoppm = tool("LUCINA_MEDIA_PDFTOPPM", &["pdftoppm"]);
+        let soffice = tool("LUCINA_MEDIA_SOFFICE", &["soffice", "libreoffice"]);
         let default_lease = home.join("bin/gpu-lease");
         let gpu_lease = match var("LUCINA_MEDIA_GPU_LEASE") {
             Some(v) if matches!(v.as_str(), "0" | "false" | "off") => None,
@@ -181,6 +204,28 @@ impl Config {
                 .map(|v| v.parse())
                 .transpose()?
                 .unwrap_or(16),
+            drive_ignore: var("LUCINA_MEDIA_DRIVE_IGNORE")
+                .map(|v| {
+                    v.split(';')
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(crate::drive_kernel::default_ignore),
+            drive_hidden: var("LUCINA_MEDIA_DRIVE_HIDDEN")
+                .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "on")),
+            drive_max_temp_c: var("LUCINA_MEDIA_DRIVE_MAX_TEMP")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(90),
+            drive_cpu_quota: var("LUCINA_MEDIA_DRIVE_CPU_QUOTA")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(50),
+            drive_isolate: true,
+            pdftotext,
+            pdftoppm,
+            soffice,
             ffmpeg,
             ffprobe,
         })
@@ -213,6 +258,14 @@ impl Config {
             prepare_window_end: 7,
             prepare_max_temp_c: 80,
             prepare_max_load: 16,
+            drive_ignore: crate::drive_kernel::default_ignore(),
+            drive_hidden: false,
+            drive_max_temp_c: 90,
+            drive_cpu_quota: 50,
+            drive_isolate: false,
+            pdftotext: None,
+            pdftoppm: None,
+            soffice: None,
         }
     }
 
@@ -261,12 +314,24 @@ fn ffmpeg_has_vaapi(ffmpeg: &Path) -> bool {
     std::process::Command::new(ffmpeg)
         .args(["-hide_banner", "-encoders"])
         .output()
-        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("h264_vaapi"))
+        .is_ok_and(|o| {
+            o.status.success() && String::from_utf8_lossy(&o.stdout).contains("h264_vaapi")
+        })
+}
+
+/// `name` found on `PATH`, if it is there.
+fn on_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?
+        .to_str()?
+        .split(':')
+        .map(|d| Path::new(d).join(name))
+        .find(|p| is_executable(p))
 }
 
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    path.metadata()
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// `[start, end)` in hours, wrapping past midnight when `start > end`. `start == end` means never quiet.

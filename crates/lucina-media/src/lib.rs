@@ -6,12 +6,21 @@
 //!   so browsing never wakes the big disk.
 //! - Nothing here ever deletes a file on a phone. A server delete is a soft delete (trash).
 //!
+//! - The Drive (`drive.rs`) indexes every file of the Drive folders in place, with its folder
+//!   hierarchy, type and text, for browsing, previews and search.
+//!
 //! The HTTP API is reached only through the p1 secretary-server proxy, which authenticates the
 //! device and adds the upstream key (see [`http::upstream_guard`]).
 
+pub mod archive;
 pub mod config;
 pub mod db;
+pub mod doctype;
+pub mod drive;
+pub mod drive_kernel;
+pub mod extract;
 pub mod geo;
+pub mod highlight;
 pub mod http;
 pub mod import;
 pub mod ingest;

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use lucina_media::config::Config;
 use lucina_media::ingest::{self, Library};
-use lucina_media::{http, import, store};
+use lucina_media::{drive, extract, http, import, store};
 
 #[derive(Parser)]
 #[command(name = "lucina-media", about = "Lucina's media library server")]
@@ -33,8 +33,19 @@ enum Cmd {
         #[arg(long)]
         kind: Option<String>,
     },
-    /// Index a folder in place (no copy) as album LABEL.
+    /// Index a folder in place (no copy) as album LABEL: a film folder's media, or every file of a
+    /// Drive folder.
     IndexFolder { label: String, path: PathBuf },
+    /// Write the text of a document to OUTPUT (the Drive worker runs this in a capped child process).
+    /// Exits 3 when the file has no text.
+    ExtractText {
+        #[arg(long = "type")]
+        doc_type: String,
+        #[arg(long)]
+        name: String,
+        input: PathBuf,
+        output: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -45,6 +56,22 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    if let Cmd::ExtractText {
+        doc_type,
+        name,
+        input,
+        output,
+    } = &cli.cmd
+    {
+        // No config needed: this is a child of the server, reading one file.
+        let doc = lucina_media::doctype::DocType::parse(doc_type)
+            .ok_or_else(|| anyhow::anyhow!("unknown type {doc_type}"))?;
+        match extract::extract_in_process(input, name, doc)? {
+            Some(text) => std::fs::write(output, extract::truncate_text(text))?,
+            None => std::process::exit(extract::NO_TEXT_EXIT),
+        }
+        return Ok(());
+    }
     let cfg = Config::from_env()?;
     match cli.cmd {
         Cmd::Init => {
@@ -91,10 +118,20 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::IndexFolder { label, path } => {
             let lib = Library::open(cfg)?;
-            let r = tokio::task::spawn_blocking(move || ingest::index_folder(&lib, &label, &path))
+            if lib.cfg.film_folders.contains(&label) {
+                let r =
+                    tokio::task::spawn_blocking(move || ingest::index_folder(&lib, &label, &path))
+                        .await??;
+                println!("added {}, unchanged {}", r.0, r.1);
+            } else {
+                let r = tokio::task::spawn_blocking(move || {
+                    drive::index_drive_folder(&lib, &label, &path)
+                })
                 .await??;
-            println!("added {}, unchanged {}", r.0, r.1);
+                println!("{r:?}");
+            }
         }
+        Cmd::ExtractText { .. } => unreachable!("handled above"),
         Cmd::Serve => serve(cfg).await?,
     }
     Ok(())
@@ -125,18 +162,41 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
     }
     if !cfg.folders.is_empty() {
         let l = lib.clone();
+        tokio::spawn(drive::drive_worker(lib.clone()));
+        tracing::info!(
+            pdftotext = ?cfg.pdftotext, pdftoppm = ?cfg.pdftoppm, soffice = ?cfg.soffice,
+            "drive: document tools"
+        );
         tokio::spawn(async move {
             loop {
                 for (label, path) in l.cfg.folders.clone() {
                     let l2 = l.clone();
-                    match tokio::task::spawn_blocking(move || {
-                        ingest::index_folder(&l2, &label, &path)
-                    })
-                    .await
-                    {
-                        Ok(Ok((a, _))) if a > 0 => tracing::info!(added = a, "folder indexed"),
-                        Ok(Err(e)) => tracing::warn!(error = %e, "folder index failed"),
-                        _ => {}
+                    // Film folders keep their media-only index; every other folder is the Drive.
+                    if l.cfg.film_folders.contains(&label) {
+                        match tokio::task::spawn_blocking(move || {
+                            ingest::index_folder(&l2, &label, &path)
+                        })
+                        .await
+                        {
+                            Ok(Ok((a, _))) if a > 0 => tracing::info!(added = a, "folder indexed"),
+                            Ok(Err(e)) => tracing::warn!(error = %e, "folder index failed"),
+                            _ => {}
+                        }
+                    } else {
+                        let lbl = label.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            drive::index_drive_folder(&l2, &label, &path)
+                        })
+                        .await
+                        {
+                            Ok(Ok(s)) if s.added + s.pruned > 0 => {
+                                tracing::info!(folder = %lbl, ?s, "drive folder indexed")
+                            }
+                            Ok(Err(e)) => {
+                                tracing::warn!(folder = %lbl, error = %e, "drive index failed")
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(1800)).await;

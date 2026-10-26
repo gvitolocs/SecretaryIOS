@@ -97,6 +97,33 @@ CREATE TABLE IF NOT EXISTS externals (
     PRIMARY KEY (source, ext_id)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(item_id UNINDEXED, body, tokenize = 'unicode61 remove_diacritics 2');
+-- The Drive (drive.rs): one row per regular file in a Drive folder, with its place in the folder.
+-- `path` is relative to the folder (`a/b/c.pdf`), `dir` its parent (`a/b`, '' at the top).
+CREATE TABLE IF NOT EXISTS drive_files (
+    id INTEGER PRIMARY KEY,
+    item_id TEXT NOT NULL UNIQUE REFERENCES items(id),
+    folder TEXT NOT NULL,
+    path TEXT NOT NULL,
+    dir TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ext TEXT NOT NULL,
+    doc_type TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    mtime TEXT NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    text_state TEXT NOT NULL DEFAULT 'pending' CHECK (text_state IN ('pending', 'ready', 'none', 'failed')),
+    UNIQUE (folder, path)
+);
+CREATE INDEX IF NOT EXISTS drive_files_dir ON drive_files(folder, dir);
+-- The filesystem (st_dev) each Drive folder's files were indexed from (drive.rs, kernel DK4).
+CREATE TABLE IF NOT EXISTS drive_folders (
+    folder TEXT PRIMARY KEY,
+    dev INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS drive_files_text ON drive_files(text_state);
+-- The text of Drive documents (PDF, Office, text, code), rowid = drive_files.id. Contentless: the
+-- text itself stays in the files (and thumbs/<id>/text.txt for extracted text).
+CREATE VIRTUAL TABLE IF NOT EXISTS drive_fts USING fts5(body, content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2');
 "#;
 
 /// System albums every library has. Keys are stable; titles are what the apps show.
@@ -325,11 +352,14 @@ pub fn video_ids(c: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
 /// The background preparation only prepares these; phone videos are left alone.
 pub fn film_video_ids(c: &Connection, films: &[String]) -> rusqlite::Result<Vec<(String, String)>> {
     let mut args = Vec::new();
-    let cond = scope_condition(Some("films"), films, &mut args).expect("films always has a condition");
+    let cond =
+        scope_condition(Some("films"), films, &mut args).expect("films always has a condition");
     let mut st = c.prepare(&format!(
         "SELECT i.id, i.added_at FROM items i WHERE i.kind = 'video' AND i.hidden = 0 AND i.trashed_at IS NULL AND {cond} ORDER BY i.added_at DESC, i.id DESC"
     ))?;
-    let rows = st.query_map(rusqlite::params_from_iter(args), |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let rows = st.query_map(rusqlite::params_from_iter(args), |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?;
     rows.collect()
 }
 
@@ -386,6 +416,15 @@ pub fn reindex(c: &Connection, id: &str) -> rusqlite::Result<()> {
     }
     body.extend(it.camera.clone());
     body.push(it.kind.clone());
+    // A Drive file is also found by its folders' names and its type ("slides", "pdf").
+    if let Some(d) = crate::drive::info_for(c, id)? {
+        body.push(d.folder.clone());
+        body.push(d.path.replace('/', " "));
+        body.push(d.ext.clone());
+        if let Some(t) = crate::doctype::DocType::parse(&d.doc_type) {
+            body.push(t.search_words().to_string());
+        }
+    }
     if let Some(t) = it
         .taken_at
         .as_deref()
@@ -441,6 +480,9 @@ pub struct ListQuery {
     /// Set by the server from its config (not a query parameter): the film folder labels.
     #[serde(skip)]
     pub film_folders: Vec<String>,
+    /// A Drive document type (`pdf`, `presentation`, …; `doctype::DocType`).
+    #[serde(rename = "type")]
+    pub doc_type: Option<String>,
     pub favorite: Option<bool>,
     pub trashed: Option<bool>,
     pub cursor: Option<String>,
@@ -549,6 +591,14 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
     if q.favorite == Some(true) {
         wh.push("i.favorite = 1".into());
     }
+    if let Some(t) = &q.doc_type {
+        add(
+            &mut wh,
+            &mut args,
+            "i.id IN (SELECT item_id FROM drive_files WHERE doc_type = ?)",
+            t.clone().into(),
+        );
+    }
     if let Some(f) = q.from.as_deref().and_then(|f| normalize_bound(f, false)) {
         add(&mut wh, &mut args, "i.sort_at >= ?", f.into());
     }
@@ -565,12 +615,14 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         ));
     }
     if let Some(fq) = q.q.as_deref().and_then(fts_query) {
-        add(
-            &mut wh,
-            &mut args,
-            "i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?)",
-            fq.into(),
-        );
+        // Titles, places, albums… and the content of Drive documents.
+        args.push(fq.into());
+        let n = args.len();
+        wh.push(format!(
+            "(i.id IN (SELECT item_id FROM items_fts WHERE items_fts MATCH ?{n}) \
+             OR i.id IN (SELECT df.item_id FROM drive_files df WHERE df.id IN \
+               (SELECT rowid FROM drive_fts WHERE drive_fts MATCH ?{n})))"
+        ));
     }
     let near = q.near.as_deref().and_then(parse_near);
     if let Some((lat, lon, km)) = near {
@@ -657,7 +709,9 @@ pub struct Album {
 }
 
 /// `ListQuery::scope` as SQL on `items i`; the film labels go into `args` (numbered `?N`).
-fn scope_condition(
+/// The three conditions are `drive_kernel::in_scope` (DK2): every item is in exactly one scope; a
+/// phone backup filed in a film album stays in the Gallery.
+pub fn scope_condition(
     scope: Option<&str>,
     films: &[String],
     args: &mut Vec<rusqlite::types::Value>,
@@ -684,11 +738,8 @@ fn scope_condition(
     };
     match scope {
         Some("gallery") => Some("i.source LIKE 'phone%'".into()),
-        Some("films") => Some(in_films()),
-        Some("drive") => Some(format!(
-            "(i.source IS NULL OR i.source NOT LIKE 'phone%') AND NOT {}",
-            in_films()
-        )),
+        Some("films") => Some(format!("i.source NOT LIKE 'phone%' AND {}", in_films())),
+        Some("drive") => Some(format!("i.source NOT LIKE 'phone%' AND NOT {}", in_films())),
         _ => None,
     }
 }

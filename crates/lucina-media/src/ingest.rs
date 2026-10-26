@@ -31,6 +31,9 @@ pub struct Library {
     pub events: broadcast::Sender<Event>,
     /// Mints the player's tokenised URLs for listings (poster_url, thumb_url).
     pub signer: Option<Arc<secretary_media_stream::Signer>>,
+    /// One heavy Drive job at a time (text extraction, PDF pages, Office conversion), whether the
+    /// background worker or a viewer asked for it.
+    pub jobs: Arc<tokio::sync::Semaphore>,
 }
 
 impl Library {
@@ -56,6 +59,7 @@ impl Library {
             db,
             events,
             signer,
+            jobs: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 
@@ -102,7 +106,7 @@ pub fn ingest_file(
     let known = lib.db.with(|c| known_for(c, &hash, client))?;
     let decision = ingest_decision(&known, &hash);
     if let IngestDecision::Duplicate { item_id } = &decision {
-        std::fs::remove_file(src)?;
+        keep_owned_bytes(lib, src, &hash, &ext, bytes)?;
         let version = lib.db.with(|c| {
             // A file imported earlier (e.g. from Takeout) now arrives from the phone: remember the
             // asset so later edits version this item instead of creating a new one.
@@ -122,18 +126,7 @@ pub fn ingest_file(
         });
     }
 
-    let have_blob = lib.db.with(|c| db::blob(c, &hash))?.is_some();
-    if have_blob {
-        std::fs::remove_file(src)?;
-    } else {
-        let loc = store::place_new(cfg, src, &hash, &ext)?;
-        lib.db.with(|c| {
-            c.execute(
-                "INSERT OR IGNORE INTO blobs (hash, bytes, ext, location, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![hash, bytes, ext, loc, now_str()],
-            )
-        })?;
-    }
+    keep_owned_bytes(lib, src, &hash, &ext, bytes)?;
 
     let place = match (x.lat, x.lon) {
         (Some(lat), Some(lon)) => geo::place_for(lat, lon),
@@ -192,6 +185,45 @@ pub fn ingest_file(
         duplicate: false,
         version,
     })
+}
+
+/// The blob row for bytes the library now owns (`src`, consumed), by kernel DK3: an owned copy that
+/// is already there wins and `src` goes; a row that only references a file in place (a Drive file,
+/// a memo) is upgraded to the owned copy, so a phone's original never depends on a file the owner
+/// may move or delete in the Drive.
+fn keep_owned_bytes(
+    lib: &Library,
+    src: &Path,
+    hash: &str,
+    ext: &str,
+    bytes: i64,
+) -> anyhow::Result<()> {
+    use crate::drive_kernel::{blob_decision, BlobAction, BlobLoc};
+    let existing = lib.db.with(|c| db::blob(c, hash))?;
+    match blob_decision(existing.map(|b| BlobLoc::from_location(&b.location)), true) {
+        BlobAction::DropIncoming => std::fs::remove_file(src)?,
+        BlobAction::Place => {
+            let loc = store::place_new(&lib.cfg, src, hash, ext)?;
+            lib.db.with(|c| {
+                c.execute(
+                    "INSERT OR IGNORE INTO blobs (hash, bytes, ext, location, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![hash, bytes, ext, loc, now_str()],
+                )
+            })?;
+        }
+        BlobAction::Upgrade => {
+            let loc = store::place_new(&lib.cfg, src, hash, ext)?;
+            lib.db.with(|c| {
+                c.execute(
+                    "UPDATE blobs SET location = ?2, ext = ?3, path = NULL WHERE hash = ?1 AND location = 'external'",
+                    params![hash, loc, ext],
+                )
+            })?;
+        }
+        // An owned incoming copy never maps to these (DK3).
+        BlobAction::RecordExternal | BlobAction::Keep => std::fs::remove_file(src)?,
+    }
+    Ok(())
 }
 
 fn known_for(c: &Connection, hash: &str, client: &ClientMeta) -> rusqlite::Result<Known> {
@@ -581,11 +613,17 @@ pub fn unregister_external(
     Ok(id)
 }
 
-/// Where an item's current original is, if the item exists.
+/// Where an item's current original is, if the item exists. A Drive file is its own file (two
+/// identical files share one blob row, which names only one of their paths).
 pub fn original_path(lib: &Library, item_id: &str) -> anyhow::Result<Option<(PathBuf, db::Item)>> {
     let Some(item) = lib.db.with(|c| db::get_item(c, item_id))? else {
         return Ok(None);
     };
+    if let Some(info) = lib.db.with(|c| crate::drive::info_for(c, item_id))? {
+        if let Some(p) = crate::drive::file_path(lib, &info).filter(|p| p.is_file()) {
+            return Ok(Some((p, item)));
+        }
+    }
     let Some(b) = lib.db.with(|c| db::blob(c, &item.hash))? else {
         return Ok(None);
     };
