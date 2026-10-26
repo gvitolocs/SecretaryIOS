@@ -5,9 +5,11 @@ struct SecretaryApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        PerfLog.appInit()
         // A Lock Screen / Action button recording may be all this launch is for: only the
         // recorder is set up here; AppModel waits for a window (AppWindow) or the stop.
         MemoRecordingCenter.install()
+        LucinaTabBarAppearance.apply()
     }
 
     var body: some Scene {
@@ -54,7 +56,7 @@ private struct AppWindow: View {
             .environment(app.backup)
             .task {
                 // Hosted unit tests load the app; keep it off the network.
-                guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+                guard !AppModel.isUnitTestHost else { return }
                 await app.start()
             }
     }

@@ -283,3 +283,13 @@ struct SectionBar<Item: Hashable & Identifiable>: View {
         .background(Theme.card, in: Capsule())
     }
 }
+
+/// The system tab bar in the token colours (`LucinaTokens.TabBar`). The glass and the selection
+/// pill stay the system's own; the TabView adds `.tint(LucinaTokens.TabBar.active)` for the
+/// selected tab. Runs once, before the first window, because the appearance proxy only reaches
+/// tab bars created after it.
+enum LucinaTabBarAppearance {
+    @MainActor static func apply() {
+        UITabBar.appearance().unselectedItemTintColor = UIColor(LucinaTokens.TabBar.inactive)
+    }
+}

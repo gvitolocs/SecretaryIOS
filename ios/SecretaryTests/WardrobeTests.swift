@@ -51,6 +51,7 @@ final class WardrobeTests: XCTestCase {
         XCTAssertEqual(s.wantedHair(in: .shopping), "bun")
         XCTAssertEqual(AvatarSettings.Section(tab: .fitness), .gym)
         XCTAssertEqual(AvatarSettings.Section(tab: .plugins), .default)
+        XCTAssertEqual(AvatarSettings.Section(tab: .lucina), .default, "MainTabs keeps the section of the tab she was opened from")
     }
 
     func testPatchEncodingKeepsNullAndAbsentApart() throws {
