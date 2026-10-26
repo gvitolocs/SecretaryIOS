@@ -1883,3 +1883,22 @@ body:has(.dock--float:not(.dock--open)) .bring-search-row {
     background-position: 150% 0;
   }
 }
+
+/* Bundled item illustrations (docs/design/item-icons.md): the image takes the emoji's place and
+   size, so 1.32em is the 58 px icon area in a tile (44 px font). */
+.item-art {
+  display: block;
+  width: 1.32em;
+  height: 1.32em;
+  object-fit: contain;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+/* An emoji kept for a custom item fills about the same box as the art (the glyph is narrower
+   than its font size), so a row of tiles keeps one icon size. */
+.item-emoji {
+  display: block;
+  font-size: 1.2em;
+  line-height: 1.1;
+}

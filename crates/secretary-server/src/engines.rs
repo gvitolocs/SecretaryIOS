@@ -88,7 +88,7 @@ fn query_request(tz: Option<String>, kind: &str) -> String {
 /// POST body → the raw request string for the engine. Malformed JSON is the
 /// engine's business (`invalid_command`, 422); a missing JSON content type
 /// is 415 like every other `/v1` route.
-fn command_body(
+pub(crate) fn command_body(
     headers: &HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<String, Box<Response>> {

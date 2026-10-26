@@ -1,7 +1,7 @@
 import { t } from "../i18n";
 import { checkHealth, health, healthLabel } from "../state/health";
 
-/** Lucina status dot. Tapping it re-checks immediately. */
+/** Lucina status: one faint dot, louder only when something is wrong. Tapping it re-checks. */
 export function StatusDot() {
   return (
     <button
@@ -20,9 +20,6 @@ export function StatusDot() {
         }}
         aria-hidden="true"
       />
-      <span class="status-text" aria-hidden="true">
-        {t("shell.lucina")}
-      </span>
     </button>
   );
 }

@@ -1,0 +1,17 @@
+[package]
+name = "ink-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local-first sync core for Lucina Ink: device op log, idempotent server apply, client sync loop"
+
+[dependencies]
+ink-library = { path = "../ink-library" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"

@@ -21,6 +21,46 @@ use crate::format;
 use crate::scope::{Caller, Scope};
 use crate::App;
 
+/// Bounded library listing/search arguments.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LibraryListArgs {
+    /// Content kinds to list; default book and document (dictionaries excluded).
+    pub kind: Option<LibraryKind>,
+    pub q: Option<String>,
+    pub status: Option<LibraryStatus>,
+    pub on_kindle: Option<bool>,
+    pub limit: Option<u32>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryKind {
+    Book,
+    Dictionary,
+    Document,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryStatus {
+    Unknown,
+    NotStarted,
+    Reading,
+    Completed,
+    Abandoned,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryBookArgs {
+    pub id: String,
+    pub q: Option<String>,
+    pub limit: Option<u32>,
+}
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryRecentArgs {
+    pub days: Option<u32>,
+}
+
 // -- arguments ------------------------------------------------------------------
 
 /// Arguments of `ask_lucina`.
@@ -270,6 +310,41 @@ pub struct NotesSearchArgs {
     pub limit: Option<u32>,
 }
 
+/// Arguments of `tasks_list`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TasksListArgs {
+    /// Which list: "today" (default: overdue + today, like Todoist's Today), "upcoming" (next 7 days), "inbox", "completed" (last 7 days), or "search" (with `query`).
+    #[serde(default)]
+    pub view: Option<String>,
+    /// Only this Todoist project, by name (e.g. "Lingue").
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Words to search for (view "search"), or a Todoist filter such as "p1 & overdue" or "@lingue".
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+/// Arguments of `task_add`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskAddArgs {
+    /// The task in Todoist quick add style, any of Italian, English or Danish: "15 min shadowing every day", "chiamare Marco domani alle 9 #Lavoro p1", "ring til tandlægen i morgen @home". Dates, recurrence, #Project, @label and p1-p4 are understood.
+    pub text: String,
+    /// Due date when the text has none, e.g. "today" (default: no date).
+    #[serde(default)]
+    pub due: Option<String>,
+}
+
+/// Arguments of `task_complete`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TaskCompleteArgs {
+    /// The task id from tasks_list.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Or words of the title, e.g. "shadowing": must match exactly one open task due today or overdue (or any open task when nothing due matches).
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
 // -- definitions ------------------------------------------------------------------
 
 pub struct ToolSpec {
@@ -346,8 +421,25 @@ pub fn specs() -> Vec<ToolSpec> {
             "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, tags, who wrote it, when, and the Markdown content. Long notes come in pages: call again with the offset it gives you."),
         spec!("notes_search", "Search notes", Scope::Read, ro = true, destructive = false, idempotent = true, NotesSearchArgs,
             "Find the owner's notes, briefings and documents by words (title, slug, tags, content) or tag; pinned first, newest first. Each hit shows its slug, title, source and an excerpt. Without `q` it lists the latest notes."),
+        spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
+            "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
+        spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,
+            "Add a task to the owner's Todoist through Secretary, written like Todoist's quick add: dates and recurrence in Italian, English or Danish (\"domani alle 9\", \"every day\", \"hver mandag\"), #Project, @label, p1-p4. It shows up at once and syncs to Todoist within a minute."),
+        spec!("task_complete", "Complete task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskCompleteArgs,
+            "Mark one of the owner's tasks done (by id from tasks_list, or by words of its title). A recurring task moves to its next date in Todoist. Deleting tasks is not possible here; ask the owner."),
         spec!("lucina_status", "Lucina status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has."),
+        spec!("library_list_books", "Library list books", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryListArgs, "List books. Ownership and Kindle presence do not imply reading or completion."),
+        spec!("library_search", "Library search", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryListArgs, "Search titles, authors, tags and clippings, with source references."),
+        spec!("library_get_book", "Library get book", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read book metadata and highlights with references."),
+        spec!("library_get_progress", "Library get progress", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Show explicitly recorded progress; unknown stays unknown."),
+        spec!("library_get_highlights", "Library get highlights", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read highlights, notes and bookmarks with page/location references."),
+        spec!("library_get_recent_reading", "Library get recent reading", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryRecentArgs, "Recent highlights and owner reading changes. Stock Kindle sessions are unavailable."),
+        spec!("library_get_brief", "Library get brief", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read generated briefs and their highlight references; never attribute them to the owner."),
+        spec!("library_find_related_notes", "Library find related notes", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read Obsidian notes indexed as referring to a book, cited as [obsidian:<vault>/<path>#L<line>]. Mentions are relations, not reading evidence."),
+        spec!("library_sync_status", "Library sync status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs, "Show the last imports and library counts."),
+        spec!("library_generate_brief", "Library generate brief", Scope::Write, ro = false, destructive = false, idempotent = true, LibraryBookArgs, "Generate an extractive brief from highlights, with citations. Model briefs are not implemented."),
+
     ]
 }
 
@@ -510,7 +602,7 @@ impl Tools<'_> {
             "sessionId": session,
             "clientMessageId": uuid::Uuid::new_v4().to_string(),
             "channel": "web",
-            // Ignored by secretary-server today (see the TODO in backend::chat).
+            // Lucina derives these timeline tags from the session id and message prefix.
             "meta": { "via": "mcp", "caller": self.caller.name },
         });
         let r = self.app.backend.chat(&body).await?;
@@ -897,6 +989,144 @@ impl Tools<'_> {
         }
     }
 
+    pub async fn tasks_list(&self, args: &JsonObject) -> ToolResult {
+        let a: TasksListArgs = parse(args)?;
+        let view = a
+            .view
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("today")
+            .to_lowercase();
+        let mut q: Vec<(&str, String)> = Vec::new();
+        let query = match a.query.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+            Some(x) => Some(check_text("query", x, 300)?),
+            None => None,
+        };
+        match (
+            view.as_str(),
+            a.project
+                .as_deref()
+                .map(str::trim)
+                .filter(|x| !x.is_empty()),
+        ) {
+            (_, Some(p)) => {
+                let p = check_text("project", p, 120)?;
+                q.push(("view", "filter".into()));
+                q.push(("query", format!("#{p}")));
+            }
+            ("search", _) => {
+                q.push(("view", "search".into()));
+                q.push((
+                    "query",
+                    query
+                        .clone()
+                        .ok_or_else(|| bad("view \"search\" needs `query`"))?,
+                ));
+            }
+            ("today" | "upcoming" | "inbox" | "completed", _) if query.is_none() => {
+                q.push(("view", view.clone()));
+            }
+            (_, _) if query.is_some() => {
+                q.push(("view", "filter".into()));
+                q.push(("query", query.clone().unwrap_or_default()));
+            }
+            _ => {
+                return Err(bad(
+                    "`view` must be today, upcoming, inbox, completed or search",
+                ))
+            }
+        }
+        let r = self.app.backend.get("/v1/tasks/state", &q).await?;
+        Ok(format::tasks(&r))
+    }
+
+    async fn task_command(&self, command: Value) -> Result<Value, ToolError> {
+        let body = json!({"op_id": format!("mcp-{}", uuid::Uuid::new_v4()), "command": command});
+        match self.app.backend.post("/v1/tasks/command", &body).await {
+            Ok(v) => Ok(v),
+            Err(e) if e.code == "invalid_command" => {
+                Err(bad(format!("Secretary refused it: {}", e.message)))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub async fn task_add(&self, args: &JsonObject) -> ToolResult {
+        let a: TaskAddArgs = parse(args)?;
+        let text = check_text("text", &a.text, 800)?;
+        let mut cmd = json!({"type": "quick_add", "text": text});
+        if let Some(d) = a.due.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+            cmd["default_due"] = json!(check_text("due", d, 100)?);
+        }
+        let r = self.task_command(cmd).await?;
+        tracing::info!(target: "secretary_mcp::audit", event = "task_add", caller = %self.caller.name);
+        Ok(format::task_added(&r))
+    }
+
+    pub async fn task_complete(&self, args: &JsonObject) -> ToolResult {
+        let a: TaskCompleteArgs = parse(args)?;
+        let id = match (
+            a.id.as_deref().map(str::trim).filter(|x| !x.is_empty()),
+            a.title.as_deref().map(str::trim).filter(|x| !x.is_empty()),
+        ) {
+            (Some(id), _) => {
+                if !id_ok(id) {
+                    return Err(bad("`id` is not a task id"));
+                }
+                id.to_owned()
+            }
+            (None, Some(words)) => {
+                let words = check_text("title", words, 200)?;
+                let today = self
+                    .app
+                    .backend
+                    .get("/v1/tasks/state", &[("view", "today".into())])
+                    .await?;
+                let mut hits = format::task_matches(&today, &words);
+                if hits.is_empty() {
+                    let all = self
+                        .app
+                        .backend
+                        .get(
+                            "/v1/tasks/state",
+                            &[("view", "search".into()), ("query", words.clone())],
+                        )
+                        .await?;
+                    hits = format::task_matches(&all, &words);
+                }
+                match hits.len() {
+                    0 => {
+                        return Err(bad(format!(
+                            "No open task matches \"{words}\". tasks_list shows them with ids."
+                        )))
+                    }
+                    1 => hits.remove(0).0,
+                    _ => {
+                        let list: Vec<String> = hits
+                            .iter()
+                            .take(8)
+                            .map(|(id, c)| format!("\"{c}\" [id {id}]"))
+                            .collect();
+                        return Err(bad(format!(
+                            "Several tasks match \"{words}\": {}. Call again with the id.",
+                            list.join(", ")
+                        )));
+                    }
+                }
+            }
+            (None, None) => {
+                return Err(bad(
+                    "Give the task `id` (from tasks_list) or words of its `title`.",
+                ))
+            }
+        };
+        let r = self
+            .task_command(json!({"type": "complete", "task_id": id}))
+            .await?;
+        tracing::info!(target: "secretary_mcp::audit", event = "task_complete", id = %id, caller = %self.caller.name);
+        Ok(format::task_completed(&r, &id))
+    }
+
     pub async fn gym(&self, args: &JsonObject) -> ToolResult {
         let a: GymArgs = parse(args)?;
         let n = a.workouts.unwrap_or(5).clamp(1, 20);
@@ -1054,6 +1284,109 @@ impl Tools<'_> {
         }
     }
 
+    /// Library tools use typed arguments and the same authenticated backend as notes.
+    pub async fn library(&self, name: &str, args: &JsonObject) -> ToolResult {
+        let v = match name {
+            "library_list_books" | "library_search" => {
+                let a: LibraryListArgs = parse(args)?;
+                let mut q = vec![("limit", library_limit(a.limit)?.to_string())];
+                if let Some(words) = a.q {
+                    q.push(("q", check_text("q", &words, 200)?));
+                }
+                if let Some(kind) = a.kind {
+                    q.push((
+                        "kind",
+                        match kind {
+                            LibraryKind::Book => "book",
+                            LibraryKind::Dictionary => "dictionary",
+                            LibraryKind::Document => "document",
+                        }
+                        .into(),
+                    ));
+                }
+                if let Some(status) = a.status {
+                    q.push((
+                        "status",
+                        match status {
+                            LibraryStatus::Unknown => "unknown",
+                            LibraryStatus::NotStarted => "not_started",
+                            LibraryStatus::Reading => "reading",
+                            LibraryStatus::Completed => "completed",
+                            LibraryStatus::Abandoned => "abandoned",
+                        }
+                        .to_owned(),
+                    ));
+                }
+                if let Some(on) = a.on_kindle {
+                    q.push(("onKindle", on.to_string()));
+                }
+                self.app
+                    .backend
+                    .library_get(
+                        if name == "library_search" {
+                            "/v1/library/search"
+                        } else {
+                            "/v1/library/books"
+                        },
+                        &q,
+                    )
+                    .await?
+            }
+            "library_get_recent_reading" => {
+                let a: LibraryRecentArgs = parse(args)?;
+                let days = a.days.unwrap_or(7);
+                if !(1..=3650).contains(&days) {
+                    return Err(bad("days must be 1-3650"));
+                }
+                self.app
+                    .backend
+                    .library_get("/v1/library/recent", &[("days", days.to_string())])
+                    .await?
+            }
+            "library_sync_status" => {
+                let _: NoArgs = parse(args)?;
+                self.app
+                    .backend
+                    .library_get("/v1/library/sync", &[])
+                    .await?
+            }
+            _ => {
+                let a: LibraryBookArgs = parse(args)?;
+                library_id(&a.id)?;
+                let mut q = vec![("limit", library_limit(a.limit)?.to_string())];
+                if let Some(words) = a.q {
+                    q.push(("q", check_text("q", &words, 200)?));
+                }
+                let path = format!("/v1/library/books/{}", seg(&a.id));
+                if name == "library_generate_brief" {
+                    let generated = self.app.backend.library_brief(&a.id).await?;
+                    let book = self.app.backend.library_get(&path, &[]).await?;
+                    return Ok(format_library_brief(&a.id, &generated, &book));
+                }
+                if name == "library_find_related_notes" {
+                    let v = self
+                        .app
+                        .backend
+                        .library_get(&format!("{path}/notes"), &[("limit", q[0].1.clone())])
+                        .await?;
+                    return Ok(format_related_notes(&a.id, &v));
+                }
+                if name == "library_get_highlights" {
+                    let mut value = self
+                        .app
+                        .backend
+                        .library_get(&format!("{path}/highlights"), &q)
+                        .await?;
+                    value["bookId"] = json!(a.id);
+                    value
+                } else {
+                    self.app.backend.library_get(&path, &[]).await?
+                }
+            }
+        };
+        Ok(format_library(name, &v))
+    }
+
     pub async fn notes_search(&self, args: &JsonObject) -> ToolResult {
         let a: NotesSearchArgs = parse(args)?;
         let limit = a.limit.unwrap_or(20).clamp(1, 50);
@@ -1078,5 +1411,275 @@ impl Tools<'_> {
             None
         };
         Ok(format::status(&health, token, self.caller, self.app))
+    }
+}
+
+/// Library ids are a single path segment with a fixed digest length.
+fn library_id(id: &str) -> Result<(), ToolError> {
+    if id.len() != 19
+        || !id.starts_with("bk_")
+        || !id.as_bytes()[3..]
+            .iter()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c))
+    {
+        return Err(bad("id must be bk_ followed by 16 lowercase hex digits"));
+    }
+    Ok(())
+}
+fn library_limit(n: Option<u32>) -> Result<u32, ToolError> {
+    let n = n.unwrap_or(20);
+    if !(1..=50).contains(&n) {
+        return Err(bad("limit must be 1-50"));
+    }
+    Ok(n)
+}
+fn library_str<'a>(v: &'a Value, k: &str) -> &'a str {
+    v.get(k).and_then(Value::as_str).unwrap_or("unknown")
+}
+fn library_cite(id: &str, h: &Value) -> String {
+    let mut c = id.to_owned();
+    if let Some(p) = h.get("page").and_then(Value::as_str) {
+        c.push_str(&format!(" p.{p}"));
+    }
+    if let Some(l) = h.get("location").filter(|l| !l.is_null()) {
+        c.push_str(&format!(" loc {}-{}", l["start"], l["end"]));
+    }
+    format!(
+        "[{c}, {}]",
+        h.get("source").and_then(Value::as_str).unwrap_or("library")
+    )
+}
+fn library_quote(v: &Value) -> String {
+    library_str(v, "text").chars().take(600).collect()
+}
+fn format_library_brief(id: &str, brief: &Value, book: &Value) -> String {
+    let mut out = format!(
+        "Generated {} brief (not the owner's words):\n",
+        library_str(brief, "kind")
+    );
+    if let Some(ids) = brief["basedOn"].as_array() {
+        for hid in ids {
+            if let Some(h) = book["highlights"]
+                .as_array()
+                .and_then(|hs| hs.iter().find(|h| h["id"] == *hid))
+            {
+                out.push_str(&format!("{} {}\n", library_quote(h), library_cite(id, h)));
+            }
+        }
+    }
+    if out.lines().count() == 1 {
+        out.push_str(&format!("No highlights available. [{id}, library]"));
+    }
+    out
+}
+/// Indexed Obsidian references with one citation each; says plainly when none exist.
+fn format_related_notes(id: &str, v: &Value) -> String {
+    let notes = v["notes"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let vaults = v["indexedVaults"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    if notes.is_empty() {
+        if vaults.is_empty() {
+            return format!("No related notes: no Obsidian vault has been indexed, so relationships are unknown. [{id}, library]");
+        }
+        let names: Vec<String> = vaults
+            .iter()
+            .map(|x| {
+                format!(
+                    "{} at {}",
+                    library_str(x, "vault"),
+                    library_str(x, "generatedAt")
+                )
+            })
+            .collect();
+        return format!(
+            "No indexed Obsidian note refers to this book (indexed: {}). [{id}, library]",
+            names.join(", ")
+        );
+    }
+    let mut out = String::from(
+        "Obsidian notes that refer to this book (relations from the owner's notes; a mention is not evidence of reading):\n",
+    );
+    for n in notes.iter().take(20) {
+        out.push_str(&format!(
+            "- {} ({}): \"{}\" [obsidian:{}/{}#L{}]\n",
+            library_str(n, "noteTitle"),
+            library_str(n, "how"),
+            n["excerpt"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(240)
+                .collect::<String>(),
+            library_str(n, "vault"),
+            library_str(n, "notePath"),
+            n["line"].as_u64().unwrap_or(0)
+        ));
+    }
+    let total = v["total"].as_u64().unwrap_or(notes.len() as u64);
+    if total > notes.len().min(20) as u64 {
+        out.push_str(&format!(
+            "Showing {} of {total} references.\n",
+            notes.len().min(20)
+        ));
+    }
+    out
+}
+fn format_library(name: &str, v: &Value) -> String {
+    let mut out = String::new();
+    if name == "library_sync_status" {
+        return format!("Library sync: {v} [library, imports log]");
+    }
+    if let Some(b) = v.get("book") {
+        let id = library_str(b, "id");
+        match name {
+            "library_get_progress" => {
+                let progress = if b["progress"].is_null() {
+                    "unknown".into()
+                } else {
+                    b["progress"].to_string()
+                };
+                return format!("{}: progress {progress}; status {}. Reading sessions unavailable on stock Kindle. [{id}, library]",library_str(b,"title"),library_str(b,"status"));
+            }
+            "library_get_brief" => {
+                if let Some(briefs) = b["briefs"].as_array() {
+                    for brief in briefs.iter().rev().take(3) {
+                        out.push_str(&format_library_brief(id, brief, v));
+                    }
+                }
+                if out.is_empty() {
+                    return format!("No generated brief. [{id}, library]");
+                }
+                return out;
+            }
+            _ => {
+                let progress = if b["progress"].is_null() {
+                    "unknown".into()
+                } else {
+                    b["progress"].to_string()
+                };
+                out.push_str(&format!(
+                    "{} — {}; status {}; progress {progress}. [{id}, library]\n",
+                    library_str(b, "title"),
+                    b["authors"],
+                    library_str(b, "status")
+                ));
+            }
+        }
+    }
+
+    for key in ["books", "results", "highlights", "changes"] {
+        if let Some(rows) = v[key].as_array() {
+            for r in rows.iter().take(20) {
+                let id = r
+                    .get("bookId")
+                    .or_else(|| r.get("id"))
+                    .and_then(Value::as_str)
+                    .or_else(|| v["book"]["id"].as_str())
+                    .or_else(|| v["bookId"].as_str())
+                    .unwrap_or("unknown");
+                let text = if key == "books" {
+                    format!(
+                        "{} — {}; status {}",
+                        library_str(r, "title"),
+                        r["authors"],
+                        library_str(r, "status")
+                    )
+                } else if key == "results" {
+                    library_str(r, "snippet").to_owned()
+                } else if key == "changes" {
+                    format!(
+                        "Status {}; progress {}",
+                        library_str(r, "status"),
+                        r["progress"]
+                    )
+                } else {
+                    format!(
+                        "{}{}",
+                        library_quote(r),
+                        r["note"]
+                            .as_str()
+                            .map(|n| format!(
+                                " (note: {})",
+                                n.chars().take(300).collect::<String>()
+                            ))
+                            .unwrap_or_default()
+                    )
+                };
+                out.push_str(&format!("{text} {}\n", library_cite(id, r)));
+            }
+            if rows.len() > 20 {
+                out.push_str("Showing first 20 results.\n");
+            }
+        }
+    }
+    if name == "library_get_recent_reading" {
+        out.push_str("Reading sessions unavailable on stock Kindle; reading time is unknown. [library, stock-kindle]\n");
+    }
+    if out.is_empty() {
+        out = "No library records found. [library]".into();
+    }
+    out
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+    #[test]
+    fn library_specs_and_validation() {
+        let tools: Vec<_> = specs()
+            .into_iter()
+            .filter(|s| s.name.starts_with("library_"))
+            .collect();
+        assert_eq!(tools.len(), 10);
+        for s in tools {
+            assert_eq!(
+                s.scope,
+                if s.name == "library_generate_brief" {
+                    Scope::Write
+                } else {
+                    Scope::Read
+                }
+            );
+        }
+        for s in ["../bad", "bk_aaa", "bk_0123456789abcdeg"] {
+            assert!(library_id(s).is_err());
+        }
+        assert!(library_id("bk_0123456789abcdef").is_ok());
+        assert!(library_limit(Some(0)).is_err());
+    }
+    #[test]
+    fn citations_and_unknowns() {
+        assert_eq!(
+            library_cite(
+                "bk_a",
+                &json!({"page":"12","location":{"start":170,"end":172},"source":"kindle-clippings"})
+            ),
+            "[bk_a p.12 loc 170-172, kindle-clippings]"
+        );
+        assert!(
+            format_related_notes("bk_a", &json!({"notes":[],"indexedVaults":[]}))
+                .contains("no Obsidian vault has been indexed")
+        );
+        assert!(format_related_notes(
+            "bk_a",
+            &json!({"notes":[],"indexedVaults":[{"vault":"Vault","generatedAt":"t"}]})
+        )
+        .contains("No indexed Obsidian note refers to this book (indexed: Vault at t)"));
+        let text = format_related_notes(
+            "bk_a",
+            &json!({"total":1,"notes":[{"vault":"Vault","notePath":"Ideas/A note.md","noteTitle":"A note","how":"mention","excerpt":"the book","line":7}],"indexedVaults":[]}),
+        );
+        assert!(
+            text.contains("- A note (mention): \"the book\" [obsidian:Vault/Ideas/A note.md#L7]"),
+            "{text}"
+        );
+        assert!(text.contains("not evidence of reading"));
+        assert!(format_library(
+            "library_get_progress",
+            &json!({"book":{"id":"bk_a","title":"Book","status":"unknown","progress":null}})
+        )
+        .contains("progress unknown"));
     }
 }

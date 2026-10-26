@@ -23,12 +23,21 @@
 //! | `SECRETARY_PUSH_ALLOW_HTTP` | `0` | `1`: accept `http://` push endpoints (local mock push services only) |
 //! | `SECRETARY_APNS_KEY_FILE`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`, `_ENV` | — | APNs for the native app; all three of file/key/team or none (see `notify::apns`) |
 //! | `SECRETARY_TIMEZONE` | `Europe/Copenhagen` | the owner's zone (calendar days, all-day events) |
+//! | `SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE` | — | file with the web Google Maps JS API key; enables the map on the deals map |
+//! | `SECRETARY_GOOGLE_MAPS_IOS_KEY_FILE` | — | file with the iOS Google Maps SDK key; forwarded for the native app |
+//! | `SECRETARY_GOOGLE_MAPS_MAP_ID` | — | cloud map id (Cloud-based Maps styling) for the deals map |
 //! | `SECRETARY_GOOGLE_CLIENT_ID_FILE` | — | Google OAuth client id (one line); with the secret file, enables Google in Links |
 //! | `SECRETARY_GOOGLE_CLIENT_SECRET_FILE` | — | Google OAuth client secret (one line, 0600) |
 //! | `SECRETARY_GOOGLE_REDIRECT_URI` | `https://getsecretary.tech/v1/links/google/callback` | must be registered on the OAuth client |
 //! | `SECRETARY_CALENDAR_SYNC_SECS` | `300` | background sync of Google and ICS calendars; `0` turns it off |
 //! | `SECRETARY_MCP_STATUS_URL` | `http://127.0.0.1:8810/internal/status` | secretary-mcp's client list (AI clients in Links) |
 //! | `SECRETARY_MCP_STATUS_TOKEN_FILE` | — | the shared status token (same file content as secretary-mcp's) |
+//! | `SECRETARY_TODOIST_SYNC_SECS` | `90` | background Todoist sync (plus on demand after edits); `0` turns it off, else at least 30 |
+//! | `SECRETARY_TODOIST_CLIENT_ID_FILE` | — | Todoist OAuth app client id; with the secret file, Links offers "Connect" (else only the personal token) |
+//! | `SECRETARY_TODOIST_CLIENT_SECRET_FILE` | — | Todoist OAuth app client secret (one line, 0600) |
+//! | `SECRETARY_TODOIST_REDIRECT_URI` | `https://getsecretary.tech/v1/links/todoist/callback` | must match the app's OAuth redirect URL |
+//! | `SECRETARY_TODOIST_API_URL` | `https://api.todoist.com` | Todoist API origin (tests point it at a mock) |
+//! | `SECRETARY_TODOIST_AUTH_URL` | `https://app.todoist.com` | Todoist authorize origin |
 
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
@@ -50,6 +59,30 @@ pub struct UpstreamConfig {
     pub legacy: Option<String>,
     pub services: Option<String>,
     pub catalog: Option<PathBuf>,
+}
+
+/// Client-side Google Maps keys for the deals map. These are *client* keys,
+/// restricted by referrer (web) / bundle id (iOS) in Google Cloud, so sending
+/// them to an authenticated device is intended — unlike server secrets, they
+/// appear in the page's script URL anyway. `Debug` never prints them.
+#[derive(Clone, Default)]
+pub struct MapsKeys {
+    /// `SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE`: the Maps JavaScript API key.
+    pub web: Option<String>,
+    /// `SECRETARY_GOOGLE_MAPS_IOS_KEY_FILE`: the iOS SDK key (forwarded).
+    pub ios: Option<String>,
+    /// `SECRETARY_GOOGLE_MAPS_MAP_ID`: the cloud map id (styling), plain env.
+    pub map_id: Option<String>,
+}
+
+impl std::fmt::Debug for MapsKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MapsKeys")
+            .field("web", &self.web.as_ref().map(|_| "<set>"))
+            .field("ios", &self.ios.as_ref().map(|_| "<set>"))
+            .field("map_id", &self.map_id)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -84,10 +117,14 @@ pub struct Config {
     pub timezone: chrono_tz::Tz,
     /// `None` without both Google client files: Google shows as unavailable.
     pub google: Option<crate::google::GoogleConfig>,
+    /// Client-side Google Maps keys (transparent on device = harmless).
+    pub maps: MapsKeys,
     pub calendar_sync_every: Duration,
     pub mcp_status: Option<crate::links::McpStatusConfig>,
     /// Tests only: allow `http://` and local ICS URLs.
     pub ics_allow_local: bool,
+    /// Todoist (Tasks): API origin, OAuth app, sync interval.
+    pub todoist: crate::todoist::TodoistConfig,
 }
 
 impl std::fmt::Debug for Config {
@@ -141,9 +178,11 @@ impl Config {
             notify: crate::notify::NotifyConfig::default(),
             timezone: chrono_tz::Europe::Copenhagen,
             google: None,
+            maps: MapsKeys::default(),
             calendar_sync_every: Duration::from_secs(300),
             mcp_status: None,
             ics_allow_local: false,
+            todoist: crate::todoist::TodoistConfig::default(),
         }
     }
 
@@ -247,6 +286,15 @@ impl Config {
             (None, None) => {}
             _ => bail!("set both SECRETARY_GOOGLE_CLIENT_ID_FILE and SECRETARY_GOOGLE_CLIENT_SECRET_FILE, or neither"),
         }
+        cfg.maps.web = get("SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE")
+            .map(|p| read_secret_file(&p, "SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE"))
+            .transpose()?;
+        cfg.maps.ios = get("SECRETARY_GOOGLE_MAPS_IOS_KEY_FILE")
+            .map(|p| read_secret_file(&p, "SECRETARY_GOOGLE_MAPS_IOS_KEY_FILE"))
+            .transpose()?;
+        if let Some(id) = get("SECRETARY_GOOGLE_MAPS_MAP_ID") {
+            cfg.maps.map_id = Some(id.trim().to_owned());
+        }
         if let Some(v) = get("SECRETARY_CALENDAR_SYNC_SECS") {
             let n: u64 = v
                 .parse()
@@ -262,6 +310,36 @@ impl Config {
                     .unwrap_or_else(|| "http://127.0.0.1:8810/internal/status".into()),
                 token: read_secret_file(&path, "SECRETARY_MCP_STATUS_TOKEN_FILE")?,
             });
+        }
+        if let Some(v) = get("SECRETARY_TODOIST_SYNC_SECS") {
+            let n: u64 = v
+                .parse()
+                .with_context(|| format!("SECRETARY_TODOIST_SYNC_SECS={v}: expected seconds"))?;
+            if n != 0 && n < 30 {
+                bail!("SECRETARY_TODOIST_SYNC_SECS={v}: 0 (off) or at least 30");
+            }
+            cfg.todoist.sync_every = Duration::from_secs(n);
+        }
+        if let Some(u) = get("SECRETARY_TODOIST_API_URL") {
+            cfg.todoist.api_base = u.trim_end_matches('/').to_owned();
+        }
+        if let Some(u) = get("SECRETARY_TODOIST_AUTH_URL") {
+            cfg.todoist.auth_base = u.trim_end_matches('/').to_owned();
+        }
+        match (
+            get("SECRETARY_TODOIST_CLIENT_ID_FILE"),
+            get("SECRETARY_TODOIST_CLIENT_SECRET_FILE"),
+        ) {
+            (Some(id), Some(secret)) => {
+                cfg.todoist.oauth = Some(crate::todoist::TodoistOAuth {
+                    client_id: read_secret_file(&id, "SECRETARY_TODOIST_CLIENT_ID_FILE")?,
+                    client_secret: read_secret_file(&secret, "SECRETARY_TODOIST_CLIENT_SECRET_FILE")?,
+                    redirect_uri: get("SECRETARY_TODOIST_REDIRECT_URI")
+                        .unwrap_or_else(|| crate::todoist::DEFAULT_REDIRECT.into()),
+                });
+            }
+            (None, None) => {}
+            _ => bail!("set both SECRETARY_TODOIST_CLIENT_ID_FILE and SECRETARY_TODOIST_CLIENT_SECRET_FILE, or neither"),
         }
         let upstream = UpstreamConfig {
             legacy: get("SECRETARY_UPSTREAM_LEGACY"),
@@ -323,6 +401,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tok = dir.path().join("tok");
         std::fs::write(&tok, "  abc\n").unwrap();
+        let web_key = dir.path().join("maps-web");
+        std::fs::write(&web_key, " sand-9g86fdlxfd \n").unwrap();
         let env: HashMap<&str, String> = [
             ("SECRETARY_BIND", "0.0.0.0:9000".to_owned()),
             (
@@ -330,6 +410,11 @@ mod tests {
                 tok.to_string_lossy().into_owned(),
             ),
             ("SECRETARY_UPSTREAM_LEGACY", "http://up".to_owned()),
+            (
+                "SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE",
+                web_key.to_string_lossy().into_owned(),
+            ),
+            ("SECRETARY_GOOGLE_MAPS_MAP_ID", " island ".to_owned()),
         ]
         .into_iter()
         .collect();
@@ -337,16 +422,31 @@ mod tests {
         assert_eq!(cfg.bind.port(), 9000);
         assert_eq!(cfg.lucina_token.as_deref(), Some("abc"));
         assert_eq!(cfg.lucina_url, DEFAULT_LUCINA_URL);
-        assert!(cfg.upstream.unwrap().services.is_none());
+        assert!(cfg.upstream.clone().unwrap().services.is_none());
+        assert_eq!(cfg.maps.web.as_deref(), Some("sand-9g86fdlxfd"));
+        assert!(cfg.maps.ios.is_none());
+        assert_eq!(cfg.maps.map_id.as_deref(), Some("island"));
+        assert!(
+            !format!("{cfg:?}").contains("sand"),
+            "the Maps key never reaches Debug"
+        );
         assert!(!format!("{:?}", Config::new("x", Some("abc".into()))).contains("abc"));
 
         let none = Config::from_lookup(|_| None).unwrap();
         assert!(none.lucina_token.is_none() && none.upstream.is_none());
+        assert!(none.maps.web.is_none() && none.maps.ios.is_none() && none.maps.map_id.is_none());
         std::fs::write(&tok, "\n").unwrap();
         let path = tok.to_string_lossy().into_owned();
         assert!(
             Config::from_lookup(|k| (k == "SECRETARY_LUCINA_TOKEN_FILE").then(|| path.clone()))
                 .is_err()
+        );
+        // a configured key file that holds nothing is a config error
+        std::fs::write(&web_key, "\n").unwrap();
+        assert!(
+            Config::from_lookup(|k| (k == "SECRETARY_GOOGLE_MAPS_WEB_KEY_FILE")
+                .then(|| web_key.to_string_lossy().into_owned()))
+            .is_err()
         );
     }
 }

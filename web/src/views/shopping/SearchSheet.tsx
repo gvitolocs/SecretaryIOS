@@ -142,6 +142,8 @@ export function SearchSheet(props: { act: (fn: () => void) => void }) {
                         flipId={`search:${item.id}`}
                         kind="recent"
                         icon={itemIcon(item)}
+                        catalogId={item.catalogId}
+                        section={item.section}
                         name={item.name}
                         spec={item.spec}
                         label={t("recentItem", { name: item.name })}
@@ -174,6 +176,7 @@ export function SearchSheet(props: { act: (fn: () => void) => void }) {
                       flipId={`cat:${cat.id}`}
                       kind="catalog"
                       icon={cat.icon}
+                      catalogId={cat.id}
                       name={name()}
                       spec={onList() ? row()?.spec : undefined}
                       selected={onList()}

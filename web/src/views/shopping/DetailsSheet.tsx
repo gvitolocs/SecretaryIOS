@@ -4,6 +4,7 @@ import { OTHER_SECTION } from "../../lib/shoppingCatalog";
 import { relativeTime, sourceName, SPEC_CHIPS } from "../../lib/shoppingI18n";
 import { THEME_ICON } from "../../lib/shoppingOps";
 import { deleteItem, editItem, itemIcon, itemSection, moveItem, shop, t } from "../../state/shopping";
+import { ItemIcon, SectionIcon } from "./ItemIcon";
 
 interface Form {
   name: string;
@@ -117,7 +118,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
             <div class="bring-sheet-grip" aria-hidden="true" />
             <header class="bring-details-head">
               <span class="bring-details-icon" aria-hidden="true">
-                {itemIcon(it()) ?? "🛒"}
+                <ItemIcon icon={itemIcon(it())} catalogId={it().catalogId} name={it().name} section={it().section} />
               </span>
               <h2 id="bring-details-title" class="bring-details-name">
                 {form.name || it().name}
@@ -266,7 +267,9 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
                           setPanel(null);
                         }}
                       >
-                        <span aria-hidden="true">{s.icon}</span>
+                        <span aria-hidden="true">
+                          <SectionIcon id={s.id} icon={s.icon} />
+                        </span>
                         <span>{s.name}</span>
                       </button>
                     )}

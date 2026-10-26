@@ -126,6 +126,10 @@ export interface SearchIndex {
   lang: string;
   entries: Indexed[];
   byId: Map<string, CatalogItem>;
+  /** Folded names in every language -> item (first item wins). */
+  byName: Map<string, CatalogItem>;
+  /** Folded aliases -> item (first item wins). */
+  byAlias: Map<string, CatalogItem>;
 }
 
 export function buildIndex(catalog: Catalog, lang: string): SearchIndex {
@@ -143,11 +147,86 @@ export function buildIndex(catalog: Catalog, lang: string): SearchIndex {
       aliases: [...new Set([...item.aliases.map(fold), ...others])].filter(Boolean),
     };
   });
-  return { lang, entries, byId: new Map(catalog.items.map((i) => [i.id, i])) };
+  const byName = new Map<string, CatalogItem>();
+  const byAlias = new Map<string, CatalogItem>();
+  const put = (map: Map<string, CatalogItem>, text: string, item: CatalogItem) => {
+    const key = fold(text);
+    if (key && !map.has(key)) map.set(key, item);
+  };
+  for (const item of catalog.items) {
+    put(byName, item.name, item);
+    for (const n of Object.values(item.names)) if (typeof n === "string") put(byName, n, item);
+  }
+  for (const item of catalog.items) for (const a of item.aliases) put(byAlias, a, item);
+  return { lang, entries, byId: new Map(catalog.items.map((i) => [i.id, i])), byName, byAlias };
+}
+
+/**
+ * The catalog item for a row's free text, for rows with no catalog id (added
+ * before the catalog, or by an old server): a name in any language, else an
+ * alias, after fold(). Exact matches only, no plurals or prefixes; the same
+ * rule as Lucina's read path. `exact` is true for a name hit.
+ */
+export function resolveByName(index: SearchIndex, text: string): { item: CatalogItem; exact: boolean } | null {
+  const q = fold(text);
+  if (!q) return null;
+  const named = index.byName.get(q);
+  if (named) return { item: named, exact: true };
+  const aliased = index.byAlias.get(q);
+  return aliased ? { item: aliased, exact: false } : null;
 }
 
 function words(text: string): string[] {
   return text.split(" ").filter(Boolean);
+}
+
+/** Shortest folded run of words a picture match may rest on ("te" or "is" alone never match). */
+const MIN_GUESS_CHARS = 3;
+/** Folded English and Danish names -> item, per index (head nouns come last in those languages). */
+const tailNames = new WeakMap<SearchIndex, Map<string, CatalogItem>>();
+
+function tailIndex(index: SearchIndex): Map<string, CatalogItem> {
+  let map = tailNames.get(index);
+  if (!map) {
+    map = new Map();
+    for (const { item } of index.entries) {
+      for (const lang of ["en", "da"]) {
+        const n = item.names[lang];
+        const key = n ? fold(n) : "";
+        if (key && !map.has(key)) map.set(key, item);
+      }
+    }
+    tailNames.set(index, map);
+  }
+  return map;
+}
+
+/**
+ * The catalog item a free-text name most likely shows, for its picture only (never to link a
+ * row): an exact name or alias, else the longest run of leading words that is one ("Pane di
+ * segale danese" -> rye bread, "Prosciutto crudo di Parma" -> prosciutto), else the longest
+ * run of trailing words that is an English or Danish name ("organic milk", "øko mælk").
+ */
+export function guessByName(index: SearchIndex, text: string): CatalogItem | null {
+  const q = fold(text);
+  if (!q) return null;
+  const exact = resolveByName(index, q);
+  if (exact) return exact.item;
+  const w = words(q);
+  for (let k = w.length - 1; k >= 1; k--) {
+    const head = w.slice(0, k).join(" ");
+    if (head.length < MIN_GUESS_CHARS) continue;
+    const hit = index.byName.get(head) ?? index.byAlias.get(head);
+    if (hit) return hit;
+  }
+  const tails = tailIndex(index);
+  for (let k = 1; k < w.length; k++) {
+    const tail = w.slice(k).join(" ");
+    if (tail.length < MIN_GUESS_CHARS) continue;
+    const hit = tails.get(tail);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** Lower is better; null = no match. */

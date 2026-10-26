@@ -15,6 +15,8 @@
 //   "job" / "order" / "book" / "image" -> reply with a job (queued -> running -> done)
 //   "remind"   -> schedule_reminder reply with a reminder object (no job)
 //   "jobfail"  -> a job that ends in error
+//   "inventario" / "calendario" / "widget" -> Lucina message format v1 replies (mock/rich.mjs)
+//   MOCK_RICH_BEFORE=1 seeds the owner's original "inventario" text wall (before the format)
 // Shopping: items whose name contains "stubborn" refuse PATCH (500), to test rollback.
 // Jobs: "image" in the message makes a generate_image job with an imageUrl.
 // POST /v1/_mock/lucina {"online": false} toggles Lucina's health (CSRF header needed).
@@ -35,6 +37,7 @@
 //   POST /v1/chat records the user message (channel from X-Secretary-Client) and Lucina's
 //   reply, and answers userItemId / lucinaItemId. "remind" also posts a reminder item 15 s later.
 //   POST /v1/_mock/timeline {channel, role, text, meta?} -> injects an item (CSRF header needed)
+//   POST /v1/proactive/outreach/{po_id}/feedback {action} -> 201 {feedback} (logged, not stored)
 //   MOCK_FAKE_TRAFFIC=1 posts a fake Telegram message (and Lucina's answer) every ~20 s.
 // Lucina stage (session needed, like the real server):
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
@@ -46,6 +49,11 @@
 //   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
 //   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
 //   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Maps (mock/maps.mjs): /v1/maps/config (tiles null unless MOCK_MAPS_TILES=<file.pmtiles>, then
+//   served with Range; MOCK_MAPS_ASSETS=<dir> serves fonts/ and sprites/), /v1/maps/geocode (a
+//   fixed table: "Folkehuset Møllestien", "Skejbygårdsvej 3"), and /v1/maps/routes (four modes).
+// Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
+//   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
 // Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
 //   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
@@ -53,7 +61,9 @@
 // that the UI degrades gracefully.
 
 import http from "node:http";
+import { handleMaps } from "./maps.mjs";
 import { addNotification, handleNotifications } from "./notifications.mjs";
+import { INVENTARIO_BEFORE, INVENTARIO_QUESTION, richMeta, richReply } from "./rich.mjs";
 import { randomUUID } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1398,6 +1408,11 @@ function seedTimeline() {
     [H - 30_000, { channel: "web", role: "lucina", text: "All quiet. Details: https://example.com/status" }],
   ];
   for (const [ago, fields] of recent) rows.push([now - ago, fields]);
+  if (process.env.MOCK_RICH_BEFORE === "1") {
+    // The owner's original 2026-10-22 reply: a markdown wall with a "Posso anche" footer.
+    rows.push([now - 20 * 60_000, { channel: "web", role: "user", text: INVENTARIO_QUESTION, meta: { via: "mcp", caller: "chatgpt" } }]);
+    rows.push([now - 20 * 60_000 + 9_000, { channel: "web", role: "lucina", text: INVENTARIO_BEFORE, meta: { via: "mcp", caller: "chatgpt" } }]);
+  }
   rows.sort((a, b) => a[0] - b[0]);
   for (const [at, fields] of rows) {
     const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
@@ -1673,6 +1688,11 @@ async function handleChat(req, res) {
       ...ids,
       reminder: { id: randomUUID(), text: message, dueAt, timeZone: "Europe/Rome", status: "pending", source: "secretary" },
     };
+  } else if (richReply(message)) {
+    // Lucina message format v1 (mock/rich.mjs): `reply` is the plain fallback.
+    const rich = richReply(message);
+    meta = richMeta(rich);
+    reply = { ...rich, action: /calendari|dentista/i.test(message) ? "calendar_confirm" : "reply", job: null, ...ids };
   } else {
     reply = { reply: lucinaReply(message), action: "reply", job: null, ...ids };
   }
@@ -1826,6 +1846,17 @@ async function route(req, res) {
     return send(res, 201, item);
   }
 
+  // Lucina's proactive outreach: feedback taps (the real server stores them for the engine).
+  const fb = path.match(/^\/v1\/proactive\/outreach\/(po_[0-9A-HJKMNP-TV-Z]{26})\/feedback$/);
+  if (fb && method === "POST") {
+    const body = await readJson(req);
+    if (!["useful", "not_now", "stop", "opened"].includes(body.action)) {
+      return send(res, 400, { error: { code: "bad_request", message: "action: one of useful, not_now, stop, opened" } });
+    }
+    console.log(`[mock] proactive feedback ${fb[1]} ${body.action}`);
+    return send(res, 201, { feedback: { id: `fb_${Date.now()}_mock`, outreachId: fb[1], action: body.action, at: Date.now(), device: "mock", source: "app" } });
+  }
+
   if (path === "/v1/_mock/gym/bump" && method === "POST") {
     gymState.revision += 1;
     return send(res, 200, { revision: gymState.revision });
@@ -1842,11 +1873,16 @@ async function route(req, res) {
     return send(res, 200, { down: mockServerDown });
   }
 
+  // Play URLs carry their own token (on p1 they skip the gateway's auth too).
+  if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
+  if (path.startsWith("/v1/media")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  if (handleMaps(req, res, url, path)) return;
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
+  if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
 
@@ -1941,6 +1977,28 @@ async function route(req, res) {
   }
 
   return fail(res, 404, "not_found", "Not found.");
+}
+
+// Tasks (docs/server-api.md, "Tasks"): proxied to a real secretary-server (its engine and
+// Todoist sync) when MOCK_TASKS_URL and MOCK_TASKS_TOKEN (a device token) are set; else 503.
+async function proxyTasks(req, res, url) {
+  const base = process.env.MOCK_TASKS_URL;
+  const token = process.env.MOCK_TASKS_TOKEN;
+  if (!base || !token) return fail(res, 503, "tasks_not_configured", "set MOCK_TASKS_URL and MOCK_TASKS_TOKEN to proxy /v1/tasks to secretary-server");
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  try {
+    const r = await fetch(`${base.replace(/\/+$/, "")}${url.pathname}${url.search}`, {
+      method: req.method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: req.method === "GET" ? undefined : Buffer.concat(chunks),
+    });
+    const text = await r.text();
+    res.writeHead(r.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(text);
+  } catch {
+    fail(res, 502, "tasks_unreachable", "secretary-server is not reachable");
+  }
 }
 
 const server = http.createServer((req, res) => {

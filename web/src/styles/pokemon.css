@@ -1,0 +1,28 @@
+/* Lucina's Pokémon game (views/Pokemon.tsx). */
+.pokemon-page { max-width: 640px; margin: 0 auto; padding: var(--lu-space-sm, 8px) var(--lu-gutter, 16px) var(--lu-space-xxl, 28px); }
+.pokemon-page h1 { margin: 4px 0 12px; }
+.pokemon-page h2 { font-size: 1.1rem; margin: 20px 0 8px; }
+.pokemon-back { display: inline-flex; align-items: center; gap: 4px; color: var(--lu-text-secondary); text-decoration: none; }
+.pokemon-card { background: var(--lu-card); border-radius: var(--lu-radius-card, 16px); padding: 16px; list-style: none; margin: 0; }
+.pokemon-screen { background: #000; border-radius: 8px; overflow: hidden; aspect-ratio: 160 / 144; }
+.pokemon-screen img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.pokemon-status { display: flex; align-items: center; gap: 6px; margin: 12px 0 0; flex-wrap: wrap; }
+.pokemon-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lu-text-tertiary); }
+.pokemon-dot[data-running="yes"] { background: var(--lu-positive); }
+.pokemon-badges { margin-left: auto; color: var(--lu-text-secondary); }
+.pokemon-muted { color: var(--lu-text-secondary); }
+.pokemon-objective { margin: 8px 0 0; }
+.pokemon-error { color: var(--lu-negative); margin: 8px 0 0; }
+.pokemon-actions { display: flex; gap: 8px; margin-top: 12px; }
+.pokemon-actions .button { flex: 1; }
+.pokemon-team li { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 8px 0; }
+.pokemon-team li + li { border-top: 1px solid var(--lu-separator); }
+.pokemon-mon { display: flex; gap: 8px; align-items: baseline; }
+.pokemon-level { margin-left: auto; }
+.pokemon-hp { grid-column: 1; height: 6px; background: var(--lu-field); border-radius: 3px; overflow: hidden; align-self: center; }
+.pokemon-hp-bar { display: block; height: 100%; background: var(--lu-positive); }
+.pokemon-hp-bar[data-level="warn"] { background: var(--lu-warning); }
+.pokemon-hp-bar[data-level="low"] { background: var(--lu-negative); }
+.pokemon-hp-text { font-variant-numeric: tabular-nums; font-size: 0.8rem; }
+.pokemon-notes li { padding: 6px 0; }
+.pokemon-notes li + li { border-top: 1px solid var(--lu-separator); }
