@@ -483,10 +483,11 @@ struct GalleryViewer: View {
         }
         .onAppear {
             #if DEBUG || SCREENSHOTS
-            // `-SecretaryGalleryAutoPlay YES` (device checks): press play on the opened video.
+            // `-SecretaryGalleryAutoPlay YES` (device checks): press play on the opened video, muted.
             if UserDefaults.standard.bool(forKey: "SecretaryGalleryAutoPlay"), start.isVideo || start.isAudio {
                 Task { @MainActor in
                     try? await Task.sleep(for: .seconds(2))
+                    media.player.isMuted = true
                     play(start)
                 }
             }
