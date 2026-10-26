@@ -482,6 +482,15 @@ struct GalleryViewer: View {
             }
         }
         .onAppear {
+            #if DEBUG || SCREENSHOTS
+            // `-SecretaryGalleryAutoPlay YES` (device checks): press play on the opened video.
+            if UserDefaults.standard.bool(forKey: "SecretaryGalleryAutoPlay"), start.isVideo || start.isAudio {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    play(start)
+                }
+            }
+            #endif
             meter.start()
             prefetchNeighbours(of: start.id)
             autoSwipe()
@@ -515,6 +524,13 @@ struct GalleryViewer: View {
             Text("It stays on this iPhone. The server keeps it in the trash for 30 days.")
         }
         .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
+    }
+
+    private func play(_ it: GalleryItem) {
+        let playable = store.items.filter { $0.isVideo || $0.isAudio }
+        let queue = playable.map(\.mediaItem)
+        media.play(queue, startAt: playable.firstIndex { $0.id == it.id } ?? 0)
+        media.presented = true
     }
 
     /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
@@ -582,12 +598,7 @@ struct GalleryViewer: View {
                         .contentShape(Rectangle())
                         .onTapGesture { chromeHidden.toggle() }
                 }
-                Button {
-                    let playable = store.items.filter { $0.isVideo || $0.isAudio }
-                    let queue = playable.map(\.mediaItem)
-                    media.play(queue, startAt: playable.firstIndex { $0.id == it.id } ?? 0)
-                    media.presented = true
-                } label: {
+                Button { play(it) } label: {
                     Image(systemName: "play.circle.fill").font(.system(size: 72)).foregroundStyle(.white).shadow(radius: 6)
                 }
                 .accessibilityIdentifier("galleryPlay")

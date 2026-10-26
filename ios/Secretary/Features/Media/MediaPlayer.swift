@@ -203,6 +203,7 @@ final class MediaPlayer {
         } catch {
             guard current?.id == item.id else { return }
             self.error = error.localizedDescription
+            localPlayLog.error("GalleryImages player failed id=\(item.id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
