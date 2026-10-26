@@ -950,3 +950,28 @@ async fn shopping_routes() {
         .await;
     assert_eq!(b["error"], "default_list");
 }
+
+#[tokio::test]
+async fn scheduler_health_reports_failures_without_failing_health() {
+    let h = harness(chat_script("x"), |c| c.scheduler = true).await;
+    {
+        let mut health = h.state.scheduler_health.lock().unwrap();
+        health.last_tick_at = Some("2026-10-26T12:00:00.000Z".into());
+        health.last_error = Some("delivery uncertain; not resent: read timeout".into());
+        health.delivered = 2;
+        health.not_delivered = 3;
+        health.uncertain = 1;
+    }
+    let response = h
+        .http
+        .get(format!("{}/health", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(
+        body["scheduler"],
+        json!({"enabled":true,"lastTickAt":"2026-10-26T12:00:00.000Z","lastError":"delivery uncertain; not resent: read timeout","delivered":2,"notDelivered":3,"uncertain":1})
+    );
+}

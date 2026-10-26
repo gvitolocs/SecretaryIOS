@@ -6,6 +6,7 @@ license.workspace = true
 description = "Lucina's file stores: owner timeline (JSONL), reminders, jobs; Node-compatible formats"
 
 [dependencies]
+fs4 = { workspace = true }
 lucina-secrets = { path = "../lucina-secrets", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }

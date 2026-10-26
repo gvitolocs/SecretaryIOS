@@ -49,6 +49,7 @@ impl Answer {
 }
 
 /// secretary-server with Lucina's service token.
+#[derive(Clone)]
 pub struct Secretary {
     pub http: reqwest::Client,
     pub url: Option<String>,

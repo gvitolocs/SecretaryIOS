@@ -105,6 +105,8 @@ pub struct Config {
     pub node_token: Option<String>,
     pub scheduler: bool,
     pub scheduler_poll: Duration,
+    pub scheduler_initial_delay: Duration,
+    pub telegram_token: Option<String>,
     // owner
     pub owner_chat_id: Option<String>,
     pub owner_peer_id: String,
@@ -407,6 +409,21 @@ impl Config {
             node_token: get("LUCINA_NODE_TOKEN_FILE").and_then(|p| read_secret_file(&p)),
             scheduler: flag("LUCINA_SCHEDULER", false),
             scheduler_poll: Duration::from_millis(num("LUCINA_REMINDER_POLL_INTERVAL_MS", 60_000)),
+            scheduler_initial_delay: Duration::from_millis(num(
+                "LUCINA_REMINDER_INITIAL_DELAY_MS",
+                15_000,
+            )),
+            telegram_token: get("TELEGRAM_BOT_TOKEN_LUCINA")
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let path = get("LUCINA_TELEGRAM_TOKEN_FILE").or_else(|| {
+                        get("HOME").map(|h| {
+                            format!("{h}/.config/lucina-rs/telegram-bot-token-lucina.token")
+                        })
+                    })?;
+                    read_secret_file(&path)
+                }),
             owner_chat_id: get("LUCINA_OPERATOR_CHAT_ID")
                 .or_else(|| get("LUCINA_GMAIL_LEARN_CHAT_ID"))
                 .or_else(|| get("TELEGRAM_ALLOWED_CHAT_IDS").and_then(|v| first_csv(&v))),
@@ -512,6 +529,29 @@ mod tests {
         })
         .unwrap();
         assert_eq!(own.jobs_path, PathBuf::from("/elsewhere/jobs.json"));
+    }
+
+    #[test]
+    fn telegram_token_precedence_and_redacted_debug() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "  test-file-secret\n").unwrap();
+        let cfg = Config::from_lookup(|k| match k {
+            "LUCINA_TELEGRAM_TOKEN_FILE" => Some(path.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.telegram_token.as_deref(), Some("test-file-secret"));
+        assert!(!format!("{cfg:?}").contains("test-file-secret"));
+        let cfg = Config::from_lookup(|k| match k {
+            "LUCINA_TELEGRAM_TOKEN_FILE" => Some(path.to_string_lossy().into_owned()),
+            "TELEGRAM_BOT_TOKEN_LUCINA" => Some(" test-env-secret ".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.telegram_token.as_deref(), Some("test-env-secret"));
+        assert!(!format!("{cfg:?}").contains("test-env-secret"));
+        assert_eq!(cfg.scheduler_initial_delay, Duration::from_secs(15));
     }
 
     #[test]

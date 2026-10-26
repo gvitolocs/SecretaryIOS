@@ -335,6 +335,7 @@ async fn health(State(st): State<AppState>) -> Response {
             "tools": st.registry.names(),
             "memory": {"provider": "honcho", "mode": st.memory.mode().as_str(), "workspace": c.honcho.workspace_id},
             "reminders": {"enabled": c.reminders_enabled, "writer": st.writer.kind(), "scheduler": c.scheduler && c.reminders_writer == crate::WriterKind::Local},
+            "scheduler": st.scheduler_health.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "channels": {"telegram": false, "discord": false},
             "grocery": st.grocery.is_some(),
             "delegation": {"enabled": st.delegator.is_some()},

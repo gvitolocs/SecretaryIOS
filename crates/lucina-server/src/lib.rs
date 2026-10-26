@@ -23,6 +23,7 @@ pub mod otp;
 pub mod parity;
 pub mod planner;
 pub mod prompts;
+pub mod reminder_delivery;
 pub mod rich;
 pub mod secrets;
 pub mod share;
@@ -91,6 +92,7 @@ pub struct Inner {
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
+    pub scheduler_health: Arc<Mutex<lucina_store::scheduler::SchedulerHealth>>,
 }
 
 #[derive(Clone)]
@@ -336,6 +338,10 @@ impl AppState {
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),
+            scheduler_health: Arc::new(Mutex::new(lucina_store::scheduler::SchedulerHealth {
+                enabled: cfg.scheduler && cfg.reminders_writer == WriterKind::Local,
+                ..Default::default()
+            })),
             cfg,
         };
         Ok(Self(Arc::new(inner)))
@@ -378,16 +384,34 @@ impl AppState {
                 tracing::warn!("LUCINA_SCHEDULER=true ignored: reminders.json is owned by the Node Lucina (LUCINA_REMINDERS_WRITER=node)");
                 return;
             }
-            let sink = Arc::new(lucina_store::scheduler::TimelineSink {
+            let timeline = lucina_store::scheduler::TimelineSink {
                 timeline: self.timeline.clone(),
                 owner_chat_id: self.cfg.owner_chat_id.clone().unwrap_or_default(),
                 owner_peer_id: self.cfg.owner_peer_id.clone(),
-            });
+            };
+            let sink: Arc<dyn lucina_store::scheduler::ReminderSink> =
+                if let Some(token) = &self.cfg.telegram_token {
+                    Arc::new(reminder_delivery::TelegramReminderSink {
+                        bot: lucina_telegram::BotApi::new(token.clone()),
+                        runtime: tokio::runtime::Handle::current(),
+                        recent: self.recent.clone(),
+                        timeline,
+                        secretary: self.secretary.clone(),
+                        app_notify: self.cfg.app_notify,
+                    })
+                } else {
+                    tracing::warn!(
+                    "reminder scheduler has no Lucina Telegram token; using timeline-only delivery"
+                );
+                    Arc::new(timeline)
+                };
             lucina_store::scheduler::spawn(
                 self.reminders.clone(),
                 sink,
                 self.cfg.persona.clone(),
                 self.cfg.scheduler_poll,
+                self.cfg.scheduler_initial_delay,
+                self.scheduler_health.clone(),
             );
         }
     }
