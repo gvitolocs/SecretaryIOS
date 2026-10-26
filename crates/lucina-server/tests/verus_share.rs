@@ -386,7 +386,7 @@ mod kernel {
         if n == 0 {
             return Some(0);
         }
-        let tl = if n % 4 == 0 { 4 } else { n % 4 };
+        let tl = if n.is_multiple_of(4) { 4 } else { n % 4 };
         let p = n - tl;
         if !s[..p].iter().all(|&c| b64_sym(c)) {
             return None;
@@ -407,7 +407,9 @@ mod kernel {
         if !s[p..p + k].iter().all(|&c| b64_sym(c)) {
             return None;
         }
-        if k == 2 && b64_val(s[p + 1]) % 16 != 0 || k == 3 && b64_val(s[p + 2]) % 4 != 0 {
+        if k == 2 && !b64_val(s[p + 1]).is_multiple_of(16)
+            || k == 3 && !b64_val(s[p + 2]).is_multiple_of(4)
+        {
             return None;
         }
         Some(3 * (p / 4) + (k - 1))
@@ -677,7 +679,7 @@ const MIMES: &[&str] = &[
 ];
 
 fn as_static(k: &str) -> &'static str {
-    *kernel::KINDS
+    kernel::KINDS
         .iter()
         .find(|w| **w == k)
         .unwrap_or_else(|| panic!("{k:?} is not a kind"))
