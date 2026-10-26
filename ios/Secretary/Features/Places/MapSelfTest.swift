@@ -11,11 +11,13 @@ private let log = Logger(subsystem: "tech.getsecretary.app", category: "MapSelfT
 /// - `card`: a proactive message's `meta.place` through TimelineMeta, its PlaceCard geocoded, then
 ///   opened like a tap; checks the camera, the distance and the travel times;
 /// - `place`: the place screen for a place with coordinates (home);
-/// - `deals`: the deals map, its pin count once loaded.
+/// - `deals`: the deals map, its pin count once loaded;
+/// - `timeline`: the newest real chat message with a place (a `place` block or a proactive `meta.place`)
+///   from the server's timeline, its card opened like a tap, then the same checks as `card`.
 /// Each step writes `PASS …` or `FAIL <step> <reason>` to the log and to Documents/map-selftest.txt.
 enum MapSelfTest {
     static var mode: String? {
-        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route"].contains($0) ? $0 : nil }
+        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route", "timeline"].contains($0) ? $0 : nil }
     }
 
     /// A proactive message's meta (a calendar reminder with the event's place).
@@ -42,11 +44,13 @@ enum MapSelfTest {
     static let homeTest = Place(title: "Home test", coordinate: CLLocationCoordinate2D(latitude: 56.19633, longitude: 10.2011))
 
     @MainActor
-    static func run(mode: String, openRoute: (String) -> Void, show: (Place) -> Void) async {
+    static func run(mode: String, openRoute: (String) -> Void, timeline: (() async throws -> TimelinePage)? = nil,
+                    show: (Place) -> Void) async {
         let report = Report()
         report.line("START \(mode)")
         switch mode {
         case "card": await runCard(report, show: show)
+        case "timeline": await runTimeline(report, timeline: timeline, show: show)
         case "route":
             openRoute(sampleRoute)
             if await wait(45, until: { MapSelfTestProbe.shared.mapShown }) {
@@ -72,7 +76,6 @@ enum MapSelfTest {
 
     @MainActor
     private static func runCard(_ report: Report, show: (Place) -> Void) async {
-        let probe = MapSelfTestProbe.shared
         let meta: TimelineMeta
         do {
             meta = try JSONDecoder().decode(TimelineMeta.self, from: Data(sampleMeta.utf8))
@@ -84,7 +87,38 @@ enum MapSelfTest {
             return report.fail("parse", "kind=\(place.kind.rawValue) when=\(place.when != nil) address=\(place.address ?? "-")")
         }
         report.pass("parse \(place.title) | \(place.address ?? "") | \(place.timeText ?? "")")
-        probe.requiresLeaveAt = true
+        await runPlace(report, place: place, requiresLeaveAt: true, show: show)
+    }
+
+    /// The newest message in the real timeline that carries a place, opened like a tap on its card.
+    @MainActor
+    private static func runTimeline(_ report: Report, timeline: (() async throws -> TimelinePage)?, show: (Place) -> Void) async {
+        guard let timeline else { return report.fail("timeline", "no API") }
+        let page: TimelinePage
+        do {
+            page = try await timeline()
+        } catch {
+            return report.fail("timeline", error.localizedDescription)
+        }
+        for item in page.items {
+            let block = item.rich?.blocks.lazy.compactMap { block -> Place? in
+                if case let .place(place) = block { return place }
+                return nil
+            }.first
+            guard let place = block ?? item.meta?.place else { continue }
+            let source = block != nil ? "block" : "meta.place"
+            report.pass("timeline \(source) \(item.ts.formatted(date: .abbreviated, time: .shortened)) \(place.title) | \(place.address ?? "-") | \(place.timeText ?? "-")")
+            let future = place.when.map { $0 > Date() } ?? false
+            return await runPlace(report, place: place, requiresLeaveAt: future, show: show)
+        }
+        report.fail("timeline", "no place in the newest \(page.items.count) messages")
+    }
+
+    /// A place's card: geocoded, opened like a tap, then the place screen's checks.
+    @MainActor
+    private static func runPlace(_ report: Report, place: Place, requiresLeaveAt: Bool, show: (Place) -> Void) async {
+        let probe = MapSelfTestProbe.shared
+        probe.requiresLeaveAt = requiresLeaveAt
         probe.targetTitle = place.title
         show(place)
 
@@ -241,7 +275,7 @@ private struct MapSelfTestScreen: View {
             default:
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(verbatim: "Hack Night: Rust meets AI is tomorrow at 18:00.")
+                        Text(verbatim: place.map { "\($0.title) · \($0.timeText ?? "")" } ?? "…")
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
                             .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -256,7 +290,10 @@ private struct MapSelfTestScreen: View {
             }
         }
         .tint(Theme.accent)
-        .task { await MapSelfTest.run(mode: mode, openRoute: { app.open(route: $0) }) { place = $0 } }
+        .task {
+            let api = app.api
+            await MapSelfTest.run(mode: mode, openRoute: { app.open(route: $0) }, timeline: { try await api.timeline(limit: 50) }) { place = $0 }
+        }
     }
 }
 #endif

@@ -33,16 +33,16 @@ struct PlaceMapView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            LucinaMap(pins: [pin], showsUserLocation: true, polyline: polyline, alsoFit: nearbyUser, onCameraChange: cameraMoved)
-                .ignoresSafeArea(edges: .bottom)
-                .accessibilityIdentifier("placeMap")
-            ScrollView { info }
-                .frame(maxHeight: 360)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, LucinaTokens.Space.gutter)
-                .padding(.bottom, LucinaTokens.Space.sm)
-        }
+        // The card is a bottom safe-area inset, so the camera fits the place (and the owner) above it.
+        LucinaMap(pins: [pin], showsUserLocation: true, polyline: polyline, alsoFit: nearbyUser, onCameraChange: cameraMoved)
+            .accessibilityIdentifier("placeMap")
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                ScrollView { info }
+                    .frame(maxHeight: 360)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, LucinaTokens.Space.gutter)
+                    .padding(.bottom, LucinaTokens.Space.sm)
+            }
         .background(Theme.page.ignoresSafeArea())
         .navigationTitle(place.title)
         .navigationBarTitleDisplayMode(.inline)

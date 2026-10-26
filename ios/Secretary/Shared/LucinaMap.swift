@@ -5,7 +5,7 @@ import SwiftUI
 // position, the camera fitted to the pins, a pin focused on request. Used by the deals map and
 // the place screen; the chat cards use a snapshot instead (PlaceCard.swift).
 
-/// A pin: a coloured pill with a short label (the deals markers), else a dot; home is a house.
+/// A pin: a coloured pill with a short label (the deals markers), else a map pin; home is a house.
 struct MapPin: Identifiable, Equatable {
     enum Tint: Equatable, Sendable {
         case accent, clearance, neutral, home
@@ -197,7 +197,7 @@ struct LucinaMap: View {
     }
 }
 
-/// A pin's look: a pill with the label and a pointer, a dot, or the house.
+/// A pin's look: a pill with the label and a pointer, a map pin, or the house.
 struct LucinaMapPinView: View {
     let pin: MapPin
     let selected: Bool
@@ -229,9 +229,13 @@ struct LucinaMapPinView: View {
             }
             .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
         } else {
-            Circle()
-                .fill(fill)
-                .frame(width: selected ? 22 : 18, height: selected ? 22 : 18)
+            // A map pin glyph, so a place never looks like the owner's position dot.
+            let side: CGFloat = selected ? 34 : 30
+            Image(systemName: "mappin")
+                .font(.system(size: side * 0.5, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: side, height: side)
+                .background(fill, in: Circle())
                 .overlay(Circle().strokeBorder(.white, lineWidth: 2))
                 .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
         }

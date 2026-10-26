@@ -57,6 +57,8 @@ struct MainTabs: View {
             if phase != .active { app.lucina.stopEverything() } else { Task { await app.device.resume() } }
         }
         .onAppear { app.openPendingWidgetRoute() }
+        // A place opened by a widget, a notification or a route (`/map/place?...`): the in-app map.
+        .modifier(OpenPlaceHost())
         #if DEBUG || SCREENSHOTS
         .task { await WidgetSelfTest.runIfRequested(app) }
         #endif
