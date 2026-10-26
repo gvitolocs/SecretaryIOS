@@ -76,7 +76,9 @@ pub fn audio_type(mime: &str) -> Option<(&'static str, &'static str)> {
         .trim()
         .to_ascii_lowercase();
     Some(match base.as_str() {
-        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/mp4a-latm" => ("audio/mp4", "m4a"),
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/mp4a-latm" => {
+            ("audio/mp4", "m4a")
+        }
         // ADTS AAC: the iPhone records it because a cut-off file still decodes (worker step 0 remuxes it to .m4a).
         "audio/aac" | "audio/x-aac" | "audio/aacp" => ("audio/aac", "aac"),
         "audio/webm" | "video/webm" => ("audio/webm", "webm"),

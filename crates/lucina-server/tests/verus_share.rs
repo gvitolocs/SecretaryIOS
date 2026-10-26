@@ -581,7 +581,7 @@ const MIMES: &[&str] = &[
 ];
 
 fn as_static(k: &str) -> &'static str {
-    kernel::KINDS
+    *kernel::KINDS
         .iter()
         .find(|w| **w == k)
         .unwrap_or_else(|| panic!("{k:?} is not a kind"))
