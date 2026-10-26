@@ -24,6 +24,8 @@ struct PlaceMapView: View {
     @State private var routes: [MapsRoute] = []
     @State private var selectedMode: PlaceTravelMode?
     @AppStorage("placeTravelMode") private var rememberedMode = ""
+    /// An event's place: pinned to the countdown widget.
+    @State private var countdownPinned = false
 
     private var selectedRoute: MapsRoute? { routes.first { $0.mode == selectedMode } }
     private var polyline: [[Double]] {
@@ -82,7 +84,22 @@ struct PlaceMapView: View {
         .navigationTitle(place.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let event = place.countdownEvent {
+                    Button {
+                        countdownPinned.toggle()
+                        Countdown.setPinned(event, countdownPinned)
+                    } label: {
+                        Image(systemName: countdownPinned ? "pin.fill" : "pin")
+                    }
+                    .accessibilityLabel(countdownPinned ? Text("Unpin from countdown") : Text("Pin to countdown"))
+                    .accessibilityIdentifier("placeCountdownPin")
+                }
+            }
+        }
         .task {
+            countdownPinned = place.countdownEvent.map { Countdown.isPinned($0.id) } ?? false
             PlaceLocation.shared.requestPermission()
             PlaceLocation.shared.refresh()
             await PlaceResolver.shared.loadHome(api: app.api)

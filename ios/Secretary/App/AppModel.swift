@@ -44,6 +44,8 @@ final class AppModel {
     var showNotes = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
+    /// The Countdown plugin (pinned events for the countdown widget, `/countdowns`).
+    var showCountdowns = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
     /// A place opened by a widget, notification or rich route action.

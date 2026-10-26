@@ -16,6 +16,7 @@ enum WidgetKind: String, CaseIterable, Sendable {
     case memo = "tech.getsecretary.widget.memo"
     case pokemon = "tech.getsecretary.widget.pokemon"
     case films = "tech.getsecretary.widget.films"
+    case countdown = "tech.getsecretary.widget.countdown"
 }
 
 protocol WidgetSection: Codable, Equatable, Sendable {

@@ -30,6 +30,9 @@ struct Plugin: Identifiable {
                    detail: String(localized: "Lucina's game")) { app.showPokemon = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
+            Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
+                   detail: Countdown.visible(Countdown.pinned, fresher: [], now: Date()).first
+                       .map { "\(Countdown.label($0, now: Date())) · \($0.title)" }) { app.showCountdowns = true },
             Plugin(id: "wardrobe", icon: "tshirt", title: "Wardrobe",
                    detail: String(localized: "Lucina's outfits")) { app.wardrobe.presented = true },
         ]
@@ -58,6 +61,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showMedia) { FilmsView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
+        .navigationDestination(isPresented: $app.showCountdowns) { CountdownsView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
     }
 }

@@ -16031,6 +16031,230 @@
           }
         }
       }
+    },
+    "%lld days" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld giorni"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld dage"
+          }
+        }
+      }
+    },
+    "Countdown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nedtælling"
+          }
+        }
+      }
+    },
+    "Network exam" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esame di Reti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Netværkseksamen"
+          }
+        }
+      }
+    },
+    "The days left until the events you pin: an exam, a trip, a birthday." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I giorni che mancano agli eventi che fissi: un esame, un viaggio, un compleanno."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagene til de begivenheder, du fastgør: en eksamen, en rejse, en fødselsdag."
+          }
+        }
+      }
+    },
+    "%@ No countdowns" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Nessun conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Ingen nedtællinger"
+          }
+        }
+      }
+    },
+    "Pin an event in Secretary." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissa un evento in Secretary."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør en begivenhed i Secretary."
+          }
+        }
+      }
+    },
+    "Pin an event in Secretary to count down to it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissa un evento in Secretary per il conto alla rovescia."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør en begivenhed i Secretary for at tælle ned til den."
+          }
+        }
+      }
+    },
+    "Pin an event to see the days left to it on the Countdown widget." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissa un evento per vedere quanti giorni mancano nel widget Conto alla rovescia."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør en begivenhed for at se dagene til den i widgetten Nedtælling."
+          }
+        }
+      }
+    },
+    "Unpin from countdown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Togli dal conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern fra nedtælling"
+          }
+        }
+      }
+    },
+    "Pin to countdown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi al conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Føj til nedtælling"
+          }
+        }
+      }
+    },
+    "No events in the coming year." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun evento nel prossimo anno."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen begivenheder i det kommende år."
+          }
+        }
+      }
+    },
+    "Pinned events" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eventi fissati"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgjorte begivenheder"
+          }
+        }
+      }
+    },
+    "Events" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eventi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Begivenheder"
+          }
+        }
+      }
+    },
+    "Choose the events to count down to. Without a choice, the widget shows the events you pinned in Secretary." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scegli gli eventi per il conto alla rovescia. Senza una scelta, il widget mostra gli eventi fissati in Secretary."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vælg de begivenheder, der skal tælles ned til. Uden et valg viser widgetten de begivenheder, du har fastgjort i Secretary."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

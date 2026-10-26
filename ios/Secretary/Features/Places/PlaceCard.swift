@@ -10,6 +10,7 @@ struct PlaceCard: View {
     @State private var resolved: PlaceResolver.Resolved?
     @State private var notFound = false
     @State private var showMap = false
+    @State private var countdownPinned = false
 
     var body: some View {
         Group {
@@ -22,7 +23,19 @@ struct PlaceCard: View {
             }
         }
         .accessibilityIdentifier("placeCard")
-        .task(id: place) { await resolve() }
+        // Long-press an event: pin it to the countdown widget.
+        .contextMenu {
+            if let event = place.countdownEvent {
+                CountdownPinButton(event: event, pinned: countdownPinned) {
+                    countdownPinned.toggle()
+                    Countdown.setPinned(event, countdownPinned)
+                }
+            }
+        }
+        .task(id: place) {
+            countdownPinned = place.countdownEvent.map { Countdown.isPinned($0.id) } ?? false
+            await resolve()
+        }
         .sheet(isPresented: $showMap) {
             if let resolved {
                 NavigationStack {

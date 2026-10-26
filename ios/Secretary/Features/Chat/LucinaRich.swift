@@ -538,6 +538,9 @@ extension AppModel {
         case "tasks":
             selectedTab = .plugins
             showTasks = true
+        case "countdowns":
+            selectedTab = .plugins
+            showCountdowns = true
         case "memos": openMemo(nil)
         case "media", "films":
             selectedTab = .plugins

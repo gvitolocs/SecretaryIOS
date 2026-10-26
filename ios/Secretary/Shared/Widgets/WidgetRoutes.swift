@@ -11,6 +11,7 @@ import Foundation
 //   memos/record      start recording a voice memo
 //   map/place?title=&address=&when=&end=&eventId=   the in-app place map for an event
 //   films/play/<id>   play a film where it stopped
+//   countdowns        the Countdown plugin (pinned events of the countdown widget)
 enum WidgetRoute {
     static let scheme = "secretary"
 
