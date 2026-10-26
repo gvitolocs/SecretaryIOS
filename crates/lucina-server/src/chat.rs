@@ -296,13 +296,19 @@ async fn run_turn(
     run_turn_inner(st, message, session, cmid, channel, mcp_turn, surface, None).await
 }
 
+pub(crate) struct ShareTurn {
+    pub item: lucina_store::timeline::TimelineItem,
+    pub voice_only: bool,
+    pub reply_meta: Meta,
+}
+
 /// Share ingestion has already written the owner's timeline item.
 pub(crate) async fn share_turn(
     st: AppState,
     message: String,
     session: String,
     channel: String,
-    item: lucina_store::timeline::TimelineItem,
+    input: ShareTurn,
 ) -> Result<Value, ApiError> {
     let surface =
         crate::surface::chat_surface(&st.cfg, Some(BearerVerified::checked()), &channel, None);
@@ -314,7 +320,7 @@ pub(crate) async fn share_turn(
         channel,
         None,
         surface,
-        Some(item),
+        Some(input),
     )
     .await
 }
@@ -328,19 +334,30 @@ async fn run_turn_inner(
     channel: String,
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
-    existing: Option<lucina_store::timeline::TimelineItem>,
+    existing: Option<ShareTurn>,
 ) -> Result<Value, ApiError> {
-    if st.cfg.planner == PlannerMode::Tools && existing.is_none() {
+    let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
+    let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
+    let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
+    if st.cfg.planner == PlannerMode::Tools && !normal_share {
         let from_mcp = mcp_turn.is_some();
-        return tools_turn(st, message, session, cmid, channel, surface, from_mcp).await;
+        return tools_turn(
+            st, message, session, cmid, channel, surface, from_mcp, existing,
+        )
+        .await;
     }
     // With rich replies the app turns structure into widgets and buttons.
-    let base_system = if existing.is_some() {
+    let base_system = if normal_share {
         crate::share::SHARE_SYSTEM
     } else if st.cfg.rich_replies {
         crate::rich::SECRETARY_EXTRA_SYSTEM_RICH
     } else {
         SECRETARY_EXTRA_SYSTEM
+    };
+    let base_system = if voice_only {
+        format!("{base_system} {}", crate::share::guidance::VOICE_SYSTEM)
+    } else {
+        base_system.to_owned()
     };
     let note = |m: &McpTurn| {
         if st.cfg.mcp_trusted {
@@ -364,7 +381,7 @@ async fn run_turn_inner(
     let timeline =
         TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
     let timeline = if let Some(item) = existing {
-        timeline.with_user_item(item)
+        timeline.with_user_item(item.item)
     } else {
         timeline
     };
@@ -404,6 +421,11 @@ async fn run_turn_inner(
             } else {
                 format!("{}\n{}", prepared.game, crate::bridges::GAME_MCP_NOTE)
             };
+            let game_system = if voice_only {
+                format!("{game_system}\n{}", crate::share::guidance::VOICE_SYSTEM)
+            } else {
+                game_system
+            };
             let finish = crate::planner::TURN_SYSTEM
                 .scope(game_system, json_turn(&t, &prepared, cmid.as_deref()))
                 .await;
@@ -434,6 +456,9 @@ async fn run_turn_inner(
         None => finish.meta.clone(),
     };
     let meta = with_rich_meta(meta, rich_msg.as_ref());
+    let meta = reply_meta
+        .map(|m| meta.clone().unwrap_or_default().merge(m))
+        .or(meta);
     let lucina_item = timeline.record_lucina(&reply, Vec::new(), meta);
     // Node queues the job's result after the ack on the turn's timeline chain.
     if let (Some(job), Some(plan)) = (&finish.job, &finish.job_plan) {
@@ -1624,6 +1649,7 @@ fn tool_item_text(r: &ToolRecord) -> String {
 }
 
 /// `LUCINA_PLANNER=tools`: the native tool loop with the confirmation flow.
+#[allow(clippy::too_many_arguments)]
 async fn tools_turn(
     st: AppState,
     message: String,
@@ -1632,6 +1658,7 @@ async fn tools_turn(
     channel: String,
     surface: TurnSurface,
     from_mcp: bool,
+    existing: Option<ShareTurn>,
 ) -> Result<Value, ApiError> {
     // The tool set follows `origin` (trusted MCP turns get the owner's);
     // memory reads and writes follow `surface`.
@@ -1644,7 +1671,18 @@ async fn tools_turn(
     let now = Utc::now();
     let tz = st.cfg.time_zone;
     let persona = st.cfg.persona.clone();
+    let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
+    let voice_system = if existing.is_some() {
+        crate::share::guidance::VOICE_SYSTEM
+    } else {
+        ""
+    };
     let turn = TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone());
+    let turn = if let Some(s) = existing {
+        turn.with_user_item(s.item)
+    } else {
+        turn
+    };
     let user_item = turn.record_user(&message, Vec::new());
     // MCP callers never get the owner-only tools (secrets); a guarded MCP
     // turn gets no delegation either.
@@ -1679,6 +1717,9 @@ async fn tools_turn(
     st.recent.append(&session, "user", &message, now);
     let ctx = Ctx::new(st.tool_env.clone(), &channel, &session).with_origin(origin);
     let on_tool = |r: &ToolRecord| {
+        if reply_meta.is_some() {
+            return;
+        }
         turn.record_lucina(
             &tool_item_text(r),
             Vec::new(),
@@ -1757,7 +1798,7 @@ async fn tools_turn(
         let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
     } else {
-        let extra = format!("{SECRETARY_EXTRA_SYSTEM} {pending_note}");
+        let extra = format!("{SECRETARY_EXTRA_SYSTEM} {voice_system} {pending_note}");
         let system = st.planner.prompts.agent_system(
             PLATFORM_LABEL,
             &message,
@@ -1796,7 +1837,12 @@ async fn tools_turn(
             Ok(_) | Err(_) => {
                 let reply = st
                     .planner
-                    .generate_reply(&t, SECRETARY_EXTRA_SYSTEM, "", "reply")
+                    .generate_reply(
+                        &t,
+                        &format!("{SECRETARY_EXTRA_SYSTEM} {voice_system}"),
+                        "",
+                        "reply",
+                    )
                     .await
                     .unwrap_or_else(|_| fallback());
                 effects_to_finish(&ctx.effects(), reply)
@@ -1839,7 +1885,9 @@ async fn tools_turn(
     let lucina_item = turn.record_lucina(
         &reply,
         Vec::new(),
-        with_rich_meta(finish.meta.clone(), rich_msg.as_ref()),
+        with_rich_meta(finish.meta.clone(), rich_msg.as_ref())
+            .map(|m| m.merge(reply_meta.clone().unwrap_or_default()))
+            .or(reply_meta),
     );
     let mut out = json!({
         "reply": reply,

@@ -40,13 +40,18 @@ const MAX_NAME_CHARS: usize = 200;
 const MAX_CLIENT_MESSAGE_ID_CHARS: usize = 128;
 const MAX_META_STRING_CHARS: usize = 200;
 const MAX_COMMAND_ARGS_CHARS: usize = 2000;
+/// A voice note's transcript, on its attachment and on the reply's meta.
+pub const MAX_TRANSCRIPT_CHARS: usize = 4000;
+/// A voice note's waveform: at most 64 levels (0–255, oldest first).
+pub const MAX_WAVEFORM_BYTES: usize = 64;
 const ATTACHMENT_KINDS: [&str; 11] = [
     "image", "voice", "file", "video", "audio", "pdf", "document", "link", "text", "contact",
     "location",
 ];
 
 /// `{kind, name?}`, plus `mime`, `mediaId`, `url`, `bytes`, `width`, `height`,
-/// `durationMs`, `thumbhash` on shared items (docs/share.md).
+/// `durationMs`, `thumbhash` on shared items, and `waveform`, `transcript` on
+/// voice notes (docs/share.md).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
@@ -67,6 +72,12 @@ pub struct Attachment {
     /// ThumbHash (base64) from lucina-media, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbhash: Option<String>,
+    /// Voice notes: base64 of up to 64 levels (0–255, oldest first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
+    /// Voice notes: the transcript, when known at receipt (on-device).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -110,10 +121,16 @@ pub struct Meta {
     pub slug: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
+    /// On Lucina's reply to a voice note: the text she answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_dm: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
+    /// On Lucina's reply to a voice note: the client may speak it (`/v1/tts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_reply: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Box<RawValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +169,8 @@ impl Meta {
             && self.via.is_none()
             && self.caller.is_none()
             && self.command_id.is_none()
+            && self.transcript.is_none()
+            && self.voice_reply.is_none()
             && self.outfit.is_none()
             && self.hair.is_none()
             && self.slug.is_none()
@@ -191,11 +210,13 @@ impl Meta {
             via,
             caller,
             command_id,
+            transcript,
             outfit,
             hair,
             slug,
             is_dm,
             ok,
+            voice_reply,
             command,
             tool,
             format,
@@ -247,6 +268,24 @@ pub struct NewItem {
 fn clean_string(value: Option<&str>, max: usize) -> Option<String> {
     let v = clip_utf16(js_trim(value?), max);
     (!v.is_empty()).then_some(v)
+}
+
+/// A voice note waveform as stored: base64 (padded or not) of 1 to 64 bytes,
+/// trimmed. Anything else is dropped.
+pub fn valid_waveform(s: &str) -> Option<String> {
+    use base64::engine::{general_purpose, DecodePaddingMode, GeneralPurpose};
+    use base64::Engine;
+    const ENGINE: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        general_purpose::PAD.with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+    let s = s.trim();
+    // 64 bytes are 88 characters padded; a longer string cannot fit.
+    if s.is_empty() || s.len() > 88 {
+        return None;
+    }
+    let bytes = ENGINE.decode(s).ok()?;
+    (!bytes.is_empty() && bytes.len() <= MAX_WAVEFORM_BYTES).then(|| s.to_owned())
 }
 
 fn normalize_command(raw: &RawValue) -> Option<Box<RawValue>> {
@@ -318,8 +357,10 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         hair: s(m.hair),
         slug: s(m.slug),
         command_id: s(m.command_id),
+        transcript: clean_string(m.transcript.as_deref(), MAX_TRANSCRIPT_CHARS),
         is_dm: m.is_dm,
         ok: m.ok,
+        voice_reply: m.voice_reply,
         command: m.command.as_deref().and_then(normalize_command),
         tool: s(m.tool),
         ..Meta::default()
@@ -381,6 +422,8 @@ pub fn normalize(input: NewItem, now: i64) -> Result<TimelineItem> {
             height: a.height,
             duration_ms: a.duration_ms,
             thumbhash: clean_string(a.thumbhash.as_deref(), 100),
+            waveform: a.waveform.as_deref().and_then(valid_waveform),
+            transcript: clean_string(a.transcript.as_deref(), MAX_TRANSCRIPT_CHARS),
         })
         .collect();
     if text.is_empty() && attachments.is_empty() {
@@ -1183,6 +1226,78 @@ mod tests {
                 "{{\"id\":\"{}\",\"ts\":\"2026-10-21T16:30:02.118Z\",\"channel\":\"ios\",\"role\":\"lucina\",\"text\":\"ciao \\\"x\\\"\",\"clientMessageId\":\"c1\",\"replyTo\":\"01K83ZK4Q6X1V9W2D3E4F5G6H7\",\"attachments\":[{{\"kind\":\"image\"}}],\"meta\":{{\"kind\":\"tool\",\"isDm\":true}}}}\n",
                 item.id
             )
+        );
+    }
+
+    #[test]
+    fn voice_note_fields_are_validated_and_clipped() {
+        // 64 levels: 88 characters padded, 86 unpadded; both are accepted.
+        let levels: String = "AAEC".repeat(21) + "Aw==";
+        assert_eq!(levels.len(), 88);
+        assert_eq!(valid_waveform(&levels).as_deref(), Some(levels.as_str()));
+        assert_eq!(valid_waveform(" AAECAw ").as_deref(), Some("AAECAw"));
+        // 65 bytes, not base64, empty, or too long: dropped.
+        assert_eq!(valid_waveform(&("AAEC".repeat(21) + "AwQ=")), None);
+        assert_eq!(valid_waveform("not base64!"), None);
+        assert_eq!(valid_waveform(""), None);
+        assert_eq!(valid_waveform(&"A".repeat(200)), None);
+        let item = normalize(
+            NewItem {
+                channel: "ios".into(),
+                role: "user".into(),
+                attachments: vec![
+                    Attachment {
+                        kind: "voice".into(),
+                        mime: Some("audio/mp4".into()),
+                        duration_ms: Some(4200),
+                        waveform: Some(levels.clone()),
+                        transcript: Some(format!("  {}  ", "è".repeat(5000))),
+                        ..Attachment::default()
+                    },
+                    Attachment {
+                        kind: "voice".into(),
+                        waveform: Some("%%%".into()),
+                        transcript: Some("   ".into()),
+                        ..Attachment::default()
+                    },
+                ],
+                meta: Some(Meta {
+                    transcript: Some("t".repeat(4500)),
+                    voice_reply: Some(true),
+                    ..Meta::default()
+                }),
+                ..NewItem::default()
+            },
+            now_ms(),
+        )
+        .unwrap();
+        let a = item.attachments.unwrap();
+        assert_eq!(a[0].waveform.as_deref(), Some(levels.as_str()));
+        assert_eq!(
+            a[0].transcript.as_ref().unwrap().chars().count(),
+            MAX_TRANSCRIPT_CHARS
+        );
+        assert_eq!(
+            (a[1].waveform.clone(), a[1].transcript.clone()),
+            (None, None)
+        );
+        let meta = item.meta.unwrap();
+        assert_eq!(meta.transcript.unwrap().len(), MAX_TRANSCRIPT_CHARS);
+        assert_eq!(meta.voice_reply, Some(true));
+        // A meta with only the voice hint is kept, and merges like the rest.
+        let only = normalize_meta(Some(Meta {
+            voice_reply: Some(true),
+            ..Meta::default()
+        }))
+        .unwrap();
+        let v = serde_json::to_value(only.merge(Meta {
+            transcript: Some("ciao".into()),
+            ..Meta::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"transcript": "ciao", "voiceReply": true})
         );
     }
 
