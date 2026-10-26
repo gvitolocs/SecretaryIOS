@@ -317,10 +317,19 @@ pub fn router(state: AppState) -> Router {
 
 async fn health(State(st): State<AppState>) -> Response {
     let c = &st.cfg;
+    // 503 only when a background loop died (the watchdog restarts on it);
+    // upstream outages are delivery alerts, not restarts.
+    let liveness = crate::delivery_monitor::liveness(&st, Utc::now());
     json_response(
-        StatusCode::OK,
+        if liveness.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         &json!({
-            "ok": true,
+            "ok": liveness.is_empty(),
+            "liveness": {"problems": liveness, "loops": st.supervisor.names()},
+            "delivery": st.monitor.health(),
             "service": "lucina-rs",
             "version": env!("CARGO_PKG_VERSION"),
             "uptimeSeconds": st.started.elapsed().as_secs(),
@@ -340,6 +349,7 @@ async fn health(State(st): State<AppState>) -> Response {
             "telegram": st.telegram_health.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "grocery": st.grocery.is_some(),
             "delegation": {"enabled": st.delegator.is_some()},
+            "botHospital": crate::bot_hospital::health_value(&st.hospital_health),
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
             "timelineStreams": st.streams.load(Ordering::Relaxed),

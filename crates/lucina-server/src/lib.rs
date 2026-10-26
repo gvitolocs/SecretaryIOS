@@ -9,6 +9,7 @@
 //! only. See `README` in the crate docs of [`config`].
 
 pub mod api;
+pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
 pub mod chat;
@@ -16,6 +17,7 @@ pub mod config;
 pub mod context;
 pub mod deals;
 pub mod delegation;
+pub mod delivery_monitor;
 pub mod fake;
 pub mod grocery_turn;
 pub mod jobs;
@@ -98,6 +100,11 @@ pub struct Inner {
     pub telegram_health: lucina_telegram::poller::SharedHealth,
     /// Node's `recent-telegram-chat.json`, written only while the Telegram bot runs here.
     pub telegram_recent: Arc<RecentChat>,
+    pub hospital_health: Arc<Mutex<bot_hospital::HospitalHealth>>,
+    /// Delivery-path alerts (`delivery_monitor`).
+    pub monitor: Arc<delivery_monitor::Monitor>,
+    /// Background loops checked by `/health`.
+    pub supervisor: Arc<delivery_monitor::Supervisor>,
 }
 
 #[derive(Clone)]
@@ -343,6 +350,15 @@ impl AppState {
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),
+            monitor: Arc::new(delivery_monitor::Monitor::new(
+                cfg.delivery_alert_after,
+                cfg.data_dir.join("lucina-rs").join("delivery-monitor.json"),
+            )),
+            supervisor: Arc::default(),
+            hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
+                enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
+                ..Default::default()
+            })),
             scheduler_health: Arc::new(Mutex::new(lucina_store::scheduler::SchedulerHealth {
                 enabled: cfg.scheduler && cfg.reminders_writer == WriterKind::Local,
                 ..Default::default()
@@ -415,7 +431,21 @@ impl AppState {
             );
         }
         // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
-        deals::spawn_watch(self);
+        if let Some(h) = deals::spawn_watch(self) {
+            self.supervisor.watch("deal watch", h);
+        }
+        if let Some(h) = bot_hospital::spawn(
+            self,
+            Arc::new(bot_hospital::Hospital {
+                cfg: self.cfg.hospital.clone(),
+                http: reqwest::Client::new(),
+                health: self.hospital_health.clone(),
+            }),
+        ) {
+            self.supervisor.watch("bot hospital", h);
+        }
+        self.supervisor
+            .watch("delivery monitor", delivery_monitor::spawn(self));
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {
                 tracing::warn!("LUCINA_SCHEDULER=true ignored: reminders.json is owned by the Node Lucina (LUCINA_REMINDERS_WRITER=node)");
@@ -446,7 +476,7 @@ impl AppState {
                 );
                     Arc::new(timeline)
                 };
-            lucina_store::scheduler::spawn(
+            let handle = lucina_store::scheduler::spawn(
                 self.reminders.clone(),
                 sink,
                 self.cfg.persona.clone(),
@@ -454,6 +484,7 @@ impl AppState {
                 self.cfg.scheduler_initial_delay,
                 self.scheduler_health.clone(),
             );
+            self.supervisor.watch("reminder scheduler", handle);
         }
     }
 }

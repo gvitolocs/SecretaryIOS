@@ -1077,7 +1077,21 @@ pub fn spawn(
         Box::pin(bot.handle(update))
     });
     let poller = Poller::new(api, cfg, handler, st.telegram_health.clone());
-    Ok(tokio::spawn(poller.run(shutdown)))
+    st.monitor.register(
+        "telegram",
+        crate::delivery_monitor::telegram_probe(st.telegram_health.clone()),
+    );
+    let alive = st.supervisor.watch_flag("telegram poller");
+    let health = st.telegram_health.clone();
+    Ok(tokio::spawn(async move {
+        poller.run(shutdown).await;
+        // A refused token (401) stops the poller on purpose: that is a delivery
+        // alert, not a reason for the watchdog to restart the process in a loop.
+        let refused = health.lock().unwrap_or_else(|e| e.into_inner()).state == "unauthorized";
+        if !refused {
+            alive.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }))
 }
 
 #[cfg(test)]

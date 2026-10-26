@@ -9,6 +9,10 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
 const PERSONA_DEFAULT: &str = include_str!("../assets/lucina-persona.md");
+/// Copies of the Node Lucina's `docs/lucina-recovery-companion.md` and
+/// `docs/lucina-operator-brief.md` (the Node repo is archived, 2026-10-26).
+const RECOVERY_COMPANION_DEFAULT: &str = include_str!("../assets/lucina-recovery-companion.md");
+const OPERATOR_BRIEF_DEFAULT: &str = include_str!("../assets/lucina-operator-brief.md");
 /// The planner's delegation rule (`LUCINA_DELEGATE`; not part of the Node
 /// parity prompt, which stays verbatim when delegation is off).
 pub const DELEGATE_PLAN_RULE: &str = "Lucina can also delegate on her own judgement to other AI agents: Grok for live web and X (Twitter) research and current news (she has no live web otherwise), Claude for code and long careful analysis, ChatGPT for a general second opinion. Choose delegate_task when another agent clearly does it better than you: fresh facts or news you do not have, writing or fixing code, a deep analysis. No confirmation is needed: decide yourself. Never delegate purchases or money movements, never include passwords or secrets, and put only the details the agent needs into task, self-contained. Schema: {\"action\":\"delegate_task\",\"to\":\"auto|grok|claude|chatgpt\",\"kind\":\"question|research|analysis|code\",\"task\":\"...\",\"ack\":\"...\"}";
@@ -33,10 +37,14 @@ pub struct Prompts {
     pub delegation: bool,
 }
 
-fn read_clip(path: &Path, max: usize, marker: &str) -> String {
-    let text = std::fs::read_to_string(path)
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_default();
+/// The file at `path` (missing: empty), or the built-in copy without a path.
+fn read_clip(path: Option<&Path>, embedded: &str, max: usize, marker: &str) -> String {
+    let text = match path {
+        Some(path) => std::fs::read_to_string(path)
+            .map(|s| s.trim().to_owned())
+            .unwrap_or_default(),
+        None => embedded.trim().to_owned(),
+    };
     if text.chars().count() > max {
         format!(
             "{}\n\n[{marker} truncated]",
@@ -61,7 +69,12 @@ impl Prompts {
         let mut p = Self {
             persona_name: cfg.persona.clone(),
             persona_doc,
-            recovery_companion: read_clip(&cfg.recovery_companion_path, 9000, "recovery companion"),
+            recovery_companion: read_clip(
+                cfg.recovery_companion_path.as_deref(),
+                RECOVERY_COMPANION_DEFAULT,
+                9000,
+                "recovery companion",
+            ),
             operator_brief: String::new(),
             host_label: cfg.host_label.clone(),
             oracle_monitor_enabled: cfg.oracle_monitor_enabled,
@@ -91,11 +104,19 @@ impl Prompts {
         } else {
             format!("Pokoin handoff (summary): {handoff}")
         };
-        let brief = [read_clip(&cfg.operator_brief_path, usize::MAX, ""), handoff]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let brief = [
+            read_clip(
+                cfg.operator_brief_path.as_deref(),
+                OPERATOR_BRIEF_DEFAULT,
+                usize::MAX,
+                "",
+            ),
+            handoff,
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
         let max = cfg.operator_brief_max_chars;
         let brief = if lucina_store::timeutil::utf16_len(&brief) > max {
             format!(
