@@ -70,6 +70,17 @@ describe("PlaceCard", () => {
     expect(paths()).toEqual(["/v1/maps/config"]);
   });
 
+  it("shows Lucina's travel time from home", async () => {
+    calls = stubFetch((call) => (call.url === "/v1/maps/config" ? { body: CONFIG } : { status: 404, body: {} }));
+    render(() => (
+      <PlaceCard
+        place={{ title: "Hack Night", address: "Folkehuset Møllestien", lat: 56.1611, lng: 10.2006, kind: "event",
+                 travelMin: 16, travelMode: "bike", travelApprox: true }}
+      />
+    ));
+    expect(screen.getByRole("link", { name: /Hack Night/ }).querySelector(".place-card-travel")?.textContent).toBe("Bike · ≈ 16 min");
+  });
+
   it("geocodes an address near home and links the place screen with the result", async () => {
     calls = stubFetch((call) => {
       if (call.url === "/v1/maps/config") return { body: CONFIG };

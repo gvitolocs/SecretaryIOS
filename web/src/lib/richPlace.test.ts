@@ -23,6 +23,23 @@ describe("place blocks", () => {
     expect(blocks(hackNight)).toEqual([hackNight]);
   });
 
+  it("keeps Lucina's travel time only when it is valid", () => {
+    const withTravel = { ...hackNight, travelMin: 18, travelMode: "transit", travelApprox: true };
+    expect(blocks(withTravel)).toEqual([withTravel]);
+    for (const bad of [{ travelMin: 0 }, { travelMin: 1441 }, { travelMin: 2.5 }, { travelMode: "car" }, { travelMin: "18" }]) {
+      expect(blocks({ ...hackNight, travelMin: 18, travelMode: "walk", ...bad })).toEqual([hackNight]);
+    }
+  });
+
+  it("accepts Lucina's Naviga route to the in-app place map, nothing external", () => {
+    const path = "/map/place?lat=56.1611&lng=10.2006&title=Hack%20Night%3A%20Rust%20meets%20AI&when=2026-10-27T16%3A00%3A00.000Z";
+    const nav = { id: "nav-1", label: "Naviga", emoji: "🧭", kind: "route", payload: { path } };
+    expect(parseRich({ format: "v1", bubbles: ["x"], actions: [nav] })!.actions).toEqual([nav]);
+    for (const bad of ["/map/place?title=a b", "/map/place?", "https://maps.apple.com/?daddr=1,2", "/map/other?x=1", `/map/place?title=${"a".repeat(600)}`]) {
+      expect(parseRich({ format: "v1", bubbles: ["x"], actions: [{ ...nav, payload: { path: bad } }] })!.actions).toEqual([]);
+    }
+  });
+
   it("drops a title-only block and one without a title", () => {
     expect(blocks({ type: "place", title: "Somewhere" })).toEqual([]);
     expect(blocks({ type: "place", title: "  ", address: "Aarhus" })).toEqual([]);

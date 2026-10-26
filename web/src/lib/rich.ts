@@ -100,6 +100,13 @@ export function parsePlace(v: unknown): PlaceInfo | null {
     if (typeof t === "string" && isRfc3339(t.trim())) place[key] = t.trim();
   }
   if (typeof b.eventId === "string" && b.eventId.trim() && b.eventId.length <= 200) place.eventId = b.eventId.trim();
+  const mode = b.travelMode;
+  if (Number.isInteger(b.travelMin) && (b.travelMin as number) >= 1 && (b.travelMin as number) <= 1440
+    && (mode === "walk" || mode === "bike" || mode === "transit" || mode === "drive")) {
+    place.travelMin = b.travelMin as number;
+    place.travelMode = mode;
+    if (b.travelApprox === true) place.travelApprox = true;
+  }
   return place;
 }
 
@@ -205,6 +212,8 @@ function parseBlock(v: unknown): RichBlock | null {
 }
 
 const ROUTE = /^\/[A-Za-z0-9/_\-.%]{0,120}$/;
+/** The in-app place map with its percent-encoded query (Lucina's "Naviga"), at most 600 characters. */
+const MAP_ROUTE = /^\/map\/place\?[A-Za-z0-9%=&_.~-]{1,589}$/;
 const ACTION_ID = /^[A-Za-z0-9_.:-]{1,48}$/;
 
 function parseAction(v: unknown, index: number): RichAction | null {
@@ -222,8 +231,9 @@ function parseAction(v: unknown, index: number): RichAction | null {
       return { ...base, kind: "reply", payload: p.prefill === true ? { text: t, prefill: true } : { text: t } };
     }
     case "route": {
-      const path = line(p.path, 128);
-      if (!ROUTE.test(path) || path.includes("..") || path.startsWith("//")) return null;
+      const path = line(p.path, 601);
+      const app = ROUTE.test(path) && !path.includes("..") && !path.startsWith("//");
+      if (!app && !MAP_ROUTE.test(path)) return null;
       return { ...base, kind: "route", payload: { path } };
     }
     case "confirm": {
