@@ -101,6 +101,12 @@ final class MemoUploadQueue {
             let clientId = url.deletingPathExtension().lastPathComponent
             guard !known.contains(clientId) else { continue }
             let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey, .fileSizeKey])
+            if values?.fileSize == 0 {
+                // A recording that never started (no audio at all): nothing to keep.
+                try? fm.removeItem(at: url)
+                MemoLog.write("recover \(clientId): empty file removed")
+                continue
+            }
             guard let audio = try? AVAudioFile(forReading: url), audio.processingFormat.sampleRate > 0 else {
                 MemoLog.write("recover \(clientId): unreadable, kept on disk")
                 continue

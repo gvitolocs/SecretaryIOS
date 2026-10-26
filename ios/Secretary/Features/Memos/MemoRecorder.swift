@@ -170,6 +170,8 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             recorder = r
         } catch {
             self.error = error.localizedDescription
+            // AVAudioRecorder may already have created the (empty) file.
+            try? FileManager.default.removeItem(at: url)
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
             return
         }
