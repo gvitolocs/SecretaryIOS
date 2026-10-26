@@ -105,7 +105,7 @@ function Row(props: { item: MediaItem; list: MediaItem[] }) {
   );
 }
 
-function Player() {
+export function Player() {
   let surface!: HTMLDivElement;
   onMount(() => onCleanup(attachElement(surface)));
   const item = () => media.current();
@@ -165,7 +165,7 @@ function Player() {
   );
 }
 
-function MiniPlayer() {
+export function MiniPlayer() {
   return (
     <Show when={media.current() && !media.open()}>
       <div class="media-mini">

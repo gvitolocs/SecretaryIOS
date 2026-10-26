@@ -554,3 +554,63 @@ export function FilmIcon() {
     </svg>
   );
 }
+
+export function FolderIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" />
+    </svg>
+  );
+}
+
+export function FileIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6.5 3h7.5l4.5 4.5V19a2 2 0 0 1-2 2h-10a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+      <path d="M14 3v4.5h4.5" />
+    </svg>
+  );
+}
+
+export function DownloadIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14" />
+    </svg>
+  );
+}
+
+export function ShareIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 15V4M8 7.5 12 3.5l4 4" />
+      <path d="M8 10.5H6.5a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-6.5a2 2 0 0 0-2-2H16" />
+    </svg>
+  );
+}
+
+export function ExternalIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M13.5 4.5H19.5V10.5M19.5 4.5 11 13" />
+      <path d="M17 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 4 18.5v-10A1.5 1.5 0 0 1 5.5 7H10" />
+    </svg>
+  );
+}
+
+export function CopyIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="8.5" y="8.5" width="11" height="11" rx="2" />
+      <path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" />
+    </svg>
+  );
+}
+
+export function SortIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 4v16M3.5 16.5 7 20l3.5-3.5M17 20V4M13.5 7.5 17 4l3.5 3.5" />
+    </svg>
+  );
+}
