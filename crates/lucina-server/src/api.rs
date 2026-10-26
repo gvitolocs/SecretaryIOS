@@ -1280,8 +1280,14 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
             }
         }
     };
-    let (items, next) = st
-        .timeline
+    // `conversation=selftest`: the self-test conversation (crate::selftest), never mixed in.
+    let store =
+        if query_param(uri, "conversation").as_deref() == Some(crate::selftest::CONVERSATION) {
+            st.selftest_timeline.clone()
+        } else {
+            st.timeline.clone()
+        };
+    let (items, next) = store
         .list(before.as_deref(), limit)
         .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
     // Items are served as stored: Node-written lines reach the client verbatim.

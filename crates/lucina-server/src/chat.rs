@@ -87,7 +87,13 @@ pub async fn handle_chat(
     if channel != "web" && channel != "ios" {
         return Err(ApiError::bad_request("channel must be web or ios"));
     }
-    let session = secretary_session_id(&requested, &st.cfg.default_session);
+    // Self-tests and diagnostics run in their own conversation, out of the owner's chat.
+    let selftest = crate::selftest::requested(&body, &requested, &message);
+    let session = if selftest {
+        crate::selftest::SESSION.to_owned()
+    } else {
+        secretary_session_id(&requested, &st.cfg.default_session)
+    };
     let mcp_turn = mcp::turn_info(&requested, &message);
     let text = mcp_turn
         .as_ref()
@@ -385,7 +391,7 @@ async fn run_turn_inner(
         ..Meta::default()
     });
     let timeline =
-        TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
+        TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone()).with_meta(turn_meta);
     let timeline = if let Some(item) = existing {
         timeline.with_user_item(item.item)
     } else {
@@ -495,6 +501,9 @@ async fn run_turn_inner(
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
     add_rich(&mut out, rich_msg.as_ref());
+    if crate::selftest::is_session(&session_of(&out)) {
+        out["conversation"] = json!(crate::selftest::CONVERSATION);
+    }
     for (k, v) in finish.extra {
         out[k] = v;
     }
@@ -576,6 +585,10 @@ fn with_rich_meta(
     }
 }
 
+fn session_of(out: &Value) -> String {
+    out["sessionId"].as_str().unwrap_or("").to_owned()
+}
+
 /// The v1 fields of the chat response (`reply` is the plain fallback).
 fn add_rich(out: &mut Value, rich: Option<&lucina_store::rich::RichMessage>) {
     if let Some(m) = rich {
@@ -600,7 +613,7 @@ async fn secrets_finish(st: &AppState, text: &str, mcp: bool) -> Option<Finish> 
 
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
 fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
-    if st.memory.mode() != MemoryMode::ReadWrite {
+    if st.memory.mode() != MemoryMode::ReadWrite || crate::selftest::is_session(&t.session) {
         return;
     }
     let label = match &t.mcp {
@@ -1460,14 +1473,15 @@ fn spawn_job(
                 job_id: Some(job.id.clone()),
                 ..Meta::default()
             });
-            st.timeline.record(lucina_store::timeline::NewItem {
-                channel: channel.clone(),
-                role: "lucina".into(),
-                text,
-                reply_to: user_item.clone(),
-                meta: with_rich_meta(meta, rich),
-                ..Default::default()
-            })
+            st.timeline_for(&session)
+                .record(lucina_store::timeline::NewItem {
+                    channel: channel.clone(),
+                    role: "lucina".into(),
+                    text,
+                    reply_to: user_item.clone(),
+                    meta: with_rich_meta(meta, rich),
+                    ..Default::default()
+                })
         };
         let _ = st.jobs.update(&job.id, |j| {
             j.status = "running".into();
@@ -1728,7 +1742,7 @@ async fn tools_turn(
     } else {
         ""
     };
-    let turn = TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone());
+    let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone());
     let turn = if let Some(s) = existing {
         turn.with_user_item(s.item)
     } else {
@@ -1965,6 +1979,9 @@ async fn tools_turn(
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
     add_rich(&mut out, rich_msg.as_ref());
+    if crate::selftest::is_session(&session_of(&out)) {
+        out["conversation"] = json!(crate::selftest::CONVERSATION);
+    }
     for (k, v) in finish.extra {
         out[k] = v;
     }

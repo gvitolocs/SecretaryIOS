@@ -234,7 +234,7 @@ pub async fn confirm_by_id(st: &AppState, body: &Value) -> Result<Value, crate::
         };
         (ok, output, text)
     };
-    st.timeline.record(NewItem {
+    st.timeline_for(&action.session_id).record(NewItem {
         channel: channel.into(),
         role: "lucina".into(),
         text: text.clone(),
@@ -332,7 +332,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         max_rounds: 4,
         ..AgentConfig::default()
     };
-    let timeline = st.timeline.clone();
+    let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {
