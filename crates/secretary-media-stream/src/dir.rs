@@ -3,7 +3,7 @@
 //!
 //! This is the provisional library until `lucina-media` (catalog, uploads,
 //! albums, search) replaces it; the routes and JSON match its contract.
-use crate::{probe, MediaSource, Signer, SourceItem, StreamConfig};
+use crate::{probe, MediaSource, Signer, SourceItem, StreamConfig, Video};
 use axum::{
     extract::{Path as UrlPath, Query, State},
     http::StatusCode,
@@ -150,6 +150,11 @@ impl DirSource {
 impl MediaSource for DirSource {
     async fn item(&self, id: &str) -> Option<SourceItem> {
         self.entries().iter().find(|e| e.item.id == id).map(|e| e.item.clone())
+    }
+
+    /// A folder has no added date: the file's modification time stands in.
+    async fn videos(&self) -> Vec<Video> {
+        self.entries().iter().filter(|e| e.item.kind == "video").map(|e| Video { item: e.item.clone(), added_at: e.modified }).collect()
     }
 }
 

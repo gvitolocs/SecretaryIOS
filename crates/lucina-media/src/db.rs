@@ -312,6 +312,15 @@ pub fn get_item(c: &Connection, id: &str) -> rusqlite::Result<Option<Item>> {
     Ok(item)
 }
 
+/// The videos a viewer can open, newest added first: `(id, added_at)`.
+pub fn video_ids(c: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut st = c.prepare(
+        "SELECT id, added_at FROM items WHERE kind = 'video' AND hidden = 0 AND trashed_at IS NULL ORDER BY added_at DESC, id DESC",
+    )?;
+    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
+}
+
 pub fn item_albums(c: &Connection, id: &str) -> rusqlite::Result<Vec<String>> {
     let mut st =
         c.prepare_cached("SELECT album_id FROM album_items WHERE item_id = ?1 ORDER BY added_at")?;

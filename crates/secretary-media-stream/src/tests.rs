@@ -55,6 +55,8 @@ async fn library_play_range_hls_subs_poster_progress() {
 
     let mut cfg = StreamConfig::new(vec![7; 32], tmp.path().join("cache"), tmp.path().join("progress.json"));
     cfg.max_jobs = 1;
+    // This test drives the jobs itself; `films_are_prepared_in_the_background` covers the worker.
+    cfg.prepare = false;
     let src = Arc::new(DirSource::new(vec![Root { label: "Test".into(), path: media.clone() }]));
     let app = router(Arc::clone(&src), cfg.clone()).unwrap().merge(dir::items_router(src, cfg));
 
@@ -119,6 +121,13 @@ async fn library_play_range_hls_subs_poster_progress() {
     }
     assert!(done, "remux did not finish");
 
+    // A finished playlist starts where the viewer resumes; a bad start_ms is ignored.
+    let (_, _, body) = call(&app, Method::GET, &format!("{hls}?start_ms=7000"), None, None).await;
+    assert!(String::from_utf8(body).unwrap().contains("#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-START:TIME-OFFSET=7,PRECISE=YES\n"));
+    let (st, _, body) = call(&app, Method::GET, &format!("{hls}?start_ms=7s"), None, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(!String::from_utf8(body).unwrap().contains("EXT-X-START"));
+
     // External Windows-1252 .srt → UTF-8 WebVTT.
     let sub = &play["subtitles"][0];
     assert_eq!(sub["lang"], "da");
@@ -151,4 +160,41 @@ async fn library_play_range_hls_subs_poster_progress() {
 
     // Unknown items.
     assert_eq!(call(&app, Method::POST, "/v1/media/items/nope/play", Some(serde_json::json!({"client": "ios"})), None).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn films_are_prepared_in_the_background() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let media = tmp.path().join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    let mkv = media.join("Film.mkv");
+    ffmpeg(&["-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=5", "-f", "lavfi", "-i", "sine=duration=5",
+        "-c:v", "libx264", "-g", "25", "-c:a", "ac3", mkv.to_str().unwrap()]);
+    ffmpeg(&["-f", "lavfi", "-i", "testsrc=size=160x120:rate=25:duration=2", "-c:v", "libx264", "-movflags", "+faststart",
+        media.join("Clip.mp4").to_str().unwrap()]);
+    let cfg = StreamConfig::new(vec![7; 32], tmp.path().join("cache"), tmp.path().join("progress.json"));
+    assert!(cfg.prepare, "on by default");
+    let src = Arc::new(DirSource::new(vec![Root { label: "Test".into(), path: media.clone() }]));
+    let _app = router(src, cfg.clone()).unwrap();
+
+    // H.264 + AC-3 in MKV: a remux for the iPhone and AAC audio for the web, nobody asking.
+    // The MP4 plays directly everywhere and gets nothing.
+    let hls = cfg.cache_dir.join("hls").join(probe::file_key(&mkv).unwrap());
+    let finished = |v: &str| hls.join(v).join(hls::DONE_MARKER).exists();
+    for _ in 0..240 {
+        if finished("copy-copy") && finished("copy-aac") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(finished("copy-copy") && finished("copy-aac"), "not prepared");
+    let variants: Vec<_> = std::fs::read_dir(cfg.cache_dir.join("hls")).unwrap().flatten().collect();
+    assert_eq!(variants.len(), 1, "only the film has HLS output");
+    // Two-second segments.
+    let playlist = std::fs::read_to_string(hls.join("copy-copy").join("index.m3u8")).unwrap();
+    assert!(playlist.matches("#EXTINF").count() >= 2, "{playlist}");
 }

@@ -30,6 +30,8 @@ pub struct Config {
     pub progress_path: PathBuf,
     /// Folders indexed in place, `(album label, path)`.
     pub folders: Vec<(String, PathBuf)>,
+    /// Prepare every film's HLS output in the background (`LUCINA_MEDIA_PREPARE=0` turns it off).
+    pub prepare: bool,
 }
 
 impl Config {
@@ -85,6 +87,8 @@ impl Config {
             data_dir,
             play_secret,
             folders,
+            prepare: var("LUCINA_MEDIA_PREPARE")
+                .is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "off")),
             store_dir: var("LUCINA_MEDIA_STORE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("mnt/mybook/lucina-media")),
@@ -127,6 +131,7 @@ impl Config {
             ffprobe: "ffprobe".into(),
             play_secret: None,
             folders: Vec::new(),
+            prepare: false,
         }
     }
 

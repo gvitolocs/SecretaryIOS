@@ -152,6 +152,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             );
             sc.ffmpeg = cfg.ffmpeg.clone();
             sc.ffprobe = cfg.ffprobe.clone();
+            sc.prepare = cfg.prepare;
             let src = std::sync::Arc::new(lucina_media::source::CatalogSource(lib.clone()));
             Some(secretary_media_stream::router(src, sc).map_err(anyhow::Error::msg)?)
         }

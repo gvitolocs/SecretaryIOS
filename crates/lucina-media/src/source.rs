@@ -3,8 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use secretary_media_stream::{MediaSource, SourceItem, SourceSub};
+use chrono::DateTime;
+use secretary_media_stream::{MediaSource, SourceItem, SourceSub, Video};
+use tokio::sync::broadcast::error::RecvError;
 
+use crate::db;
 use crate::ingest::{self, Library};
 use crate::thumbs;
 
@@ -19,6 +22,44 @@ impl MediaSource for CatalogSource {
             .ok()
             .flatten()
     }
+
+    async fn videos(&self) -> Vec<Video> {
+        let lib = self.0.clone();
+        tokio::task::spawn_blocking(move || videos(&lib))
+            .await
+            .unwrap_or_default()
+    }
+
+    /// A new item, or new bytes for one (a folder file replaced), may need preparing.
+    async fn changed(&self) {
+        let mut events = self.0.events.subscribe();
+        loop {
+            match events.recv().await {
+                Ok(e) if matches!(e.kind, "item.added" | "item.updated") => return,
+                Ok(_) => {}
+                // Missed some: one of them may have been an add.
+                Err(RecvError::Lagged(_)) => return,
+                Err(RecvError::Closed) => std::future::pending().await,
+            }
+        }
+    }
+}
+
+/// The catalog's videos (not hidden, not trashed), newest added first.
+pub fn videos(lib: &Library) -> Vec<Video> {
+    let ids = lib.db.with(|c| db::video_ids(c)).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "listing videos failed");
+        Vec::new()
+    });
+    ids.into_iter()
+        .filter_map(|(id, added_at)| {
+            Some(Video {
+                item: source_item(lib, &id)?,
+                added_at: DateTime::parse_from_rfc3339(&added_at)
+                    .map_or(0, |t| t.timestamp_millis().max(0) as u64),
+            })
+        })
+        .collect()
 }
 
 pub fn source_item(lib: &Library, id: &str) -> Option<SourceItem> {
@@ -105,6 +146,52 @@ mod tests {
         assert_eq!(
             labels,
             vec![("English", None), ("da", Some("da")), ("Subtitles", None)]
+        );
+    }
+
+    #[test]
+    fn videos_are_the_visible_films_newest_first() {
+        let t = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config::for_dirs(t.path().join("data"), t.path().join("store"));
+        let lib = Library::open(cfg).unwrap();
+        let film = |id: &str, kind: &str, hidden: i64, trashed: Option<&str>, added: &str| {
+            let path = t.path().join(format!("{id}.mkv"));
+            std::fs::write(&path, b"x").unwrap();
+            lib.db
+                .with(|c| {
+                    c.execute(
+                        "INSERT INTO blobs (hash, bytes, ext, location, path, created_at) VALUES (?1, 1, 'mkv', 'external', ?2, ?3)",
+                        rusqlite::params![id, path.to_str(), added],
+                    )?;
+                    c.execute(
+                        "INSERT INTO items (id, kind, title, hash, mime, bytes, sort_at, source, hidden, trashed_at, added_at, updated_at)
+                         VALUES (?1, ?2, ?1, ?1, 'video/x-matroska', 1, ?3, 'folder', ?4, ?5, ?3, ?3)",
+                        rusqlite::params![id, kind, added, hidden, trashed],
+                    )
+                })
+                .unwrap();
+        };
+        film("old", "video", 0, None, "2026-01-01T00:00:00.000Z");
+        film("new", "video", 0, None, "2026-10-01T00:00:00.000Z");
+        film("live-motion", "video", 1, None, "2026-10-02T00:00:00.000Z");
+        film(
+            "binned",
+            "video",
+            0,
+            Some("2026-10-03T00:00:00.000Z"),
+            "2026-10-03T00:00:00.000Z",
+        );
+        film("memo", "audio", 0, None, "2026-10-04T00:00:00.000Z");
+        let got: Vec<(String, u64)> = videos(&lib)
+            .into_iter()
+            .map(|v| (v.item.id, v.added_at))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("new".to_string(), 1_790_812_800_000),
+                ("old".to_string(), 1_767_225_600_000)
+            ]
         );
     }
 }
