@@ -327,7 +327,14 @@ impl DeviceEventStore {
         }
         if !fresh.is_empty() {
             let text: String = fresh.iter().map(|e| format!("{e}\n")).collect();
-            open_append(&self.path)?.write_all(text.as_bytes())?;
+            if let Err(e) = open_append(&self.path).and_then(|mut f| f.write_all(text.as_bytes())) {
+                // Not stored: forget the ids, or the client's retry would be a
+                // "duplicate" and the events lost (verification E1).
+                for id in &accepted {
+                    g.ids.remove(id);
+                }
+                return Err(e.into());
+            }
             g.events.extend(fresh);
             g.events.sort_by(|a, b| ts_of(a).cmp(ts_of(b)));
             g.last_received_ms = now.timestamp_millis();

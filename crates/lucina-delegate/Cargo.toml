@@ -24,3 +24,5 @@ uuid = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+# Stateright model of the daily budget (tests/budget_model.rs), checked by `cargo test`.
+stateright = { version = "=0.31.0", default-features = false }
