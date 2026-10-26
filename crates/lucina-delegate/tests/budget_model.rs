@@ -26,6 +26,9 @@
 //!   means an agent has no other reservation on the new day to undercount).
 //! - sometimes: a job is in flight at midnight, a skipped job gives its call
 //!   back, a cap hit pauses delegation, a day reaches its cap exactly.
+//!
+//! TLA+ twin: `formal/delegate/DelegateBudget.tla` (the same state; TLC finds
+//! the same 17 788 / 14 094 distinct states), run by `formal/run-gap-checks`.
 
 use stateright::{Checker, Model, Property};
 

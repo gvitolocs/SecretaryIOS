@@ -33,6 +33,9 @@
 //!   the Mac send different events with the same id; secretary-server keys by
 //!   (device, id) but Lucina by id alone, so one is dropped:
 //!   `no_silent_loss` **violated**. Clients must use globally unique ids.
+//!
+//! TLA+ twin: `formal/devices/DeviceEvents.tla` (the same state; TLC finds the
+//! same 4 875 distinct states for `current`), run by `formal/run-gap-checks`.
 
 use stateright::{Checker, Model, Property};
 
