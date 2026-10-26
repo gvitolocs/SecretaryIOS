@@ -31,6 +31,10 @@ export interface PlaceInfo {
   end?: string;
   eventId?: string;
   kind: "event" | "place";
+  /** Lucina's travel time from home (minutes, 1-1440), its mode and whether it is a straight-line estimate. */
+  travelMin?: number;
+  travelMode?: "walk" | "bike" | "transit" | "drive";
+  travelApprox?: boolean;
 }
 
 /** Home (Skejbygårdsvej 3, 8240 Risskov): the fallback origin. */

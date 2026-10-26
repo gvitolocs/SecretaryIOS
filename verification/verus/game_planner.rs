@@ -23,6 +23,9 @@
 //      locked door).
 //   P3 termination: every loop of `plan` and `step_target` has a decreases clause (Verus checks it).
 //   P4 story_order_respects_requirements: the milestone `next_milestone` picks has every requirement done.
+//   P5 apply_push: a Strength push is allowed only onto free FLOOR at the player's elevation (never stairs, a wall,
+//      a sprite or another boulder); it moves exactly the boulder in front, and refused pushes change nothing.
+//   P6 replay: any push sequence keeps every boulder on a floor cell and no two boulders in one cell.
 use vstd::prelude::*;
 
 verus! {
@@ -698,6 +701,159 @@ pub proof fn story_order_respects_requirements(done: Seq<bool>, r: int)
         forall|q: int| #[trigger] req(r, q) ==> done[q],
 {
     story_table_points_backwards();
+}
+
+
+// ---------------------------------------------------------------- Strength boulders (P5, P6)
+//
+// Production: world::solve_boulders_to (the push rule of the boulder search) and macros::push (one push on the
+// emulator). Differential test (Lucina repo): world.rs `victory_road_route` replays every push of the solved route
+// through `push_ok` (Rust mirror) on the ROM maps.
+
+pub open spec fn ints(v: Seq<(usize, usize)>) -> Seq<(int, int)> {
+    v.map_values(|c: (usize, usize)| (c.0 as int, c.1 as int))
+}
+
+pub open spec fn holds(bs: Seq<(int, int)>, c: (int, int)) -> bool {
+    exists|i: int| 0 <= i < bs.len() && bs[i] == c
+}
+
+/// A push from (x, y) in direction d (engine/overworld/push_boulder.asm, CheckForCollisionWhenPushingBoulder): the
+/// player stands where no boulder is, the boulder is in the next cell, and the cell beyond is FLOOR (not stairs, a
+/// wall, a tree, a door or a sprite), holds no boulder, and is on the player's elevation.
+pub open spec fn push_ok(g: &Grid, bs: Seq<(int, int)>, x: int, y: int, d: int) -> bool {
+    let nx = x + dx(d);
+    let ny = y + dy(d);
+    let bx = nx + dx(d);
+    let by = ny + dy(d);
+    &&& 0 <= d < 4
+    &&& g.inside(x, y) && g.inside(nx, ny) && g.inside(bx, by)
+    &&& !holds(bs, (x, y))
+    &&& holds(bs, (nx, ny))
+    &&& g.k(bx, by) == FLOOR
+    &&& !holds(bs, (bx, by))
+    &&& g.e(bx, by) == g.e(x, y)
+}
+
+pub open spec fn on_floor(g: &Grid, bs: Seq<(int, int)>) -> bool {
+    forall|i: int| 0 <= i < bs.len() ==> g.inside(#[trigger] bs[i].0, bs[i].1) && g.k(bs[i].0, bs[i].1) == FLOOR
+}
+
+pub open spec fn apart(bs: Seq<(int, int)>) -> bool {
+    forall|i: int, j: int| 0 <= i < bs.len() && 0 <= j < bs.len() && i != j ==> #[trigger] bs[i] != #[trigger] bs[j]
+}
+
+fn find(bs: &Vec<(usize, usize)>, c: (usize, usize)) -> (r: Option<usize>)
+    ensures
+        match r {
+            Some(i) => i < bs@.len() && bs@[i as int] == c,
+            None => !holds(ints(bs@), (c.0 as int, c.1 as int)),
+        },
+{
+    let mut i: usize = 0;
+    while i < bs.len()
+        invariant
+            i <= bs@.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] bs@[j] != c,
+        decreases bs@.len() - i,
+    {
+        if bs[i] == c {
+            return Some(i);
+        }
+        i += 1;
+    }
+    proof {
+        assert forall|k: int| 0 <= k < ints(bs@).len() implies ints(bs@)[k] != (c.0 as int, c.1 as int) by {
+            assert(bs@[k] != c);
+        }
+    }
+    None
+}
+
+/// One push on the boulder list: P5. When it is allowed, the boulder in front moves one cell; boulders stay on
+/// floor and never share a cell. When it is not, nothing changes.
+pub fn apply_push(g: &Grid, bs: &mut Vec<(usize, usize)>, x: usize, y: usize, d: usize) -> (ok: bool)
+    requires
+        g.wf(),
+        d < 4,
+        on_floor(g, ints(old(bs)@)),
+        apart(ints(old(bs)@)),
+    ensures
+        final(bs)@.len() == old(bs)@.len(),
+        on_floor(g, ints(final(bs)@)),
+        apart(ints(final(bs)@)),
+        ok ==> push_ok(g, ints(old(bs)@), x as int, y as int, d as int),
+        !ok ==> final(bs)@ == old(bs)@,
+{
+    if x >= g.w || y >= g.h {
+        return false;
+    }
+    let Some((nx, ny)) = neighbour(g, x, y, d) else { return false };
+    let Some((bx, by)) = neighbour(g, nx, ny, d) else { return false };
+    if find(bs, (x, y)).is_some() {
+        return false;
+    }
+    let Some(i) = find(bs, (nx, ny)) else { return false };
+    if kind_at(g, bx, by) != FLOOR || find(bs, (bx, by)).is_some() || elev_at(g, bx, by) != elev_at(g, x, y) {
+        return false;
+    }
+    let ghost b0 = ints(bs@);
+    proof {
+        assert(holds(b0, (nx as int, ny as int))) by {
+            assert(b0[i as int] == (nx as int, ny as int));
+        }
+    }
+    bs.set(i, (bx, by));
+    proof {
+        let b1 = ints(bs@);
+        assert forall|k: int| 0 <= k < b1.len() implies g.inside(#[trigger] b1[k].0, b1[k].1) && g.k(b1[k].0, b1[k].1) == FLOOR by {
+            if k != i as int {
+                assert(b1[k] == b0[k]);
+            }
+        }
+        assert forall|j: int, k: int| 0 <= j < b1.len() && 0 <= k < b1.len() && j != k implies #[trigger] b1[j] != #[trigger] b1[k] by {
+            if j == i as int {
+                assert(b1[k] == b0[k]);
+                assert(b0[k] != (bx as int, by as int));
+            } else if k == i as int {
+                assert(b1[j] == b0[j]);
+                assert(b0[j] != (bx as int, by as int));
+            } else {
+                assert(b1[j] == b0[j] && b1[k] == b0[k]);
+            }
+        }
+    }
+    true
+}
+
+/// A whole push sequence (x, y, direction), stopping at the first push the game would refuse: P6. Boulders stay on
+/// floor cells and never share one, whatever the solver returned.
+pub fn replay(g: &Grid, bs: &mut Vec<(usize, usize)>, pushes: &Vec<(usize, usize, usize)>) -> (ok: bool)
+    requires
+        g.wf(),
+        on_floor(g, ints(old(bs)@)),
+        apart(ints(old(bs)@)),
+    ensures
+        final(bs)@.len() == old(bs)@.len(),
+        on_floor(g, ints(final(bs)@)),
+        apart(ints(final(bs)@)),
+{
+    let mut k: usize = 0;
+    while k < pushes.len()
+        invariant
+            g.wf(),
+            bs@.len() == old(bs)@.len(),
+            on_floor(g, ints(bs@)),
+            apart(ints(bs@)),
+        decreases pushes@.len() - k,
+    {
+        let (x, y, d) = pushes[k];
+        if d >= 4 || !apply_push(g, bs, x, y, d) {
+            return false;
+        }
+        k += 1;
+    }
+    true
 }
 
 } // verus!

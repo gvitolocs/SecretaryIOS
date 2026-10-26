@@ -12,6 +12,7 @@ import {
   DEFAULT_HOME,
   distanceM,
   formatDistance,
+  formatMinutes,
   googleSearchUrl,
   hasPoint,
   placeRoute,
@@ -95,6 +96,11 @@ export function PlaceCard(props: { place: PlaceInfo; class?: string }) {
     return o.you ? t("maps.fromYou", { d }) : t("maps.fromHome", { d });
   });
   const route = createMemo(() => placeRoute({ ...props.place, ...(point() ?? {}) }));
+  const travel = createMemo(() => {
+    const p = props.place;
+    if (!p.travelMin || !p.travelMode) return "";
+    return `${t(`maps.mode${p.travelMode}`)} · ${p.travelApprox ? "≈ " : ""}${formatMinutes(p.travelMin)}`;
+  });
 
   function open(e: MouseEvent) {
     if (!navigate || e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
@@ -117,6 +123,9 @@ export function PlaceCard(props: { place: PlaceInfo; class?: string }) {
         </Show>
         <Show when={distance()}>
           <span class="place-card-line place-card-distance">{distance()}</span>
+        </Show>
+        <Show when={travel()}>
+          <span class="place-card-line place-card-travel">{travel()}</span>
         </Show>
         <Show when={lookup() === "locating"}>
           <span class="place-card-line" role="status">
