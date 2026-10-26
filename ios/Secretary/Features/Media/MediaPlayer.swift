@@ -5,6 +5,9 @@ import os
 import UIKit
 
 private let localPlayLog = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
+/// `MediaTiming` lines: where the wait before the first frame goes (server answer, AVPlayer ready,
+/// resume seek, first frame), for every play.
+private let timingLog = Logger(subsystem: "tech.getsecretary.app", category: "MediaTiming")
 
 /// Playback of the owner's videos and audio from the server (docs/media-player.md).
 ///
@@ -59,6 +62,10 @@ final class MediaPlayer {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var artwork: MPMediaItemArtwork?
     @ObservationIgnored private let deviceName = UIDevice.current.name
+    /// The play waiting for its first frame: item, when the tap was, the steps so far.
+    @ObservationIgnored private var firstFrame: (id: String, start: ContinuousClock.Instant, from: TimeInterval, steps: String)?
+    /// Milliseconds from the tap to the first frame of the last play (the self-test reads it).
+    private(set) var lastFirstFrameMs: Int?
 
     init(api: @escaping () -> MediaAPI, coreFile: URL = PlayerCore.defaultFileURL) {
         self.api = api
@@ -172,12 +179,16 @@ final class MediaPlayer {
 
     private func open(_ item: MediaItem) async {
         defer { if current?.id == item.id { loading = false } }
+        let start = ContinuousClock.now
+        let ms = { Int((ContinuousClock.now - start) / .milliseconds(1)) }
+        lastFirstFrameMs = nil
         do {
             if item.isVideo, let identifier = localVideo?(item.id), let asset = await LocalVideo.asset(identifier) {
                 try await openLocal(item, asset)
                 return
             }
             let info = try await api().play(id: item.id)
+            let apiMs = ms()
             guard !Task.isCancelled, current?.id == item.id else { return }
             if let saved = info.progress { _ = try? core?.merge([saved]) }
             let resumeMs = (try? core?.resume(id: item.id, durationMs: info.durationMs)) ?? info.resumeMs
@@ -189,9 +200,12 @@ final class MediaPlayer {
             observeEnd(of: avItem)
             player.replaceCurrentItem(with: avItem)
             try await waitUntilReady(avItem)
+            let readyMs = ms()
             guard !Task.isCancelled, current?.id == item.id else { return }
             if resumeMs > 0 { await seekWhenAvailable(TimeInterval(resumeMs) / 1000, in: avItem) }
             guard !Task.isCancelled, current?.id == item.id else { return }
+            firstFrame = (item.id, start, TimeInterval(resumeMs) / 1000,
+                          "mode=\(info.mode) api_ms=\(apiMs) ready_ms=\(readyMs) seek_ms=\(ms()) resume_s=\(resumeMs / 1000)")
             player.playImmediately(atRate: rate)
             if let pick = core?.pickSubtitle(id: item.id, tracks: info.subtitles),
                let track = info.subtitles.first(where: { $0.id == pick }) {
@@ -370,6 +384,12 @@ final class MediaPlayer {
             seekableEnd = item.seekableTimeRanges.last.map { $0.timeRangeValue.end.seconds } ?? 0
         }
         updateCue()
+        if let f = firstFrame, f.id == current?.id, isPlaying, position > f.from + 0.1 {
+            let total = Int((ContinuousClock.now - f.start) / .milliseconds(1))
+            lastFirstFrameMs = total
+            timingLog.notice("MediaTiming id=\(f.id, privacy: .public) \(f.steps, privacy: .public) first_frame_ms=\(total)")
+            firstFrame = nil
+        }
         if isPlaying, position - lastReport >= 1 || position < lastReport {
             reportNow(playing: true)
         }
@@ -431,6 +451,11 @@ final class MediaPlayer {
         cues.first { $0.startMs >= Int(seconds * 1000) }.map { TimeInterval($0.startMs) / 1000 }
     }
     func savedPositionMs(id: String) -> Int? { core?.entry(id: id)?.positionMs }
+    /// Sets the saved position as if the player had stopped there (and pushes it).
+    func setSavedPosition(id: String, ms: Int, durationMs: Int) async {
+        _ = try? core?.position(id: id, positionMs: ms, durationMs: durationMs, playing: false, device: deviceName)
+        await pushProgress()
+    }
     #endif
 
     /// Saved position for a list row: fraction played, or nil when unseen/finished.

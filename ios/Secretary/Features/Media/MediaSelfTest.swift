@@ -72,6 +72,43 @@ enum MediaSelfTest {
         log.notice("MediaSelfTest done pass=\(pass) restored_ms=\(media.savedPositionMs(id: item.id) ?? -1) muted=\(media.player.isMuted)")
     }
 
+    /// `-SecretaryMediaTTFF "Up@0;Pokemon@0.5"`: time from the tap to the first frame for each
+    /// `title words@fraction` (the saved position is set to that fraction of the film first, so
+    /// 0.5 is a resume at the middle). Muted; saved positions are put back afterwards. One
+    /// `MediaTTFF …` line per case (MediaTiming has the breakdown).
+    static func timeToFirstFrame(media: MediaPlayer, items: [MediaItem]) async {
+        guard !ranTTFF, let spec = UserDefaults.standard.string(forKey: "SecretaryMediaTTFF"), !items.isEmpty else { return }
+        ranTTFF = true
+        media.player.isMuted = true
+        var restore: [(MediaItem, Int)] = []
+        for case_ in spec.split(separator: ";") {
+            let parts = case_.split(separator: "@", maxSplits: 1).map(String.init)
+            guard let query = parts.first, let item = items.first(where: { $0.title.localizedCaseInsensitiveContains(query) }) else {
+                log.notice("MediaTTFF case=\(String(case_), privacy: .public) no item")
+                continue
+            }
+            let fraction = parts.count > 1 ? Double(parts[1]) ?? 0 : 0
+            let durationMs = item.durationMs ?? 0
+            if !restore.contains(where: { $0.0.id == item.id }) { restore.append((item, media.savedPositionMs(id: item.id) ?? 0)) }
+            await media.setSavedPosition(id: item.id, ms: Int(Double(durationMs) * fraction), durationMs: durationMs)
+            media.play([item], startAt: 0)
+            media.presented = true
+            let ok = await wait(120) { media.lastFirstFrameMs != nil }
+            log.notice("MediaTTFF case=\(String(case_), privacy: .public) ok=\(ok) first_frame_ms=\(media.lastFirstFrameMs ?? -1) title=\(item.title, privacy: .public) muted=\(media.player.isMuted)")
+            try? await Task.sleep(for: .seconds(3))
+            media.player.pause()
+            media.stop()
+            try? await Task.sleep(for: .seconds(1))
+        }
+        for (item, ms) in restore {
+            await media.setSavedPosition(id: item.id, ms: ms, durationMs: item.durationMs ?? 0)
+        }
+        media.presented = false
+        log.notice("MediaTTFF done restored=\(restore.count)")
+    }
+
+    private static var ranTTFF = false
+
     private static func wait(_ seconds: Double, until done: () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {

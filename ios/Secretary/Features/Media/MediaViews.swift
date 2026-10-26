@@ -65,7 +65,12 @@ struct MediaLibraryView: View {
             await load()
             #if DEBUG || SCREENSHOTS
             // Not cancelled when the player cover hides this list.
-            if kind == .video { Task { @MainActor in await MediaSelfTest.runIfRequested(media: media, items: items) } }
+            if kind == .video {
+                Task { @MainActor in
+                    await MediaSelfTest.runIfRequested(media: media, items: items)
+                    await MediaSelfTest.timeToFirstFrame(media: media, items: items)
+                }
+            }
             #endif
         }
         .task { await media.syncProgress() }
