@@ -87,7 +87,13 @@ pub async fn handle_chat(
     if channel != "web" && channel != "ios" {
         return Err(ApiError::bad_request("channel must be web or ios"));
     }
-    let session = secretary_session_id(&requested, &st.cfg.default_session);
+    // Self-tests and diagnostics run in their own conversation, out of the owner's chat.
+    let selftest = crate::selftest::requested(&body, &requested, &message);
+    let session = if selftest {
+        crate::selftest::SESSION.to_owned()
+    } else {
+        secretary_session_id(&requested, &st.cfg.default_session)
+    };
     let mcp_turn = mcp::turn_info(&requested, &message);
     let text = mcp_turn
         .as_ref()
@@ -185,6 +191,8 @@ struct Finish {
     routes: Vec<Value>,
     /// Calendar events the turn read: the reply gets map cards for those it names.
     calendar_events: Vec<Value>,
+    /// A calendar question the calendar answered: the reply is its agenda (crate::agenda).
+    agenda: Option<crate::agenda::Agenda>,
 }
 
 impl Finish {
@@ -199,6 +207,7 @@ impl Finish {
             job_plan: None,
             routes: Vec::new(),
             calendar_events: Vec::new(),
+            agenda: None,
         }
     }
 
@@ -382,7 +391,7 @@ async fn run_turn_inner(
         ..Meta::default()
     });
     let timeline =
-        TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
+        TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone()).with_meta(turn_meta);
     let timeline = if let Some(item) = existing {
         timeline.with_user_item(item.item)
     } else {
@@ -446,6 +455,7 @@ async fn run_turn_inner(
         // Secrets replies are fixed texts: no model rewrite.
         !finish.action.starts_with("secrets_"),
         &finish.calendar_events,
+        finish.agenda.as_ref(),
     )
     .await;
     let rich_msg = with_routes(rich_msg, &finish.routes);
@@ -491,10 +501,21 @@ async fn run_turn_inner(
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
     add_rich(&mut out, rich_msg.as_ref());
+    if crate::selftest::is_session(&session_of(&out)) {
+        out["conversation"] = json!(crate::selftest::CONVERSATION);
+    }
     for (k, v) in finish.extra {
         out[k] = v;
     }
     Ok(out)
+}
+
+/// A calendar bridge answer as the turn's finish.
+fn calendar_finish(o: crate::bridges::Outcome) -> Finish {
+    let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
+    f.calendar_events = o.events;
+    f.agenda = o.agenda;
+    f
 }
 
 /// `LUCINA_RICH_REPLIES=true`: the reply as Lucina message format v1, plus the
@@ -511,9 +532,27 @@ async fn rich_reply(
     action_result: &str,
     use_model: bool,
     calendar_events: &[Value],
+    agenda: Option<&crate::agenda::Agenda>,
 ) -> (Option<lucina_store::rich::RichMessage>, String, String) {
     if !st.cfg.rich_replies {
         return (None, reply.to_owned(), reply.to_owned());
+    }
+    // An agenda: one sentence and the event cards, no model rewrite, no wall of text.
+    if let Some(a) = agenda.filter(|_| !calendar_events.is_empty()) {
+        let tz = st.cfg.time_zone;
+        let mut m = crate::agenda::message(a, calendar_events, tz);
+        if let Some(g) = &st.geocoder {
+            g.fill(&mut m.blocks).await;
+            g.add_travel(&mut m.blocks).await;
+        }
+        m.blocks = m
+            .blocks
+            .iter()
+            .filter_map(lucina_store::rich::normalize_block)
+            .collect();
+        crate::agenda::with_navigation(&mut m);
+        let text = crate::agenda::plain_text(a, calendar_events, &m.blocks, tz);
+        return (Some(m), text.clone(), text);
     }
     let draft = crate::rich::Draft {
         text: reply,
@@ -546,6 +585,10 @@ fn with_rich_meta(
     }
 }
 
+fn session_of(out: &Value) -> String {
+    out["sessionId"].as_str().unwrap_or("").to_owned()
+}
+
 /// The v1 fields of the chat response (`reply` is the plain fallback).
 fn add_rich(out: &mut Value, rich: Option<&lucina_store::rich::RichMessage>) {
     if let Some(m) = rich {
@@ -570,7 +613,7 @@ async fn secrets_finish(st: &AppState, text: &str, mcp: bool) -> Option<Finish> 
 
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
 fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
-    if st.memory.mode() != MemoryMode::ReadWrite {
+    if st.memory.mode() != MemoryMode::ReadWrite || crate::selftest::is_session(&t.session) {
         return;
     }
     let label = match &t.mcp {
@@ -919,11 +962,7 @@ async fn json_turn(
                 tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
                 return Finish::refusal(&persona, blocked);
             }
-            Some(Ok(o)) => {
-                let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
-                f.calendar_events = o.events;
-                return f;
-            }
+            Some(Ok(o)) => return calendar_finish(o),
             None => {}
         }
     }
@@ -1434,14 +1473,15 @@ fn spawn_job(
                 job_id: Some(job.id.clone()),
                 ..Meta::default()
             });
-            st.timeline.record(lucina_store::timeline::NewItem {
-                channel: channel.clone(),
-                role: "lucina".into(),
-                text,
-                reply_to: user_item.clone(),
-                meta: with_rich_meta(meta, rich),
-                ..Default::default()
-            })
+            st.timeline_for(&session)
+                .record(lucina_store::timeline::NewItem {
+                    channel: channel.clone(),
+                    role: "lucina".into(),
+                    text,
+                    reply_to: user_item.clone(),
+                    meta: with_rich_meta(meta, rich),
+                    ..Default::default()
+                })
         };
         let _ = st.jobs.update(&job.id, |j| {
             j.status = "running".into();
@@ -1484,7 +1524,7 @@ fn spawn_job(
                 };
                 // Job results are formatted without another model call.
                 let (rich_msg, text, _) =
-                    rich_reply(&st, &result, &message, &action, "", false, &[]).await;
+                    rich_reply(&st, &result, &message, &action, "", false, &[], None).await;
                 let item = record(text, rich_msg.as_ref());
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
@@ -1702,7 +1742,7 @@ async fn tools_turn(
     } else {
         ""
     };
-    let turn = TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone());
+    let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone());
     let turn = if let Some(s) = existing {
         turn.with_user_item(s.item)
     } else {
@@ -1815,10 +1855,23 @@ async fn tools_turn(
         (Some(d), None) => delegation_settings(d, &message, mcp).await,
         _ => None,
     };
+    // Calendar questions ("cosa ho domani?", "dove si tiene la Hack Night?") are answered from
+    // the calendar like on the JSON planner, never by the model from memory or notes.
+    let calendar = if secrets.is_none()
+        && delegation.is_none()
+        && settled.is_none()
+        && st.cfg.calendar_enabled
+    {
+        crate::bridges::calendar_read(&st.secretary, &message, now, tz).await
+    } else {
+        None
+    };
     let finish = if let Some(f) = secrets {
         f
     } else if let Some(f) = delegation {
         f
+    } else if let Some(o) = calendar {
+        calendar_finish(o)
     } else if let Some(result) = settled {
         let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
@@ -1888,6 +1941,7 @@ async fn tools_turn(
         // Secrets replies are fixed texts: no model rewrite.
         !finish.action.starts_with("secrets_"),
         &finish.calendar_events,
+        finish.agenda.as_ref(),
     )
     .await;
     st.recent
@@ -1925,6 +1979,9 @@ async fn tools_turn(
         "lucinaItemId": lucina_item.map(|i| i.id),
     });
     add_rich(&mut out, rich_msg.as_ref());
+    if crate::selftest::is_session(&session_of(&out)) {
+        out["conversation"] = json!(crate::selftest::CONVERSATION);
+    }
     for (k, v) in finish.extra {
         out[k] = v;
     }

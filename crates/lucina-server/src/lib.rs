@@ -8,6 +8,7 @@
 //! are off; reminder writes are forwarded to the Node Lucina; Honcho is read
 //! only. See `README` in the crate docs of [`config`].
 
+pub mod agenda;
 pub mod api;
 pub mod bridges;
 pub mod capabilities;
@@ -27,6 +28,7 @@ pub mod planner;
 pub mod prompts;
 pub mod rich;
 pub mod secrets;
+pub mod selftest;
 pub mod share;
 pub mod surface;
 
@@ -59,6 +61,8 @@ pub struct Inner {
     pub share: crate::share::ShareRuntime,
     pub cfg: Config,
     pub timeline: Arc<TimelineStore>,
+    /// Self-test and diagnostic turns (crate::selftest), never the owner's timeline.
+    pub selftest_timeline: Arc<TimelineStore>,
     pub reminders: Arc<ReminderStore>,
     pub writer: Arc<dyn ReminderWriter>,
     pub jobs: Arc<JobStore>,
@@ -107,6 +111,18 @@ impl std::ops::Deref for AppState {
     }
 }
 
+impl Inner {
+    /// The timeline a turn of `session` writes: the owner's, or for a self-test its own
+    /// (crate::selftest).
+    pub fn timeline_for(&self, session: &str) -> Arc<TimelineStore> {
+        if selftest::is_session(session) {
+            self.selftest_timeline.clone()
+        } else {
+            self.timeline.clone()
+        }
+    }
+}
+
 impl AppState {
     /// Wire everything from the config. `model: None` uses DeepSeek.
     pub fn build(cfg: Config, model: Option<Arc<dyn ChatModel>>) -> anyhow::Result<Self> {
@@ -130,6 +146,11 @@ impl AppState {
         let secret_store = secrets::open_store(&cfg);
         let timeline = Arc::new(TimelineStore::new(
             &cfg.timeline_path,
+            cfg.timeline_max_bytes,
+            cfg.timeline_enabled,
+        ));
+        let selftest_timeline = Arc::new(TimelineStore::new(
+            cfg.timeline_path.with_file_name(selftest::TIMELINE_FILE),
             cfg.timeline_max_bytes,
             cfg.timeline_enabled,
         ));
@@ -294,6 +315,7 @@ impl AppState {
             geocoder,
             share,
             timeline,
+            selftest_timeline,
             reminders,
             writer,
             jobs,

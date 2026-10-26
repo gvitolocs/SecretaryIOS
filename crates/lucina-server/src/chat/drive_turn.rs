@@ -87,7 +87,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         max_rounds: 5,
         ..AgentConfig::default()
     };
-    let timeline = st.timeline.clone();
+    let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {

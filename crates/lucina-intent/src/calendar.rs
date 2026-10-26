@@ -163,6 +163,11 @@ fn day_of(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<(String, Remover)> {
     weekday_offset(text, now, tz).map(|(o, src)| (ymd_plus(now, tz, o), Remover::Dynamic(src)))
 }
 
+/// The day a text names (`YYYY-MM-DD`) and the text without it.
+pub(crate) fn day_of_text(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<(String, String)> {
+    day_of(text, now, tz).map(|(ymd, remover)| (ymd, remover.apply(text)))
+}
+
 fn time_of(text: &str) -> Option<(u32, u32, Remover)> {
     let patterns: [(&'static str, &'static str); 5] = [
         (
