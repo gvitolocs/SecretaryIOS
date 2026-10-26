@@ -1,8 +1,7 @@
 use axum::{
     body::Body,
-    extract::Query,
     http::{header, Request, StatusCode},
-    routing::get,
+    routing::post,
     Json, Router,
 };
 use http_body_util::BodyExt;
@@ -35,7 +34,7 @@ fn setup(dir: &Path) {
     std::fs::write(dir.join("secret.txt"), b"outside").unwrap();
 }
 
-fn config(dir: &Path, photon: &str) -> Config {
+fn config(dir: &Path, google: &str) -> Config {
     Config {
         dir: dir.to_path_buf(),
         tiles: "region".into(),
@@ -45,7 +44,10 @@ fn config(dir: &Path, photon: &str) -> Config {
             label: "Home".into(),
         }),
         // Port 1: nothing listens, connections are refused at once.
-        photon_url: photon.into(),
+        google_key: None,
+        places_url: google.into(),
+        routes_url: google.into(),
+        state_dir: dir.join("state"),
         upstream_key: None,
     }
 }
@@ -78,7 +80,7 @@ async fn config_and_health() {
     assert_eq!(
         json_of(&b),
         json!({"tiles":"/v1/maps/tiles/region.pmtiles","assets":"/v1/maps/assets",
-            "home":{"lat":56.19633,"lng":10.2011,"label":"Home"},"geocoder":false,
+            "home":{"lat":56.19633,"lng":10.2011,"label":"Home"},"geocoder":false,"routes":false,
             "attribution":"© OpenStreetMap contributors · Protomaps"})
     );
     let (s, _, b) = send(&a, get_req("/v1/maps/health")).await;
@@ -316,7 +318,7 @@ async fn geocode_validation_and_down() {
         (s, json_of(&b)),
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"error":"geocoder_unavailable"})
+            json!({"error":"provider_unavailable"})
         )
     );
     let ok = "x".repeat(200);
@@ -328,40 +330,77 @@ async fn geocode_validation_and_down() {
     );
 }
 
-type Seen = Arc<Mutex<Vec<HashMap<String, String>>>>;
+type Seen = Arc<Mutex<Vec<(axum::http::HeaderMap, Value)>>>;
 
-async fn fake_photon(seen: Seen, hits: Arc<AtomicUsize>) -> String {
-    let route = get(move |Query(q): Query<HashMap<String, String>>| {
-        let seen = Arc::clone(&seen);
-        let hits = Arc::clone(&hits);
-        async move {
-            hits.fetch_add(1, Ordering::SeqCst);
-            seen.lock().unwrap().push(q);
-            Json(json!({"type":"FeatureCollection","features":[
-                {"geometry":{"coordinates":[10.2006,56.1611]},
-                 "properties":{"name":"Folkehuset","street":"Møllestien","postcode":"8000","city":"Aarhus","country":"Denmark"}},
-                {"geometry":{"coordinates":[0,0]},"properties":{"name":"broken"}}
-            ]}))
-        }
-    });
+async fn fake_google(
+    seen: Seen,
+    hits: Arc<AtomicUsize>,
+    fail: &'static str,
+    slow: bool,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let route = post(
+        move |uri: axum::http::Uri, headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+            let seen = seen.clone();
+            let hits = hits.clone();
+            async move {
+                assert!(uri.query().is_none());
+                assert!(!body.to_string().contains("stub-google-secret"));
+                hits.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(headers["x-goog-api-key"], "stub-google-secret");
+                seen.lock().unwrap().push((headers, body.clone()));
+                if slow {
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                }
+                if body["travelMode"] == fail || fail == "all" {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error":"stub-google-secret"})),
+                    );
+                }
+                if body.get("textQuery").is_some() {
+                    return (
+                        StatusCode::OK,
+                        Json(
+                            json!({"places":[{"displayName":{"text":"Folkehuset"},"formattedAddress":"Møllestien, Aarhus","location":{"latitude":56.1611,"longitude":10.2006}},{"location":{"latitude":0,"longitude":0}}]}),
+                        ),
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(
+                        json!({"routes":[{"duration":"540s","staticDuration":"480s","distanceMeters":4200,"polyline":{"encodedPolyline":"_p~iF~ps|U_ulLnnqC_mqNvxq`@"},"legs":[{"steps":[{"transitDetails":{"transitLine":{"nameShort":"2A","name":"Bus 2A","vehicle":{"type":"BUS"}},"stopDetails":{"departureStop":{"name":"Home stop"},"arrivalStop":{"name":"City stop"},"departureTime":"2099-10-27T16:40:00Z","arrivalTime":"2099-10-27T16:49:00Z"}}}]}]}]}),
+                    ),
+                )
+            }
+        },
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, Router::new().route("/api", route))
+    let task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/", route))
             .await
-            .unwrap()
+            .unwrap();
     });
-    format!("http://{addr}")
+    (format!("http://{addr}/"), task)
 }
+fn keyed(dir: &Path, url: &str) -> Config {
+    let mut c = config(dir, url);
+    c.google_key = secretary_maps::provider::Secret::new("stub-google-secret");
+    c
+}
+const ROUTE: &str = "/v1/maps/routes?from=56.19633,10.2011&to=56.1611,10.2006";
 
 #[tokio::test]
-async fn geocode_through_photon() {
+async fn google_happy_cache_and_persistence() {
     let tmp = tempfile::tempdir().unwrap();
     let seen: Seen = Arc::default();
     let hits = Arc::new(AtomicUsize::new(0));
-    let url = fake_photon(Arc::clone(&seen), Arc::clone(&hits)).await;
-    let a = app(AppState::new(config(tmp.path(), &url)));
-
+    let (url, task) = fake_google(seen.clone(), hits.clone(), "none", false).await;
+    let c = keyed(tmp.path(), &url);
+    let a = app(AppState::new(c.clone()));
+    let (_, _, b) = send(&a, get_req("/v1/maps/config")).await;
+    assert_eq!(json_of(&b)["geocoder"], true);
+    assert_eq!(json_of(&b)["routes"], true);
     let (s, _, b) = send(
         &a,
         get_req("/v1/maps/geocode?q=%20Folkehuset%20%20Aarhus%20"),
@@ -370,116 +409,224 @@ async fn geocode_through_photon() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         json_of(&b),
-        json!({"results":[{"name":"Folkehuset","address":"Møllestien, 8000 Aarhus, Denmark","lat":56.1611,"lng":10.2006}]})
+        json!({"results":[{"name":"Folkehuset","address":"Møllestien, Aarhus","lat":56.1611,"lng":10.2006}]})
     );
+    send(&a, get_req("/v1/maps/geocode?q=folkehuset%20aarhus")).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let a2 = app(AppState::new(c));
+    assert_eq!(
+        send(&a2, get_req("/v1/maps/geocode?q=folkehuset%20aarhus"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
     {
         let seen = seen.lock().unwrap();
-        let q = &seen[0];
-        assert_eq!(q["q"], "Folkehuset  Aarhus");
-        assert_eq!((q["limit"].as_str(), q["lang"].as_str()), ("3", "en"));
+        let (h, b) = &seen[0];
         assert_eq!(
-            (q["lat"].as_str(), q["lon"].as_str()),
-            ("56.19633", "10.2011")
-        ); // home
+            h["x-goog-fieldmask"],
+            "places.displayName,places.formattedAddress,places.location"
+        );
+        assert_eq!(b["languageCode"], "da");
+        assert_eq!(b["pageSize"], 3);
+        assert_eq!(b["locationBias"]["circle"]["radius"], 50000.0);
+        assert_eq!(b["locationBias"]["circle"]["center"]["latitude"], 56.19633);
     }
-    // Same normalized query and bias: served from the cache.
-    let (s, _, _) = send(&a, get_req("/v1/maps/geocode?q=folkehuset%20aarhus")).await;
+    let uri = format!("{ROUTE}&arrive=2099-10-27T17:00:00Z");
+    let (s, _, b) = send(&a, get_req(&uri)).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let v = json_of(&b);
+    assert_eq!(v["routes"].as_array().unwrap().len(), 4);
+    assert_eq!(v["failed"], json!([]));
+    assert_eq!(v["routes"][0]["leaveAt"], "2099-10-27T16:46:00Z");
+    assert_eq!(v["routes"][3]["transit"][0]["line"], "2A");
+    assert_eq!(v["routes"][0]["polyline"][0], json!([38.5, -120.2]));
+    assert!(!String::from_utf8(b).unwrap().contains("stub-google-secret"));
+    assert_eq!(hits.load(Ordering::SeqCst), 6); // Places + four modes + drive second pass
+    let (s, _, b) = send(&a, get_req(&format!("{ROUTE}&arrive=2099-10-27T17:00:01Z"))).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(hits.load(Ordering::SeqCst), 6);
+    assert_eq!(json_of(&b)["routes"][0]["leaveAt"], "2099-10-27T16:46:01Z");
+    let seen = seen.lock().unwrap();
+    let drives: Vec<_> = seen
+        .iter()
+        .filter(|(_, b)| b["travelMode"] == "DRIVE")
+        .collect();
+    assert_eq!(drives.len(), 2);
+    assert_eq!(drives[1].1["departureTime"], "2099-10-27T16:52:00Z");
+    assert_eq!(drives[1].1["routingPreference"], "TRAFFIC_AWARE");
+    let transit = seen
+        .iter()
+        .find(|(_, b)| b["travelMode"] == "TRANSIT")
+        .unwrap();
+    assert_eq!(transit.1["arrivalTime"], "2099-10-27T17:00:00Z");
+    assert!(transit.1.get("departureTime").is_none());
+    task.abort();
+}
 
-    // A valid bias from the query wins; an invalid one falls back to home.
-    send(
-        &a,
-        get_req("/v1/maps/geocode?q=folkehuset&lat=55.6761&lng=12.5683&limit=5"),
+#[tokio::test]
+async fn partial_failure_validation_and_no_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let seen: Seen = Arc::default();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (url, task) = fake_google(seen, hits.clone(), "BICYCLE", false).await;
+    let a = app(AppState::new(keyed(tmp.path(), &url)));
+    let (s, _, b) = send(&a, get_req(ROUTE)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(json_of(&b)["failed"], json!(["bike"]));
+    assert_eq!(json_of(&b)["routes"].as_array().unwrap().len(), 3);
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
+    for uri in [
+        "/v1/maps/routes",
+        "/v1/maps/routes?from=0,0&to=1,2",
+        "/v1/maps/routes?from=NaN,2&to=1,2",
+    ] {
+        assert_eq!(send(&a, get_req(uri)).await.0, StatusCode::BAD_REQUEST);
+    }
+    for suffix in [
+        "&modes=",
+        "&modes=car",
+        "&arrive=tomorrow",
+        "&modes=drive,,walk",
+    ] {
+        assert_eq!(
+            send(&a, get_req(&format!("{ROUTE}{suffix}"))).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let a = app(AppState::new(config(tmp.path(), &url)));
+    for uri in [ROUTE, "/v1/maps/geocode?q=aarhus"] {
+        let (s, _, b) = send(&a, get_req(uri)).await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json_of(&b), json!({"error":"provider_unavailable"}));
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
+    task.abort();
+}
+
+#[derive(Clone)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+impl std::io::Write for LogCapture {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self {
+        self.clone()
+    }
+}
+#[tokio::test]
+async fn errors_timeouts_and_secret_redaction() {
+    let logs = LogCapture(Arc::default());
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(logs.clone())
+            .finish(),
     )
-    .await;
-    send(&a, get_req("/v1/maps/geocode?q=elsewhere&lat=0&lng=0")).await;
-    send(&a, get_req("/v1/maps/geocode?q=nowhere&lat=91&lng=10")).await;
-    let seen = seen.lock().unwrap().clone();
-    assert_eq!(seen.len(), 4);
-    assert_eq!(
-        (
-            seen[1]["lat"].as_str(),
-            seen[1]["lon"].as_str(),
-            seen[1]["limit"].as_str()
-        ),
-        ("55.6761", "12.5683", "5")
-    );
-    assert_eq!(seen[2]["lat"], "56.19633");
-    assert_eq!(seen[3]["lat"], "56.19633");
-
-    // The probe now reports the geocoder up.
-    let (_, _, b) = send(&a, get_req("/v1/maps/health")).await;
-    assert_eq!(json_of(&b)["geocoder"], json!(true));
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    for slow in [false, true] {
+        let (url, task) =
+            fake_google(Arc::default(), Arc::new(AtomicUsize::new(0)), "all", slow).await;
+        let c = keyed(tmp.path(), &url);
+        assert!(!format!("{c:?}").contains("stub-google-secret"));
+        let a = app(AppState::new(c));
+        let start = std::time::Instant::now();
+        // Route calls must run concurrently, including timeouts.
+        let (s, _, b) = send(&a, get_req(ROUTE)).await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(start.elapsed() < std::time::Duration::from_millis(5500));
+        assert_eq!(json_of(&b), json!({"error":"provider_unavailable"}));
+        let (s, _, b) = send(&a, get_req("/v1/maps/geocode?q=private-address")).await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!String::from_utf8(b).unwrap().contains("stub-google-secret"));
+        task.abort();
+    }
+    let text = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(!text.contains("stub-google-secret"));
+    assert!(!text.contains("private-address"));
+    assert!(!text.contains("56.19633"));
+    assert!(text.contains("geocode unavailable"));
 }
 
 #[test]
 fn config_from_env() {
     let tmp = tempfile::tempdir().unwrap();
     let key = tmp.path().join("key");
-    std::fs::write(&key, "  0123456789abcdef-secret\n").unwrap();
-    let env = |pairs: Vec<(&'static str, String)>| {
-        let map: HashMap<&str, String> = pairs.into_iter().collect();
-        move |k: &str| map.get(k).cloned()
-    };
-    let c = Config::from_env(env(vec![("HOME", "/home/x".into())])).unwrap();
-    assert_eq!(c.dir, Path::new("/home/x/data/maps"));
+    std::fs::write(&key, "  stub-google-secret\n").unwrap();
+    let env = HashMap::from([
+        ("HOME", tmp.path().display().to_string()),
+        ("MAPS_GOOGLE_KEY_FILE", key.display().to_string()),
+    ]);
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(c.google_key.is_some());
+    assert!(!format!("{c:?}").contains("stub-google-secret"));
     assert_eq!(
-        (c.tiles.as_str(), c.photon_url.as_str()),
-        ("region", "http://127.0.0.1:2322")
+        c.places_url,
+        "https://places.googleapis.com/v1/places:searchText"
     );
-    assert_eq!((c.home, c.upstream_key), (None, None));
+    assert_eq!(c.state_dir, tmp.path().join(".local/state/secretary-maps"));
+    std::fs::remove_file(key).unwrap();
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(c.google_key.is_none());
+}
 
-    let c = Config::from_env(env(vec![
-        ("MAPS_DIR", "/srv/maps".into()),
-        ("MAPS_TILES", "dk".into()),
+#[test]
+fn env_home_validation_and_overrides() {
+    let tmp = tempfile::tempdir().unwrap();
+    let key = tmp.path().join("upstream");
+    std::fs::write(&key, " 0123456789abcdef-upstream ").unwrap();
+    let mut env = HashMap::from([
+        ("HOME", tmp.path().display().to_string()),
         ("MAPS_HOME_LAT", "56.19633".into()),
-        ("MAPS_HOME_LNG", " 10.2011 ".into()),
-        ("MAPS_PHOTON_URL", "http://10.0.0.2:2322/".into()),
+        ("MAPS_HOME_LNG", "10.2011".into()),
+        ("MAPS_HOME_LABEL", "Skejby".into()),
+        ("MAPS_TILES", "dk".into()),
+        ("MAPS_GOOGLE_PLACES_URL", "http://localhost/places".into()),
+        ("MAPS_GOOGLE_ROUTES_URL", "http://localhost/routes".into()),
+        (
+            "XDG_STATE_HOME",
+            tmp.path().join("custom-state").display().to_string(),
+        ),
         ("MAPS_UPSTREAM_KEY_FILE", key.display().to_string()),
-    ]))
-    .unwrap();
-    assert_eq!(
-        c.home,
-        Some(Home {
-            lat_e7: 561_963_300,
-            lng_e7: 102_011_000,
-            label: "Home".into()
-        })
-    );
-    assert_eq!(c.photon_url, "http://10.0.0.2:2322");
-    assert_eq!(c.upstream_key.as_deref(), Some("0123456789abcdef-secret"));
-
-    for (lat, lng) in [
-        ("56.2", ""),
+    ]);
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert_eq!(c.home.unwrap().label, "Skejby");
+    assert_eq!(c.tiles, "dk");
+    assert_eq!(c.places_url, "http://localhost/places");
+    assert_eq!(c.routes_url, "http://localhost/routes");
+    assert_eq!(c.state_dir, tmp.path().join("custom-state/secretary-maps"));
+    assert_eq!(c.upstream_key.as_deref(), Some("0123456789abcdef-upstream"));
+    for (a, b) in [
+        ("56", ""),
         ("x", "10"),
         ("0", "0"),
         ("91", "10"),
         ("NaN", "10"),
     ] {
-        let c = Config::from_env(env(vec![
-            ("HOME", "/h".into()),
-            ("MAPS_HOME_LAT", lat.into()),
-            ("MAPS_HOME_LNG", lng.into()),
-        ]));
-        assert_eq!(c.unwrap().home, None, "{lat},{lng}");
+        env.insert("MAPS_HOME_LAT", a.into());
+        env.insert("MAPS_HOME_LNG", b.into());
+        assert!(Config::from_env(|k| env.get(k).cloned())
+            .unwrap()
+            .home
+            .is_none());
     }
-    let c = Config::from_env(env(vec![
-        ("HOME", "/h".into()),
-        ("MAPS_HOME_LAT", "56".into()),
-        ("MAPS_HOME_LNG", "10".into()),
-        ("MAPS_HOME_LABEL", "Skejby".into()),
-    ]));
-    assert_eq!(c.unwrap().home.unwrap().label, "Skejby");
-    assert!(Config::from_env(env(vec![
-        ("HOME", "/h".into()),
-        ("MAPS_TILES", "../x".into())
-    ]))
-    .is_err());
-    std::fs::write(&key, "short").unwrap();
-    assert!(Config::from_env(env(vec![
-        ("HOME", "/h".into()),
-        ("MAPS_UPSTREAM_KEY_FILE", key.display().to_string())
-    ]))
-    .is_err());
+    env.insert("MAPS_GOOGLE_PLACES_URL", "http://127.0.0.1:1234".into());
+    env.insert("MAPS_GOOGLE_ROUTES_URL", "http://127.0.0.1:1235/".into());
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert_eq!(c.places_url, "http://127.0.0.1:1234/v1/places:searchText");
+    assert_eq!(
+        c.routes_url,
+        "http://127.0.0.1:1235/directions/v2:computeRoutes"
+    );
+    env.insert("MAPS_TILES", "../x".into());
+    assert!(Config::from_env(|k| env.get(k).cloned()).is_err());
 }

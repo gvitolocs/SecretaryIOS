@@ -277,3 +277,39 @@ fn mk5_place_validity() {
         }
     }
 }
+
+#[test]
+fn mk6_mk7_routing() {
+    let mut seed = 0x45abcd1234u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for _ in 0..5000 {
+        let len = (next() % 1000) as usize;
+        let max = (next() % 500) as usize;
+        let points: Vec<_> = (0..len).map(|i| (i as i64, next() as i64)).collect();
+        let r = secretary_maps::kernel::simplify(&points, max);
+        assert!(r.len() <= max);
+        if max >= 2 && len > 0 {
+            assert_eq!(r.first(), points.first());
+            assert_eq!(r.last(), points.last());
+        }
+        // The first component is a strict index witness, matching indexed_subsequence.
+        assert!(r.windows(2).all(|w| w[0].0 < w[1].0));
+        for p in r {
+            assert_eq!(points[p.0 as usize], p);
+        }
+        let a = next() as i64;
+        let d = next();
+        let b = next();
+        let exact = a as i128 - (d as i128 + b as i128) * 1000;
+        assert_eq!(
+            secretary_maps::kernel::leave_at(a, d, b),
+            exact.max(i64::MIN as i128) as i64
+        );
+        assert!(secretary_maps::kernel::leave_at(a, d, b) <= a);
+    }
+}

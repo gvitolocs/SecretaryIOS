@@ -1,10 +1,10 @@
 # secretary-maps
 
-Self-hosted maps for the Secretary apps (the web app, the Android WebView, the place cards): one
-Protomaps PMTiles extract served with HTTP range, the map fonts and sprites, and geocoding through a
-local [Photon](https://github.com/komoot/photon). No API keys, and no request leaves the box: the
-geocoder is local and clients read tiles from this server. iOS uses MapKit and needs only
-`/v1/maps/config` (home) and, optionally, `/v1/maps/geocode`.
+Maps for the Secretary apps: self-hosted Protomaps PMTiles, fonts and sprites, with Google
+Places API (New) Text Search and Google Routes API called by this server. The Google key stays
+on the server and travels only in `X-Goog-Api-Key`; clients never receive it. iOS keeps MapKit
+for rendering; web and Android use MapLibre. Provider failures let clients fall back to their
+platform search/directions or approximate travel estimates.
 
 The kernels (coordinates, bounds, travel estimates, the `place` normalizer, the asset path rule)
 are in `src/kernel.rs` and verified in `verification/verus/map_kernels.rs` (protocol 15 in
@@ -19,7 +19,10 @@ are in `src/kernel.rs` and verified in `verification/verus/map_kernels.rs` (prot
 | `MAPS_TILES` | `region` | tiles file name without `.pmtiles`, `[a-z0-9-]{1,40}` |
 | `MAPS_HOME_LAT`, `MAPS_HOME_LNG` | unset | home; `home` is `null` when either is unset or invalid (out of range, (0, 0), not a number) |
 | `MAPS_HOME_LABEL` | `Home` | |
-| `MAPS_PHOTON_URL` | `http://127.0.0.1:2322` | |
+| `MAPS_GOOGLE_KEY_FILE` | `~/.config/secretary-maps/google.key` | trimmed at startup; missing/empty key disables geocoding and routes; restart after rotation |
+| `MAPS_GOOGLE_PLACES_URL` | `https://places.googleapis.com/v1/places:searchText` | base origin or complete endpoint override for local tests |
+| `MAPS_GOOGLE_ROUTES_URL` | `https://routes.googleapis.com/directions/v2:computeRoutes` | base origin or complete endpoint override for local tests |
+| `XDG_STATE_HOME` | `~/.local/state` | Places snapshot at `secretary-maps/cache.json`, private directory/file permissions, atomic temp-file + rename |
 | `MAPS_UPSTREAM_KEY_FILE` | unset | when set, every route except `/v1/maps/health` requires `X-Maps-Upstream-Key` equal to the file's trimmed content (at least 16 characters; constant-time compare), else 401 |
 | `RUST_LOG` | `info` | |
 
@@ -30,10 +33,25 @@ All under `/v1/maps`; anything else is `404 {"error":"not_found"}`.
 | Route | |
 |---|---|
 | `GET /health` | `{"ok":true,"tiles":bool,"geocoder":bool}` (no upstream key needed) |
-| `GET /config` | `{"tiles":"/v1/maps/tiles/region.pmtiles"\|null,"assets":"/v1/maps/assets","home":{"lat","lng","label"}\|null,"geocoder":bool,"attribution":"© OpenStreetMap contributors · Protomaps"}`; `tiles` is null while the file is missing, `geocoder` is a probe of Photon (`/api?q=aarhus&limit=1`) cached for 60 s |
+| `GET /config` | `{"tiles":"/v1/maps/tiles/region.pmtiles"\|null,"assets":"/v1/maps/assets","home":{"lat","lng","label"}\|null,"geocoder":bool,"routes":bool,"attribution":"© OpenStreetMap contributors · Protomaps"}`; `tiles` is null while the file is missing, `geocoder` and `routes` are true when a Google key is loaded (no network probe) |
 | `GET /tiles/<name>.pmtiles` | the file with `Range` (206 + `Content-Range`, 416 for an unsatisfiable range), `ETag` (`If-None-Match` 304, `If-Match` 412, `If-Range`), `Last-Modified`, `Accept-Ranges: bytes`, `Cache-Control: private, max-age=86400` |
 | `GET /assets/<path>` | files under `MAPS_DIR/assets` (`.pbf` as `application/x-protobuf`, `.json`, `.png`), `Cache-Control: private, max-age=604800`. Paths with `..`, `.` or empty segments, a leading `/`, `\`, `%`, NUL or other control bytes are 400; a path whose canonical form leaves the assets dir (a symlink out) is 404 |
-| `GET /geocode?q=&lat=&lng=&limit=` | `{"results":[{"name","address","lat","lng"}]}`. `q` trimmed, 2..=200 chars, `limit` 1..=5 (default 3), else 400. Biased to `lat`/`lng` when valid, else home. Photon down or failing (3 s timeout) is `503 {"error":"geocoder_unavailable"}`. Results are cached in memory (512 entries, 24 h) by lowercased, whitespace-collapsed query + bias rounded to 0.01° + limit. The query is never logged (only its length and the result count) |
+| `GET /geocode?q=&lat=&lng=&limit=` | `{"results":[{"name","address","lat","lng"}]}`. `q` trimmed, 2..=200 chars, `limit` 1..=5 (default 3), else 400. Places Text Search, Danish language, 50 km circular bias around valid query coordinates or home. Three-second deadline. Persistent + memory LRU/TTL cache, 5000 entries, 30 days, keyed by normalized query, bias rounded to 0.01°, and limit. Logs only query length and result count. |
+| `GET /routes?from=lat,lng&to=lat,lng&modes=drive,walk,bike,transit&arrive=RFC3339` | Coordinates required and validated via `parse_coord`; modes optional subset (default all four), arrival optional. Invalid input is 400. Concurrent Google Routes calls, four-second deadline per mode. Returns `{"provider":"google","routes":[...],"failed":[...]}`; each route has mode, durationS, staticDurationS, distanceM, decoded precision-5 polyline simplified to ≤400 points, leaveAt (with arrival: arrival − duration − 5 min), and transit step summaries for transit. |
+
+Both provider endpoints return `503 {"error":"provider_unavailable"}` without a key or on provider failure
+(routes: when every requested mode fails). Partial routing failures appear in `failed`. Drive uses
+`TRAFFIC_AWARE` and departure now; for a future arrival it first obtains static duration and then routes at
+arrival minus that duration, within the same deadline. Transit uses arrivalTime when supplied,
+otherwise departureTime now. Walk/bike omit time options. Routing logs contain only mode, status and latency.
+Route results are cached in memory by coordinates rounded to four decimals, mode and arrival rounded to five
+minutes (absent arrival is a distinct bucket): drive/transit five minutes, walk/bike 24 h, at most 5000 entries.
+Cached leaveAt is recalculated for the exact requested arrival. Only Places entries persist.
+
+`deploy/secretary-maps/sync-google-key.sh` reads `GOOGLE_MAPS_SERVER_KEY` from the dev Infisical project and
+atomically writes the private key file with `umask 077`; it never prints the value. Run it at deployment,
+then restart the service. It exits 3 if the secret is missing. This script is a deployment step, not a service
+startup dependency (the service can serve tiles without Google).
 
 The web client opens the tiles with `pmtiles://` + the absolute URL of `config.tiles`, and the
 MapLibre style points `glyphs` at `<assets>/fonts/{fontstack}/{range}.pbf` and `sprite` at
@@ -106,7 +124,8 @@ MAPS_HOME_LAT=56.19633
 MAPS_HOME_LNG=10.20110
 MAPS_HOME_LABEL=Home
 MAPS_UPSTREAM_KEY_FILE=/home/nez/.config/secretary-maps/upstream.key
+MAPS_GOOGLE_KEY_FILE=/home/nez/.config/secretary-maps/google.key
 ```
 
-Tests: `cargo test -p secretary-maps` (kernels, the HTTP routes against a fake Photon, and
+Tests: `cargo test -p secretary-maps` (kernels, the HTTP routes against a local Google stub, and
 `tests/kernel_model.rs`, the differential test against the Verus specs).

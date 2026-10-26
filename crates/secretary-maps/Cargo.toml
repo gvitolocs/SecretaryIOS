@@ -3,7 +3,7 @@ name = "secretary-maps"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Self-hosted maps for the Secretary apps: PMTiles with HTTP range, map fonts and sprites, a local Photon geocoder"
+description = "Self-hosted maps for the Secretary apps: PMTiles with HTTP range, map fonts and sprites, Google Places geocoding and Routes routing"
 
 [dependencies]
 axum = "0.8"

@@ -2,7 +2,7 @@
 //! block normalizer and the asset path rule.
 //!
 //! The verified core works on integer coordinates in degrees × 10^7 (`e7`). Its Verus model is
-//! `verification/verus/map_kernels.rs` (MK1–MK5); `tests/kernel_model.rs` checks these
+//! `verification/verus/map_kernels.rs` (MK1–MK7); `tests/kernel_model.rs` checks these
 //! functions against that model on pseudo-random inputs.
 //!
 //! The antimeridian is not special: longitudes are plain numbers in [-180, 180], so a set of
@@ -582,5 +582,150 @@ mod tests {
         assert!(!valid_tiles_name("Region"));
         assert!(!valid_tiles_name("../x"));
         assert!(!valid_tiles_name("a.b"));
+    }
+}
+
+/// Google encoded polyline, precision 5. Reject truncated, overflowing and non-ASCII encodings.
+pub fn decode_polyline(s: &str) -> Option<Vec<(i64, i64)>> {
+    fn component(bytes: &[u8], pos: &mut usize) -> Option<i64> {
+        let mut value = 0u64;
+        for shift in (0..=60).step_by(5) {
+            let byte = *bytes.get(*pos)?;
+            *pos += 1;
+            if !(63..=126).contains(&byte) {
+                return None;
+            }
+            let b = (byte - 63) as u64;
+            if shift == 60 && b & 31 > 15 {
+                return None;
+            }
+            value |= (b & 31) << shift;
+            if b < 32 {
+                return Some((value >> 1) as i64 ^ -((value & 1) as i64));
+            }
+        }
+        None
+    }
+    let mut points = Vec::new();
+    let (mut pos, mut lat, mut lng) = (0, 0i64, 0i64);
+    while pos < s.len() {
+        lat = lat.checked_add(component(s.as_bytes(), &mut pos)?)?;
+        lng = lng.checked_add(component(s.as_bytes(), &mut pos)?)?;
+        if !(-9_000_000..=9_000_000).contains(&lat) || !(-18_000_000..=18_000_000).contains(&lng) {
+            return None;
+        }
+        points.push((lat, lng));
+    }
+    Some(points)
+}
+
+/// Stride simplification; max >= 2 is required to retain two distinct endpoints.
+/// For max < 2 returns empty. Integer index arithmetic cannot overflow.
+pub fn simplify(points: &[(i64, i64)], max: usize) -> Vec<(i64, i64)> {
+    if max < 2 {
+        return Vec::new();
+    }
+    let Some(&first) = points.first() else {
+        return Vec::new();
+    };
+    let last = points.len() - 1;
+    let mut out = vec![first];
+    let mut i = 0;
+    let mut slots = max - 1;
+    while i < last {
+        let step = (last - i - 1) / slots + 1;
+        i += step;
+        out.push(points[i]);
+        slots -= 1;
+    }
+    out
+}
+
+/// MK7: seconds are nonnegative. Calculate in i128, then clamp once, avoiding
+/// premature saturation of the seconds-to-milliseconds multiplication.
+pub fn leave_at(arrive_ms: i64, duration_s: u64, buffer_s: u64) -> i64 {
+    let result = arrive_ms as i128 - (duration_s as i128 + buffer_s as i128) * 1000;
+    result.max(i64::MIN as i128) as i64
+}
+
+/// Coordinates rounded to 4 decimals (nearest, ties toward positive infinity), arrival
+/// rounded to the nearest five minutes. No arrival has its own cache bucket.
+pub fn route_cache_key(
+    from: (i64, i64),
+    to: (i64, i64),
+    mode: &str,
+    arrive_ms: Option<i64>,
+) -> String {
+    let round = |x: i64| (x as i128 + 500).div_euclid(1000);
+    let arrive = arrive_ms.map(|x| (x as i128 + 150_000).div_euclid(300_000));
+    format!(
+        "route|{},{},{},{}|{mode}|{arrive:?}",
+        round(from.0),
+        round(from.1),
+        round(to.0),
+        round(to.1)
+    )
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    #[test]
+    fn polyline_examples_and_fuzz() {
+        assert_eq!(
+            decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@"),
+            Some(vec![
+                (3850000, -12020000),
+                (4070000, -12095000),
+                (4325200, -12645300)
+            ])
+        );
+        for bad in ["_", "?", "\0", "é", "~~~~~~~~~~~~~~?", "___________~?"] {
+            assert!(decode_polyline(bad).is_none());
+        }
+        let mut seed = 0x12345678u64;
+        for n in 0..10000 {
+            let bytes: Vec<u8> = (0..n % 128)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect();
+            // Exercise arbitrary UTF-8 inputs, including ASCII control/continuation bytes.
+            let s = String::from_utf8_lossy(&bytes);
+            let _ = decode_polyline(&s);
+        }
+    }
+    #[test]
+    fn stride_properties() {
+        for n in 0..1000 {
+            let p: Vec<_> = (0..n).map(|i| (i, i)).collect();
+            for max in [0, 1, 2, 3, 17, 400] {
+                let s = simplify(&p, max);
+                assert!(s.len() <= max);
+                if n > 0 && max >= 2 {
+                    assert_eq!(s.first(), p.first());
+                    assert_eq!(s.last(), p.last());
+                }
+                assert!(s.windows(2).all(|w| w[0].0 < w[1].0));
+            }
+        }
+    }
+    #[test]
+    fn leave_and_rounding() {
+        assert_eq!(leave_at(1_000_000, 540, 300), 160_000);
+        assert_eq!(leave_at(i64::MIN, 1, 0), i64::MIN);
+        assert_eq!(leave_at(i64::MAX, u64::MAX, u64::MAX), i64::MIN);
+        assert_eq!(leave_at(-1, 0, 0), -1);
+        assert_eq!(
+            route_cache_key((1001, -1001), (2000, 3000), "walk", Some(1)),
+            route_cache_key((1002, -1002), (2001, 3001), "walk", Some(1000))
+        );
+        assert_ne!(
+            route_cache_key((1001, -1001), (2000, 3000), "walk", None),
+            route_cache_key((1001, -1001), (2000, 3000), "walk", Some(0))
+        );
     }
 }

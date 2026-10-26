@@ -36,6 +36,8 @@
 //       coordinates present and valid)); a kept block has both coordinates or neither, and its
 //       coordinates are the input pair, valid.
 //
+//   MK6 simplify <-> kernel::simplify: subsequence, endpoints kept for max >= 2, len <= max.
+//   MK7 leave_at <-> kernel::leave_at: saturating arrive - (duration + buffer)*1000, <= arrive.
 // No assume, admit or external_body.
 use vstd::arithmetic::div_mod::*;
 use vstd::prelude::*;
@@ -381,6 +383,84 @@ pub proof fn lemma_place_examples() {
     assert(!keep_spec(true, false, Some(0), Some(0)));
     assert(keep_spec(true, false, Some(561_611_000), Some(102_006_000)));
     assert(!keep_spec(false, true, Some(561_611_000), Some(102_006_000)));
+}
+
+// ------------------------------------------------------------------ MK6 stride simplification
+// Mirrors kernel::simplify: adaptive stride ceil(remaining / slots); max < 2 => empty.
+// A strictly increasing index witness is the definition of subsequence (including duplicates).
+pub open spec fn indexed_subsequence(p: Seq<(i64,i64)>, r: Seq<(i64,i64)>, ix: Seq<int>) -> bool {
+    &&& ix.len() == r.len()
+    &&& forall|j:int| 0 <= j < ix.len() ==> 0 <= ix[j] < p.len() && r[j] == p[ix[j]]
+    &&& forall|a:int,b:int| 0 <= a < b < ix.len() ==> ix[a] < ix[b]
+}
+
+pub fn simplify(p: &Vec<(i64,i64)>, max: usize) -> (r: Vec<(i64,i64)>)
+    ensures
+        r.len() <= max,
+        exists|ix: Seq<int>| indexed_subsequence(p@,r@,ix),
+        max >= 2 && p.len() > 0 ==> r.len() > 0 && r@[0] == p@[0] && r@[r.len()-1] == p@[p.len()-1],
+{
+    let mut out = Vec::new();
+    if max < 2 || p.len() == 0 {
+        assert(indexed_subsequence(p@,out@,Seq::<int>::empty()));
+        return out;
+    }
+    let last = p.len() - 1;
+    out.push(p[0]);
+    let ghost mut ix = seq![0int];
+    let mut i: usize = 0;
+    let mut slots = max - 1;
+    while i < last
+        invariant
+            last == p.len() - 1,
+            p.len() > 0, max >= 2,
+            i <= last,
+            out.len() > 0,
+            out.len() + slots == max,
+            i < last ==> slots > 0,
+            indexed_subsequence(p@,out@,ix),
+            ix[0] == 0, ix[ix.len()-1] == i,
+            out@[0] == p@[0], out@[out.len()-1] == p@[i as int],
+        decreases last - i,
+    {
+        let remaining = last - i;
+        let step = (remaining - 1) / slots + 1;
+        proof {
+            if remaining > 1 && slots > 1 { lemma_div_decreases((remaining - 1) as int, slots as int); }
+            assert(0 <= (remaining - 1) as int / slots as int <= remaining - 1);
+            if slots == 1 { assert(step == remaining); }
+        }
+        i = i + step;
+        out.push(p[i]);
+        proof {
+            let oldix = ix;
+            ix = ix.push(i as int);
+            assert forall|a:int,b:int| 0 <= a < b < ix.len() implies ix[a] < ix[b] by {
+                if b == oldix.len() {
+                    if a < oldix.len()-1 { assert(oldix[a] < oldix[oldix.len()-1]); }
+                }
+            }
+            assert(indexed_subsequence(p@,out@,ix));
+        }
+        slots = slots - 1;
+    }
+    assert(exists|w:Seq<int>| indexed_subsequence(p@,out@,w)) by {
+        assert(indexed_subsequence(p@,out@,ix));
+    }
+    out
+}
+
+// ------------------------------------------------------------------ MK7 leave time
+// Mirrors kernel::leave_at: i128 intermediate, seconds -> milliseconds, lower saturation.
+pub open spec fn leave_spec(a:int,d:int,b:int) -> int {
+    let x = a - (d+b)*1000;
+    if x < i64::MIN { i64::MIN as int } else { x }
+}
+pub fn leave_at(a:i64,d:u64,b:u64) -> (r:i64)
+    ensures r as int == leave_spec(a as int,d as int,b as int), r <= a,
+{
+    let x = (a as i128) - ((d as i128)+(b as i128))*1000;
+    if x < i64::MIN as i128 { i64::MIN } else { x as i64 }
 }
 
 fn main() {

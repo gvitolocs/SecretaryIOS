@@ -2,11 +2,14 @@
 //! docs/verification.md protocol 15).
 //!
 //! Routes under `/v1/maps`: `health`, `config`, `tiles/<name>.pmtiles` (HTTP range),
-//! `assets/<path>` (fonts and sprites), `geocode` (a local Photon). Nothing here calls a third
-//! party. p1's Caddy authenticates the owner (forward_auth) and, when the service is started with
+//! `assets/<path>` (fonts and sprites), `geocode` and `routes` (Google server APIs).
+//! p1's Caddy authenticates the owner (forward_auth) and, when the service is started with
 //! an upstream key, adds `X-Maps-Upstream-Key`.
+pub mod cache;
 pub mod geocode;
 pub mod kernel;
+pub mod provider;
+pub mod routes;
 
 use axum::{
     body::Body,
@@ -22,7 +25,7 @@ use serde_json::{json, Value};
 use std::{
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant, UNIX_EPOCH},
+    time::{Duration, UNIX_EPOCH},
 };
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -30,8 +33,6 @@ use tower_http::services::ServeFile;
 pub const ATTRIBUTION: &str = "© OpenStreetMap contributors · Protomaps";
 const TILES_CACHE: &str = "private, max-age=86400";
 const ASSETS_CACHE: &str = "private, max-age=604800";
-const PROBE_TTL: Duration = Duration::from_secs(60);
-pub const PHOTON_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Home {
@@ -45,12 +46,15 @@ pub struct Config {
     pub dir: PathBuf,
     pub tiles: String,
     pub home: Option<Home>,
-    pub photon_url: String,
+    pub google_key: Option<provider::Secret>,
+    pub places_url: String,
+    pub routes_url: String,
+    pub state_dir: PathBuf,
     pub upstream_key: Option<String>,
 }
 
 impl Config {
-    /// Reads `MAPS_DIR`, `MAPS_TILES`, `MAPS_HOME_LAT`/`_LNG`/`_LABEL`, `MAPS_PHOTON_URL` and
+    /// Reads `MAPS_DIR`, `MAPS_TILES`, `MAPS_HOME_LAT`/`_LNG`/`_LABEL`, `MAPS_GOOGLE_KEY_FILE` and
     /// `MAPS_UPSTREAM_KEY_FILE` through `var` (`std::env::var` in the binary).
     pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
         let get = |k: &str| {
@@ -82,10 +86,25 @@ impl Config {
             },
             _ => None,
         };
-        let photon_url = get("MAPS_PHOTON_URL")
-            .unwrap_or_else(|| "http://127.0.0.1:2322".into())
-            .trim_end_matches('/')
-            .to_string();
+        let home_dir = var("HOME").map(PathBuf::from).unwrap_or_default();
+        let key_path = get("MAPS_GOOGLE_KEY_FILE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir.join(".config/secretary-maps/google.key"));
+        let google_key = match std::fs::read_to_string(key_path) {
+            Ok(k) => provider::Secret::new(k.trim()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => return Err("cannot read Google key file".into()),
+        };
+        let places_url = get("MAPS_GOOGLE_PLACES_URL")
+            .map(|url| provider::endpoint(&url, "v1/places:searchText"))
+            .unwrap_or_else(|| "https://places.googleapis.com/v1/places:searchText".into());
+        let routes_url = get("MAPS_GOOGLE_ROUTES_URL")
+            .map(|url| provider::endpoint(&url, "directions/v2:computeRoutes"))
+            .unwrap_or_else(|| "https://routes.googleapis.com/directions/v2:computeRoutes".into());
+        let state_dir = get("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_dir.join(".local/state"))
+            .join("secretary-maps");
         let upstream_key = match get("MAPS_UPSTREAM_KEY_FILE") {
             None => None,
             Some(path) => {
@@ -103,7 +122,10 @@ impl Config {
             dir,
             tiles,
             home,
-            photon_url,
+            google_key,
+            places_url,
+            routes_url,
+            state_dir,
             upstream_key,
         })
     }
@@ -120,50 +142,27 @@ impl Config {
 pub struct AppState {
     pub config: Config,
     http: reqwest::Client,
-    probe: Mutex<Option<(Instant, bool)>>,
-    cache: Mutex<geocode::Cache>,
+    cache: Mutex<cache::Cache>,
 }
 
 impl AppState {
     pub fn new(config: Config) -> Arc<AppState> {
         let http = reqwest::Client::builder()
-            .timeout(PHOTON_TIMEOUT)
-            .connect_timeout(PHOTON_TIMEOUT)
+            .timeout(Duration::from_secs(4))
+            .connect_timeout(Duration::from_secs(4))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client");
+        let cache = Mutex::new(cache::Cache::load(config.state_dir.join("cache.json")));
         Arc::new(AppState {
             config,
             http,
-            probe: Mutex::new(None),
-            cache: Mutex::new(geocode::Cache::new(
-                geocode::CACHE_ENTRIES,
-                geocode::CACHE_TTL,
-            )),
+            cache,
         })
     }
 
     fn tiles_present(&self) -> bool {
         self.config.tiles_path(&self.config.tiles).is_file()
-    }
-
-    /// Photon answers `/api?q=aarhus&limit=1`; cached for 60 s.
-    async fn geocoder_up(&self) -> bool {
-        if let Some((at, up)) = *self.probe.lock().unwrap() {
-            if at.elapsed() < PROBE_TTL {
-                return up;
-            }
-        }
-        let url = format!("{}/api", self.config.photon_url);
-        let up = matches!(
-            self.http.get(url).query(&[("q", "aarhus"), ("limit", "1")]).send().await,
-            Ok(r) if r.status().is_success()
-        );
-        *self.probe.lock().unwrap() = Some((Instant::now(), up));
-        up
-    }
-
-    fn set_probe(&self, up: bool) {
-        *self.probe.lock().unwrap() = Some((Instant::now(), up));
     }
 }
 
@@ -176,6 +175,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/maps/tiles/{file}", get(tiles))
         .route("/v1/maps/assets/{*path}", get(assets))
         .route("/v1/maps/geocode", get(geocode_route))
+        .route("/v1/maps/routes", get(routes::routes_route))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state);
@@ -226,7 +226,9 @@ async fn method_not_allowed() -> Response {
 }
 
 async fn health(State(st): State<Arc<AppState>>) -> Json<Value> {
-    Json(json!({ "ok": true, "tiles": st.tiles_present(), "geocoder": st.geocoder_up().await }))
+    Json(
+        json!({ "ok": true, "tiles": st.tiles_present(), "geocoder": st.config.google_key.is_some() }),
+    )
 }
 
 async fn config(State(st): State<Arc<AppState>>) -> Json<Value> {
@@ -241,7 +243,8 @@ async fn config(State(st): State<Arc<AppState>>) -> Json<Value> {
         "tiles": tiles,
         "assets": "/v1/maps/assets",
         "home": home,
-        "geocoder": st.geocoder_up().await,
+        "geocoder": st.config.google_key.is_some(),
+        "routes": st.config.google_key.is_some(),
         "attribution": ATTRIBUTION,
     }))
 }
@@ -420,27 +423,28 @@ async fn geocode_route(State(st): State<Arc<AppState>>, Query(p): Query<GeocodeQ
         _ => None,
     };
     let bias = from_query.or(st.config.home.as_ref().map(|h| (h.lat_e7, h.lng_e7)));
+    if st.config.google_key.is_none() {
+        return error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable");
+    }
     let key = geocode::cache_key(q, bias, limit);
     if let Some(results) = st.cache.lock().unwrap().get(&key) {
-        tracing::info!(q_len = n, results = results.len(), cached = true, "geocode");
         return Json(json!({ "results": results })).into_response();
     }
-    match geocode::photon(&st.http, &st.config.photon_url, q, bias, limit).await {
+    match tokio::time::timeout(Duration::from_secs(3), geocode::google(&st, q, bias, limit))
+        .await
+        .unwrap_or(Err(provider::Unavailable))
+    {
         Ok(results) => {
-            st.set_probe(true);
-            tracing::info!(
-                q_len = n,
-                results = results.len(),
-                cached = false,
-                "geocode"
-            );
-            st.cache.lock().unwrap().insert(key, results.clone());
+            tracing::info!(q_len = n, results = results.len(), "geocode");
+            st.cache
+                .lock()
+                .unwrap()
+                .insert(key, json!(results), 30 * 86400, true);
             Json(json!({ "results": results })).into_response()
         }
-        Err(e) => {
-            st.set_probe(false);
-            tracing::warn!(q_len = n, "geocode: photon unavailable: {e}");
-            error(StatusCode::SERVICE_UNAVAILABLE, "geocoder_unavailable")
+        Err(provider::Unavailable) => {
+            tracing::warn!(q_len = n, "geocode unavailable");
+            error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable")
         }
     }
 }
