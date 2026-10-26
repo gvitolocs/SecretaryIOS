@@ -971,5 +971,17 @@
   "No calendar events around the time of this recording.": ["Nessun evento in calendario intorno all'ora di questa registrazione.", "Ingen kalenderbegivenheder omkring tidspunktet for denne optagelse."],
   "Lucina writes the summary again for the event you pick: lecture notes for a lecture, minutes for a meeting.": ["Lucina riscrive il riassunto per l'evento che scegli: appunti per una lezione, verbale per una riunione.", "Lucina skriver resuméet igen til den begivenhed, du vælger: noter til en forelæsning, referat til et møde."],
   "No event": ["Nessun evento", "Ingen begivenhed"],
-  "Here": ["Qui", "Her"]
+  "Here": ["Qui", "Her"],
+  "Navigate": ["Naviga", "Naviger"],
+  "Open in Apple Maps": ["Apri in Apple Maps", "Åbn i Apple Maps"],
+  "You have arrived": ["Sei a destinazione", "Du er fremme"],
+  "Arrive at %@": ["Arrivo alle %@", "Ankomst kl. %@"],
+  "%@ to go": ["Mancano %@", "%@ tilbage"],
+  "Finding your position…": ["Cerco la tua posizione…", "Finder din position…"],
+  "Allow location access to navigate.": ["Consenti l'accesso alla posizione per navigare.", "Giv adgang til din placering for at navigere."],
+  "End": ["Fine", "Afslut"],
+  "Navigate to the next appointment": ["Naviga al prossimo impegno", "Naviger til næste aftale"],
+  "Opens Secretary's map with directions to your next appointment.": ["Apre la mappa di Secretary con le indicazioni per il prossimo impegno.", "Åbner Secretarys kort med rutevejledning til din næste aftale."],
+  "No upcoming appointment with a place.": ["Nessun prossimo impegno con un luogo.", "Ingen kommende aftale med et sted."],
+  "Directions to %@.": ["Indicazioni per %@.", "Rutevejledning til %@."]
 }

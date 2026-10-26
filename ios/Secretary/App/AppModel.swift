@@ -48,6 +48,8 @@ final class AppModel {
     var showDealsMap = false
     /// A place opened by a widget, notification or rich route action.
     var openPlace: Place?
+    /// The opened place's map starts navigating (`/map/place?…&navigate=1`, a Shortcut).
+    var openPlaceNavigates = false
     /// The media library and player, a plugin.
     var showMedia = false
     /// `/films/play/<id>` (a film Lucina found): Films opens and plays it.

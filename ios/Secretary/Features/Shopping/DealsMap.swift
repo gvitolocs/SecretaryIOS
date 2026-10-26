@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Observation
 
@@ -303,13 +304,11 @@ struct DealsMapFilter: Equatable, Sendable {
     }
 }
 
-/// The Directions button: Google Maps when it is installed, else Apple Maps.
-enum DealsDirections {
-    static let googleMapsProbe = URL(string: "comgooglemaps://")!
-
-    static func url(lat: Double, lng: Double, googleMapsInstalled: Bool) -> URL? {
-        let daddr = "\(lat),\(lng)"
-        return URL(string: googleMapsInstalled ? "comgooglemaps://?daddr=\(daddr)" : "maps://?daddr=\(daddr)")
+extension DealsMap.Store {
+    /// The store on the app's own map (its Navigate button guides there; no other maps app).
+    var place: Place {
+        Place(title: name.localizedCaseInsensitiveContains(chainName) ? name : "\(chainName) \(name)", address: street,
+              coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lng))
     }
 }
 

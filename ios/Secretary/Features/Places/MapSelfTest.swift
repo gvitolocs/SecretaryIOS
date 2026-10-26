@@ -13,11 +13,13 @@ private let log = Logger(subsystem: "tech.getsecretary.app", category: "MapSelfT
 /// - `place`: the place screen for a place with coordinates (home);
 /// - `deals`: the deals map, its pin count once loaded;
 /// - `timeline`: the newest real chat message with a place (a `place` block or a proactive `meta.place`)
-///   from the server's timeline, its card opened like a tap, then the same checks as `card`.
+///   from the server's timeline, its card opened like a tap, then the same checks as `card`;
+/// - `navigate`: the route with `navigate=1` (a Navigate action): the in-app map navigating.
+/// Every mode also checks that nothing opened another maps app (Apple Maps, Google Maps).
 /// Each step writes `PASS …` or `FAIL <step> <reason>` to the log and to Documents/map-selftest.txt.
 enum MapSelfTest {
     static var mode: String? {
-        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route", "timeline"].contains($0) ? $0 : nil }
+        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route", "timeline", "navigate"].contains($0) ? $0 : nil }
     }
 
     /// A proactive message's meta (a calendar reminder with the event's place).
@@ -58,6 +60,20 @@ enum MapSelfTest {
             } else {
                 report.fail("route", "the routed place screen did not appear")
             }
+        case "navigate":
+            openRoute(sampleRoute + "&navigate=1")
+            guard await wait(45, until: { MapSelfTestProbe.shared.mapShown }) else {
+                report.fail("navigate", "the routed place screen did not appear")
+                break
+            }
+            if await wait(10, until: { MapSelfTestProbe.shared.navigating }) {
+                report.pass("navigating in the app")
+            } else {
+                report.fail("navigate", "the place screen did not start navigating")
+            }
+            if await wait(30, until: { MapSelfTestProbe.shared.navigationSteps != nil }) {
+                report.line("INFO turn-by-turn steps \(MapSelfTestProbe.shared.navigationSteps ?? 0)")
+            }
         case "place":
             guard await wait(15, until: { MapSelfTestProbe.shared.mapShown }) else {
                 return report.fail("open map", "the place screen did not appear")
@@ -70,6 +86,11 @@ enum MapSelfTest {
             } else {
                 report.fail("deals", "the deals map did not load in 60 s")
             }
+        }
+        if MapSelfTestProbe.shared.externalOpens == 0 {
+            report.pass("stayed in the app")
+        } else {
+            report.fail("in-app", "another maps app was opened \(MapSelfTestProbe.shared.externalOpens) times")
         }
         report.line("DONE")
     }
@@ -242,6 +263,10 @@ final class MapSelfTestProbe {
     var leaveAt: Date?
     var requiresLeaveAt = false
     var dealsPins: Int?
+    var navigating = false
+    var navigationSteps: Int?
+    /// ExternalMaps.open calls (the explicit "Open in Apple Maps"); a self-test never makes one.
+    var externalOpens = 0
 }
 
 /// The cover the self-test runs in (MainTabs, when `-SecretaryMapSelfTest` is set).
@@ -250,8 +275,8 @@ struct MapSelfTestHost: ViewModifier {
     @State private var mode = MapSelfTest.mode
 
     func body(content: Content) -> some View {
-        if mode == "route" {
-            content.task { await MapSelfTest.run(mode: "route", openRoute: { app.open(route: $0) }) { _ in } }
+        if mode == "route" || mode == "navigate" {
+            content.task { await MapSelfTest.run(mode: mode ?? "route", openRoute: { app.open(route: $0) }) { _ in } }
         } else {
             content.fullScreenCover(isPresented: Binding(get: { mode != nil }, set: { if !$0 { mode = nil } })) {
                 if let mode { MapSelfTestScreen(mode: mode) }

@@ -124,11 +124,18 @@ final class DealsMapTests: XCTestCase {
         XCTAssertEqual(filter.kinds, [.clearance])
     }
 
-    func testDirections() {
-        XCTAssertEqual(DealsDirections.url(lat: 56.19, lng: 10.19, googleMapsInstalled: true)?.absoluteString,
-                       "comgooglemaps://?daddr=56.19,10.19")
-        XCTAssertEqual(DealsDirections.url(lat: 56.19, lng: 10.19, googleMapsInstalled: false)?.absoluteString,
-                       "maps://?daddr=56.19,10.19")
+    /// Navigate on a store opens the app's own map at the store, never another maps app.
+    func testStoreNavigatesInTheApp() throws {
+        let store = DealsMap.Store(id: "tjek:1", chain: "Netto", name: "Netto Vesterbro", street: "Vesterbrogade 1",
+                                   lat: 56.19, lng: 10.19)
+        XCTAssertEqual(store.place.title, "Netto Vesterbro")
+        XCTAssertEqual(store.place.address, "Vesterbrogade 1")
+        XCTAssertEqual(store.place.coordinate?.latitude, 56.19)
+        let route = PlaceLinks.route(store.place, navigate: true)
+        XCTAssertTrue(route.hasPrefix("/map/place?"))
+        XCTAssertTrue(PlaceLinks.navigates(route))
+        XCTAssertEqual(Place.fromRoute(route)?.coordinate?.longitude, 10.19)
+        XCTAssertEqual(DealsMap.Store(id: "x", chain: "Rema 1000", name: "Viby", lat: 56.1, lng: 10.1).place.title, "Rema 1000 Viby")
     }
 
     func testDealDates() {

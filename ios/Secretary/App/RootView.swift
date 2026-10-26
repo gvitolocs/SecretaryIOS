@@ -59,13 +59,19 @@ struct MainTabs: View {
         .onAppear { app.openPendingWidgetRoute() }
         // A place opened by a widget, a notification or a route (`/map/place?...`): the in-app map.
         .modifier(OpenPlaceHost())
+        // A maps link (Apple Maps, Google Maps) tapped in the chat opens on Lucina's map too.
+        .environment(\.openURL, OpenURLAction { url in
+            guard let place = PlaceLinks.place(fromMapsLink: url) else { return .systemAction }
+            app.showPlace(place)
+            return .handled
+        })
         #if DEBUG || SCREENSHOTS
         .task { await WidgetSelfTest.runIfRequested(app) }
         #endif
         // Lucina in the room (AR), over everything.
         .modifier(LucinaARHost(controller: app.lucina))
         #if SCREENSHOTS
-        // `-SecretaryMapSelfTest place|card|deals|route` (Features/Places/MapSelfTest.swift).
+        // `-SecretaryMapSelfTest place|card|deals|route|timeline|navigate` (Features/Places/MapSelfTest.swift).
         .modifier(MapSelfTestHost())
         #endif
         // Lucina asks before deleting something or changing the calendar.

@@ -524,7 +524,7 @@ extension AppModel {
     /// In-app navigation for a `route` button (web paths mapped to tabs).
     func open(route path: String) {
         if let place = Place.fromRoute(path) {
-            openPlace = place
+            showPlace(place, navigate: PlaceLinks.navigates(path))
             return
         }
         let first = path.split(separator: "/").first.map(String.init) ?? ""
@@ -549,6 +549,12 @@ extension AppModel {
         default: selectedTab = .chat
         }
         if NotificationRoute.opensDealsMap(path) { showDealsMap = true }
+    }
+
+    /// Lucina's own map for a place (never another maps app); `navigate` starts the navigation.
+    func showPlace(_ place: Place, navigate: Bool = false) {
+        openPlaceNavigates = navigate
+        openPlace = place
     }
 
     /// `/gallery`, `/gallery/album/<id>` (what Lucina found is in `sys-lucina`), `/gallery/search/<words>`.
