@@ -207,13 +207,8 @@ struct GalleryScreen: View {
         }
         // Google Photos: behind the viewer the grid follows the photo on screen, so closing zooms
         // into its tile.
-        // After the swipe settles: scrolling the grid during the page animation dropped frames
-        // (worst 85 ms on the iPhone).
-        .task(id: shownID) {
-            guard let id = shownID else { return }
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            proxy.scrollTo(id, anchor: .center)
+        .onChange(of: shownID) { _, id in
+            if let id { proxy.scrollTo(id, anchor: .center) }
         }
         }
         .fullScreenCover(item: $viewing) { item in
@@ -547,8 +542,13 @@ struct GalleryViewer: View {
             autoSwipe()
         }
         .onDisappear { meter.stop() }
+        // The grid learns the photo once a swipe settles: updating it during the page animation
+        // redrew the whole grid screen each swipe (25 hitches in 20 swipes on the iPhone, worst 83 ms).
+        .task(id: current) {
+            try? await Task.sleep(for: .milliseconds(500))
+            if !Task.isCancelled { shown = current }
+        }
         .onChange(of: current) { _, id in
-            shown = id
             meter.swipes += 1
             prefetchNeighbours(of: id)
         }
