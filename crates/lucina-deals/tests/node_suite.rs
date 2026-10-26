@@ -687,12 +687,17 @@ async fn watch_digest_incremental_alerts_price_drops_failure_caps_and_dry_run_pe
     };
     h.set_result(with_new(2.0));
     h.set_fail(true);
-    let before = h.file_text();
+    let before = h.state();
     assert_eq!(
         h.watch.run_alerts(false).await.unwrap().reason,
         "send failed"
     );
-    assert_eq!(h.file_text(), before);
+    // F1: the failed message is pending (re-sent first by the next run); nothing is
+    // acknowledged.
+    let mut after = h.state();
+    assert_eq!(after["pending"]["kind"], "alert");
+    after.as_object_mut().unwrap().remove("pending");
+    assert_eq!(after, before);
     h.set_fail(false);
     let alert = h.watch.run_alerts(false).await.unwrap();
     assert!(alert.sent);
@@ -807,7 +812,7 @@ async fn skipped_digests_persist_their_date_across_runs_and_restarts_dry_runs_ne
 }
 
 #[tokio::test]
-async fn failed_digest_leaves_state_untouched_and_retries_only_after_ten_minutes() {
+async fn failed_digest_stays_pending_and_is_resent_only_after_ten_minutes() {
     let h = Harness::with_fixture_result().await;
     h.set_fail(true);
     let initial = json!({"notified": {}, "alertCounts": {}}).to_string();
@@ -816,7 +821,15 @@ async fn failed_digest_leaves_state_untouched_and_retries_only_after_ten_minutes
         h.watch.run_digest(false).await.unwrap().reason,
         "send failed"
     );
-    assert_eq!(h.file_text(), initial);
+    // F1: nothing is acknowledged, the digest is pending with its dedup key.
+    let state = h.state();
+    assert_eq!(state["notified"], json!({}));
+    assert_eq!(state["lastDigestDate"], Value::Null);
+    assert_eq!(state["pending"]["kind"], "digest");
+    assert_eq!(
+        state["pending"]["dedupKey"].as_str(),
+        Some(h.deliver.attempts.lock().unwrap()[0].dedup_key.as_str())
+    );
     h.clock.set(fixed() + 60_000);
     assert_eq!(
         h.watch.run_digest(false).await.unwrap().reason,
@@ -833,8 +846,14 @@ async fn failed_digest_leaves_state_untouched_and_retries_only_after_ten_minutes
     h.clock.set(fixed() + 600_000);
     h.set_fail(false);
     assert!(h.watch.run_digest(false).await.unwrap().sent);
-    assert_eq!(h.calls(), 3);
+    // The retry re-sends the pending digest without polling (the first run and the
+    // preview polled).
+    assert_eq!(h.calls(), 2);
+    let attempts = h.deliver.attempts.lock().unwrap().clone();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[1], attempts[0]);
     assert_eq!(h.state()["lastDigestDate"], "2026-10-24");
+    assert!(h.state().get("pending").is_none());
 }
 
 #[tokio::test]
@@ -963,17 +982,20 @@ async fn alerts_send_one_best_deal_per_item_and_defer_the_sixth_without_false_mi
         .unwrap()
         .is_match(&first.text));
     assert!(utf16_len(&first.text) <= 1490);
+    // F2: only the delivered best offers are acknowledged, not the alternatives.
     let state = h.state();
     for item in &items[..5] {
-        for d in &item.deals {
-            assert_eq!(
-                state["notified"][format!("{}|{}", item.rule_id, d.key)]["price"].as_f64(),
-                Some(d.price_dkk)
-            );
-        }
+        let (best, second) = (&item.deals[0], &item.deals[1]);
+        assert_eq!(
+            state["notified"][format!("{}|{}", item.rule_id, best.key)]["price"].as_f64(),
+            Some(best.price_dkk)
+        );
+        assert!(state["notified"]
+            .get(format!("{}|{}", item.rule_id, second.key))
+            .is_none());
     }
     assert!(state["notified"].get("item_6|tjek:6:best").is_none());
-    assert_eq!(state["notified"]["item_6|tjek:6:second"]["price"], 7);
+    assert!(state["notified"].get("item_6|tjek:6:second").is_none());
     let second = h.watch.run_alerts(false).await.unwrap();
     assert!(second.sent);
     assert!(second.text.contains("\nItem 6:"));
@@ -987,8 +1009,10 @@ async fn alerts_send_one_best_deal_per_item_and_defer_the_sixth_without_false_mi
     );
 }
 
+/// F2 (Node: "Their alternatives are already known"): an alternative that was never
+/// shown is alerted when it becomes the best offer (bug DW3).
 #[tokio::test]
-async fn known_alternatives_becoming_best_stay_silent_including_omitted_items() {
+async fn alternatives_becoming_best_are_alerted_including_omitted_items() {
     let mut items: Vec<MatchItem> = (1..=6).map(notification_item).collect();
     let h = Harness::new(result_of(items.clone()));
     assert!(h.watch.run_alerts(false).await.unwrap().sent);
@@ -996,11 +1020,18 @@ async fn known_alternatives_becoming_best_stay_silent_including_omitted_items() 
         item.deals[0].status = Status::Expired;
     }
     h.set_result(result_of(items));
+    let alert = h.watch.run_alerts(false).await.unwrap();
+    assert!(alert.sent);
+    assert_eq!(item_lines(&alert.text), 5);
+    assert!(alert.text.contains("Item 1: Alternative 1: 7.00 DKK"));
+    let last = h.watch.run_alerts(false).await.unwrap();
+    assert!(last.text.contains("Item 6: Alternative 6"), "{last:?}");
+    assert_eq!(item_lines(&last.text), 1);
     assert_eq!(
         h.watch.run_alerts(false).await.unwrap().reason,
         "no new or cheaper matches"
     );
-    assert_eq!(h.deliver.delivered.lock().unwrap().len(), 1);
+    assert_eq!(h.deliver.delivered.lock().unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -1030,7 +1061,8 @@ async fn digest_distinguishes_a_real_miss_from_a_size_trimmed_item() {
     assert!(utf16_len(&digest.text) <= 1490);
     let state = h.state();
     assert!(state["notified"].get("item_2|tjek:2:best").is_none());
-    assert_eq!(state["notified"]["item_2|tjek:2:second"]["price"], 7);
+    // F2: the alternative was not shown, so it is not acknowledged.
+    assert!(state["notified"].get("item_2|tjek:2:second").is_none());
     trimmed.deals[0].name = Some(json!("Short offer"));
     h.set_result(result_of(vec![shown, miss, trimmed]));
     let alert = h.watch.run_alerts(false).await.unwrap();
@@ -1076,25 +1108,47 @@ async fn failed_app_sends_preserve_state_and_dedup_keys_follow_delivered_offers(
         h.watch.run_alerts(false).await.unwrap().reason,
         "send failed"
     );
-    assert_eq!(h.file_text(), initial);
-    // An undelivered offer's price must not alter the dedup identity.
+    let attempts = || h.deliver.attempts.lock().unwrap().clone();
+    // F1: nothing is acknowledged (the expired entry is pruned), the message is pending.
+    let state = h.state();
+    assert_eq!(state["notified"], json!({}));
+    assert_eq!(state["alertCounts"], json!({}));
+    assert_eq!(
+        state["pending"]["dedupKey"].as_str(),
+        Some(attempts()[0].dedup_key.as_str())
+    );
+    // An undelivered offer's price must not alter the dedup identity (a fresh compose).
+    std::fs::write(&h.file, &initial).unwrap();
     items[5].deals[0].price_dkk = 4.0;
     h.set_result(result_of(items.clone()));
     assert!(!h.watch.run_alerts(false).await.unwrap().sent);
-    let attempts = || h.deliver.attempts.lock().unwrap().clone();
     assert_eq!(attempts()[0].dedup_key, attempts()[1].dedup_key);
+    // The next run re-sends the pending message unchanged, whatever the offers do.
     items[0].deals[0].price_dkk = 3.0;
     h.set_result(result_of(items.clone()));
+    assert_eq!(
+        h.watch.run_alerts(false).await.unwrap().reason,
+        "send failed"
+    );
+    assert_eq!(attempts()[2], attempts()[1]);
     h.set_fail(false);
-    assert!(h.watch.run_alerts(false).await.unwrap().sent);
-    assert_ne!(attempts()[1].dedup_key, attempts()[2].dedup_key);
+    // Delivered: acknowledged, then the run sends what is new since (Item 1 is
+    // cheaper, Item 6 was omitted) under a new key.
+    let alert = h.watch.run_alerts(false).await.unwrap();
+    assert!(alert.sent);
+    assert_eq!(attempts()[3], attempts()[1]);
+    assert_ne!(attempts()[3].dedup_key, attempts()[4].dedup_key);
     assert!(Regex::new(r"^grocery-deals:alert:2026-10-24:[a-f0-9]{24}$")
         .unwrap()
-        .is_match(&attempts()[2].dedup_key));
-    assert!(h.watch.run_alerts(false).await.unwrap().sent);
-    assert_ne!(attempts()[2].dedup_key, attempts()[3].dedup_key);
-    assert_eq!(attempts()[3].title, "🛒 New deal on your shopping list");
-    assert!(attempts()[3].body.starts_with("Item 6:"));
+        .is_match(&attempts()[4].dedup_key));
+    assert_eq!(attempts()[4].title, "🛒 New deals on your shopping list");
+    assert!(attempts()[4].body.starts_with("Item 1:"));
+    assert!(attempts()[4].body.contains("\nItem 6:"));
+    assert_eq!(alert.text, attempts()[4].text);
+    assert_eq!(
+        h.watch.run_alerts(false).await.unwrap().reason,
+        "no new or cheaper matches"
+    );
 }
 
 #[tokio::test]
