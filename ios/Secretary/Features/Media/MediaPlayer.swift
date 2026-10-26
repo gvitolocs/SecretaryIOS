@@ -64,8 +64,9 @@ final class MediaPlayer {
     @ObservationIgnored private let deviceName = UIDevice.current.name
     /// The play waiting for its first frame: item, when the tap was, the steps so far.
     @ObservationIgnored private var firstFrame: (id: String, start: ContinuousClock.Instant, from: TimeInterval, steps: String)?
-    /// Milliseconds from the tap to the first frame of the last play (the self-test reads it).
+    /// Milliseconds from the tap to the first frame of the last play, and its breakdown (the self-test reads them).
     private(set) var lastFirstFrameMs: Int?
+    private(set) var lastTiming: String?
 
     init(api: @escaping () -> MediaAPI, coreFile: URL = PlayerCore.defaultFileURL) {
         self.api = api
@@ -400,6 +401,7 @@ final class MediaPlayer {
         if let f = firstFrame, f.id == current?.id, isPlaying, position > f.from + 0.1 {
             let total = Int((ContinuousClock.now - f.start) / .milliseconds(1))
             lastFirstFrameMs = total
+            lastTiming = "\(f.steps) first_frame_ms=\(total)"
             timingLog.notice("MediaTiming id=\(f.id, privacy: .public) \(f.steps, privacy: .public) first_frame_ms=\(total)")
             firstFrame = nil
         }
