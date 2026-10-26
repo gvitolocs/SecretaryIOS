@@ -1,0 +1,188 @@
+/* The Drive (views/Drive.tsx), on the media page's layout (styles/media.css) and the Lucina
+   tokens (--lu-*). Dark is the default; light follows the device unless <html data-theme> pins it. */
+.drive {
+  --drive-red: #ff6961;
+  --drive-blue: #64a8ff;
+  --drive-green: #4cd964;
+  --drive-orange: #ffa94d;
+  --drive-yellow: #ffd60a;
+  --drive-purple: #c78bff;
+  --drive-teal: #5ad8d0;
+  --drive-pink: #ff7eb6;
+  --drive-indigo: #8f9bff;
+  --drive-gray: var(--lu-text-secondary, #8e8e93);
+  /* Code tokens (lib/drive.ts tokenClass). */
+  --tok-kw: #ff7ab2;
+  --tok-str: #ff8170;
+  --tok-com: #7f8c98;
+  --tok-num: #d9c97c;
+  --tok-fn: #67b7a4;
+  --tok-type: #5dd8ff;
+  --tok-const: #d0a8ff;
+  --tok-punct: var(--lu-text, #e5e5ea);
+  --tok-tag: #5dd8ff;
+  --tok-attr: #ffa14f;
+  --tok-var: #a2fcff;
+  --tok-head: #ff7ab2;
+  --tok-em: #d0a8ff;
+  --drive-code-bg: rgba(255, 255, 255, 0.04);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .drive {
+    --drive-red: #d70015;
+    --drive-blue: #0a60d6;
+    --drive-green: #1a8a3a;
+    --drive-orange: #c45500;
+    --drive-yellow: #a07800;
+    --drive-purple: #8e44c9;
+    --drive-teal: #00837b;
+    --drive-pink: #c2185b;
+    --drive-indigo: #4a5bb5;
+    --tok-kw: #ad3da4;
+    --tok-str: #c41a16;
+    --tok-com: #5d6c79;
+    --tok-num: #1c00cf;
+    --tok-fn: #326d74;
+    --tok-type: #0b4f79;
+    --tok-const: #6c36a9;
+    --tok-punct: var(--lu-text, #1c1c1e);
+    --tok-tag: #0b4f79;
+    --tok-attr: #994500;
+    --tok-var: #0f68a0;
+    --tok-head: #ad3da4;
+    --tok-em: #6c36a9;
+    --drive-code-bg: rgba(0, 0, 0, 0.03);
+  }
+}
+:root[data-theme="light"] .drive {
+  --drive-red: #d70015;
+  --drive-blue: #0a60d6;
+  --drive-green: #1a8a3a;
+  --drive-orange: #c45500;
+  --drive-yellow: #a07800;
+  --drive-purple: #8e44c9;
+  --drive-teal: #00837b;
+  --drive-pink: #c2185b;
+  --drive-indigo: #4a5bb5;
+  --tok-kw: #ad3da4;
+  --tok-str: #c41a16;
+  --tok-com: #5d6c79;
+  --tok-num: #1c00cf;
+  --tok-fn: #326d74;
+  --tok-type: #0b4f79;
+  --tok-const: #6c36a9;
+  --tok-punct: var(--lu-text, #1c1c1e);
+  --tok-tag: #0b4f79;
+  --tok-attr: #994500;
+  --tok-var: #0f68a0;
+  --tok-head: #ad3da4;
+  --tok-em: #6c36a9;
+  --drive-code-bg: rgba(0, 0, 0, 0.03);
+}
+
+/* Breadcrumbs. */
+.drive-crumbs ol { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; list-style: none; margin: 0; padding: 0; font-size: var(--lu-type-subheadline, .9rem); }
+.drive-crumbs li { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.drive-crumbs a { color: var(--lu-accent, #7f8fe0); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+.drive-crumbs a[aria-current="page"] { color: var(--lu-text, inherit); font-weight: 600; }
+.drive-crumbs__sep { color: var(--lu-text-tertiary, #636366); }
+
+/* Tools: search, sort, type chips. */
+.drive-sort { display: flex; align-items: center; gap: 6px; color: var(--lu-text-secondary, #8e8e93); }
+.drive-sort .media-select select { background: var(--lu-field, rgba(118,118,128,.24)); color: var(--lu-text, inherit); }
+.drive-chips { display: flex; gap: var(--lu-space-sm, 8px); overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.drive-chips::-webkit-scrollbar { display: none; }
+.drive-chips .media-chip { flex: none; }
+.drive-chips .media-chip[aria-pressed="true"] { background: var(--lu-accent-fill, #5e6ad2); color: var(--lu-on-accent, #fff); }
+.drive-chips--small .media-chip { height: 30px; padding: 0 12px; }
+.drive-btn { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border: 0; border-radius: var(--lu-radius-pill, 999px); background: var(--lu-field, rgba(118,118,128,.24)); color: var(--lu-text, inherit); font: inherit; font-size: var(--lu-type-footnote, .85rem); text-decoration: none; cursor: pointer; white-space: nowrap; }
+.drive-btn .icon { width: 18px; height: 18px; }
+.drive-btn--primary { background: var(--lu-accent-fill, #5e6ad2); color: var(--lu-on-accent, #fff); height: 44px; padding: 0 20px; font-size: var(--lu-type-callout, .95rem); }
+.drive-more { justify-self: center; }
+
+/* Rows. */
+.drive-list { display: grid; gap: 1px; list-style: none; margin: 0; padding: 0; border-radius: var(--lu-radius-card, 18px); overflow: hidden; background: var(--lu-separator, rgba(84,84,88,.4)); }
+.drive-row { display: grid; grid-template-columns: 44px 1fr; gap: 12px; align-items: center; width: 100%; padding: 10px var(--lu-space-card-padding, 14px); border: 0; background: var(--lu-card, #1c1c1e); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.drive-row:hover { background: var(--lu-card-raised, #2c2c2e); }
+.drive-row:focus-visible { outline: 2px solid var(--lu-accent, #7f8fe0); outline-offset: -2px; }
+.drive-row__text { display: grid; gap: 3px; min-width: 0; }
+.drive-row__name { font-size: var(--lu-type-subheadline, .95rem); font-weight: 500; overflow-wrap: anywhere; }
+.drive-row__meta, .drive-row__where { color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, .78rem); }
+.drive-row__where { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-row__where .icon { width: 13px; height: 13px; flex: none; }
+.drive-row__snippet { color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-footnote, .82rem); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+
+/* File icons: a page with a coloured badge, or the thumbnail. */
+.drive-glyph { position: relative; display: grid; place-items: center; width: 44px; height: 44px; color: var(--drive-gray); }
+.drive-glyph .icon { width: 36px; height: 36px; stroke-width: 1.4; }
+.drive-glyph--folder { color: var(--lu-accent, #7f8fe0); }
+.drive-glyph--folder .icon { fill: var(--lu-accent-soft, #7f8fe02e); }
+.drive-glyph__badge { position: absolute; bottom: 7px; left: 50%; transform: translateX(-50%); padding: 0 3px; border-radius: 4px; font-family: var(--lu-font-mono, monospace); font-size: 9px; font-weight: 700; line-height: 14px; letter-spacing: .02em; white-space: nowrap; }
+.drive-glyph__badge { color: var(--lu-card, #1c1c1e); background: var(--drive-tone, var(--drive-gray)); }
+.drive-glyph[data-tone="red"] { --drive-tone: var(--drive-red); color: var(--drive-red); }
+.drive-glyph[data-tone="blue"] { --drive-tone: var(--drive-blue); color: var(--drive-blue); }
+.drive-glyph[data-tone="green"] { --drive-tone: var(--drive-green); color: var(--drive-green); }
+.drive-glyph[data-tone="orange"] { --drive-tone: var(--drive-orange); color: var(--drive-orange); }
+.drive-glyph[data-tone="yellow"] { --drive-tone: var(--drive-yellow); color: var(--drive-yellow); }
+.drive-glyph[data-tone="purple"] { --drive-tone: var(--drive-purple); color: var(--drive-purple); }
+.drive-glyph[data-tone="teal"] { --drive-tone: var(--drive-teal); color: var(--drive-teal); }
+.drive-glyph[data-tone="pink"] { --drive-tone: var(--drive-pink); color: var(--drive-pink); }
+.drive-glyph[data-tone="indigo"] { --drive-tone: var(--drive-indigo); color: var(--drive-indigo); }
+.drive-glyph[data-tone="gray"] { --drive-tone: var(--drive-gray); }
+.drive-thumb { display: block; width: 44px; height: 44px; object-fit: cover; border-radius: 8px; background: var(--lu-field, rgba(118,118,128,.24)); }
+
+/* The preview dialog. */
+.drive-preview { position: fixed; inset: 0; z-index: 30; display: grid; grid-template-rows: auto auto 1fr; background: var(--lu-bg, #000); color: var(--lu-text, inherit); }
+.drive-preview__bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--lu-separator, rgba(84,84,88,.4)); }
+.drive-preview__title { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.drive-preview__name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-preview__title .drive-row__meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-preview__actions { display: flex; gap: 6px; flex: none; }
+.drive-preview__body { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 10px; padding: 12px; }
+.drive-toast { justify-self: center; margin: 6px 0 0; padding: 4px 12px; border-radius: var(--lu-radius-pill, 999px); background: var(--lu-card-raised, #2c2c2e); font-size: var(--lu-type-footnote, .85rem); }
+.drive-note { margin: 0; color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-footnote, .85rem); }
+.drive-note a { color: var(--lu-accent, #7f8fe0); }
+.drive-note--error { color: var(--lu-negative, #ff453a); }
+.drive-pdf { width: 100%; height: calc(100vh - 120px); min-height: 360px; border: 0; border-radius: var(--lu-radius-field, 12px); background: var(--lu-card, #1c1c1e); }
+.drive-image { max-width: 100%; max-height: calc(100vh - 140px); justify-self: center; object-fit: contain; border-radius: var(--lu-radius-field, 12px); }
+.drive-play { display: grid; justify-items: center; gap: 16px; padding-top: 24px; }
+.drive-info { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: var(--lu-type-subheadline, .9rem); }
+.drive-info dt { color: var(--lu-text-secondary, #8e8e93); }
+.drive-info dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Text and code. */
+.drive-text { display: grid; gap: 8px; min-width: 0; }
+.drive-text__bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.drive-text__info { margin: 0; color: var(--lu-text-secondary, #8e8e93); font-size: var(--lu-type-caption-2, .78rem); }
+.drive-code { overflow: auto; max-height: calc(100vh - 170px); padding: 8px 0; border-radius: var(--lu-radius-field, 12px); background: var(--drive-code-bg); font-family: var(--lu-font-mono, monospace); font-size: 12.5px; line-height: 1.55; tab-size: 4; }
+.drive-code__line { display: flex; width: max-content; min-width: 100%; }
+.drive-code__no { position: sticky; left: 0; flex: none; width: 5ch; padding: 0 12px 0 8px; text-align: right; color: var(--lu-text-tertiary, #636366); background: var(--lu-bg, #000); user-select: none; -webkit-user-select: none; }
+.drive-code__src { white-space: pre; padding-right: 16px; }
+.tok-kw { color: var(--tok-kw); font-weight: 600; }
+.tok-str { color: var(--tok-str); }
+.tok-com { color: var(--tok-com); font-style: italic; }
+.tok-num { color: var(--tok-num); }
+.tok-fn { color: var(--tok-fn); }
+.tok-type { color: var(--tok-type); }
+.tok-const { color: var(--tok-const); }
+.tok-punct { color: var(--tok-punct); }
+.tok-tag { color: var(--tok-tag); }
+.tok-attr { color: var(--tok-attr); }
+.tok-var { color: var(--tok-var); }
+.tok-head { color: var(--tok-head); font-weight: 700; }
+.tok-em { color: var(--tok-em); font-style: italic; }
+
+/* Archives. */
+.drive-archive { display: grid; gap: 8px; }
+.drive-archive__table { width: 100%; border-collapse: collapse; font-size: var(--lu-type-footnote, .85rem); }
+.drive-archive__table th { text-align: left; color: var(--lu-text-secondary, #8e8e93); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--lu-separator, rgba(84,84,88,.4)); }
+.drive-archive__table td { padding: 3px 8px; border-bottom: 1px solid var(--lu-separator, rgba(84,84,88,.25)); }
+.drive-archive__path { font-family: var(--lu-font-mono, monospace); overflow-wrap: anywhere; }
+.drive-archive__table tr[data-dir] .drive-archive__path { color: var(--lu-text-secondary, #8e8e93); }
+.drive-archive__size { text-align: right; white-space: nowrap; color: var(--lu-text-secondary, #8e8e93); }
+
+@media (max-width: 640px) {
+  .drive-btn__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .drive-preview__bar .drive-glyph { display: none; }
+  .drive-btn { padding: 0 10px; }
+}
