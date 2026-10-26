@@ -2,6 +2,7 @@
 import ActivityKit
 import AVFoundation
 import Foundation
+import UIKit
 
 /// Debug builds only: a memo spoken by the iPhone's speech synthesizer, queued like a real
 /// recording, so the upload and pipeline can be tested on the device without the microphone.
@@ -109,6 +110,24 @@ enum MemoRecordSelfTest {
                 // The on-device transcriber reads the stereo 48 kHz file ("failed" would be a format problem).
                 _ = await MemoOnDeviceTranscriber.transcribe(kept, clientId: "quality-test", language: "it")
             }
+            return
+        }
+        // `-SecretaryMemoBackgroundStartTest YES`: once the app is in the background (open
+        // another app), start through the intent as the Lock Screen control does, then discard.
+        if defaults.bool(forKey: "SecretaryMemoBackgroundStartTest") {
+            var token: NSObjectProtocol?
+            token = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+                if let token { NotificationCenter.default.removeObserver(token) }
+                Task { @MainActor in
+                    let rec = store.recorder
+                    try? await Task.sleep(for: .seconds(3))
+                    do { _ = try await StartMemoRecordingIntent().perform() } catch { MemoLog.write("background start: intent failed: \(error)") }
+                    try? await Task.sleep(for: .seconds(4))
+                    MemoLog.write("background start: state=\(rec.state) elapsed=\(String(format: "%.1f", rec.elapsed)) live=\(rec.activityReport)")
+                    rec.discard()
+                }
+            }
+            MemoLog.write("background start: waiting for the app to go to the background")
             return
         }
         guard defaults.bool(forKey: "SecretaryMemoRecordTest") else { return }

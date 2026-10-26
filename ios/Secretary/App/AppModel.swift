@@ -199,9 +199,14 @@ final class AppModel {
             }
         }
         MemoRecordingCommands.start = { [client] in
-            guard client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+            let appState = UIApplication.shared.applicationState == .background ? "background" : "foreground"
+            guard client.accessKey?.isEmpty == false else {
+                MemoLog.write("start intent (\(appState)): no access key")
+                throw IntentFailure.message(String(localized: "Open Secretary and sign in first."))
+            }
             if memoStore.recorder.isActive { return }
             await memoStore.record()
+            MemoLog.write("start intent (\(appState)): state=\(memoStore.recorder.state) live=\(memoStore.recorder.activityReport) error=\(memoStore.recorder.error ?? "-")")
             if let error = memoStore.recorder.error { throw IntentFailure.message(error) }
         }
         if launch.openSettings { showSettings = true }

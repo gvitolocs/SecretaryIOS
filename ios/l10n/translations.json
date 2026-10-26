@@ -860,5 +860,6 @@
   "Stop and save recording": ["Ferma e salva la registrazione", "Stop og gem optagelsen"],
   "Lucina memo": ["Memo Lucina", "Lucina-memo"],
   "Starts a voice memo at once. Lucina transcribes and summarises it.": ["Avvia subito un memo vocale. Lucina lo trascrive e lo riassume.", "Starter et talememo med det samme. Lucina transskriberer og opsummerer det."],
-  "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.": ["Apre Secretary e avvia la registrazione di un memo vocale. Lucina lo trascrive e lo riassume.", "Åbner Secretary og starter optagelsen af et talememo. Lucina transskriberer og opsummerer det."]
+  "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.": ["Apre Secretary e avvia la registrazione di un memo vocale. Lucina lo trascrive e lo riassume.", "Åbner Secretary og starter optagelsen af et talememo. Lucina transskriberer og opsummerer det."],
+  "Open Secretary once, then try again.": ["Apri Secretary una volta, poi riprova.", "Åbn Secretary én gang, og prøv igen."]
 }

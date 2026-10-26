@@ -14239,6 +14239,22 @@
           }
         }
       }
+    },
+    "Open Secretary once, then try again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary én gang, og prøv igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary una volta, poi riprova."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"
