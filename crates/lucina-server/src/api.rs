@@ -317,10 +317,19 @@ pub fn router(state: AppState) -> Router {
 
 async fn health(State(st): State<AppState>) -> Response {
     let c = &st.cfg;
+    // 503 only when a background loop died (the watchdog restarts on it);
+    // upstream outages are delivery alerts, not restarts.
+    let liveness = crate::delivery_monitor::liveness(&st, Utc::now());
     json_response(
-        StatusCode::OK,
+        if liveness.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         &json!({
-            "ok": true,
+            "ok": liveness.is_empty(),
+            "liveness": {"problems": liveness, "loops": st.supervisor.names()},
+            "delivery": st.monitor.health(),
             "service": "lucina-rs",
             "version": env!("CARGO_PKG_VERSION"),
             "uptimeSeconds": st.started.elapsed().as_secs(),

@@ -127,8 +127,10 @@ pub struct Config {
     pub turn_deadline: Duration,
     pub oracle_monitor_enabled: bool,
     pub persona_path: Option<PathBuf>,
-    pub recovery_companion_path: PathBuf,
-    pub operator_brief_path: PathBuf,
+    /// `LUCINA_RECOVERY_COMPANION_PATH`; unset: the copy built into the binary.
+    pub recovery_companion_path: Option<PathBuf>,
+    /// `LUCINA_OPERATOR_BRIEF_PATH`; unset: the copy built into the binary.
+    pub operator_brief_path: Option<PathBuf>,
     // tools
     pub default_location: Location,
     pub endpoints: Endpoints,
@@ -172,6 +174,8 @@ pub struct Config {
     pub otp: crate::otp::OtpConfig,
     /// Bot Hospital daily Poko-news audit (`BOT_HOSPITAL_*`), see [`crate::bot_hospital`].
     pub hospital: crate::bot_hospital::HospitalConfig,
+    /// `LUCINA_DELIVERY_ALERT_AFTER_MIN` (default 5): a delivery path down this long alerts the owner.
+    pub delivery_alert_after: Duration,
 }
 
 impl std::fmt::Debug for Config {
@@ -294,7 +298,6 @@ impl Config {
                 .and_then(|m| MemoryMode::parse(&m))
                 .unwrap_or(MemoryMode::ReadOnly),
         };
-        let lucina_docs = PathBuf::from("/home/nez/Projects/Lucina/docs");
         let mut default_location = Location::default();
         if let Some(n) = get("LUCINA_DEFAULT_LOCATION_NAME") {
             default_location.name = n;
@@ -448,12 +451,8 @@ impl Config {
             turn_deadline: Duration::from_millis(num("LUCINA_TURN_DEADLINE_MS", 90_000).max(1000)),
             oracle_monitor_enabled,
             persona_path: get("LUCINA_PERSONA_PATH").map(PathBuf::from),
-            recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| lucina_docs.join("lucina-recovery-companion.md")),
-            operator_brief_path: get("LUCINA_OPERATOR_BRIEF_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| lucina_docs.join("lucina-operator-brief.md")),
+            recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH").map(PathBuf::from),
+            operator_brief_path: get("LUCINA_OPERATOR_BRIEF_PATH").map(PathBuf::from),
             default_location,
             endpoints,
             nominatim_email: get("LUCINA_NOMINATIM_EMAIL"),
@@ -481,6 +480,9 @@ impl Config {
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
             hospital,
+            delivery_alert_after: Duration::from_secs(
+                num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
+            ),
             drive_enabled: flag("LUCINA_DRIVE", false),
             google_client_file: PathBuf::from(
                 get("LUCINA_GOOGLE_CLIENT_FILE")

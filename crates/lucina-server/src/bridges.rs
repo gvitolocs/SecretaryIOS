@@ -648,6 +648,8 @@ pub async fn notify(s: &Secretary, body: &Value) -> Answer {
     for attempt in 0..2 {
         let r = s.call(Method::POST, "/v1/notify", Some(body)).await;
         if r.ok || (r.status > 0 && r.status < 500) {
+            // A 4xx is an answer (bad body, quiet hours…): the path works.
+            crate::delivery_monitor::record_notify(true);
             return r;
         }
         last = r;
@@ -656,6 +658,7 @@ pub async fn notify(s: &Secretary, body: &Value) -> Answer {
         }
     }
     tracing::warn!(status = last.status, code = %last.code, "app notification failed");
+    crate::delivery_monitor::record_notify(false);
     last
 }
 
