@@ -153,6 +153,17 @@ enum LucinaTokens {
         static let height: CGFloat = 200
         static let series: [Color] = [Colors.accent, Colors.positive, Colors.warning, Colors.info, Colors.negative]
     }
+
+    /// The floating glass tab bar (the system TabView draws the glass; these are its colours).
+    enum TabBar {
+        static let material = "glass"
+        static let height: CGFloat = 64
+        static let blur: CGFloat = 24
+        static let background = Color(lucinaDark: 0x1C1C1EB8, light: 0xFFFFFFB8)
+        static let active = Colors.accent
+        static let activeBackground = Colors.accentSoft
+        static let inactive = Colors.textSecondary
+    }
 }
 
 extension Color {
