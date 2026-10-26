@@ -1523,8 +1523,17 @@ fn remember_job(
 
 // ---------------------------------------------------------------- tools mode
 
-/// "Show in Gallery" (the app opens the path; web and older clients ignore unknown routes).
+/// "Show in Gallery", or for films "Play the film" / "Show N in Films" (the app opens the path;
+/// web and older clients ignore unknown routes).
 fn gallery_action(path: &str, count: usize) -> Value {
+    if path.starts_with("/films") {
+        let label = if path.starts_with("/films/play/") {
+            "Play the film".to_owned()
+        } else {
+            format!("Show {count} in Films")
+        };
+        return json!({"id": "films", "label": label, "emoji": "🎬", "kind": "route", "payload": {"path": path}});
+    }
     let label = if count == 1 {
         "Show the photo".to_owned()
     } else {
@@ -1851,6 +1860,26 @@ async fn tools_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn film_results_get_a_films_button() {
+        let one = gallery_action("/films/play/itm_up", 1);
+        assert_eq!(
+            (one["id"].as_str(), one["label"].as_str()),
+            (Some("films"), Some("Play the film"))
+        );
+        assert_eq!(one["payload"]["path"], "/films/play/itm_up");
+        let many = gallery_action("/films", 3);
+        assert_eq!(many["label"], "Show 3 in Films");
+        assert_eq!(
+            gallery_action("/gallery/album/sys-lucina", 4)["label"],
+            "Show 4 in Gallery"
+        );
+        assert_eq!(
+            gallery_action("/gallery/album/sys-lucina", 1)["label"],
+            "Show the photo"
+        );
+    }
     use chrono::TimeZone;
 
     #[test]

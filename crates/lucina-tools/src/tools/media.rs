@@ -86,6 +86,25 @@ struct Args {
     limit: Option<u32>,
 }
 
+/// The apps' Films route for a search's results: `/films/play/<id>` for a single film (it starts
+/// playing from the saved minute), else the Films screen.
+fn films_path(ids: &[Value]) -> String {
+    match ids {
+        [one] if one.as_str().is_some_and(|id| !id.is_empty()) => {
+            let mut path = String::from("/films/play/");
+            for b in one.as_str().unwrap_or_default().bytes() {
+                if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                    path.push(b as char);
+                } else {
+                    path.push_str(&format!("%{b:02X}"));
+                }
+            }
+            path
+        }
+        _ => "/films".into(),
+    }
+}
+
 fn base() -> String {
     std::env::var("LUCINA_MEDIA_URL")
         .ok()
@@ -241,7 +260,13 @@ impl Tool for MediaTool {
                 let items = page["items"].as_array().cloned().unwrap_or_default();
                 let ids: Vec<Value> = items.iter().map(|i| i["id"].clone()).collect();
                 let shown = a.show.unwrap_or(true) && !items.is_empty();
-                if shown {
+                if shown && scope == Scope::Films {
+                    // Films have their own screen in the apps: one film opens and plays there.
+                    ctx.push_effect(Effect::Gallery {
+                        path: films_path(&ids),
+                        count: items.len(),
+                    });
+                } else if shown {
                     send(
                         http.put(format!("{b}/v1/media/albums/{PICKS_ALBUM}/items"))
                             .json(&json!({ "item_ids": ids })),
@@ -369,6 +394,15 @@ mod tests {
         for place in ["gallery", "films", "drive"] {
             assert!(schema.contains(place), "{place} missing from the schema");
         }
+    }
+
+    #[test]
+    fn films_open_the_films_screen_and_one_film_plays() {
+        assert_eq!(films_path(&[json!("itm_up")]), "/films/play/itm_up");
+        assert_eq!(films_path(&[json!("itm a/b")]), "/films/play/itm%20a%2Fb");
+        assert_eq!(films_path(&[json!("itm_up"), json!("itm_cars")]), "/films");
+        assert_eq!(films_path(&[]), "/films");
+        assert_eq!(films_path(&[json!(null)]), "/films");
     }
 
     #[test]
