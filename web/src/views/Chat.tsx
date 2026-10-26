@@ -36,10 +36,12 @@ import {
 } from "../lib/attachments";
 import { LinkifiedText } from "../components/LinkifiedText";
 import { Markdown } from "../components/Markdown";
+import { PlaceCard } from "../components/PlaceCard";
 import { RichReply } from "../components/RichReply";
 import Model3dViewer from "../components/Model3dViewer";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
+import type { PlaceInfo } from "../lib/mapKit";
 import { actionText } from "../lib/rich";
 import {
   channelLabel,
@@ -186,7 +188,7 @@ export function FeedbackButtons(props: { outreachId: string; actions?: Proactive
 }
 
 /** A message Lucina sent on her own: priority, content buttons, feedback, why. */
-function ProactiveCard(props: { text: string; meta: ProactiveMeta }) {
+function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: PlaceInfo }) {
   const navigate = useOptionalNavigate();
   const [showWhy, setShowWhy] = createSignal(false);
   const links = () => props.meta.actions.filter((a) => !a.feedback && a.route).slice(0, 2);
@@ -216,6 +218,7 @@ function ProactiveCard(props: { text: string; meta: ProactiveMeta }) {
         </span>
       </header>
       <LinkifiedText class="proactive-text" text={props.text} />
+      <Show when={props.place}>{(place) => <PlaceCard place={place()} class="proactive-place" />}</Show>
       <Show when={links().length > 0}>
         <div class="proactive-actions">
           <For each={links()}>
@@ -419,7 +422,7 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
       data-outreach={proactive()?.outreachId}
     >
       <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
-      <Show when={proactive()}>{(p) => <ProactiveCard text={props.message.text} meta={p()} />}</Show>
+      <Show when={proactive()}>{(p) => <ProactiveCard text={props.message.text} meta={p()} place={props.message.meta?.place} />}</Show>
       <Show when={rich()}>
         {(r) => <RichReply message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
       </Show>

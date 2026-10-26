@@ -88,14 +88,6 @@
   inset: 0;
 }
 
-.deals-map-fallback {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .deals-side {
   grid-area: side;
   min-height: 0;
