@@ -113,9 +113,17 @@ fn check_v6(s: [u16; 8]) {
 }
 
 /// First octets and second octets around every range edge.
-const EDGES1: &[u32] = &[0, 1, 9, 10, 11, 99, 100, 101, 126, 127, 128, 168, 169, 170, 171, 172, 173, 191, 192, 193, 223, 224, 254, 255];
-const EDGES2: &[u32] = &[0, 1, 15, 16, 17, 31, 32, 63, 64, 65, 127, 128, 167, 168, 169, 253, 254, 255];
-const SEG0: &[u16] = &[0, 1, 0x2001, 0x2002, 0xfbff, 0xfc00, 0xfcff, 0xfd00, 0xfdff, 0xfe00, 0xfe7f, 0xfe80, 0xfebf, 0xfec0, 0xff00, 0xffff];
+const EDGES1: &[u32] = &[
+    0, 1, 9, 10, 11, 99, 100, 101, 126, 127, 128, 168, 169, 170, 171, 172, 173, 191, 192, 193, 223,
+    224, 254, 255,
+];
+const EDGES2: &[u32] = &[
+    0, 1, 15, 16, 17, 31, 32, 63, 64, 65, 127, 128, 167, 168, 169, 253, 254, 255,
+];
+const SEG0: &[u16] = &[
+    0, 1, 0x2001, 0x2002, 0xfbff, 0xfc00, 0xfcff, 0xfd00, 0xfdff, 0xfe00, 0xfe7f, 0xfe80, 0xfebf,
+    0xfec0, 0xff00, 0xffff,
+];
 
 #[test]
 fn ipv4_literals_agree_with_the_kernel() {
@@ -187,7 +195,12 @@ fn mapped_ipv4_literals_are_refused() {
     // A mapped public address is still fine.
     assert!(!refused("https://[::ffff:8.8.8.8]/x.ics"));
     // WHATWG IPv4 spellings are normalised by the URL parser before the check.
-    for url in ["https://0x7f.1/x", "https://2130706433/x", "https://127.1/x", "https://0177.0.0.1/x"] {
+    for url in [
+        "https://0x7f.1/x",
+        "https://2130706433/x",
+        "https://127.1/x",
+        "https://0177.0.0.1/x",
+    ] {
         assert!(refused(url), "{url}");
     }
 }
