@@ -250,7 +250,11 @@ export function LucinaMap(props: LucinaMapProps) {
   });
 
   function drawLines(m: MlMap) {
-    if (!m.isStyleLoaded()) return;
+    // style.load can fire while sprites and glyphs are still loading: draw once the map is idle.
+    if (!m.isStyleLoaded()) {
+      m.once("idle", () => drawLines(m));
+      return;
+    }
     const data: FeatureCollection<LineString> = {
       type: "FeatureCollection",
       features: (props.lines ?? []).filter(line => line.length > 1).map(line => ({
