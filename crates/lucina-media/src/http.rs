@@ -440,8 +440,14 @@ async fn summary(State(lib): State<Library>) -> ApiResult<Json<Value>> {
     Ok(Json(v))
 }
 
-async fn list_albums(State(lib): State<Library>) -> ApiResult<Json<Value>> {
-    let albums = lib.db.call(|c| db::list_albums(c)).await?;
+#[derive(Deserialize)]
+struct AlbumsQuery {
+    /// `gallery` or `drive`: only albums with items there, counted there.
+    scope: Option<String>,
+}
+
+async fn list_albums(State(lib): State<Library>, Query(q): Query<AlbumsQuery>) -> ApiResult<Json<Value>> {
+    let albums = lib.db.call(move |c| db::list_albums_in(c, q.scope.as_deref())).await?;
     Ok(Json(json!({ "albums": albums })))
 }
 

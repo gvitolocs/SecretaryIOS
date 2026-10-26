@@ -356,3 +356,33 @@ async fn a_lost_upload_answers_gone() {
     let (s, _) = json_call(&app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
     assert_eq!(s, StatusCode::GONE);
 }
+
+#[tokio::test]
+async fn scope_splits_the_gallery_from_the_drive() {
+    let (tmp, lib, app) = setup();
+    for (name, source, shade) in [("phone.png", "phone-ios", 10u8), ("film.png", "folder", 20), ("shared.png", "ios-share", 30)] {
+        let src = tmp.path().join(name);
+        std::fs::write(&src, png(8, 8, shade)).unwrap();
+        let client = lucina_media::meta::ClientMeta { filename: Some(name.into()), source: Some(source.into()), ..Default::default() };
+        ingest::ingest_file(&lib, &src, None, &client, None).unwrap();
+    }
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v["items"].as_array().unwrap().iter().map(|i| i["title"].as_str().unwrap().to_string()).collect();
+        t.sort();
+        t
+    };
+    let (s, all) = get_json(&app, "/v1/media/items").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(titles(&all).len(), 3);
+    let (_, gallery) = get_json(&app, "/v1/media/items?scope=gallery").await;
+    assert_eq!(titles(&gallery), vec!["phone.png"]);
+    let (_, drive) = get_json(&app, "/v1/media/items?scope=drive").await;
+    assert_eq!(titles(&drive), vec!["film.png", "shared.png"]);
+    // The camera album (phone uploads) is a Gallery album, not a Drive folder.
+    let (_, albums) = get_json(&app, "/v1/media/albums?scope=drive").await;
+    let keys: Vec<&str> = albums["albums"].as_array().unwrap().iter().filter_map(|a| a["system_key"].as_str()).collect();
+    assert!(!keys.contains(&"camera"), "{albums}");
+    let (_, gallery_albums) = get_json(&app, "/v1/media/albums?scope=gallery").await;
+    let camera = gallery_albums["albums"].as_array().unwrap().iter().find(|a| a["system_key"] == "camera").expect("camera album");
+    assert_eq!(camera["count"], 1);
+}

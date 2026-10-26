@@ -12,7 +12,9 @@ final class GalleryStore {
     private(set) var total: Int?
     private(set) var loading = false
     var error: String?
-    var filter = GalleryAPI.Filter()
+    var filter: GalleryAPI.Filter
+    /// `gallery` (the Gallery: the phones' photos and videos) or `drive` (the Drive plugin).
+    let scope: String?
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let api: () -> GalleryAPI
 
@@ -24,14 +26,16 @@ final class GalleryStore {
         let total: Int?
     }
 
-    private static var listingURL: URL {
+    private var listingURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("gallery-listing.json")
+            .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI) {
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil) {
         self.api = api
-        if let data = try? Data(contentsOf: Self.listingURL),
+        self.scope = scope
+        filter = GalleryAPI.Filter(scope: scope)
+        if let data = try? Data(contentsOf: listingURL),
            let saved = try? JSONDecoder().decode(Listing.self, from: data) {
             items = saved.items
             cursor = saved.nextCursor
@@ -54,9 +58,9 @@ final class GalleryStore {
             total = page.total
             error = nil
             showingCachedListing = false
-            if requestedFilter == GalleryAPI.Filter() {
+            if requestedFilter == GalleryAPI.Filter(scope: scope) {
                 let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
-                let url = Self.listingURL
+                let url = listingURL
                 await Task.detached(priority: .utility) {
                     try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                     if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
@@ -81,7 +85,7 @@ final class GalleryStore {
     }
 
     func loadAlbums() async {
-        if let a = try? await api().albums() { albums = a }
+        if let a = try? await api().albums(scope: scope) { albums = a }
     }
 
     func replace(_ item: GalleryItem) {
@@ -733,7 +737,6 @@ private struct FilterChips: View {
                 }
                 ChipButton(title: "Photos", icon: "photo", isOn: store.filter.kind == "photo") { store.filter.kind = "photo" }
                 ChipButton(title: "Videos", icon: "video", isOn: store.filter.kind == "video") { store.filter.kind = "video" }
-                ChipButton(title: "Audio", icon: "waveform", isOn: store.filter.kind == "audio") { store.filter.kind = "audio" }
                 ChipButton(title: "Favourites", icon: "heart", isOn: store.filter.favorites) { store.filter.favorites.toggle() }
             }
             .padding(.horizontal)

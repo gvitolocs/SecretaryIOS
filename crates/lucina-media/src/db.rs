@@ -375,6 +375,9 @@ pub struct ListQuery {
     /// `lat,lon,km`
     pub near: Option<String>,
     pub source: Option<String>,
+    /// `gallery`: what the phones backed up (`source` phone-…), the Gallery. `drive`: everything
+    /// else (imported folders such as the films, shared files, voice memos), the Drive.
+    pub scope: Option<String>,
     pub favorite: Option<bool>,
     pub trashed: Option<bool>,
     pub cursor: Option<String>,
@@ -451,6 +454,9 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
     }
     if let Some(s) = &q.source {
         add(&mut wh, &mut args, "i.source = ?", s.clone().into());
+    }
+    if let Some(cond) = scope_condition(q.scope.as_deref()) {
+        wh.push(cond.into());
     }
     if q.favorite == Some(true) {
         wh.push("i.favorite = 1".into());
@@ -547,15 +553,31 @@ pub struct Album {
     pub updated_at: String,
 }
 
+/// `ListQuery::scope` as SQL on `items i`.
+fn scope_condition(scope: Option<&str>) -> Option<&'static str> {
+    match scope {
+        Some("gallery") => Some("i.source LIKE 'phone%'"),
+        Some("drive") => Some("(i.source IS NULL OR i.source NOT LIKE 'phone%')"),
+        _ => None,
+    }
+}
+
 pub fn list_albums(c: &Connection) -> rusqlite::Result<Vec<Album>> {
-    let mut st = c.prepare(
+    list_albums_in(c, None)
+}
+
+/// Albums with their counts in one scope (`gallery`, `drive`); the ones with nothing there are left out.
+pub fn list_albums_in(c: &Connection, scope: Option<&str>) -> rusqlite::Result<Vec<Album>> {
+    let extra = scope_condition(scope).map(|s| format!(" AND {s}")).unwrap_or_default();
+    let mut st = c.prepare(&format!(
         "SELECT a.id, a.title, a.system_key, a.cover_item, \
            (SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \
-             WHERE ai.album_id = a.id AND i.trashed_at IS NULL AND i.hidden = 0), a.created_at, a.updated_at \
-         FROM albums a ORDER BY a.system_key IS NULL, a.updated_at DESC",
-    )?;
+             WHERE ai.album_id = a.id AND i.trashed_at IS NULL AND i.hidden = 0{extra}), a.created_at, a.updated_at \
+         FROM albums a ORDER BY a.system_key IS NULL, a.updated_at DESC"
+    ))?;
     let rows = st.query_map([], album_from_row)?;
-    rows.collect()
+    let albums: Vec<Album> = rows.collect::<rusqlite::Result<_>>()?;
+    Ok(if scope.is_some() { albums.into_iter().filter(|a| a.count > 0).collect() } else { albums })
 }
 
 pub fn get_album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
