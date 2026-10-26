@@ -31,6 +31,9 @@ targets:
       path: Secretary/Info.plist
       properties:
         CFBundleDisplayName: Secretary
+        # Siri and App Shortcuts also take "Lucina" for the app name ("Registra memo con Lucina").
+        INAlternativeAppNames:
+          - INAlternativeAppName: Lucina
         NSUserActivityTypes: [INSendMessageIntent]
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, it, da]

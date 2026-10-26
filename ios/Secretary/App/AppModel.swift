@@ -198,6 +198,12 @@ final class AppModel {
             case .stop: memoStore.finishRecording()
             }
         }
+        MemoRecordingCommands.start = { [client] in
+            guard client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+            if memoStore.recorder.isActive { return }
+            await memoStore.record()
+            if let error = memoStore.recorder.error { throw IntentFailure.message(error) }
+        }
         if launch.openSettings { showSettings = true }
         if launch.openNotes {
             selectedTab = .plugins

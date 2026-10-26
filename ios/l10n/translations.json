@@ -847,5 +847,18 @@
   "Resume": ["Riprendi", "Fortsæt"],
   "Play from the beginning": ["Riproduci dall’inizio", "Afspil fra begyndelsen"],
   "%lld percent watched": ["%lld percento visto", "%lld procent set"],
-  "Watched": ["Visto", "Set"]
+  "Watched": ["Visto", "Set"],
+  "Record a memo with Lucina": ["Registra memo con Lucina", "Optag memo med Lucina"],
+  "Starts recording a voice memo at once, also from the Lock Screen. Lucina transcribes and summarises it.": ["Avvia subito la registrazione di un memo vocale, anche dalla schermata di blocco. Lucina lo trascrive e lo riassume.", "Starter optagelsen af et talememo med det samme, også fra låseskærmen. Lucina transskriberer og opsummerer det."],
+  "Open the memo recorder": ["Apri il registratore di memo", "Åbn memo-optageren"],
+  "Stop memo": ["Ferma memo", "Stop memo"],
+  "Pause memo": ["Pausa memo", "Pause memo"],
+  "Resume memo": ["Riprendi memo", "Genoptag memo"],
+  "Record memo": ["Registra memo", "Optag memo"],
+  "Pause recording": ["Metti in pausa la registrazione", "Sæt optagelsen på pause"],
+  "Resume recording": ["Riprendi la registrazione", "Genoptag optagelsen"],
+  "Stop and save recording": ["Ferma e salva la registrazione", "Stop og gem optagelsen"],
+  "Lucina memo": ["Memo Lucina", "Lucina-memo"],
+  "Starts a voice memo at once. Lucina transcribes and summarises it.": ["Avvia subito un memo vocale. Lucina lo trascrive e lo riassume.", "Starter et talememo med det samme. Lucina transskriberer og opsummerer det."],
+  "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it.": ["Apre Secretary e avvia la registrazione di un memo vocale. Lucina lo trascrive e lo riassume.", "Åbner Secretary og starter optagelsen af et talememo. Lucina transskriberer og opsummerer det."]
 }

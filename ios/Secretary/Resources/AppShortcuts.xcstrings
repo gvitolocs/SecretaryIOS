@@ -1,0 +1,230 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Add to my list in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Føj til min liste i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiungi alla mia lista in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Add to shopping in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Føj til indkøb i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aggiungi alla spesa in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Ask ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spørg ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chiedi a ${applicationName}"
+          }
+        }
+      }
+    },
+    "Ask Lucina in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spørg Lucina i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chiedi a Lucina in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Log my weight in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registrer min vægt i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registra il mio peso in ${applicationName}"
+          }
+        }
+      }
+    },
+    "New voice memo with ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nyt talememo med ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nuovo memo vocale con ${applicationName}"
+          }
+        }
+      }
+    },
+    "Pause the memo in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sæt memoet på pause i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metti in pausa il memo in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Record a memo with ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Optag memo med ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registra memo con ${applicationName}"
+          }
+        }
+      }
+    },
+    "Resume the memo in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Genoptag memoet i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Riprendi il memo in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Save the memo in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gem memoet i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Salva il memo in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Send to Lucina with ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send til Lucina med ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invia a Lucina con ${applicationName}"
+          }
+        }
+      }
+    },
+    "Share with Lucina in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Del med Lucina i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Condividi con Lucina in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Start a workout in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start en træning i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inizia un allenamento in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Stop the memo in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop memoet i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ferma il memo in ${applicationName}"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

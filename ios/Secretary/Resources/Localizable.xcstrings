@@ -7755,7 +7755,22 @@
         }
       }
     },
-    "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it." : {},
+    "Opens Secretary and starts recording a voice memo. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner Secretary og starter optagelsen af et talememo. Lucina transskriberer og opsummerer det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre Secretary e avvia la registrazione di un memo vocale. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    },
     "Other" : {
       "localizations" : {
         "da" : {
@@ -7901,7 +7916,22 @@
         }
       }
     },
-    "Pause recording" : {},
+    "Pause recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt optagelsen på pause"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Metti in pausa la registrazione"
+          }
+        }
+      }
+    },
     "Paused" : {},
     "Paused by a call" : {},
     "Paused by another app or a call" : {},
@@ -8376,7 +8406,22 @@
     },
     "Record" : {},
     "Record a memo" : {},
-    "Record memo" : {},
+    "Record memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optag memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra memo"
+          }
+        }
+      }
+    },
     "Recording" : {
       "localizations" : {
         "it" : {
@@ -8880,7 +8925,22 @@
       }
     },
     "Resume" : {},
-    "Resume recording" : {},
+    "Resume recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genoptag optagelsen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprendi la registrazione"
+          }
+        }
+      }
+    },
     "Retry" : {
       "localizations" : {
         "da" : {
@@ -9848,7 +9908,22 @@
       }
     },
     "Stop and save" : {},
-    "Stop and save recording" : {},
+    "Stop and save recording" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop og gem optagelsen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferma e salva la registrazione"
+          }
+        }
+      }
+    },
     "Stop dancing" : {},
     "Stop listening" : {
       "localizations" : {
@@ -14036,7 +14111,135 @@
     "%@, %@, %@" : {
       "shouldTranslate" : false
     },
-    "%lld %%" : {}
+    "%lld %%" : {},
+    "Record a memo with Lucina" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Optag memo med Lucina"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Registra memo con Lucina"
+          }
+        }
+      }
+    },
+    "Starts recording a voice memo at once, also from the Lock Screen. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starter optagelsen af et talememo med det samme, også fra låseskærmen. Lucina transskriberer og opsummerer det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvia subito la registrazione di un memo vocale, anche dalla schermata di blocco. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    },
+    "Open the memo recorder" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn memo-optageren"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri il registratore di memo"
+          }
+        }
+      }
+    },
+    "Stop memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ferma memo"
+          }
+        }
+      }
+    },
+    "Pause memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pause memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pausa memo"
+          }
+        }
+      }
+    },
+    "Resume memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genoptag memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riprendi memo"
+          }
+        }
+      }
+    },
+    "Lucina memo" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucina-memo"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Memo Lucina"
+          }
+        }
+      }
+    },
+    "Starts a voice memo at once. Lucina transcribes and summarises it." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starter et talememo med det samme. Lucina transskriberer og opsummerer det."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Avvia subito un memo vocale. Lucina lo trascrive e lo riassume."
+          }
+        }
+      }
+    }
   },
   "version" : "1.0"
 }
