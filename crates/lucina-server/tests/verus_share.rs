@@ -11,6 +11,12 @@
 //!   limits, and random field sequences, against the kernel's receive loop.
 //! - SK2: repeated receives of one shareId (and a staged dir left by a crash before the
 //!   save) give one userItemId and one user item.
+//! - SK1.6/SK1.7 (voice notes, branch voice-notes): the real `router::route_for` and
+//!   `timeline_kind_for` over every header x extension x mime x voice flag against the
+//!   kernel, and extract's re-route from the stored kind against receive's.
+//! - SK4.5: the real `timeline::valid_waveform` and the base64 engine against the kernel's
+//!   decoder (exhaustive short strings, random strings, the 64/66-byte edges), and the
+//!   transcripts `timeline::normalize` stores against the kernel's `clip16`.
 
 mod common;
 
@@ -19,8 +25,10 @@ use std::time::Duration;
 
 use common::{harness, script, H};
 use lucina_server::share::handlers::code;
-use lucina_server::share::router::{route, sniff, timeline_kind, KINDS};
-use lucina_store::timeline::{normalize, Attachment, Meta, NewItem};
+use lucina_server::share::router::{
+    route, route_for, sniff, timeline_kind, timeline_kind_for, KINDS,
+};
+use lucina_store::timeline::{normalize, valid_waveform, Attachment, Meta, NewItem};
 use reqwest::multipart::{Form, Part};
 use serde_json::{json, Value};
 
@@ -334,6 +342,94 @@ mod kernel {
     }
     pub fn valid_session(s: &[u8]) -> bool {
         s.len() <= 64 && s.iter().all(|&b| alnum(b) || b == b'-' || b == b'_')
+    }
+
+    // ------------------------------------------------------------ SK1.6 voice routing
+
+    pub fn route_for(i: &Input, voice: bool, container: bool) -> &'static str {
+        let k = route(i);
+        if voice && k == "video" && i.mime == Some("audio") && container {
+            "audio"
+        } else {
+            k
+        }
+    }
+    pub fn timeline_kind_for(w: &str, voice: bool) -> &'static str {
+        if w == "audio" && voice {
+            "voice"
+        } else {
+            timeline_kind(w)
+        }
+    }
+
+    // ------------------------------------------------------------ SK4.5 voice-note fields
+
+    fn b64_sym(c: u8) -> bool {
+        c.is_ascii_uppercase()
+            || c.is_ascii_lowercase()
+            || c.is_ascii_digit()
+            || c == b'+'
+            || c == b'/'
+    }
+    fn b64_val(c: u8) -> u8 {
+        match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            _ => 63,
+        }
+    }
+    /// b64_decoded_len: the decoded length, or None where the engine errors.
+    pub fn b64_decoded_len(s: &[u8]) -> Option<usize> {
+        let n = s.len();
+        if n == 0 {
+            return Some(0);
+        }
+        let tl = if n % 4 == 0 { 4 } else { n % 4 };
+        let p = n - tl;
+        if !s[..p].iter().all(|&c| b64_sym(c)) {
+            return None;
+        }
+        let pads = if s[n - 1] == b'=' {
+            if tl >= 2 && s[n - 2] == b'=' {
+                2
+            } else {
+                1
+            }
+        } else {
+            0
+        };
+        if tl < pads + 2 {
+            return None;
+        }
+        let k = tl - pads;
+        if !s[p..p + k].iter().all(|&c| b64_sym(c)) {
+            return None;
+        }
+        if k == 2 && b64_val(s[p + 1]) % 16 != 0 || k == 3 && b64_val(s[p + 2]) % 4 != 0 {
+            return None;
+        }
+        Some(3 * (p / 4) + (k - 1))
+    }
+    pub fn valid_waveform(s: &[u8]) -> bool {
+        !s.is_empty()
+            && s.len() <= 88
+            && matches!(b64_decoded_len(s), Some(d) if (1..=64).contains(&d))
+    }
+    pub fn clip16(s: &[char], max: usize) -> Vec<char> {
+        match s.split_first() {
+            Some((c, rest)) if c.len_utf16() <= max => {
+                let mut out = vec![*c];
+                out.extend(clip16(rest, max - c.len_utf16()));
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+    pub fn stored_transcript(s: &[char]) -> Option<Vec<char>> {
+        let c = clip16(s, 4000);
+        (!c.is_empty()).then_some(c)
     }
 }
 
@@ -1257,4 +1353,217 @@ async fn sk2_a_dir_left_by_a_crash_before_the_save_is_replaced() {
     assert_eq!(dup["duplicate"], true);
     assert_eq!(dup["userItemId"], body["userItemId"]);
     assert_eq!(user_items_for(&h, id).len(), 1);
+}
+
+// ================================================================ SK1.6-SK1.7: voice routing
+
+/// head[4..8] == "ftyp" or the Matroska magic (what route_for reads, 12 bytes).
+fn container(head: &[u8]) -> bool {
+    head.get(4..8) == Some(b"ftyp") || head.starts_with(b"\x1a\x45\xdf\xa3")
+}
+
+const VOICE_MIMES: &[&str] = &[
+    "audio/mp4",
+    "audio/webm",
+    "audio/x-m4a",
+    "AUDIO/MP4; codecs=mp4a",
+];
+
+#[test]
+fn sk1_voice_routing_matches_the_kernel() {
+    let dir = tempfile::tempdir().unwrap();
+    let heads = heads();
+    let (mut checked, mut changed) = (0, 0);
+    for (i, (label, bytes, zip)) in heads.iter().enumerate() {
+        let path = dir.path().join(format!("v{i:02}"));
+        std::fs::write(&path, bytes).unwrap();
+        for ext in EXTS {
+            let name = if ext.is_empty() {
+                "voice".to_owned()
+            } else {
+                format!("note.{ext}")
+            };
+            for mime in MIMES.iter().chain(VOICE_MIMES) {
+                let input = kernel_input(bytes, *zip, &name, mime);
+                let plain = route(&path, &name, mime);
+                for voice in [false, true] {
+                    let ctx = format!("{label} {name:?} {mime:?} voice={voice}");
+                    let real = route_for(&path, &name, mime, voice);
+                    assert_eq!(
+                        real,
+                        kernel::route_for(&input, voice, container(bytes)),
+                        "{ctx}"
+                    );
+                    assert!(KINDS.contains(&real), "{ctx}: {real}");
+                    if real != plain {
+                        // only an audio-MIME container that sniff calls video
+                        assert!(voice && plain == "video" && real == "audio", "{ctx}");
+                        changed += 1;
+                    }
+                    let kind = timeline_kind_for(real, voice);
+                    assert_eq!(kind, kernel::timeline_kind_for(real, voice), "{ctx}");
+                    assert!(kernel::ATTACHMENT_KINDS.contains(&kind), "{ctx}: {kind}");
+                    assert_eq!(kind == "voice", voice && real == "audio", "{ctx}");
+                    if real != "audio" {
+                        assert_eq!(kind, timeline_kind(plain), "{ctx}");
+                    }
+                    // extract::read re-routes with the flag read back from the stored kind
+                    let again = route_for(&path, &name, mime, kind == "voice");
+                    assert_eq!(again, real, "{ctx}: extract disagrees with receive");
+                    assert_eq!(
+                        again == "audio" && kind == "voice",
+                        kind == "voice",
+                        "{ctx}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(
+        checked,
+        heads.len() * EXTS.len() * (MIMES.len() + VOICE_MIMES.len()) * 2
+    );
+    assert!(
+        changed > 0,
+        "no container was re-routed: the case is not exercised"
+    );
+}
+
+// ================================================================ SK4.5: voice-note fields
+
+fn engine_len(s: &str) -> Option<usize> {
+    use base64::engine::{general_purpose, DecodePaddingMode, GeneralPurpose};
+    use base64::Engine;
+    const ENGINE: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        general_purpose::PAD.with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+    ENGINE.decode(s).ok().map(|b| b.len())
+}
+
+fn check_waveform(raw: &str) {
+    let t = raw.trim();
+    assert_eq!(
+        kernel::b64_decoded_len(t.as_bytes()),
+        engine_len(t),
+        "decoded length of {t:?}"
+    );
+    let real = valid_waveform(raw);
+    let k = kernel::valid_waveform(t.as_bytes());
+    assert_eq!(real.is_some(), k, "valid_waveform({raw:?})");
+    if let Some(stored) = real {
+        assert_eq!(stored, t);
+        assert!((1..=88).contains(&stored.len()));
+        assert!(matches!(engine_len(&stored), Some(1..=64)));
+    }
+    // SK4.5: exactly the strings that decode to 1..=64 bytes
+    assert_eq!(k, matches!(engine_len(t), Some(1..=64)), "{t:?}");
+}
+
+#[test]
+fn sk4_valid_waveform_matches_the_kernel() {
+    // every string of up to 4 symbols over an alphabet with both trailing-bit classes,
+    // padding and junk
+    let alphabet: Vec<char> = "ABQgw/+=!é".chars().collect();
+    let mut words = vec![String::new()];
+    for _ in 0..4 {
+        let next: Vec<String> = words
+            .iter()
+            .flat_map(|w| alphabet.iter().map(move |c| format!("{w}{c}")))
+            .collect();
+        words.extend(next.iter().cloned());
+        words = words
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+    }
+    assert!(words.len() > 10_000);
+    for w in &words {
+        check_waveform(w);
+        check_waveform(&format!("AAAA{w}"));
+    }
+    // the edges: 64 and 66 bytes, with and without padding, and whitespace around them
+    for n in 0..=100 {
+        let a = "A".repeat(n);
+        for s in [
+            a.clone(),
+            format!("{a}="),
+            format!("{a}=="),
+            format!("{a}AA=="),
+            format!(" {a}\n"),
+            format!("\u{a0}{a}A="),
+        ] {
+            check_waveform(&s);
+        }
+    }
+    assert!(valid_waveform(&"A".repeat(86)).is_some());
+    assert!(valid_waveform(&("A".repeat(84) + "AA==")).is_some());
+    assert!(valid_waveform(&"A".repeat(88)).is_none());
+    assert_eq!(engine_len(&"A".repeat(88)), Some(66));
+    // random strings around the limits
+    let pool: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=  -_é"
+        .chars()
+        .collect();
+    let mut rng = Rng(0x5eed_0045);
+    for _ in 0..20_000 {
+        let len = rng.below(100);
+        let w: String = (0..len)
+            .map(|_| {
+                if rng.below(8) == 0 {
+                    *rng.pick(&pool)
+                } else {
+                    *rng.pick(&pool[..64])
+                }
+            })
+            .collect();
+        check_waveform(&w);
+    }
+}
+
+#[test]
+fn sk4_stored_transcripts_match_the_kernel() {
+    let pool = ['a', 'Z', ' ', '\n', 'è', '日', '😀', '\u{feff}', '\u{a0}'];
+    let mut rng = Rng(0x5eed_4005);
+    for round in 0..400 {
+        let len = match round % 4 {
+            0 => rng.below(20),
+            1 => 1995 + rng.below(10),
+            2 => 3990 + rng.below(20),
+            _ => 7990 + rng.below(20),
+        };
+        let s: String = (0..len).map(|_| *rng.pick(&pool)).collect();
+        let trimmed: Vec<char> = lucina_store::timeutil::js_trim(&s).chars().collect();
+        let want = kernel::stored_transcript(&trimmed).map(|c| c.into_iter().collect::<String>());
+        let item = normalize(
+            NewItem {
+                channel: "ios".into(),
+                role: "user".into(),
+                attachments: vec![Attachment {
+                    kind: "voice".into(),
+                    transcript: Some(s.clone()),
+                    ..Attachment::default()
+                }],
+                meta: Some(Meta {
+                    transcript: Some(s.clone()),
+                    voice_reply: Some(true),
+                    ..Meta::default()
+                }),
+                ..NewItem::default()
+            },
+            1_760_000_000_000,
+        )
+        .unwrap();
+        let att = item.attachments.unwrap()[0].transcript.clone();
+        assert_eq!(att, want, "attachment transcript, round {round}");
+        assert_eq!(
+            item.meta.unwrap().transcript,
+            want,
+            "meta.transcript, round {round}"
+        );
+        if let Some(t) = want {
+            assert!(t.encode_utf16().count() <= 4000 && t.chars().count() <= 4000);
+        }
+    }
 }
