@@ -41,12 +41,13 @@ struct AppointmentSection: WidgetSection {
         var start: Date
         var end: Date
         var allDay: Bool
-        /// Minutes from where the owner is (or home) to `location`.
+        /// Minutes from home to `location` (maps routes, the quickest mode).
         var travelMinutes: Int?
-        /// `driving`, `walking`, `transit`, `bicycling`.
+        /// `drive`, `walk`, `bike`, `transit`.
         var travelMode: String?
-        /// When to leave (start minus travel time), if known.
-        var leaveAt: Date? { travelMinutes.map { start.addingTimeInterval(-Double($0) * 60) } }
+        /// The server's leave time (start - travel - 5 min); else start minus the travel time.
+        var leaveBy: Date?
+        var leaveAt: Date? { leaveBy ?? travelMinutes.map { start.addingTimeInterval(-Double($0) * 60) } }
     }
 
     var fetchedAt: Date

@@ -10,7 +10,7 @@ All of these live in the `SecretaryWidgets` extension (`Extensions/SecretaryWidg
 | Widget | Home Screen / StandBy | Lock Screen | Tap / buttons |
 | --- | --- | --- | --- |
 | Ask Lucina | small, medium: her last reply + an "Ask Lucina…" field | circular, rectangular, inline | the chat with the keyboard up (`chat/compose`) |
-| Next appointment | small, medium (+ the one after) | circular, rectangular, inline | the in-app map for the event (`map/event/<id>`) |
+| Next appointment | small, medium (+ the one after) | circular, rectangular, inline | the in-app place map (`map/place?title=&address=&when=&end=&eventId=`) |
 | Shopping list | small, medium (+ deals), large (+ deals) | circular, rectangular, inline | **tick items off in place**; "+" opens the add field; deals open the deals map |
 | Today (tasks + reminders) | small, medium, large | circular, rectangular, inline | **complete in place** (Todoist task, or dismisses Lucina's reminder) |
 | Weight | small, medium (30-day trend) | circular, rectangular, inline | "+" opens the quick weight sheet |
@@ -47,8 +47,13 @@ the Action button (Settings → Action Button → Shortcut).
   section is replaced only by a newer one, and a copy younger than 60 s is reused as is.
 - **Media.** `/v1/media/*` goes to the primary URL only, because p1's Caddy serves it and the tailnet fallback is
   secretary-server.
-- **Travel time.** It is read from `GET /v1/maps/travel?destination=&arrivalMs=` (fields `durationS`, `mode`). Until the
-  maps work serves it, the widget shows time and place without travel time.
+- **Travel time** comes from secretary-maps:
+  1. `GET /v1/maps/config` gives home (the widget has no location of its own).
+  2. `GET /v1/maps/geocode?q=<address>` finds the event's place.
+  3. `GET /v1/maps/routes?from=&to=&modes=drive,transit,walk&arrive=` gives the routes.
+
+  The widget uses the quickest route and the server's `leaveAt` (5 min buffer). A 503 (no Google key) or a missing home
+  means the widget shows time and place only.
 
 ## Privacy
 

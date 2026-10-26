@@ -52,20 +52,34 @@ struct WidgetFetcher: Sendable {
             if let travel = try? await travel(to: place, arriveBy: event.start) {
                 event.travelMinutes = travel.minutes
                 event.travelMode = travel.mode
+                event.leaveBy = travel.leaveAt
             }
             next = event
         }
         return AppointmentSection(fetchedAt: Date(), next: next, then: ordered.dropFirst().first)
     }
 
-    /// Travel time from the maps endpoint (Google Routes on the server). Nil when the server has none.
-    func travel(to place: String, arriveBy: Date) async throws -> (minutes: Int, mode: String?)? {
-        let query = [URLQueryItem(name: "destination", value: place),
-                     URLQueryItem(name: "arrivalMs", value: String(Int64(arriveBy.timeIntervalSince1970 * 1000)))]
-        guard let json: JSONValue = try? await client.get("/v1/maps/travel", query: query, timeout: 10) else { return nil }
-        let seconds = json["durationS"]?.numberValue ?? json["duration_s"]?.numberValue ?? json["seconds"]?.numberValue
-        guard let seconds, seconds > 0 else { return nil }
-        return (Int((seconds / 60).rounded(.up)), json["mode"]?.nonEmptyString)
+    /// Travel time from home to `place` (secretary-maps: Google Routes on the server, cached), the
+    /// quickest of drive, transit and walk. Nil when the server has none (no home, no key: 503).
+    /// The widget has no location of its own, so it starts from home, as the maps API does without one.
+    func travel(to place: String, arriveBy: Date) async throws -> (minutes: Int, mode: String?, leaveAt: Date?)? {
+        let config: JSONValue = try await client.get("/v1/maps/config", timeout: 10)
+        guard let home = config["home"], let hLat = home["lat"]?.numberValue, let hLng = home["lng"]?.numberValue else { return nil }
+        let found: JSONValue = try await client.get("/v1/maps/geocode", query: [
+            URLQueryItem(name: "q", value: place), URLQueryItem(name: "lat", value: String(hLat)), URLQueryItem(name: "lng", value: String(hLng)),
+        ], timeout: 10)
+        guard let first = found["results"]?.arrayValue?.first, let lat = first["lat"]?.numberValue, let lng = first["lng"]?.numberValue else { return nil }
+        let routes: JSONValue = try await client.get("/v1/maps/routes", query: [
+            URLQueryItem(name: "from", value: "\(hLat),\(hLng)"), URLQueryItem(name: "to", value: "\(lat),\(lng)"),
+            URLQueryItem(name: "modes", value: "drive,transit,walk"),
+            URLQueryItem(name: "arrive", value: ISO8601DateFormatter().string(from: arriveBy)),
+        ], timeout: 15)
+        let best = (routes["routes"]?.arrayValue ?? []).compactMap { route -> (Double, JSONValue)? in
+            guard let seconds = route["durationS"]?.numberValue, seconds > 0 else { return nil }
+            return (seconds, route)
+        }.min { $0.0 < $1.0 }
+        guard let (seconds, route) = best else { return nil }
+        return (Int((seconds / 60).rounded(.up)), route["mode"]?.nonEmptyString, Self.date(route["leaveAt"]))
     }
 
     static func event(_ json: JSONValue) -> AppointmentSection.Event? {

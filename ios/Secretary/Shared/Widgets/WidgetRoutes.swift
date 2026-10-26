@@ -9,7 +9,7 @@ import Foundation
 //   weight/log        the quick weight entry sheet
 //   gym/start         start (or resume) a workout
 //   memos/record      start recording a voice memo
-//   map/event/<id>    the in-app map for a calendar event
+//   map/place?title=&address=&when=&end=&eventId=   the in-app place map for an event
 //   films/play/<id>   play a film where it stopped
 enum WidgetRoute {
     static let scheme = "secretary"
@@ -24,7 +24,8 @@ enum WidgetRoute {
         guard url.scheme == scheme, url.host == "open" else { return nil }
         // Still percent-encoded: an id may hold a `/` (the app decodes each segment itself).
         let path = url.path(percentEncoded: true)
-        return path.count <= 1 ? "chat" : String(path.dropFirst())
+        let route = path.count <= 1 ? "chat" : String(path.dropFirst())
+        return url.query(percentEncoded: true).map { "\(route)?\($0)" } ?? route
     }
 
     static func segment(_ id: String) -> String {

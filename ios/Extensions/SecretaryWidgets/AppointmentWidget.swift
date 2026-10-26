@@ -59,9 +59,15 @@ struct AppointmentWidgetView: View {
 
     private var event: AppointmentSection.Event? { entry.section?.next }
 
+    /// The in-app place map (`/map/place?…`, maps feature); it geocodes an address by itself.
     private var link: URL {
-        guard let event else { return WidgetRoute.url("chat") }
-        return WidgetRoute.url(event.location == nil ? "calendar" : "map/event/\(WidgetRoute.segment(event.id))")
+        guard let event, let place = event.location else { return WidgetRoute.url("chat") }
+        var query = URLComponents()
+        let iso = ISO8601DateFormatter()
+        query.queryItems = [URLQueryItem(name: "title", value: event.title), URLQueryItem(name: "address", value: place),
+                            URLQueryItem(name: "when", value: iso.string(from: event.start)),
+                            URLQueryItem(name: "end", value: iso.string(from: event.end)), URLQueryItem(name: "eventId", value: event.id)]
+        return WidgetRoute.url("map/place?\(query.percentEncodedQuery ?? "")")
     }
 
     var body: some View {
@@ -179,9 +185,9 @@ struct AppointmentWidgetView: View {
 
     private func symbol(_ mode: String?) -> String {
         switch mode {
-        case "walking": return "figure.walk"
+        case "walk", "walking": return "figure.walk"
         case "transit": return "tram.fill"
-        case "bicycling": return "bicycle"
+        case "bike", "bicycling": return "bicycle"
         default: return "car.fill"
         }
     }
