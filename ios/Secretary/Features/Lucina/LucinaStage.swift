@@ -6,12 +6,14 @@ import Speech
 import SwiftUI
 import WebKit
 
-// Persistent 3D Lucina: the shared three.js stage (packages/lucina-stage, bundled as
-// Resources/Stage/lucina-stage.standalone.js) in one WKWebView, shown as a small
-// draggable avatar over every tab on iPhone and as a full-body side column on iPad or in
-// landscape. Voice input is native (SFSpeechRecognizer, it-IT); the transcript goes to
-// /v1/chat like a typed message; the reply is spoken through the stage only when the
-// owner has turned the sound on. Muted by default, never plays anything by itself.
+// 3D Lucina: the shared three.js stage (packages/lucina-stage, bundled as
+// Resources/Stage/lucina-stage.standalone.js) in one WKWebView, on the Lucina tab only
+// (LucinaTab.swift). Nothing of it exists before that tab first opens: the web view, the
+// model download and the voice engine are created then, and released again when memory is
+// tight while she is out of sight (or when WebKit drops the page); the next visit reloads her.
+// Voice input is native (SFSpeechRecognizer, it-IT); the transcript goes to /v1/chat like a
+// typed message; the reply is spoken through the stage only when the owner has turned the
+// sound on. Muted by default, never plays anything by itself.
 
 /// Serves the stage under `lucina-app://stage/`:
 /// - `stage.html`, `lucina-stage.standalone.js` from the app bundle;
@@ -78,17 +80,20 @@ final class LucinaSchemeHandler: NSObject, WKURLSchemeHandler {
         finish(task, status: 200, data: data, type: type)
     }
 
-    private static var cacheDirectory: URL {
+    nonisolated private static var cacheDirectory: URL {
         let base = (try? FileManager.default.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("lucina-assets", isDirectory: true)
     }
 
+    /// The model is several MB: the cache is read and written off the main thread.
     private func serveAsset(_ task: any WKURLSchemeTask, name: String) async {
         let file = Self.cacheDirectory.appendingPathComponent(name)
         let tagFile = Self.cacheDirectory.appendingPathComponent(name + ".etag")
-        let cached = try? Data(contentsOf: file)
-        let tag = cached == nil ? nil : (try? String(contentsOf: tagFile, encoding: .utf8))
+        let (cached, tag) = await Task.detached(priority: .userInitiated) { () -> (Data?, String?) in
+            let cached = try? Data(contentsOf: file)
+            return (cached, cached == nil ? nil : (try? String(contentsOf: tagFile, encoding: .utf8)))
+        }.value
         let type = name.hasSuffix(".json") ? "application/json" : name.hasSuffix(".glb") ? "model/gltf-binary" : "application/octet-stream"
         do {
             var headers: [String: String] = [:]
@@ -97,10 +102,14 @@ final class LucinaSchemeHandler: NSObject, WKURLSchemeHandler {
             if response.status == 304, let cached {
                 return finish(task, status: 200, data: cached, type: type)
             }
-            try? FileManager.default.createDirectory(at: Self.cacheDirectory, withIntermediateDirectories: true)
-            try? response.data.write(to: file, options: .atomic)
-            if let etag = response.headers["etag"] { try? etag.write(to: tagFile, atomically: true, encoding: .utf8) }
-            finish(task, status: 200, data: response.data, type: response.headers["content-type"] ?? type)
+            let data = response.data
+            let etag = response.headers["etag"]
+            Task.detached(priority: .utility) {
+                try? FileManager.default.createDirectory(at: LucinaSchemeHandler.cacheDirectory, withIntermediateDirectories: true)
+                try? data.write(to: file, options: .atomic)
+                if let etag { try? etag.write(to: tagFile, atomically: true, encoding: .utf8) }
+            }
+            finish(task, status: 200, data: data, type: response.headers["content-type"] ?? type)
         } catch {
             if let cached, APIError.wrap(error).isConnectivity {
                 return finish(task, status: 200, data: cached, type: type) // offline: the last model we had
@@ -229,7 +238,10 @@ final class LucinaStageController {
     /// The stage is loading or playing an outfit change.
     private(set) var changingOutfit = false
     var message: String?
-    var expanded = false
+    /// The Lucina tab asked for the stage (it stays false until the tab first opens).
+    private(set) var awake = false
+    /// Bumped when the web view is released, so the tab's host builds a fresh one.
+    private(set) var generation = 0
 
     /// Muted by default; the choice persists. Nothing plays while muted.
     var muted: Bool {
@@ -240,17 +252,34 @@ final class LucinaStageController {
         }
     }
 
+    /// "Show Lucina" in Settings: off, the Lucina tab shows a switch instead of the stage.
     var enabled: Bool {
-        didSet { UserDefaults.standard.set(enabled, forKey: Self.enabledKey) }
+        didSet {
+            UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
+            if enabled { awake = visible } else { releaseStage() }
+        }
     }
 
     @ObservationIgnored private var webViewStorage: WKWebView?
     @ObservationIgnored private var schemeHandler: LucinaSchemeHandler?
+    @ObservationIgnored private var navigationProxy: NavigationProxy?
+    /// The Lucina tab is on screen.
+    @ObservationIgnored private var visible = false
+    /// A look that changed while she was out of sight: sent when she is back on screen.
+    @ObservationIgnored private var lookPending = false
+    @ObservationIgnored private var memoryObserver: NSObjectProtocol?
     @ObservationIgnored private var framing: Framing = .bust
     /// The wardrobe and the look she should wear (JSON for the page).
     @ObservationIgnored private var wardrobeJSON = "{}"
     @ObservationIgnored private var lookJSON = "{}"
-    @ObservationIgnored private let voice = VoiceInput()
+    /// The speech recognizer and audio engine, made on the first voice turn.
+    @ObservationIgnored private var voiceStorage: VoiceInput?
+    private var voice: VoiceInput {
+        if let voiceStorage { return voiceStorage }
+        let voice = VoiceInput()
+        voiceStorage = voice
+        return voice
+    }
     @ObservationIgnored let client: APIClient
     /// While set (the AR view is open), her speech goes here instead of the web stage.
     @ObservationIgnored var speechSink: ((Data) -> Void)?
@@ -262,11 +291,62 @@ final class LucinaStageController {
         let defaults = UserDefaults.standard
         muted = defaults.object(forKey: Self.mutedKey) as? Bool ?? true
         enabled = defaults.object(forKey: Self.enabledKey) as? Bool ?? true
+        memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
+                                                                object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.memoryWarning() }
+        }
     }
 
-    /// The shared web view, created on first use.
+    // MARK: - Lifetime (the Lucina tab)
+
+    /// The Lucina tab appeared or went away. The first appearance wakes the stage; a look that
+    /// changed meanwhile is applied when she is on screen again.
+    func setVisible(_ visible: Bool) {
+        self.visible = visible
+        guard visible else { return }
+        if enabled { awake = true }
+        if lookPending {
+            lookPending = false
+            run("lucina.dress(\(wardrobeJSON), \(lookJSON))")
+        }
+    }
+
+    /// Drops the web view, the page and the model (memory warning, WebKit gave up the page, sign
+    /// out, "Show Lucina" off). On screen, the tab's host loads her again at once.
+    func releaseStage() {
+        guard let view = webViewStorage else { return }
+        voiceStorage?.stop(deliver: false)
+        listening = false
+        thinking = false
+        view.stopLoading()
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "lucina")
+        view.removeFromSuperview()
+        webViewStorage = nil
+        schemeHandler = nil
+        navigationProxy = nil
+        phase = .idle
+        stageState = "idle"
+        changingOutfit = false
+        awake = visible && enabled
+        generation += 1
+        Self.log.notice("stage released")
+    }
+
+    private func memoryWarning() {
+        // On screen she stays; out of sight she is the biggest thing the app holds.
+        guard !visible else { return }
+        releaseStage()
+    }
+
+    fileprivate func webContentTerminated() {
+        Self.log.error("stage web content process terminated")
+        releaseStage()
+    }
+
+    /// The shared web view, created when the Lucina tab first shows the stage.
     var webView: WKWebView {
         if let webViewStorage { return webViewStorage }
+        PerfLog.lucinaLoadBegan()
         let configuration = WKWebViewConfiguration()
         let handler = LucinaSchemeHandler(client: client)
         configuration.setURLSchemeHandler(handler, forURLScheme: LucinaSchemeHandler.scheme)
@@ -276,6 +356,9 @@ final class LucinaStageController {
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.websiteDataStore = .nonPersistent()
         let view = WKWebView(frame: .zero, configuration: configuration)
+        let navigation = NavigationProxy(owner: self)
+        view.navigationDelegate = navigation
+        navigationProxy = navigation
         view.isOpaque = false
         view.backgroundColor = .clear
         view.scrollView.backgroundColor = .clear
@@ -325,6 +408,12 @@ final class LucinaStageController {
         guard w != wardrobeJSON || l != lookJSON else { return }
         wardrobeJSON = w
         lookJSON = l
+        // Out of sight an outfit change would load a model nobody sees: it waits for the tab.
+        // (Before the stage loads, `lucina.start` already carries the look.)
+        guard visible else {
+            lookPending = webViewStorage != nil
+            return
+        }
         run("lucina.dress(\(w), \(l))")
     }
 
@@ -353,6 +442,8 @@ final class LucinaStageController {
         case "ready":
             placeholder = body["placeholder"] as? Bool ?? false
             phase = .ready
+            lookPending = false
+            PerfLog.lucinaReady()
             runDemoIfAsked()
             restoreStudio()
             // The look may have changed while she was loading.
@@ -402,10 +493,9 @@ final class LucinaStageController {
         }
     }
 
-    /// Device check without a user: `-lucinaDemo` opens the stage and runs scripted gestures.
+    /// Device check without a user: `-lucinaDemo` opens the Lucina tab (AppModel) and runs scripted gestures.
     private func runDemoIfAsked() {
         guard ProcessInfo.processInfo.arguments.contains("-lucinaDemo") else { return }
-        expanded = true
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(4))
             run("lucina.demo()")
@@ -494,9 +584,23 @@ final class LucinaStageController {
     }
 
     func stopEverything() {
-        voice.stop(deliver: false)
+        voiceStorage?.stop(deliver: false)
         listening = false
         run("lucina.stop(); lucina.setState('idle')")
+    }
+}
+
+/// The web view's navigation delegate, weakly: iOS kills the page's process under memory pressure,
+/// which would leave a blank stage until the app restarts.
+private final class NavigationProxy: NSObject, WKNavigationDelegate {
+    weak var owner: LucinaStageController?
+
+    init(owner: LucinaStageController) {
+        self.owner = owner
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        MainActor.assumeIsolated { owner?.webContentTerminated() }
     }
 }
 
@@ -603,121 +707,5 @@ struct LucinaControls: View {
                 .accessibilityIdentifier("lucinaMic")
             }
         }
-    }
-}
-
-/// iPhone portrait: a small draggable Lucina over every tab; tap for full body.
-struct LucinaOverlay: View {
-    @Bindable var controller: LucinaStageController
-    @AppStorage("secretary.lucina.bubbleX") private var savedX: Double = -1
-    @AppStorage("secretary.lucina.bubbleY") private var savedY: Double = -1
-    @GestureState private var drag: CGSize = .zero
-
-    private let size: CGFloat = 86
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                if controller.expanded {
-                    expanded
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                } else {
-                    bubble(in: proxy.size)
-                }
-            }
-            .animation(.spring(duration: 0.3), value: controller.expanded)
-        }
-        // Face tracking only runs while her full view is open.
-        .onChange(of: controller.expanded) { _, expanded in
-            if !expanded { LucinaFaceTracker.shared.stop() }
-        }
-    }
-
-    private func position(in area: CGSize) -> CGPoint {
-        let x = savedX < 0 ? area.width - size / 2 - 14 : savedX
-        let y = savedY < 0 ? area.height - size / 2 - 140 : savedY
-        return CGPoint(x: x + drag.width, y: y + drag.height)
-    }
-
-    private func bubble(in area: CGSize) -> some View {
-        StageHost(controller: controller, framing: .bust)
-            .allowsHitTesting(false)
-            .frame(width: size, height: size)
-            .background(.ultraThinMaterial)
-            .clipShape(Circle())
-            .overlay(Circle().strokeBorder(stateColor, lineWidth: controller.stageState == "idle" ? 1 : 3))
-            .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
-            .contentShape(Circle())
-            .position(position(in: area))
-            .gesture(
-                DragGesture(minimumDistance: 6)
-                    .updating($drag) { value, state, _ in state = value.translation }
-                    .onEnded { value in
-                        let start = position(in: area)
-                        let end = CGPoint(x: start.x + value.translation.width - drag.width, y: start.y + value.translation.height - drag.height)
-                        // Snap to the nearer side, keep it on screen.
-                        savedX = end.x < area.width / 2 ? size / 2 + 10 : area.width - size / 2 - 10
-                        savedY = min(max(end.y, size / 2 + 50), area.height - size / 2 - 90)
-                    }
-            )
-            .onTapGesture { controller.expanded = true }
-            .accessibilityElement()
-            .accessibilityLabel("Lucina")
-            .accessibilityHint("Opens Lucina full screen")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityIdentifier("lucinaBubble")
-    }
-
-    private var expanded: some View {
-        ZStack(alignment: .top) {
-            Rectangle().fill(.regularMaterial).ignoresSafeArea()
-            VStack(spacing: 12) {
-                HStack {
-                    Spacer()
-                    Button {
-                        controller.expanded = false
-                    } label: {
-                        Image(systemName: "xmark").font(.headline).frame(width: 40, height: 40).background(.thinMaterial, in: Circle())
-                    }
-                    .accessibilityLabel("Close Lucina")
-                    .accessibilityIdentifier("lucinaClose")
-                }
-                .padding(.horizontal, 16)
-                StageHost(controller: controller, framing: .full)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityIdentifier("lucinaStage")
-                LucinaViewBar(controller: controller)
-                LucinaControls(controller: controller)
-                    .padding(.bottom, 24)
-            }
-        }
-    }
-
-    private var stateColor: Color {
-        switch controller.stageState {
-        case "listening": return .red
-        case "thinking": return .orange
-        case "speaking": return Theme.accent
-        default: return .white.opacity(0.6)
-        }
-    }
-}
-
-/// iPad or landscape: a full-body column beside the tabs.
-struct LucinaColumn: View {
-    @Bindable var controller: LucinaStageController
-
-    var body: some View {
-        VStack(spacing: 12) {
-            StageHost(controller: controller, framing: .full)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityIdentifier("lucinaStage")
-            LucinaViewBar(controller: controller)
-            LucinaControls(controller: controller)
-                .padding(.bottom, 16)
-        }
-        .padding(.top, 8)
-        .background(Theme.page)
-        .onDisappear { LucinaFaceTracker.shared.stop() }
     }
 }

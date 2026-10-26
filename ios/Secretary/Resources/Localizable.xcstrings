@@ -12779,6 +12779,22 @@
         }
       }
     },
+    "Lucina's 3D stage is off." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas 3D-scene er slået fra."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La scena 3D di Lucina è disattivata."
+          }
+        }
+      }
+    },
     "Training lives" : {
       "localizations" : {
         "da" : {

@@ -531,6 +531,7 @@ extension AppModel {
         switch first {
         case "shopping": selectedTab = .shopping
         case "gym", "weight": selectedTab = .fitness
+        case "lucina", "avatar", "wardrobe": selectedTab = .lucina
         case "settings", "links": showSettings = true
         case "notes":
             selectedTab = .plugins

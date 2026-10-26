@@ -1,7 +1,7 @@
 import SwiftUI
 
-// The Plugins tab (owner, 2026-10-24): everything that is not Chat, Shopping or Training +
-// Weight is a plugin card here, instead of another tab. A new feature adds one entry to
+// The Plugins tab (owner, 2026-10-24): everything that is not Chat, Lucina, Shopping or
+// Training + Weight is a plugin card here, instead of another tab. A new feature adds one entry to
 // `Plugin.all` and, when it pushes a screen, a navigationDestination below.
 
 struct Plugin: Identifiable {
