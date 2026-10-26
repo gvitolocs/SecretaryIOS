@@ -9,6 +9,7 @@ pub mod assets;
 pub mod auth;
 pub mod avatar;
 pub mod calendar;
+pub mod calls;
 pub mod cli;
 pub mod config;
 pub mod device;
@@ -18,17 +19,22 @@ pub mod error;
 pub mod google;
 pub mod health;
 pub mod insights;
+pub mod library;
 pub mod links;
+pub mod models;
 pub mod notes;
 pub mod notify;
 pub mod owner;
+pub mod proactive;
 pub mod ratelimit;
 pub mod routes;
 pub mod secrets;
 pub mod service;
 pub mod sessions;
 pub mod shopping;
+pub mod tasks;
 pub mod timeline;
+pub mod todoist;
 pub mod tts;
 pub mod upstream;
 pub mod web;
@@ -73,8 +79,15 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// Push), and `manifest-src 'self'` the web app manifest.
 ///
 /// Plus `base-uri 'none'`. Same directives as the standalone `/lucina/`
-/// page in `deploy/Caddyfile.p1`.
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'";
+/// page in `deploy/Caddyfile.p1`, with embedded font data also admitted (below).
+///
+/// The in-app maps (MapLibre GL with self-hosted Protomaps tiles, fonts and
+/// sprites under `/v1/maps/*`) need nothing beyond that: tiles, glyphs and
+/// sprites are same-origin fetches, the MapLibre worker is a same-origin
+/// module (`worker-src 'self'`), and its canvas images are `data:`/`blob:`.
+/// No third-party origin is allowed; `font-src data:` admits fonts inlined
+/// into the app's own CSS.
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
@@ -101,7 +114,12 @@ pub struct Inner {
     pub avatar: Arc<avatar::AvatarStore>,
     /// Notes and documents (notes/ in the data dir).
     pub notes: Arc<notes::NoteStore>,
+    pub library: Arc<library::LibraryStore>,
+    /// The 3D model gallery (models/ in the data dir).
+    pub models: Arc<models::ModelStore>,
     pub catalog_dir: PathBuf,
+    /// Client-side Google Maps keys (`GET /v1/grocery/deals/map`).
+    pub maps: config::MapsKeys,
     pub tts: tts::Tts,
     /// Open `/v1/timeline/stream` responses.
     pub streams: timeline::StreamSlots,
@@ -111,6 +129,10 @@ pub struct Inner {
     pub notify: Arc<notify::Notifier>,
     /// Links and calendar (`links.json`, `calendar.json`).
     pub links: links::Hub,
+    /// Feedback taps on Lucina's proactive outreach.
+    pub proactive: Arc<proactive::FeedbackStore>,
+    /// Tasks engine (`tasks.json`) and the Todoist client.
+    pub tasks: Arc<tasks::TasksHub>,
 }
 
 #[derive(Clone)]
@@ -151,12 +173,17 @@ impl AppState {
             private_assets_dir: cfg.private_assets_dir.clone(),
             avatar: Arc::new(avatar::AvatarStore::new(&cfg.data_dir)),
             notes: notes::store(&cfg.data_dir),
+            library: library::store(&cfg.data_dir),
+            models: models::store(&cfg.data_dir),
             catalog_dir: cfg.catalog_dir.clone(),
+            maps: cfg.maps.clone(),
             tts: tts::Tts::new(&cfg.tts_url, cfg.tts_voices.clone(), cfg.tts_timeout)?,
             streams: timeline::StreamSlots::new(timeline::PER_DEVICE, timeline::TOTAL),
             shutdown: tokio::sync::watch::Sender::new(false),
             notify: Arc::new(notify::Notifier::open(&cfg.data_dir, cfg.notify.clone())?),
             links: links::Hub::open(cfg)?,
+            proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
+            tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
         })))
     }
 
@@ -224,11 +251,14 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::account_routes())
         .merge(assets::routes())
         .merge(tts::routes())
+        .merge(calls::routes())
         .merge(timeline::routes())
         .merge(shopping::routes())
         .merge(device::routes())
         .merge(notify::routes::routes())
-        .merge(links::routes());
+        .merge(proactive::routes())
+        .merge(links::routes())
+        .merge(todoist::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -250,6 +280,8 @@ pub fn app(state: AppState) -> Router {
     let api = Router::new()
         .merge(routes::public())
         .merge(links::public_routes())
+        .merge(todoist::public_routes())
+        .merge(tasks::routes(state.clone()))
         .merge(calendar)
         .merge(device_events)
         .merge(auth::session_routes())
@@ -257,7 +289,10 @@ pub fn app(state: AppState) -> Router {
         .merge(insights::routes(state.clone()))
         .merge(avatar::routes(state.clone()))
         .merge(notify::routes::service_routes(state.clone()))
+        .merge(proactive::service_routes(state.clone()))
         .merge(notes::routes(state.clone()))
+        .merge(library::routes(state.clone()))
+        .merge(models::routes(state.clone()))
         .route_layer(SetResponseHeaderLayer::if_not_present(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store"),
@@ -349,6 +384,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }
+    tasks::spawn_sync_loop(state.clone());
     let st = state.clone();
     let shutdown = async move {
         shutdown_signal().await;

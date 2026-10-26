@@ -3,6 +3,7 @@ import { createEffect, createSignal, Match, on, onCleanup, onMount, Show, Switch
 import { speechLang, t } from "../i18n";
 import { readString, writeString } from "../lib/storage";
 import { loadStage, type StageModule } from "../lib/stageLoader";
+import { isFaceTrackingSupported, startFaceTracking, type FaceTracker, type FaceTrackError } from "../lib/faceTrack";
 import { effectiveTheme, stageQuality } from "../state/appearance";
 import { onLucinaReply } from "../state/chat";
 import { lucinaActivity, setLucinaActivity, type LucinaActivity } from "../state/stage";
@@ -19,7 +20,8 @@ import {
   wardrobeHairstyles,
   wardrobeOutfits,
 } from "../state/wardrobe";
-import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { CloseIcon, CollapseIcon, HangerIcon, MicIcon, SparkleIcon, VolumeIcon, VolumeOffIcon } from "./Icons";
+import { LucinaStudio, restoreStudio, savePhoto } from "./LucinaStudio";
 
 /** Same key the stage persists its mute preference under (MUTE_STORAGE_KEY). */
 export const MUTE_KEY = "lucina-stage:muted";
@@ -42,6 +44,21 @@ export function storedMuted(): boolean {
 type Mode = "loading" | "ready" | "fallback";
 
 const WAVE_BARS = 14;
+/** Voice-line keys of touch reactions (packages/lucina-stage/src/interact/reactions.ts). */
+const TOUCH_LINES: Record<string, Parameters<typeof t>[0]> = {
+  head: "shell.touchHead",
+  face: "shell.touchFace",
+  chest: "shell.touchChest",
+  hips: "shell.touchHips",
+  skirt: "shell.touchSkirt",
+  arm: "shell.touchArm",
+  hand: "shell.touchHand",
+  leg: "shell.touchLeg",
+  pat: "shell.touchPat",
+  pat_more: "shell.touchPatMore",
+  pat_love: "shell.touchPatLove",
+  enough: "shell.touchEnough",
+};
 const STATE_LABELS: Record<LucinaActivity, Parameters<typeof t>[0]> = {
   idle: "shell.stateIdle",
   listening: "shell.stateListening",
@@ -74,6 +91,12 @@ export function LucinaPanel(props: {
   const [listening, setListening] = createSignal(false);
   const [note, setNote] = createSignal<string | null>(null);
   const [hint, setHint] = createSignal(false);
+  const [studioOpen, setStudioOpen] = createSignal(false);
+  const [photo, setPhoto] = createSignal(false);
+  const [stageRef, setStageRef] = createSignal<WardrobeStage | null>(null);
+  /** Face tracking (F1): off, asking for the camera / loading the model, or mirroring. */
+  const [face, setFace] = createSignal<"off" | "starting" | "on">("off");
+  let tracker: FaceTracker | null = null;
   let canvas: HTMLCanvasElement | undefined;
   let mod: StageModule | null = null;
   let stage: WardrobeStage | null = null;
@@ -116,18 +139,25 @@ export function LucinaPanel(props: {
         muted: true,
         // Sky, holo floor, particles, rim light, bloom on "high" (packages/lucina-stage/src/scene).
         environment: { quality: stageQuality(), theme: effectiveTheme() },
+        // Drag turns her, pinch/wheel zooms, double-tap resets, taps on her body react.
+        interactive: true,
       });
       if (disposed) {
         s.dispose();
         return;
       }
       stage = s;
+      setStageRef(s);
+      // Keep Lucina’s original procedural stage and authentic model/poses.
+      // Restore the owner’s saved Studio choices below.
+      s.setBackground("default");
+      restoreStudio(s);
       s.setMuted(muted());
       s.onStateChange((next) => setLucinaActivity(next));
       s.onChanging(setOutfitChanging);
-      s.onTap((e) => {
-        s.react(e.point);
-        void talk();
+      s.onTouch((e) => {
+        setHint(false);
+        void sayLine(e.line);
       });
       if (props.thinking) s.setState("thinking");
       if (import.meta.env.DEV) (window as unknown as { __lucina?: unknown }).__lucina = { stage: s, mod };
@@ -144,11 +174,13 @@ export function LucinaPanel(props: {
 
   onCleanup(() => {
     disposed = true;
+    stopFace();
     clearTimeout(hintTimer);
     listenCtrl?.abort();
     ttsCtrl?.abort();
     stage?.dispose();
     stage = null;
+    setStageRef(null);
     setLucinaActivity("idle");
     setOutfitChanging(false);
   });
@@ -217,6 +249,25 @@ export function LucinaPanel(props: {
 
   onMount(() => onCleanup(onLucinaReply((text) => void say(text))));
 
+  /** Her short line for a touch: only when unmuted, never over a reply, cached after the first TTS. */
+  const lineAudio = new Map<string, Blob>();
+  async function sayLine(key: string) {
+    const s = stage;
+    const text = TOUCH_LINES[key] ? t(TOUCH_LINES[key]) : null;
+    if (!s || !voice || !text || muted() || s.speaking || ttsCtrl || listening()) return;
+    try {
+      let audio = lineAudio.get(text);
+      if (!audio) {
+        audio = await voice.speak(text, { lang: speechLang() });
+        lineAudio.set(text, audio);
+      }
+      if (stage !== s || muted() || s.speaking) return;
+      await s.speak(audio);
+    } catch {
+      // No voice for this one: the reaction is enough.
+    }
+  }
+
   function toggleMute() {
     const next = !muted();
     setMuted(next);
@@ -229,6 +280,68 @@ export function LucinaPanel(props: {
       // Inside the click: lets iOS start audio output later.
       void stage?.unlockAudio().catch(() => {});
     }
+  }
+
+  async function takePhoto() {
+    const s = stage;
+    if (!s) return;
+    try {
+      const result = await savePhoto(await s.snapshot());
+      if (result !== "cancelled") setNote(t("studio.photoSaved"));
+    } catch {
+      // The frame could not be read back: nothing to save.
+    }
+  }
+
+  const FACE_NOTES: Record<FaceTrackError, Parameters<typeof t>[0]> = {
+    unsupported: "studio.faceUnsupported",
+    denied: "studio.faceDenied",
+    "no-camera": "studio.faceNoCamera",
+    failed: "studio.faceFailed",
+  };
+
+  /**
+   * Face tracking: only from a tap (the browser asks for the camera then). The frames stay in this
+   * tab (MediaPipe runs here); it stops on Stop, when the page is hidden, or when she is closed.
+   */
+  async function toggleFace() {
+    if (face() !== "off") {
+      stopFace();
+      return;
+    }
+    const s = stage;
+    if (!s || !mod) return;
+    setFace("starting");
+    setNote(null);
+    try {
+      const started = await startFaceTracking({
+        solver: new mod.FaceSolver(),
+        onDrive: (d) => stage?.setFaceDrive(d),
+        onStop: (reason) => {
+          tracker = null;
+          setFace("off");
+          if (reason !== "ended" && reason !== "hidden") setNote(t(FACE_NOTES[reason]));
+        },
+      });
+      if (disposed || stage !== s || face() !== "starting") {
+        started.stop();
+        return;
+      }
+      tracker = started;
+      setFace("on");
+      s.cameraPreset("face");
+    } catch (e) {
+      if (face() === "starting") setFace("off");
+      setNote(t(FACE_NOTES[(typeof e === "string" && e in FACE_NOTES ? e : "failed") as FaceTrackError]));
+    }
+  }
+
+  function stopFace() {
+    if (face() === "off" && !tracker) return;
+    tracker?.stop();
+    tracker = null;
+    setFace("off");
+    stage?.setFaceDrive(null);
   }
 
   async function talk() {
@@ -275,7 +388,7 @@ export function LucinaPanel(props: {
   return (
     <section
       class="stage"
-      classList={{ "stage--listening": listening() }}
+      classList={{ "stage--listening": listening(), "stage--photo": photo() }}
       data-state={activity()}
       aria-label={t("shell.lucina")}
     >
@@ -325,6 +438,19 @@ export function LucinaPanel(props: {
             <VolumeOffIcon />
           </Show>
         </button>
+        <Show when={mode() === "ready"}>
+          <button
+            type="button"
+            class="icon-btn stage-btn"
+            classList={{ "stage-btn--busy": studioOpen() }}
+            onClick={() => setStudioOpen(!studioOpen())}
+            aria-expanded={studioOpen() ? "true" : "false"}
+            aria-label={t("studio.open")}
+            title={t("studio.title")}
+          >
+            <SparkleIcon />
+          </button>
+        </Show>
         <button
           type="button"
           class="icon-btn stage-btn stage-btn--wardrobe"
@@ -340,7 +466,10 @@ export function LucinaPanel(props: {
             <button
               type="button"
               class="icon-btn stage-btn"
-              onClick={() => minimize()()}
+              onClick={() => {
+                stopFace();
+                minimize()();
+              }}
               aria-label={t("shell.lucinaMinimize")}
               title={t("shell.lucinaMinimize")}
             >
@@ -351,13 +480,47 @@ export function LucinaPanel(props: {
         <button
           type="button"
           class="icon-btn stage-btn"
-          onClick={() => props.onCollapse()}
+          onClick={() => {
+            stopFace();
+            props.onCollapse();
+          }}
           aria-label={t("shell.lucinaHide")}
           title={t("shell.lucinaHideTitle")}
         >
           <CloseIcon />
         </button>
       </div>
+      <Show when={studioOpen() && mode() === "ready" && !photo()}>
+        <LucinaStudio
+          stage={stageRef}
+          muted={muted}
+          fetchInit={AUTH}
+          onClose={() => setStudioOpen(false)}
+          onPhoto={() => setPhoto(true)}
+          face={isFaceTrackingSupported() ? face : undefined}
+          onFace={() => void toggleFace()}
+        />
+      </Show>
+      <Show when={face() !== "off"}>
+        <div class="stage-face" role="status">
+          <span class="stage-face-dot" aria-hidden="true" />
+          <span class="stage-face-label">{face() === "starting" ? t("studio.faceStarting") : t("studio.faceOn")}</span>
+          <button type="button" class="studio-chip" onClick={() => tracker?.recenter()} disabled={face() !== "on"}>
+            {t("studio.faceRecenter")}
+          </button>
+          <button type="button" class="studio-chip" onClick={stopFace}>
+            {t("studio.faceStop")}
+          </button>
+        </div>
+      </Show>
+      <Show when={photo()}>
+        <div class="stage-photo-bar">
+          <button type="button" class="studio-action" onClick={() => setPhoto(false)}>
+            {t("studio.photoDone")}
+          </button>
+          <button type="button" class="stage-shutter" onClick={() => void takePhoto()} aria-label={t("studio.photoTake")} title={t("studio.photoTake")} />
+        </div>
+      </Show>
       <Show when={activity() === "listening"}>
         <div class="stage-wave" aria-hidden="true">
           {Array.from({ length: WAVE_BARS }, (_, i) => (

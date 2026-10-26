@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g transform="translate(20 31) scale(1.1)">
+    <path d="M-10.5-1.5-5.5-17c.3-1 1.2-1.5 2.2-1.5h6.6c1 0 1.9.5 2.2 1.5l5 15.5Z" fill="#e9a91c"/>
+    <path d="M-5.5-3.5-3.2-15M0-3.5V-16M5.5-3.5 3.2-15" stroke="#3d2b2b" stroke-width="1.1" stroke-linecap="round" opacity=".15"/>
+    <path d="M10.5-1.5 5.5-17c-.3-1-1.2-1.5-2.2-1.5H2c1 0 1.9.5 2.2 1.5L7.5-1.5Z" fill="#3d2b2b" opacity=".18"/>
+    <ellipse cy="-18" rx="4.4" ry="1.5" fill="#fff" opacity=".45"/>
+    <path d="M-7.2-4.5l3-10" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+    <rect x="-13.5" y="-2.5" width="27" height="4.5" rx="2.25" fill="#c97d36"/>
+  </g>
+  <g transform="translate(44 31) scale(1.1)">
+    <path d="M-10.5-1.5-5.5-17c.3-1 1.2-1.5 2.2-1.5h6.6c1 0 1.9.5 2.2 1.5l5 15.5Z" fill="#3a86d6"/>
+    <path d="M-5.5-3.5-3.2-15M0-3.5V-16M5.5-3.5 3.2-15" stroke="#3d2b2b" stroke-width="1.1" stroke-linecap="round" opacity=".15"/>
+    <path d="M10.5-1.5 5.5-17c-.3-1-1.2-1.5-2.2-1.5H2c1 0 1.9.5 2.2 1.5L7.5-1.5Z" fill="#3d2b2b" opacity=".18"/>
+    <ellipse cy="-18" rx="4.4" ry="1.5" fill="#fff" opacity=".45"/>
+    <path d="M-7.2-4.5l3-10" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+    <rect x="-13.5" y="-2.5" width="27" height="4.5" rx="2.25" fill="#24477e"/>
+  </g>
+  <g transform="translate(32 52) scale(1.3)">
+    <path d="M-10.5-1.5-5.5-17c.3-1 1.2-1.5 2.2-1.5h6.6c1 0 1.9.5 2.2 1.5l5 15.5Z" fill="#3e9b3e"/>
+    <path d="M-5.5-3.5-3.2-15M0-3.5V-16M5.5-3.5 3.2-15" stroke="#3d2b2b" stroke-width="1.1" stroke-linecap="round" opacity=".15"/>
+    <path d="M10.5-1.5 5.5-17c-.3-1-1.2-1.5-2.2-1.5H2c1 0 1.9.5 2.2 1.5L7.5-1.5Z" fill="#3d2b2b" opacity=".18"/>
+    <ellipse cy="-18" rx="4.4" ry="1.5" fill="#fff" opacity=".45"/>
+    <path d="M-7.2-4.5l3-10" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+    <rect x="-13.5" y="-2.5" width="27" height="4.5" rx="2.25" fill="#256b2f"/>
+  </g>
+</svg>

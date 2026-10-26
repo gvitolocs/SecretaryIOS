@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<g transform="translate(-6 -7)">
+  <g transform="translate(26 60) rotate(58) scale(.9)">
+    <path d="M0 2v-46" stroke="#8b5530" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M0-6l-5-3M0-6l5-3M0-11l-5.5-3M0-11l5.5-3M0-16l-6-3M0-16l6-3M0-21l-5.5-3M0-21l5.5-3M0-26l-5-3M0-26l5-3M0-31l-4.5-3M0-31l4.5-3M0-36l-4-2.5M0-36l4-2.5M0-41l-3-2M0-41l3-2M0 0v-45" fill="none" stroke="#3e9b3e" stroke-width="2.8" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(16 58) rotate(28)">
+    <path d="M0 2v-46" stroke="#8b5530" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M0-6l-5-3M0-6l5-3M0-11l-5.5-3M0-11l5.5-3M0-16l-6-3M0-16l6-3M0-21l-5.5-3M0-21l5.5-3M0-26l-5-3M0-26l5-3M0-31l-4.5-3M0-31l4.5-3M0-36l-4-2.5M0-36l4-2.5M0-41l-3-2M0-41l3-2M0 0v-45" fill="none" stroke="#256b2f" stroke-width="3" stroke-linecap="round"/>
+    <path d="M0-8l4.5-2.6M0-13l5-2.6M0-18l5.5-2.6M0-23l5-2.6M0-28l4.5-2.6" fill="none" stroke="#3d2b2b" stroke-width="1.2" stroke-linecap="round" opacity=".25"/>
+    <path d="M0-11l-4-2.2M0-16l-4.5-2.2M0-21l-4-2.2M0-26l-3.5-2" fill="none" stroke="#a8d84e" stroke-width="1" stroke-linecap="round"/>
+  </g>
+  <g transform="translate(26 60) rotate(58) scale(.9)"><path d="M0-11l-4-2.2M0-21l-4-2.2M0-31l-3.5-2" fill="none" stroke="#fff" stroke-width="1" stroke-linecap="round" opacity=".5"/></g>
+</g>
+</svg>

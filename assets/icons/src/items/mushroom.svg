@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M22 33c0 9-2 17 0 22 4 3 12 3 16 0 2-5 0-13 0-22Z" fill="#fff6e0"/>
+  <path d="M34 33c0 9 2 17 0 22 1.5-.3 3-1 4-2 2-5 0-11 0-20Z" fill="#3d2b2b" opacity=".12"/>
+  <ellipse cx="30" cy="33.5" rx="20" ry="4" fill="#e6dccb"/>
+  <path d="M8 30C8 17 18 9 30 9s22 8 22 21c0 3-2 4-5 4H13c-3 0-5-1-5-4Z" fill="#c97d36"/>
+  <path d="M52 30c0 3-2 4-5 4H34c8-1 13-6 13-13 0-4-1.5-7.5-4-10 5.5 3.5 9 10 9 19Z" fill="#3d2b2b" opacity=".18"/>
+  <ellipse cx="20" cy="18" rx="3.5" ry="6.5" transform="rotate(50 20 18)" fill="#f0c27b"/>
+  <path d="M44 47c0 5-1 9 0 11 2 1.5 6 1.5 8 0 1-2 0-6 0-11Z" fill="#fff6e0"/>
+  <ellipse cx="48" cy="47.5" rx="9.5" ry="2.4" fill="#e6dccb"/>
+  <path d="M38 46c0-8 4-13 10-13s10 5 10 13c0 1.5-1 2-2.5 2h-15c-1.5 0-2.5-.5-2.5-2Z" fill="#8b5530"/>
+  <path d="M58 46c0 1.5-1 2-2.5 2H49c4-1 6-4 6-8 0-2-.5-4-1.5-5.5C56 37 58 41 58 46Z" fill="#3d2b2b" opacity=".2"/>
+  <ellipse cx="43.5" cy="39" rx="1.6" ry="3.2" transform="rotate(45 43.5 39)" fill="#fff" opacity=".45"/>
+</svg>

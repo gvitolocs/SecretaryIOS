@@ -7,7 +7,9 @@ import {
   addIcs,
   type CalendarEvent,
   connectGoogle,
+  connectTodoist,
   disconnectGoogle,
+  disconnectTodoist,
   dismissProposal,
   getEvents,
   getLinks,
@@ -18,11 +20,14 @@ import {
   type Proposal,
   removeCustom,
   removeIcs,
+  saveTodoistToken,
   syncCalendars,
+  syncTodoist,
 } from "../api/links";
 import {
   BubbleIcon,
   CalendarIcon,
+  CheckCircleIcon,
   DriveIcon,
   GamepadIcon,
   LinkIcon,
@@ -44,6 +49,7 @@ import "../styles/links.css";
 
 const GROUP_TITLE: Record<string, MessageKey> = {
   calendars: "links.groupCalendars",
+  tasks: "links.groupTasks",
   channels: "links.groupChannels",
   ai: "links.groupAi",
   google: "links.groupGoogle",
@@ -52,6 +58,7 @@ const GROUP_TITLE: Record<string, MessageKey> = {
 
 const GROUP_HINT: Record<string, MessageKey> = {
   calendars: "links.hintCalendars",
+  tasks: "links.hintTasks",
   channels: "links.hintChannels",
   ai: "links.hintAi",
   google: "links.hintGoogle",
@@ -99,6 +106,13 @@ function cardDetail(c: LinkCard): string | null {
       return t("links.detailDiscord");
     case "channel:alexa":
       return t("links.detailAlexa");
+  }
+  if (c.kind === "todoist") {
+    return c.status === "disconnected"
+      ? c.oauth
+        ? t("links.detailTodoistOffOauth")
+        : t("links.detailTodoistOff")
+      : t("links.detailTodoistOn", { count: c.count ?? 0 });
   }
   if (c.kind === "ai") return c.status === "unknown" ? t("links.detailAiUnknown") : t("links.detailAi");
   if (c.kind === "mcp") return t("links.detailMcp");
@@ -154,6 +168,7 @@ function Glyph(props: { card: LinkCard }): JSX.Element {
         return <SpeakerIcon />;
     }
     if (c.kind === "ics") return <CalendarIcon />;
+    if (c.kind === "todoist") return <CheckCircleIcon />;
     if (c.kind === "ai") return <SparkIcon />;
     if (c.kind === "mcp") return <PlugIcon />;
     if (c.kind === "channel") return <BubbleIcon />;
@@ -197,6 +212,8 @@ function Card(props: { card: LinkCard; h: CardHandlers }) {
         return t("links.sync");
       case "remove":
         return t("links.remove");
+      case "token":
+        return t("links.todoistPasteToken");
       default:
         return a;
     }
@@ -258,7 +275,7 @@ function Card(props: { card: LinkCard; h: CardHandlers }) {
                     <button
                       type="button"
                       class="btn btn--small"
-                      classList={{ "btn--primary": a === "connect" || a === "reconnect" }}
+                      classList={{ "btn--primary": a === "connect" || a === "reconnect" || (a === "token" && !c().oauth) }}
                       disabled={busy()}
                       onClick={() => void act(a)}
                     >
@@ -370,6 +387,61 @@ function IcsForm(props: { onAdded: (msg: string) => void }) {
       <button class="btn btn--primary" type="submit" disabled={pending() || !url().trim()}>
         {pending() ? t("links.icsAdding") : t("links.icsAdd")}
       </button>
+    </form>
+  );
+}
+
+function TodoistTokenForm(props: { onSaved: (msg: string) => void; onCancel: () => void }) {
+  const [token, setToken] = createSignal("");
+  const [pending, setPending] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  let input: HTMLInputElement | undefined;
+  onMount(() => input?.focus());
+
+  async function submit(e: SubmitEvent) {
+    e.preventDefault();
+    const v = token().trim();
+    if (!v || pending()) return;
+    setPending(true);
+    setError(null);
+    try {
+      const r = await saveTodoistToken(v);
+      setToken("");
+      props.onSaved(t("links.todoistTokenSaved", { account: r.account ?? "Todoist" }));
+    } catch (err) {
+      const e2 = toApiError(err);
+      setError(e2.code === "todoist_token_rejected" ? t("links.todoistTokenRejected") : e2.message);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form class="card links-form todoist-token" onSubmit={(e) => void submit(e)} aria-label={t("links.todoistPasteToken")}>
+      <label class="field-label" for="todoist-token">
+        {t("links.todoistTokenLabel")}
+      </label>
+      <p class="links-hint">{t("links.todoistTokenHint")}</p>
+      <div class="links-form-row">
+        <input
+          ref={input}
+          id="todoist-token"
+          class="text-input"
+          type="password"
+          autocomplete="off"
+          spellcheck={false}
+          value={token()}
+          onInput={(e) => setToken(e.currentTarget.value)}
+          disabled={pending()}
+        />
+        <button type="submit" class="btn btn--primary btn--small" disabled={pending() || !token().trim()}>
+          {pending() ? t("links.todoistChecking") : t("links.todoistTokenSave")}
+        </button>
+        <button type="button" class="btn btn--small" onClick={() => props.onCancel()}>
+          {t("common.cancel")}
+        </button>
+      </div>
+      <Show when={error()}>{(m) => <p class="link-error">{m()}</p>}</Show>
     </form>
   );
 }
@@ -533,6 +605,7 @@ export default function LinksView() {
   const [error, setError] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal<string | null>(null);
   const [syncing, setSyncing] = createSignal(false);
+  const [tokenOpen, setTokenOpen] = createSignal(false);
 
   async function refresh() {
     try {
@@ -552,7 +625,10 @@ export default function LinksView() {
     const g = params.google;
     if (g === "connected") setNotice(t("links.googleConnected"));
     else if (g === "error") setError(t("links.googleError", { reason: String(params.reason ?? "unknown") }));
-    if (g) setParams({ google: undefined, reason: undefined }, { replace: true });
+    const td = params.todoist;
+    if (td === "connected") setNotice(t("links.todoistConnected"));
+    else if (td === "error") setError(t("links.todoistError", { reason: String(params.reason ?? "unknown") }));
+    if (g || td) setParams({ google: undefined, todoist: undefined, reason: undefined }, { replace: true });
     void refresh();
   });
 
@@ -578,6 +654,27 @@ export default function LinksView() {
       setError(null);
       setNotice(null);
       try {
+        if (card.kind === "todoist") {
+          if (action === "connect" || action === "reconnect") {
+            const { authorizeUrl } = await connectTodoist();
+            nav.assign(authorizeUrl);
+            return;
+          }
+          if (action === "token") {
+            // no refresh: it would rebuild the cards and the form with them
+            setTokenOpen(true);
+            return;
+          }
+          if (action === "sync") {
+            await syncTodoist();
+            setNotice(t("links.synced"));
+          } else if (action === "disconnect") {
+            await disconnectTodoist();
+            setNotice(t("links.disconnected"));
+          }
+          await refresh();
+          return;
+        }
         if (action === "connect" || action === "reconnect") {
           const services = card.kind === "google" && card.service ? [card.service] : ["calendar"];
           const { authorizeUrl } = await connectGoogle(services);
@@ -700,6 +797,15 @@ export default function LinksView() {
                 </Show>
                 <Show when={g.id === "calendars"}>
                   <IcsForm onAdded={added} />
+                </Show>
+                <Show when={g.id === "tasks" && tokenOpen()}>
+                  <TodoistTokenForm
+                    onSaved={(m) => {
+                      setTokenOpen(false);
+                      added(m);
+                    }}
+                    onCancel={() => setTokenOpen(false)}
+                  />
                 </Show>
                 <Show when={g.id === "custom"}>
                   <LinkForm onAdded={added} />

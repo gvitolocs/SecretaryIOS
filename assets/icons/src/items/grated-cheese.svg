@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M15 6h18" stroke="#7d8b99" stroke-width="3.6" stroke-linecap="round"/>
+  <path d="M17 6v5M31 6v5" stroke="#7d8b99" stroke-width="3" stroke-linecap="round"/>
+  <path d="M14 10h20l6 47H8Z" fill="#c3ccd6"/>
+  <path d="M34 10l6 47h-7l-4.5-47Z" fill="#7d8b99"/>
+  <g fill="#7d8b99"><path d="M15.5 18h4l-.6 3h-3Zm7 0h4l-.4 3h-3.2ZM14.6 27h4l-.6 3h-3Zm8 0h4l-.3 3h-3.4ZM13.7 36h4l-.6 3h-3Zm9 0h4l-.2 3h-3.6ZM12.8 45h4l-.6 3h-3Zm10 0h4l-.1 3h-3.8Z"/></g>
+  <path d="M15.5 14l-4 38" stroke="#fff" stroke-width="2.2" stroke-linecap="round" opacity=".7"/>
+  <path d="M28 60c-1-6 4-12 12-13 4-4.5 12-4 15.5.5 4 3 5.5 8 3.5 12.5Z" fill="#ffd43b"/>
+  <path d="M32 59c1-3 4-6 8-7M38 59.5c1-3 3-5 6-6.5M45 59c0-3 2-5 5-6M41 53c2-2 5-3 8-2.5M52 58.5c.5-2 1.5-3.6 3-4.6" fill="none" stroke="#e9a91c" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M41 49c2-1.5 4.6-2 7-1.4" stroke="#ffe896" stroke-width="2" stroke-linecap="round"/>
+  <path d="M59 60c1-3 .5-6-1.5-8.5 0 4-2 7-6 8.5Z" fill="#3d2b2b" opacity=".15"/>
+</svg>

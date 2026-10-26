@@ -22,6 +22,7 @@ import {
   exactMatch,
   LANGS,
   OTHER_SECTION,
+  resolveByName,
   type Catalog,
   type CatalogItem,
   type Lang,
@@ -448,16 +449,22 @@ export function dismissShoppingError(): void {
 
 // ---------- Item helpers ----------
 
-export function itemIcon(item: Pick<ShopItem, "icon" | "catalogId">): string | null {
-  if (item.icon) return item.icon;
-  if (item.catalogId) return catalogIndex().byId.get(item.catalogId)?.icon ?? DEFAULT_ICON;
-  return null;
+/** The catalog item behind a row: its catalog id, else its name resolved like the server does. */
+function rowCatalogItem(item: Pick<ShopItem, "catalogId" | "name">): CatalogItem | undefined {
+  if (item.catalogId) return catalogIndex().byId.get(item.catalogId);
+  return resolveByName(catalogIndex(), item.name)?.item;
 }
 
-export function itemSection(item: Pick<ShopItem, "section" | "catalogId">): string {
+export function itemIcon(item: Pick<ShopItem, "icon" | "catalogId" | "name">): string | null {
+  if (item.icon) return item.icon;
+  const cat = rowCatalogItem(item);
+  if (cat) return cat.icon;
+  return item.catalogId ? DEFAULT_ICON : null;
+}
+
+export function itemSection(item: Pick<ShopItem, "section" | "catalogId" | "name">): string {
   if (item.section) return item.section;
-  if (item.catalogId) return catalogIndex().byId.get(item.catalogId)?.section ?? OTHER_SECTION;
-  return OTHER_SECTION;
+  return rowCatalogItem(item)?.section ?? OTHER_SECTION;
 }
 
 function findActive(catalogId: string | null, name: string): ShopItem | undefined {

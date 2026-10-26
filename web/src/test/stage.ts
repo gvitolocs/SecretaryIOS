@@ -16,6 +16,35 @@ export class FakeStage {
   muted: boolean;
   states: StageState[] = [];
   private taps: ((e: { point: { x: number; y: number; z: number } }) => void)[] = [];
+  private touches: ((e: { line: string; region: string }) => void)[] = [];
+  speaking = false;
+  readonly onTouch = vi.fn((cb: (e: { line: string; region: string }) => void) => {
+    this.touches.push(cb);
+    return () => {};
+  });
+  readonly cameraPreset = vi.fn();
+  background = "default";
+  lighting = "default";
+  dancing = false;
+  gyro = false;
+  info = { clips: [{ name: "greet_wave", loop: false }, { name: "bow", loop: false }, { name: "status_loop", loop: true }] };
+  gestures = ["nod", "tilt", "dance"];
+  readonly play = vi.fn(async (_name: string, _opts?: unknown) => {});
+  readonly setExpression = vi.fn();
+  readonly setInteractive = vi.fn();
+  readonly setBackground = vi.fn((id: string) => {
+    this.background = id;
+  });
+  readonly setLighting = vi.fn((id: string) => {
+    this.lighting = id;
+  });
+  readonly setDance = vi.fn(async (on: boolean, _opts?: unknown) => {
+    this.dancing = on;
+  });
+  readonly setGyro = vi.fn();
+  readonly snapshot = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+  readonly resetView = vi.fn();
+  readonly setView = vi.fn();
   private stateListeners: ((next: StageState, prev: StageState) => void)[] = [];
   readonly setState = vi.fn((s: StageState) => {
     const prev = this.state;
@@ -79,6 +108,11 @@ export class FakeStage {
     this.outfit = options.outfit ?? null;
     this.hair = options.hair ?? "natural";
     this.hairColor = options.hairColor ?? null;
+  }
+
+  /** Simulates a touch on her body (the stage already reacted; the host may speak `line`). */
+  touch(region = "head", line = region): void {
+    for (const cb of this.touches) cb({ region, line });
   }
 
   /** Simulates a tap on Lucina. */

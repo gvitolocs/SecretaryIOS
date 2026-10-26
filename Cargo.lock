@@ -464,7 +464,7 @@ dependencies = [
  "encoding_rs",
  "fast-float2",
  "log",
- "quick-xml",
+ "quick-xml 0.37.5",
  "serde",
  "zip 4.6.1",
 ]
@@ -709,6 +709,15 @@ name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
+
+[[package]]
+name = "core_maths"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77745e017f5edba1a9c1d854f6f3a52dac8a12dd5af5d2f54aecf61e43d80d30"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -1263,6 +1272,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1295,7 +1313,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "zlib-rs",
 ]
 
@@ -1338,6 +1356,16 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
+name = "fontdue"
+version = "0.9.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e796cb6894e6418daacea84b28dd4f98d3b32c74d5bb452ba1ecfbf5ad8e84ca"
+dependencies = [
+ "hashbrown 0.15.5",
+ "ttf-parser",
+]
 
 [[package]]
 name = "form_urlencoded"
@@ -1976,6 +2004,105 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "ink-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "ink-library",
+ "ink-obsidian",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "ink-epub"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "quick-xml 0.38.4",
+ "thiserror 2.0.21",
+ "zip 0.6.6",
+]
+
+[[package]]
+name = "ink-kindle-hal"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "libc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ink-library"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "encoding_rs",
+ "proptest",
+ "quick-xml 0.38.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+ "zip 0.6.6",
+]
+
+[[package]]
+name = "ink-obsidian"
+version = "0.1.0"
+dependencies = [
+ "ink-library",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "ink-preview"
+version = "0.1.0"
+dependencies = [
+ "ink-epub",
+ "ink-kindle-hal",
+ "ink-render",
+ "serde_json",
+]
+
+[[package]]
+name = "ink-render"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "ink-epub",
+ "ink-kindle-hal",
+ "png",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ink-sync"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ink-library",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2750,6 +2877,16 @@ dependencies = [
 
 [[package]]
 name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+ "simd-adler32",
+]
+
+[[package]]
+name = "miniz_oxide"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
@@ -3177,6 +3314,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "png"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+dependencies = [
+ "bitflags 2.13.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3305,6 +3455,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
 dependencies = [
  "encoding_rs",
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
  "memchr",
 ]
 
@@ -3597,6 +3756,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -3991,6 +4151,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-maps"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "secretary-mcp"
 version = "0.1.0"
 dependencies = [
@@ -4018,6 +4196,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-player"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "secretary-player-wasm"
+version = "0.1.0"
+dependencies = [
+ "secretary-player",
+ "serde_json",
+]
+
+[[package]]
 name = "secretary-server"
 version = "0.1.0"
 dependencies = [
@@ -4030,14 +4224,19 @@ dependencies = [
  "clap",
  "futures-util",
  "getrandom 0.3.4",
+ "ink-library",
+ "ink-obsidian",
+ "ink-sync",
  "mime",
  "p256",
+ "proptest",
  "reqwest 0.12.28",
  "ring",
  "secretary-body",
  "secretary-calendar",
  "secretary-core",
  "secretary-gym",
+ "secretary-tasks",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4052,6 +4251,19 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-push-native",
+]
+
+[[package]]
+name = "secretary-tasks"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
 ]
 
 [[package]]
@@ -5130,6 +5342,9 @@ name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
+dependencies = [
+ "core_maths",
+]
 
 [[package]]
 name = "twilight-gateway"
@@ -5355,6 +5570,13 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "verification-models"
+version = "0.1.0"
+dependencies = [
+ "stateright 0.31.0",
+]
 
 [[package]]
 name = "version_check"
@@ -6013,6 +6235,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "zip"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "760394e246e4c28189f19d488c058bf16f564016aefac5d32bb1f3b51d5e9261"
+dependencies = [
+ "byteorder",
+ "crc32fast",
+ "crossbeam-utils",
+ "flate2",
 ]
 
 [[package]]

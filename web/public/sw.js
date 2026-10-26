@@ -10,7 +10,7 @@
 // - Shows pushes (encrypted end to end; the payload is JSON from the server)
 //   and opens the right route when one is tapped.
 
-const VERSION = "v1";
+const VERSION = "v2";
 const CACHE = `secretary-static-${VERSION}`;
 const SHELL = "/index.html";
 const ICON = "/icon-192.png";
@@ -32,6 +32,7 @@ self.addEventListener("activate", (event) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((k) => k.startsWith("secretary-static-") && k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => pruneShareInbox())
       .then(() => self.clients.claim()),
   );
 });
@@ -83,9 +84,13 @@ async function networkFirstPage(request) {
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  if (request.method !== "GET") return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname === "/share-target" && (request.method === "POST" || request.method === "GET")) {
+    event.respondWith(receiveShare(request, url));
+    return;
+  }
+  if (request.method !== "GET") return;
   // The API (cookies, Bearer tokens, private data): never intercepted, never cached.
   if (isApi(url)) return;
   if (request.headers.has("authorization") || request.headers.has("range")) return;
@@ -199,3 +204,44 @@ self.addEventListener("pushsubscriptionchange", (event) => {
     })().catch(() => undefined),
   );
 });
+
+// Transactions resolve on commit, so the redirect never races the stored blobs.
+function shareInbox(action) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("secretary-share", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("inbox", { keyPath: "id" });
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction("inbox", "readwrite");
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = tx.onerror = () => { db.close(); reject(tx.error); };
+      action(tx.objectStore("inbox"));
+    };
+  });
+}
+
+async function receiveShare(request, url) {
+  const data = request.method === "POST" ? await request.formData() : url.searchParams;
+  const strings = (key) => data.getAll(key).filter((v) => typeof v === "string" && v.trim());
+  const id = crypto.randomUUID();
+  const entry = {
+    id, createdAt: Date.now(), title: strings("title")[0] || "",
+    text: strings("text"), url: strings("url"),
+    files: request.method === "POST" ? data.getAll("file").filter((v) => typeof v !== "string" && (v.size || v.name)) : [],
+  };
+  await shareInbox((store) => store.put(entry));
+  return Response.redirect(new URL("/?share=" + encodeURIComponent(id), url.origin).href, 303);
+}
+
+function pruneShareInbox() {
+  return shareInbox((store) => {
+    const cursor = store.openCursor();
+    cursor.onsuccess = () => {
+      const item = cursor.result;
+      if (!item) return;
+      if (item.value.createdAt < Date.now() - 7 * 24 * 60 * 60 * 1000) item.delete();
+      item.continue();
+    };
+  });
+}
