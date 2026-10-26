@@ -17,6 +17,9 @@ struct MemoDetailView: View {
     @State private var pdfURL: URL?
     @State private var addedTasks: Set<String> = []
     @State private var choosingEvent = false
+    /// Whether this server links memos to calendar events (older lucina-memo builds don't).
+    @State private var eventsSupported = MemoDetailView.serverHasEvents ?? false
+    @MainActor private static var serverHasEvents: Bool?
 
     private var row: MemoRow? { store.rows.first { $0.serverId == memoId } }
 
@@ -47,7 +50,7 @@ struct MemoDetailView: View {
                     }
                     if let row { InlinePlayer(row: row) }
                 }
-                if d.memo.event != nil || d.memo.status == .done || d.memo.status == .failed {
+                if d.memo.event != nil || (eventsSupported && (d.memo.status == .done || d.memo.status == .failed)) {
                     Section("Event") {
                         if let e = d.memo.event {
                             MemoEventRow(event: e)
@@ -184,6 +187,13 @@ struct MemoDetailView: View {
         do {
             let d = try await store.detail(memoId)
             detail = d
+            if Self.serverHasEvents == nil {
+                // One probe per launch: a 404 means this lucina-memo has no calendar link yet.
+                do { _ = try await store.events(memoId); Self.serverHasEvents = true } catch let e as APIError {
+                    Self.serverHasEvents = e.status != 404
+                } catch {}
+                eventsSupported = Self.serverHasEvents ?? false
+            }
             if d.summary != nil || [.done, .rendering, .publishing, .summarizing].contains(d.memo.status) {
                 if let t = try? await store.transcript(memoId) { transcript = t }
             }
