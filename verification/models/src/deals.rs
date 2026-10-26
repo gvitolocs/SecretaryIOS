@@ -24,11 +24,15 @@
 //!   API), and a few watch messages cannot evict anything.
 //!
 //! Switches: `node` (the Node watcher runs first, `StopNode` then `StartRust`), `overlap`
-//! (both run at once), `dedup` (server dedup on), and the proposed fixes `fix_pending`
-//! (F1: write the composed message to the state file before sending; a run that finds it
-//! re-sends it with the same key, then acknowledges it), `fix_ack_delivered` (F2:
-//! acknowledge only the delivered best offers) and `fix_min_price` (F3: a notified price
-//! never goes up).
+//! (both run at once), `dedup` (server dedup on), and the fixes `fix_pending` (F1: write
+//! the composed message to the state file before sending; a run that finds it re-sends it
+//! with the same key, then acknowledges it), `fix_ack_delivered` (F2: acknowledge only the
+//! delivered best offers) and `fix_min_price` (F3: a notified price never goes up). The
+//! code has all three since the commit in `deals-revision` (bugs DW1-DW3 fixed), so every
+//! case runs with them; `pre_fix` is the dd7ec9e watcher, whose DW1-DW3 traces the
+//! `pre_fix_traces` tests replay.
+//! The code continues a run after a delivered re-send (`watch.rs::DealWatch::run`); the
+//! model ends it and lets the next `Load` continue, which includes the code's order.
 
 use stateright::{Model, Property};
 
@@ -648,27 +652,37 @@ impl Model for Deals {
     }
 }
 
-/// The cases. `_deep` changes nothing: the default bounds are exhaustive (about one
-/// million states per case).
-pub fn cases(_deep: bool) -> Vec<Case> {
-    use Expect::*;
-    let current = Deals {
+/// The watcher as the code is now (fixes F1 F2 F3), one fault, server dedup on.
+fn current() -> Deals {
+    Deals {
         node: false,
         overlap: false,
         dedup: true,
-        fix_pending: false,
-        fix_ack_delivered: false,
-        fix_min_price: false,
-        max_runs: 4,
-        max_edits: 2,
-        max_faults: 1,
-    };
-    let fixed = Deals {
         fix_pending: true,
         fix_ack_delivered: true,
         fix_min_price: true,
-        ..current.clone()
-    };
+        max_runs: 4,
+        max_edits: 2,
+        max_faults: 1,
+    }
+}
+
+/// The code before the fixes (lucina-rs dd7ec9e): bugs DW1-DW3.
+pub fn pre_fix() -> Deals {
+    Deals {
+        fix_pending: false,
+        fix_ack_delivered: false,
+        fix_min_price: false,
+        ..current()
+    }
+}
+
+/// The cases. `_deep` changes nothing: the default bounds are exhaustive (about one
+/// million states per case). DW1-DW3 are fixed in the code, so G0-G2 model the fixed
+/// watcher; G3-G5 are rule witnesses (never two watchers; the server dedup is needed).
+pub fn cases(_deep: bool) -> Vec<Case> {
+    use Expect::*;
+    let current = current();
     let node = Deals {
         node: true,
         max_faults: 0,
@@ -697,12 +711,6 @@ pub fn cases(_deep: bool) -> Vec<Case> {
         v.extend(reached.iter().map(|w| (*w, Reached)));
         v
     };
-    let all = [
-        "no_repeat",
-        "one_digest_per_day",
-        "silent_when_unchanged",
-        "no_skip",
-    ];
     let rust_witnesses = ["new_alert", "restart_continues", "digest_relists"];
     let cutover_witnesses = [
         "new_alert",
@@ -713,73 +721,55 @@ pub fn cases(_deep: bool) -> Vec<Case> {
     vec![
         Case::new(
             PROTOCOL,
-            "G0 current Rust, no faults",
+            "G0 Rust (F1 F2 F3), no faults",
             Deals {
                 max_faults: 0,
                 ..current.clone()
             },
             None,
-            expect(&["no_repeat", "no_skip"], &["new_alert", "digest_relists"]),
+            expect(&[], &["new_alert", "digest_relists"]),
         ),
         Case::new(
             PROTOCOL,
-            "G1 current Rust after the cutover (one fault)",
+            "G1 Rust (F1 F2 F3), one fault",
             current.clone(),
-            None,
-            expect(&all, &rust_witnesses),
-        ),
-        Case::new(
-            PROTOCOL,
-            "G1 + fixes F1 F2 F3",
-            fixed.clone(),
             None,
             expect(&[], &rust_witnesses),
         ),
         Case::new(
             PROTOCOL,
-            "G2 cutover as performed (stop Node, start Rust)",
+            "G2 stop at any step, start, same file (F1 F2 F3 in both)",
             node.clone(),
-            None,
-            expect(&all, &cutover_witnesses),
-        ),
-        Case::new(
-            PROTOCOL,
-            "G2 + fixes in both runtimes",
-            Deals {
-                fix_pending: true,
-                fix_ack_delivered: true,
-                fix_min_price: true,
-                ..node.clone()
-            },
             None,
             expect(&[], &cutover_witnesses),
         ),
         Case::new(
             PROTOCOL,
-            "G3 Node and Rust both running (rule witness)",
+            "G3 two watchers at once (rule witness)",
             Deals {
                 overlap: true,
                 ..node.clone()
             },
             None,
-            expect(&all, &["cutover"]),
+            expect(&G3_VIOLATED, &["cutover"]),
         ),
         Case::new(
             PROTOCOL,
-            "G4 current, no server dedup",
+            "G4 no server dedup, no faults",
             Deals {
                 dedup: false,
+                max_faults: 0,
                 ..current.clone()
             },
             None,
-            expect(&all, &rust_witnesses),
+            expect(&[], &["new_alert", "digest_relists"]),
         ),
         Case::new(
             PROTOCOL,
-            "G5 fixes, no server dedup",
+            "G5 no server dedup, one fault (rule witness)",
             Deals {
                 dedup: false,
-                ..fixed
+                ..current
             },
             None,
             expect(
@@ -788,4 +778,118 @@ pub fn cases(_deep: bool) -> Vec<Case> {
             ),
         ),
     ]
+}
+
+/// What two fixed watchers on one file break (stale snapshots, lost updates); `no_skip`
+/// holds with F2.
+const G3_VIOLATED: [&str; 3] = ["no_repeat", "one_digest_per_day", "silent_when_unchanged"];
+
+/// DW1-DW3 stay reproducible: the shortest traces of `docs/verification.md` §14, replayed
+/// on the pre-fix watcher, break the property they broke (no model check needed).
+#[cfg(test)]
+mod pre_fix_traces {
+    use super::*;
+    use Action::*;
+    use Kind::*;
+    use Outcome::*;
+
+    fn replay(m: &Deals, trace: &[Action]) -> State {
+        let mut s = m.init_states().remove(0);
+        for (i, a) in trace.iter().enumerate() {
+            let mut enabled = Vec::new();
+            m.actions(&s, &mut enabled);
+            assert!(enabled.contains(a), "step {i}: {a:?} not enabled");
+            s = m
+                .next_state(&s, *a)
+                .unwrap_or_else(|| panic!("step {i}: {a:?}"));
+        }
+        s
+    }
+
+    #[test]
+    fn dw1_lost_response_then_alert_repeats() {
+        let trace = [
+            Tick,
+            Load(RUST, Digest),
+            Poll(RUST, 0),
+            Decide(RUST),
+            Send(RUST, Lost),
+            Load(RUST, Alert),
+            Poll(RUST, 0),
+            Decide(RUST),
+            Send(RUST, Delivered),
+        ];
+        let s = replay(&pre_fix(), &trace);
+        assert_ne!(s.bad & BAD_REPEAT, 0);
+        assert_ne!(s.bad & BAD_SILENT, 0);
+    }
+
+    #[test]
+    fn dw2_price_bounce_repeats() {
+        let trace = [
+            Tick,
+            Tick,
+            Load(RUST, Alert),
+            Poll(RUST, 0),
+            Decide(RUST),
+            Send(RUST, Delivered),
+            Save(RUST),
+            Tick,
+            Tick,
+            Edit(0, 2),
+            Load(RUST, Digest),
+            Poll(RUST, 0),
+            Decide(RUST),
+            Send(RUST, Delivered),
+            Save(RUST),
+            Edit(0, 1),
+            Load(RUST, Alert),
+            Poll(RUST, 0),
+            Decide(RUST),
+            Send(RUST, Delivered),
+        ];
+        let m = Deals {
+            max_faults: 0,
+            ..pre_fix()
+        };
+        assert_ne!(replay(&m, &trace).bad & BAD_REPEAT, 0);
+        // F3 alone removes it: the same steps up to the last Decide compose nothing.
+        let f3 = Deals {
+            fix_min_price: true,
+            ..m
+        };
+        let s = replay(&f3, &trace[..trace.len() - 1]);
+        assert_eq!(s.run[RUST].phase, Phase::Idle);
+        assert_eq!(s.bad, 0);
+    }
+
+    #[test]
+    fn dw3_alternative_skipped() {
+        let trace = [
+            Load(RUST, Digest),
+            Poll(RUST, 0),
+            Decide(RUST),
+            Send(RUST, Delivered),
+            Save(RUST),
+            Edit(0, 0),
+            Tick,
+            Tick,
+            Load(RUST, Alert),
+            Poll(RUST, 0),
+            Decide(RUST),
+        ];
+        let m = Deals {
+            max_faults: 0,
+            ..pre_fix()
+        };
+        assert_ne!(replay(&m, &trace).bad & BAD_SKIP, 0);
+        // F2 alone: the alternative is composed (the run goes on to send it).
+        let f2 = Deals {
+            fix_ack_delivered: true,
+            ..m
+        };
+        let s = replay(&f2, &trace);
+        assert_eq!(s.run[RUST].phase, Phase::Ready);
+        assert_eq!(s.bad, 0);
+    }
 }

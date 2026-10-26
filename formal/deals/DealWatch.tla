@@ -2,7 +2,7 @@
 (***************************************************************************)
 (* The grocery deal watch: twin of verification/models/src/deals.rs        *)
 (* (Stateright), with the same state, actions and invariants. See          *)
-(* docs/verification.md section 7 for the mapping to                       *)
+(* docs/verification.md section 14 for the mapping to                      *)
 (* crates/lucina-deals (branch lucina-rs) and secretary-server's notify.   *)
 (*                                                                         *)
 (* Offers 0 and 1 are item 0 (food waste and a flyer alternative), offer 2 *)
