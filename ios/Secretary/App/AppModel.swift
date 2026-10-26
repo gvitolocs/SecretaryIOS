@@ -487,7 +487,7 @@ struct LaunchOptions {
         openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
-        openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
+        openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"

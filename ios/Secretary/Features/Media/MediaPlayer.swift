@@ -89,12 +89,17 @@ final class MediaPlayer {
 
     // MARK: Queue
 
-    /// Plays `items` from `index` (the list the owner tapped in becomes the queue).
-    func play(_ items: [MediaItem], startAt index: Int) {
+    /// Plays `items` from `index` (the list the owner tapped in becomes the queue). `fromStart`
+    /// forgets the saved minute of that item first ("Play from the beginning").
+    func play(_ items: [MediaItem], startAt index: Int, fromStart: Bool = false) {
         reportNow(playing: false)
         guard let core else {
             error = coreError
             return
+        }
+        if fromStart, items.indices.contains(index) {
+            let item = items[index]
+            _ = try? core.position(id: item.id, positionMs: 0, durationMs: item.durationMs ?? 0, playing: false, device: deviceName)
         }
         do {
             apply(try core.setQueue(items, start: index))
@@ -192,7 +197,13 @@ final class MediaPlayer {
             guard !Task.isCancelled, current?.id == item.id else { return }
             if let saved = info.progress { _ = try? core?.merge([saved]) }
             let resumeMs = (try? core?.resume(id: item.id, durationMs: info.durationMs)) ?? info.resumeMs
-            guard let url = api().absolute(info.url) else { throw APIError.invalidURL }
+            guard var url = api().absolute(info.url) else { throw APIError.invalidURL }
+            // A finished HLS playlist then starts at the resume point (EXT-X-START), so AVPlayer
+            // loads that segment first instead of segment 0 and a seek afterwards.
+            if resumeMs > 0, info.mode != "direct", var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                parts.queryItems = (parts.queryItems ?? []) + [URLQueryItem(name: "start_ms", value: String(resumeMs))]
+                url = parts.url ?? url
+            }
             self.info = info
             if let ms = info.durationMs { duration = TimeInterval(ms) / 1000 }
             activateAudioSession(video: item.isVideo)
@@ -202,7 +213,9 @@ final class MediaPlayer {
             try await waitUntilReady(avItem)
             let readyMs = ms()
             guard !Task.isCancelled, current?.id == item.id else { return }
-            if resumeMs > 0 { await seekWhenAvailable(TimeInterval(resumeMs) / 1000, in: avItem) }
+            // Still needed when the server ignored start_ms (a playlist still being written, an old server).
+            let target = TimeInterval(resumeMs) / 1000
+            if resumeMs > 0, abs(player.currentTime().seconds - target) > 1.5 { await seekWhenAvailable(target, in: avItem) }
             guard !Task.isCancelled, current?.id == item.id else { return }
             firstFrame = (item.id, start, TimeInterval(resumeMs) / 1000,
                           "mode=\(info.mode) api_ms=\(apiMs) ready_ms=\(readyMs) seek_ms=\(ms()) resume_s=\(resumeMs / 1000)")
@@ -243,11 +256,11 @@ final class MediaPlayer {
     }
 
     private func waitUntilReady(_ item: AVPlayerItem) async throws {
-        for _ in 0..<600 {
+        for _ in 0..<2400 {
             switch item.status {
             case .readyToPlay: return
             case .failed: throw item.error ?? APIError.network(message: String(localized: "This file can't be played."))
-            default: try await Task.sleep(for: .milliseconds(100))
+            default: try await Task.sleep(for: .milliseconds(25))
             }
         }
         throw APIError.network(message: String(localized: "The server took too long to start this file."))
@@ -256,7 +269,7 @@ final class MediaPlayer {
     /// Seeks to `target`, waiting (up to 30 s) while an HLS remux is still being written
     /// and does not reach that far yet.
     private func seekWhenAvailable(_ target: TimeInterval, in item: AVPlayerItem) async {
-        for _ in 0..<60 {
+        for _ in 0..<150 {
             let end = item.seekableTimeRanges.last.map { $0.timeRangeValue.end.seconds } ?? 0
             if end >= target - 1 {
                 let time = CMTime(seconds: target, preferredTimescale: 600)
@@ -264,7 +277,7 @@ final class MediaPlayer {
                 position = target
                 return
             }
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: .milliseconds(200))
             if Task.isCancelled { return }
         }
     }

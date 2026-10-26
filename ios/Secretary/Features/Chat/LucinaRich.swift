@@ -516,7 +516,7 @@ extension AppModel {
             selectedTab = .plugins
             showTasks = true
         case "memos": openMemo(nil)
-        case "media":
+        case "media", "films":
             selectedTab = .plugins
             showMedia = true
         case "plugins": selectedTab = .plugins

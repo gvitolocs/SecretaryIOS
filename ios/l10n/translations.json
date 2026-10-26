@@ -837,5 +837,15 @@
   "Share": ["Condividi", "Del"],
   "This is large: keep this sheet open until it's sent.": ["È grande: tieni aperto questo pannello finché non è inviato.", "Den er stor: hold dette ark åbent, indtil den er sendt."],
   "Up to 20 files at a time.": ["Al massimo 20 file alla volta.", "Højst 20 filer ad gangen."],
-  "Video, %@ %@": ["Video, %@ %@", "Video, %@ %@"]
+  "Video, %@ %@": ["Video, %@ %@", "Video, %@ %@"],
+  "Films": ["Film", "Film"],
+  "Film and Dansk film": ["Film e Dansk film", "Film og Dansk film"],
+  "Continue watching": ["Continua a guardare", "Fortsæt med at se"],
+  "No films yet": ["Ancora nessun film", "Ingen film endnu"],
+  "Films in the Film and Dansk film folders on the server show up here.": ["Qui compaiono i film delle cartelle Film e Dansk film sul server.", "Film i mapperne Film og Dansk film på serveren vises her."],
+  "Search films": ["Cerca film", "Søg i film"],
+  "Resume": ["Riprendi", "Fortsæt"],
+  "Play from the beginning": ["Riproduci dall’inizio", "Afspil fra begyndelsen"],
+  "%lld percent watched": ["%lld percento visto", "%lld procent set"],
+  "Watched": ["Visto", "Set"]
 }
