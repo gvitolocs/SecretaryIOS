@@ -201,6 +201,8 @@ final class AppModel {
         #endif
         // Widget and control taps (OpenSecretaryIntent runs in this process).
         WidgetRouter.open = { route in AppModel.shared.openWidgetRoute(route) }
+        pendingWidgetRoute = WidgetRouter.pending
+        WidgetRouter.pending = nil
         if launch.openSettings { showSettings = true }
         if launch.openNotes {
             selectedTab = .plugins

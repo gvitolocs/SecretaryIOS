@@ -33,10 +33,13 @@ enum WidgetRoute {
     }
 }
 
-/// Set by the app at launch; nil in the widget extension, which never runs `OpenSecretaryIntent`
-/// itself (`openAppWhenRun` runs it in the app).
+/// Set by the app model when it is built; nil in the widget extension, which never runs
+/// `OpenSecretaryIntent` itself (`openAppWhenRun` runs it in the app).
 enum WidgetRouter {
     @MainActor static var open: ((String) -> Void)?
+    /// A route that arrived before the app model existed (the app is launched with only the memo
+    /// recorder set up; the model is built with the first window). The model takes it when built.
+    @MainActor static var pending: String?
 }
 
 /// Opens Secretary at a route. Used by the Control Center / Lock Screen controls and by widget
@@ -55,7 +58,7 @@ struct OpenSecretaryIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        WidgetRouter.open?(route)
+        if let open = WidgetRouter.open { open(route) } else { WidgetRouter.pending = route }
         return .result()
     }
 }
