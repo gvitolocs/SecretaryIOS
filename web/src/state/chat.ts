@@ -19,7 +19,25 @@ import {
   type StreamStatus,
   type TimelineItem,
 } from "../api/timeline";
+import { t } from "../i18n";
+import {
+  buildShareMeta,
+  draftAttachment,
+  locationAttachment,
+  releaseDraft,
+  type DraftAttachment,
+  type ShareLocation,
+} from "../lib/attachments";
+import {
+  newShareId,
+  pollShareStatus,
+  postChatShare,
+  type ShareStage,
+  type ShareStatus,
+  type ShareStatusAttachment,
+} from "../lib/chatShare";
 import { chatSessionId, uuid } from "../lib/ids";
+import { parseRich, speechText, stripMarkdown, type RichMessage } from "../lib/rich";
 import { readJSON, removeKey, writeJSON } from "../lib/storage";
 import { markLucinaOnline } from "./lucina";
 
@@ -36,7 +54,22 @@ export interface JobState {
   pollError: string | null;
 }
 
+/** A chat composer attachment send: upload progress, then the reading stage. */
+export interface ChatShare {
+  /** The idempotency key also used by POST /v1/share (retry keeps it). */
+  id: string;
+  files: DraftAttachment[];
+  progress: number;
+  phase: "uploading" | ShareStage;
+  /** The optional `meta` JSON built when the send started. */
+  meta?: string;
+  error?: string;
+  stage?: ShareStage;
+  attachments?: ShareStatusAttachment[];
+}
+
 export interface ChatMessage {
+  sensitive?: boolean;
   /** Stable render identity; survives the optimistic -> server swap. */
   key: string;
   /** Server timeline item id, once known. */
@@ -58,6 +91,17 @@ export interface ChatMessage {
   error?: string;
   action?: string | null;
   job?: JobState | null;
+  /** Lucina message format v1 from the chat response (timeline items carry it in meta.rich). */
+  rich?: RichMessage;
+  /** Arrived while the chat was open: reveal its bubbles one by one. Never cached. */
+  reveal?: boolean;
+  /** This tab's attachment upload/reading state. */
+  share?: ChatShare;
+}
+
+/** The v1 rich message of a chat message, if it has one. */
+export function richOf(m: ChatMessage): RichMessage | undefined {
+  return m.meta?.rich ?? m.rich;
 }
 
 export type LoadState = "idle" | "loading" | "ready" | "error";
@@ -87,8 +131,14 @@ function hydrate(): ChatMessage[] {
     if (typeof msg.createdAt !== "number" || !Number.isFinite(msg.createdAt)) continue;
     if (!(CHANNELS as readonly string[]).includes(msg.channel)) continue;
     seen.add(msg.key);
+    delete msg.reveal;
+    if (msg.rich !== undefined) {
+      const rich = parseRich(msg.rich);
+      if (rich) msg.rich = rich;
+      else delete msg.rich;
+    }
     // A reload interrupted this send; let the user retry it.
-    out.push(msg.status === "sending" ? { ...msg, status: "error", error: "Not sent: the page was reloaded." } : msg);
+    out.push(msg.status === "sending" ? { ...msg, status: "error", error: t("chat.errReloaded") } : msg);
   }
   return out.sort(byTime);
 }
@@ -111,6 +161,48 @@ const [streamStatus, setStreamStatus] = createSignal<StreamStatus>("connecting")
 
 export { chat, sending, lastReply, loadState, olderState, streamStatus };
 
+// ---- Rich replies: composer prefill, reveal progress, chosen buttons ----------
+
+/** Text a button wants in the composer (`prefill` replies, "Modifica"); `n` makes repeats distinct. */
+const [prefill, setPrefill] = createSignal<{ text: string; n: number } | null>(null);
+let prefillCount = 0;
+export { prefill };
+export function requestPrefill(text: string): void {
+  setPrefill({ text, n: ++prefillCount });
+}
+
+/** Bumped whenever a revealing reply shows another bubble (keeps the list pinned to the end). */
+const [revealTick, setRevealTick] = createSignal(0);
+export { revealTick };
+export function bumpReveal(): void {
+  setRevealTick((n) => n + 1);
+}
+
+const CHOICES_KEY = "secretary.chat.choices.v1";
+const CHOICES_LIMIT = 200;
+
+function readChoices(): Record<string, string> {
+  const data = readJSON("local", CHOICES_KEY);
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data as Record<string, unknown>)) if (typeof v === "string") out[k] = v;
+  return out;
+}
+
+const [choices, setChoices] = createStore<Record<string, string>>(readChoices());
+
+/** The button already used on this message (by item id once known, else its key). */
+export function chosenAction(m: ChatMessage): string | undefined {
+  return (m.itemId && choices[m.itemId]) || choices[m.key];
+}
+
+export function chooseAction(m: ChatMessage, actionId: string): void {
+  const id = m.itemId ?? m.key;
+  setChoices(id, actionId);
+  const all = Object.entries(unwrap(choices));
+  writeJSON("local", CHOICES_KEY, Object.fromEntries(all.slice(-CHOICES_LIMIT)));
+}
+
 const replyListeners = new Set<(text: string) => void>();
 
 /** Called with the text of each reply to this tab's own messages (e.g. to speak it). */
@@ -132,7 +224,30 @@ function byTime(a: ChatMessage, b: ChatMessage): number {
 }
 
 function persist(): void {
-  writeJSON("session", CACHE_KEY, chat.messages.slice(-CACHE_LIMIT));
+  // Files and blob previews cannot survive a reload: drop attachment sends the
+  // server never accepted (a retry could not resend the files) and strip the
+  // tab-only state from the accepted ones. Sensitive replies are never cached.
+  const cache = chat.messages
+    .filter((m) => !m.sensitive)
+    .slice(-CACHE_LIMIT)
+    .filter((m) => !m.share || m.status === "sent")
+    .map((m) => {
+    if (!m.share && !m.attachments?.some((a) => a.previewUrl)) return m;
+    return {
+      ...m,
+      ...(m.share ? { share: undefined } : {}),
+      ...(m.attachments
+        ? {
+            attachments: m.attachments.map((a) => {
+              const rest = { ...a };
+              delete rest.previewUrl;
+              return rest;
+            }),
+          }
+        : {}),
+    };
+  });
+  writeJSON("session", CACHE_KEY, cache);
 }
 
 function find(key: string): ChatMessage | undefined {
@@ -153,18 +268,20 @@ function commit(edit: (list: ChatMessage[]) => void): void {
 }
 
 function serverFields(it: TimelineItem): Partial<ChatMessage> {
-  return {
+  const fields: Partial<ChatMessage> = {
     itemId: it.id,
     role: it.role,
     text: it.text,
     createdAt: it.ts,
     channel: it.channel,
     replyTo: it.replyTo,
-    attachments: it.attachments,
     meta: it.meta,
     backfilled: it.backfilled,
     ...(it.clientMessageId ? { clientMessageId: it.clientMessageId } : {}),
   };
+  // Keep the optimistic previews when the server item has no attachment list.
+  if (it.attachments) fields.attachments = it.attachments;
+  return fields;
 }
 
 function fromItem(it: TimelineItem): ChatMessage {
@@ -177,6 +294,13 @@ function matchItem(list: ChatMessage[], it: TimelineItem): ChatMessage | undefin
   if (byId) return byId;
   if (it.role === "user" && it.clientMessageId) {
     return list.find((m) => m.role === "user" && !m.itemId && m.clientMessageId === it.clientMessageId);
+  }
+  // A composer share's server item can arrive (stream, poll) before the 202, or
+  // without it when the 202 is lost: match it to the local bubble by shareId
+  // (Stateright SH5, Verus SK2.4; iOS Timeline.merge does the same).
+  const shareId = it.role === "user" ? it.meta?.shareId : undefined;
+  if (shareId) {
+    return list.find((m) => m.role === "user" && !m.itemId && m.share?.id === shareId);
   }
   if (it.role === "lucina") {
     const cmid = it.clientMessageId ?? (it.replyTo ? list.find((m) => m.itemId === it.replyTo)?.clientMessageId : undefined);
@@ -281,11 +405,39 @@ export async function loadOlder(): Promise<number> {
   }
 }
 
+const itemListeners = new Set<(item: TimelineItem) => void>();
+
+/** Called with each live item from the stream (not with pages), e.g. Lucina's outfit changes. */
+export function onTimelineItem(cb: (item: TimelineItem) => void): () => void {
+  itemListeners.add(cb);
+  return () => itemListeners.delete(cb);
+}
+
 /** Merge one live item (from the stream). */
 export function receiveItem(item: TimelineItem): void {
   commit((list) => {
-    mergeItems(list, [item], "end");
+    const added = mergeItems(list, [item], "end");
+    // A rich reply that arrives live is "said" bubble by bubble.
+    if (added && item.role === "lucina" && item.meta?.rich) {
+      const m = list.find((x) => x.itemId === item.id);
+      if (m) m.reveal = true;
+    }
+    // Lucina answered an attachment: no more "reading…" state.
+    if (item.role === "lucina") finishShareForReply(list, item.replyTo);
   });
+  for (const cb of itemListeners) cb(item);
+}
+
+function finishShareForReply(list: ChatMessage[], replyTo: string | undefined): void {
+  if (!replyTo) return;
+  for (const m of list) {
+    if (!m.share || m.itemId !== replyTo) continue;
+    if (m.share.phase !== "done") {
+      // A new object: commit's copy is shallow, so nested edits must not mutate the store.
+      m.share = { ...m.share, phase: "done", stage: "done" };
+      stopSharePoll(m.share.id);
+    }
+  }
 }
 
 // ---- Live stream ----------------------------------------------------------------
@@ -350,14 +502,14 @@ export function connectTimeline(): () => void {
 // ---- Sending -------------------------------------------------------------------
 
 export function describeChatError(err: ApiError): string {
-  if (err.code === "lucina_unreachable") return "Lucina is offline. Not delivered.";
-  if (err.code === "lucina_timeout") return "Lucina didn't answer in time.";
-  if (err.code === "lucina_error") return "Lucina ran into a problem.";
-  if (err.code === "timeout") return "No answer in time.";
-  if (err.isNetwork) return "Couldn't reach the server.";
-  if (err.status === 401) return "You were signed out.";
-  if (err.status === 429) return "Too many messages; wait a moment.";
-  return err.message || "Not delivered.";
+  if (err.code === "lucina_unreachable") return t("chat.errOffline");
+  if (err.code === "lucina_timeout") return t("chat.errTimeout");
+  if (err.code === "lucina_error") return t("chat.errProblem");
+  if (err.code === "timeout") return t("chat.errNoAnswer");
+  if (err.isNetwork) return t("chat.errNetwork");
+  if (err.status === 401) return t("chat.errSignedOut");
+  if (err.status === 429) return t("chat.errTooMany");
+  return err.message || t("chat.notDelivered");
 }
 
 async function deliver(key: string): Promise<void> {
@@ -374,6 +526,8 @@ async function deliver(key: string): Promise<void> {
     const rawJob = res?.job && res.job.id !== undefined && res.job.id !== null ? res.job : null;
     const action = typeof res?.action === "string" ? res.action : null;
     const replyText = typeof res?.reply === "string" ? res.reply : "";
+    const sensitive = res?.sensitive === true;
+    const rich = sensitive ? undefined : parseRich(res) ?? undefined;
     const job: JobState | null = rawJob
       ? { id: String(rawJob.id), status: String(rawJob.status ?? "queued"), action, pollError: null }
       : null;
@@ -404,6 +558,7 @@ async function deliver(key: string): Promise<void> {
         existing.action = action;
         existing.job = job;
         if (!existing.text) existing.text = replyText;
+        if (rich && !existing.meta?.rich) existing.rich = rich;
         replyKey = existing.key;
         return;
       }
@@ -417,14 +572,28 @@ async function deliver(key: string): Promise<void> {
         replyFor: cmid,
         action,
         job,
+        ...(sensitive ? { sensitive: true } : {}),
+        ...(rich ? { rich, reveal: true } : {}),
       };
       if (lucinaItemId) reply.itemId = lucinaItemId;
       list.push(reply);
       replyKey = reply.key;
     });
-    if (replyText) {
-      setLastReply(replyText);
-      for (const fn of replyListeners) fn(replyText);
+    if (sensitive && replyKey && res.expiresAt) {
+      const expiringKey = replyKey;
+      const timer = setTimeout(() => {
+        if (gen !== generation) return;
+        commit((list) => { const m = list.find((v) => v.key === expiringKey); if (m) m.text = "OTP expired."; });
+        setLastReply("");
+      }, Math.max(0, Math.min(120_000, res.expiresAt - Date.now())));
+      // Browser timer is bounded; it carries only a message key, never the code.
+      void timer;
+    }
+    if (!sensitive && (replyText || rich)) {
+      // Her voice and the live region get the bubbles only (never the widgets), without markdown.
+      const spoken = rich ? speechText(rich) : stripMarkdown(replyText);
+      setLastReply(spoken);
+      for (const fn of replyListeners) fn(spoken);
     }
     if (job && replyKey) scheduleJobPoll(replyKey, isTerminalJob(job.status) ? 0 : JOB_POLL_MS);
   } catch (e) {
@@ -438,7 +607,7 @@ async function deliver(key: string): Promise<void> {
 }
 
 /**
- * The server accepts 1-4000 characters with no control characters other than
+ * The server accepts 1-12000 characters with no control characters other than
  * newline and tab.
  */
 export function cleanMessage(text: string): string {
@@ -473,9 +642,184 @@ export async function sendMessage(text: string): Promise<boolean> {
 export async function retryMessage(key: string): Promise<void> {
   const msg = find(key);
   if (!msg || msg.role !== "user" || msg.status !== "error" || sending()) return;
+  if (msg.share) {
+    setChat("messages", (m) => m.key === key, { status: "sending", error: undefined, share: { ...msg.share!, phase: "uploading", progress: 0, error: undefined } });
+    persist();
+    await deliverShare(key);
+    return;
+  }
   setChat("messages", (m) => m.key === key, { status: "sending", error: undefined });
   persist();
   await deliver(key);
+}
+
+/**
+ * Adds an optimistic attachment bubble (files and/or a shared location) and
+ * sends it through POST /v1/share. Returns false if there is nothing to send.
+ */
+export async function sendAttachmentMessage(
+  files: readonly DraftAttachment[],
+  caption = "",
+  location?: ShareLocation | null,
+): Promise<boolean> {
+  const text = cleanMessage(caption);
+  if (text.length > CHAT_MAX_CHARS) return false;
+  if (!files.length && !location) return false;
+  if (sending()) return false;
+  const shareId = newShareId();
+  const last = chat.messages[chat.messages.length - 1];
+  const attachments = files.map(draftAttachment);
+  if (location) attachments.push(locationAttachment(location));
+  const msg: ChatMessage = {
+    key: `f:${shareId}`,
+    role: "user",
+    text,
+    createdAt: Math.max(Date.now(), last ? last.createdAt + 1 : 0),
+    channel: "web",
+    status: "sending",
+    attachments,
+    share: {
+      id: shareId,
+      files: [...files],
+      progress: 0,
+      phase: "uploading",
+      meta: buildShareMeta(files, location),
+    },
+  };
+  commit((list) => {
+    list.push(msg);
+  });
+  await deliverShare(msg.key);
+  return true;
+}
+
+function setShareProgress(key: string, progress: number): void {
+  setChat(
+    "messages",
+    (m) => m.key === key,
+    "share",
+    (share) => (share ? { ...share, progress: Math.max(share.progress, Math.min(1, progress)) } : share),
+  );
+}
+
+async function deliverShare(key: string): Promise<void> {
+  const msg = find(key);
+  if (!msg?.share) return;
+  const share = msg.share;
+  const shareId = share.id;
+  const files = share.files;
+  const meta = share.meta;
+  const text = msg.text;
+  const gen = generation;
+  setSending(true);
+  try {
+    const accepted = await postChatShare(
+      { shareId, files, caption: text, meta },
+      { onProgress: (loaded, total) => setShareProgress(key, total > 0 ? loaded / total : 0) },
+    );
+    if (gen !== generation || !find(key)) return;
+    let finished = false;
+    commit((list) => {
+      const mine = list.find((m) => m.key === key);
+      if (!mine) return;
+      mine.status = "sent";
+      delete mine.error;
+      if (accepted.userItemId) adopt(list, key, accepted.userItemId);
+      const replied = !!mine.itemId &&
+        list.some((m) => m.role === "lucina" && (m.replyTo === mine.itemId || (!!accepted.lucinaItemId && m.itemId === accepted.lucinaItemId)));
+      if ((replied || accepted.stage === "done") && mine.share) finished = true;
+    });
+    // Update the nested share through the store setter so the bubble re-renders
+    // (a plain mutation inside commit's cloned list is not deep-merged).
+    setChat(
+      "messages",
+      (m) => m.key === key,
+      "share",
+      (current): ChatShare | undefined =>
+        current
+          ? {
+              ...current,
+              progress: 1,
+              phase: finished ? "done" : accepted.stage ?? "received",
+              stage: finished ? "done" : accepted.stage,
+              error: undefined,
+            }
+          : current,
+    );
+    if (!finished) startSharePoll(key, shareId);
+  } catch (e) {
+    if (gen !== generation || !find(key)) return;
+    const message = e instanceof Error && e.message ? e.message : t("chat.notDelivered");
+    setChat("messages", (m) => m.key === key, { status: "error", error: t("share.notSentRetry") });
+    setChat("messages", (m) => m.key === key, "share", (current): ChatShare | undefined =>
+      current ? { ...current, phase: "error", error: message } : current);
+    persist();
+  } finally {
+    if (gen === generation) setSending(false);
+  }
+}
+
+// ---- Share status polling ------------------------------------------------------
+
+const shareStops = new Map<string, () => void>();
+
+function stopSharePoll(shareId: string): void {
+  const stop = shareStops.get(shareId);
+  if (!stop) return;
+  shareStops.delete(shareId);
+  stop();
+}
+
+function startSharePoll(key: string, shareId: string): void {
+  stopSharePoll(shareId);
+  const stop = pollShareStatus(shareId, {
+    onUpdate: (status) => {
+      if (!find(key)) {
+        stopSharePoll(shareId);
+        return;
+      }
+      applyShareStatus(key, status);
+      if (status.stage === "done" || status.stage === "error") shareStops.delete(shareId);
+    },
+  });
+  shareStops.set(shareId, stop);
+}
+
+function applyShareStatus(key: string, status: ShareStatus): void {
+  commit((list) => {
+    const mine = list.find((m) => m.key === key);
+    if (!mine?.share) return;
+    // Replace (never mutate) the nested share and attachments: commit's copy is
+    // shallow, and an in-place edit would bypass the store's signals.
+    mine.share = {
+      ...mine.share,
+      phase: status.stage,
+      stage: status.stage,
+      attachments: status.attachments,
+      ...(status.error ? { error: status.error } : {}),
+    };
+    if (status.stage === "error") {
+      mine.status = "error";
+      mine.error = status.error ?? t("share.notSentRetry");
+    }
+    if (status.userItemId) adopt(list, key, status.userItemId);
+    if (mine.attachments && status.attachments.length) {
+      mine.attachments = mine.attachments.map((attachment, index) => {
+        const item = status.attachments.find((a) => a.index === index);
+        if (!item) return attachment;
+        return {
+          ...attachment,
+          ...(item.mediaId ? { mediaId: item.mediaId } : {}),
+          ...(item.summary && !attachment.name ? { name: item.summary } : {}),
+        };
+      });
+    }
+  });
+}
+
+export function stopSharePolling(): void {
+  for (const stop of shareStops.values()) stop();
+  shareStops.clear();
 }
 
 // ---- Job polling -----------------------------------------------------------
@@ -517,11 +861,11 @@ async function pollJob(key: string): Promise<void> {
     const err = toApiError(e);
     if (!find(key)) return;
     if (err.status === 404 || err.code === "job_not_found") {
-      updateJob(key, { status: "error", pollError: "This job no longer exists." });
+      updateJob(key, { status: "error", pollError: t("chat.jobGone") });
       return;
     }
     if (err.status === 401) return; // Session ended; the app returns to login.
-    updateJob(key, { pollError: "Couldn't check on this job. Retrying…" });
+    updateJob(key, { pollError: t("chat.jobRetrying") });
     scheduleJobPoll(key);
   }
 }
@@ -546,6 +890,8 @@ function reset(messages: ChatMessage[]): void {
   connections = 0;
   teardownStream();
   stopJobPolling();
+  stopSharePolling();
+  for (const m of chat.messages) if (m.share) for (const file of m.share.files) releaseDraft(file);
   setChat({ messages, nextBefore: null, loaded: false });
   setSending(false);
   setLastReply("");

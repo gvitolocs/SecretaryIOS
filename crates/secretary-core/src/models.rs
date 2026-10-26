@@ -517,6 +517,83 @@ impl ShoppingOp {
     }
 }
 
+// -- device bridge (docs/device-bridge.md) --------------------------------
+
+/// One event from the owner's devices (`POST /device/events`). Only these
+/// fields are forwarded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceEvent {
+    /// Client-chosen id (dedup key), `[A-Za-z0-9_.:-]{1,128}`.
+    pub id: String,
+    /// Epoch milliseconds or an RFC 3339 timestamp.
+    pub ts: Scalar,
+    /// One of [`crate::validate::DEVICE_EVENT_TYPES`].
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// One of [`crate::validate::DEVICE_SOURCES`].
+    pub source: String,
+    /// Type-specific payload, a JSON object of at most 8 KiB.
+    #[serde(default = "empty_object")]
+    pub data: Value,
+}
+
+fn empty_object() -> Value {
+    Value::Object(Map::new())
+}
+
+/// The device that sent a request, added by secretary-server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// `POST /device/events` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceEvents {
+    pub events: Vec<DeviceEvent>,
+    /// Set by the server (never trusted from the client).
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceRef>,
+}
+
+/// `POST /device/commands/{id}/result` body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The id the device gave the object it created (alarm, reminder, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_object_id: Option<String>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceRef>,
+}
+
+/// `POST /device/state` body: what is on the device right now. Items are
+/// objects passed through opaque; `focus` is the Focus mode (object, string
+/// or `null`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceState {
+    #[serde(default)]
+    pub alarms: Vec<Value>,
+    #[serde(default)]
+    pub timers: Vec<Value>,
+    #[serde(default)]
+    pub reminders: Vec<Value>,
+    #[serde(default)]
+    pub events: Vec<Value>,
+    #[serde(default)]
+    pub focus: Value,
+    /// When the snapshot was taken (epoch ms or RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<Scalar>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceRef>,
+}
+
 // -- timeline ---------------------------------------------------------------
 
 /// A JSON string or number kept exactly as Lucina sent it (timeline ids and

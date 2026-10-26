@@ -15,6 +15,8 @@
 //   "job" / "order" / "book" / "image" -> reply with a job (queued -> running -> done)
 //   "remind"   -> schedule_reminder reply with a reminder object (no job)
 //   "jobfail"  -> a job that ends in error
+//   "inventario" / "calendario" / "widget" -> Lucina message format v1 replies (mock/rich.mjs)
+//   MOCK_RICH_BEFORE=1 seeds the owner's original "inventario" text wall (before the format)
 // Shopping: items whose name contains "stubborn" refuse PATCH (500), to test rollback.
 // Jobs: "image" in the message makes a generate_image job with an imageUrl.
 // POST /v1/_mock/lucina {"online": false} toggles Lucina's health (CSRF header needed).
@@ -35,20 +37,34 @@
 //   POST /v1/chat records the user message (channel from X-Secretary-Client) and Lucina's
 //   reply, and answers userItemId / lucinaItemId. "remind" also posts a reminder item 15 s later.
 //   POST /v1/_mock/timeline {channel, role, text, meta?} -> injects an item (CSRF header needed)
+//   POST /v1/proactive/outreach/{po_id}/feedback {action} -> 201 {feedback} (logged, not stored)
 //   MOCK_FAKE_TRAFFIC=1 posts a fake Telegram message (and Lucina's answer) every ~20 s.
 // Lucina stage (session needed, like the real server):
 //   GET  /v1/assets/<file> -> files from MOCK_ASSETS_DIR (default ~/scratch/lucina-avatar/out).
 //                            The model is private: never copy it into the repo.
 //   POST /v1/tts {text, lang} -> a short silent audio/mpeg clip
+// Wardrobe (docs/server-api.md, "Avatar wardrobe"): outfits, hairstyles, hair colours.
+//   GET/PUT /v1/avatar, GET /v1/avatar/wardrobe. The wardrobe is MOCK_WARDROBE_DIR/wardrobe.json
+//   (default ~/scratch/lucina-wardrobe) or the placeholder mock/wardrobe.json; outfit models
+//   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
+//   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
+//   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
+//   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
+// Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
+//   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
 // active_elapsed_seconds or volume_grams; repeat_workout and parse_weight fail) to check
 // that the UI degrades gracefully.
 
 import http from "node:http";
+import { addNotification, handleNotifications } from "./notifications.mjs";
+import { INVENTARIO_BEFORE, INVENTARIO_QUESTION, richMeta, richReply } from "./rich.mjs";
 import { randomUUID } from "node:crypto";
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8791);
 const HOST = process.env.MOCK_HOST ?? "127.0.0.1";
@@ -603,9 +619,73 @@ function gymApply(state, command, now) {
       };
       return;
     }
+    case "record_measurement": {
+      // Body weight belongs to the body module now (engine rule).
+      if (command.kind === "body_weight") throw new Error("Log body weight in the body module");
+      state.measurements.push({
+        id: randomUUID(),
+        timestamp_ms: now,
+        kind: String(command.kind ?? ""),
+        value_milli: gymDecimalMilli(command.value),
+      });
+      return;
+    }
+    case "delete_measurement": {
+      const index = state.measurements.findIndex((m) => m.id === command.measurement_id);
+      if (index < 0) throw new Error("Measurement not found");
+      state.measurements.splice(index, 1);
+      return;
+    }
+    case "restore_json": {
+      let restored;
+      try {
+        restored = JSON.parse(String(command.backup ?? ""));
+      } catch (e) {
+        throw new Error(`Invalid backup: ${e?.message ?? e}`);
+      }
+      const lists = ["exercises", "routines", "history", "measurements"];
+      if (!restored || typeof restored !== "object" || !restored.settings || lists.some((k) => !Array.isArray(restored[k]))) {
+        throw new Error("Invalid backup: missing fields");
+      }
+      const receipts = state.receipts;
+      const revision = state.revision;
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, restored, { receipts, revision, rest: null, active: restored.active ?? null });
+      return;
+    }
     default:
       throw new Error(`unknown variant \`${command.type}\``);
   }
+}
+
+/** The engine's decimal text -> thousandths (up to three decimals, `,` or `.`). */
+function gymDecimalMilli(value) {
+  const text = String(value ?? "").trim().replace(",", ".");
+  const match = /^(\d{1,9})(?:\.(\d{1,3}))?$/.exec(text);
+  if (!match) throw new Error("Enter a number with up to three decimals");
+  return Number(match[1]) * 1000 + Number((match[2] ?? "").padEnd(3, "0"));
+}
+
+/** Engine-shaped export texts (export_json drops receipts; CSV lists completed sets). */
+function gymExportText(state, type) {
+  if (type === "export_json") return JSON.stringify({ ...state, receipts: {} }, null, 2);
+  const quote = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const rows = [
+    ["workout_name", "started_utc", "finished_utc", "exercise", "set_order", "set_type", "weight_kg", "reps", "duration_seconds", "distance_meters", "notes"],
+  ];
+  for (const w of state.history) {
+    for (const e of w.exercises) {
+      const name = state.exercises.find((x) => x.id === e.exercise_id)?.name ?? e.exercise_id;
+      e.sets.forEach((set, i) => {
+        if (!set.completed) return;
+        rows.push([
+          w.title, new Date(w.started_ms).toISOString(), new Date(w.finished_ms).toISOString(), name, i + 1, set.kind,
+          gymNumber(set.weight_grams / 1000), set.reps, set.seconds, set.distance_meters, `${w.notes}\n${e.notes}`,
+        ]);
+      });
+    }
+  }
+  return rows.map((r) => r.map(quote).join(",")).join("\n") + "\n";
 }
 
 function gymValidate(state) {
@@ -983,7 +1063,8 @@ function engineError(res, status, code, error) {
 async function handleGymCommand(req, res) {
   let body;
   try {
-    body = await readJson(req);
+    // 16 MiB like the server's /v1/gym/command limit (restore_json backups).
+    body = await readJson(req, 16 * 1024 * 1024);
   } catch (e) {
     return engineError(res, e?.status ?? 400, "invalid_json", String(e?.message ?? e));
   }
@@ -999,6 +1080,9 @@ async function handleGymCommand(req, res) {
   }
   const now = Date.now();
   if (command.type === "clock") return send(res, 200, { ok: true, replayed: false, clock: gymClock(gymState, now) });
+  if (command.type === "export_json" || command.type === "export_csv") {
+    return send(res, 200, { ok: true, replayed: false, text: gymExportText(gymState, command.type), view: gymView(gymState, now, tz) });
+  }
   if (command.type === "parse_weight" && !MOCK_STRICT) {
     try {
       const grams = parseGymWeight(String(command.value ?? ""), command.unit ?? gymState.settings.weight_unit);
@@ -1282,6 +1366,10 @@ function addItem(fields, ts = Date.now()) {
   const item = { id: String(++timelineSeq), ts: new Date(ts).toISOString(), ...fields };
   timeline.push(item);
   for (const client of streamClients) sseWrite(client, item);
+  // Live Lucina items also land in the notification inbox (not the seeded history).
+  if (item.role === "lucina" && ts >= Date.now() - 60_000) {
+    addNotification({ category: item.meta?.kind === "reminder" ? "reminder" : "lucina_message", body: String(item.text).slice(0, 240), channel: item.channel, timelineId: item.id });
+  }
   return item;
 }
 
@@ -1316,6 +1404,11 @@ function seedTimeline() {
     [H - 30_000, { channel: "web", role: "lucina", text: "All quiet. Details: https://example.com/status" }],
   ];
   for (const [ago, fields] of recent) rows.push([now - ago, fields]);
+  if (process.env.MOCK_RICH_BEFORE === "1") {
+    // The owner's original 2026-10-22 reply: a markdown wall with a "Posso anche" footer.
+    rows.push([now - 20 * 60_000, { channel: "web", role: "user", text: INVENTARIO_QUESTION, meta: { via: "mcp", caller: "chatgpt" } }]);
+    rows.push([now - 20 * 60_000 + 9_000, { channel: "web", role: "lucina", text: INVENTARIO_BEFORE, meta: { via: "mcp", caller: "chatgpt" } }]);
+  }
   rows.sort((a, b) => a[0] - b[0]);
   for (const [at, fields] of rows) {
     const clean = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
@@ -1386,18 +1479,125 @@ const ASSET_TYPES = {
   ".ktx2": "image/ktx2",
 };
 
-function handleAsset(res, rel) {
-  const file = resolve(ASSETS_DIR, `.${sep}${rel}`);
-  const type = ASSET_TYPES[extname(file).toLowerCase()];
-  let st = null;
+// The wardrobe (outfit GLBs, thumbnails, wardrobe.json) is looked up here first, then in
+// ASSETS_DIR. Without a wardrobe.json there, mock/wardrobe.json is the placeholder, and a
+// missing outfit model (`lucina-<outfit>.glb`) is served as lucina.glb so swaps still run.
+const WARDROBE_DIR = resolve(process.env.MOCK_WARDROBE_DIR ?? join(homedir(), "scratch/lucina-wardrobe"));
+const WARDROBE_PLACEHOLDER = fileURLToPath(new URL("./wardrobe.json", import.meta.url));
+
+function statFile(file) {
   try {
-    st = statSync(file);
+    const st = statSync(file);
+    return st.isFile() ? st : null;
   } catch {
-    st = null;
+    return null;
   }
-  if (!type || !file.startsWith(ASSETS_DIR + sep) || !st?.isFile()) return fail(res, 404, "not_found", "No such asset.");
-  res.writeHead(200, { "Content-Type": type, "Content-Length": String(st.size), "Cache-Control": "private, no-store" });
-  createReadStream(file).pipe(res);
+}
+
+function findAsset(rel) {
+  for (const dir of [WARDROBE_DIR, ASSETS_DIR]) {
+    const file = resolve(dir, `.${sep}${rel}`);
+    if (!file.startsWith(dir + sep)) return null;
+    const st = statFile(file);
+    if (st) return { file, st };
+  }
+  if (/^lucina-[a-z0-9_-]+\.glb$/.test(rel)) return findAsset("lucina.glb");
+  return null;
+}
+
+function handleAsset(res, rel) {
+  const type = ASSET_TYPES[extname(rel).toLowerCase()];
+  const found = type ? findAsset(rel) : null;
+  if (!found) return fail(res, 404, "not_found", "No such asset.");
+  res.writeHead(200, { "Content-Type": type, "Content-Length": String(found.st.size), "Cache-Control": "private, no-store" });
+  createReadStream(found.file).pipe(res);
+}
+
+// ---------- Avatar wardrobe (GET/PUT /v1/avatar, GET /v1/avatar/wardrobe) ----------
+
+const OUTFIT_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+const SECTION_KEYS = ["gym", "shopping", "default"];
+const DEFAULT_RULES = {
+  gym: { outfit: "gym", hair: "ponytail" },
+  shopping: { outfit: "chef", hair: "natural" },
+  default: { outfit: "uniform", hair: "natural" },
+};
+let avatar = { outfit: null, hair: null, hairColor: null, auto: true, rules: DEFAULT_RULES, updatedMs: 0, updatedBy: "" };
+
+/** `{outfits, hairstyles, colors}` (a bare array is the outfits), from the wardrobe dir or the placeholder. */
+function wardrobeFile() {
+  const real = join(WARDROBE_DIR, "wardrobe.json");
+  for (const file of [real, WARDROBE_PLACEHOLDER]) {
+    try {
+      const raw = JSON.parse(readFileSync(file, "utf8"));
+      const o = Array.isArray(raw) ? { outfits: raw } : raw;
+      const list = (v, glb) => (Array.isArray(v) ? v.filter((e) => e && OUTFIT_ID.test(e.id) && (!glb || e.id === "natural" || typeof e.glb === "string")) : []);
+      return {
+        outfits: list(o.outfits, true),
+        hairstyles: list(o.hairstyles, true),
+        colors: list(o.colors).filter((c) => /^#[0-9a-f]{6}$/i.test(c.hex ?? "")),
+      };
+    } catch {
+      // next
+    }
+  }
+  return { outfits: [], hairstyles: [], colors: [] };
+}
+
+const bad = (message) => ({ status: 400, code: "bad_request", message });
+
+/** PUT /v1/avatar: merge a patch like the real server (400 shape errors, 422 unknown_*). */
+function patchAvatar(body, by) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return bad("expected an object");
+  for (const k of Object.keys(body)) if (!["outfit", "hair", "hairColor", "auto", "rules"].includes(k)) return bad(`unknown field ${k}`);
+  const rules = body.rules ?? {};
+  if (typeof rules !== "object" || Array.isArray(rules)) return bad("rules: expected an object");
+  if (body.auto !== undefined && typeof body.auto !== "boolean") return bad("auto: expected a boolean");
+  const nextRules = { ...avatar.rules };
+  for (const [k, v] of Object.entries(rules)) {
+    if (!SECTION_KEYS.includes(k)) return bad(`rules: unknown field ${k}`);
+    const p = typeof v === "string" ? { outfit: v } : v;
+    if (!p || typeof p !== "object" || Object.keys(p).some((f) => f !== "outfit" && f !== "hair")) return bad(`rules.${k}: expected {outfit?, hair?}`);
+    nextRules[k] = { ...nextRules[k], ...p };
+  }
+  const next = { ...avatar, rules: nextRules };
+  for (const f of ["outfit", "hair", "hairColor"]) if (f in body) next[f] = body[f];
+  if (body.auto !== undefined) next.auto = body.auto;
+  const outfits = [next.outfit, ...SECTION_KEYS.map((k) => next.rules[k].outfit)].filter((v) => v !== null);
+  const hairs = [next.hair, ...SECTION_KEYS.map((k) => next.rules[k].hair)].filter((v) => v !== null);
+  const colors = [next.hairColor].filter((v) => v !== null);
+  if ([...outfits, ...hairs, ...colors].some((v) => typeof v !== "string" || !OUTFIT_ID.test(v))) return bad("ids must match [a-z0-9][a-z0-9_-]*");
+  const w = wardrobeFile();
+  const check = (ids, list, code, what, extra = []) => {
+    const known = [...extra, ...list.map((e) => e.id)];
+    const miss = list.length ? ids.find((v) => !known.includes(v)) : undefined;
+    return miss ? { status: 422, code, message: `no ${what} "${miss}" in the wardrobe; known: ${known.join(", ")}` } : null;
+  };
+  const err =
+    check(outfits, w.outfits, "unknown_outfit", "outfit") ??
+    check(hairs, w.hairstyles, "unknown_hairstyle", "hairstyle", ["natural"]) ??
+    check(colors, w.colors, "unknown_hair_color", "hair colour");
+  if (err) return err;
+  avatar = { ...next, updatedMs: Date.now(), updatedBy: by };
+  return null;
+}
+
+/**
+ * "mettiti il vestito da cameriera", "put on your gym clothes", "fatti la coda", "put your hair in
+ * a bun", "torna automatica": Lucina changes her look. Returns a patch, null (back to automatic)
+ * or undefined (not a request).
+ */
+function lookIntent(text) {
+  const m = text.toLowerCase();
+  if (/\b(torna|go back|switch back|skift).*\b(automatic|automatico|automatica|automatisk)\b/.test(m)) return null;
+  const hairWords = { ponytail: /\bcoda\b|ponytail|hestehale/, bun: /chignon|\bbun\b|knold/, natural: /capelli sciolti|hair down|løst hår/ };
+  if (/\b(fatti|raccogli|pettina|put your hair|wear your hair|do your hair|sæt dit hår|sæt håret)\b/.test(m)) {
+    for (const [id, re] of Object.entries(hairWords)) if (re.test(m)) return { hair: id };
+  }
+  if (!/\b(mettiti|indossa|cambia(ti)? (vestito|abito)|put on|change into|tag .* på|skift til)\b/.test(m)) return undefined;
+  const words = { gym: /palestra|gym|tuta|træning|sport/, chef: /chef|cuoc|kok/, maid: /cameriera|maid|stuepige/, casual: /casual|hverdag/, uniform: /divisa|uniform/ };
+  for (const [id, re] of Object.entries(words)) if (re.test(m)) return { outfit: id };
+  return undefined;
 }
 
 /** ~0.5 s of silence: MPEG-1 Layer III frames (32 kbps, 44.1 kHz, mono) with empty side info. */
@@ -1456,8 +1656,14 @@ async function handleChat(req, res) {
   if (/\bfail\b/.test(m)) return fail(res, 500, "internal", "Something broke (mock).");
 
   let reply;
+  let meta;
   const ids = { sessionId: `secretary_${sessionId}`, clientMessageId };
-  if (/(job|order|book|image)/.test(m)) {
+  const look = lookIntent(message);
+  if (look !== undefined) {
+    patchAvatar(look === null ? { outfit: null, hair: null, auto: true } : look, "lucina");
+    meta = { kind: "avatar_outfit", ...(look ?? {}) };
+    reply = { reply: look === null ? "Va bene, torno a cambiarmi da sola." : "Un attimo… eccomi!", action: "avatar_outfit", job: null, ...ids };
+  } else if (/(job|order|book|image)/.test(m)) {
     const id = randomUUID();
     const action = m.includes("image") ? "generate_image" : m.includes("order") ? "spreadsheet_update_task" : "cursor_task";
     jobs.set(id, {
@@ -1478,6 +1684,11 @@ async function handleChat(req, res) {
       ...ids,
       reminder: { id: randomUUID(), text: message, dueAt, timeZone: "Europe/Rome", status: "pending", source: "secretary" },
     };
+  } else if (richReply(message)) {
+    // Lucina message format v1 (mock/rich.mjs): `reply` is the plain fallback.
+    const rich = richReply(message);
+    meta = richMeta(rich);
+    reply = { ...rich, action: /calendari|dentista/i.test(message) ? "calendar_confirm" : "reply", job: null, ...ids };
   } else {
     reply = { reply: lucinaReply(message), action: "reply", job: null, ...ids };
   }
@@ -1487,6 +1698,7 @@ async function handleChat(req, res) {
     text: reply.reply,
     replyTo: userItemId,
     ...(clientMessageId ? { clientMessageId } : {}),
+    ...(meta ? { meta } : {}),
   });
   reply = { ...reply, userItemId, lucinaItemId: lucinaItem.id };
   if (reply.reminder) {
@@ -1630,6 +1842,17 @@ async function route(req, res) {
     return send(res, 201, item);
   }
 
+  // Lucina's proactive outreach: feedback taps (the real server stores them for the engine).
+  const fb = path.match(/^\/v1\/proactive\/outreach\/(po_[0-9A-HJKMNP-TV-Z]{26})\/feedback$/);
+  if (fb && method === "POST") {
+    const body = await readJson(req);
+    if (!["useful", "not_now", "stop", "opened"].includes(body.action)) {
+      return send(res, 400, { error: { code: "bad_request", message: "action: one of useful, not_now, stop, opened" } });
+    }
+    console.log(`[mock] proactive feedback ${fb[1]} ${body.action}`);
+    return send(res, 201, { feedback: { id: `fb_${Date.now()}_mock`, outreachId: fb[1], action: body.action, at: Date.now(), device: "mock", source: "app" } });
+  }
+
   if (path === "/v1/_mock/gym/bump" && method === "POST") {
     gymState.revision += 1;
     return send(res, 200, { revision: gymState.revision });
@@ -1646,10 +1869,17 @@ async function route(req, res) {
     return send(res, 200, { down: mockServerDown });
   }
 
+  // Play URLs carry their own token (on p1 they skip the gateway's auth too).
+  if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
+  if (path.startsWith("/v1/media")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
+  if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
+  if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {
     res.writeHead(502, { "Cache-Control": "no-store" });
@@ -1676,6 +1906,14 @@ async function route(req, res) {
   if (path === "/v1/chat" && method === "POST") return handleChat(req, res);
 
   if (path === "/v1/tts" && method === "POST") return handleTts(req, res);
+  if (path === "/v1/avatar/wardrobe" && method === "GET") return send(res, 200, wardrobeFile());
+  if (path === "/v1/avatar" && method === "GET") return send(res, 200, avatar);
+  if (path === "/v1/avatar" && method === "PUT") {
+    const body = await readJson(req);
+    const client = req.headers["x-secretary-client"];
+    const err = patchAvatar(body, client === "web" || client === "ios" ? client : "device");
+    return err ? fail(res, err.status, err.code, err.message) : send(res, 200, avatar);
+  }
   const assetMatch = path.match(/^\/v1\/assets\/(.+)$/);
   if (assetMatch && method === "GET") {
     let rel;
@@ -1734,6 +1972,28 @@ async function route(req, res) {
   }
 
   return fail(res, 404, "not_found", "Not found.");
+}
+
+// Tasks (docs/server-api.md, "Tasks"): proxied to a real secretary-server (its engine and
+// Todoist sync) when MOCK_TASKS_URL and MOCK_TASKS_TOKEN (a device token) are set; else 503.
+async function proxyTasks(req, res, url) {
+  const base = process.env.MOCK_TASKS_URL;
+  const token = process.env.MOCK_TASKS_TOKEN;
+  if (!base || !token) return fail(res, 503, "tasks_not_configured", "set MOCK_TASKS_URL and MOCK_TASKS_TOKEN to proxy /v1/tasks to secretary-server");
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  try {
+    const r = await fetch(`${base.replace(/\/+$/, "")}${url.pathname}${url.search}`, {
+      method: req.method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
+      body: req.method === "GET" ? undefined : Buffer.concat(chunks),
+    });
+    const text = await r.text();
+    res.writeHead(r.status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+    res.end(text);
+  } catch {
+    fail(res, 502, "tasks_unreachable", "secretary-server is not reachable");
+  }
 }
 
 const server = http.createServer((req, res) => {

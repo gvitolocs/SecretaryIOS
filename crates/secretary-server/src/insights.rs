@@ -48,11 +48,13 @@ async fn summary(
         secretary_body::insights(e.state(), now)
     })
     .await?;
+    let tasks = crate::tasks::insights(&st, tz).await;
     Ok(Json(json!({
         "generated_ms": now,
         "timezone": tz_name,
         "gym": gym,
         "body": body,
+        "tasks": tasks,
     })))
 }
 

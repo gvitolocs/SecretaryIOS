@@ -32,6 +32,13 @@ pub struct Config {
     pub folders: Vec<(String, PathBuf)>,
     /// Prepare every film's HLS output in the background (`LUCINA_MEDIA_PREPARE=0` turns it off).
     pub prepare: bool,
+    /// The folder labels that are films (the Films plugin, `scope=films`), out of the Drive.
+    pub film_folders: Vec<String>,
+}
+
+/// `LUCINA_MEDIA_FILM_FOLDERS` when unset.
+pub fn default_film_folders() -> Vec<String> {
+    vec!["Film".into(), "Dansk film".into()]
 }
 
 impl Config {
@@ -89,6 +96,14 @@ impl Config {
             folders,
             prepare: var("LUCINA_MEDIA_PREPARE")
                 .is_none_or(|v| !matches!(v.as_str(), "0" | "false" | "off")),
+            film_folders: var("LUCINA_MEDIA_FILM_FOLDERS")
+                .map(|v| {
+                    v.split(';')
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                        .collect()
+                })
+                .unwrap_or_else(default_film_folders),
             store_dir: var("LUCINA_MEDIA_STORE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("mnt/mybook/lucina-media")),
@@ -132,6 +147,7 @@ impl Config {
             play_secret: None,
             folders: Vec::new(),
             prepare: false,
+            film_folders: default_film_folders(),
         }
     }
 

@@ -1,0 +1,49 @@
+[package]
+name = "secretary-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina MCP: remote MCP server (Streamable HTTP + OAuth 2.1) in front of secretary-server"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "secretary-mcp"
+path = "src/main.rs"
+
+[dependencies]
+secretary-core = { path = "../secretary-core" }
+# Official Rust MCP SDK, pinned (3.5.1 was published 2026-10-05).
+rmcp = { version = "=3.5.1", default-features = false, features = [
+    "server",
+    "schemars",
+    "transport-streamable-http-server",
+] }
+# Pinned to a release at least two weeks old (1.2.2: 2026-07-27).
+schemars = "=1.2.2"
+axum = { version = "0.8", features = ["form"] }
+tokio = { workspace = true }
+tokio-util = "0.7"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+sha2 = { workspace = true }
+subtle = "2"
+base64 = "0.22"
+getrandom = "0.3"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# Interop tests with the official rmcp client (test builds only).
+rmcp = { version = "=3.5.1", default-features = false, features = [
+    "client",
+    "transport-streamable-http-client-reqwest",
+] }

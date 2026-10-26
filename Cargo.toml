@@ -1,12 +1,25 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ink-library",
+    "crates/ink-sync",
+    "crates/ink-cli",
+    "crates/ink-obsidian",
+    "crates/ink-kindle-hal",
+    "crates/ink-render",
+    "crates/ink-epub",
+    "apps/desktop-preview",
     "crates/secretary-core",
     "crates/secretary-server",
     "crates/secretary-gym",
     "crates/secretary-body",
     "crates/secretary-ffi",
+    "crates/secretary-mcp",
+    "crates/secretary-calendar",
+    "crates/secretary-tasks",
     "crates/secretary-player",
+    "crates/secretary-player-wasm",
+    "verification/models",
     "crates/secretary-media-stream",
     "crates/lucina-media",
     "crates/secretary-image",
@@ -40,4 +53,14 @@ strip = true
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]
+opt-level = 3
+
+# The model checkers explore millions of states: optimise them in test builds too.
+[profile.dev.package.verification-models]
+opt-level = 3
+[profile.dev.package.stateright]
+opt-level = 3
+[profile.dev.package.dashmap]
+opt-level = 3
+[profile.dev.package.ahash]
 opt-level = 3

@@ -22,8 +22,13 @@ remove the spool copy, so it is safe to interrupt.
 
 ## API (all under `/v1/media`)
 
-- `GET items?kind=&from=&to=&q=&near=lat,lon,km&album=&favorite=&trashed=&cursor=&limit=` gives newest first
+- `GET items?scope=&kind=&from=&to=&q=&near=lat,lon,km&album=&favorite=&trashed=&cursor=&limit=` gives newest first
   (`taken_at`, else `added_at`).
+  - `scope` splits the library into the owner's three places (2026-10-26): `gallery` is only what the phones backed
+    up (`source` phone-…: the Gallery); `films` is the film folders (`LUCINA_MEDIA_FILM_FOLDERS`, default
+    `Film;Dansk film`: the Films plugin); `drive` is everything else (old Nextcloud files, computer photo backups,
+    audio, other folders, shared files, voice memos: the Drive). Without it, everything. `GET albums?scope=` lists
+    only the albums with items there, counted there.
   - `q` searches title, caption, place, country (also in Danish/Italian), month words ("July 2025"), camera and album titles.
   - `album` takes an id or a title.
 - `GET|PATCH|DELETE items/{id}`, `POST items/{id}/restore`.
@@ -46,7 +51,12 @@ The upload protocol's decisions (chunk offsets, finish once, dedupe or version) 
 ## Clients
 
 - **iPhone** (`ios/Secretary/Features/Gallery`):
-  - The Gallery (a plugin: the Plugins tab's card opens `GalleryScreen` via `app.showGallery`; until that tab exists, a button on the chat) shows a timeline by month, search, albums, and a viewer that hands videos and audio to the media player.
+  - The Gallery (a plugin card, `GalleryScreen` via `app.showGallery`, `scope=gallery`) shows the phones' photos and
+    videos: a timeline by month, search, albums, and a viewer that zooms out of its tile and back. Phone photos come
+    from PhotoKit; server renditions are cached on disk and a cut-off preview resumes with `Range`.
+  - The Drive (`DriveScreen`, `app.showDrive`, `scope=drive`) lists the archive as folders and files; photos and
+    videos open in the same viewer, audio in the player, other files in Quick Look. Films have their own plugin
+    (the player session's, `scope=films`).
   - Photo backup (`PhotoBackup.swift`) reads PhotoKit newest first.
     - It sends originals (edited renderings as new versions, both halves of Live Photos) and a JPEG preview, because the server cannot decode HEIC.
     - Transfers go through a background URLSession. A BGProcessingTask and the app-refresh task continue the work.

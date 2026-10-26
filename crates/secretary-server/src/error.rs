@@ -168,7 +168,7 @@ fn from_status(status: StatusCode, detail: String) -> ApiError {
         // axum: JSON syntax error (400) vs. wrong shape (422)
         StatusCode::BAD_REQUEST => ApiError::new(status, "invalid_json", detail),
         StatusCode::PAYLOAD_TOO_LARGE => {
-            ApiError::new(status, "payload_too_large", "request body exceeds 256 KiB")
+            ApiError::new(status, "payload_too_large", "request body is too large")
         }
         StatusCode::UNSUPPORTED_MEDIA_TYPE => ApiError::new(
             status,

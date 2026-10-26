@@ -1,11 +1,37 @@
 import { createEffect, createSignal, on, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
+import { openWardrobe } from "../state/wardrobe";
+import { HangerIcon } from "./Icons";
+import { NotificationSettings } from "./NotificationSettings";
+import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
+import {
+  QUALITIES,
+  setStageQuality,
+  setThemeSetting,
+  stageQuality,
+  THEMES,
+  themeSetting,
+  type StageQualitySetting,
+  type ThemeSetting,
+} from "../state/appearance";
+
+const THEME_LABELS: Record<ThemeSetting, MessageKey> = {
+  system: "shell.themeSystem",
+  dark: "shell.themeDark",
+  light: "shell.themeLight",
+};
+const QUALITY_LABELS: Record<StageQualitySetting, MessageKey> = {
+  auto: "shell.qualityAuto",
+  low: "shell.qualityLow",
+  medium: "shell.qualityMedium",
+  high: "shell.qualityHigh",
+};
 
 export const MIN_PASSWORD_LENGTH = 8;
 
-/** Account panel opened from the header: change the single user's password. */
-export function AccountDialog(props: { open: boolean; onClose: () => void }) {
+/** Account panel opened from the header: language, and the single user's password. */
+export function AccountDialog(props: { open: boolean; onClose: () => void; section?: "notifications" | null }) {
   const [current, setCurrent] = createSignal("");
   const [next, setNext] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
@@ -25,7 +51,15 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
         setConfirm("");
         setError(null);
         setDone(false);
-        queueMicrotask(() => firstInput?.focus());
+        queueMicrotask(() => {
+          if (props.section === "notifications") {
+            const el = document.getElementById("notif-settings-title");
+            el?.scrollIntoView?.({ block: "start" });
+            (el?.parentElement?.querySelector("button, input") as HTMLElement | null)?.focus();
+          } else {
+            firstInput?.focus();
+          }
+        });
       },
     ),
   );
@@ -33,12 +67,12 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     if (saving()) return;
-    if (!current()) return setError("Enter your current password.");
+    if (!current()) return setError(t("shell.errEnterCurrent"));
     if (next().length < MIN_PASSWORD_LENGTH) {
-      return setError(`The new password needs at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return setError(t("shell.errTooShort", { count: MIN_PASSWORD_LENGTH }));
     }
-    if (next() !== confirm()) return setError("The new passwords don't match.");
-    if (next() === current()) return setError("Choose a password different from the current one.");
+    if (next() !== confirm()) return setError(t("shell.errMismatch"));
+    if (next() === current()) return setError(t("shell.errSame"));
     setError(null);
     setSaving(true);
     try {
@@ -53,9 +87,9 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
       // (the caller stays signed in) and repeated failures with 429 account_locked.
       setError(
         apiErr.code === "invalid_credentials"
-          ? "Your current password is incorrect."
+          ? t("shell.errWrongCurrent")
           : apiErr.status === 429
-            ? "Too many attempts. Please wait and try again."
+            ? t("shell.errTooMany")
             : apiErr.message,
       );
     } finally {
@@ -79,16 +113,95 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
         >
           <header class="picker-head">
             <h2 id="account-title" class="section-title">
-              Account
+              {t("shell.account")}
             </h2>
-            <button type="button" class="icon-btn" aria-label="Close" onClick={() => props.onClose()}>
+            <button type="button" class="icon-btn" aria-label={t("common.close")} onClick={() => props.onClose()}>
               ×
             </button>
           </header>
-          <form class="settings-form" onSubmit={submit} novalidate aria-label="Change password">
-            <h3 class="field-label">Change password</h3>
+          <div class="settings-form">
+            <label class="field-label" for="account-language">
+              {t("shell.language")}
+            </label>
+            <select
+              id="account-language"
+              class="text-input"
+              value={localeOverride() ?? "auto"}
+              onChange={(e) => {
+                const v = e.currentTarget.value;
+                setLocale((LOCALES as readonly string[]).includes(v) ? (v as Locale) : null);
+              }}
+            >
+              <option value="auto">{t("shell.languageAuto", { name: LOCALE_NAMES[detectedLocale()] })}</option>
+              {LOCALES.map((l) => (
+                <option value={l} lang={l}>
+                  {LOCALE_NAMES[l]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div class="settings-form appearance">
+            <h3 class="field-label">{t("shell.appearance")}</h3>
+            <span class="field-label appearance-label" id="appearance-theme">
+              {t("shell.theme")}
+            </span>
+            <div class="segmented segmented--wide" role="group" aria-labelledby="appearance-theme">
+              {THEMES.map((v) => (
+                <button
+                  type="button"
+                  class="segmented-btn"
+                  classList={{ "segmented-btn--active": themeSetting() === v }}
+                  aria-pressed={themeSetting() === v ? "true" : "false"}
+                  onClick={() => setThemeSetting(v)}
+                >
+                  {t(THEME_LABELS[v])}
+                </button>
+              ))}
+            </div>
+            <span class="field-label appearance-label" id="appearance-quality">
+              {t("shell.stageQuality")}
+            </span>
+            <div class="segmented segmented--wide" role="group" aria-labelledby="appearance-quality" aria-describedby="appearance-quality-hint">
+              {QUALITIES.map((v) => (
+                <button
+                  type="button"
+                  class="segmented-btn"
+                  classList={{ "segmented-btn--active": stageQuality() === v }}
+                  aria-pressed={stageQuality() === v ? "true" : "false"}
+                  onClick={() => setStageQuality(v)}
+                >
+                  {t(QUALITY_LABELS[v])}
+                </button>
+              ))}
+            </div>
+            <p id="appearance-quality-hint" class="muted small">
+              {t("shell.stageQualityHint")}
+            </p>
+            <button
+              type="button"
+              class="settings-link"
+              onClick={() => {
+                props.onClose();
+                openWardrobe();
+              }}
+            >
+              <span class="settings-link-icon" aria-hidden="true">
+                <HangerIcon />
+              </span>
+              <span class="settings-link-text">
+                <span class="settings-link-title">{t("wardrobe.open")}</span>
+                <span class="muted small">{t("wardrobe.openHint")}</span>
+              </span>
+              <span class="settings-link-chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
+          </div>
+          <NotificationSettings />
+          <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>
+            <h3 class="field-label">{t("shell.changePassword")}</h3>
             <label class="field-label" for="pw-current">
-              Current password
+              {t("shell.currentPassword")}
             </label>
             <input
               ref={firstInput}
@@ -101,7 +214,7 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
               disabled={saving()}
             />
             <label class="field-label" for="pw-new">
-              New password
+              {t("shell.newPassword")}
             </label>
             <input
               id="pw-new"
@@ -115,10 +228,10 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
               disabled={saving()}
             />
             <p id="pw-hint" class="muted small">
-              At least {MIN_PASSWORD_LENGTH} characters.
+              {t("shell.passwordHint", { count: MIN_PASSWORD_LENGTH })}
             </p>
             <label class="field-label" for="pw-confirm">
-              Confirm new password
+              {t("shell.confirmPassword")}
             </label>
             <input
               id="pw-confirm"
@@ -131,7 +244,7 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
             />
             <label class="check-row">
               <input type="checkbox" checked={show()} onChange={(e) => setShow(e.currentTarget.checked)} />
-              Show passwords
+              {t("shell.showPasswords")}
             </label>
             <Show when={error()}>
               {(msg) => (
@@ -142,11 +255,11 @@ export function AccountDialog(props: { open: boolean; onClose: () => void }) {
             </Show>
             <Show when={done()}>
               <p class="muted" role="status">
-                Password changed.
+                {t("shell.passwordChanged")}
               </p>
             </Show>
             <button type="submit" class="btn btn--primary" disabled={saving()}>
-              {saving() ? "Saving…" : "Change password"}
+              {saving() ? t("common.saving") : t("shell.changePassword")}
             </button>
           </form>
         </div>

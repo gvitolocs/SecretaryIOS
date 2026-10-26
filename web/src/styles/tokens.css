@@ -1,0 +1,127 @@
+/*
+ * Secretary web tokens: the shared Lucina look (design/tokens.json, the iOS Weight, Settings
+ * and Chat tabs), so the web and the apps read as one product.
+ *
+ * The values come from lucina-tokens.css (generated, --lu-*). The older names below
+ * (--bg, --surface, --accent, ...) are kept as aliases so every existing rule follows the
+ * shared palette; new rules should use --lu-* directly. Light mode and <html data-theme>
+ * are handled in lucina-tokens.css, so nothing here is repeated per theme.
+ */
+
+:root {
+  /* ---- Surfaces ---- */
+  --void: var(--lu-bg);
+  --bg: var(--lu-bg);
+  --bg-elev: var(--lu-card);
+  --surface: var(--lu-card);
+  --surface-solid: var(--lu-card);
+  --surface-2: var(--lu-field);
+  --surface-3: var(--lu-card-raised);
+  --glass: var(--lu-card);
+  --glass-strong: var(--lu-tab-bar-bg);
+  --glass-hi: transparent;
+  --text: var(--lu-text);
+  --text-muted: var(--lu-text-secondary);
+  --text-dim: var(--lu-text-tertiary);
+  --border: color-mix(in srgb, var(--lu-separator) 55%, transparent);
+  --border-strong: var(--lu-separator);
+  --hairline: transparent;
+
+  /* ---- The former neon palette, folded onto the accent and the semantic colours ---- */
+  --cyan: var(--lu-accent);
+  --violet: var(--lu-accent);
+  --magenta: var(--lu-accent);
+  --lime: var(--lu-positive);
+  --amber: var(--lu-warning);
+  --neon-red: var(--lu-negative);
+  --neon-teal: var(--lu-info);
+
+  --accent: var(--lu-accent);
+  --accent-strong: var(--lu-accent);
+  /* Text on an --accent fill: dark on periwinkle (7:1), light on indigo in light mode. */
+  --accent-contrast: var(--lu-bg);
+  --accent-soft: var(--lu-accent-soft);
+  --accent-2: var(--lu-accent);
+  --accent-3: var(--lu-accent);
+
+  --user-bubble: linear-gradient(var(--lu-accent-fill), var(--lu-accent-fill));
+  --user-bubble-text: var(--lu-on-accent);
+
+  --ok: var(--lu-positive);
+  --warn: var(--lu-warning);
+  --bad: var(--lu-negative);
+  --danger-text: var(--lu-negative);
+  --danger-bg: color-mix(in srgb, var(--lu-negative) 14%, transparent);
+  --notice-bg: color-mix(in srgb, var(--lu-warning) 14%, transparent);
+  --notice-text: var(--lu-warning);
+
+  /* Gradients are flat now (one accent); kept as gradients so background-image still works. */
+  --grad-holo: linear-gradient(var(--lu-accent), var(--lu-accent));
+  --grad-holo-soft: linear-gradient(var(--lu-accent-soft), var(--lu-accent-soft));
+  --grad-primary: linear-gradient(var(--lu-accent-fill), var(--lu-accent-fill));
+  --grad-border: linear-gradient(transparent, transparent);
+
+  /* ---- Depth: flat cards, a shadow only on what floats ---- */
+  --glow-accent: 0 0 0 1px color-mix(in srgb, var(--lu-accent) 45%, transparent);
+  --glow-violet: none;
+  --glow-text: none;
+  --shadow: none;
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.35);
+  --blur: 20px;
+  --blur-strong: 24px;
+  --scrim: var(--lu-scrim);
+  --grain-opacity: 0;
+  --aurora-a: transparent;
+  --aurora-b: transparent;
+  --aurora-c: transparent;
+
+  /* ---- Shape + space ---- */
+  --gutter: var(--lu-space-gutter);
+  --tap: var(--lu-space-tap);
+  --radius: var(--lu-radius-card);
+  --radius-sm: var(--lu-radius-tile);
+  --radius-xs: var(--lu-radius-field);
+  --radius-lg: var(--lu-radius-sheet);
+  --radius-xl: var(--lu-radius-sheet);
+  --space-1: var(--lu-space-xs);
+  --space-2: var(--lu-space-sm);
+  --space-3: var(--lu-space-md);
+  --space-4: var(--lu-space-lg);
+  --space-5: var(--lu-space-xl);
+  --space-6: var(--lu-space-xxl);
+  --space-7: var(--lu-space-xxxl);
+  --rail-w: 104px;
+  --dock-h: var(--lu-tab-bar-height);
+
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --pad-left: max(var(--gutter), var(--safe-left));
+  --pad-right: max(var(--gutter), var(--safe-right));
+
+  /* ---- Type: the system font and the iOS text styles ---- */
+  --font: var(--lu-font);
+  --font-display: var(--lu-font);
+  /* Small-capitals labels used the mono face; they take the system font like iOS section headers.
+     Code keeps --lu-font-mono (lucina-look.css). */
+  --mono: var(--lu-font);
+  --fs-2xs: var(--lu-type-caption-2);
+  --fs-xs: var(--lu-type-caption);
+  --fs-sm: var(--lu-type-subheadline);
+  --fs-md: var(--lu-type-body);
+  --fs-lg: var(--lu-type-title-3);
+  --fs-xl: var(--lu-type-title-2);
+  --fs-2xl: var(--lu-type-title);
+  --fs-3xl: var(--lu-type-large-title);
+  --tracking-hud: 0.06em;
+
+  /* ---- Motion ---- */
+  --dur-1: var(--lu-motion-fast);
+  --dur-2: var(--lu-motion-base);
+  --dur-3: var(--lu-motion-slow);
+  --dur-4: 640ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}

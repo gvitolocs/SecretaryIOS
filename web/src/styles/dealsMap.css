@@ -1,0 +1,421 @@
+/* Deals map (/shopping/map). Reuses the .bring tokens (styles/shopping.css),
+   which the view's root shares; the map and panels follow the app theme
+   through those variables. */
+
+.deals {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+.deals-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 10px 0 var(--b-margin);
+  flex: none;
+}
+
+.deals-title {
+  flex: 1;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deals-filter-chips,
+.deals-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px var(--b-margin);
+  flex: none;
+}
+
+.deals-chipbtn {
+  border: 0;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 16px;
+  background: var(--b-section);
+  color: var(--b-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.deals-chipbtn[aria-pressed="true"] {
+  background: var(--b-current);
+  color: var(--accent-contrast, #031019);
+}
+
+.deals-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr);
+  grid-template-areas:
+    "map side"
+    "panel panel";
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 0 var(--b-margin) calc(var(--b-peek) + 8px + var(--safe-bottom, 0px));
+  overflow-y: auto;
+}
+
+.deals-map {
+  grid-area: map;
+  position: relative;
+  min-height: 320px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.deals-map-host {
+  position: absolute;
+  inset: 0;
+}
+
+.deals-map-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.deals-side {
+  grid-area: side;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.deals-stores {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deals-store {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--b-field);
+  color: var(--b-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.deals-store--on {
+  border-color: var(--b-current);
+}
+
+.deals-store-letter {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-weight: 700;
+  color: var(--accent-contrast, #031019);
+  background: hsl(var(--chip-h, 200) 70% 60%);
+}
+
+.deals-store-letter--lg {
+  width: 40px;
+  height: 40px;
+}
+
+.deals-store-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.deals-store-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deals-store-sub {
+  color: var(--b-hint);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deals-store-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.deals-store-badge {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-contrast, #031019);
+}
+
+.deals-store-badge--list {
+  background: var(--b-current);
+}
+
+.deals-store-badge--cl {
+  background: var(--b-teal);
+}
+
+/* Map chips (AdvancedMarkerElement content). */
+.deals-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 0;
+  border-radius: 999px;
+  background: hsl(var(--chip-h, 200) 72% 60%);
+  color: var(--accent-contrast, #031019);
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.35);
+}
+
+.deals-chip-letter {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  background: rgb(255 255 255 / 0.85);
+  border-radius: 50%;
+}
+
+.deals-chip-badge {
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  background: var(--b-red);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.deals-home {
+  font-size: 22px;
+  filter: drop-shadow(0 2px 4px rgb(0 0 0 / 0.4));
+}
+
+/* Selected store panel. */
+.deals-panel {
+  grid-area: panel;
+  border-radius: 16px;
+  background: var(--b-sheet);
+  border: 1px solid var(--border);
+  padding: 12px 16px calc(16px + var(--safe-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.deals-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.deals-panel-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.deals-panel-title h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deals-panel-title p {
+  margin: 2px 0 0;
+  color: var(--b-hint);
+  font-size: 13px;
+}
+
+.deals-panel-close {
+  border: 0;
+  background: none;
+  color: var(--b-text);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.deals-directions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 16px;
+  background: var(--b-section);
+  color: var(--b-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.deals-directions:hover {
+  background: var(--b-current);
+  color: var(--accent-contrast, #031019);
+}
+
+.deals-panel-sec {
+  margin: 8px 0 2px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--b-hint);
+}
+
+.deals-list,
+.deals-stores .deals-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deals-matched {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 0 2px;
+}
+
+.deals-matched-item::before {
+  content: "🧺";
+  font-size: 13px;
+}
+
+.deals-deal {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: var(--b-field);
+  border: 1px solid var(--hairline, rgb(255 255 255 / 0.06));
+}
+
+.deals-deal--flyer {
+  border-left: 3px solid var(--b-slate);
+}
+
+.deals-deal-name {
+  font-weight: 700;
+}
+
+.deals-deal-price {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 15px;
+}
+
+.deals-deal-was {
+  color: var(--b-hint);
+  font-weight: 400;
+}
+
+.deals-deal-badge {
+  color: var(--b-red-600);
+}
+
+.deals-deal-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--b-hint);
+  font-size: 12px;
+}
+
+.deals-deal-src {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+/* Phone width: map on top, list under it, panel as a bottom sheet. */
+@container (max-width: 640px) {
+  .deals-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "map"
+      "side"
+      "panel";
+    gap: 10px;
+  }
+
+  .deals-map {
+    min-height: 44vh;
+    flex: none;
+  }
+
+  .deals-panel {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6;
+    max-width: none;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 30px rgb(0 0 0 / 0.45);
+    max-height: 75vh;
+    overflow-y: auto;
+  }
+}

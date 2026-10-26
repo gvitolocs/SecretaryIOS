@@ -211,8 +211,9 @@ fn first_album_titles(
 
 async fn list_items(
     State(lib): State<Library>,
-    Query(q): Query<ListQuery>,
+    Query(mut q): Query<ListQuery>,
 ) -> ApiResult<Json<Value>> {
+    q.film_folders = lib.cfg.film_folders.clone();
     let (page, titles, albums) = lib
         .db
         .call(move |c| {
@@ -584,7 +585,7 @@ async fn summary(State(lib): State<Library>) -> ApiResult<Json<Value>> {
 
 #[derive(Deserialize)]
 struct AlbumsQuery {
-    /// `gallery` or `drive`: only albums with items there, counted there.
+    /// `gallery`, `films` or `drive`: only albums with items there, counted there.
     scope: Option<String>,
 }
 
@@ -594,7 +595,10 @@ async fn list_albums(
 ) -> ApiResult<Json<Value>> {
     let albums = lib
         .db
-        .call(move |c| db::list_albums_in(c, q.scope.as_deref()))
+        .call({
+            let films = lib.cfg.film_folders.clone();
+            move |c| db::list_albums_in(c, q.scope.as_deref(), &films)
+        })
         .await?;
     Ok(Json(json!({ "albums": albums })))
 }

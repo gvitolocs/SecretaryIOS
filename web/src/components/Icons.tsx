@@ -35,6 +35,41 @@ export function ScaleIcon() {
   );
 }
 
+export function NoteIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6.5 3h8l4 4v11.5A2.5 2.5 0 0 1 16 21H6.5A2.5 2.5 0 0 1 4 18.5v-13A2.5 2.5 0 0 1 6.5 3z" />
+      <path d="M14.5 3v4h4M8 11.5h8M8 15h8M8 18h5" />
+    </svg>
+  );
+}
+
+export function SearchIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="6" />
+      <path d="m15 15 5 5" />
+    </svg>
+  );
+}
+
+export function TrashIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 6.5h15M9.5 6.5V4.5h5v2M6.5 6.5l1 13a1.5 1.5 0 0 0 1.5 1.5h6a1.5 1.5 0 0 0 1.5-1.5l1-13" />
+      <path d="M10 10.5v6M14 10.5v6" />
+    </svg>
+  );
+}
+
+export function BackIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M15 5l-7 7 7 7" />
+    </svg>
+  );
+}
+
 export function UserIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -185,6 +220,337 @@ export function AvatarIcon() {
       <rect x="3.5" y="4" width="17" height="16" rx="3" />
       <circle cx="12" cy="10.5" r="2.8" />
       <path d="M7.5 20c.8-2.6 2.4-3.9 4.5-3.9s3.7 1.3 4.5 3.9" />
+    </svg>
+  );
+}
+
+export function CloseIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+    </svg>
+  );
+}
+
+/** The wardrobe: a coat hanger. */
+export function HangerIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 6.5a2 2 0 1 1 2.8 1.84c-.5.22-.8.7-.8 1.24V10.5" />
+      <path d="M12 10.5 3.6 16.2c-.9.6-.5 1.8.5 1.8h15.8c1 0 1.4-1.2.5-1.8z" />
+    </svg>
+  );
+}
+
+export function PinIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 4h6l-1 5 3 3v1.5H7V12l3-3z" />
+      <path d="M12 13.5V20" />
+    </svg>
+  );
+}
+
+export function CheckIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m5 12.5 4.5 4.5L19 7.5" />
+    </svg>
+  );
+}
+
+/** Wardrobe categories. */
+export function GridIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="6.5" height="6.5" rx="1.6" />
+      <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6" />
+      <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6" />
+      <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6" />
+    </svg>
+  );
+}
+
+export function DressIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9.5 3.5 9 7l-2 3 1.5 1.5L5 20.5h14l-3.5-9L17 10l-2-3-.5-3.5" />
+      <path d="M9 7c1.8 1.2 4.2 1.2 6 0" />
+    </svg>
+  );
+}
+
+export function ShirtIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 4 4 6.5l1.8 4L8 9.6V20h8V9.6l2.2.9 1.8-4L15 4c-.6 1.4-1.7 2.1-3 2.1S9.6 5.4 9 4z" />
+    </svg>
+  );
+}
+
+export function ChefHatIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 14.5c-2.2-.4-3.5-2-3.5-3.9A3.9 3.9 0 0 1 8 6.8a4.4 4.4 0 0 1 8 0 3.9 3.9 0 0 1 4.5 3.8c0 1.9-1.3 3.5-3.5 3.9V19H7z" />
+      <path d="M7 16.5h10" />
+    </svg>
+  );
+}
+
+export function BowIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10.5 12 4 8v8zM13.5 12 20 8v8z" />
+      <rect x="10.5" y="10.3" width="3" height="3.4" rx="1" />
+    </svg>
+  );
+}
+
+export function SparkleIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5c.6 4.2 2.3 5.9 6.5 6.5-4.2.6-5.9 2.3-6.5 6.5-.6-4.2-2.3-5.9-6.5-6.5 4.2-.6 5.9-2.3 6.5-6.5z" />
+      <path d="M18.5 15.5c.3 1.6.9 2.2 2.5 2.5-1.6.3-2.2.9-2.5 2.5-.3-1.6-.9-2.2-2.5-2.5 1.6-.3 2.2-.9 2.5-2.5z" />
+    </svg>
+  );
+}
+
+/** Hairstyles: a head with a flowing ponytail. */
+export function HairIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 13.5c-1.3-.7-2-2.2-2-4A6 6 0 0 1 12 3.5a6 6 0 0 1 6 6c0 1.6-.6 3-1.7 3.8" />
+      <path d="M8.5 9.5c1.6.2 4.2-.6 5.6-2.4.6 1.2 1.6 2 2.9 2.4" />
+      <path d="M9 13.5c.6 1.6 1.7 2.5 3 2.5s2.4-.9 3-2.5" />
+      <path d="M17.5 11.5c1.8 1.4 2.4 4 1.6 6.3-.6 1.7-2 2.7-3.6 2.7" />
+    </svg>
+  );
+}
+
+export function SparkIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5c.6 3.9 2.6 5.9 6.5 6.5-3.9.6-5.9 2.6-6.5 6.5-.6-3.9-2.6-5.9-6.5-6.5 3.9-.6 5.9-2.6 6.5-6.5z" />
+      <path d="M18.5 15.5c.2 1.5 1 2.3 2.5 2.5-1.5.2-2.3 1-2.5 2.5-.2-1.5-1-2.3-2.5-2.5 1.5-.2 2.3-1 2.5-2.5z" />
+    </svg>
+  );
+}
+
+/** Hair colour: a drop. */
+export function DropIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5c3 3.6 5.5 6.9 5.5 10a5.5 5.5 0 0 1-11 0c0-3.1 2.5-6.4 5.5-10z" />
+      <path d="M9.3 14.2a2.8 2.8 0 0 0 2.4 2.6" />
+    </svg>
+  );
+}
+
+export function ClockIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </svg>
+  );
+}
+
+export function CalendarIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
+      <path d="M3.5 10h17M8 3v4M16 3v4" />
+    </svg>
+  );
+}
+
+export function ShieldCheckIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9V6z" />
+      <path d="m9 12 2 2 4-4" />
+    </svg>
+  );
+}
+
+export function PulseIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 12h4l2-5 4 10 2-5h6" />
+    </svg>
+  );
+}
+
+export function GearIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" />
+    </svg>
+  );
+}
+
+// Links tab.
+
+export function LinkIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2" />
+      <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2" />
+    </svg>
+  );
+}
+
+
+export function MailIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.5" />
+      <path d="m4.5 7 7.5 6 7.5-6" />
+    </svg>
+  );
+}
+
+export function DriveIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 4h6l6 10.5-3 5.5H6l-3-5.5z" />
+      <path d="M9 4l6 10.5H3M15 4 9 14.5l-3 5.5" />
+    </svg>
+  );
+}
+
+
+export function PlugIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9 3.5v4M15 3.5v4M7 7.5h10v3a5 5 0 0 1-10 0z" />
+      <path d="M12 15.5v5" />
+    </svg>
+  );
+}
+
+// ---- Tasks ----
+
+export function CheckCircleIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="m8.5 12.2 2.4 2.4 4.6-5" />
+    </svg>
+  );
+}
+
+export function InboxIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 13.5 6.3 5.6A1.5 1.5 0 0 1 7.7 4.5h8.6a1.5 1.5 0 0 1 1.4 1.1L20 13.5v4A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z" />
+      <path d="M4 13.5h4.5l1.2 2h4.6l1.2-2H20" />
+    </svg>
+  );
+}
+
+export function TodayIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="15" rx="2.5" />
+      <path d="M4 9.5h16M8.5 3v4M15.5 3v4" />
+      <path d="M10 13.2h2.2v4.3" />
+    </svg>
+  );
+}
+
+export function UpcomingIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="15" rx="2.5" />
+      <path d="M4 9.5h16M8.5 3v4M15.5 3v4M8 13h2M12 13h2M16 13h0M8 16.5h2M12 16.5h2" />
+    </svg>
+  );
+}
+
+export function FiltersIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="7" height="7" rx="1.8" />
+      <rect x="13" y="4" width="7" height="7" rx="1.8" />
+      <rect x="4" y="13" width="7" height="7" rx="1.8" />
+      <path d="M13 16.5h7M16.5 13v7" />
+    </svg>
+  );
+}
+
+export function TagIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 12.6V5a1.5 1.5 0 0 1 1.5-1.5h7.6l8 8a1.5 1.5 0 0 1 0 2.1l-7.1 7.1a1.5 1.5 0 0 1-2.1 0z" />
+      <circle cx="8" cy="8" r="1.3" />
+    </svg>
+  );
+}
+
+export function FlagIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5.5 21V4.5M5.5 4.5h11l-2.2 4 2.2 4h-11" />
+    </svg>
+  );
+}
+
+export function RepeatIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M17 3.5 20 6.5l-3 3M4 11.5V10a3.5 3.5 0 0 1 3.5-3.5H20M7 20.5 4 17.5l3-3M20 12.5V14a3.5 3.5 0 0 1-3.5 3.5H4" />
+    </svg>
+  );
+}
+
+export function HashIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M9.5 4 7.5 20M16.5 4l-2 16M5 9h15M4 15h15" />
+    </svg>
+  );
+}
+
+export function MenuIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  );
+}
+
+export function SubtaskIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 4v10.5A2.5 2.5 0 0 0 8.5 17H18M15 14l3 3-3 3" />
+    </svg>
+  );
+}
+
+export function EditIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 19.5 5.3 15.8 15.6 5.5a2 2 0 0 1 2.9 0l0 0a2 2 0 0 1 0 2.9L8.2 18.7z" />
+      <path d="M13.8 7.3l2.9 2.9" />
+    </svg>
+  );
+}
+
+export function BookIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5v16M12 5C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1z" />
+    </svg>
+  );
+}
+
+export function FilmIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="14" rx="2.5" />
+      <path d="M10 9.2v5.6l4.6-2.8z" />
     </svg>
   );
 }

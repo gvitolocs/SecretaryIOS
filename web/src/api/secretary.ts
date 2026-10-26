@@ -14,12 +14,21 @@ export interface JobRef {
 }
 
 export interface ChatResponse {
+  /** Private OTP reply: keep only in RAM, never speak or cache. */
+  sensitive?: boolean;
+  expiresAt?: number;
   reply: string;
   action?: string | null;
   job: JobRef | null;
   /** Timeline ids of the recorded user message and Lucina's reply (newer servers). */
   userItemId?: string | number | null;
   lucinaItemId?: string | number | null;
+  /** Lucina message format v1 (docs/lucina-message-format.md); `reply` is then the plain fallback. */
+  format?: "v1";
+  lang?: string;
+  bubbles?: unknown;
+  blocks?: unknown;
+  actions?: unknown;
 }
 
 export interface JobInfo {
@@ -42,7 +51,7 @@ export interface HealthInfo {
 /** Lucina can take up to 120 s; leave headroom for the server's own timeout. */
 export const CHAT_TIMEOUT_MS = 130_000;
 /** Server limit for a chat message (docs/server-api.md). */
-export const CHAT_MAX_CHARS = 4000;
+export const CHAT_MAX_CHARS = 12000;
 /** Page size for GET /v1/timeline. */
 export const TIMELINE_PAGE = 50;
 

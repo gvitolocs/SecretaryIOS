@@ -1,0 +1,16 @@
+[package]
+name = "catalog-check"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Validates assets/catalog/catalog.v1.json and (re)generates the localised catalog files"
+
+# Standalone on purpose: not a member of the repo workspace.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-normalization = "0.1"
+unicode-segmentation = "1"

@@ -15,10 +15,10 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::models::{
-    Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CreateList, CreateReminder,
-    CreatedReminder, Envelope, Health, Job, ListState, OpsBatch, OpsResult, ReminderList,
-    ReminderQuery, ReminderScope, ShoppingItem, ShoppingList, ShoppingListData, ShoppingListsData,
-    ShoppingOp, TimelinePage, TimelineQuery, UpdateList,
+    Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
+    CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
+    OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
+    ShoppingListData, ShoppingListsData, ShoppingOp, TimelinePage, TimelineQuery, UpdateList,
 };
 use crate::validate;
 
@@ -95,6 +95,37 @@ impl Call {
     /// `GET /health`.
     pub fn health() -> Self {
         Self::new(Method::GET, &["health"])
+    }
+
+    /// `GET /hermes`: the Hermes desk settings.
+    pub fn hermes() -> Self {
+        Self::new(Method::GET, &["hermes"])
+    }
+
+    /// `PUT /hermes`.
+    pub fn hermes_update(body: Value) -> Result<Self> {
+        Ok(Self::new(Method::PUT, &["hermes"]).with_body(body))
+    }
+
+    /// `GET /game/state`: Lucina's Pokémon run (map, party, badges, objective, notes).
+    pub fn game_state() -> Self {
+        Self::new(Method::GET, &["game", "state"])
+    }
+
+    /// `GET /game/screenshot`: the current screen as PNG (send with [`LucinaClient::bytes`]).
+    pub fn game_screenshot() -> Self {
+        Self::new(Method::GET, &["game", "screenshot"])
+    }
+
+    /// `POST /game/control`: start (`true`) or pause the run.
+    pub fn game_control(running: bool) -> Self {
+        let reason = if running {
+            "Started by the owner from the app"
+        } else {
+            "Paused by the owner from the app"
+        };
+        Self::new(Method::POST, &["game", "control"])
+            .with_body(serde_json::json!({"running": running, "reason": reason}))
     }
 
     /// `POST /chat`.
@@ -252,13 +283,7 @@ impl Call {
         }
         let mut seen = std::collections::HashSet::new();
         for (i, op) in batch.ops.iter().enumerate() {
-            validate_op(op).map_err(|e| match e {
-                Error::Invalid { field, message } => Error::Invalid {
-                    field: "ops",
-                    message: format!("[{i}].{field}: {message}"),
-                },
-                other => other,
-            })?;
+            validate_op(op).map_err(|e| index_error("ops", i, e))?;
             if !seen.insert(op.op_id()) {
                 return Err(Error::Invalid {
                     field: "ops",
@@ -268,6 +293,77 @@ impl Call {
         }
         let body = serde_json::to_value(batch).map_err(|e| Error::Decode(e.to_string()))?;
         Ok(Self::new(Method::POST, &["shopping", "lists", id, "ops"]).with_body(body))
+    }
+
+    /// `POST /device/events`: 1..=500 events, whitelisted `type`/`source`,
+    /// `data` an object of at most 8 KiB.
+    pub fn device_events(batch: &DeviceEvents) -> Result<Self> {
+        if batch.events.is_empty() || batch.events.len() > validate::MAX_DEVICE_EVENTS {
+            return Err(Error::Invalid {
+                field: "events",
+                message: format!("must hold 1..={} events", validate::MAX_DEVICE_EVENTS),
+            });
+        }
+        for (i, ev) in batch.events.iter().enumerate() {
+            let check = || -> Result<()> {
+                validate::id("id", &ev.id)?;
+                validate::event_ts("ts", &ev.ts)?;
+                validate::one_of("type", &ev.kind, validate::DEVICE_EVENT_TYPES)?;
+                validate::one_of("source", &ev.source, validate::DEVICE_SOURCES)?;
+                validate::object("data", &ev.data)?;
+                validate::json_size("data", &ev.data, validate::MAX_EVENT_DATA_BYTES)
+            };
+            check().map_err(|e| index_error("events", i, e))?;
+        }
+        let body = serde_json::to_value(batch).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["device", "events"]).with_body(body))
+    }
+
+    /// `POST /device/commands/{id}/result {ok, error?, deviceObjectId?}`.
+    pub fn command_result(id: &str, res: &CommandResult) -> Result<Self> {
+        validate::id("id", id)?;
+        if let Some(e) = res.error.as_deref() {
+            validate::text("error", e, validate::MAX_COMMAND_TEXT_CHARS)?;
+        }
+        if let Some(d) = res.device_object_id.as_deref() {
+            validate::text("deviceObjectId", d, validate::MAX_COMMAND_TEXT_CHARS)?;
+        }
+        let body = serde_json::to_value(res).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["device", "commands", id, "result"]).with_body(body))
+    }
+
+    /// `POST /device/state`: each list at most 500 objects of at most 8 KiB.
+    pub fn device_state(st: &DeviceState) -> Result<Self> {
+        for (field, items) in [
+            ("alarms", &st.alarms),
+            ("timers", &st.timers),
+            ("reminders", &st.reminders),
+            ("events", &st.events),
+        ] {
+            if items.len() > validate::MAX_STATE_ITEMS {
+                return Err(Error::Invalid {
+                    field,
+                    message: format!("must hold at most {} items", validate::MAX_STATE_ITEMS),
+                });
+            }
+            for (i, it) in items.iter().enumerate() {
+                validate::object("item", it)
+                    .and_then(|()| validate::json_size("item", it, validate::MAX_STATE_ITEM_BYTES))
+                    .map_err(|e| index_error(field, i, e))?;
+            }
+        }
+        if !matches!(st.focus, Value::Null | Value::String(_) | Value::Object(_)) {
+            return Err(Error::Invalid {
+                field: "focus",
+                message: "must be an object, a string or null".into(),
+            });
+        }
+        validate::json_size("focus", &st.focus, validate::MAX_STATE_ITEM_BYTES)?;
+        if let Some(ts) = &st.ts {
+            validate::event_ts("ts", ts)?;
+        }
+        let body = serde_json::to_value(st).map_err(|e| Error::Decode(e.to_string()))?;
+        Ok(Self::new(Method::POST, &["device", "state"]).with_body(body))
     }
 
     /// `GET /timeline?before=&limit=` (newest first, `{items, nextBefore}`).
@@ -280,6 +376,26 @@ impl Call {
         if let Some(l) = q.limit.as_deref() {
             let n = validate::bounded_int("limit", l, 1, validate::MAX_TIMELINE_LIMIT)?;
             call.query.push(("limit", n.to_string()));
+        }
+        Ok(call)
+    }
+
+    /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
+    /// The optional radius is in meters, 500..=15 000.
+    pub fn deals_map(radius_m: Option<u32>) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["grocery", "deals", "map"]);
+        if let Some(r) = radius_m {
+            if !(validate::DEALS_RADIUS_MIN..=validate::DEALS_RADIUS_MAX).contains(&r) {
+                return Err(Error::Invalid {
+                    field: "radiusM",
+                    message: format!(
+                        "must be an integer {}..={}",
+                        validate::DEALS_RADIUS_MIN,
+                        validate::DEALS_RADIUS_MAX
+                    ),
+                });
+            }
+            call.query.push(("radiusM", r.to_string()));
         }
         Ok(call)
     }
@@ -299,6 +415,17 @@ impl Call {
     /// Path below `/api/secretary/`, for diagnostics (ids included).
     pub fn path(&self) -> String {
         format!("/api/secretary/{}", self.segments.join("/"))
+    }
+}
+
+/// `Invalid{field}` of item `i` of list `list` -> `Invalid{list, "[i].field: ..."}`.
+fn index_error(list: &'static str, i: usize, e: Error) -> Error {
+    match e {
+        Error::Invalid { field, message } => Error::Invalid {
+            field: list,
+            message: format!("[{i}].{field}: {message}"),
+        },
+        other => other,
     }
 }
 
@@ -483,6 +610,32 @@ impl LucinaClient {
         timeout: Duration,
     ) -> Result<T> {
         Ok(self.send(call, timeout).await?.1)
+    }
+
+    /// Send `call` and return the raw body with its content type, for non-JSON answers (the game screenshot).
+    /// A non-2xx answer is decoded as Lucina's JSON error.
+    pub async fn bytes(&self, call: &Call) -> Result<(String, Vec<u8>)> {
+        let resp = self
+            .http
+            .request(call.method.clone(), self.url(call))
+            .bearer_auth(&self.token)
+            .timeout(self.timeouts.default)
+            .send()
+            .await
+            .map_err(Error::from_reqwest)?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let body = resp.bytes().await.map_err(Error::from_reqwest)?;
+        if !status.is_success() {
+            decode_response::<Value>(status.as_u16(), &body)?;
+            return Err(Error::Decode(format!("unexpected status {status}")));
+        }
+        Ok((content_type, body.to_vec()))
     }
 
     async fn send<T: DeserializeOwned>(&self, call: &Call, timeout: Duration) -> Result<(u16, T)> {
@@ -682,6 +835,37 @@ mod tests {
             c.url(&Call::timeline(&q).unwrap()).as_str(),
             "http://h:1/prefix/api/secretary/timeline?before=tl_9&limit=50"
         );
+        assert_eq!(
+            c.url(&Call::deals_map(Some(2026)).unwrap()).as_str(),
+            "http://h:1/prefix/api/secretary/grocery/deals/map?radiusM=2026"
+        );
+        assert!(
+            !c.url(&Call::deals_map(None).unwrap())
+                .as_str()
+                .contains('?'),
+            "no query without a radius"
+        );
+    }
+
+    #[test]
+    fn deals_map_radius_is_500_to_15000() {
+        assert!(Call::deals_map(None).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MIN)).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MAX)).is_ok());
+        for bad in [
+            Some(validate::DEALS_RADIUS_MIN - 1),
+            Some(validate::DEALS_RADIUS_MAX + 1),
+            Some(0),
+            Some(u32::MAX),
+        ] {
+            match Call::deals_map(bad) {
+                Err(Error::Invalid { field, message }) => {
+                    assert_eq!(field, "radiusM");
+                    assert!(message.contains("500..=15000"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -808,6 +992,58 @@ mod tests {
         .is_err());
         assert!(Call::shopping_list_update("default", &UpdateList::default()).is_err());
         assert!(Call::shopping_list("a/b").is_err());
+    }
+
+    #[test]
+    fn device_bridge_validation() {
+        let ev = |kind: &str, data: Value| json!({"id": "ev-1", "ts": 1_761_048_000_000_i64, "type": kind, "source": "ios", "data": data});
+        let batch = |events: Value| -> Result<Call> {
+            let b: DeviceEvents = serde_json::from_value(json!({"events": events}))
+                .map_err(|e| Error::Decode(e.to_string()))?;
+            Call::device_events(&b)
+        };
+        assert!(batch(json!([ev("web_visit", json!({"domain": "example.com"}))])).is_ok());
+        assert!(batch(json!([])).is_err());
+        assert!(batch(json!([ev("keylogger", json!({}))])).is_err());
+        assert!(batch(json!([ev("workout", json!([1]))])).is_err());
+        assert!(batch(json!([ev("workout", json!({"x": "y".repeat(8200)}))])).is_err());
+        let too_many: Vec<Value> = (0..501).map(|_| ev("app_open", json!({}))).collect();
+        assert!(batch(Value::Array(too_many)).is_err());
+        let iso =
+            json!([{"id": "a", "ts": "2026-10-21T10:00:00Z", "type": "app_open", "source": "mac"}]);
+        assert!(batch(iso).is_ok(), "data defaults to {{}}");
+        match batch(json!([{"id": "a", "ts": "yesterday", "type": "app_open", "source": "ios"}])) {
+            Err(Error::Invalid { field, message }) => {
+                assert_eq!(field, "events");
+                assert!(message.starts_with("[0].ts:"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // the device is set by the server only
+        let b: DeviceEvents =
+            serde_json::from_value(json!({"events": [], "device": {"id": "spoof", "name": "x"}}))
+                .unwrap();
+        assert!(b.device.is_none());
+
+        let res = |v: Value| Call::command_result("cmd-1", &serde_json::from_value(v).unwrap());
+        let call = res(json!({"ok": true, "deviceObjectId": "ABC:123"})).unwrap();
+        assert_eq!(call.path(), "/api/secretary/device/commands/cmd-1/result");
+        assert!(res(json!({"ok": false, "error": "x".repeat(501)})).is_err());
+        assert!(Call::command_result(
+            "../x",
+            &CommandResult {
+                ok: true,
+                error: None,
+                device_object_id: None,
+                device: None
+            }
+        )
+        .is_err());
+
+        let state = |v: Value| Call::device_state(&serde_json::from_value(v).unwrap());
+        assert!(state(json!({"alarms": [{"id": "a1", "time": "07:00"}], "focus": "work"})).is_ok());
+        assert!(state(json!({"alarms": ["07:00"]})).is_err());
+        assert!(state(json!({"focus": 3})).is_err());
     }
 
     #[test]

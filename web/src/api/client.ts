@@ -33,7 +33,7 @@ export function toApiError(e: unknown): ApiError {
   return new ApiError(0, "client_error", "Something went wrong.");
 }
 
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface RequestOptions {
   body?: unknown;

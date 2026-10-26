@@ -1,9 +1,11 @@
 import { createSignal } from "solid-js";
 import { setUnauthorizedHandler, toApiError } from "../api/client";
 import { api } from "../api/secretary";
+import { t } from "../i18n";
 import { resetBody } from "./body";
 import { clearChat } from "./chat";
 import { resetGym } from "./gym";
+import { resetNotifications } from "./notifications";
 import { resetShopping } from "./shopping";
 
 export type SessionState =
@@ -20,6 +22,7 @@ function forgetLocalData(): void {
   resetShopping();
   resetGym();
   resetBody();
+  resetNotifications();
 }
 
 export async function checkSession(): Promise<void> {
@@ -44,7 +47,7 @@ export async function signIn(email: string, password: string): Promise<void> {
   const now = session();
   if (now.status === "anon") {
     // Cookie did not stick (e.g. blocked cookies).
-    throw toApiError(new Error("Signed in, but the session didn't stick. Are cookies allowed?"));
+    throw toApiError(new Error(t("shell.cookieNotStuck")));
   }
 }
 

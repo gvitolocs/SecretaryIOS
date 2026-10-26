@@ -2,6 +2,8 @@
 // These helpers only format for display. Parsing typed weights and every
 // computed label belong to the Rust engines (docs/server-api.md).
 
+import { locale } from "../i18n";
+
 export type WeightUnit = "kg" | "lb";
 
 const LB_GRAMS = 453.59237;
@@ -39,7 +41,7 @@ export function formatDistance(meters: number): string {
 }
 
 export function formatDate(ms: number): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale(), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -47,7 +49,7 @@ export function formatDate(ms: number): string {
 }
 
 export function formatDateTime(ms: number): string {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale(), {
     year: "numeric",
     month: "short",
     day: "numeric",

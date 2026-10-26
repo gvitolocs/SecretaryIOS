@@ -136,14 +136,81 @@ fn csrf_error() -> ApiError {
 /// CSRF for cookie writes, per-device rate limit.
 pub async fn require_device(
     State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorize(&st, &st.limiter, req, next).await
+}
+
+/// The device id the service token (Lucina) gets on routes that accept it.
+pub const SERVICE_DEVICE_ID: &str = "svc";
+
+/// [`require_device`], plus Lucina's service token (`svc_…`) for the
+/// calendar routes. The service caller is `Identity { device_id: "svc",
+/// device_name: "lucina" }` and shares the service rate-limit bucket.
+pub async fn require_device_or_service(
+    State(st): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let ident = identify(&st, req.headers())?.map_err(ApiError::unauthorized)?;
+    let svc = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, t)| t.trim().to_owned())
+        .filter(|t| t.starts_with(crate::service::SERVICE_PREFIX));
+    let Some(token) = svc else {
+        return authorize(&st, &st.limiter, req, next).await;
+    };
+    match &st.service_token {
+        Some(expected) if expected.matches(&token) => {}
+        Some(_) => return Err(ApiError::unauthorized("unknown service token")),
+        None => {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_token_not_configured",
+                "SECRETARY_SERVICE_TOKEN_FILE is not set on the server",
+            ))
+        }
+    }
+    if let Err(wait) = st.limiter.check(crate::service::RATE_KEY) {
+        return Err(ApiError::rate_limited(wait));
+    }
+    req.extensions_mut().insert(Identity {
+        device_id: SERVICE_DEVICE_ID.into(),
+        device_name: "lucina".into(),
+        via: Via::Bearer,
+    });
+    let mut resp = next.run(req).await;
+    resp.extensions_mut()
+        .insert(DeviceId(SERVICE_DEVICE_ID.into()));
+    Ok(resp)
+}
+
+/// [`require_device`] with the device-events bucket
+/// (`SECRETARY_DEVICE_EVENTS_PER_MINUTE`) instead of the general one, so a
+/// phone flushing its offline queue does not starve the app's own requests.
+pub async fn require_device_events(
+    State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    authorize(&st, &st.device_limiter, req, next).await
+}
+
+async fn authorize(
+    st: &AppState,
+    limiter: &crate::ratelimit::RateLimiter,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let ident = identify(st, req.headers())?.map_err(ApiError::unauthorized)?;
     if ident.via == Via::Cookie && state_changing(req.method()) && !csrf_ok(req.headers()) {
         return Err(csrf_error());
     }
-    if let Err(wait) = st.limiter.check(&ident.device_id) {
+    if let Err(wait) = limiter.check(&ident.device_id) {
         return Err(ApiError::rate_limited(wait));
     }
     let id = ident.device_id.clone();
@@ -347,6 +414,16 @@ async fn device_login(State(st): State<AppState>, req: Request) -> Result<Respon
         }
         Err(e) => return Err(registry_error(&e)),
     };
+    // `system` notification (off by default): a new device signed in.
+    let notifier = st.notify.clone();
+    let lang = notifier.settings.read(|s| s.language.clone());
+    let notice = crate::notify::NewNotification::new(
+        crate::notify::Category::System,
+        crate::notify::text::new_device(&dev.name, &lang),
+    );
+    tokio::spawn(async move {
+        let _ = notifier.publish(notice).await;
+    });
     let mut resp = (
         StatusCode::CREATED,
         Json(json!({"token": token, "deviceId": dev.id, "deviceName": dev.name})),
