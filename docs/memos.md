@@ -24,8 +24,11 @@ iPhone / web ──HTTPS──► p1 Caddy /v1/memos* ──tailnet──► luc
 
 ## Recording
 
-- **iPhone**: the Plugins tab → Voice memos (or Siri/Shortcuts/Action button: "Record a memo in Secretary").
-  ADTS AAC (`.aac`) mono 44.1 kHz 96 kbit/s, so a recording cut off when iOS kills the app still decodes; the next
+- **iPhone**: the Plugins tab → Voice memos, or one tap without opening the app: the Lock Screen / Control Center
+  control, the Voice memo widget, the Action button or Siri ("Registra memo con Lucina"). Those run
+  `StartMemoRecordingIntent` (an `AudioRecordingIntent` and `LiveActivityIntent`) in the app's process, launched in
+  the background with only the recorder (`MemoRecordingCenter`; AppModel waits for a window or the stop).
+  ADTS AAC (`.aac`) 48 kHz, stereo from the built-in mics where they have a stereo pattern, 128 kbit/s per channel, so a recording cut off when iOS kills the app still decodes; the next
   launch recovers and queues it (`MemoUploadQueue.recoverOrphans`). The server rewraps it as `.m4a` (step 0). live level meter, pause/resume, keeps recording with the screen locked
   (`UIBackgroundModes: audio`); a call or Siri pauses it and it resumes when iOS allows.
   The **Live Activity** shows the timer on the Lock Screen and in the Dynamic Island with Pause/Resume and Done
@@ -39,7 +42,9 @@ iPhone / web ──HTTPS──► p1 Caddy /v1/memos* ──tailnet──► luc
 
 ## Upload protocol
 
-1. `POST /v1/memos {clientId, title?, recordedAt, timezone, durationSec, mime, sizeBytes, source}` → `{memo}`;
+1. `POST /v1/memos {clientId, title?, recordedAt, endedAt?, timezone, durationSec, mime, sizeBytes, source,
+   location?: {lat, lon, accuracyM?}}` → `{memo}` (`endedAt` = wall-clock end with pauses, ≤ 24 h after the start;
+   `location` = where the recording started, only when the app already has location access);
    201 when created, 200 with the same memo for a repeated `clientId`.
 2. `PUT /v1/memos/{id}/audio` with header `Upload-Offset: <receivedBytes>`, body = the next bytes (≤ 16 MiB;
    apps send 4 MiB). → `{receivedBytes, sizeBytes}`. A wrong offset → 409 `offset_mismatch` with the server's
@@ -55,7 +60,11 @@ Other routes: `GET /v1/memos?limit&before`, `GET /v1/memos/{id}` (`{memo, summar
 `GET …/audio` (Range, ETag), `GET …/pdf`, `GET …/transcript`, `PUT …/device-transcript`,
 `PATCH /v1/memos/{id} {title}` (the owner's title wins everywhere), `DELETE` (moves to `trash/`, never deletes),
 `POST …/resummarize {instructions?}`, `POST …/reprocess {fromTranscript?}`,
-`GET /v1/memos/search?q&from&to&days&limit` (dates `YYYY-MM-DD` in the owner's zone).
+`GET /v1/memos/search?q&from&to&days&limit` (dates `YYYY-MM-DD` in the owner's zone; words also match the linked
+event's title, course, place, attendees and calendar), `GET …/events` (`{current, eventSource, candidates:
+[{event, overlapMs, locMatch}]}` for the recording ± 2 h, best first; 502 when the calendar is unreachable),
+`PUT …/event {eventId | null}` (the owner's choice, `null` = no event; re-summarises a finished memo; 409 while a
+summary runs; 404 for an event not around the recording).
 Auth: `X-Memo-Gateway` from Caddy (after secretary-server accepted the device), or `Authorization: Bearer <service.token>`
 for local callers. Cookie writes need `X-Secretary-CSRF: 1`. `GET /health` is open.
 
@@ -68,14 +77,29 @@ One memo at a time, oldest first; each step writes its output before recording i
    the iPhone's transcript when there is one (memo continues now; the idle worker upgrades it to Whisper later
    and re-summarises without a second notification), otherwise the memo waits and retries every minute.
    No CPU Whisper model is installed (owner's choice, 2026-10-24).
+1b. **Calendar event** (best effort, before the summary): secretary-server's `/v1/calendar/events` (Google, ICS,
+   iPhone calendars; service token) for the recording ± 30 min. `kernel::pick_event` (K8): timed events covering
+   half the recording or ≥ 10 min of it; the one at the device's location first (optional: `LUCINA_MEMO_GEOCODE_URL`
+   = secretary-maps' local Photon, match within 400 m + accuracy), then the most overlap, the shorter event, the
+   earlier one. Kind (`events::kind`): lecture (lecture/lezione/forelæsning/… or a university calendar), meeting
+   (meeting/riunione/møde/sync/… or 2+ attendees), other. Series: the recurring master id, else the title without
+   "Lecture 5"-style suffixes. Title = `<event> · <date>` (`title_source: event`) unless the owner named the memo
+   (K10). The owner's choice on the memo screen is never replaced (K9). Calendar down: logged, retried on reprocess.
 2. **Summary**: Lucina's DeepSeek model (text only, never audio), JSON: title, overview, key points,
    decisions, action items (owner, due date resolved from the recording date), tags, with seconds into the audio.
-   Long transcripts are summarised in parts and merged.
+   Long transcripts are summarised in parts and merged. Linked to a **lecture**: lecture notes, key concepts,
+   definitions, questions to review, homework, connected to the overviews of the course's earlier memos. Linked to
+   a **meeting**: minutes, decisions, action items with owners. The event (title, time, place, attendees) is context
+   in the prompt.
 3. **PDF**: HTML printed by headless Chrome (summary page, then the timed transcript).
 4. **Obsidian**: the canonical vault on the Raspberry Pi (`pi-cursor:/home/nes/Obsidian`), folder
    `Voice Memos/Lucina/`: `<YYYY-MM-DD HHmm> <title>.md` (frontmatter in the vault's Voice Memos style, embedded
    audio, summary callout, action items as checkboxes linking to transcript block ids `^sNNN`), attachments in
-   `Attachments/`, index `00 Lucina memos.md`. rsync, never deletes. A note keeps its file name after the first publish.
+   `Attachments/`, index `00 Lucina memos.md`. A note keeps its file name after the first publish. Linked memos go
+   to `Courses/<course>/` or `Meetings/<meeting>/` with event frontmatter (`event`, `event_start`, `location`,
+   `attendees`, `course`/`meeting`, `series`), a "Previous" section linking the series' earlier notes and a series
+   index `<folder>/<course>.md`. When the event changes the note moves: the new path and every old one
+   (`obsidian_old_notes`) are recorded before the push, the old copies deleted after it (rsync itself never deletes).
 5. **Notify**: app inbox (`/v1/notify`, route `/memos/<id>`) and Telegram from Lucina's bot.
 6. **Media library**: `PUT 127.0.0.1:8830/internal/v1/external/voice-memo/{id}` (lucina-media; best effort).
 
@@ -85,13 +109,14 @@ attempts; `reprocess` re-queues).
 ## Lucina
 
 Tool `memos` (lucina-rs): `list`, `search` ("what did I say in yesterday's memo about X": `from`/`to` = that date
-plus words; without words every memo of the range with its summary), `read` (summary + timed transcript),
+plus words; without words every memo of the range with its summary; "last Tuesday's Algorithms lecture" = words
+`Algorithms`, that Tuesday, matched on the linked event), `read` (summary + timed transcript),
 `resummarize`. Action items become tasks through the `tasks` tool, or with + in the iPhone's memo screen.
 
 ## Verification
 
 `docs/verification.md` §7 (branch main): the Stateright model `verification/models/src/memos.rs`, its TLA+ twin
-`formal/memos/Memos.tla`, and the Verus kernel `verification/verus/memo_kernel.rs` (K1–K7) whose function bodies are
+`formal/memos/Memos.tla`, and the Verus kernel `verification/verus/memo_kernel.rs` (K1–K10) whose function bodies are
 `crates/lucina-memo/src/kernel.rs` (differential test `tests/verus_kernel.rs`). Bugs found and fixed there: B1 a
 second vault note after a crash and a rename, B2 Whisper replaced by the iPhone transcript on a reprocess, B3 Telegram
 sent twice after a crash, B4 a recording lost when iOS killed the app.

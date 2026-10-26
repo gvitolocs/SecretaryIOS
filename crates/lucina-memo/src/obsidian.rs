@@ -156,6 +156,28 @@ pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: 
     o.push_str(&format!("title: {}\n", yaml(&s.title)));
     o.push_str(&format!("memo_id: {}\n", m.id));
     o.push_str("source: lucina\n");
+    if let Some(e) = &m.event {
+        o.push_str(&format!(
+            "event: {}\nevent_start: {}\nevent_end: {}\nlocation: {}\nattendees: {}\nseries: {}\n",
+            yaml(&e.title),
+            yaml(&e.start),
+            yaml(&e.end),
+            yaml(e.location.as_deref().unwrap_or_default()),
+            serde_json::to_string(&e.attendees).unwrap_or_else(|_| "[]".into()),
+            yaml(&e.series)
+        ));
+        let label = match e.kind {
+            crate::model::EventKind::Lecture => Some("course"),
+            crate::model::EventKind::Meeting => Some("meeting"),
+            _ => None,
+        };
+        if let Some(label) = label {
+            o.push_str(&format!(
+                "{label}: {}\n",
+                yaml(&crate::events::series_title(&e.title))
+            ));
+        }
+    }
     o.push_str(&format!(
         "audio: {}\n",
         yaml(&format!("[[Attachments/{base}.{}]]", m.ext))
@@ -172,6 +194,26 @@ pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: 
     }
     o.push_str("---\n\n");
     o.push_str(&format!("# {}\n\n", s.title));
+    if let Some(e) = &m.event {
+        let time = |ms| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .map(|t| t.with_timezone(&ztz).format("%H:%M").to_string())
+                .unwrap_or_default()
+        };
+        o.push_str(&format!(
+            "Event: {} · {}–{} · {}\n\n",
+            e.title,
+            time(e.start_ms),
+            time(e.end_ms),
+            e.location.as_deref().unwrap_or_default()
+        ));
+    }
+    if m.event
+        .as_ref()
+        .is_some_and(|e| e.kind == crate::model::EventKind::Meeting)
+    {
+        o.push_str("## Minutes\n\n");
+    }
     o.push_str(&format!(
         "{} {} · {} {} · {} {}\n\n",
         l.recorded,
@@ -187,10 +229,40 @@ pub fn note(m: &Memo, s: &Summary, t: &Transcript, tz: Tz, base: &str, app_url: 
         o.push_str(&format!("> {line}\n"));
     }
     o.push('\n');
-    let lists: [(&str, &[Item], bool); 3] = [
-        (l.key_points, &s.key_points, false),
-        (l.decisions, &s.decisions, false),
-        (l.action_items, &s.action_items, true),
+    let lecture = m
+        .event
+        .as_ref()
+        .is_some_and(|e| e.kind == crate::model::EventKind::Lecture);
+    let meeting = m
+        .event
+        .as_ref()
+        .is_some_and(|e| e.kind == crate::model::EventKind::Meeting);
+    let lists: [(&str, &[Item], bool); 5] = [
+        (
+            if lecture {
+                "Key concepts"
+            } else {
+                l.key_points
+            },
+            &s.key_points,
+            false,
+        ),
+        ("Definitions", &s.definitions, false),
+        ("Questions to review", &s.questions, false),
+        (
+            if meeting { "Decisions" } else { l.decisions },
+            &s.decisions,
+            false,
+        ),
+        (
+            if meeting {
+                "Action items"
+            } else {
+                l.action_items
+            },
+            &s.action_items,
+            true,
+        ),
     ];
     for (title, items, todo) in lists {
         if items.is_empty() {
@@ -377,8 +449,84 @@ async fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The note's folder under the memo folder: `Courses/<course>` for a lecture,
+/// `Meetings/<meeting>` for a meeting, none otherwise. Only the folder follows the event; the
+/// file name stays the memo's (K7).
+pub fn event_folder(m: &Memo) -> String {
+    match &m.event {
+        Some(e) => match e.kind {
+            crate::model::EventKind::Lecture => format!(
+                "Courses/{}",
+                safe_name(&crate::events::series_title(&e.title))
+            ),
+            crate::model::EventKind::Meeting => format!(
+                "Meetings/{}",
+                safe_name(&crate::events::series_title(&e.title))
+            ),
+            _ => String::new(),
+        },
+        None => String::new(),
+    }
+}
+
+/// Records that the memo's note now lives at `new` (before the push, K7): the path it had joins
+/// the copies to delete after the push, and `new` is never among them. Several moves before a
+/// delete went through keep every earlier path, so the vault ends with exactly one note.
+pub fn move_note(m: &mut Memo, new: &str) {
+    if let Some(old) = m.obsidian_note.take() {
+        if old != new && !m.obsidian_old_notes.contains(&old) {
+            m.obsidian_old_notes.push(old);
+        }
+    }
+    m.obsidian_old_notes.retain(|o| o != new);
+    m.obsidian_note = Some(new.to_owned());
+}
+
+/// Delete only the previously recorded note after its replacement was pushed.
+/// Missing files are success, so replay after a crash converges.
+pub async fn delete_note(target: &VaultTarget, note: &str) -> Result<(), PublishError> {
+    if !note.starts_with(&format!("{}/", target.folder))
+        || !note.ends_with(".md")
+        || note.split('/').any(|p| p == "..")
+    {
+        return Err(PublishError("invalid old note path".into()));
+    }
+    if let Some((host, path)) = target.vault.split_once(':') {
+        let output = tokio::time::timeout(
+            Duration::from_secs(60),
+            Command::new("ssh")
+                .args([
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=10",
+                    host,
+                    "rm",
+                    "-f",
+                    "--",
+                ])
+                .arg(shell_quote(&format!("{path}/{note}")))
+                .stdin(Stdio::null())
+                .output(),
+        )
+        .await
+        .map_err(|_| PublishError("old note deletion timed out".into()))?
+        .map_err(|e| PublishError(e.to_string()))?;
+        if !output.status.success() {
+            return Err(PublishError("old note deletion failed".into()));
+        }
+    } else {
+        match tokio::fs::remove_file(Path::new(&target.vault).join(note)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(PublishError(e.to_string())),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::{Segment, Status, Steps};
     use chrono::{TimeZone, Utc};
@@ -416,6 +564,11 @@ mod tests {
             transcript_source: None,
             upgrade_attempts: 0,
             notify_telegram_rev: None,
+            ended_at: None,
+            location: None,
+            event: None,
+            event_source: None,
+            obsidian_old_notes: Vec::new(),
         }
     }
 
@@ -444,6 +597,9 @@ mod tests {
             created_at: Utc::now(),
         };
         let s = Summary {
+            template: None,
+            definitions: vec![],
+            questions: vec![],
             title: "Preventivo: cucina/Marco".into(),
             language: "it".into(),
             overview: "Parli del preventivo.".into(),
@@ -486,5 +642,74 @@ mod tests {
     fn names() {
         assert_eq!(safe_name("a/b: c#d [e]"), "a b c d e");
         assert_eq!(safe_name("..."), "Voice memo");
+    }
+
+    #[test]
+    fn moving_notes_keeps_every_old_copy_to_delete() {
+        let mut m = memo();
+        move_note(&mut m, "VM/a.md");
+        assert!(m.obsidian_old_notes.is_empty());
+        // Linked to a lecture: the note moves; the first copy is deleted after the push.
+        move_note(&mut m, "VM/Courses/Algorithms/a.md");
+        assert_eq!(m.obsidian_old_notes, ["VM/a.md"]);
+        // The delete did not happen (crash) and the owner picks a meeting: both old copies stay listed.
+        move_note(&mut m, "VM/Meetings/Sync/a.md");
+        assert_eq!(
+            m.obsidian_old_notes,
+            ["VM/a.md", "VM/Courses/Algorithms/a.md"]
+        );
+        // Back to where it started: that path is the note again, never deleted.
+        move_note(&mut m, "VM/a.md");
+        assert_eq!(
+            m.obsidian_old_notes,
+            ["VM/Courses/Algorithms/a.md", "VM/Meetings/Sync/a.md"]
+        );
+        assert_eq!(m.obsidian_note.as_deref(), Some("VM/a.md"));
+    }
+
+    #[tokio::test]
+    async fn deletes_only_notes_inside_the_memo_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = VaultTarget {
+            vault: dir.path().display().to_string(),
+            folder: "VM".into(),
+            ssh_opts: String::new(),
+        };
+        std::fs::create_dir_all(dir.path().join("VM/Courses/A")).unwrap();
+        std::fs::write(dir.path().join("VM/Courses/A/n.md"), "x").unwrap();
+        delete_note(&target, "VM/Courses/A/n.md").await.unwrap();
+        assert!(!dir.path().join("VM/Courses/A/n.md").exists());
+        // Already gone: fine (a retry after a crash).
+        delete_note(&target, "VM/Courses/A/n.md").await.unwrap();
+        for bad in ["Other/n.md", "VM/../x.md", "VM/n.txt"] {
+            assert!(delete_note(&target, bad).await.is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn folders_follow_the_event() {
+        let mut m = memo();
+        assert_eq!(event_folder(&m), "");
+        let link = |kind| crate::model::EventLink {
+            id: "e".into(),
+            source: "google".into(),
+            calendar: None,
+            title: "Algorithms – Lecture 5".into(),
+            start: String::new(),
+            end: String::new(),
+            start_ms: 0,
+            end_ms: 0,
+            location: None,
+            attendees: vec![],
+            recurring: false,
+            series: "algorithms".into(),
+            kind,
+        };
+        m.event = Some(link(crate::model::EventKind::Lecture));
+        assert_eq!(event_folder(&m), "Courses/Algorithms");
+        m.event = Some(link(crate::model::EventKind::Meeting));
+        assert_eq!(event_folder(&m), "Meetings/Algorithms");
+        m.event = Some(link(crate::model::EventKind::Other));
+        assert_eq!(event_folder(&m), "");
     }
 }

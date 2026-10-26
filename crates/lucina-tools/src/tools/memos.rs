@@ -93,6 +93,7 @@ fn valid_id(id: &str) -> bool {
 /// One memo of a list, compact for the model.
 fn compact(m: &Value) -> Value {
     json!({
+        "event": m["event"],
         "id": m["id"],
         "title": m["title"],
         "recordedAt": m["recordedAt"],

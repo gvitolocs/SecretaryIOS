@@ -34,7 +34,11 @@ mod proved {
     fn is_pipeline(s: Status) -> bool {
         matches!(
             s,
-            Status::Queued | Status::Transcribing | Status::Summarizing | Status::Rendering | Status::Publishing
+            Status::Queued
+                | Status::Transcribing
+                | Status::Summarizing
+                | Status::Rendering
+                | Status::Publishing
         )
     }
 
@@ -92,19 +96,50 @@ fn transcript_choice_matches() {
             }
         }
     }
-    assert_eq!(kernel::Source::parse(Some("device-kept")), Some(Source::Device));
-    assert_eq!(kernel::Source::parse(Some("whisper")), Some(Source::Whisper));
+    assert_eq!(
+        kernel::Source::parse(Some("device-kept")),
+        Some(Source::Device)
+    );
+    assert_eq!(
+        kernel::Source::parse(Some("whisper")),
+        Some(Source::Whisper)
+    );
     assert_eq!(kernel::Source::parse(None), None);
 }
 
 #[test]
 fn numbers_match() {
-    let edge = [0u64, 1, 2, 3, 99, 100, 101, 199, 200, 201, 599_999, 600_000, 600_001, u64::MAX / 2, u64::MAX - 1, u64::MAX];
+    let edge = [
+        0u64,
+        1,
+        2,
+        3,
+        99,
+        100,
+        101,
+        199,
+        200,
+        201,
+        599_999,
+        600_000,
+        600_001,
+        u64::MAX / 2,
+        u64::MAX - 1,
+        u64::MAX,
+    ];
     for &a in &edge {
         for &b in &edge {
-            assert_eq!(kernel::upgrade_replaces(a, b), proved::upgrade_replaces(a, b), "{a} {b}");
+            assert_eq!(
+                kernel::upgrade_replaces(a, b),
+                proved::upgrade_replaces(a, b),
+                "{a} {b}"
+            );
             for m in [false, true] {
-                assert_eq!(kernel::route_on_device(a, b, m), proved::route_on_device(a, b, m), "{a} {b} {m}");
+                assert_eq!(
+                    kernel::route_on_device(a, b, m),
+                    proved::route_on_device(a, b, m),
+                    "{a} {b} {m}"
+                );
             }
         }
     }
@@ -114,7 +149,11 @@ fn numbers_match() {
 fn statuses_match() {
     for from in STATUSES {
         for to in STATUSES {
-            assert_eq!(kernel::status_allowed(from, to), proved::status_allowed(from, to), "{from:?} -> {to:?}");
+            assert_eq!(
+                kernel::status_allowed(from, to),
+                proved::status_allowed(from, to),
+                "{from:?} -> {to:?}"
+            );
         }
     }
 }
@@ -130,7 +169,10 @@ fn finish_telegram_and_note_match() {
     }
     for marker in [None, Some(0u32), Some(1), Some(2), Some(u32::MAX)] {
         for rev in [0u32, 1, 2, u32::MAX] {
-            assert_eq!(kernel::send_telegram(marker, rev), proved::send_telegram(marker, rev));
+            assert_eq!(
+                kernel::send_telegram(marker, rev),
+                proved::send_telegram(marker, rev)
+            );
         }
     }
     for existing in [None, Some(7u64), Some(9)] {
