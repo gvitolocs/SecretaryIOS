@@ -1,15 +1,12 @@
 {
-<<<<<<< HEAD
   "By bike": ["In bicicletta", "På cykel"],
   "%@ with traffic": ["%@ con traffico", "%@ med trafik"],
   "Leave at %@ to be on time": ["Parti alle %@ per arrivare in orario", "Tag af sted kl. %@ for at nå frem til tiden"],
-=======
   "%@ %@ · %lld🏅": ["%@ %@ · %lld🏅", "%@ %@ · %lld🏅"],
   "%@ Lv %lld": ["%@ Lv %lld", "%@ Niv. %lld"],
   "%@ No appointments": ["%@ Nessun impegno", "%@ Ingen aftaler"],
   "%@ in progress": ["%@ in corso", "%@ i gang"],
   "%@ this week": ["%@ questa settimana", "%@ denne uge"],
->>>>>>> ios-app
   "%@ · %lld sets · %@": ["%@ · %lld serie · %@", "%@ · %lld sæt · %@"],
   "%@ / reps": ["%@ / ripetizioni", "%@ / gentagelser"],
   "%@, %@, at %@.": ["%@, %@, a %@.", "%@, %@, på %@."],
@@ -923,7 +920,6 @@
   "This is large: keep this sheet open until it's sent.": ["È grande: tieni aperto questo pannello finché non è inviato.", "Den er stor: hold dette ark åbent, indtil den er sendt."],
   "Up to 20 files at a time.": ["Al massimo 20 file alla volta.", "Højst 20 filer ad gangen."],
   "Video, %@ %@": ["Video, %@ %@", "Video, %@ %@"],
-<<<<<<< HEAD
   "%@ from home": ["%@ da casa", "%@ hjemmefra"],
   "%@ from you": ["%@ da te", "%@ fra dig"],
   "Apple Maps": ["Mappe di Apple", "Apple Kort"],
@@ -935,8 +931,7 @@
   "On foot": ["A piedi", "Til fods"],
   "Opens the map": ["Apre la mappa", "Åbner kortet"],
   "Search in Maps": ["Cerca in Mappe", "Søg i Kort"],
-  "Travel times…": ["Tempi di percorrenza…", "Rejsetider…"]
-=======
+  "Travel times…": ["Tempi di percorrenza…", "Rejsetider…"],
   "Films": ["Film", "Film"],
   "Film and Dansk film": ["Film e Dansk film", "Film og Dansk film"],
   "Continue watching": ["Continua a guardare", "Fortsæt med at se"],
@@ -977,5 +972,4 @@
   "Lucina writes the summary again for the event you pick: lecture notes for a lecture, minutes for a meeting.": ["Lucina riscrive il riassunto per l'evento che scegli: appunti per una lezione, verbale per una riunione.", "Lucina skriver resuméet igen til den begivenhed, du vælger: noter til en forelæsning, referat til et møde."],
   "No event": ["Nessun evento", "Ingen begivenhed"],
   "Here": ["Qui", "Her"]
->>>>>>> ios-app
 }
