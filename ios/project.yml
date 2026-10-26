@@ -5,11 +5,6 @@ options:
     iOS: "17.0"
   developmentLanguage: en
   createIntermediateGroups: true
-packages:
-  # The deals map (Features/Shopping/DealsMapView.swift). Exact tag: bump on purpose.
-  GoogleMaps:
-    url: https://github.com/googlemaps/ios-maps-sdk
-    exactVersion: 11.2.0
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -54,7 +49,7 @@ targets:
         # Only plain-HTTP to local hosts (the dev mock); everything else must be HTTPS.
         NSHealthShareUsageDescription: "Lucina reads your weight, workouts, steps and sleep so the Weight tab stays complete and she knows how you are doing."
         NSHealthUpdateUsageDescription: "Your weigh-ins and gym workouts are saved to Apple Health."
-        NSLocationWhenInUseUsageDescription: "Lucina learns which places you visit, so she can remind you of things where they matter."
+        NSLocationWhenInUseUsageDescription: "Lucina learns which places you visit, so she can remind you of things where they matter, and the maps show how far away a place is."
         NSLocationAlwaysAndWhenInUseUsageDescription: "To notice when you arrive at or leave a place, even when Secretary is closed."
         NSCalendarsFullAccessUsageDescription: "Lucina sees your upcoming events and adds or removes them when you ask."
         NSRemindersFullAccessUsageDescription: "Lucina adds, completes and reads your reminders when you ask."
@@ -70,7 +65,7 @@ targets:
         NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        # The deals map's Directions button opens Google Maps when it is installed (canOpenURL).
+        # The maps' Directions buttons open Google Maps when it is installed (canOpenURL).
         LSApplicationQueriesSchemes: [comgooglemaps]
         # Notifications (docs/notifications.md): background refresh syncs the inbox and the
         # local schedules; `audio` keeps the media player (and Picture in Picture) playing and voice
@@ -91,8 +86,6 @@ targets:
       - target: SecretaryScreenTimeMonitor
       - target: SecretaryWidgets
       - sdk: Security.framework
-      - package: GoogleMaps
-        product: GoogleMaps
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: tech.getsecretary.app

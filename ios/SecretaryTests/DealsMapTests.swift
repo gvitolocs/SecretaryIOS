@@ -45,8 +45,6 @@ final class DealsMapTests: XCTestCase {
         XCTAssertEqual(map.home, DealsMap.Point(lat: 56.19633, lng: 10.2011, label: "Risskov"))
         XCTAssertEqual(map.radiusM, 3000)
         XCTAssertEqual(map.failures, ["flyer"])
-        XCTAssertEqual(map.iosKey, "ios-test")
-        XCTAssertNil(map.maps?.mapId)
         XCTAssertEqual(map.stores.map(\.id), ["salling:0847307a", "tjek:3", "tjek:9"], "sorted by distance, the broken store skipped")
 
         let foetex = try XCTUnwrap(map.stores.first)
@@ -68,7 +66,6 @@ final class DealsMapTests: XCTestCase {
     func testMinimalAndMissingFields() throws {
         let map = try decode(#"{"stores":[{"lat":56.1,"lng":10.1,"chain":"Lidl"}],"maps":{"iosKey":"  "}}"#)
         XCTAssertNil(map.home)
-        XCTAssertNil(map.iosKey, "a blank key counts as no key")
         XCTAssertEqual(map.failures, [])
         let store = try XCTUnwrap(map.stores.first)
         XCTAssertEqual(store.name, "Lidl")
@@ -80,7 +77,7 @@ final class DealsMapTests: XCTestCase {
 
         let empty = try decode("{}")
         XCTAssertEqual(empty.stores, [])
-        XCTAssertNil(empty.maps)
+        XCTAssertNil(empty.home)
     }
 
     func testMarkerLabels() throws {

@@ -48,6 +48,10 @@ struct MainTabs: View {
         }
         // Lucina in the room (AR), over everything.
         .modifier(LucinaARHost(controller: app.lucina))
+        #if SCREENSHOTS
+        // `-SecretaryMapSelfTest place|card|deals` (Features/Places/MapSelfTest.swift).
+        .modifier(MapSelfTestHost())
+        #endif
         // Lucina asks before deleting something or changing the calendar.
         .sheet(item: Binding(get: { app.device.bridge.pendingConfirmations.first }, set: { _ in })) { command in
             CommandConfirmation(command: command)

@@ -4,8 +4,8 @@ The native SwiftUI app for Secretary: a thin client of `secretary-server`'s
 `/v1` API (`../docs/server-api.md`). Product logic stays in the Rust engines and
 in Lucina; the app sends requests and renders the views it gets back.
 
-- iOS 17+, bundle id `tech.getsecretary.app`. One Swift package: the Google Maps SDK
-  (`GoogleMaps`, exact tag in `project.yml`), for the grocery deals map on the Shopping tab.
+- iOS 17+, bundle id `tech.getsecretary.app`. No Swift packages: the maps (the deals map, places
+  in the chat) are MapKit (`Shared/LucinaMap.swift`, `Features/Places/`), with no keys.
 - Tabs: **Chat** (Lucina, with job cards), **Shopping**, **Gym** (the LucinaGym
   screens), **Weight**, **Settings**.
 - Auth: email + password (`POST /v1/auth/device`) or a `sec_…` device key. The

@@ -144,6 +144,9 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var topic: String?
     var why: String?
     var actions: [ProactiveAction]?
+    /// With `kind == "proactive"`: the place of the event she is reminding of (a `place` block without
+    /// `type`), shown as a map card under the message.
+    var place: Place?
     /// With `kind == "share"`: the share (files from the share sheet or the chat composer) behind the item.
     var shareId: String?
 
@@ -182,12 +185,13 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         topic = c.lenientOptional(String.self, .topic)
         why = c.lenientOptional(String.self, .why)
         actions = c.lenientOptional([ProactiveAction].self, .actions)
+        place = Place.parse(c.lenientOptional(JSONValue.self, .place))
         shareId = c.lenientOptional(String.self, .shareId)
     }
 
     private enum CodingKeys: String, CodingKey {
         case via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
-        case outreachId, priority, topic, why, actions, shareId
+        case outreachId, priority, topic, why, actions, place, shareId
     }
 }
 

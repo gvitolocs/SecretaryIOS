@@ -402,6 +402,7 @@ private struct ProactiveCard: View {
                     .accessibilityIdentifier("proactivePriority")
             }
             Text(LinkText.attributed(item.displayText)).font(.subheadline).textSelection(.enabled)
+            if let place = meta.place { PlaceCard(place: place) }
             HStack(spacing: 6) {
                 ForEach(buttons, id: \.id) { b in
                     Button(b.label) { tap(b.id) }
