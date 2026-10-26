@@ -108,12 +108,16 @@ struct GalleryScreen: View {
     @Environment(GalleryStore.self) private var store
     @Environment(PhotoBackup.self) private var backup
     @State private var viewing: GalleryItem?
+    /// The photo on screen in the viewer: the one it zooms back into, kept scrolled into view.
+    @State private var shownID: String?
+    @Namespace private var zoom
     @State private var showBackup = false
     @State private var showAlbums = false
     @State private var search = ""
 
     var body: some View {
         @Bindable var store = store
+        ScrollViewReader { proxy in
         ScrollView {
             BackupBanner { showBackup = true }
                 .padding(.horizontal)
@@ -139,7 +143,7 @@ struct GalleryScreen: View {
             LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
                 ForEach(store.sections, id: \.title) { section in
                     Section {
-                        GalleryGrid(items: section.items) { viewing = $0 }
+                        GalleryGrid(items: section.items, zoom: zoom) { viewing = $0 }
                     } header: {
                         Text(section.title)
                             .font(LucinaTokens.Fonts.headline)
@@ -201,9 +205,16 @@ struct GalleryScreen: View {
             }
             .lucinaSheet()
         }
+        // Google Photos: behind the viewer the grid follows the photo on screen, so closing zooms
+        // into its tile.
+        .onChange(of: shownID) { _, id in
+            if let id { proxy.scrollTo(id, anchor: .center) }
+        }
+        }
         .fullScreenCover(item: $viewing) { item in
-            GalleryViewer(start: item)
+            GalleryViewer(start: item, shown: $shownID)
                 .presentationBackground(.clear)
+                .zoomTransition(from: shownID ?? item.id, in: zoom)
         }
     }
 }
@@ -211,6 +222,7 @@ struct GalleryScreen: View {
 /// Square cells, 3 across on iPhone.
 struct GalleryGrid: View {
     let items: [GalleryItem]
+    var zoom: Namespace.ID?
     let open: (GalleryItem) -> Void
 
     var body: some View {
@@ -242,6 +254,8 @@ struct GalleryGrid: View {
                         }
                 }
                 .buttonStyle(.plain)
+                .zoomSource(item.id, in: zoom)
+                .id(item.id)
                 .accessibilityLabel(item.title)
                 .accessibilityIdentifier("gallery-\(item.id)")
             }
@@ -454,8 +468,12 @@ struct GalleryViewer: View {
     /// The photo that is zoomed, if any: there the drag pans instead of closing.
     @State private var zoomedID: String?
 
-    init(start: GalleryItem) {
+    /// The photo on screen, for the grid (the tile the viewer zooms back into).
+    @Binding var shown: String?
+
+    init(start: GalleryItem, shown: Binding<String?> = .constant(nil)) {
         self.start = start
+        _shown = shown
         _current = State(initialValue: start.id)
     }
 
@@ -465,7 +483,10 @@ struct GalleryViewer: View {
         NavigationStack {
             pager
             // Google Photos: swipe down to close, up for the details.
-            .photoDragOut(enabled: zoomedID != current, dragging: $dragging, onDismiss: { dismiss() }, onInfo: { showInfo = true })
+            // Swipe down closes into the grid tile (the zoom transition, iOS 18), swipe up shows the details.
+            .photoDragOut(enabled: zoomedID != current, systemDismiss: true, dragging: $dragging,
+                          onDismiss: { dismiss() }, onInfo: { showInfo = true })
+            .interactiveDismissDisabled(zoomedID == current)
             // Google Photos: the photo is always full screen; the bars float over it on dark
             // gradients (its bottom_dark_gradient: clear to 75% black), so nothing resizes on a tap.
             .overlay(alignment: .top) { ViewerScrim(top: true).opacity(bare ? 0 : 1) }
@@ -502,6 +523,7 @@ struct GalleryViewer: View {
             }
         }
         .onAppear {
+            shown = start.id
             #if DEBUG || SCREENSHOTS
             // `-SecretaryGalleryAutoPlay YES` (device checks): press play on the opened video, muted.
             if UserDefaults.standard.bool(forKey: "SecretaryGalleryAutoPlay"), start.isVideo || start.isAudio {
@@ -518,6 +540,7 @@ struct GalleryViewer: View {
         }
         .onDisappear { meter.stop() }
         .onChange(of: current) { _, id in
+            shown = id
             meter.swipes += 1
             prefetchNeighbours(of: id)
         }

@@ -15,6 +15,9 @@ private let dragLog = Logger(subsystem: "tech.getsecretary.app", category: "Gall
 /// NavigationStack) for the grid to show through.
 struct PhotoDragOut: ViewModifier {
     var enabled: Bool
+    /// The presentation has the zoom transition (iOS 18): its own interactive dismiss shrinks the
+    /// photo back into its grid tile, so a drag down is left to it and only the swipe up is ours.
+    var systemDismiss = false
     /// True while a drag is out, so the viewer can hide its bars.
     @Binding var dragging: Bool
     var onDismiss: () -> Void
@@ -45,7 +48,7 @@ struct PhotoDragOut: ViewModifier {
     @ViewBuilder
     private func dismissGesture<V: View>(_ view: V, _ size: CGSize) -> some View {
         if #available(iOS 18.0, *) {
-            view.gesture(VerticalPan(enabled: enabled,
+            view.gesture(VerticalPan(enabled: enabled, upOnly: systemDismiss,
                                      changed: { t, vy in changed(t, vy, size) },
                                      ended: { t, vy in ended(t, vy, size) }))
         } else {
@@ -132,16 +135,18 @@ struct PhotoDragOut: ViewModifier {
 @available(iOS 18.0, *)
 struct VerticalPan: UIGestureRecognizerRepresentable {
     var enabled: Bool
+    var upOnly = false
     var changed: (CGSize, CGFloat) -> Void
     var ended: (CGSize, CGFloat) -> Void
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var enabled = true
+        var upOnly = false
 
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
             guard enabled, let pan = gesture as? UIPanGestureRecognizer else { return false }
             let v = pan.velocity(in: pan.view)
-            let begin = abs(v.y) > abs(v.x)
+            let begin = abs(v.y) > abs(v.x) && (!upOnly || v.y < 0)
             dragLog.notice("GalleryDrag pan should_begin=\(begin) vx=\(Int(v.x)) vy=\(Int(v.y))")
             return begin
         }
@@ -157,11 +162,13 @@ struct VerticalPan: UIGestureRecognizerRepresentable {
         pan.maximumNumberOfTouches = 1
         pan.delegate = context.coordinator
         context.coordinator.enabled = enabled
+        context.coordinator.upOnly = upOnly
         return pan
     }
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
         context.coordinator.enabled = enabled
+        context.coordinator.upOnly = upOnly
     }
 
     func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
@@ -177,9 +184,32 @@ struct VerticalPan: UIGestureRecognizerRepresentable {
 }
 
 extension View {
-    func photoDragOut(enabled: Bool = true, dragging: Binding<Bool>, onDismiss: @escaping () -> Void,
-                      onInfo: @escaping () -> Void = {}) -> some View {
-        modifier(PhotoDragOut(enabled: enabled, dragging: dragging, onDismiss: onDismiss, onInfo: onInfo))
+    func photoDragOut(enabled: Bool = true, systemDismiss: Bool = false, dragging: Binding<Bool>,
+                      onDismiss: @escaping () -> Void, onInfo: @escaping () -> Void = {}) -> some View {
+        var systemOwnsDown = false
+        if #available(iOS 18.0, *) { systemOwnsDown = systemDismiss }
+        return modifier(PhotoDragOut(enabled: enabled, systemDismiss: systemOwnsDown, dragging: dragging,
+                                     onDismiss: onDismiss, onInfo: onInfo))
+    }
+
+    /// iOS 18: the viewer grows out of this view and shrinks back into it (the zoom transition).
+    @ViewBuilder
+    func zoomSource(_ id: String, in namespace: Namespace.ID?) -> some View {
+        if #available(iOS 18.0, *), let namespace {
+            matchedTransitionSource(id: id, in: namespace)
+        } else {
+            self
+        }
+    }
+
+    /// On a presented viewer: open from, and close into, the source with this id.
+    @ViewBuilder
+    func zoomTransition(from id: String, in namespace: Namespace.ID) -> some View {
+        if #available(iOS 18.0, *) {
+            navigationTransition(.zoom(sourceID: id, in: namespace))
+        } else {
+            self
+        }
     }
 
     /// On the root view inside a viewer's NavigationStack: no opaque container behind it, so a
