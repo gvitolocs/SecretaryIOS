@@ -185,6 +185,8 @@ struct Finish {
     routes: Vec<Value>,
     /// Calendar events the turn read: the reply gets map cards for those it names.
     calendar_events: Vec<Value>,
+    /// A calendar question the calendar answered: the reply is its agenda (crate::agenda).
+    agenda: Option<crate::agenda::Agenda>,
 }
 
 impl Finish {
@@ -199,6 +201,7 @@ impl Finish {
             job_plan: None,
             routes: Vec::new(),
             calendar_events: Vec::new(),
+            agenda: None,
         }
     }
 
@@ -446,6 +449,7 @@ async fn run_turn_inner(
         // Secrets replies are fixed texts: no model rewrite.
         !finish.action.starts_with("secrets_"),
         &finish.calendar_events,
+        finish.agenda.as_ref(),
     )
     .await;
     let rich_msg = with_routes(rich_msg, &finish.routes);
@@ -497,6 +501,14 @@ async fn run_turn_inner(
     Ok(out)
 }
 
+/// A calendar bridge answer as the turn's finish.
+fn calendar_finish(o: crate::bridges::Outcome) -> Finish {
+    let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
+    f.calendar_events = o.events;
+    f.agenda = o.agenda;
+    f
+}
+
 /// `LUCINA_RICH_REPLIES=true`: the reply as Lucina message format v1, plus the
 /// plain fallback text (timeline, `reply`, MCP callers, old clients) and the
 /// text to remember (without the button hints). Calendar events the reply
@@ -511,9 +523,27 @@ async fn rich_reply(
     action_result: &str,
     use_model: bool,
     calendar_events: &[Value],
+    agenda: Option<&crate::agenda::Agenda>,
 ) -> (Option<lucina_store::rich::RichMessage>, String, String) {
     if !st.cfg.rich_replies {
         return (None, reply.to_owned(), reply.to_owned());
+    }
+    // An agenda: one sentence and the event cards, no model rewrite, no wall of text.
+    if let Some(a) = agenda.filter(|_| !calendar_events.is_empty()) {
+        let tz = st.cfg.time_zone;
+        let mut m = crate::agenda::message(a, calendar_events, tz);
+        if let Some(g) = &st.geocoder {
+            g.fill(&mut m.blocks).await;
+            g.add_travel(&mut m.blocks).await;
+        }
+        m.blocks = m
+            .blocks
+            .iter()
+            .filter_map(lucina_store::rich::normalize_block)
+            .collect();
+        crate::agenda::with_navigation(&mut m);
+        let text = crate::agenda::plain_text(a, calendar_events, &m.blocks, tz);
+        return (Some(m), text.clone(), text);
     }
     let draft = crate::rich::Draft {
         text: reply,
@@ -919,11 +949,7 @@ async fn json_turn(
                 tracing::warn!(session_id = %t.session, %blocked, "secretary mcp turn refused");
                 return Finish::refusal(&persona, blocked);
             }
-            Some(Ok(o)) => {
-                let mut f = Finish::reply(o.reply, &o.action).with(o.action_result, o.meta);
-                f.calendar_events = o.events;
-                return f;
-            }
+            Some(Ok(o)) => return calendar_finish(o),
             None => {}
         }
     }
@@ -1484,7 +1510,7 @@ fn spawn_job(
                 };
                 // Job results are formatted without another model call.
                 let (rich_msg, text, _) =
-                    rich_reply(&st, &result, &message, &action, "", false, &[]).await;
+                    rich_reply(&st, &result, &message, &action, "", false, &[], None).await;
                 let item = record(text, rich_msg.as_ref());
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
@@ -1815,10 +1841,23 @@ async fn tools_turn(
         (Some(d), None) => delegation_settings(d, &message, mcp).await,
         _ => None,
     };
+    // Calendar questions ("cosa ho domani?", "dove si tiene la Hack Night?") are answered from
+    // the calendar like on the JSON planner, never by the model from memory or notes.
+    let calendar = if secrets.is_none()
+        && delegation.is_none()
+        && settled.is_none()
+        && st.cfg.calendar_enabled
+    {
+        crate::bridges::calendar_read(&st.secretary, &message, now, tz).await
+    } else {
+        None
+    };
     let finish = if let Some(f) = secrets {
         f
     } else if let Some(f) = delegation {
         f
+    } else if let Some(o) = calendar {
+        calendar_finish(o)
     } else if let Some(result) = settled {
         let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
@@ -1888,6 +1927,7 @@ async fn tools_turn(
         // Secrets replies are fixed texts: no model rewrite.
         !finish.action.starts_with("secrets_"),
         &finish.calendar_events,
+        finish.agenda.as_ref(),
     )
     .await;
     st.recent

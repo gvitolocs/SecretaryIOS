@@ -8,6 +8,7 @@
 //! are off; reminder writes are forwarded to the Node Lucina; Honcho is read
 //! only. See `README` in the crate docs of [`config`].
 
+pub mod agenda;
 pub mod api;
 pub mod bridges;
 pub mod capabilities;
