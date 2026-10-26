@@ -35,20 +35,35 @@ pub struct Library {
 
 impl Library {
     pub fn open(cfg: Config) -> anyhow::Result<Self> {
-        for d in [cfg.data_dir.clone(), cfg.spool_dir(), cfg.uploads_dir(), cfg.thumbs_dir()] {
+        for d in [
+            cfg.data_dir.clone(),
+            cfg.spool_dir(),
+            cfg.uploads_dir(),
+            cfg.thumbs_dir(),
+        ] {
             std::fs::create_dir_all(d)?;
         }
         let db = Db::open(&cfg.db_path())?;
         let (events, _) = broadcast::channel(256);
-        let signer = cfg
-            .play_secret
-            .as_deref()
-            .map(|s| Arc::new(secretary_media_stream::Signer::new(s, Duration::from_secs(12 * 3600))));
-        Ok(Self { cfg: Arc::new(cfg), db, events, signer })
+        let signer = cfg.play_secret.as_deref().map(|s| {
+            Arc::new(secretary_media_stream::Signer::new(
+                s,
+                Duration::from_secs(12 * 3600),
+            ))
+        });
+        Ok(Self {
+            cfg: Arc::new(cfg),
+            db,
+            events,
+            signer,
+        })
     }
 
     pub fn emit(&self, kind: &'static str, item_id: &str) {
-        let _ = self.events.send(Event { kind, item_id: item_id.to_string() });
+        let _ = self.events.send(Event {
+            kind,
+            item_id: item_id.to_string(),
+        });
     }
 }
 
@@ -74,7 +89,10 @@ pub fn ingest_file(
         None => store::hash_file(src)?,
     };
     let name_path = PathBuf::from(client.filename.clone().unwrap_or_else(|| {
-        src.file_name().and_then(|n| n.to_str()).unwrap_or("file").to_string()
+        src.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string()
     }));
     let mime = meta::mime_for(&name_path, client.mime.as_deref());
     let ext = meta::ext_for(&name_path, &mime);
@@ -97,7 +115,11 @@ pub fn ingest_file(
             }
             c.query_row("SELECT version FROM items WHERE id = ?1", [item_id], |r| r.get(0))
         })?;
-        return Ok(IngestResult { item_id: item_id.clone(), duplicate: true, version });
+        return Ok(IngestResult {
+            item_id: item_id.clone(),
+            duplicate: true,
+            version,
+        });
     }
 
     let have_blob = lib.db.with(|c| db::blob(c, &hash))?.is_some();
@@ -120,11 +142,36 @@ pub fn ingest_file(
     let (item_id, version, event) = match decision {
         IngestDecision::New => {
             let id = db::new_id("itm");
-            lib.db.with(|c| insert_item(c, &id, &hash, bytes, &name_path, &x, place.as_ref(), client))?;
+            let raced = lib.db.with(|c| {
+                insert_new_or_duplicate(
+                    c,
+                    &id,
+                    &hash,
+                    bytes,
+                    &name_path,
+                    &x,
+                    place.as_ref(),
+                    client,
+                )
+            })?;
+            if let Some(item_id) = raced {
+                let version = lib.db.with(|c| {
+                    c.query_row("SELECT version FROM items WHERE id = ?1", [&item_id], |r| {
+                        r.get(0)
+                    })
+                })?;
+                return Ok(IngestResult {
+                    item_id,
+                    duplicate: true,
+                    version,
+                });
+            }
             (id, 1, "item.added")
         }
         IngestDecision::NewVersion { item_id } => {
-            let v = lib.db.with(|c| new_version(c, &item_id, &hash, bytes, &x, place.as_ref()))?;
+            let v = lib
+                .db
+                .with(|c| new_version(c, &item_id, &hash, bytes, &x, place.as_ref()))?;
             let dir = thumbs::dir_for(cfg, &item_id);
             for f in ["s.jpg", "l.jpg", "poster.jpg", "preview.jpg"] {
                 let _ = std::fs::remove_file(dir.join(f));
@@ -140,26 +187,74 @@ pub fn ingest_file(
     }
     lib.db.with(|c| db::reindex(c, &item_id))?;
     lib.emit(event, &item_id);
-    Ok(IngestResult { item_id, duplicate: false, version })
+    Ok(IngestResult {
+        item_id,
+        duplicate: false,
+        version,
+    })
 }
 
 fn known_for(c: &Connection, hash: &str, client: &ClientMeta) -> rusqlite::Result<Known> {
     let by_hash = c
-        .query_row("SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1", [hash], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1",
+            [hash],
+            |r| r.get(0),
+        )
         .optional()?;
     let by_asset = match (&client.device, &client.asset_id) {
         (Some(d), Some(a)) => c
-            .query_row("SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2", params![d, a], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2",
+                params![d, a],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .optional()?,
         _ => None,
     };
     Ok(Known { by_hash, by_asset })
 }
 
+/// The insert of a New item, deciding again under the catalog lock (bug M3 in docs/verification.md):
+/// `known_for` ran before `store::place_new`, so a concurrent finish of the same bytes may have
+/// added an item since. Then nothing is inserted and that item is returned, with this phone asset
+/// recorded on it as the Duplicate branch does. The check and the insert run in one `Db::with`,
+/// so no other ingest can come between them.
+#[allow(clippy::too_many_arguments)]
+fn insert_new_or_duplicate(
+    c: &mut Connection,
+    id: &str,
+    hash: &str,
+    bytes: i64,
+    name: &Path,
+    x: &Extracted,
+    place: Option<&db::Place>,
+    client: &ClientMeta,
+) -> rusqlite::Result<Option<String>> {
+    let existing: Option<String> = c
+        .query_row(
+            "SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1",
+            [hash],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if let (Some(dev), Some(asset)) = (&client.device, &client.asset_id) {
+            c.execute(
+                "UPDATE items SET device = ?2, asset_id = ?3 WHERE id = ?1 AND asset_id IS NULL",
+                params![existing, dev, asset],
+            )?;
+        }
+        return Ok(Some(existing));
+    }
+    insert_item(c, id, hash, bytes, name, x, place, client)?;
+    Ok(None)
+}
+
 fn sort_at(taken: Option<DateTime<Utc>>) -> String {
-    taken.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)).unwrap_or_else(now_str)
+    taken
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(now_str)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -178,9 +273,15 @@ fn insert_item(
     let title = client
         .title
         .clone()
-        .or_else(|| name.file_name().and_then(|n| n.to_str()).map(str::to_string))
+        .or_else(|| {
+            name.file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| "Untitled".into());
-    let taken = x.taken_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let taken = x
+        .taken_at
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     let source = client.source.clone().unwrap_or_else(|| "upload".into());
     tx.execute(
         "INSERT INTO items (id, kind, title, caption, hash, mime, bytes, taken_at, sort_at, width, height, duration_ms,
@@ -220,11 +321,21 @@ fn insert_item(
     )?;
     if let (Some(dev), Some(pair)) = (&client.device, &client.live_pair_asset) {
         let other: Option<String> = tx
-            .query_row("SELECT id FROM items WHERE device = ?1 AND asset_id = ?2", params![dev, pair], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM items WHERE device = ?1 AND asset_id = ?2",
+                params![dev, pair],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(other) = other {
-            tx.execute("UPDATE items SET live_pair = ?2 WHERE id = ?1", params![id, other])?;
-            tx.execute("UPDATE items SET live_pair = ?2 WHERE id = ?1", params![other, id])?;
+            tx.execute(
+                "UPDATE items SET live_pair = ?2 WHERE id = ?1",
+                params![id, other],
+            )?;
+            tx.execute(
+                "UPDATE items SET live_pair = ?2 WHERE id = ?1",
+                params![other, id],
+            )?;
         }
     }
     for key in system_albums_for(&x.kind, &source, client) {
@@ -263,9 +374,11 @@ fn system_albums_for(kind: &str, source: &str, client: &ClientMeta) -> Vec<&'sta
 
 pub fn find_or_create_album(c: &Connection, title: &str) -> rusqlite::Result<String> {
     if let Some(id) = c
-        .query_row("SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE ORDER BY created_at LIMIT 1", [title], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT id FROM albums WHERE title = ?1 COLLATE NOCASE ORDER BY created_at LIMIT 1",
+            [title],
+            |r| r.get(0),
+        )
         .optional()?
     {
         return Ok(id);
@@ -288,13 +401,18 @@ fn new_version(
     place: Option<&db::Place>,
 ) -> rusqlite::Result<i64> {
     let tx = c.transaction()?;
-    let (old_hash, version): (String, i64) =
-        tx.query_row("SELECT hash, version FROM items WHERE id = ?1", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let (old_hash, version): (String, i64) = tx.query_row(
+        "SELECT hash, version FROM items WHERE id = ?1",
+        [item_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
     tx.execute(
         "INSERT OR IGNORE INTO item_versions (item_id, version, hash, replaced_at) VALUES (?1, ?2, ?3, ?4)",
         params![item_id, version, old_hash, now_str()],
     )?;
-    let taken = x.taken_at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let taken = x
+        .taken_at
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     tx.execute(
         "UPDATE items SET hash = ?2, mime = ?3, bytes = ?4, version = ?5, width = ?6, height = ?7, duration_ms = ?8,
             video_codec = ?9, audio_codec = ?10, taken_at = COALESCE(?11, taken_at), sort_at = COALESCE(?11, sort_at),
@@ -343,9 +461,17 @@ pub struct ExternalReq {
     pub album: Option<String>,
 }
 
-pub fn register_external(lib: &Library, source: &str, ext_id: &str, req: &ExternalReq) -> anyhow::Result<IngestResult> {
+pub fn register_external(
+    lib: &Library,
+    source: &str,
+    ext_id: &str,
+    req: &ExternalReq,
+) -> anyhow::Result<IngestResult> {
     let path = PathBuf::from(&req.path);
-    anyhow::ensure!(path.is_absolute() && path.is_file(), "path must be an existing absolute file");
+    anyhow::ensure!(
+        path.is_absolute() && path.is_file(),
+        "path must be an existing absolute file"
+    );
     let hash = store::hash_file(&path)?;
     let mime = meta::mime_for(&path, req.mime.as_deref());
     let ext = meta::ext_for(&path, &mime);
@@ -365,9 +491,11 @@ pub fn register_external(lib: &Library, source: &str, ext_id: &str, req: &Extern
     }
     let links = (!req.links.is_null()).then(|| req.links.to_string());
     let existing: Option<String> = lib.db.with(|c| {
-        c.query_row("SELECT item_id FROM externals WHERE source = ?1 AND ext_id = ?2", params![source, ext_id], |r| {
-            r.get(0)
-        })
+        c.query_row(
+            "SELECT item_id FROM externals WHERE source = ?1 AND ext_id = ?2",
+            params![source, ext_id],
+            |r| r.get(0),
+        )
         .optional()
     })?;
     lib.db.with(|c| {
@@ -394,7 +522,10 @@ pub fn register_external(lib: &Library, source: &str, ext_id: &str, req: &Extern
             let name = PathBuf::from(req.title.clone().unwrap_or_else(|| ext_id.to_string()));
             lib.db.with(|c| {
                 insert_item(c, &id, &hash, bytes, &name, &x, None, &client)?;
-                c.execute("UPDATE items SET links = ?2 WHERE id = ?1", params![id, links])?;
+                c.execute(
+                    "UPDATE items SET links = ?2 WHERE id = ?1",
+                    params![id, links],
+                )?;
                 c.execute(
                     "INSERT INTO externals (source, ext_id, item_id) VALUES (?1, ?2, ?3)",
                     params![source, ext_id, id],
@@ -405,23 +536,42 @@ pub fn register_external(lib: &Library, source: &str, ext_id: &str, req: &Extern
         }
     };
     lib.db.with(|c| {
-        c.execute("UPDATE items SET thumb_state = 'pending' WHERE id = ?1", [&item_id])?;
+        c.execute(
+            "UPDATE items SET thumb_state = 'pending' WHERE id = ?1",
+            [&item_id],
+        )?;
         db::reindex(c, &item_id)
     })?;
     lib.emit(event, &item_id);
-    Ok(IngestResult { item_id, duplicate: false, version: 1 })
+    Ok(IngestResult {
+        item_id,
+        duplicate: false,
+        version: 1,
+    })
 }
 
-pub fn unregister_external(lib: &Library, source: &str, ext_id: &str) -> anyhow::Result<Option<String>> {
+pub fn unregister_external(
+    lib: &Library,
+    source: &str,
+    ext_id: &str,
+) -> anyhow::Result<Option<String>> {
     let id: Option<String> = lib.db.with(|c| {
         let id = c
-            .query_row("SELECT item_id FROM externals WHERE source = ?1 AND ext_id = ?2", params![source, ext_id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT item_id FROM externals WHERE source = ?1 AND ext_id = ?2",
+                params![source, ext_id],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(id) = &id {
-            c.execute("UPDATE items SET trashed_at = ?2 WHERE id = ?1", params![id, now_str()])?;
-            c.execute("DELETE FROM externals WHERE source = ?1 AND ext_id = ?2", params![source, ext_id])?;
+            c.execute(
+                "UPDATE items SET trashed_at = ?2 WHERE id = ?1",
+                params![id, now_str()],
+            )?;
+            c.execute(
+                "DELETE FROM externals WHERE source = ?1 AND ext_id = ?2",
+                params![source, ext_id],
+            )?;
         }
         Ok(id)
     })?;
@@ -433,8 +583,12 @@ pub fn unregister_external(lib: &Library, source: &str, ext_id: &str) -> anyhow:
 
 /// Where an item's current original is, if the item exists.
 pub fn original_path(lib: &Library, item_id: &str) -> anyhow::Result<Option<(PathBuf, db::Item)>> {
-    let Some(item) = lib.db.with(|c| db::get_item(c, item_id))? else { return Ok(None) };
-    let Some(b) = lib.db.with(|c| db::blob(c, &item.hash))? else { return Ok(None) };
+    let Some(item) = lib.db.with(|c| db::get_item(c, item_id))? else {
+        return Ok(None);
+    };
+    let Some(b) = lib.db.with(|c| db::blob(c, &item.hash))? else {
+        return Ok(None);
+    };
     Ok(Some((store::path_of(&lib.cfg, &b), item)))
 }
 
@@ -459,15 +613,19 @@ pub async fn thumb_worker(lib: Library) {
         for (id, kind) in batch {
             let l = lib.clone();
             let tid = id.clone();
-            let res = tokio::task::spawn_blocking(move || -> anyhow::Result<(&'static str, Option<Vec<u8>>)> {
-                let Some((path, item)) = original_path(&l, &tid)? else { return Ok(("none", None)) };
-                let state = thumbs::generate(&l.cfg, &tid, &kind, &path, item.duration_ms)?;
-                let hash = match &state {
-                    thumbs::ThumbState::Ready(h) => Some(h.clone()),
-                    thumbs::ThumbState::None => None,
-                };
-                Ok((state.as_str(), hash))
-            })
+            let res = tokio::task::spawn_blocking(
+                move || -> anyhow::Result<(&'static str, Option<Vec<u8>>)> {
+                    let Some((path, item)) = original_path(&l, &tid)? else {
+                        return Ok(("none", None));
+                    };
+                    let state = thumbs::generate(&l.cfg, &tid, &kind, &path, item.duration_ms)?;
+                    let hash = match &state {
+                        thumbs::ThumbState::Ready(h) => Some(h.clone()),
+                        thumbs::ThumbState::None => None,
+                    };
+                    Ok((state.as_str(), hash))
+                },
+            )
             .await;
             let (state, hash) = match res {
                 Ok(Ok(s)) => s,
@@ -512,7 +670,8 @@ pub async fn spool_mover(lib: Library) {
 
 /// Delete upload temp files that were abandoned for more than a week.
 pub fn sweep_uploads(lib: &Library) -> anyhow::Result<usize> {
-    let cutoff = (Utc::now() - chrono::Duration::days(7)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let cutoff = (Utc::now() - chrono::Duration::days(7))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let stale: Vec<String> = lib.db.with(|c| {
         let mut st = c.prepare("SELECT id FROM uploads WHERE finished = 0 AND updated_at < ?1")?;
         let rows = st.query_map([&cutoff], |r| r.get(0))?;
@@ -521,7 +680,8 @@ pub fn sweep_uploads(lib: &Library) -> anyhow::Result<usize> {
     for id in &stale {
         let _ = std::fs::remove_file(lib.cfg.uploads_dir().join(id));
         let _ = std::fs::remove_file(lib.cfg.uploads_dir().join(format!("{id}.preview")));
-        lib.db.with(|c| c.execute("DELETE FROM uploads WHERE id = ?1", [id]))?;
+        lib.db
+            .with(|c| c.execute("DELETE FROM uploads WHERE id = ?1", [id]))?;
     }
     Ok(stale.len())
 }
@@ -531,7 +691,11 @@ pub fn sweep_uploads(lib: &Library) -> anyhow::Result<usize> {
 pub fn index_folder(lib: &Library, label: &str, root: &Path) -> anyhow::Result<(usize, usize)> {
     let (mut added, mut kept) = (0, 0);
     // Symlinks are followed: the player's library folders are links to files elsewhere.
-    for entry in walkdir::WalkDir::new(root).follow_links(true).into_iter().filter_map(Result::ok) {
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -563,7 +727,11 @@ pub fn index_folder(lib: &Library, label: &str, root: &Path) -> anyhow::Result<(
             kept += 1;
             continue;
         }
-        let title = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&name).replace(['.', '_'], " ");
+        let title = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&name)
+            .replace(['.', '_'], " ");
         let req = ExternalReq {
             kind: Some(kind.to_string()),
             title: Some(title),
@@ -581,4 +749,155 @@ pub fn index_folder(lib: &Library, label: &str, root: &Path) -> anyhow::Result<(
         }
     }
     Ok((added, kept))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library() -> (tempfile::TempDir, Library) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = Config::for_dirs(tmp.path().join("data"), tmp.path().join("store"));
+        cfg.quiet_start = 0;
+        cfg.quiet_end = 0;
+        store::init_store(&cfg).unwrap();
+        (tmp, Library::open(cfg).unwrap())
+    }
+
+    /// A phone's asset `n` (a new asset per round: the same asset with other bytes is an edit).
+    fn client(device: &str, n: usize) -> ClientMeta {
+        ClientMeta {
+            filename: Some("same.txt".into()),
+            device: Some(device.into()),
+            asset_id: Some(format!("{device}-asset-{n}")),
+            ..Default::default()
+        }
+    }
+
+    fn items_with_hash(lib: &Library, hash: &str) -> i64 {
+        lib.db
+            .with(|c| {
+                c.query_row("SELECT COUNT(*) FROM items WHERE hash = ?1", [hash], |r| {
+                    r.get(0)
+                })
+            })
+            .unwrap()
+    }
+
+    /// M3: the decision said New, then a concurrent finish of the same bytes inserted its item.
+    #[test]
+    fn insert_after_a_concurrent_new_is_a_duplicate() {
+        let (tmp, lib) = library();
+        let src = tmp.path().join("same.txt");
+        std::fs::write(&src, b"the same bytes").unwrap();
+        let x = meta::extract(
+            &src,
+            "text/plain",
+            &client("phone-a", 0),
+            lib.cfg.tz,
+            &lib.cfg.ffprobe,
+        );
+        let name = PathBuf::from("same.txt");
+        lib.db
+            .with(|c| c.execute("INSERT INTO blobs (hash, bytes, ext, location, created_at) VALUES ('h1', 14, 'txt', 'store', 'now')", []))
+            .unwrap();
+        // Both finishes decided with an empty catalog.
+        let known = lib
+            .db
+            .with(|c| known_for(c, "h1", &client("phone-b", 0)))
+            .unwrap();
+        assert_eq!(ingest_decision(&known, "h1"), IngestDecision::New);
+        // The other one inserts first.
+        assert_eq!(
+            lib.db
+                .with(|c| insert_new_or_duplicate(
+                    c,
+                    "itm_first",
+                    "h1",
+                    14,
+                    &name,
+                    &x,
+                    None,
+                    &client("phone-a", 0)
+                ))
+                .unwrap(),
+            None
+        );
+        // This one must not add a second item made from the same bytes.
+        let got = lib
+            .db
+            .with(|c| {
+                insert_new_or_duplicate(
+                    c,
+                    "itm_second",
+                    "h1",
+                    14,
+                    &name,
+                    &x,
+                    None,
+                    &client("phone-b", 0),
+                )
+            })
+            .unwrap();
+        assert_eq!(got.as_deref(), Some("itm_first"));
+        assert_eq!(items_with_hash(&lib, "h1"), 1);
+    }
+
+    /// Two devices finish the same new bytes at the same moment, 20 times.
+    #[test]
+    fn concurrent_ingests_of_the_same_bytes_make_one_item() {
+        let (tmp, lib) = library();
+        for round in 0..20 {
+            let bytes = format!("round {round}: the same picture from two phones").into_bytes();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let results: Vec<IngestResult> = ["phone-a", "phone-b"]
+                .into_iter()
+                .map(|device| {
+                    let src = tmp.path().join(format!("{round}-{device}.txt"));
+                    std::fs::write(&src, &bytes).unwrap();
+                    let (lib, barrier) = (lib.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        ingest_file(&lib, &src, None, &client(device, round), None).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect();
+            let hash = lib
+                .db
+                .with(|c| {
+                    c.query_row(
+                        "SELECT hash FROM items WHERE id = ?1",
+                        [&results[0].item_id],
+                        |r| r.get::<_, String>(0),
+                    )
+                })
+                .unwrap();
+            let rows: Vec<String> = lib
+                .db
+                .with(|c| {
+                    let mut st = c.prepare("SELECT id || ' ' || IFNULL(device,'-') || ' ' || IFNULL(asset_id,'-') || ' ' || source || ' v' || version FROM items WHERE hash = ?1")?;
+                    let r = st.query_map([&hash], |r| r.get(0))?.collect();
+                    r
+                })
+                .unwrap();
+            assert_eq!(
+                items_with_hash(&lib, &hash),
+                1,
+                "round {round}: two items from the same bytes: {rows:?} {:?}",
+                results
+                    .iter()
+                    .map(|r| (&r.item_id, r.duplicate))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(results[0].item_id, results[1].item_id, "round {round}");
+            assert_eq!(
+                results.iter().filter(|r| r.duplicate).count(),
+                1,
+                "round {round}"
+            );
+        }
+    }
 }

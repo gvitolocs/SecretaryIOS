@@ -18,6 +18,8 @@ struct Plugin: Identifiable {
             Plugin(id: "gallery", icon: "photo.on.rectangle.angled", title: "Gallery",
                    detail: app.backup.backedUp > 0 ? String(localized: "\(app.backup.backedUp) backed up") : nil,
                    isActive: app.backup.remaining > 0) { app.showGallery = true },
+            Plugin(id: "drive", icon: "externaldrive", title: "Drive",
+                   detail: String(localized: "Films, files and shares")) { app.showDrive = true },
             Plugin(id: "memos", icon: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform",
                    title: "Voice memos",
                    detail: app.memos.recorder.isActive ? String(localized: "Recording") : nil,
@@ -51,6 +53,7 @@ struct PluginsView: View {
         }
         .lucinaScreen("Plugins")
         .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
+        .navigationDestination(isPresented: $app.showDrive) { DriveScreen().environment(app.drive) }
         .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
         .navigationDestination(isPresented: $app.showMedia) { MediaLibraryView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }

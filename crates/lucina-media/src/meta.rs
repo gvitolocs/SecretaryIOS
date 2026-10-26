@@ -65,20 +65,31 @@ pub fn mime_for(path: &Path, hint: Option<&str>) -> String {
     if let Some(h) = hint.filter(|h| h.contains('/') && *h != "application/octet-stream") {
         return h.to_ascii_lowercase();
     }
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "heic" | "heif" => "image/heic".into(),
         "dng" => "image/x-adobe-dng".into(),
         "mov" => "video/quicktime".into(),
         "m4a" => "audio/mp4".into(),
         "mkv" => "video/x-matroska".into(),
-        _ => mime_guess::from_ext(&ext).first_or_octet_stream().essence_str().to_string(),
+        _ => mime_guess::from_ext(&ext)
+            .first_or_octet_stream()
+            .essence_str()
+            .to_string(),
     }
 }
 
 /// Lower-case extension used for the stored object, derived from the MIME type if the name has none.
 pub fn ext_for(path: &Path, mime: &str) -> String {
-    if let Some(e) = path.extension().and_then(|e| e.to_str()).filter(|e| e.len() <= 8 && e.is_ascii()) {
+    if let Some(e) = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| e.len() <= 8 && e.is_ascii())
+    {
         return e.to_ascii_lowercase();
     }
     match mime {
@@ -96,7 +107,11 @@ pub fn ext_for(path: &Path, mime: &str) -> String {
 
 pub fn extract(path: &Path, mime: &str, client: &ClientMeta, tz: Tz, ffprobe: &Path) -> Extracted {
     let kind = kind_for_mime(mime).to_string();
-    let mut x = Extracted { kind: kind.clone(), mime: mime.to_string(), ..Default::default() };
+    let mut x = Extracted {
+        kind: kind.clone(),
+        mime: mime.to_string(),
+        ..Default::default()
+    };
     match kind.as_str() {
         "photo" => exif_into(path, tz, &mut x),
         "video" | "audio" => probe_into(path, ffprobe, &mut x),
@@ -109,7 +124,11 @@ pub fn extract(path: &Path, mime: &str, client: &ClientMeta, tz: Tz, ffprobe: &P
         }
     }
     // The phone's values describe the asset as the owner sees it (edited dates, places).
-    if let Some(t) = client.taken_at.as_deref().and_then(|t| DateTime::parse_from_rfc3339(t).ok()) {
+    if let Some(t) = client
+        .taken_at
+        .as_deref()
+        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+    {
         x.taken_at = Some(t.with_timezone(&Utc));
     }
     if let (Some(lat), Some(lon)) = (client.lat, client.lon) {
@@ -124,15 +143,31 @@ pub fn extract(path: &Path, mime: &str, client: &ClientMeta, tz: Tz, ffprobe: &P
 
 fn exif_into(path: &Path, tz: Tz, x: &mut Extracted) {
     use nom_exif::ExifTag;
-    let Ok(exif) = nom_exif::read_exif(path) else { return };
-    let text = |t: ExifTag| exif.get(t).and_then(|v| v.as_str()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let num = |t: ExifTag| exif.get(t).and_then(|v| v.as_u32().map(i64::from).or_else(|| v.as_u16().map(i64::from)));
+    let Ok(exif) = nom_exif::read_exif(path) else {
+        return;
+    };
+    let text = |t: ExifTag| {
+        exif.get(t)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let num = |t: ExifTag| {
+        exif.get(t).and_then(|v| {
+            v.as_u32()
+                .map(i64::from)
+                .or_else(|| v.as_u16().map(i64::from))
+        })
+    };
     let offset = text(ExifTag::OffsetTimeOriginal).and_then(|o| parse_offset(&o));
     for tag in [ExifTag::DateTimeOriginal, ExifTag::CreateDate] {
         if let Some(dt) = exif.get(tag).and_then(|v| v.as_datetime()) {
             x.taken_at = match (dt.aware(), offset) {
                 (Some(a), _) => Some(a.with_timezone(&Utc)),
-                (None, Some(off)) => off.from_local_datetime(&dt.into_naive()).single().map(|d| d.with_timezone(&Utc)),
+                (None, Some(off)) => off
+                    .from_local_datetime(&dt.into_naive())
+                    .single()
+                    .map(|d| d.with_timezone(&Utc)),
                 (None, None) => local_to_utc(dt.into_naive(), tz),
             };
             if x.taken_at.is_some() {
@@ -165,12 +200,16 @@ fn parse_offset(s: &str) -> Option<FixedOffset> {
         '-' => -1,
         _ => return None,
     };
-    let (h, m) = s[1..].split_once(':').unwrap_or((&s[1..3.min(s.len())], s.get(3..).unwrap_or("0")));
+    let (h, m) = s[1..]
+        .split_once(':')
+        .unwrap_or((&s[1..3.min(s.len())], s.get(3..).unwrap_or("0")));
     FixedOffset::east_opt(sign * (h.parse::<i32>().ok()? * 3600 + m.parse::<i32>().ok()? * 60))
 }
 
 fn local_to_utc(n: NaiveDateTime, tz: Tz) -> Option<DateTime<Utc>> {
-    tz.from_local_datetime(&n).earliest().map(|d| d.with_timezone(&Utc))
+    tz.from_local_datetime(&n)
+        .earliest()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 #[derive(Deserialize)]
@@ -201,15 +240,26 @@ struct ProbeFormat {
 
 fn probe_into(path: &Path, ffprobe: &Path, x: &mut Extracted) {
     let out = Command::new(ffprobe)
-        .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+        ])
         .arg(path)
         .output();
     let Ok(out) = out else { return };
-    let Ok(p) = serde_json::from_slice::<Probe>(&out.stdout) else { return };
+    let Ok(p) = serde_json::from_slice::<Probe>(&out.stdout) else {
+        return;
+    };
     let mut rotation = 0i64;
     for s in &p.streams {
         match s.codec_type.as_deref() {
-            Some("video") if x.video_codec.is_none() && s.codec_name.as_deref() != Some("mjpeg") => {
+            Some("video")
+                if x.video_codec.is_none() && s.codec_name.as_deref() != Some("mjpeg") =>
+            {
                 x.video_codec = s.codec_name.clone();
                 x.width = s.width;
                 x.height = s.height;
@@ -231,8 +281,16 @@ fn probe_into(path: &Path, ffprobe: &Path, x: &mut Extracted) {
         x.kind = "audio".into();
     }
     let Some(f) = p.format else { return };
-    x.duration_ms = f.duration.and_then(|d| d.parse::<f64>().ok()).map(|d| (d * 1000.0).round() as i64);
-    let tag = |k: &str| f.tags.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone());
+    x.duration_ms = f
+        .duration
+        .and_then(|d| d.parse::<f64>().ok())
+        .map(|d| (d * 1000.0).round() as i64);
+    let tag = |k: &str| {
+        f.tags
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(k))
+            .map(|(_, v)| v.clone())
+    };
     x.taken_at = tag("com.apple.quicktime.creationdate")
         .and_then(|d| parse_loose_datetime(&d))
         .or_else(|| tag("creation_time").and_then(|d| parse_loose_datetime(&d)))
@@ -273,7 +331,10 @@ pub fn parse_iso6709(s: &str) -> Option<(f64, f64)> {
     }
     let lat: f64 = parts.first()?.parse().ok()?;
     let lon: f64 = parts.get(1)?.parse().ok()?;
-    ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon) && !(lat == 0.0 && lon == 0.0)).then_some((lat, lon))
+    ((-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+        && !(lat == 0.0 && lon == 0.0))
+        .then_some((lat, lon))
 }
 
 #[cfg(test)]
@@ -282,8 +343,14 @@ mod tests {
 
     #[test]
     fn iso6709_and_apple_dates_parse() {
-        assert_eq!(parse_iso6709("+55.6761+012.5683+010.000/"), Some((55.6761, 12.5683)));
-        assert_eq!(parse_iso6709("-33.8688+151.2093/"), Some((-33.8688, 151.2093)));
+        assert_eq!(
+            parse_iso6709("+55.6761+012.5683+010.000/"),
+            Some((55.6761, 12.5683))
+        );
+        assert_eq!(
+            parse_iso6709("-33.8688+151.2093/"),
+            Some((-33.8688, 151.2093))
+        );
         assert_eq!(parse_iso6709("+00.0000+000.0000/"), None);
         let d = parse_loose_datetime("2025-07-12T14:03:22+0200").unwrap();
         assert_eq!(d.to_rfc3339(), "2025-07-12T12:03:22+00:00");
@@ -294,10 +361,16 @@ mod tests {
     fn mime_and_kind() {
         assert_eq!(mime_for(Path::new("IMG_0001.HEIC"), None), "image/heic");
         assert_eq!(mime_for(Path::new("a.mov"), None), "video/quicktime");
-        assert_eq!(mime_for(Path::new("a.bin"), Some("image/jpeg")), "image/jpeg");
+        assert_eq!(
+            mime_for(Path::new("a.bin"), Some("image/jpeg")),
+            "image/jpeg"
+        );
         assert_eq!(kind_for_mime("audio/mp4"), "audio");
         assert_eq!(ext_for(Path::new("x"), "image/heic"), "heic");
         assert_eq!(parse_offset("+02:00"), FixedOffset::east_opt(7200));
-        assert_eq!(parse_offset("-0530"), FixedOffset::east_opt(-(5 * 3600 + 30 * 60)));
+        assert_eq!(
+            parse_offset("-0530"),
+            FixedOffset::east_opt(-(5 * 3600 + 30 * 60))
+        );
     }
 }

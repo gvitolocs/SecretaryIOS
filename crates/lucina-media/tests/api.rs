@@ -26,17 +26,41 @@ fn setup() -> (tempfile::TempDir, Library, Router) {
     (tmp, lib, app)
 }
 
-async fn put_bytes(app: &Router, uri: &str, data: &[u8]) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
+async fn put_bytes(
+    app: &Router,
+    uri: &str,
+    data: &[u8],
+) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
     let len = data.len().to_string();
-    call(app, "PUT", uri, Some(Body::from(data.to_vec())), &[("content-length", &len)]).await
+    call(
+        app,
+        "PUT",
+        uri,
+        Some(Body::from(data.to_vec())),
+        &[("content-length", &len)],
+    )
+    .await
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Body>, headers: &[(&str, &str)]) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
-    let mut b = Request::builder().method(method).uri(uri).header("x-media-upstream-key", KEY);
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Body>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Vec<u8>, axum::http::HeaderMap) {
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-media-upstream-key", KEY);
     for (k, v) in headers {
         b = b.header(*k, *v);
     }
-    let res = app.clone().oneshot(b.body(body.unwrap_or_else(Body::empty)).unwrap()).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(b.body(body.unwrap_or_else(Body::empty)).unwrap())
+        .await
+        .unwrap();
     let status = res.status();
     let headers = res.headers().clone();
     let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
@@ -44,7 +68,14 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Body>, headers
 }
 
 async fn json_call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
-    let (s, b, _) = call(app, method, uri, Some(Body::from(body.to_string())), &[("content-type", "application/json")]).await;
+    let (s, b, _) = call(
+        app,
+        method,
+        uri,
+        Some(Body::from(body.to_string())),
+        &[("content-type", "application/json")],
+    )
+    .await;
     (s, serde_json::from_slice(&b).unwrap_or(Value::Null))
 }
 
@@ -56,14 +87,21 @@ async fn get_json(app: &Router, uri: &str) -> (StatusCode, Value) {
 fn png(w: u32, h: u32, shade: u8) -> Vec<u8> {
     let img = image::RgbImage::from_pixel(w, h, image::Rgb([shade, 100, 200]));
     let mut out = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgb8(img).write_to(&mut out, image::ImageFormat::Png).unwrap();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
     out.into_inner()
 }
 
 async fn upload(app: &Router, name: &str, data: &[u8], meta: Value) -> Value {
     let hash = blake3::hash(data).to_hex().to_string();
-    let (s, created) =
-        json_call(app, "POST", "/v1/media/uploads", json!({"filename": name, "size": data.len(), "hash": hash, "meta": meta})).await;
+    let (s, created) = json_call(
+        app,
+        "POST",
+        "/v1/media/uploads",
+        json!({"filename": name, "size": data.len(), "hash": hash, "meta": meta}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{created}");
     if created["duplicate"] == true {
         return created;
@@ -71,28 +109,72 @@ async fn upload(app: &Router, name: &str, data: &[u8], meta: Value) -> Value {
     let id = created["upload_id"].as_str().unwrap().to_string();
     // Two chunks, with a retry of the first one in between.
     let mid = data.len() / 2;
-    let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset=0"), &data[..mid]).await;
+    let (s, _, _) = put_bytes(
+        app,
+        &format!("/v1/media/uploads/{id}?offset=0"),
+        &data[..mid],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, b, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset=0"), &data[..mid]).await;
+    let (s, b, _) = put_bytes(
+        app,
+        &format!("/v1/media/uploads/{id}?offset=0"),
+        &data[..mid],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["offset"], mid as u64);
-    let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset={}", mid + 1), &[1u8]).await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&b).unwrap()["offset"],
+        mid as u64
+    );
+    let (s, _, _) = put_bytes(
+        app,
+        &format!("/v1/media/uploads/{id}?offset={}", mid + 1),
+        &[1u8],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
     if mid > 4 {
         // An iOS background retry: the whole file again from 0; the stored half is skipped.
         let (s, b, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset=0"), data).await;
         assert_eq!(s, StatusCode::OK);
-        assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["offset"], data.len() as u64);
-        let (s, done) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&b).unwrap()["offset"],
+            data.len() as u64
+        );
+        let (s, done) = json_call(
+            app,
+            "POST",
+            &format!("/v1/media/uploads/{id}/finish"),
+            json!({}),
+        )
+        .await;
         assert_eq!(s, StatusCode::OK, "{done}");
         return done;
     }
-    let (s, _, _) = put_bytes(app, &format!("/v1/media/uploads/{id}?offset={mid}"), &data[mid..]).await;
+    let (s, _, _) = put_bytes(
+        app,
+        &format!("/v1/media/uploads/{id}?offset={mid}"),
+        &data[mid..],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, done) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+    let (s, done) = json_call(
+        app,
+        "POST",
+        &format!("/v1/media/uploads/{id}/finish"),
+        json!({}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{done}");
     // A retried finish answers with the same item.
-    let (s, again) = json_call(app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+    let (s, again) = json_call(
+        app,
+        "POST",
+        &format!("/v1/media/uploads/{id}/finish"),
+        json!({}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(again["item_id"], done["item_id"]);
     done
@@ -104,7 +186,13 @@ async fn wait_thumbs(lib: &Library) {
     for _ in 0..600 {
         let pending: i64 = lib
             .db
-            .with(|c| c.query_row("SELECT COUNT(*) FROM items WHERE thumb_state = 'pending'", [], |r| r.get(0)))
+            .with(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM items WHERE thumb_state = 'pending'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
             .unwrap();
         if pending == 0 {
             break;
@@ -119,17 +207,37 @@ async fn upstream_key_is_required() {
     let (_t, _lib, app) = setup();
     let res = app
         .clone()
-        .oneshot(Request::builder().uri("/v1/media/items").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/media/items")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     let res = app
         .clone()
-        .oneshot(Request::builder().uri("/v1/media/items").header("x-media-upstream-key", "wrong").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/media/items")
+                .header("x-media-upstream-key", "wrong")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-    let res = app.clone().oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap()).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 }
 
@@ -179,30 +287,79 @@ async fn phone_backup_flow() {
     // Pagination.
     let (_, p1) = get_json(&app, "/v1/media/items?limit=1").await;
     let cursor = p1["next_cursor"].as_str().unwrap().to_string();
-    let (_, p2) = get_json(&app, &format!("/v1/media/items?limit=1&cursor={}", urlencode(&cursor))).await;
+    let (_, p2) = get_json(
+        &app,
+        &format!("/v1/media/items?limit=1&cursor={}", urlencode(&cursor)),
+    )
+    .await;
     assert_eq!(p2["items"][0]["id"], other_id.as_str());
     assert!(p2["next_cursor"].is_null());
 
     // Original with Range, ETag, 304.
-    let (s, body, h) = call(&app, "GET", &format!("/v1/media/items/{item_id}/original"), None, &[("range", "bytes=0-9")]).await;
+    let (s, body, h) = call(
+        &app,
+        "GET",
+        &format!("/v1/media/items/{item_id}/original"),
+        None,
+        &[("range", "bytes=0-9")],
+    )
+    .await;
     assert_eq!(s, StatusCode::PARTIAL_CONTENT);
     assert_eq!(body, photo[..10]);
-    assert_eq!(h["content-range"], format!("bytes 0-9/{}", photo.len()).as_str());
+    assert_eq!(
+        h["content-range"],
+        format!("bytes 0-9/{}", photo.len()).as_str()
+    );
     let etag = h["etag"].to_str().unwrap().to_string();
-    let (s, _, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/original"), None, &[("if-none-match", &etag)]).await;
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/v1/media/items/{item_id}/original"),
+        None,
+        &[("if-none-match", &etag)],
+    )
+    .await;
     assert_eq!(s, StatusCode::NOT_MODIFIED);
-    let (s, thumb, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/thumb?size=256"), None, &[]).await;
+    let (s, thumb, _) = call(
+        &app,
+        "GET",
+        &format!("/v1/media/items/{item_id}/thumb?size=256"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(&thumb[..2], &[0xFF, 0xD8]);
-    let (s, grid, h) = call(&app, "GET", &format!("/v1/media/items/{item_id}/r/grid?v=1"), None, &[]).await;
+    let (s, grid, h) = call(
+        &app,
+        "GET",
+        &format!("/v1/media/items/{item_id}/r/grid?v=1"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(&grid[..2], &[0xFF, 0x0A]);
     assert_eq!(h["content-type"], "image/jxl");
     assert!(h["cache-control"].to_str().unwrap().contains("immutable"));
-    let (s, _, _) = call(&app, "GET", &format!("/v1/media/items/{item_id}/r/preview?v=1"), None, &[]).await;
+    let (s, _, _) = call(
+        &app,
+        "GET",
+        &format!("/v1/media/items/{item_id}/r/preview?v=1"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(items[0]["thumbhash"].as_str().is_some_and(|t| t.len() < 60), "{}", items[0]);
-    assert!(items[0]["urls"]["grid"].as_str().unwrap().contains("/r/grid"));
+    assert!(
+        items[0]["thumbhash"].as_str().is_some_and(|t| t.len() < 60),
+        "{}",
+        items[0]
+    );
+    assert!(items[0]["urls"]["grid"]
+        .as_str()
+        .unwrap()
+        .contains("/r/grid"));
 
     // Edited on the phone: same asset, new bytes → same item, version 2.
     let edited = upload(&app, "IMG_0001.PNG", &png(1200, 800, 200), meta.clone()).await;
@@ -210,31 +367,65 @@ async fn phone_backup_flow() {
     assert_eq!(edited["version"], 2);
 
     // Albums and search by album title.
-    let (s, album) = json_call(&app, "POST", "/v1/media/albums", json!({"title": "Copenhagen summer", "item_ids": [item_id]})).await;
+    let (s, album) = json_call(
+        &app,
+        "POST",
+        "/v1/media/albums",
+        json!({"title": "Copenhagen summer", "item_ids": [item_id]}),
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED);
     assert_eq!(album["count"], 1);
     let (_, p) = get_json(&app, "/v1/media/items?album=copenhagen%20summer").await;
     assert_eq!(p["items"].as_array().unwrap().len(), 1);
-    assert!(p["albums"].as_array().unwrap().iter().any(|a| a == "Copenhagen summer"));
+    assert!(p["albums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a == "Copenhagen summer"));
     let (_, p) = get_json(&app, "/v1/media/items?q=summer").await;
     assert_eq!(p["items"][0]["id"], item_id.as_str());
-    let (s, r) = json_call(&app, "PUT", "/v1/media/albums/sys-lucina/items", json!({"item_ids": [other_id, "itm_missing"]})).await;
+    let (s, r) = json_call(
+        &app,
+        "PUT",
+        "/v1/media/albums/sys-lucina/items",
+        json!({"item_ids": [other_id, "itm_missing"]}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(r["items"], 1);
     let (_, p) = get_json(&app, "/v1/media/items?album=sys-lucina").await;
     assert_eq!(p["items"][0]["id"], other_id.as_str());
     let (_, albums) = get_json(&app, "/v1/media/albums").await;
-    let camera = albums["albums"].as_array().unwrap().iter().find(|a| a["system_key"] == "camera").unwrap();
+    let camera = albums["albums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["system_key"] == "camera")
+        .unwrap();
     assert_eq!(camera["count"], 2);
 
     // Trash hides, restore brings back, nothing is removed from disk.
-    let (s, _, _) = call(&app, "DELETE", &format!("/v1/media/items/{other_id}"), None, &[]).await;
+    let (s, _, _) = call(
+        &app,
+        "DELETE",
+        &format!("/v1/media/items/{other_id}"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
     let (_, p) = get_json(&app, "/v1/media/items").await;
     assert_eq!(p["items"].as_array().unwrap().len(), 1);
     let (_, p) = get_json(&app, "/v1/media/items?trashed=true").await;
     assert_eq!(p["items"][0]["id"], other_id.as_str());
-    let (s, _) = json_call(&app, "POST", &format!("/v1/media/items/{other_id}/restore"), json!({})).await;
+    let (s, _) = json_call(
+        &app,
+        "POST",
+        &format!("/v1/media/items/{other_id}/restore"),
+        json!({}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
 
     // Device asset list for reinstall recovery.
@@ -249,12 +440,30 @@ async fn phone_backup_flow() {
 async fn bad_hash_is_refused() {
     let (_t, _lib, app) = setup();
     let data = png(10, 10, 1);
-    let (_, created) = json_call(&app, "POST", "/v1/media/uploads",
-        json!({"filename": "x.png", "size": data.len(), "hash": "0".repeat(64)})).await;
+    let (_, created) = json_call(
+        &app,
+        "POST",
+        "/v1/media/uploads",
+        json!({"filename": "x.png", "size": data.len(), "hash": "0".repeat(64)}),
+    )
+    .await;
     let id = created["upload_id"].as_str().unwrap();
-    let (s, _, _) = call(&app, "PUT", &format!("/v1/media/uploads/{id}"), Some(Body::from(data.clone())), &[]).await;
+    let (s, _, _) = call(
+        &app,
+        "PUT",
+        &format!("/v1/media/uploads/{id}"),
+        Some(Body::from(data.clone())),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _) = json_call(&app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+    let (s, _) = json_call(
+        &app,
+        "POST",
+        &format!("/v1/media/uploads/{id}/finish"),
+        json!({}),
+    )
+    .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
     let (_, p) = get_json(&app, "/v1/media/items").await;
     assert_eq!(p["items"].as_array().unwrap().len(), 0);
@@ -267,7 +476,13 @@ async fn external_voice_memo_is_indexed_in_place() {
     std::fs::write(&memo, b"not really audio").unwrap();
     let body = json!({"kind": "audio", "title": "Groceries idea", "created_at": "2026-10-24T09:00:00Z",
                       "duration_ms": 4200, "mime": "audio/mp4", "path": memo, "links": {"pdf": "/v1/memos/m1/pdf"}});
-    let (s, r) = json_call(&app, "PUT", "/internal/v1/external/voice-memo/m1", body.clone()).await;
+    let (s, r) = json_call(
+        &app,
+        "PUT",
+        "/internal/v1/external/voice-memo/m1",
+        body.clone(),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
     let (s, r2) = json_call(&app, "PUT", "/internal/v1/external/voice-memo/m1", body).await;
     assert_eq!(s, StatusCode::OK);
@@ -278,18 +493,41 @@ async fn external_voice_memo_is_indexed_in_place() {
     let (_, p) = get_json(&app, "/v1/media/items?q=groceries").await;
     assert_eq!(p["items"].as_array().unwrap().len(), 1);
     let id = r["item_id"].as_str().unwrap();
-    let (s, b, _) = call(&app, "GET", &format!("/v1/media/items/{id}/original"), None, &[]).await;
+    let (s, b, _) = call(
+        &app,
+        "GET",
+        &format!("/v1/media/items/{id}/original"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b, b"not really audio");
     assert!(memo.exists());
-    let (s, _, _) = call(&app, "DELETE", "/internal/v1/external/voice-memo/m1", None, &[]).await;
+    let (s, _, _) = call(
+        &app,
+        "DELETE",
+        "/internal/v1/external/voice-memo/m1",
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    assert!(memo.exists(), "unregistering must not delete the memo service's file");
+    assert!(
+        memo.exists(),
+        "unregistering must not delete the memo service's file"
+    );
 }
 
 fn urlencode(s: &str) -> String {
     s.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
         .collect()
 }
 
@@ -298,8 +536,13 @@ async fn internal_ingest_moves_a_shared_file_in() {
     let (t, lib, app) = setup();
     let src = t.path().join("shared photo.png");
     std::fs::write(&src, png(64, 48, 7)).unwrap();
-    let (s, r) = json_call(&app, "POST", "/internal/v1/ingest",
-        json!({"path": src, "source": "share", "album": "Shared", "move": true})).await;
+    let (s, r) = json_call(
+        &app,
+        "POST",
+        "/internal/v1/ingest",
+        json!({"path": src, "source": "share", "album": "Shared", "move": true}),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(r["kind"], "photo");
     assert_eq!(r["duplicate"], false);
@@ -312,7 +555,13 @@ async fn internal_ingest_moves_a_shared_file_in() {
     assert_eq!(r2["duplicate"], true);
     assert_eq!(r2["item_id"], id.as_str());
     assert!(again.exists(), "copied, not moved");
-    let (_, p) = json_call(&app, "GET", &format!("/internal/v1/items/{id}/path"), Value::Null).await;
+    let (_, p) = json_call(
+        &app,
+        "GET",
+        &format!("/internal/v1/items/{id}/path"),
+        Value::Null,
+    )
+    .await;
     assert!(std::path::Path::new(p["path"].as_str().unwrap()).is_file());
     let (_, page) = get_json(&app, "/v1/media/items?album=Shared").await;
     assert_eq!(page["items"][0]["id"], id.as_str());
@@ -333,14 +582,25 @@ async fn signed_renditions_need_no_upstream_key() {
     upload(&app, "a.png", &png(300, 200, 3), json!({})).await;
     wait_thumbs(&lib).await;
     let (_, page) = get_json(&app, "/v1/media/items").await;
-    let grid = page["items"][0]["urls"]["grid"].as_str().unwrap().to_string();
+    let grid = page["items"][0]["urls"]["grid"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(grid.starts_with("/v1/media/s/"), "{grid}");
     // No upstream key: the token is the auth.
-    let res = app.clone().oneshot(Request::builder().uri(&grid).body(Body::empty()).unwrap()).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri(&grid).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "image/jxl");
     let forged = grid.replacen("/v1/media/s/", "/v1/media/s/x", 1);
-    let res = app.clone().oneshot(Request::builder().uri(&forged).body(Body::empty()).unwrap()).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(Request::builder().uri(&forged).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
 
@@ -348,11 +608,76 @@ async fn signed_renditions_need_no_upstream_key() {
 async fn a_lost_upload_answers_gone() {
     let (_t, lib, app) = setup();
     let data = png(20, 20, 9);
-    let (_, created) = json_call(&app, "POST", "/v1/media/uploads", json!({"filename": "x.png", "size": data.len()})).await;
+    let (_, created) = json_call(
+        &app,
+        "POST",
+        "/v1/media/uploads",
+        json!({"filename": "x.png", "size": data.len()}),
+    )
+    .await;
     let id = created["upload_id"].as_str().unwrap().to_string();
     let (s, _, _) = put_bytes(&app, &format!("/v1/media/uploads/{id}"), &data).await;
     assert_eq!(s, StatusCode::OK);
     std::fs::remove_file(lib.cfg.uploads_dir().join(&id)).unwrap();
-    let (s, _) = json_call(&app, "POST", &format!("/v1/media/uploads/{id}/finish"), json!({})).await;
+    let (s, _) = json_call(
+        &app,
+        "POST",
+        &format!("/v1/media/uploads/{id}/finish"),
+        json!({}),
+    )
+    .await;
     assert_eq!(s, StatusCode::GONE);
+}
+
+#[tokio::test]
+async fn scope_splits_the_gallery_from_the_drive() {
+    let (tmp, lib, app) = setup();
+    for (name, source, shade) in [
+        ("phone.png", "phone-ios", 10u8),
+        ("film.png", "folder", 20),
+        ("shared.png", "ios-share", 30),
+    ] {
+        let src = tmp.path().join(name);
+        std::fs::write(&src, png(8, 8, shade)).unwrap();
+        let client = lucina_media::meta::ClientMeta {
+            filename: Some(name.into()),
+            source: Some(source.into()),
+            ..Default::default()
+        };
+        ingest::ingest_file(&lib, &src, None, &client, None).unwrap();
+    }
+    let titles = |v: &Value| -> Vec<String> {
+        let mut t: Vec<String> = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["title"].as_str().unwrap().to_string())
+            .collect();
+        t.sort();
+        t
+    };
+    let (s, all) = get_json(&app, "/v1/media/items").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(titles(&all).len(), 3);
+    let (_, gallery) = get_json(&app, "/v1/media/items?scope=gallery").await;
+    assert_eq!(titles(&gallery), vec!["phone.png"]);
+    let (_, drive) = get_json(&app, "/v1/media/items?scope=drive").await;
+    assert_eq!(titles(&drive), vec!["film.png", "shared.png"]);
+    // The camera album (phone uploads) is a Gallery album, not a Drive folder.
+    let (_, albums) = get_json(&app, "/v1/media/albums?scope=drive").await;
+    let keys: Vec<&str> = albums["albums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|a| a["system_key"].as_str())
+        .collect();
+    assert!(!keys.contains(&"camera"), "{albums}");
+    let (_, gallery_albums) = get_json(&app, "/v1/media/albums?scope=gallery").await;
+    let camera = gallery_albums["albums"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["system_key"] == "camera")
+        .expect("camera album");
+    assert_eq!(camera["count"], 1);
 }

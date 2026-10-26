@@ -93,6 +93,8 @@ struct GalleryAPI: Sendable {
     let client: APIClient
 
     struct Filter: Hashable, Sendable {
+        /// `gallery` (the phones' photos and videos) or `drive` (everything else); nil: both.
+        var scope: String?
         var kind: String?
         var album: String?
         var query: String = ""
@@ -101,6 +103,7 @@ struct GalleryAPI: Sendable {
 
     func items(_ filter: Filter, cursor: String? = nil, limit: Int = 200) async throws -> GalleryPage {
         var q: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+        if let scope = filter.scope { q.append(URLQueryItem(name: "scope", value: scope)) }
         if let kind = filter.kind { q.append(URLQueryItem(name: "kind", value: kind)) }
         if let album = filter.album { q.append(URLQueryItem(name: "album", value: album)) }
         if !filter.query.trimmingCharacters(in: .whitespaces).isEmpty { q.append(URLQueryItem(name: "q", value: filter.query)) }
@@ -109,10 +112,28 @@ struct GalleryAPI: Sendable {
         return try await client.get("/v1/media/items", query: q)
     }
 
-    func albums() async throws -> [GalleryAlbum] {
+    /// With a scope: only the albums with items there, counted there.
+    func albums(scope: String? = nil) async throws -> [GalleryAlbum] {
         struct Page: Decodable { let albums: [GalleryAlbum] }
-        let page: Page = try await client.get("/v1/media/albums")
+        let query = scope.map { [URLQueryItem(name: "scope", value: $0)] } ?? []
+        let page: Page = try await client.get("/v1/media/albums", query: query)
         return page.albums
+    }
+
+    /// The original file, downloaded to a temporary file named like it (for Quick Look).
+    func downloadOriginal(_ item: GalleryItem) async throws -> URL {
+        guard let url = absolute(item.urls?.original) else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        if let key = client.accessKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        let (file, response) = try await URLSession.shared.download(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("drive-\(item.id)", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = item.title.isEmpty ? item.id : item.title.replacingOccurrences(of: "/", with: "-")
+        let target = dir.appendingPathComponent(name)
+        try FileManager.default.moveItem(at: file, to: target)
+        return target
     }
 
     func createAlbum(title: String, items: [String]) async throws -> GalleryAlbum {

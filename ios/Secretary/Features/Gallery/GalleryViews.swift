@@ -12,7 +12,9 @@ final class GalleryStore {
     private(set) var total: Int?
     private(set) var loading = false
     var error: String?
-    var filter = GalleryAPI.Filter()
+    var filter: GalleryAPI.Filter
+    /// `gallery` (the Gallery: the phones' photos and videos) or `drive` (the Drive plugin).
+    let scope: String?
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let api: () -> GalleryAPI
 
@@ -24,14 +26,16 @@ final class GalleryStore {
         let total: Int?
     }
 
-    private static var listingURL: URL {
+    private var listingURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("gallery-listing.json")
+            .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI) {
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil) {
         self.api = api
-        if let data = try? Data(contentsOf: Self.listingURL),
+        self.scope = scope
+        filter = GalleryAPI.Filter(scope: scope)
+        if let data = try? Data(contentsOf: listingURL),
            let saved = try? JSONDecoder().decode(Listing.self, from: data) {
             items = saved.items
             cursor = saved.nextCursor
@@ -54,9 +58,9 @@ final class GalleryStore {
             total = page.total
             error = nil
             showingCachedListing = false
-            if requestedFilter == GalleryAPI.Filter() {
+            if requestedFilter == GalleryAPI.Filter(scope: scope) {
                 let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
-                let url = Self.listingURL
+                let url = listingURL
                 await Task.detached(priority: .utility) {
                     try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                     if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
@@ -81,7 +85,7 @@ final class GalleryStore {
     }
 
     func loadAlbums() async {
-        if let a = try? await api().albums() { albums = a }
+        if let a = try? await api().albums(scope: scope) { albums = a }
     }
 
     func replace(_ item: GalleryItem) {
@@ -207,14 +211,16 @@ struct GalleryScreen: View {
         }
         // Google Photos: behind the viewer the grid follows the photo on screen, so closing zooms
         // into its tile.
+        // No anchor: the grid moves only when that tile is off screen. Centring a visible tile moved
+        // it while the zoom ran from it, and the zoom lost its source both ways.
         .onChange(of: shownID) { _, id in
-            if let id { proxy.scrollTo(id, anchor: .center) }
+            if let id { proxy.scrollTo(id) }
         }
         }
         .fullScreenCover(item: $viewing) { item in
             GalleryViewer(start: item, shown: $shownID)
                 .presentationBackground(.clear)
-                .zoomTransition(from: shownID ?? item.id, in: zoom, enabled: !Self.noZoom)
+                .zoomTransition(from: shownID ?? item.id, in: zoom)
         }
     }
 
@@ -224,9 +230,6 @@ struct GalleryScreen: View {
         shownID = item.id
         viewing = item
     }
-
-    /// `-SecretaryGalleryNoZoom YES` / `-SecretaryGalleryNoGap YES`: frame-time comparisons.
-    static let noZoom = UserDefaults.standard.bool(forKey: "SecretaryGalleryNoZoom")
 }
 
 /// Square cells, 3 across on iPhone.
@@ -595,7 +598,7 @@ struct GalleryViewer: View {
         media.presented = true
     }
 
-    private static let pageGap: CGFloat = UserDefaults.standard.bool(forKey: "SecretaryGalleryNoGap") ? 0 : 24
+    private static let pageGap: CGFloat = 24
 
     /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
     /// (legacy) re-created every page from the first one to the current one on each change (seen
@@ -734,7 +737,6 @@ private struct FilterChips: View {
                 }
                 ChipButton(title: "Photos", icon: "photo", isOn: store.filter.kind == "photo") { store.filter.kind = "photo" }
                 ChipButton(title: "Videos", icon: "video", isOn: store.filter.kind == "video") { store.filter.kind = "video" }
-                ChipButton(title: "Audio", icon: "waveform", isOn: store.filter.kind == "audio") { store.filter.kind = "audio" }
                 ChipButton(title: "Favourites", icon: "heart", isOn: store.filter.favorites) { store.filter.favorites.toggle() }
             }
             .padding(.horizontal)

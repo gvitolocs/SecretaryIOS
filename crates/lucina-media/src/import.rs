@@ -57,11 +57,18 @@ struct Geo {
 
 fn media_like(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    !lower.ends_with(".json") && !lower.starts_with('.') && !lower.ends_with(".html") && lower != "thumbs.db"
+    !lower.ends_with(".json")
+        && !lower.starts_with('.')
+        && !lower.ends_with(".html")
+        && lower != "thumbs.db"
 }
 
 fn sidecar_meta(sc: &Sidecar, client: &mut ClientMeta) {
-    if let Some(t) = sc.photo_taken_time.as_ref().and_then(|t| t.timestamp.parse::<i64>().ok()) {
+    if let Some(t) = sc
+        .photo_taken_time
+        .as_ref()
+        .and_then(|t| t.timestamp.parse::<i64>().ok())
+    {
         if t > 0 {
             client.taken_at = chrono::DateTime::from_timestamp(t, 0)
                 .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
@@ -85,7 +92,10 @@ fn sidecar_meta(sc: &Sidecar, client: &mut ClientMeta) {
 
 /// Candidate sidecar names for a media file, most specific first.
 pub fn sidecar_names(file: &str) -> Vec<String> {
-    let mut v = vec![format!("{file}.supplemental-metadata.json"), format!("{file}.json")];
+    let mut v = vec![
+        format!("{file}.supplemental-metadata.json"),
+        format!("{file}.json"),
+    ];
     // Takeout truncates "<name>.<suffix>.json" to 51 characters before ".json".
     for suffix in [".supplemental-metadata", ""] {
         let full = format!("{file}{suffix}");
@@ -115,12 +125,20 @@ fn takeout_album(dir_name: &str) -> Option<String> {
 
 pub fn import_path(lib: &Library, root: &Path, opts: &ImportOpts) -> anyhow::Result<ImportStats> {
     let mut stats = ImportStats::default();
-    if root.is_file() && root.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+    if root.is_file()
+        && root
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+    {
         import_zip(lib, root, opts, &mut stats)?;
         return Ok(stats);
     }
     let takeout = opts.source == "takeout";
-    for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_map(Result::ok) {
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -134,21 +152,32 @@ pub fn import_path(lib: &Library, root: &Path, opts: &ImportOpts) -> anyhow::Res
             continue;
         }
         stats.seen += 1;
-        let mut client = ClientMeta { filename: Some(name.clone()), source: Some(opts.source.clone()), ..Default::default() };
+        let mut client = ClientMeta {
+            filename: Some(name.clone()),
+            source: Some(opts.source.clone()),
+            ..Default::default()
+        };
         client.album = opts.album.clone();
         if takeout {
             let dir = path.parent().unwrap_or(root);
-            if let Some(sc) = sidecar_names(&name).into_iter().map(|n| dir.join(n)).find(|p| p.is_file()) {
+            if let Some(sc) = sidecar_names(&name)
+                .into_iter()
+                .map(|n| dir.join(n))
+                .find(|p| p.is_file())
+            {
                 if let Ok(sc) = serde_json::from_slice::<Sidecar>(&fs::read(sc)?) {
                     sidecar_meta(&sc, &mut client);
                     client.filename = Some(name.clone());
                 }
             }
             if client.album.is_none() {
-                client.album = dir.file_name().and_then(|d| takeout_album(&d.to_string_lossy()));
+                client.album = dir
+                    .file_name()
+                    .and_then(|d| takeout_album(&d.to_string_lossy()));
             }
         }
-        match copy_in(lib, path).and_then(|tmp| ingest::ingest_file(lib, &tmp, None, &client, None)) {
+        match copy_in(lib, path).and_then(|tmp| ingest::ingest_file(lib, &tmp, None, &client, None))
+        {
             Ok(r) if r.duplicate => {
                 stats.duplicates += 1;
                 if let Some(a) = &client.album {
@@ -186,7 +215,12 @@ fn copy_in(lib: &Library, src: &Path) -> anyhow::Result<PathBuf> {
     Ok(tmp)
 }
 
-fn import_zip(lib: &Library, zip_path: &Path, opts: &ImportOpts, stats: &mut ImportStats) -> anyhow::Result<()> {
+fn import_zip(
+    lib: &Library,
+    zip_path: &Path,
+    opts: &ImportOpts,
+    stats: &mut ImportStats,
+) -> anyhow::Result<()> {
     let file = fs::File::open(zip_path)?;
     let mut zip = zip::ZipArchive::new(io::BufReader::new(file))?;
     // Pass 1: the sidecars (small) by full entry name.
@@ -212,16 +246,30 @@ fn import_zip(lib: &Library, zip_path: &Path, opts: &ImportOpts, stats: &mut Imp
             stats.skipped += 1;
             continue;
         };
-        let name = entry_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         if !media_like(&name) {
             continue;
         }
         stats.seen += 1;
-        let dir = entry_path.parent().map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-        let mut client = ClientMeta { filename: Some(name.clone()), source: Some(opts.source.clone()), ..Default::default() };
+        let dir = entry_path
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let mut client = ClientMeta {
+            filename: Some(name.clone()),
+            source: Some(opts.source.clone()),
+            ..Default::default()
+        };
         client.album = opts.album.clone();
         for cand in sidecar_names(&name) {
-            let key = if dir.is_empty() { cand } else { format!("{dir}/{cand}") };
+            let key = if dir.is_empty() {
+                cand
+            } else {
+                format!("{dir}/{cand}")
+            };
             if let Some(sc) = sidecars.get(&key) {
                 sidecar_meta(sc, &mut client);
                 client.filename = Some(name.clone());
@@ -229,7 +277,10 @@ fn import_zip(lib: &Library, zip_path: &Path, opts: &ImportOpts, stats: &mut Imp
             }
         }
         if client.album.is_none() {
-            client.album = entry_path.parent().and_then(|p| p.file_name()).and_then(|d| takeout_album(&d.to_string_lossy()));
+            client.album = entry_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|d| takeout_album(&d.to_string_lossy()));
         }
         let tmp = lib.cfg.uploads_dir().join(db::new_id("imp"));
         let res = (|| -> anyhow::Result<ingest::IngestResult> {
@@ -270,6 +321,9 @@ mod tests {
         let v = sidecar_names(long);
         assert!(v.iter().any(|n| n.len() == 51));
         assert_eq!(takeout_album("Photos from 2019"), None);
-        assert_eq!(takeout_album("Copenhagen trip"), Some("Copenhagen trip".into()));
+        assert_eq!(
+            takeout_album("Copenhagen trip"),
+            Some("Copenhagen trip".into())
+        );
     }
 }

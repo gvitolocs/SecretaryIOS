@@ -529,8 +529,9 @@ extension AppModel {
     /// `/gallery`, `/gallery/album/<id>` (what Lucina found is in `sys-lucina`), `/gallery/search/<words>`.
     private func openGallery(_ path: String) {
         let parts = path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
-        var filter = GalleryAPI.Filter()
-        if parts.count >= 3, parts[1] == "album" { filter.album = parts[2] }
+        var filter = GalleryAPI.Filter(scope: gallery.scope)
+        // What Lucina found can be anywhere (a film, a shared file): her album is not limited to the phones.
+        if parts.count >= 3, parts[1] == "album" { filter.album = parts[2]; filter.scope = nil }
         if parts.count >= 3, parts[1] == "search" { filter.query = parts[2...].joined(separator: " ") }
         gallery.filter = filter
         selectedTab = .plugins

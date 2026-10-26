@@ -48,6 +48,8 @@ final class AppModel {
     var showMedia = false
     /// The Gallery, a plugin.
     var showGallery = false
+    /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
+    var showDrive = false
     /// Voice memos, a plugin.
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
@@ -83,6 +85,7 @@ final class AppModel {
     let media: MediaPlayer
     /// The photo library on the server (/v1/media), shown by the Gallery plugin.
     let gallery: GalleryStore
+    let drive: GalleryStore
     /// Automatic backup of this iPhone's photos and videos to the server.
     let backup: PhotoBackup
     /// Voice memos: recorder, upload queue, list (/v1/memos on lucina-memo).
@@ -158,7 +161,8 @@ final class AppModel {
             return mediaClient
         }
         media = MediaPlayer(api: { MediaAPI(client: mediaAPI()) })
-        gallery = GalleryStore(api: { GalleryAPI(client: mediaAPI()) })
+        gallery = GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery")
+        drive = GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive")
         backup = PhotoBackup(api: { GalleryAPI(client: mediaAPI()) })
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
         self.memoClient = memoClient

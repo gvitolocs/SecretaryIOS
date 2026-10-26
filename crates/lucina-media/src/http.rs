@@ -67,7 +67,10 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/media/items", get(list_items))
-        .route("/v1/media/items/{id}", get(get_item).patch(patch_item).delete(trash_item))
+        .route(
+            "/v1/media/items/{id}",
+            get(get_item).patch(patch_item).delete(trash_item),
+        )
         .route("/v1/media/items/{id}/restore", post(restore_item))
         .route("/v1/media/items/{id}/original", get(original))
         .route("/v1/media/items/{id}/thumb", get(thumb))
@@ -75,11 +78,20 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/items/{id}/r/{rendition}", get(rendition))
         // The same renditions behind a play token: p1 passes /v1/media/s/* straight through, so a
         // gallery page costs no device-rate-limit tokens (60 a minute) and needs no header.
-        .route("/v1/media/s/{token}/{id}/r/{rendition}", get(signed_rendition))
+        .route(
+            "/v1/media/s/{token}/{id}/r/{rendition}",
+            get(signed_rendition),
+        )
         .route("/v1/media/summary", get(summary))
         .route("/v1/media/albums", get(list_albums).post(create_album))
-        .route("/v1/media/albums/{id}", get(get_album).patch(patch_album).delete(delete_album))
-        .route("/v1/media/albums/{id}/items", post(album_add).put(album_replace).delete(album_remove))
+        .route(
+            "/v1/media/albums/{id}",
+            get(get_album).patch(patch_album).delete(delete_album),
+        )
+        .route(
+            "/v1/media/albums/{id}/items",
+            post(album_add).put(album_replace).delete(album_remove),
+        )
         .route("/v1/media/uploads", post(create_upload))
         .route("/v1/media/uploads/{id}/finish", post(finish_upload))
         .route("/v1/media/devices/{device}/assets", get(device_assets))
@@ -93,7 +105,10 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
 /// Loopback-only routes for services on nezopt (voice memos, imports).
 pub fn internal_router(lib: Library) -> Router {
     Router::new()
-        .route("/internal/v1/external/{source}/{ext_id}", put(put_external).delete(delete_external))
+        .route(
+            "/internal/v1/external/{source}/{ext_id}",
+            put(put_external).delete(delete_external),
+        )
         .route("/internal/v1/import", post(start_import))
         .route("/internal/v1/ingest", post(ingest_local))
         .route("/internal/v1/items/{id}/path", get(item_path))
@@ -108,9 +123,17 @@ pub async fn upstream_guard(State(lib): State<Library>, req: Request, next: Next
         return next.run(req).await;
     }
     if let Some(key) = lib.cfg.upstream_key.as_deref() {
-        let given = req.headers().get(UPSTREAM_KEY_HEADER).map(|v| v.as_bytes()).unwrap_or(b"");
+        let given = req
+            .headers()
+            .get(UPSTREAM_KEY_HEADER)
+            .map(|v| v.as_bytes())
+            .unwrap_or(b"");
         if !bool::from(given.ct_eq(key.as_bytes())) {
-            return ApiError(StatusCode::UNAUTHORIZED, "missing or wrong upstream key".into()).into_response();
+            return ApiError(
+                StatusCode::UNAUTHORIZED,
+                "missing or wrong upstream key".into(),
+            )
+            .into_response();
         }
     }
     next.run(req).await
@@ -132,8 +155,12 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
     let (poster_url, thumb_url) = match &lib.signer {
         Some(s) => {
             let (base, _) = s.base(&it.id);
-            let has_visual = it.thumb_state == "ready" || matches!(it.kind.as_str(), "video" | "audio");
-            (has_visual.then(|| format!("{base}/poster.jpg")), has_visual.then(|| format!("{base}/thumb.jpg")))
+            let has_visual =
+                it.thumb_state == "ready" || matches!(it.kind.as_str(), "video" | "audio");
+            (
+                has_visual.then(|| format!("{base}/poster.jpg")),
+                has_visual.then(|| format!("{base}/thumb.jpg")),
+            )
         }
         None => (None, None),
     };
@@ -151,7 +178,13 @@ pub fn item_out(lib: &Library, it: Item, album: Option<String>) -> ItemOut {
         "preview": has_thumb.then(|| rendition_url(lib, id, "preview", v)),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
-    ItemOut { item: it, urls, poster_url, thumb_url, album }
+    ItemOut {
+        item: it,
+        urls,
+        poster_url,
+        thumb_url,
+        album,
+    }
 }
 
 fn rendition_url(lib: &Library, id: &str, which: &str, v: i64) -> String {
@@ -162,21 +195,34 @@ fn rendition_url(lib: &Library, id: &str, which: &str, v: i64) -> String {
 }
 
 /// Album titles for items, user albums first, for `ItemOut.album`.
-fn first_album_titles(c: &rusqlite::Connection, items: &[Item]) -> rusqlite::Result<Vec<Option<String>>> {
+fn first_album_titles(
+    c: &rusqlite::Connection,
+    items: &[Item],
+) -> rusqlite::Result<Vec<Option<String>>> {
     let mut st = c.prepare_cached(
         "SELECT a.title FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.item_id = ?1
          ORDER BY a.system_key IS NOT NULL, ai.added_at LIMIT 1",
     )?;
-    items.iter().map(|it| st.query_row([&it.id], |r| r.get(0)).optional()).collect()
+    items
+        .iter()
+        .map(|it| st.query_row([&it.id], |r| r.get(0)).optional())
+        .collect()
 }
 
-async fn list_items(State(lib): State<Library>, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
+async fn list_items(
+    State(lib): State<Library>,
+    Query(q): Query<ListQuery>,
+) -> ApiResult<Json<Value>> {
     let (page, titles, albums) = lib
         .db
         .call(move |c| {
             let page = db::list_items(c, &q)?;
             let titles = first_album_titles(c, &page.items)?;
-            let albums: Vec<String> = db::list_albums(c)?.into_iter().filter(|a| a.count > 0).map(|a| a.title).collect();
+            let albums: Vec<String> = db::list_albums(c)?
+                .into_iter()
+                .filter(|a| a.count > 0)
+                .map(|a| a.title)
+                .collect();
             Ok((page, titles, albums))
         })
         .await?;
@@ -193,8 +239,12 @@ async fn get_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResu
     let (it, album) = lib
         .db
         .call(move |c| {
-            let Some(it) = db::get_item(c, &id)? else { return Ok(None) };
-            let a = first_album_titles(c, std::slice::from_ref(&it))?.pop().flatten();
+            let Some(it) = db::get_item(c, &id)? else {
+                return Ok(None);
+            };
+            let a = first_album_titles(c, std::slice::from_ref(&it))?
+                .pop()
+                .flatten();
             Ok(Some((it, a)))
         })
         .await?
@@ -216,7 +266,9 @@ async fn patch_item(
     Json(p): Json<ItemPatch>,
 ) -> ApiResult<Json<ItemOut>> {
     let taken = match p.taken_at.as_deref() {
-        Some(t) => Some(crate::meta::parse_loose_datetime(t).ok_or_else(|| bad("taken_at must be RFC 3339"))?),
+        Some(t) => Some(
+            crate::meta::parse_loose_datetime(t).ok_or_else(|| bad("taken_at must be RFC 3339"))?,
+        ),
         None => None,
     }
     .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
@@ -273,12 +325,18 @@ async fn trash_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiRe
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn restore_item(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<ItemOut>> {
+async fn restore_item(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ItemOut>> {
     let iid = id.clone();
     let it = lib
         .db
         .call(move |c| {
-            c.execute("UPDATE items SET trashed_at = NULL, updated_at = ?2 WHERE id = ?1", params![iid, now_str()])?;
+            c.execute(
+                "UPDATE items SET trashed_at = NULL, updated_at = ?2 WHERE id = ?1",
+                params![iid, now_str()],
+            )?;
             db::get_item(c, &iid)
         })
         .await?
@@ -287,9 +345,19 @@ async fn restore_item(State(lib): State<Library>, Path(id): Path<String>) -> Api
     Ok(Json(item_out(&lib, it, None)))
 }
 
-async fn serve_file(req_headers: HeaderMap, path: PathBuf, mime: &str, etag: &str, cache: &str) -> ApiResult<Response> {
+async fn serve_file(
+    req_headers: HeaderMap,
+    path: PathBuf,
+    mime: &str,
+    etag: &str,
+    cache: &str,
+) -> ApiResult<Response> {
     let etag = format!("\"{etag}\"");
-    if req_headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()) == Some(etag.as_str()) {
+    if req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(etag.as_str())
+    {
         return Ok(Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(header::ETAG, &etag)
@@ -298,12 +366,23 @@ async fn serve_file(req_headers: HeaderMap, path: PathBuf, mime: &str, etag: &st
     }
     let mut req = Request::builder().uri("/");
     for (k, v) in req_headers.iter() {
-        if matches!(k.as_str(), "range" | "if-range" | "if-modified-since" | "if-unmodified-since") {
+        if matches!(
+            k.as_str(),
+            "range" | "if-range" | "if-modified-since" | "if-unmodified-since"
+        ) {
             req = req.header(k, v);
         }
     }
-    let svc = ServeFile::new_with_mime(&path, &mime.parse().unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM));
-    let mut res = svc.oneshot(req.body(Body::empty()).unwrap()).await?.map(Body::new);
+    let svc = ServeFile::new_with_mime(
+        &path,
+        &mime
+            .parse()
+            .unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM),
+    );
+    let mut res = svc
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await?
+        .map(Body::new);
     let h = res.headers_mut();
     h.insert(header::ETAG, HeaderValue::from_str(&etag)?);
     h.insert(header::CACHE_CONTROL, HeaderValue::from_str(cache)?);
@@ -311,16 +390,38 @@ async fn serve_file(req_headers: HeaderMap, path: PathBuf, mime: &str, etag: &st
     Ok(res)
 }
 
-async fn original(State(lib): State<Library>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Response> {
+async fn original(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     let l = lib.clone();
-    let (path, item) =
-        tokio::task::spawn_blocking(move || ingest::original_path(&l, &id)).await??.ok_or_else(not_found)?;
+    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &id))
+        .await??
+        .ok_or_else(not_found)?;
     if !path.is_file() {
-        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "original is not reachable right now".into()));
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "original is not reachable right now".into(),
+        ));
     }
-    let mut res = serve_file(headers, path, &item.mime, &item.hash, "private, max-age=31536000, immutable").await?;
-    let name: String = item.title.chars().filter(|c| !c.is_control() && *c != '"' && *c != '\\').collect();
-    if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", name.replace(|c: char| !c.is_ascii(), "_"))) {
+    let mut res = serve_file(
+        headers,
+        path,
+        &item.mime,
+        &item.hash,
+        "private, max-age=31536000, immutable",
+    )
+    .await?;
+    let name: String = item
+        .title
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect();
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "inline; filename=\"{}\"",
+        name.replace(|c: char| !c.is_ascii(), "_")
+    )) {
         res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(res)
@@ -346,9 +447,19 @@ async fn signed_rendition(
     Path((token, id, which)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let Some(secret) = lib.cfg.play_secret.as_deref() else { return Err(not_found()) };
-    if !secretary_media_stream::token::verify(secret, &id, &token, secretary_media_stream::now_secs()) {
-        return Err(ApiError(StatusCode::FORBIDDEN, "bad or expired token".into()));
+    let Some(secret) = lib.cfg.play_secret.as_deref() else {
+        return Err(not_found());
+    };
+    if !secretary_media_stream::token::verify(
+        secret,
+        &id,
+        &token,
+        secretary_media_stream::now_secs(),
+    ) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "bad or expired token".into(),
+        ));
     }
     rendition(State(lib), Path((id, which)), headers).await
 }
@@ -368,29 +479,60 @@ async fn rendition(
         return Err(not_found());
     }
     let iid = id.clone();
-    let it = lib.db.call(move |c| db::get_item(c, &iid)).await?.ok_or_else(not_found)?;
+    let it = lib
+        .db
+        .call(move |c| db::get_item(c, &iid))
+        .await?
+        .ok_or_else(not_found)?;
     let path = thumbs::dir_for(&lib.cfg, &id).join(file);
     if !path.is_file() {
         return Err(not_found());
     }
-    serve_file(headers, path, "image/jxl", &format!("{}-{}-{file}", it.hash, it.version), "private, max-age=31536000, immutable").await
+    serve_file(
+        headers,
+        path,
+        "image/jxl",
+        &format!("{}-{}-{file}", it.hash, it.version),
+        "private, max-age=31536000, immutable",
+    )
+    .await
 }
 
-async fn poster(State(lib): State<Library>, Path(id): Path<String>, headers: HeaderMap) -> ApiResult<Response> {
+async fn poster(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     thumb_file(lib, id, "poster.jpg", headers).await
 }
 
-async fn thumb_file(lib: Library, id: String, file: &str, headers: HeaderMap) -> ApiResult<Response> {
+async fn thumb_file(
+    lib: Library,
+    id: String,
+    file: &str,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
     if id.contains('/') || id.contains("..") {
         return Err(not_found());
     }
     let iid = id.clone();
-    let it = lib.db.call(move |c| db::get_item(c, &iid)).await?.ok_or_else(not_found)?;
+    let it = lib
+        .db
+        .call(move |c| db::get_item(c, &iid))
+        .await?
+        .ok_or_else(not_found)?;
     let path = thumbs::dir_for(&lib.cfg, &id).join(file);
     if !path.is_file() {
         return Err(not_found());
     }
-    serve_file(headers, path, "image/jpeg", &format!("{}-{}-{file}", it.hash, it.version), "private, max-age=604800").await
+    serve_file(
+        headers,
+        path,
+        "image/jpeg",
+        &format!("{}-{}-{file}", it.hash, it.version),
+        "private, max-age=604800",
+    )
+    .await
 }
 
 async fn summary(State(lib): State<Library>) -> ApiResult<Json<Value>> {
@@ -440,8 +582,20 @@ async fn summary(State(lib): State<Library>) -> ApiResult<Json<Value>> {
     Ok(Json(v))
 }
 
-async fn list_albums(State(lib): State<Library>) -> ApiResult<Json<Value>> {
-    let albums = lib.db.call(|c| db::list_albums(c)).await?;
+#[derive(Deserialize)]
+struct AlbumsQuery {
+    /// `gallery` or `drive`: only albums with items there, counted there.
+    scope: Option<String>,
+}
+
+async fn list_albums(
+    State(lib): State<Library>,
+    Query(q): Query<AlbumsQuery>,
+) -> ApiResult<Json<Value>> {
+    let albums = lib
+        .db
+        .call(move |c| db::list_albums_in(c, q.scope.as_deref()))
+        .await?;
     Ok(Json(json!({ "albums": albums })))
 }
 
@@ -452,7 +606,10 @@ struct AlbumReq {
     item_ids: Vec<String>,
 }
 
-async fn create_album(State(lib): State<Library>, Json(r): Json<AlbumReq>) -> ApiResult<(StatusCode, Json<db::Album>)> {
+async fn create_album(
+    State(lib): State<Library>,
+    Json(r): Json<AlbumReq>,
+) -> ApiResult<(StatusCode, Json<db::Album>)> {
     let title = r.title.trim().to_string();
     if title.is_empty() || title.len() > 200 {
         return Err(bad("title must be 1-200 characters"));
@@ -468,7 +625,11 @@ async fn create_album(State(lib): State<Library>, Json(r): Json<AlbumReq>) -> Ap
                 params![id, title, now],
             )?;
             for item in &r.item_ids {
-                if tx.query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(())).optional()?.is_some() {
+                if tx
+                    .query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(()))
+                    .optional()?
+                    .is_some()
+                {
                     db::add_to_album(&tx, &id, item)?;
                     db::reindex(&tx, item)?;
                 }
@@ -482,8 +643,16 @@ async fn create_album(State(lib): State<Library>, Json(r): Json<AlbumReq>) -> Ap
     Ok((StatusCode::CREATED, Json(album)))
 }
 
-async fn get_album(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<db::Album>> {
-    Ok(Json(lib.db.call(move |c| db::get_album(c, &id)).await?.ok_or_else(not_found)?))
+async fn get_album(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<db::Album>> {
+    Ok(Json(
+        lib.db
+            .call(move |c| db::get_album(c, &id))
+            .await?
+            .ok_or_else(not_found)?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -523,7 +692,10 @@ async fn delete_album(State(lib): State<Library>, Path(id): Path<String>) -> Api
                 let rows = st.query_map([&id], |r| r.get(0))?;
                 rows.collect::<Result<_, _>>()?
             };
-            let n = tx.execute("DELETE FROM albums WHERE id = ?1 AND system_key IS NULL", [&id])?;
+            let n = tx.execute(
+                "DELETE FROM albums WHERE id = ?1 AND system_key IS NULL",
+                [&id],
+            )?;
             if n > 0 {
                 tx.execute("DELETE FROM album_items WHERE album_id = ?1", [&id])?;
                 for it in items {
@@ -559,7 +731,10 @@ async fn album_add(
             }
             let mut added = 0;
             for item in &r.item_ids {
-                if tx.query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(())).optional()?.is_some()
+                if tx
+                    .query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(()))
+                    .optional()?
+                    .is_some()
                     && db::add_to_album(&tx, &id, item)?
                 {
                     db::reindex(&tx, item)?;
@@ -596,7 +771,10 @@ async fn album_replace(
             tx.execute("UPDATE albums SET cover_item = NULL WHERE id = ?1", [&id])?;
             let mut n = 0;
             for item in r.item_ids.iter().take(500) {
-                if tx.query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(())).optional()?.is_some()
+                if tx
+                    .query_row("SELECT 1 FROM items WHERE id = ?1", [item], |_| Ok(()))
+                    .optional()?
+                    .is_some()
                     && db::add_to_album(&tx, &id, item)?
                 {
                     n += 1;
@@ -624,7 +802,10 @@ async fn album_remove(
             let tx = c.transaction()?;
             let mut removed = 0;
             for item in &r.item_ids {
-                removed += tx.execute("DELETE FROM album_items WHERE album_id = ?1 AND item_id = ?2", params![id, item])?;
+                removed += tx.execute(
+                    "DELETE FROM album_items WHERE album_id = ?1 AND item_id = ?2",
+                    params![id, item],
+                )?;
                 db::reindex(&tx, item)?;
             }
             tx.commit()?;
@@ -660,7 +841,10 @@ fn valid_hash(h: &str) -> bool {
     h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-async fn create_upload(State(lib): State<Library>, Json(r): Json<CreateUpload>) -> ApiResult<Json<UploadOut>> {
+async fn create_upload(
+    State(lib): State<Library>,
+    Json(r): Json<CreateUpload>,
+) -> ApiResult<Json<UploadOut>> {
     if r.filename.is_empty() || r.filename.len() > 255 || r.filename.contains('/') {
         return Err(bad("bad filename"));
     }
@@ -676,17 +860,23 @@ async fn create_upload(State(lib): State<Library>, Json(r): Json<CreateUpload>) 
             .call(move |c| {
                 if let (Some(d), Some(a)) = (&device, &asset) {
                     let by_asset: Option<(String, String)> = c
-                        .query_row("SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2", params![d, a], |r| {
-                            Ok((r.get(0)?, r.get(1)?))
-                        })
+                        .query_row(
+                            "SELECT id, hash FROM items WHERE device = ?1 AND asset_id = ?2",
+                            params![d, a],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
                         .optional()?;
                     if let Some((id, cur)) = by_asset {
                         // Same asset, same bytes: done. Edited: the upload must go through.
                         return Ok(if cur == h { Some(id) } else { None });
                     }
                 }
-                c.query_row("SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1", [&h], |r| r.get(0))
-                    .optional()
+                c.query_row(
+                    "SELECT id FROM items WHERE hash = ?1 ORDER BY added_at LIMIT 1",
+                    [&h],
+                    |r| r.get(0),
+                )
+                .optional()
             })
             .await?;
         if let Some(item_id) = existing {
@@ -705,7 +895,11 @@ async fn create_upload(State(lib): State<Library>, Json(r): Json<CreateUpload>) 
     let mut meta = r.meta;
     meta.filename = meta.filename.or(Some(r.filename.clone()));
     let meta_json = serde_json::to_string(&meta)?;
-    let (uid, size, hash) = (id.clone(), r.size as i64, r.hash.map(|h| h.to_ascii_lowercase()));
+    let (uid, size, hash) = (
+        id.clone(),
+        r.size as i64,
+        r.hash.map(|h| h.to_ascii_lowercase()),
+    );
     lib.db
         .call(move |c| {
             c.execute(
@@ -715,7 +909,14 @@ async fn create_upload(State(lib): State<Library>, Json(r): Json<CreateUpload>) 
             )
         })
         .await?;
-    Ok(Json(UploadOut { upload_id: Some(id), offset: 0, size: r.size, finished: false, duplicate: false, item_id: None }))
+    Ok(Json(UploadOut {
+        upload_id: Some(id),
+        offset: 0,
+        size: r.size,
+        finished: false,
+        duplicate: false,
+        item_id: None,
+    }))
 }
 
 struct UploadRow {
@@ -754,7 +955,10 @@ async fn load_upload(lib: &Library, id: &str) -> ApiResult<UploadRow> {
         .ok_or_else(not_found)
 }
 
-async fn get_upload(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<UploadOut>> {
+async fn get_upload(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<UploadOut>> {
     let u = load_upload(&lib, &id).await?;
     Ok(Json(UploadOut {
         upload_id: Some(id),
@@ -787,7 +991,11 @@ async fn put_chunk(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(u.declared.saturating_sub(offset));
-    let state = UploadState { declared: u.declared, received: u.received, finished: u.finished };
+    let state = UploadState {
+        declared: u.declared,
+        received: u.received,
+        finished: u.finished,
+    };
     let out = |received: u64| UploadOut {
         upload_id: Some(id.clone()),
         offset: received,
@@ -800,12 +1008,18 @@ async fn put_chunk(
         Ok(ChunkOutcome::AlreadyHave { offset }) => return Ok(Json(out(offset))),
         Ok(ChunkOutcome::Append { skip, .. }) => skip,
         Err(e @ protocol::ChunkError::OffsetMismatch { .. }) => {
-            return Err(ApiError(StatusCode::CONFLICT, format!("{e}; resume at {}", u.received)))
+            return Err(ApiError(
+                StatusCode::CONFLICT,
+                format!("{e}; resume at {}", u.received),
+            ))
         }
         Err(e) => return Err(ApiError(StatusCode::CONFLICT, e.to_string())),
     };
     let path = lib.cfg.uploads_dir().join(&id);
-    let mut f = tokio::fs::OpenOptions::new().write(true).open(&path).await?;
+    let mut f = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .await?;
     // The file can be longer than `received` if an earlier chunk was cut off mid-write.
     f.set_len(u.received).await?;
     let mut f = tokio::io::BufWriter::with_capacity(1 << 20, {
@@ -831,7 +1045,10 @@ async fn put_chunk(
             }
         }
         if u.received + written + chunk.len() as u64 > u.declared {
-            return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "chunk longer than declared".into()));
+            return Err(ApiError(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "chunk longer than declared".into(),
+            ));
         }
         f.write_all(&chunk).await?;
         written += chunk.len() as u64;
@@ -854,12 +1071,21 @@ async fn put_chunk(
     Ok(Json(out(received)))
 }
 
-async fn put_preview(State(lib): State<Library>, Path(id): Path<String>, body: Body) -> ApiResult<StatusCode> {
+async fn put_preview(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    body: Body,
+) -> ApiResult<StatusCode> {
     let u = load_upload(&lib, &id).await?;
     if u.finished {
-        return Err(ApiError(StatusCode::CONFLICT, "upload already finished".into()));
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "upload already finished".into(),
+        ));
     }
-    let bytes = axum::body::to_bytes(body, MAX_PREVIEW_BYTES).await.map_err(|_| bad("preview too large"))?;
+    let bytes = axum::body::to_bytes(body, MAX_PREVIEW_BYTES)
+        .await
+        .map_err(|_| bad("preview too large"))?;
     if !bytes.starts_with(&[0xFF, 0xD8]) {
         return Err(bad("preview must be a JPEG"));
     }
@@ -885,24 +1111,40 @@ async fn finish_upload(
         let iid = item_id.clone();
         let version = lib
             .db
-            .call(move |c| c.query_row("SELECT version FROM items WHERE id = ?1", [&iid], |r| r.get(0)))
+            .call(move |c| {
+                c.query_row("SELECT version FROM items WHERE id = ?1", [&iid], |r| {
+                    r.get(0)
+                })
+            })
             .await?;
-        return Ok(Json(ingest::IngestResult { item_id, duplicate: false, version }));
+        return Ok(Json(ingest::IngestResult {
+            item_id,
+            duplicate: false,
+            version,
+        }));
     }
     let path = lib.cfg.uploads_dir().join(&id);
     if !path.is_file() {
         // The bytes are gone (an earlier finish ingested them, then the client hung up before the
         // answer): the client starts this upload again; dedupe makes that cheap.
-        return Err(ApiError(StatusCode::GONE, "upload lost; start again".into()));
+        return Err(ApiError(
+            StatusCode::GONE,
+            "upload lost; start again".into(),
+        ));
     }
     let p2 = path.clone();
     let computed = tokio::task::spawn_blocking(move || crate::store::hash_file(&p2)).await??;
     let expected = r.hash.or(u.expected_hash).map(|h| h.to_ascii_lowercase());
-    let state = UploadState { declared: u.declared, received: u.received, finished: false };
+    let state = UploadState {
+        declared: u.declared,
+        received: u.received,
+        finished: false,
+    };
     protocol::check_finish(state, &computed, expected.as_deref()).map_err(|e| match e {
-        protocol::FinishError::HashMismatch => {
-            ApiError(StatusCode::UNPROCESSABLE_ENTITY, "content hash does not match; upload again".into())
-        }
+        protocol::FinishError::HashMismatch => ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "content hash does not match; upload again".into(),
+        ),
         e => ApiError(StatusCode::CONFLICT, e.to_string()),
     })?;
     let meta: ClientMeta = serde_json::from_str(&u.meta).unwrap_or_default();
@@ -928,7 +1170,10 @@ async fn finish_upload(
 }
 
 /// What the library holds for one phone, so a reinstalled app can skip assets already backed up.
-async fn device_assets(State(lib): State<Library>, Path(device): Path<String>) -> ApiResult<Json<Value>> {
+async fn device_assets(
+    State(lib): State<Library>,
+    Path(device): Path<String>,
+) -> ApiResult<Json<Value>> {
     let rows = lib
         .db
         .call(move |c| {
@@ -945,10 +1190,14 @@ async fn device_assets(State(lib): State<Library>, Path(device): Path<String>) -
     Ok(Json(json!({ "assets": rows })))
 }
 
-async fn events(State(lib): State<Library>) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+async fn events(
+    State(lib): State<Library>,
+) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = lib.events.subscribe();
     let stream = tokio_stream_from(rx).map(|e| {
-        Ok(SseEvent::default().event(e.kind).data(serde_json::to_string(&e).unwrap_or_default()))
+        Ok(SseEvent::default()
+            .event(e.kind)
+            .data(serde_json::to_string(&e).unwrap_or_default()))
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
 }
@@ -970,7 +1219,10 @@ fn tokio_stream_from(
 // ---- internal ------------------------------------------------------------------------------
 
 fn valid_key(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
 
 async fn put_external(
@@ -982,9 +1234,10 @@ async fn put_external(
         return Err(bad("source and id must be [A-Za-z0-9._-]"));
     }
     let l = lib.clone();
-    let res = tokio::task::spawn_blocking(move || ingest::register_external(&l, &source, &ext_id, &req))
-        .await?
-        .map_err(|e| bad(e.to_string()))?;
+    let res =
+        tokio::task::spawn_blocking(move || ingest::register_external(&l, &source, &ext_id, &req))
+            .await?
+            .map_err(|e| bad(e.to_string()))?;
     Ok(Json(res))
 }
 
@@ -993,7 +1246,9 @@ async fn delete_external(
     Path((source, ext_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let l = lib.clone();
-    match tokio::task::spawn_blocking(move || ingest::unregister_external(&l, &source, &ext_id)).await?? {
+    match tokio::task::spawn_blocking(move || ingest::unregister_external(&l, &source, &ext_id))
+        .await??
+    {
         Some(_) => Ok(StatusCode::NO_CONTENT),
         None => Err(not_found()),
     }
@@ -1014,7 +1269,10 @@ struct IngestReq {
     r#move: bool,
 }
 
-async fn ingest_local(State(lib): State<Library>, Json(r): Json<IngestReq>) -> ApiResult<Json<Value>> {
+async fn ingest_local(
+    State(lib): State<Library>,
+    Json(r): Json<IngestReq>,
+) -> ApiResult<Json<Value>> {
     let src = PathBuf::from(&r.path);
     if !src.is_absolute() || !src.is_file() {
         return Err(bad("path must be an existing absolute file"));
@@ -1047,7 +1305,11 @@ async fn ingest_local(State(lib): State<Library>, Json(r): Json<IngestReq>) -> A
     .await?
     .map_err(|e| bad(e.to_string()))?;
     let id = res.item_id.clone();
-    let it = lib.db.call(move |c| db::get_item(c, &id)).await?.ok_or_else(not_found)?;
+    let it = lib
+        .db
+        .call(move |c| db::get_item(c, &id))
+        .await?
+        .ok_or_else(not_found)?;
     let out = item_out(&lib, it, None);
     Ok(Json(json!({
         "item_id": res.item_id,
@@ -1067,14 +1329,20 @@ struct ImportReq {
     album: Option<String>,
 }
 
-async fn start_import(State(lib): State<Library>, Json(r): Json<ImportReq>) -> ApiResult<(StatusCode, Json<Value>)> {
+async fn start_import(
+    State(lib): State<Library>,
+    Json(r): Json<ImportReq>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
     let path = PathBuf::from(&r.path);
     if !path.is_absolute() || !path.exists() {
         return Err(bad("path must exist and be absolute"));
     }
     let l = lib.clone();
     tokio::task::spawn_blocking(move || {
-        let opts = crate::import::ImportOpts { source: r.source.unwrap_or_else(|| "import".into()), album: r.album };
+        let opts = crate::import::ImportOpts {
+            source: r.source.unwrap_or_else(|| "import".into()),
+            album: r.album,
+        };
         match crate::import::import_path(&l, &path, &opts) {
             Ok(s) => tracing::info!(?s, "import finished"),
             Err(e) => tracing::warn!(error = %e, "import failed"),
@@ -1085,6 +1353,10 @@ async fn start_import(State(lib): State<Library>, Json(r): Json<ImportReq>) -> A
 
 async fn item_path(State(lib): State<Library>, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     let l = lib.clone();
-    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &id)).await??.ok_or_else(not_found)?;
-    Ok(Json(json!({ "path": path, "mime": item.mime, "hash": item.hash, "kind": item.kind })))
+    let (path, item) = tokio::task::spawn_blocking(move || ingest::original_path(&l, &id))
+        .await??
+        .ok_or_else(not_found)?;
+    Ok(Json(
+        json!({ "path": path, "mime": item.mime, "hash": item.hash, "kind": item.kind }),
+    ))
 }
