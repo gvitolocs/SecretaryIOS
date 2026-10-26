@@ -85,7 +85,8 @@ final class MediaPlayer {
             Task { @MainActor in self?.playingChanged(playing) }
         }
         if let queue = try? core?.queue() { apply(queue) }
-        setUpRemoteCommands()
+        // The remote commands are registered when an item plays (NowPlayingSession), not here:
+        // registered at launch they bring up the Lock Screen media widget while a memo records.
     }
 
     // MARK: Queue
@@ -150,7 +151,7 @@ final class MediaPlayer {
         currentIndex = nil
         cues = []
         cueText = nil
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        NowPlayingSession.deactivate()
     }
 
     private func apply(_ view: PlayerCore.QueueView) {
@@ -423,6 +424,7 @@ final class MediaPlayer {
     private func playingChanged(_ playing: Bool) {
         guard playing != isPlaying else { return }
         isPlaying = playing
+        if playing { NowPlayingSession.activate { remoteCommands($0) } }
         if !playing { reportNow(playing: false) }
         updateNowPlaying()
     }
@@ -517,7 +519,7 @@ final class MediaPlayer {
 
     private func updateNowPlaying() {
         guard let item = current, info != nil || playingLocal else {
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            NowPlayingSession.update(nil)
             return
         }
         var now: [String: Any] = [
@@ -530,46 +532,51 @@ final class MediaPlayer {
         if duration > 0 { now[MPMediaItemPropertyPlaybackDuration] = duration }
         if let album = item.album { now[MPMediaItemPropertyAlbumTitle] = album }
         if let artwork { now[MPMediaItemPropertyArtwork] = artwork }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = now
+        NowPlayingSession.update(now)
     }
 
-    private func setUpRemoteCommands() {
-        let center = MPRemoteCommandCenter.shared()
-        center.playCommand.addTarget { [weak self] _ in
+    /// The Lock Screen controls, added while an item plays (NowPlayingSession removes them).
+    private func remoteCommands(_ center: MPRemoteCommandCenter) -> [(command: MPRemoteCommand, target: Any)] {
+        var targets: [(command: MPRemoteCommand, target: Any)] = []
+        func add(_ command: MPRemoteCommand, _ handler: @escaping @Sendable (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus) {
+            targets.append((command, command.addTarget(handler: handler)))
+        }
+        add(center.playCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.player.playImmediately(atRate: self?.rate ?? 1) }
             return .success
         }
-        center.pauseCommand.addTarget { [weak self] _ in
+        add(center.pauseCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.player.pause() }
             return .success
         }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+        add(center.togglePlayPauseCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.togglePlay() }
             return .success
         }
         center.skipForwardCommand.preferredIntervals = [15]
-        center.skipForwardCommand.addTarget { [weak self] _ in
+        add(center.skipForwardCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.skip(by: 15) }
             return .success
         }
         center.skipBackwardCommand.preferredIntervals = [15]
-        center.skipBackwardCommand.addTarget { [weak self] _ in
+        add(center.skipBackwardCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.skip(by: -15) }
             return .success
         }
-        center.nextTrackCommand.addTarget { [weak self] _ in
+        add(center.nextTrackCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.next() }
             return .success
         }
-        center.previousTrackCommand.addTarget { [weak self] _ in
+        add(center.previousTrackCommand) { [weak self] _ in
             MainActor.assumeIsolated { self?.previous() }
             return .success
         }
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+        add(center.changePlaybackPositionCommand) { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
             MainActor.assumeIsolated { self?.seek(to: event.positionTime) }
             return .success
         }
+        return targets
     }
 }
 

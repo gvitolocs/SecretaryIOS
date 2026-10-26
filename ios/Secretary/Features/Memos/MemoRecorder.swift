@@ -157,6 +157,9 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             self.error = String(localized: "The microphone is busy: \(error.localizedDescription)")
             return
         }
+        // No Lock Screen media player while recording (a paused film's controls go too): only the
+        // memo's Live Activity shows. The film player registers them again when it plays.
+        NowPlayingSession.deactivate()
         let clientId = UUID().uuidString.lowercased()
         let url = MemoFiles.audio(clientId, ext: "aac")
         MemoLog.write("record: \(setup.route)")
