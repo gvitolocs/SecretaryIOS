@@ -94,6 +94,10 @@ final class MediaPlayer {
     /// forgets the saved minute of that item first ("Play from the beginning").
     func play(_ items: [MediaItem], startAt index: Int, fromStart: Bool = false) {
         reportNow(playing: false)
+        // Cleared now, not when the load task starts: a reader must not see the last play's numbers.
+        lastFirstFrameMs = nil
+        lastTiming = nil
+        firstFrame = nil
         guard let core else {
             error = coreError
             return
@@ -187,7 +191,6 @@ final class MediaPlayer {
         defer { if current?.id == item.id { loading = false } }
         let start = ContinuousClock.now
         let ms = { Int((ContinuousClock.now - start) / .milliseconds(1)) }
-        lastFirstFrameMs = nil
         do {
             if item.isVideo, let identifier = localVideo?(item.id), let asset = await LocalVideo.asset(identifier) {
                 try await openLocal(item, asset)
