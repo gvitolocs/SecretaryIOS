@@ -470,7 +470,7 @@ async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     Ok(x)
 }
 /// 16 kHz mono WAV of the first 30 minutes, then Whisper.
-async fn transcribe(st: &AppState, path: &Path) -> anyhow::Result<(String, f64)> {
+pub(super) async fn transcribe(st: &AppState, path: &Path) -> anyhow::Result<(String, f64)> {
     let wav = path.with_extension("share.wav");
     command(
         "ffmpeg",

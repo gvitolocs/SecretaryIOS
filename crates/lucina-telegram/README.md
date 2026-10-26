@@ -21,7 +21,12 @@ flock is unusable. It uses `HERMES_GATEWAY_LOCK_DIR`, otherwise
 `lucina-rs`). The lease holds an exclusive flock and maintains the Node-compatible
 JSON record every 30 seconds. Pollers must stop when `lost()` becomes true **or the
 watch channel closes**, and retain the lease until polling stops. Dropping it stops
-the heartbeat and removes only its own record. This crate does not start a poller.
+the heartbeat and removes only its own record.
+
+`poller::Poller` is the polling loop on top of it (lease first, no dropped pending
+updates, at-most-once claims from `claim.rs` persisted before any handler runs, 409 /
+401 / back-off handling, one ordered queue per chat, a shared `PollerHealth`). The
+server starts it only with `LUCINA_TELEGRAM_ENABLED=true` (`lucina-server/src/telegram`).
 
 Reminder integration lives in `lucina-server/src/reminder_delivery.rs`. It is enabled
 only with `LUCINA_SCHEDULER=true` and `LUCINA_REMINDERS_WRITER=local`; the token comes

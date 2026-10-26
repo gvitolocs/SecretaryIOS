@@ -1,7 +1,9 @@
 //! Minimal Bot API transport. Credentials and raw request URLs never escape errors.
+pub mod claim;
 pub mod lease;
 pub mod lease_decision;
 pub mod outcome;
+pub mod poller;
 
 use outcome::{classify, SendOutcome, SendStage};
 use serde::{Deserialize, Serialize};
@@ -34,6 +36,9 @@ pub struct SendOptions {
     pub disable_web_page_preview: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parse_mode: Option<String>,
+    /// Node's OTP replies: the client may not forward or save the message.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub protect_content: bool,
 }
 
 #[derive(Deserialize)]
@@ -64,6 +69,13 @@ impl BotApi {
                 .expect("TLS client"),
             timeout: Duration::from_secs(30),
         }
+    }
+    /// The lease and claim key of this bot (the token's numeric id, never the secret).
+    pub fn bot_key(&self) -> String {
+        lease::bot_key_from_token(&self.token)
+    }
+    pub(crate) fn token(&self) -> &str {
+        &self.token
     }
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
@@ -199,6 +211,17 @@ impl BotApi {
         self.call("getFile", json!({"file_id":file_id}), self.timeout)
             .await
     }
+    pub async fn get_webhook_info(&self) -> Result<Value, ApiError> {
+        self.call("getWebhookInfo", json!({}), self.timeout).await
+    }
+    pub async fn delete_message(&self, chat_id: &str, message_id: i64) -> Result<Value, ApiError> {
+        self.call(
+            "deleteMessage",
+            json!({"chat_id":chat_id,"message_id":message_id}),
+            self.timeout,
+        )
+        .await
+    }
     pub async fn delete_webhook(&self, drop_pending_updates: bool) -> Result<Value, ApiError> {
         self.call(
             "deleteWebhook",
@@ -330,6 +353,7 @@ mod tests {
                 reply_to_message_id: Some(9),
                 disable_web_page_preview: true,
                 parse_mode: Some("HTML".into()),
+                ..Default::default()
             },
         )
         .await

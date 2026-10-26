@@ -28,6 +28,7 @@ pub mod rich;
 pub mod secrets;
 pub mod share;
 pub mod surface;
+pub mod telegram;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -93,6 +94,10 @@ pub struct Inner {
     pub streams: AtomicUsize,
     pub started: Instant,
     pub scheduler_health: Arc<Mutex<lucina_store::scheduler::SchedulerHealth>>,
+    /// The Telegram poller (`/health` → `telegram`).
+    pub telegram_health: lucina_telegram::poller::SharedHealth,
+    /// Node's `recent-telegram-chat.json`, written only while the Telegram bot runs here.
+    pub telegram_recent: Arc<RecentChat>,
 }
 
 #[derive(Clone)]
@@ -342,6 +347,8 @@ impl AppState {
                 enabled: cfg.scheduler && cfg.reminders_writer == WriterKind::Local,
                 ..Default::default()
             })),
+            telegram_health: Default::default(),
+            telegram_recent: Arc::new(RecentChat::new(Some(cfg.telegram.recent_path.clone()))),
             cfg,
         };
         Ok(Self(Arc::new(inner)))
@@ -354,6 +361,34 @@ impl AppState {
             .expect("with_deals before the state is shared")
             .deals = engine;
         self
+    }
+
+    /// `LUCINA_TELEGRAM_ENABLED=true` and a Lucina bot token.
+    pub fn telegram_active(&self) -> bool {
+        self.cfg.telegram.enabled && self.cfg.telegram_token.is_some()
+    }
+
+    /// The Telegram bot's poller (`LUCINA_TELEGRAM_ENABLED=true`); `None`
+    /// when off. It releases its lease when `shutdown` turns true: await
+    /// the handle before exiting.
+    pub fn spawn_telegram(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.cfg.telegram.enabled {
+            return None;
+        }
+        let Some(token) = self.cfg.telegram_token.clone() else {
+            tracing::warn!("LUCINA_TELEGRAM_ENABLED=true but no Lucina bot token (TELEGRAM_BOT_TOKEN_LUCINA or LUCINA_TELEGRAM_TOKEN_FILE): Telegram stays off");
+            return None;
+        };
+        match telegram::spawn(self, lucina_telegram::BotApi::new(token), shutdown) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "telegram poller not started");
+                None
+            }
+        }
     }
 
     /// Background tasks: the grocery deal watch when `GROCERY_OFFER_WATCH_ENABLED=true`,
@@ -374,8 +409,10 @@ impl AppState {
                 });
             }
         }
-        if self.cfg.telegram_requested || self.cfg.discord_requested {
-            tracing::warn!("LUCINA_TELEGRAM_ENABLED/LUCINA_DISCORD_ENABLED: channels are not part of this build; they stay off");
+        if self.cfg.discord_requested {
+            tracing::warn!(
+                "LUCINA_DISCORD_ENABLED: Discord is not part of this build; it stays off"
+            );
         }
         // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
         deals::spawn_watch(self);
@@ -395,6 +432,10 @@ impl AppState {
                         bot: lucina_telegram::BotApi::new(token.clone()),
                         runtime: tokio::runtime::Handle::current(),
                         recent: self.recent.clone(),
+                        // With the bot here, deliveries join the chat's turns (Node's buffer).
+                        telegram_recent: self
+                            .telegram_active()
+                            .then(|| (self.telegram_recent.clone(), self.telegram_health.clone())),
                         timeline,
                         secretary: self.secretary.clone(),
                         app_notify: self.cfg.app_notify,

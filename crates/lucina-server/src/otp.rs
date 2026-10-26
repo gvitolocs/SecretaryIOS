@@ -15,9 +15,8 @@
 //! - Replies are `sensitive: true`; a delivered code carries `expiresAt` so
 //!   the Secretary client drops it then and never caches it.
 //!
-//! Telegram: the Rust Lucina has no Telegram transport yet (the Node Lucina
-//! keeps `privateOtpMiddleware`). A future transport calls [`respond`] with
-//! its [`Asker`].
+//! Telegram: `crate::telegram` (Node's `privateOtpMiddleware`) calls
+//! [`respond`] with its [`Asker`] before the allow-list and any turn.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

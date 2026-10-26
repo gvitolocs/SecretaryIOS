@@ -218,6 +218,28 @@ Parity: replay recorded/synthesised `Update` JSON (text, voice, photo, document,
 into both bots against a fake Bot API (wiremock) and diff the outgoing call sequence (method, chat, reply-to, parse
 mode, text with LLM text masked); golden transcripts from the Telegram sample; timeline items identical.
 
+**Implemented (branch `node-retire`, 2026-10-26)**, off unless `LUCINA_TELEGRAM_ENABLED=true` (with the Lucina
+token of task A):
+
+- `lucina-telegram::poller`: the lease before the first `getUpdates` (deferred: holder logged, retry 5 s; lost: stop
+  at once, reacquire; SIGTERM: stop, release, then a 20 s handler drain). No `drop_pending_updates` ever; a webhook
+  is deleted only when `getWebhookInfo` reports one, keeping pending updates. At most once: `claim.rs`
+  (`should_handle = update_id > claimed`, `claim = max`) persisted to `<data>/lucina-rs/telegram-<botKey>-claim.json`
+  (temp, fsync, rename) before a batch reaches any handler; replays are skipped and counted. 409 backs off 30 s
+  (logged as an error), 401/404 stop the poller, other errors 5 s, `retry_after` honoured. One bounded queue per
+  chat (ordered), chats concurrent. `/health` → `telegram` (state, lease, holder, counters, claim).
+- `lucina-server::telegram`: OTP middleware, allow-list and `TELEGRAM_UNAUTHORIZED_DM=decline`, `/start`,
+  `/cancel_pdf`, `/status [full]`, text turns through `chat::channel_turn` (session `telegram_chat_<id>`, Node's
+  peer and label rules, planner platform `telegram`, replies `Telegram`, reminders for the chat with source
+  `telegram`, jobs reporting back to the chat), voice/audio/video_note (limits and texts as Node, the share
+  pipeline's Whisper), photos and documents (the share pipeline's per-file handling and tool loop), owner timeline
+  items (`isDm`, `chatTitle`), `recent-telegram-chat.json` (reloaded at each lease acquisition, secretary sessions
+  merged in when missing), `telegram-chats.json`, Telegram HTML replies split at 4096.
+- Not ported: PDF follow-up questions (`/cancel_pdf` always answers that nothing runs), provider-wait notices (no
+  retry events in the Rust planner), rich multi-message replies (one plain reply), the Gemini/OpenAI transcription
+  fallbacks, Node-only actions (image generation, graphs, web crawl, log inspection, Ollama, Poko posts: the planner
+  says it cannot run them). Non-owner chats are held to the MCP allowlist and get no Honcho memory (surface policy).
+
 ### Phase 4: Discord
 
 Prerequisites: Q1 (keep Discord? persona name), `LUCINA_OWNER_DISCORD_USER_ID`.

@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 
+/// Node's heartbeat interval.
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
+
 pub fn bot_key_from_token(token: &str) -> String {
     let head = token.split(':').next().unwrap_or_default();
     if !head.is_empty() && head.bytes().all(|b| b.is_ascii_digit()) {
@@ -24,6 +27,13 @@ pub fn default_lock_dir() -> io::Result<PathBuf> {
     std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(".local/state/hermes-gateway-locks"))
         .ok_or_else(|| io::Error::other("gateway lock directory unavailable: HOME is unset"))
+}
+/// The current lock record of a bot in `dir` (for reporting a deferred lease's
+/// holder; never contains the token).
+pub fn read_holder(dir: &Path, token: &str) -> Option<LockRecord> {
+    read_record(&dir.join(format!("telegram-{}.lock", bot_key_from_token(token))))
+        .ok()
+        .flatten()
 }
 fn read_record(path: &Path) -> io::Result<Option<LockRecord>> {
     match std::fs::read(path) {
@@ -102,6 +112,17 @@ impl Lease {
         name: &str,
         token: &str,
         instance: &str,
+    ) -> io::Result<Option<Self>> {
+        Self::acquire_with(dir, name, token, instance, HEARTBEAT).await
+    }
+    /// [`Lease::acquire_in`] with another heartbeat interval (tests; the
+    /// record stays live for 90 s after each heartbeat either way).
+    pub async fn acquire_with(
+        dir: &Path,
+        name: &str,
+        token: &str,
+        instance: &str,
+        heartbeat_every: Duration,
     ) -> io::Result<Option<Self>> {
         std::fs::create_dir_all(dir).map_err(|e| {
             io::Error::new(e.kind(), format!("gateway lock directory unusable: {e}"))
@@ -191,7 +212,7 @@ impl Lease {
         let weak = Arc::downgrade(&held);
         let heartbeat = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                tokio::time::sleep(heartbeat_every).await;
                 let Some(held) = weak.upgrade() else {
                     break;
                 };

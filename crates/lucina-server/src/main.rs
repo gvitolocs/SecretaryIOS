@@ -627,6 +627,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             state.spawn_background();
             // One server per address (127.0.0.1 and the Tailscale IP), one shutdown.
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let telegram = state.spawn_telegram(stop_rx.clone());
             let mut servers = tokio::task::JoinSet::new();
             for bind in binds {
                 let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -648,6 +649,15 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 }
             }
             let _ = stop_tx.send(true);
+            // The Telegram poller stops and releases its lease before the process exits.
+            if let Some(t) = telegram {
+                if tokio::time::timeout(std::time::Duration::from_secs(30), t)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("telegram poller did not stop in 30 s");
+                }
+            }
             while servers.join_next().await.is_some() {}
         }
         Cmd::FakeDeepseek {

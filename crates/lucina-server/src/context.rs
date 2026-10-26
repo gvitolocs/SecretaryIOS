@@ -151,9 +151,42 @@ pub async fn prepare_with(
     platform: &str,
     tools_mode: bool,
 ) -> Prepared {
+    let keys = Keys {
+        recent: &st.recent,
+        recent_key: session,
+        peer: &st.cfg.owner_peer_id,
+    };
+    prepare_keyed(
+        st, surface, session, keys, user_text, user_label, platform, tools_mode,
+    )
+    .await
+}
+
+/// Which recent-turn buffer and Honcho peer a turn reads (the Secretary app:
+/// its own buffer by session, the owner peer; Telegram: Node's buffer by
+/// chat id, the chat's peer).
+#[derive(Clone, Copy)]
+pub struct Keys<'a> {
+    pub recent: &'a lucina_store::recent::RecentChat,
+    pub recent_key: &'a str,
+    pub peer: &'a str,
+}
+
+/// [`prepare_with`] for any channel.
+#[allow(clippy::too_many_arguments)]
+pub async fn prepare_keyed(
+    st: &AppState,
+    surface: &TurnSurface,
+    session: &str,
+    keys: Keys<'_>,
+    user_text: &str,
+    user_label: &str,
+    platform: &str,
+    tools_mode: bool,
+) -> Prepared {
     let now = Utc::now();
     let tz = st.cfg.time_zone;
-    let metadata = st.recent.metadata_block(session, tz, now);
+    let metadata = keys.recent.metadata_block(keys.recent_key, tz, now);
     let first_after_idle = metadata.contains("- first turn after idle: yes");
     // The owner's personal memory, per the turn's surface (recent turns
     // included: they also feed the intent classifier).
@@ -162,7 +195,7 @@ pub async fn prepare_with(
         surface.log_denied("read", &Scope::OwnerPersonal, "turn_context");
     }
     let recent_context = if owner {
-        st.recent.render(session, tz)
+        keys.recent.render(keys.recent_key, tz)
     } else {
         String::new()
     };
@@ -236,7 +269,7 @@ pub async fn prepare_with(
         let ctx = tokio::time::timeout(
             std::time::Duration::from_secs(12),
             st.memory
-                .build_context(surface, &st.cfg.owner_peer_id, session, user_text),
+                .build_context(surface, keys.peer, session, user_text),
         )
         .await
         .unwrap_or_default();

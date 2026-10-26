@@ -137,8 +137,10 @@ pub struct Config {
     pub device_retention_days: i64,
     pub device_command_ttl_ms: i64,
     pub device_reachable_minutes: i64,
-    // channels (not implemented in this build; always off)
+    // channels: Telegram (`LUCINA_TELEGRAM_ENABLED`, see `telegram`); Discord not in this build
     pub telegram_requested: bool,
+    /// The Telegram bot (`crate::telegram`).
+    pub telegram: crate::telegram::TelegramConfig,
     pub discord_requested: bool,
     // discord presence (watcher: `lucina presence-watch`)
     pub owner_discord_user_id: Option<String>,
@@ -199,6 +201,7 @@ impl std::fmt::Debug for Config {
             .field("otp_owner_token_file", &self.otp.owner_token_file)
             .field("drive", &self.drive_enabled)
             .field("mcp_trusted", &self.mcp_trusted)
+            .field("telegram", &self.telegram.enabled)
             .finish_non_exhaustive()
     }
 }
@@ -490,6 +493,7 @@ impl Config {
                         "google-drive-token.json",
                     )
                 }),
+            telegram: crate::telegram::TelegramConfig::from_lookup(&get, &data_dir),
             data_dir,
         })
     }

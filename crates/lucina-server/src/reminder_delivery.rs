@@ -12,6 +12,9 @@ pub struct TelegramReminderSink {
     pub bot: BotApi,
     pub runtime: tokio::runtime::Handle,
     pub recent: Arc<RecentChat>,
+    /// With the Telegram bot here: Node's chat buffer, used only while the
+    /// poller holds the lease (before that Node may still write it).
+    pub telegram_recent: Option<(Arc<RecentChat>, lucina_telegram::poller::SharedHealth)>,
     pub timeline: TimelineSink,
     pub secretary: crate::bridges::Secretary,
     pub app_notify: bool,
@@ -29,8 +32,11 @@ impl ReminderSink for TelegramReminderSink {
                     _ => DeliveryOutcome::Uncertain(e.to_string()),
                 };
             }
-            self.recent
-                .append(&reminder.chat_id, "assistant", text, Utc::now());
+            let recent = match &self.telegram_recent {
+                Some((r, h)) if h.lock().unwrap_or_else(|e| e.into_inner()).lease_held => r,
+                _ => &self.recent,
+            };
+            recent.append(&reminder.chat_id, "assistant", text, Utc::now());
             let item = self.timeline.record(reminder, text);
             if self.app_notify && self.timeline.is_owner(reminder) {
                 let mut body = json!({
@@ -96,6 +102,7 @@ mod tests {
                 bot: BotApi::with_base_url(TOKEN.into(), &bot.uri()).with_timeout(timeout),
                 runtime: tokio::runtime::Handle::current(),
                 recent: Arc::new(RecentChat::new(Some(dir.path().join("recent.json")))),
+                telegram_recent: None,
                 timeline: TimelineSink {
                     timeline: Arc::new(TimelineStore::new(
                         dir.path().join("t.jsonl"),

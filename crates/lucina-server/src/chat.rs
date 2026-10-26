@@ -29,10 +29,14 @@ use lucina_tools::{Ctx, Effect, Origin};
 use serde_json::{json, Value};
 
 use crate::api::{optional_string, owner_reminders, ApiError, PLATFORM_LABEL, USER_LABEL};
+use std::sync::Arc;
+
 use crate::planner::TurnInput;
 use crate::prompts::Prompts;
 use crate::surface::BearerVerified;
 use crate::{jobs, AppState, PlannerMode};
+use lucina_store::recent::RecentChat;
+use lucina_store::timeline::{Attachment, TimelineStore};
 
 pub mod drive_turn;
 pub mod media_turn;
@@ -171,6 +175,70 @@ pub async fn handle_chat(
     out
 }
 
+/// Sends a later message (a finished job's result) back to the channel.
+pub type ReplySink =
+    Arc<dyn Fn(String) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
+
+/// A turn from a chat channel other than the Secretary app (Telegram): where
+/// it comes from and where its effects go. The Secretary path has none and
+/// keeps its own values.
+#[derive(Clone)]
+pub struct ChannelOrigin {
+    /// The planner's `Platform:` (Node: `telegram`).
+    pub planner_platform: &'static str,
+    /// The reply generator's platform (Node: `Telegram`).
+    pub platform_label: &'static str,
+    pub user_label: String,
+    /// Extra system text for replies (Node passes none for Telegram).
+    pub extra_system: String,
+    /// The Honcho user peer (the owner's chat: the canonical owner peer).
+    pub peer_id: String,
+    /// The recent-turn buffer and its key (Telegram: the chat id).
+    pub recent: Arc<RecentChat>,
+    pub recent_key: String,
+    /// The owner's timeline, or a disabled store when this turn is not recorded.
+    pub timeline: Arc<TimelineStore>,
+    /// On every item of the turn (`isDm`, `chatTitle`).
+    pub timeline_meta: Option<Meta>,
+    /// The owner's item: its text (a voice note's transcript) and attachments.
+    pub timeline_text: Option<String>,
+    pub user_attachments: Vec<Attachment>,
+    /// Reminders created in this turn are delivered here.
+    pub reminder_chat_id: String,
+    pub reminder_source: &'static str,
+    /// The owner himself: otherwise the turn is held to the MCP allowlist
+    /// (no owner tools, no secrets).
+    pub owner: bool,
+    /// An attachment turn (the share pipeline's focused tool loop).
+    pub share: bool,
+    /// Where a started job's result is sent when it finishes.
+    pub on_job_done: Option<ReplySink>,
+}
+
+/// A chat channel's text (or attachment) turn through the Secretary turn
+/// pipeline (JSON planner; `LUCINA_PLANNER=tools` does not apply here).
+pub async fn channel_turn(
+    st: AppState,
+    message: String,
+    session: String,
+    channel: String,
+    surface: TurnSurface,
+    origin: ChannelOrigin,
+) -> Result<Value, ApiError> {
+    run_turn_inner(
+        st,
+        message,
+        session,
+        None,
+        channel,
+        None,
+        surface,
+        None,
+        Some(Arc::new(origin)),
+    )
+    .await
+}
+
 /// What the turn answered.
 struct Finish {
     reply: String,
@@ -263,15 +331,50 @@ struct Turn<'a> {
     mcp: Option<McpTurn>,
     /// The turn's memory surface (classified once in `handle_chat`).
     surface: TurnSurface,
-    /// An MCP turn held to the allowlist (`LUCINA_MCP_TRUSTED=false`).
+    /// An MCP turn held to the allowlist (`LUCINA_MCP_TRUSTED=false`), or a
+    /// channel turn that is not the owner's.
     guarded: bool,
     user_label: String,
     extra_system: String,
+    /// The share pipeline's tool loop.
+    share: bool,
+    /// `None`: the Secretary app.
+    origin: Option<Arc<ChannelOrigin>>,
 }
 
 impl Turn<'_> {
     fn persona(&self) -> &str {
         &self.st.cfg.persona
+    }
+
+    /// The planner's platform (`secretary`, or the channel's).
+    fn planner_platform(&self) -> &'static str {
+        self.origin
+            .as_ref()
+            .map_or(PLANNER_PLATFORM, |o| o.planner_platform)
+    }
+
+    /// The reply generator's platform (`Secretary app`, or the channel's).
+    fn platform_label(&self) -> &'static str {
+        self.origin
+            .as_ref()
+            .map_or(PLATFORM_LABEL, |o| o.platform_label)
+    }
+
+    fn recent(&self) -> &RecentChat {
+        self.origin.as_ref().map_or(&self.st.recent, |o| &o.recent)
+    }
+
+    fn recent_key(&self) -> &str {
+        self.origin
+            .as_ref()
+            .map_or(self.session.as_str(), |o| o.recent_key.as_str())
+    }
+
+    fn peer(&self) -> &str {
+        self.origin
+            .as_ref()
+            .map_or(self.st.cfg.owner_peer_id.as_str(), |o| o.peer_id.as_str())
     }
 
     fn input<'b>(&'b self, memory: &'b str, platform: &'b str) -> TurnInput<'b> {
@@ -293,7 +396,10 @@ async fn run_turn(
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
 ) -> Result<Value, ApiError> {
-    run_turn_inner(st, message, session, cmid, channel, mcp_turn, surface, None).await
+    run_turn_inner(
+        st, message, session, cmid, channel, mcp_turn, surface, None, None,
+    )
+    .await
 }
 
 /// Share ingestion has already written the owner's timeline item.
@@ -315,6 +421,7 @@ pub(crate) async fn share_turn(
         None,
         surface,
         Some(item),
+        None,
     )
     .await
 }
@@ -329,8 +436,9 @@ async fn run_turn_inner(
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
     existing: Option<lucina_store::timeline::TimelineItem>,
+    origin: Option<Arc<ChannelOrigin>>,
 ) -> Result<Value, ApiError> {
-    if st.cfg.planner == PlannerMode::Tools && existing.is_none() {
+    if st.cfg.planner == PlannerMode::Tools && existing.is_none() && origin.is_none() {
         let from_mcp = mcp_turn.is_some();
         return tools_turn(st, message, session, cmid, channel, surface, from_mcp).await;
     }
@@ -349,27 +457,39 @@ async fn run_turn_inner(
             mcp::note(m)
         }
     };
-    let (user_label, extra_system) = match &mcp_turn {
-        Some(m) => (
+    let (user_label, extra_system) = match (&mcp_turn, &origin) {
+        (_, Some(o)) => (o.user_label.clone(), o.extra_system.clone()),
+        (Some(m), None) => (
             format!("{USER_LABEL}; {}", note(m)),
             format!("{base_system} {}", note(m)),
         ),
-        None => (USER_LABEL.to_owned(), base_system.to_owned()),
+        (None, None) => (USER_LABEL.to_owned(), base_system.to_owned()),
     };
+    let share = existing.is_some() || origin.as_ref().is_some_and(|o| o.share);
     let turn_meta = mcp_turn.as_ref().map(|m| Meta {
         via: Some("mcp".into()),
         caller: Some(m.caller.clone()),
         ..Meta::default()
     });
-    let timeline =
-        TimelineTurn::new(st.timeline.clone(), &channel, cmid.clone()).with_meta(turn_meta);
+    let (timeline_store, turn_meta) = match &origin {
+        Some(o) => (o.timeline.clone(), o.timeline_meta.clone()),
+        None => (st.timeline.clone(), turn_meta),
+    };
+    let timeline = TimelineTurn::new(timeline_store, &channel, cmid.clone()).with_meta(turn_meta);
     let timeline = if let Some(item) = existing {
         timeline.with_user_item(item)
     } else {
         timeline
     };
-    let user_item = timeline.record_user(&message, Vec::new());
-    let guarded = mcp_turn.is_some() && !st.cfg.mcp_trusted;
+    let user_item = match &origin {
+        Some(o) => timeline.record_user(
+            o.timeline_text.as_deref().unwrap_or(&message),
+            o.user_attachments.clone(),
+        ),
+        None => timeline.record_user(&message, Vec::new()),
+    };
+    let guarded =
+        (mcp_turn.is_some() && !st.cfg.mcp_trusted) || origin.as_ref().is_some_and(|o| !o.owner);
     let t = Turn {
         st: &st,
         message,
@@ -380,25 +500,36 @@ async fn run_turn_inner(
         guarded,
         user_label,
         extra_system,
+        share,
+        origin,
     };
     // Secrets first, without the model: a fixed refusal for reveal requests
     // (MCP included), status and audit for the owner.
-    let (finish, prepared) = match secrets_finish(&st, &t.message, t.mcp.is_some()).await {
+    let not_owner = t.mcp.is_some() || t.origin.as_ref().is_some_and(|o| !o.owner);
+    let (finish, prepared) = match secrets_finish(&st, &t.message, not_owner).await {
         Some(f) => {
-            st.recent.append(&t.session, "user", &t.message, Utc::now());
+            t.recent()
+                .append(t.recent_key(), "user", &t.message, Utc::now());
             (f, None)
         }
         None => {
-            let prepared = crate::context::prepare(
+            let prepared = crate::context::prepare_keyed(
                 &st,
                 &t.surface,
                 &t.session,
+                crate::context::Keys {
+                    recent: t.recent(),
+                    recent_key: t.recent_key(),
+                    peer: t.peer(),
+                },
                 &t.message,
                 &t.user_label,
-                PLANNER_PLATFORM,
+                t.planner_platform(),
+                false,
             )
             .await;
-            st.recent.append(&t.session, "user", &t.message, Utc::now());
+            t.recent()
+                .append(t.recent_key(), "user", &t.message, Utc::now());
             let game_system = if prepared.game.is_empty() || !t.guarded {
                 prepared.game.clone()
             } else {
@@ -412,19 +543,25 @@ async fn run_turn_inner(
     };
 
     // Finish: recent turns, Honcho, the Lucina item.
-    let (rich_msg, reply, remembered) = rich_reply(
-        &st,
-        finish.reply.trim(),
-        &t.message,
-        &finish.action,
-        &finish.action_result,
-        // Secrets replies are fixed texts: no model rewrite.
-        !finish.action.starts_with("secrets_"),
-    )
-    .await;
+    let (rich_msg, reply, remembered) = if t.origin.is_some() {
+        // Channels send plain text (no app widgets).
+        let reply = finish.reply.trim().to_owned();
+        (None, reply.clone(), reply)
+    } else {
+        rich_reply(
+            &st,
+            finish.reply.trim(),
+            &t.message,
+            &finish.action,
+            &finish.action_result,
+            // Secrets replies are fixed texts: no model rewrite.
+            !finish.action.starts_with("secrets_"),
+        )
+        .await
+    };
     let rich_msg = with_routes(rich_msg, &finish.routes);
-    st.recent
-        .append(&t.session, "assistant", &remembered, Utc::now());
+    t.recent()
+        .append(t.recent_key(), "assistant", &remembered, Utc::now());
     remember_turn(&st, &t, &finish.action, &remembered, &finish.action_result);
     let meta = match &finish.job {
         Some(job) => Some(Meta {
@@ -446,10 +583,13 @@ async fn run_turn_inner(
                 .as_ref()
                 .map(|p| p.memory_context.clone())
                 .unwrap_or_default(),
-            t.session.clone(),
-            timeline.user_item_id(),
-            t.channel.clone(),
-            t.surface.clone(),
+            JobDest {
+                session: t.session.clone(),
+                user_item: timeline.user_item_id(),
+                channel: t.channel.clone(),
+                surface: t.surface.clone(),
+                origin: t.origin.clone(),
+            },
         );
     }
     let mut out = json!({
@@ -533,6 +673,28 @@ async fn secrets_finish(st: &AppState, text: &str, mcp: bool) -> Option<Finish> 
 /// Honcho `remember` (`readwrite` only), Node's `rememberSecretaryTurn`.
 fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_result: &str) {
     if st.memory.mode() != MemoryMode::ReadWrite {
+        return;
+    }
+    if t.origin.is_some() {
+        // Node's Telegram turns: the user's text and the reply as sent
+        // (grocery replies carry their intent).
+        let assistant = if action == "grocery" && !action_result.is_empty() {
+            format!("[{action_result}] {reply}")
+        } else {
+            reply.to_owned()
+        };
+        let (mem, peer, sid, surface, user) = (
+            st.memory.clone(),
+            t.peer().to_owned(),
+            t.session.clone(),
+            t.surface.clone(),
+            t.message.clone(),
+        );
+        tokio::spawn(async move {
+            if let Err(e) = mem.remember(&surface, &peer, &sid, &user, &assistant).await {
+                tracing::warn!(error = %e, "channel honcho remember failed");
+            }
+        });
         return;
     }
     let label = match &t.mcp {
@@ -711,7 +873,21 @@ async fn json_turn(
     let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
-    if t.extra_system == crate::share::SHARE_SYSTEM {
+    if t.share {
+        if t.guarded {
+            // Not the owner: no tools, an answer from the extracted content only.
+            let reply = st
+                .planner
+                .generate_reply(
+                    &t.input(memory, t.platform_label()),
+                    &t.extra_system,
+                    "",
+                    "reply",
+                )
+                .await
+                .unwrap_or_default();
+            return Finish::reply(reply, "reply");
+        }
         return share_turn::run(t, memory).await;
     }
 
@@ -764,7 +940,7 @@ async fn json_turn(
         .join(" ");
         let reply = st
             .planner
-            .generate_reply(&t.input(&context, PLATFORM_LABEL), &extra, "", "reply")
+            .generate_reply(&t.input(&context, t.platform_label()), &extra, "", "reply")
             .await
             .unwrap_or_default();
         let reply = match reply.trim() {
@@ -821,7 +997,7 @@ async fn json_turn(
                 .join(" ");
                 reply = st
                     .planner
-                    .generate_reply(&t.input(&context, PLATFORM_LABEL), &extra, "", "reply")
+                    .generate_reply(&t.input(&context, t.platform_label()), &extra, "", "reply")
                     .await
                     .unwrap_or_default();
                 if reply.trim().is_empty() {
@@ -950,12 +1126,12 @@ async fn json_turn(
     let game_live = !t.guarded && !prepared.game.is_empty();
     let routed = if game_live {
         st.planner
-            .plan_response(&t.input(memory, PLANNER_PLATFORM))
+            .plan_response(&t.input(memory, t.planner_platform()))
             .await
     } else {
         st.planner
             .route_classified(
-                &t.input(memory, PLANNER_PLATFORM),
+                &t.input(memory, t.planner_platform()),
                 &prepared.classification,
                 &st.cfg.intent,
                 st.cfg.capability_hints,
@@ -968,7 +1144,7 @@ async fn json_turn(
             tracing::error!(surface = "secretary", error = %e, "response planning failed");
             match st
                 .planner
-                .generate_reply(&t.input(memory, PLATFORM_LABEL), "", "", "reply")
+                .generate_reply(&t.input(memory, t.platform_label()), "", "", "reply")
                 .await
             {
                 Ok(text) => json!({"action": "reply", "text": text}),
@@ -1088,7 +1264,11 @@ async fn json_turn(
                 &action,
             );
         }
-        let Some(chat) = st.cfg.owner_chat_id.clone().filter(|c| !c.is_empty()) else {
+        let chat = match &t.origin {
+            Some(o) => Some(o.reminder_chat_id.clone()),
+            None => st.cfg.owner_chat_id.clone(),
+        };
+        let Some(chat) = chat.filter(|c| !c.is_empty()) else {
             return Finish::reply(format!("{persona}: no owner Telegram chat is configured, so I cannot schedule reminders."), &action);
         };
         let o = ParseOptions {
@@ -1106,12 +1286,16 @@ async fn json_turn(
                 text,
                 due_at: due,
                 chat_id: chat,
-                user_peer_id: st.cfg.owner_peer_id.clone(),
+                user_peer_id: t.peer().to_owned(),
                 user_label: t.user_label.clone(),
                 persona: persona.clone(),
                 time_zone: tz.name().into(),
                 dedupe_key: None,
-                source: "secretary".into(),
+                source: t
+                    .origin
+                    .as_ref()
+                    .map_or("secretary", |o| o.reminder_source)
+                    .into(),
             })
             .await
         {
@@ -1203,7 +1387,7 @@ async fn json_turn(
             None => st
                 .planner
                 .generate_reply(
-                    &t.input(memory, PLATFORM_LABEL),
+                    &t.input(memory, t.platform_label()),
                     &t.extra_system,
                     "",
                     "reply",
@@ -1220,17 +1404,30 @@ async fn json_turn(
     }
 
     // A tool the app cannot run (Discord admin, web crawl, log inspection, …).
-    let extra = format!(
-        "{} This request needs the \"{action}\" tool, which the Secretary app cannot run. Say so in one sentence, answer whatever you can without it, and suggest asking on Telegram for the tool. Never claim the tool ran.",
-        t.extra_system
-    );
+    let extra = if t.origin.is_some() {
+        format!(
+            "{} This request needs the \"{action}\" tool, which this Lucina cannot run yet. Say so in one sentence, answer whatever you can without it, and never claim the tool ran.",
+            t.extra_system
+        )
+        .trim()
+        .to_owned()
+    } else {
+        format!(
+            "{} This request needs the \"{action}\" tool, which the Secretary app cannot run. Say so in one sentence, answer whatever you can without it, and suggest asking on Telegram for the tool. Never claim the tool ran.",
+            t.extra_system
+        )
+    };
     let text = st
         .planner
-        .generate_reply(&t.input(memory, PLATFORM_LABEL), &extra, "", "reply")
+        .generate_reply(&t.input(memory, t.platform_label()), &extra, "", "reply")
         .await
         .unwrap_or_default();
     let text = if text.trim().is_empty() {
-        "I cannot do that from the app yet. Ask me on Telegram.".to_owned()
+        if t.origin.is_some() {
+            "I cannot do that here yet.".to_owned()
+        } else {
+            "I cannot do that from the app yet. Ask me on Telegram.".to_owned()
+        }
     } else {
         text
     };
@@ -1333,7 +1530,7 @@ async fn delegated_finish(
             );
             t.st.planner
                 .generate_skill_reply(
-                    &t.input(memory, PLATFORM_LABEL),
+                    &t.input(memory, t.platform_label()),
                     &format!("{} (asked by Lucina)", job.agent.label()),
                     &dg::answer_text(job),
                     &instruction,
@@ -1372,27 +1569,41 @@ fn remember_note(st: &AppState, surface: &TurnSurface, session: &str, note: &Val
     });
 }
 
-/// `startJob`: run the action, report on the timeline and the job record.
-#[allow(clippy::too_many_arguments)]
-fn spawn_job(
-    st: AppState,
-    job: Job,
-    plan: Value,
-    message: String,
-    memory: String,
+/// Where a job reports: the turn's session, owner item, channel and surface,
+/// and for a chat channel its timeline, recent turns, peer and reply sink.
+struct JobDest {
     session: String,
     user_item: Option<String>,
     channel: String,
-    // The job keeps the surface of the turn that started it.
+    /// The job keeps the surface of the turn that started it.
     surface: TurnSurface,
-) {
+    origin: Option<Arc<ChannelOrigin>>,
+}
+
+/// `startJob`: run the action, report on the timeline and the job record
+/// (and, from a chat channel, in the chat: it has no polling client).
+fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: String, dest: JobDest) {
     tokio::spawn(async move {
+        let JobDest {
+            session,
+            user_item,
+            channel,
+            surface,
+            origin,
+        } = dest;
+        let timeline = origin
+            .as_ref()
+            .map_or_else(|| st.timeline.clone(), |o| o.timeline.clone());
         let record = |text: String, rich: Option<&lucina_store::rich::RichMessage>| {
             let meta = Some(Meta {
                 job_id: Some(job.id.clone()),
                 ..Meta::default()
             });
-            st.timeline.record(lucina_store::timeline::NewItem {
+            let meta = match origin.as_ref().and_then(|o| o.timeline_meta.clone()) {
+                Some(base) => meta.map(|m| base.merge(m)),
+                None => meta,
+            };
+            timeline.record(lucina_store::timeline::NewItem {
                 channel: channel.clone(),
                 role: "lucina".into(),
                 text,
@@ -1400,6 +1611,10 @@ fn spawn_job(
                 meta: with_rich_meta(meta, rich),
                 ..Default::default()
             })
+        };
+        let (recent, recent_key): (&RecentChat, &str) = match &origin {
+            Some(o) => (&o.recent, &o.recent_key),
+            None => (&st.recent, &session),
         };
         let _ = st.jobs.update(&job.id, |j| {
             j.status = "running".into();
@@ -1409,8 +1624,10 @@ fn spawn_job(
         let t = TurnInput {
             user_text: &message,
             memory: &memory,
-            user_label: USER_LABEL,
-            platform: PLATFORM_LABEL,
+            user_label: origin
+                .as_ref()
+                .map_or(USER_LABEL, |o| o.user_label.as_str()),
+            platform: origin.as_ref().map_or(PLATFORM_LABEL, |o| o.platform_label),
         };
         let outcome: Result<(String, String), String> = async {
             match action.as_str() {
@@ -1433,7 +1650,10 @@ fn spawn_job(
             }
         }
         .await;
-        match outcome {
+        let peer = origin
+            .as_ref()
+            .map_or(st.cfg.owner_peer_id.as_str(), |o| o.peer_id.as_str());
+        let sent = match outcome {
             Ok((reply, action_result)) => {
                 let result = if reply.trim().is_empty() {
                     "Done.".to_owned()
@@ -1441,8 +1661,13 @@ fn spawn_job(
                     reply.trim().to_owned()
                 };
                 // Job results are formatted without another model call.
-                let (rich_msg, text, _) =
-                    rich_reply(&st, &result, &message, &action, "", false).await;
+                let (rich_msg, text) = if origin.is_some() {
+                    (None, result.clone())
+                } else {
+                    let (rich_msg, text, _) =
+                        rich_reply(&st, &result, &message, &action, "", false).await;
+                    (rich_msg, text)
+                };
                 let item = record(text, rich_msg.as_ref());
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
@@ -1450,16 +1675,21 @@ fn spawn_job(
                     j.timeline_item_id = item.map(|i| i.id);
                     j.finished_at = Some(now_iso());
                 });
-                st.recent.append(&session, "assistant", &result, Utc::now());
+                recent.append(recent_key, "assistant", &result, Utc::now());
                 remember_job(
                     &st,
                     &surface,
-                    &session,
-                    &message,
+                    JobMemory {
+                        peer,
+                        session: &session,
+                        message: &message,
+                        channel: origin.is_some(),
+                    },
                     &action,
                     &result,
                     &action_result,
                 );
+                result
             }
             Err(reason) => {
                 let reason: String = reason.chars().take(500).collect();
@@ -1472,18 +1702,42 @@ fn spawn_job(
                     j.timeline_item_id = item.map(|i| i.id);
                     j.finished_at = Some(now_iso());
                 });
-                remember_job(&st, &surface, &session, &message, &action, &text, "");
+                remember_job(
+                    &st,
+                    &surface,
+                    JobMemory {
+                        peer,
+                        session: &session,
+                        message: &message,
+                        channel: origin.is_some(),
+                    },
+                    &action,
+                    &text,
+                    "",
+                );
+                text
             }
-        }
+        };
         st.jobs.finish(&job.id);
+        if let Some(sink) = origin.as_ref().and_then(|o| o.on_job_done.clone()) {
+            sink(sent).await;
+        }
     });
+}
+
+/// Who a job's exchange is remembered for.
+struct JobMemory<'a> {
+    peer: &'a str,
+    session: &'a str,
+    message: &'a str,
+    /// A chat channel's job: the user's text as he wrote it (Node), no app label.
+    channel: bool,
 }
 
 fn remember_job(
     st: &AppState,
     surface: &TurnSurface,
-    session: &str,
-    message: &str,
+    who: JobMemory<'_>,
     action: &str,
     reply: &str,
     action_result: &str,
@@ -1491,7 +1745,12 @@ fn remember_job(
     if st.memory.mode() != MemoryMode::ReadWrite {
         return;
     }
-    let user = format!("[{PLATFORM_LABEL}] {message}");
+    let message = who.message;
+    let user = if who.channel {
+        message.to_owned()
+    } else {
+        format!("[{PLATFORM_LABEL}] {message}")
+    };
     let assistant = [
         format!("[action:{action}]"),
         reply.to_owned(),
@@ -1510,8 +1769,8 @@ fn remember_job(
     .join("\n\n");
     let (mem, peer, sid, surface) = (
         st.memory.clone(),
-        st.cfg.owner_peer_id.clone(),
-        session.to_owned(),
+        who.peer.to_owned(),
+        who.session.to_owned(),
         surface.clone(),
     );
     tokio::spawn(async move {
@@ -1834,6 +2093,8 @@ async fn tools_turn(
         guarded: false,
         user_label: USER_LABEL.into(),
         extra_system: String::new(),
+        share: false,
+        origin: None,
     };
     remember_turn(&st, &t2, &finish.action, &remembered, &finish.action_result);
     let lucina_item = turn.record_lucina(

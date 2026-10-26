@@ -1043,6 +1043,78 @@ fn section(n: usize, part: &Part, x: &Extracted, budget: &mut usize) -> String {
     s
 }
 
+/// One local file through the per-file-type handling, outside a share job
+/// (Telegram photos and documents): the section for the turn message and the
+/// timeline attachment. Nothing is stored in the attachment memory.
+pub(crate) async fn read_local_file(
+    st: &AppState,
+    dir: &Path,
+    path: &Path,
+    name: &str,
+    mime: &str,
+) -> (String, Attachment) {
+    let (p, n, m) = (path.to_owned(), name.to_owned(), mime.to_owned());
+    let routed = tokio::task::spawn_blocking(move || router::route(&p, &n, &m))
+        .await
+        .unwrap_or("other");
+    let bytes = tokio::fs::metadata(path).await.map(|m| m.len()).ok();
+    let mut part = Part::new(Attachment {
+        kind: router::timeline_kind(routed).into(),
+        name: Some(sanitize(name)),
+        mime: (!mime.is_empty()).then(|| mime.to_owned()),
+        bytes,
+        ..Attachment::default()
+    });
+    part.path = Some(path.to_owned());
+    part.handler = Some(routed.into());
+    let seconds = if ["audio", "video"].contains(&part.attachment.kind.as_str()) {
+        1200
+    } else {
+        300
+    };
+    let x = match tokio::time::timeout(
+        Duration::from_secs(seconds),
+        extract::read(st, dir, &mut part, true, None, ""),
+    )
+    .await
+    {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => {
+            let mut x = Extracted::new("other");
+            x.warnings.push(e.to_string());
+            x
+        }
+        Err(_) => {
+            let mut x = Extracted::new("other");
+            x.warnings.push("reading it took too long".into());
+            x
+        }
+    };
+    let mut budget = TURN_TEXT_BUDGET;
+    (section(1, &part, &x, &mut budget), part.attachment)
+}
+
+/// The share pipeline's Whisper (`LUCINA_WHISPER_BIN`, `LUCINA_WHISPER_MODEL`) on a local file.
+pub(crate) async fn transcribe_local(st: &AppState, path: &Path) -> anyhow::Result<String> {
+    extract::transcribe(st, path).await.map(|(text, _)| text)
+}
+
+/// The share turn message around the read content (see `process`).
+pub(crate) fn turn_message(note: &str, lang: &str, content: &str) -> String {
+    let note = note.trim();
+    let owner = if note.is_empty() {
+        format!(
+            "(no note: react as rule 2 says; the app's default line was \"{}\")",
+            default_note(lang)
+        )
+    } else {
+        format!("\"{note}\"")
+    };
+    format!(
+        "Owner's question or note: {owner}\nDevice language: {lang}\n\n<Shared content>{content}</Shared content>"
+    )
+}
+
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
     ensure_user(st, job)?;
     if let Some((id, text)) = existing_reply(st, &job.user_item.id) {

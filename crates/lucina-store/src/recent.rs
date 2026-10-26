@@ -107,6 +107,12 @@ impl RecentChat {
         }
     }
 
+    /// Forget the loaded turns: the next use reads the file again (another
+    /// writer may have changed it, e.g. Node before a lease handover).
+    pub fn reload(&self) {
+        *self.turns.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     pub fn turns(&self, chat_id: &str) -> Vec<Turn> {
         self.with(|m| m.get(chat_id).cloned().unwrap_or_default())
     }
