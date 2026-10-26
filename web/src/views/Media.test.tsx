@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";

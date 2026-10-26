@@ -1,9 +1,10 @@
 // Deals map (/shopping/map): nearby supermarkets with Lucina's current
-// offers. Google Maps only when the server has a web key — chip markers,
-// home marker, fitted bounds; otherwise the store list is the whole view.
+// offers. The shared LucinaMap (self-hosted tiles) with chip pins and a home
+// pin, fitted to what the filters show; without tiles the store list is the
+// whole view.
 
 import { A } from "@solidjs/router";
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createMemo, createSignal, For, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { shoppingApi } from "../../api/shopping";
 import { toApiError } from "../../api/client";
@@ -16,12 +17,14 @@ import {
   type DealsMapData,
   type MapStore,
 } from "../../lib/dealsMap";
+import { googleDirectionsUrl, type MapPin } from "../../lib/mapKit";
+import { LucinaMap } from "../../components/LucinaMap";
 import { shop, t } from "../../state/shopping";
 import "../../styles/shopping.css";
 import "../../styles/dealsMap.css";
-import { directionsUrl, loadMaps, makeMarker, type MapsLibraries, type MapsMap } from "./mapLoader";
 
-const FALLBACK_ZOOM = 13;
+/** The home pin's id (store ids are `<source>:<id>`). */
+const HOME_PIN = "home";
 
 const BROWSER_TAG: Record<string, string> = { it: "it-IT", en: "en-GB", da: "da-DK" };
 
@@ -35,8 +38,8 @@ function day(iso: string): string {
   return new Intl.DateTimeFormat(BROWSER_TAG[shop.lang] ?? "da-DK", { day: "numeric", month: "short" }).format(d);
 }
 
-/** Marker chip content (AdvancedMarkerElement): chain initial + offer badge. */
-function chipElement(store: MapStore, onOpen: (id: string) => void): HTMLElement {
+/** Marker chip: chain initial + offer badge (LucinaMap adds the label and the click). */
+function chipElement(store: MapStore): HTMLElement {
   const el = document.createElement("button");
   el.type = "button";
   el.className = "deals-chip";
@@ -53,11 +56,14 @@ function chipElement(store: MapStore, onOpen: (id: string) => void): HTMLElement
     badge.textContent = caption;
     el.append(badge);
   }
-  el.addEventListener("click", (e) => {
-    e.stopPropagation();
-    onOpen(store.id);
-  });
   return el;
+}
+
+function homeElement(): HTMLElement {
+  const pin = document.createElement("div");
+  pin.className = "deals-home";
+  pin.textContent = "🏠";
+  return pin;
 }
 
 export default function DealsMapView() {
@@ -66,15 +72,10 @@ export default function DealsMapView() {
   const [data, setData] = createSignal<DealsMapData | null>(null);
   const [filters, setFilters] = createStore({ myList: false, clearance: false, chain: "" });
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
-  const [mapsReady, setMapsReady] = createSignal(false);
-  const [mapError, setMapError] = createSignal(false);
-  let mapHost: HTMLDivElement | undefined;
+  /** null until LucinaMap knows whether tiles are installed. */
+  const [mapShown, setMapShown] = createSignal<boolean | null>(null);
+  const [focus, setFocus] = createSignal<{ id: string; tick: number } | null>(null);
   let lists: HTMLUListElement | undefined;
-  // Non-reactive handles: the Maps API objects are never read by the renderer.
-  let maps: MapsLibraries | null = null;
-  let map: MapsMap | null = null;
-  let fitted = false;
-  let dropped: Array<{ map: MapsMap | null }> = [];
 
   const stores = createMemo(() => data()?.stores ?? []);
   const filtered = createMemo(() =>
@@ -94,6 +95,31 @@ export default function DealsMapView() {
     return [...byKey].map(([key, label]) => ({ key, label }));
   });
   const selected = createMemo(() => stores().find((s) => s.id === selectedId()) ?? null);
+  const byId = createMemo(() => new Map(stores().map((s) => [s.id, s])));
+  const pins = createMemo<MapPin[]>(() => {
+    const d = data();
+    if (!d) return [];
+    const home: MapPin = { id: HOME_PIN, lat: d.home.lat, lng: d.home.lng, title: d.home.label ?? t("mapTitle"), tint: "home" };
+    return [
+      home,
+      ...filtered().map(
+        (s): MapPin => ({
+          id: s.id,
+          lat: s.lat,
+          lng: s.lng,
+          title: s.name,
+          ...(s.street ? { subtitle: s.street } : {}),
+          tint: s.clearances.length ? "clearance" : s.listMatches.length ? "accent" : "neutral",
+          selected: s.id === selectedId(),
+        }),
+      ),
+    ];
+  });
+
+  function renderPin(pin: MapPin): HTMLElement {
+    const store = byId().get(pin.id);
+    return store ? chipElement(store) : homeElement();
+  }
 
   async function refresh() {
     setStatus("loading");
@@ -102,14 +128,6 @@ export default function DealsMapView() {
       const d = await shoppingApi.dealsMap();
       setData(d);
       setStatus("ready");
-      if (d.maps.webKey) {
-        loadMaps({ key: d.maps.webKey, mapId: d.maps.mapId })
-          .then((lib) => {
-            maps = lib;
-            setMapsReady(true);
-          })
-          .catch(() => setMapError(true));
-      }
     } catch (e) {
       setError(toApiError(e).message);
       setStatus("error");
@@ -118,60 +136,13 @@ export default function DealsMapView() {
 
   onMount(() => void refresh());
 
-  // A dropped marker stays only while the map exists: signals flip → redraw.
-  createEffect(() => {
-    if (!mapsReady()) return;
-    const lib = maps;
-    if (!lib || !mapHost) return;
-    for (const m of dropped) m.map = null;
-    dropped = [];
-    if (!map) {
-      const home = data()!.home;
-      map = new lib.maps.Map(mapHost, {
-        center: { lat: home.lat, lng: home.lng },
-        zoom: FALLBACK_ZOOM,
-        mapId: data()!.maps.mapId ?? undefined,
-        disableDefaultUI: false,
-      });
-      // Home pin: chip content when the marker library is there, classic otherwise.
-      const homePos = { lat: data()!.home.lat, lng: data()!.home.lng };
-      const pin = document.createElement("div");
-      pin.className = "deals-home";
-      pin.title = t("mapTitle");
-      pin.textContent = "🏠";
-      dropped.push(
-        lib.marker
-          ? new lib.marker.AdvancedMarkerElement({ map, position: homePos, title: "Home", content: pin })
-          : new lib.maps.Marker({ map, position: homePos, title: "Home" }), // classic fallback: no label
-      );
-    }
-    if (!fitted && lib.maps.LatLngBounds) {
-      const bounds = new lib.maps.LatLngBounds();
-      bounds.extend({ lat: data()!.home.lat, lng: data()!.home.lng });
-      for (const s of filtered()) bounds.extend({ lat: s.lat, lng: s.lng });
-      map!.fitBounds(bounds);
-      fitted = true;
-    }
-    for (const s of filtered()) {
-      const withCaption = chipCaption(s) !== null;
-      const mark = makeMarker(lib, {
-        map: map!,
-        store: s,
-        initial: chainInitial(s),
-        content: withCaption ? chipElement(s, (id) => openStore(id)) : undefined,
-      });
-      dropped.push(mark);
-    }
-  });
+  function onPin(id: string) {
+    if (id !== HOME_PIN) openStore(id);
+  }
 
-  onCleanup(() => {
-    for (const m of dropped) m.map = null;
-    dropped = [];
-    map = null;
-  });
-
-  function openStore(id: string) {
+  function openStore(id: string, fromList = false) {
     setSelectedId(id);
+    if (fromList) setFocus({ id, tick: (focus()?.tick ?? 0) + 1 });
     // bring the row next to the panel into view (mobile scrolling)
     const row = lists?.querySelector(`[data-store="${CSS.escape(id)}"]`);
     row?.scrollIntoView?.({ block: "nearest" });
@@ -248,15 +219,18 @@ export default function DealsMapView() {
 
       <Show when={status() === "ready"}>
         <div class="deals-body">
-          <Show
-            when={data() && data()!.maps.webKey}
-            fallback={<p class="deals-note deals-note--warn">{t("mapKeyMissing")}</p>}
-          >
+          <Show when={mapShown() !== false} fallback={<p class="deals-note deals-note--warn">{t("mapTilesMissing")}</p>}>
             <div class="deals-map">
-              <div class="deals-map-host" ref={mapHost} aria-label={t("mapTitle")} role="img" />
-              <Show when={mapError()}>
-                <p class="deals-note deals-note--warn deals-map-fallback">{t("mapKeyMissing")}</p>
-              </Show>
+              <div class="deals-map-host">
+                <LucinaMap
+                  pins={pins()}
+                  renderPin={renderPin}
+                  onSelect={onPin}
+                  focus={focus()}
+                  onAvailable={setMapShown}
+                  label={t("mapTitle")}
+                />
+              </div>
             </div>
           </Show>
 
@@ -273,7 +247,7 @@ export default function DealsMapView() {
                         classList={{ "deals-store--on": on() }}
                         style={{ "--chip-h": String(chainHue(s)) }}
                         aria-current={on() ? "true" : undefined}
-                        onClick={() => openStore(s.id)}
+                        onClick={() => openStore(s.id, true)}
                       >
                         <span class="deals-store-letter" aria-hidden="true">
                           {chainInitial(s)}
@@ -327,7 +301,7 @@ export default function DealsMapView() {
                     ×
                   </button>
                 </header>
-                <a class="deals-directions" href={directionsUrl(s())} target="_blank" rel="noreferrer">
+                <a class="deals-directions" href={googleDirectionsUrl(s())} target="_blank" rel="noreferrer">
                   🧭 {t("mapDirections")}
                 </a>
                 <Show when={s().listMatches.length > 0}>

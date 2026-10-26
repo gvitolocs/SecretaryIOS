@@ -10,6 +10,7 @@ import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
 
 const DealsMapView = lazy(() => import("./views/shopping/DealsMap"));
+const PlaceMapView = lazy(() => import("./views/PlaceMap"));
 
 const GymHome = lazy(() => import("./views/gym/GymHome"));
 const WorkoutView = lazy(() => import("./views/gym/Workout"));
@@ -44,6 +45,7 @@ render(
         <Route path="/" component={ShoppingView} />
         <Route path="/map" component={DealsMapView} />
       </Route>
+      <Route path="/map/place" component={PlaceMapView} />
       <Route path="/gym">
         <Route path="/" component={GymHome} />
         <Route path="/workout" component={WorkoutView} />

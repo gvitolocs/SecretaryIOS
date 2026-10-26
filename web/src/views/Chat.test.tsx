@@ -333,6 +333,31 @@ describe("Chat", () => {
       }
     });
 
+    it("shows the event's place under a calendar reminder", async () => {
+      serve(
+        () => ({ status: 404 }),
+        () => ({
+          body: {
+            items: [
+              {
+                ...PROACTIVE,
+                meta: {
+                  ...PROACTIVE.meta,
+                  place: { title: "CRAFT-IT4SD", address: "Folkehuset Møllestien, Aarhus", lat: 56.1611, lng: 10.2006, kind: "event" },
+                },
+              },
+            ],
+            nextBefore: null,
+          },
+        }),
+      );
+      render(() => <ChatView />);
+      const card = await screen.findByRole("region", { name: "Lucina reached out" });
+      const place = card.querySelector<HTMLAnchorElement>("a.place-card")!;
+      expect(place).toHaveTextContent("Folkehuset Møllestien, Aarhus");
+      expect(place.getAttribute("href")).toMatch(/^\/map\/place\?lat=56\.1611&lng=10\.2006&title=CRAFT-IT4SD/);
+    });
+
     it("shows a failed tap and keeps the buttons", async () => {
       serve(
         () => ({ status: 500, body: { error: { code: "internal", message: "x" } } }),

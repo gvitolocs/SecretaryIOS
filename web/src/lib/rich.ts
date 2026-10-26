@@ -3,6 +3,7 @@
 // `parseRich` validates it again and drops what does not fit (never throws).
 
 import { safeHref } from "./linkify";
+import { isRfc3339, validLatLng, type PlaceInfo } from "./mapKit";
 
 export type CardTone = "info" | "success" | "warning";
 
@@ -14,7 +15,8 @@ export type RichBlock =
   | { type: "table"; title?: string; columns: string[]; rows: string[][] }
   | { type: "steps"; title?: string; items: string[] }
   | { type: "quote"; text: string; cite?: string }
-  | { type: "link_preview"; url: string; title: string };
+  | { type: "link_preview"; url: string; title: string }
+  | ({ type: "place" } & PlaceInfo);
 
 export type RichAction =
   | { id: string; label: string; emoji?: string; kind: "reply"; payload: { text: string; prefill?: boolean } }
@@ -37,6 +39,8 @@ export const MAX_ACTIONS = 4;
 export const LIST_VISIBLE = 5;
 export const MAX_TABLE_COLUMNS = 4;
 export const MAX_TABLE_ROWS = 6;
+/** Place blocks per message (they count against MAX_BLOCKS too). */
+export const MAX_PLACES = 3;
 
 type Raw = Record<string, unknown>;
 
@@ -70,6 +74,33 @@ function arr(v: unknown): unknown[] {
 function withTitle<T extends object>(block: T, raw: Raw): T & { title?: string } {
   const title = line(raw.title, 120);
   return title ? { ...block, title } : block;
+}
+
+/**
+ * A place (`place` block or a proactive item's `meta.place`): a title plus an
+ * address or a valid coordinate pair, else null. A bad coordinate pair (one
+ * missing, not finite, out of range, (0,0)) is dropped on its own; so are a
+ * time that isn't RFC 3339 and an over-long event id.
+ */
+export function parsePlace(v: unknown): PlaceInfo | null {
+  const b = obj(v);
+  if (!b) return null;
+  const title = line(b.title, 120);
+  if (!title) return null;
+  const place: PlaceInfo = { title, kind: b.kind === "event" ? "event" : "place" };
+  const address = line(b.address, 200);
+  if (address) place.address = address;
+  if (validLatLng(b.lat, b.lng)) {
+    place.lat = b.lat as number;
+    place.lng = b.lng as number;
+  }
+  if (!address && place.lat === undefined) return null;
+  for (const key of ["when", "end"] as const) {
+    const t = b[key];
+    if (typeof t === "string" && isRfc3339(t.trim())) place[key] = t.trim();
+  }
+  if (typeof b.eventId === "string" && b.eventId.trim() && b.eventId.length <= 200) place.eventId = b.eventId.trim();
+  return place;
 }
 
 function parseBlock(v: unknown): RichBlock | null {
@@ -164,6 +195,10 @@ function parseBlock(v: unknown): RichBlock | null {
       if (!url) return null;
       return { type: "link_preview", url, title: line(b.title, 120) || new URL(url).hostname };
     }
+    case "place": {
+      const place = parsePlace(b);
+      return place ? { type: "place", ...place } : null;
+    }
     default:
       return null;
   }
@@ -214,9 +249,10 @@ export function parseRich(raw: unknown): RichMessage | null {
     .filter(Boolean)
     .slice(0, MAX_BUBBLES);
   if (!bubbles.length) return null;
+  let places = 0;
   const blocks = arr(m.blocks)
     .map(parseBlock)
-    .filter((b): b is RichBlock => !!b)
+    .filter((b): b is RichBlock => !!b && (b.type !== "place" || ++places <= MAX_PLACES))
     .slice(0, MAX_BLOCKS);
   const actions: RichAction[] = [];
   const ids = new Set<string>();

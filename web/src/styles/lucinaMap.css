@@ -1,0 +1,399 @@
+/* LucinaMap (components/LucinaMap.tsx), place cards and the place screen.
+ * Pins, the owner's dot and MapLibre's own controls in the --lu-* tokens. */
+
+.lmap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  background: var(--lu-card);
+  overflow: hidden;
+}
+
+.lmap--static,
+.lmap--static .maplibregl-canvas-container,
+.lmap--static .maplibregl-canvas {
+  pointer-events: none;
+}
+
+.lmap .maplibregl-ctrl-attrib {
+  font: var(--lu-type-caption-2) / var(--lu-type-caption-2-line) var(--lu-font);
+  background: color-mix(in srgb, var(--lu-card) 80%, transparent);
+  color: var(--lu-text-secondary);
+}
+
+.lmap .maplibregl-ctrl-attrib a {
+  color: inherit;
+}
+
+.lmap .maplibregl-ctrl-group {
+  background: var(--lu-card-raised);
+  border-radius: var(--lu-radius-field);
+  box-shadow: none;
+}
+
+.lmap .maplibregl-ctrl-group button + button {
+  border-top-color: var(--lu-separator);
+}
+
+:root:not([data-theme="light"]) .lmap .maplibregl-ctrl-group .maplibregl-ctrl-icon {
+  filter: invert(1);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .lmap .maplibregl-ctrl-group .maplibregl-ctrl-icon {
+    filter: none;
+  }
+}
+
+/* ---------- pins ---------- */
+
+.lmap-marker {
+  --pin: var(--lu-accent);
+}
+
+.lmap-tint--clearance {
+  --pin: var(--lu-warning);
+}
+
+.lmap-tint--neutral {
+  --pin: var(--lu-text-secondary);
+}
+
+.lmap-tint--home {
+  --pin: var(--lu-info);
+}
+
+.lmap-pin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--lu-text);
+  cursor: pointer;
+  font: inherit;
+  /* the dot sits on the point: anchor "top" plus half the dot */
+  margin-top: -9px;
+}
+
+.lmap-pin-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--pin);
+  border: 3px solid var(--lu-on-accent);
+  box-shadow: 0 1px 4px #0006;
+  transition: transform var(--lu-motion-fast) ease-out;
+}
+
+.lmap-marker--selected .lmap-pin-dot {
+  transform: scale(1.4);
+}
+
+.lmap-pin-label {
+  max-width: 160px;
+  padding: 1px 6px;
+  border-radius: var(--lu-radius-pill);
+  background: color-mix(in srgb, var(--lu-card) 88%, transparent);
+  color: var(--lu-text);
+  font: var(--lu-type-caption-weight) var(--lu-type-caption) / var(--lu-type-caption-line) var(--lu-font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 3px #0004;
+}
+
+.lmap-pin:focus-visible {
+  outline: none;
+}
+
+.lmap-pin:focus-visible .lmap-pin-dot,
+.lmap-marker--selected.deals-chip,
+.deals-chip.lmap-marker:focus-visible {
+  outline: 2px solid var(--lu-accent);
+  outline-offset: 2px;
+}
+
+.deals-chip.lmap-marker--selected {
+  scale: 1.18;
+}
+
+/* ---------- the owner's position ---------- */
+
+.lmap-user {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--lu-info);
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px #0006;
+}
+
+.lmap-user::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: var(--lu-info);
+  opacity: 0.5;
+  animation: lmap-pulse 2s ease-out infinite;
+  z-index: -1;
+}
+
+@keyframes lmap-pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(3);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lmap-user::after {
+    animation: none;
+  }
+}
+
+/* ---------- place card (chat) ---------- */
+
+.place-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  padding: 12px;
+  border-radius: var(--lu-radius-card);
+  background: var(--lu-card);
+  border: 1px solid var(--lu-separator);
+  color: var(--lu-text);
+  text-align: start;
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color var(--lu-motion-fast) ease-out;
+}
+
+.place-card:hover,
+.place-card:focus-visible {
+  border-color: color-mix(in srgb, var(--lu-accent) 60%, var(--lu-separator));
+  outline: none;
+}
+
+.place-card-head {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.place-card-icon {
+  font-size: 1.1rem;
+  line-height: 1.3;
+}
+
+.place-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.place-card-title {
+  font: var(--lu-type-headline-weight) var(--lu-type-subheadline) / var(--lu-type-subheadline-line) var(--lu-font);
+  overflow-wrap: anywhere;
+}
+
+.place-card-line {
+  color: var(--lu-text-secondary);
+  font: var(--lu-type-footnote-weight) var(--lu-type-footnote) / var(--lu-type-footnote-line) var(--lu-font);
+  overflow-wrap: anywhere;
+}
+
+.place-card-mini {
+  height: 140px;
+  border-radius: var(--lu-radius-tile);
+  overflow: hidden;
+  background: var(--lu-card-raised);
+}
+
+.place-card-mini .lmap {
+  min-height: 0;
+}
+
+.place-card-missing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--lu-text-secondary);
+  font: var(--lu-type-footnote-weight) var(--lu-type-footnote) / var(--lu-type-footnote-line) var(--lu-font);
+}
+
+.place-card-missing a {
+  color: var(--lu-accent);
+}
+
+.proactive-place,
+.attachment--place {
+  margin-top: 8px;
+  list-style: none;
+}
+
+/* ---------- place screen (/map/place) ---------- */
+
+.place-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--lu-bg);
+  color: var(--lu-text);
+  font-family: var(--lu-font);
+}
+
+.place-screen-map {
+  position: absolute;
+  inset: 0;
+}
+
+.place-screen-map .lmap {
+  height: 100%;
+}
+
+.place-screen-nomap {
+  display: grid;
+  place-items: center;
+  position: absolute;
+  inset: 0 0 50%;
+  padding: 24px;
+  color: var(--lu-text-secondary);
+  text-align: center;
+}
+
+.place-screen-back {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 12px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--lu-radius-pill);
+  background: color-mix(in srgb, var(--lu-card-raised) 92%, transparent);
+  color: var(--lu-text);
+  font: var(--lu-type-headline-weight) var(--lu-type-subheadline) / 1 var(--lu-font);
+  box-shadow: 0 2px 8px #0005;
+  cursor: pointer;
+}
+
+.place-sheet {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  z-index: 2;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: var(--lu-space-card-padding);
+  border-radius: var(--lu-radius-sheet);
+  background: var(--lu-card);
+  box-shadow: 0 8px 30px #0007;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.place-sheet h1 {
+  margin: 0;
+  font: var(--lu-type-title-3-weight) var(--lu-type-title-3) / var(--lu-type-title-3-line) var(--lu-font);
+  overflow-wrap: anywhere;
+}
+
+.place-sheet p {
+  margin: 0;
+  color: var(--lu-text-secondary);
+  font: var(--lu-type-subheadline-weight) var(--lu-type-subheadline) / var(--lu-type-subheadline-line) var(--lu-font);
+}
+
+.place-eta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.place-eta li {
+  padding: 4px 10px;
+  border-radius: var(--lu-radius-pill);
+  background: var(--lu-field);
+  font: var(--lu-type-footnote-weight) var(--lu-type-footnote) / var(--lu-type-footnote-line) var(--lu-font);
+}
+
+.place-directions {
+  position: relative;
+  margin-top: 8px;
+}
+
+.place-directions > button {
+  width: 100%;
+  min-height: var(--lu-space-tap);
+  border: 0;
+  border-radius: var(--lu-radius-button);
+  background: var(--lu-accent-fill);
+  color: var(--lu-on-accent);
+  font: var(--lu-type-headline-weight) var(--lu-type-headline) / 1 var(--lu-font);
+  cursor: pointer;
+}
+
+.place-directions-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border-radius: var(--lu-radius-tile);
+  background: var(--lu-card-raised);
+  box-shadow: 0 8px 24px #0007;
+}
+
+.place-directions-menu a {
+  padding: 12px;
+  border-radius: var(--lu-radius-field);
+  color: var(--lu-text);
+  text-decoration: none;
+  font: var(--lu-type-body-weight) var(--lu-type-body) / var(--lu-type-body-line) var(--lu-font);
+}
+
+.place-directions-menu a:hover,
+.place-directions-menu a:focus-visible {
+  background: var(--lu-field);
+  outline: none;
+}
+
+.place-sheet { max-height: 55%; overflow-y: auto; }
+.place-modes { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.place-modes button { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 8px 10px; border: 1px solid var(--lu-separator); border-radius: var(--lu-radius-field); background: var(--lu-field); color: var(--lu-text); font: inherit; cursor: pointer; }
+.place-modes button[aria-pressed="true"] { border-color: var(--lu-accent); color: var(--lu-accent); }
+.place-modes small { width: 100%; color: var(--lu-text-secondary); }
+.place-transit { display: flex; flex-direction: column; gap: 8px; padding-inline-start: 22px; margin: 6px 0; }
+.place-transit li > span, .place-transit time { display: block; color: var(--lu-text-secondary); }
+.place-sheet .place-route-note { font-size: 0.8rem; }
+.place-eta li { display: flex; align-items: center; gap: 4px; }
+
+.place-card-notfound-link { color: inherit; text-decoration: none; }
