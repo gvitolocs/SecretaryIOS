@@ -49,10 +49,13 @@ impl MediaSource for CatalogSource {
 /// film folders are prepared: phone videos would be a lot of 4K tone-mapping.
 pub fn videos(lib: &Library) -> Vec<Video> {
     let films = lib.cfg.film_folders.clone();
-    let ids = lib.db.with(move |c| db::film_video_ids(c, &films)).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "listing films failed");
-        Vec::new()
-    });
+    let ids = lib
+        .db
+        .with(move |c| db::film_video_ids(c, &films))
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "listing films failed");
+            Vec::new()
+        });
     ids.into_iter()
         .filter_map(|(id, added_at)| {
             Some(Video {
