@@ -1,4 +1,6 @@
-//! Concurrent per-mode Routes calls. Only mode/status/latency enter tracing.
+//! Concurrent per-mode Routes calls: Google when a key is loaded, else (or when every Google
+//! mode fails) the self-hosted OSRM, else with `estimate=1` straight-line estimates. Only
+//! mode/status/latency enter tracing.
 use crate::provider::Unavailable;
 use crate::{error, kernel, provider, AppState};
 use axum::{
@@ -20,6 +22,9 @@ pub struct RoutesQuery {
     to: Option<String>,
     modes: Option<String>,
     arrive: Option<String>,
+    /// `1`: answer straight-line estimates (`"provider":"estimate"`) when no router answers,
+    /// instead of 503. Lucina asks for them; the apps make their own "≈" estimates.
+    estimate: Option<String>,
 }
 fn coord(s: Option<&str>) -> Option<(i64, i64)> {
     let (a, b) = s?.split_once(',')?;
@@ -169,28 +174,110 @@ pub async fn routes_route(
             None => return error(StatusCode::BAD_REQUEST, "bad_arrive"),
         },
     };
-    if st.config.google_key.is_none() {
-        return error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable");
-    }
-    let mut tasks = Vec::new();
-    for mode in MODES {
-        if requested.contains(&mode) {
-            let st = st.clone();
-            tasks.push((
-                mode,
-                tokio::spawn(async move { one(st, from, to, mode, arrive).await }),
-            ));
+    let (mut provider, mut routes, mut failed) = ("google", Vec::new(), Vec::new());
+    if st.config.google_key.is_some() {
+        let mut tasks = Vec::new();
+        for mode in MODES {
+            if requested.contains(&mode) {
+                let st = st.clone();
+                tasks.push((
+                    mode,
+                    tokio::spawn(async move { one(st, from, to, mode, arrive).await }),
+                ));
+            }
+        }
+        for (mode, task) in tasks {
+            match task.await {
+                Ok(Ok(v)) => routes.push(v),
+                _ => failed.push(mode),
+            }
         }
     }
-    let (mut routes, mut failed) = (Vec::new(), Vec::new());
-    for (mode, task) in tasks {
-        match task.await {
-            Ok(Ok(v)) => routes.push(v),
-            _ => failed.push(mode),
+    if routes.is_empty() {
+        if let Some(base) = st.config.osrm_url.clone() {
+            (provider, failed) = ("osrm", Vec::new());
+            let mut tasks = Vec::new();
+            for mode in MODES {
+                if requested.contains(&mode) {
+                    let (st, base) = (st.clone(), base.clone());
+                    tasks.push((
+                        mode,
+                        tokio::spawn(
+                            async move { osrm_one(st, &base, from, to, mode, arrive).await },
+                        ),
+                    ));
+                }
+            }
+            for (mode, task) in tasks {
+                match task.await {
+                    Ok(Ok(v)) => routes.push(v),
+                    _ => failed.push(mode),
+                }
+            }
+        }
+    }
+    if routes.is_empty() && p.estimate.as_deref() == Some("1") {
+        (provider, failed) = ("estimate", Vec::new());
+        for mode in MODES {
+            if requested.contains(&mode) {
+                match crate::osrm::estimate(from, to, mode) {
+                    Some(mut v) => {
+                        if let Some(a) = arrive {
+                            let leave = timestamp(kernel::leave_at(
+                                a,
+                                v["durationS"].as_u64().unwrap_or(0),
+                                300,
+                            ));
+                            v["leaveAt"] = json!(leave);
+                        }
+                        routes.push(v)
+                    }
+                    None => failed.push(mode),
+                }
+            }
         }
     }
     if routes.is_empty() {
         return error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable");
     }
-    Json(json!({"provider":"google","routes":routes,"failed":failed})).into_response()
+    Json(json!({"provider":provider,"routes":routes,"failed":failed})).into_response()
+}
+
+/// One OSRM mode, cached like Google's (under its own key).
+async fn osrm_one(
+    st: Arc<AppState>,
+    base: &str,
+    from: (i64, i64),
+    to: (i64, i64),
+    mode: &'static str,
+    arrive: Option<i64>,
+) -> Result<Value, Unavailable> {
+    let key = format!("osrm|{}", kernel::route_cache_key(from, to, mode, None));
+    let cached = st.cache.lock().unwrap().get(&key);
+    let result = match cached {
+        Some(v) => Ok(v),
+        None => {
+            let start = std::time::Instant::now();
+            let result = crate::osrm::route(&st.http, base, from, to, mode).await;
+            tracing::info!(
+                mode,
+                status = if result.is_ok() { "ok" } else { "failed" },
+                latency_ms = start.elapsed().as_millis() as u64,
+                "routes osrm"
+            );
+            if let Ok(v) = &result {
+                st.cache
+                    .lock()
+                    .unwrap()
+                    .insert(key, v.clone(), 86400, false);
+            }
+            result
+        }
+    };
+    let mut v = result?;
+    if let Some(a) = arrive {
+        let d = v["durationS"].as_u64().ok_or(Unavailable)?;
+        v["leaveAt"] = json!(timestamp(kernel::leave_at(a, d, 300)).ok_or(Unavailable)?);
+    }
+    Ok(v)
 }

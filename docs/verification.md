@@ -892,6 +892,8 @@ Verus (`map_kernels.rs`; no `assume`/`admit`/`external_body`), each mirroring `c
 - MK4 `travel_minutes` (the web "≈" estimate: walk 4.8, bike 15, car 35 km/h, × 1.3 detour, so
   `ceil(78 d / speed)` minutes for `d` whole metres, clamped to 1e8 m) is at least 1, overflow-free and monotone
   non-decreasing in the distance for each mode; `travel_estimate_min` rounds the f64 distance up to whole metres.
+  The server's no-provider fallback (`/v1/maps/routes?…&estimate=1`, `osrm::estimate`) calls the same
+  `travel_estimate_min` over `distance_m`, so it inherits MK4 unchanged.
 - MK5 the normalizer's keep/drop decision `place_keep`: kept iff the title is non-empty and (the address is
   non-empty or both coordinates are present and valid); a kept block carries both coordinates or neither, and they
   are the input pair. Examples: title only is dropped; one coordinate with an address keeps the block without

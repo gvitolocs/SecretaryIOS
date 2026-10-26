@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     http::{header, Request, StatusCode},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use http_body_util::BodyExt;
@@ -47,6 +47,8 @@ fn config(dir: &Path, google: &str) -> Config {
         google_key: None,
         places_url: google.into(),
         routes_url: google.into(),
+        photon_url: None,
+        osrm_url: None,
         state_dir: dir.join("state"),
         upstream_key: None,
     }
@@ -629,4 +631,189 @@ fn env_home_validation_and_overrides() {
     );
     env.insert("MAPS_TILES", "../x".into());
     assert!(Config::from_env(|k| env.get(k).cloned()).is_err());
+}
+
+/// Self-hosted Photon (`GET /api`) and OSRM (`GET /route/v1/<profile>/<coords>`) stubs; `hits`
+/// counts both.
+async fn fake_self_hosted(hits: Arc<AtomicUsize>) -> (String, tokio::task::JoinHandle<()>) {
+    let photon_hits = hits.clone();
+    let photon = get(move |q: axum::extract::Query<HashMap<String, String>>| {
+        let hits = photon_hits.clone();
+        async move {
+            hits.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(q.get("lang").map(String::as_str), Some("en"));
+            assert!(
+                q.contains_key("lat") && q.contains_key("lon"),
+                "biased to home"
+            );
+            Json(
+                json!({"features":[{"geometry":{"coordinates":[10.2006,56.1611]},
+                "properties":{"name":"Folkehuset","street":"Møllestien","city":"Aarhus"}}]}),
+            )
+        }
+    });
+    let osrm = get(
+        move |axum::extract::Path((profile, coords)): axum::extract::Path<(String, String)>| {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(coords, "10.2011,56.19633;10.2006,56.1611");
+                let duration = match profile.as_str() {
+                    "walking" => 2900.2,
+                    "cycling" => 960.0,
+                    "driving" => return Json(json!({"code":"NoRoute","routes":[]})),
+                    other => panic!("profile {other}"),
+                };
+                Json(
+                    json!({"code":"Ok","routes":[{"duration":duration,"distance":4100.0,
+                    "geometry":"_p~iF~ps|U_ulLnnqC_mqNvxq`@"}]}),
+                )
+            }
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let router = Router::new()
+            .route("/api", photon)
+            .route("/route/v1/{profile}/{coords}", osrm);
+        axum::serve(listener, router).await.unwrap();
+    });
+    (format!("http://{addr}"), task)
+}
+
+#[tokio::test]
+async fn without_google_estimates_only_on_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let a = app(AppState::new(config(tmp.path(), "http://127.0.0.1:1")));
+    let (s, _, _) = send(&a, get_req(ROUTE)).await;
+    assert_eq!(
+        s,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the apps keep their own estimates"
+    );
+    let (s, _, b) = send(
+        &a,
+        get_req(&format!("{ROUTE}&estimate=1&arrive=2099-10-27T17:00:00Z")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let v = json_of(&b);
+    assert_eq!(v["provider"], "estimate");
+    assert_eq!(v["failed"], json!(["transit"]));
+    let routes = v["routes"].as_array().unwrap();
+    let modes: Vec<_> = routes.iter().map(|r| r["mode"].as_str().unwrap()).collect();
+    assert_eq!(modes, ["drive", "walk", "bike"]);
+    let from = (561_963_300, 102_011_000);
+    let to = (561_611_000, 102_006_000);
+    let d = secretary_maps::kernel::distance_m(from, to);
+    for (r, m) in routes.iter().zip([
+        secretary_maps::kernel::Mode::Car,
+        secretary_maps::kernel::Mode::Walk,
+        secretary_maps::kernel::Mode::Bike,
+    ]) {
+        let s = u64::from(secretary_maps::kernel::travel_estimate_min(d, m)) * 60;
+        assert_eq!(r["durationS"], s);
+        assert_eq!(r["polyline"], json!([]));
+        assert_eq!(r["estimate"], true);
+        assert!(r["leaveAt"].as_str().unwrap().starts_with("2099-10-27T1"));
+    }
+    let (s, _, _) = send(&a, get_req(&format!("{ROUTE}&modes=transit&estimate=1"))).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "no transit estimate");
+}
+
+#[tokio::test]
+async fn self_hosted_photon_and_osrm_without_google() {
+    let tmp = tempfile::tempdir().unwrap();
+    setup(tmp.path());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (url, task) = fake_self_hosted(hits.clone()).await;
+    let mut c = config(tmp.path(), "http://127.0.0.1:1");
+    c.photon_url = Some(url.clone());
+    c.osrm_url = Some(url);
+    let a = app(AppState::new(c));
+    let (_, _, b) = send(&a, get_req("/v1/maps/config")).await;
+    assert_eq!(
+        (
+            json_of(&b)["geocoder"].clone(),
+            json_of(&b)["routes"].clone()
+        ),
+        (json!(true), json!(true))
+    );
+    let (_, _, b) = send(&a, get_req("/v1/maps/health")).await;
+    assert_eq!(json_of(&b)["geocoder"], true);
+
+    let (s, _, b) = send(&a, get_req("/v1/maps/geocode?q=folkehuset")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        json_of(&b),
+        json!({"results":[{"name":"Folkehuset","address":"Møllestien, Aarhus","lat":56.1611,"lng":10.2006}]})
+    );
+    // Cached in memory.
+    send(&a, get_req("/v1/maps/geocode?q=folkehuset")).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(
+        !tmp.path().join("state/cache.json").exists(),
+        "Photon answers are not persisted"
+    );
+
+    let (s, _, b) = send(&a, get_req(&format!("{ROUTE}&arrive=2099-10-27T17:00:00Z"))).await;
+    assert_eq!(s, StatusCode::OK);
+    let v = json_of(&b);
+    assert_eq!(v["provider"], "osrm");
+    assert_eq!(v["failed"], json!(["drive", "transit"]));
+    let walk = &v["routes"][0];
+    assert_eq!(
+        (walk["mode"].as_str(), walk["durationS"].as_u64()),
+        (Some("walk"), Some(2901))
+    );
+    assert_eq!(walk["leaveAt"], "2099-10-27T16:06:39Z");
+    assert_eq!(walk["polyline"][0], json!([38.5, -120.2]));
+    assert_eq!(v["routes"][1]["mode"], "bike");
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
+    task.abort();
+}
+
+#[tokio::test]
+async fn failing_google_falls_back_to_osrm() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (google, g) =
+        fake_google(Arc::default(), Arc::new(AtomicUsize::new(0)), "all", false).await;
+    let (osrm, o) = fake_self_hosted(Arc::new(AtomicUsize::new(0))).await;
+    let mut c = keyed(tmp.path(), &google);
+    c.osrm_url = Some(osrm.clone());
+    c.photon_url = Some(osrm);
+    let a = app(AppState::new(c));
+    let (s, _, b) = send(&a, get_req(&format!("{ROUTE}&modes=walk"))).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(json_of(&b)["provider"], "osrm");
+    let (s, _, b) = send(&a, get_req("/v1/maps/geocode?q=folkehuset")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(json_of(&b)["results"][0]["name"], "Folkehuset");
+    g.abort();
+    o.abort();
+}
+
+#[test]
+fn google_key_from_the_environment_never_required() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut env = HashMap::from([
+        ("HOME", tmp.path().display().to_string()),
+        (
+            "GOOGLE_MAPS_SERVER_KEY",
+            "  stub-google-secret ".to_string(),
+        ),
+        ("MAPS_PHOTON_URL", "http://127.0.0.1:2322/".to_string()),
+        ("MAPS_OSRM_URL", " http://127.0.0.1:5000 ".to_string()),
+    ]);
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(c.google_key.is_some());
+    assert!(!format!("{c:?}").contains("stub-google-secret"));
+    assert_eq!(c.photon_url.as_deref(), Some("http://127.0.0.1:2322"));
+    assert_eq!(c.osrm_url.as_deref(), Some("http://127.0.0.1:5000"));
+    // An empty variable and an unreadable key file (here a directory) only turn Google off.
+    env.insert("GOOGLE_MAPS_SERVER_KEY", "   ".into());
+    env.insert("MAPS_GOOGLE_KEY_FILE", tmp.path().display().to_string());
+    let c = Config::from_env(|k| env.get(k).cloned()).unwrap();
+    assert!(c.google_key.is_none());
 }
