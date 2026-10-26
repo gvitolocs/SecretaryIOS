@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import UIKit
 
 /// App-wide state: the server, the stored device token, sign-in/out, the shared
@@ -45,8 +46,12 @@ final class AppModel {
     var showDealsMap = false
     /// The media library and player, a plugin.
     var showMedia = false
+    /// `/films/play/<id>` (a film Lucina found): Films opens and plays it.
+    var openFilmID: String?
     /// The Gallery, a plugin.
     var showGallery = false
+    /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
+    var showDrive = false
     /// Voice memos, a plugin.
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
@@ -82,6 +87,7 @@ final class AppModel {
     let media: MediaPlayer
     /// The photo library on the server (/v1/media), shown by the Gallery plugin.
     let gallery: GalleryStore
+    let drive: GalleryStore
     /// Automatic backup of this iPhone's photos and videos to the server.
     let backup: PhotoBackup
     /// Voice memos: recorder, upload queue, list (/v1/memos on lucina-memo).
@@ -134,7 +140,22 @@ final class AppModel {
         wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
         device = DeviceHub(client: client, weight: weight)
         notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
-        let mediaClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
+        var mediaBase = client.primaryURL
+        #if DEBUG || SCREENSHOTS
+        let selftest = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
+        // `-SecretaryMediaOffline YES`: the Gallery, the player and the backup talk to a port nothing listens
+        // on, so every media request fails at once as if the phone were offline.
+        if UserDefaults.standard.bool(forKey: "SecretaryMediaOffline"), let unreachable = URL(string: "http://127.0.0.1:9") {
+            mediaBase = unreachable
+            selftest.notice("GalleryImages selftest offline")
+        }
+        // `-SecretaryGalleryClearCache YES`: no cached renditions at start (the saved listing stays).
+        if UserDefaults.standard.bool(forKey: "SecretaryGalleryClearCache") {
+            GalleryDiskCache.removeAllNow()
+            selftest.notice("GalleryImages selftest cache cleared")
+        }
+        #endif
+        let mediaClient = APIClient(baseURL: mediaBase, accessKey: client.accessKey)
         self.mediaClient = mediaClient
         // The key can change (sign-in): copy it on every use.
         let mediaAPI = { () -> APIClient in
@@ -142,7 +163,8 @@ final class AppModel {
             return mediaClient
         }
         media = MediaPlayer(api: { MediaAPI(client: mediaAPI()) })
-        gallery = GalleryStore(api: { GalleryAPI(client: mediaAPI()) })
+        gallery = GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery")
+        drive = GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive")
         backup = PhotoBackup(api: { GalleryAPI(client: mediaAPI()) })
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
         self.memoClient = memoClient
@@ -213,6 +235,9 @@ final class AppModel {
         let wardrobe = wardrobe
         let notes = notes
         let notifications = notifications
+        // Videos on this iPhone play from Photos (the backup ledger knows which items they are).
+        let ledger = backup
+        media.localVideo = { id in ledger.localAsset(for: id) }
         notifications.calendarEvents = { await device.calendarAlerts() }
         chat.onItems = { [weak self] items in
             device.bridge.consider(items)
@@ -468,7 +493,7 @@ struct LaunchOptions {
         openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
-        openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
+        openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"

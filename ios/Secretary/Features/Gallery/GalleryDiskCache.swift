@@ -15,8 +15,17 @@ actor GalleryDiskCache {
         let etag: String
     }
 
-    private let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("gallery", isDirectory: true)
+    nonisolated static var rootURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gallery", isDirectory: true)
+    }
+
+    /// Every cached rendition and prefix, before the actor is used (device self-tests start from nothing).
+    nonisolated static func removeAllNow() {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+
+    private let root = GalleryDiskCache.rootURL
     private var checked: Set<Kind> = []
     /// Bytes written per kind since its last prune (a prune lists the whole directory).
     private var unpruned: [Kind: Int] = [:]

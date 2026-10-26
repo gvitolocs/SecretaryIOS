@@ -18,12 +18,14 @@ struct Plugin: Identifiable {
             Plugin(id: "gallery", icon: "photo.on.rectangle.angled", title: "Gallery",
                    detail: app.backup.backedUp > 0 ? String(localized: "\(app.backup.backedUp) backed up") : nil,
                    isActive: app.backup.remaining > 0) { app.showGallery = true },
+            Plugin(id: "drive", icon: "externaldrive", title: "Drive",
+                   detail: String(localized: "Archive, files and audio")) { app.showDrive = true },
             Plugin(id: "memos", icon: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform",
                    title: "Voice memos",
                    detail: app.memos.recorder.isActive ? String(localized: "Recording") : nil,
                    isActive: app.memos.recorder.isActive) { app.showMemos = true },
-            Plugin(id: "media", icon: "play.rectangle", title: "Media",
-                   detail: String(localized: "Films, music and audio")) { app.showMedia = true },
+            Plugin(id: "films", icon: "film", title: "Films",
+                   detail: app.media.current.map(\.title) ?? String(localized: "Film and Dansk film")) { app.showMedia = true },
             Plugin(id: "pokemon", icon: "gamecontroller", title: "Pokémon",
                    detail: String(localized: "Lucina's game")) { app.showPokemon = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
@@ -51,8 +53,9 @@ struct PluginsView: View {
         }
         .lucinaScreen("Plugins")
         .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
+        .navigationDestination(isPresented: $app.showDrive) { DriveScreen().environment(app.drive) }
         .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
-        .navigationDestination(isPresented: $app.showMedia) { MediaLibraryView() }
+        .navigationDestination(isPresented: $app.showMedia) { FilmsView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }

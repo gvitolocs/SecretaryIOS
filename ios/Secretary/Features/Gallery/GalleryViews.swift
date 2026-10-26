@@ -12,7 +12,9 @@ final class GalleryStore {
     private(set) var total: Int?
     private(set) var loading = false
     var error: String?
-    var filter = GalleryAPI.Filter()
+    var filter: GalleryAPI.Filter
+    /// `gallery` (the Gallery: the phones' photos and videos) or `drive` (the Drive plugin).
+    let scope: String?
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let api: () -> GalleryAPI
 
@@ -24,14 +26,16 @@ final class GalleryStore {
         let total: Int?
     }
 
-    private static var listingURL: URL {
+    private var listingURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("gallery-listing.json")
+            .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI) {
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil) {
         self.api = api
-        if let data = try? Data(contentsOf: Self.listingURL),
+        self.scope = scope
+        filter = GalleryAPI.Filter(scope: scope)
+        if let data = try? Data(contentsOf: listingURL),
            let saved = try? JSONDecoder().decode(Listing.self, from: data) {
             items = saved.items
             cursor = saved.nextCursor
@@ -54,9 +58,9 @@ final class GalleryStore {
             total = page.total
             error = nil
             showingCachedListing = false
-            if requestedFilter == GalleryAPI.Filter() {
+            if requestedFilter == GalleryAPI.Filter(scope: scope) {
                 let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
-                let url = Self.listingURL
+                let url = listingURL
                 await Task.detached(priority: .utility) {
                     try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                     if let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
@@ -81,7 +85,7 @@ final class GalleryStore {
     }
 
     func loadAlbums() async {
-        if let a = try? await api().albums() { albums = a }
+        if let a = try? await api().albums(scope: scope) { albums = a }
     }
 
     func replace(_ item: GalleryItem) {
@@ -108,12 +112,16 @@ struct GalleryScreen: View {
     @Environment(GalleryStore.self) private var store
     @Environment(PhotoBackup.self) private var backup
     @State private var viewing: GalleryItem?
+    /// The photo on screen in the viewer: the one it zooms back into, kept scrolled into view.
+    @State private var shownID: String?
+    @Namespace private var zoom
     @State private var showBackup = false
     @State private var showAlbums = false
     @State private var search = ""
 
     var body: some View {
         @Bindable var store = store
+        ScrollViewReader { proxy in
         ScrollView {
             BackupBanner { showBackup = true }
                 .padding(.horizontal)
@@ -139,7 +147,7 @@ struct GalleryScreen: View {
             LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
                 ForEach(store.sections, id: \.title) { section in
                     Section {
-                        GalleryGrid(items: section.items) { viewing = $0 }
+                        GalleryGrid(items: section.items, zoom: zoom) { open($0) }
                     } header: {
                         Text(section.title)
                             .font(LucinaTokens.Fonts.headline)
@@ -184,11 +192,11 @@ struct GalleryScreen: View {
             await store.loadAlbums()
             // `-SecretaryGalleryOpenFirst YES` (device checks without UI tests): open the newest photo.
             if UserDefaults.standard.bool(forKey: "SecretaryGalleryOpenFirst"), viewing == nil {
-                viewing = store.items.first { $0.kind == "photo" }
+                if let first = store.items.first(where: { $0.kind == "photo" }) { open(first) }
             }
             // `-SecretaryGalleryOpen <item id>`: open that item (it must be on the first page).
             if let id = UserDefaults.standard.string(forKey: "SecretaryGalleryOpen"), viewing == nil {
-                viewing = store.items.first { $0.id == id }
+                if let item = store.items.first(where: { $0.id == id }) { open(item) }
             }
         }
         .sheet(isPresented: $showBackup) { NavigationStack { BackupSettingsView() }.lucinaSheet() }
@@ -201,20 +209,39 @@ struct GalleryScreen: View {
             }
             .lucinaSheet()
         }
-        .fullScreenCover(item: $viewing) { item in
-            GalleryViewer(start: item)
-                .presentationBackground(.clear)
+        // Google Photos: behind the viewer the grid follows the photo on screen, so closing zooms
+        // into its tile.
+        // No anchor: the grid moves only when that tile is off screen. Centring a visible tile moved
+        // it while the zoom ran from it, and the zoom lost its source both ways.
+        .onChange(of: shownID) { _, id in
+            if let id { proxy.scrollTo(id) }
         }
+        }
+        .fullScreenCover(item: $viewing) { item in
+            GalleryViewer(start: item, shown: $shownID)
+                .presentationBackground(.clear)
+                .zoomTransition(from: shownID ?? item.id, in: zoom)
+        }
+    }
+
+    /// The viewer grows out of the tapped tile: the zoom source must be that tile before it opens
+    /// (it still held the last photo viewed, which was off screen, so the open did not zoom).
+    private func open(_ item: GalleryItem) {
+        shownID = item.id
+        viewing = item
     }
 }
 
 /// Square cells, 3 across on iPhone.
 struct GalleryGrid: View {
     let items: [GalleryItem]
+    var zoom: Namespace.ID?
     let open: (GalleryItem) -> Void
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 2)], spacing: 2) {
+        // Google Photos on a phone: 4 columns (photos_photogrid_calculator_compact_column_count);
+        // wider screens get more, about 90 pt each.
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 86), spacing: 2)], spacing: 2) {
             ForEach(items) { item in
                 Button { open(item) } label: {
                     // A square cell whatever the picture's shape: the thumb fills it and is cropped.
@@ -242,6 +269,8 @@ struct GalleryGrid: View {
                         }
                 }
                 .buttonStyle(.plain)
+                .zoomSource(item.id, in: zoom)
+                .id(item.id)
                 .accessibilityLabel(item.title)
                 .accessibilityIdentifier("gallery-\(item.id)")
             }
@@ -421,6 +450,21 @@ struct AlbumsView: View {
     }
 }
 
+/// The gradient behind the viewer's bars, so the date and the buttons read on any photo.
+private struct ViewerScrim: View {
+    let top: Bool
+
+    var body: some View {
+        LinearGradient(colors: [.black.opacity(0.75), .black.opacity(0)], startPoint: top ? .top : .bottom,
+                       endPoint: top ? .bottom : .top)
+            // Google Photos' lightbox_top_gradient_height and lightbox_bottom_gradient_height.
+            .frame(height: top ? 140 : 300)
+            .frame(maxWidth: .infinity)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+    }
+}
+
 /// Full screen, swipe between items. Photos zoom; videos and audio open the media player.
 struct GalleryViewer: View {
     @Environment(GalleryStore.self) private var store
@@ -428,7 +472,7 @@ struct GalleryViewer: View {
     @Environment(MediaPlayer.self) private var media
     @Environment(\.dismiss) private var dismiss
     let start: GalleryItem
-    @State private var current: String = ""
+    @State private var current: String
     @State private var showInfo = false
     @State private var addToAlbum = false
     @State private var confirmTrash = false
@@ -440,21 +484,34 @@ struct GalleryViewer: View {
     /// The photo that is zoomed, if any: there the drag pans instead of closing.
     @State private var zoomedID: String?
 
+    /// The photo on screen, for the grid (the tile the viewer zooms back into).
+    @Binding var shown: String?
+
+    init(start: GalleryItem, shown: Binding<String?> = .constant(nil)) {
+        self.start = start
+        _shown = shown
+        _current = State(initialValue: start.id)
+    }
+
     var body: some View {
         let bare = chromeHidden || dragging
         let item = store.items.first { $0.id == current } ?? start
         NavigationStack {
-            TabView(selection: $current) {
-                ForEach(store.items) { it in
-                    page(it).tag(it.id)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .never))
+            pager
             // Google Photos: swipe down to close, up for the details.
-            .photoDragOut(enabled: zoomedID != current, dragging: $dragging, onDismiss: { dismiss() }, onInfo: { showInfo = true })
+            // Swipe down closes into the grid tile (the zoom transition, iOS 18), swipe up shows the details.
+            .photoDragOut(enabled: zoomedID != current, systemDismiss: true, dragging: $dragging,
+                          onDismiss: { dismiss() }, onInfo: { showInfo = true })
+            .interactiveDismissDisabled(zoomedID == current)
+            // Google Photos: the photo is always full screen; the bars float over it on dark
+            // gradients (its bottom_dark_gradient: clear to 75% black), so nothing resizes on a tap.
+            .overlay(alignment: .top) { ViewerScrim(top: true).opacity(bare ? 0 : 1) }
+            .overlay(alignment: .bottom) { ViewerScrim(top: false).opacity(bare ? 0 : 1) }
             .clearNavigationBackground()
-            .ignoresSafeArea(edges: bare ? .all : .bottom)
-            .toolbarBackground(.visible, for: .navigationBar, .bottomBar)
+            .ignoresSafeArea()
+            .toolbarBackground(.hidden, for: .navigationBar, .bottomBar)
+            // White date and buttons on the scrims, in light mode too.
+            .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
             .toolbar(bare ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(bare)
             .animation(.easeInOut(duration: 0.2), value: bare)
@@ -482,12 +539,28 @@ struct GalleryViewer: View {
             }
         }
         .onAppear {
-            current = start.id
+            shown = start.id
+            #if DEBUG || SCREENSHOTS
+            // `-SecretaryGalleryAutoPlay YES` (device checks): press play on the opened video, muted.
+            if UserDefaults.standard.bool(forKey: "SecretaryGalleryAutoPlay"), start.isVideo || start.isAudio {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    media.player.isMuted = true
+                    play(start)
+                }
+            }
+            #endif
             meter.start()
             prefetchNeighbours(of: start.id)
             autoSwipe()
         }
         .onDisappear { meter.stop() }
+        // The grid learns the photo once a swipe settles: updating it during the page animation
+        // redrew the whole grid screen each swipe (25 hitches in 20 swipes on the iPhone, worst 83 ms).
+        .task(id: current) {
+            try? await Task.sleep(for: .milliseconds(500))
+            if !Task.isCancelled { shown = current }
+        }
         .onChange(of: current) { _, id in
             meter.swipes += 1
             prefetchNeighbours(of: id)
@@ -518,6 +591,54 @@ struct GalleryViewer: View {
         .fullScreenCover(isPresented: Binding(get: { media.presented }, set: { media.presented = $0 })) { MediaPlayerScreen() }
     }
 
+    private func play(_ it: GalleryItem) {
+        let playable = store.items.filter { $0.isVideo || $0.isAudio }
+        let queue = playable.map(\.mediaItem)
+        media.play(queue, startAt: playable.firstIndex { $0.id == it.id } ?? 0)
+        media.presented = true
+    }
+
+    private static let pageGap: CGFloat = 24
+
+    /// Smooth: a lazy paging scroll view builds only the pages near the screen. A paged TabView
+    /// (legacy) re-created every page from the first one to the current one on each change (seen
+    /// on the iPhone: 9 page loads for one swipe at the 9th photo, growing with the position).
+    @ViewBuilder
+    private var pager: some View {
+        if gallerySmooth {
+            // Google Photos leaves a 24 dp gap between photos while swiping (photos_pager_page_margin):
+            // each page is the screen plus 12 pt of black on both sides, and the scroll view is that
+            // much wider than the screen, so paging still lands on whole photos.
+            GeometryReader { geo in
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: 0) {
+                        ForEach(store.items) { it in
+                            page(it)
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .padding(.horizontal, Self.pageGap / 2)
+                                .id(it.id)
+                        }
+                    }
+                    .scrollTargetLayout()
+                }
+                .frame(width: geo.size.width + Self.pageGap)
+                .offset(x: -Self.pageGap / 2)
+                .scrollTargetBehavior(.paging)
+                .scrollPosition(id: Binding(get: { current }, set: { if let id = $0 { current = id } }))
+                .scrollIndicators(.hidden)
+                // A zoomed photo pans; the pager waits until it is fitted again.
+                .scrollDisabled(zoomedID == current)
+            }
+        } else {
+            TabView(selection: $current) {
+                ForEach(store.items) { it in
+                    page(it).tag(it.id)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+        }
+    }
+
     /// `-SecretaryGalleryAutoSwipe N` (device measurements without UI tests): page forward through N
     /// photos, one every 1.2 s, with the pager's own animation; frame times go to the GalleryFrames log.
     private func autoSwipe() {
@@ -544,15 +665,15 @@ struct GalleryViewer: View {
     private func page(_ it: GalleryItem) -> some View {
         if it.isVideo || it.isAudio {
             ZStack {
-                GalleryThumb(item: it, large: true)
-                    .contentShape(Rectangle())
-                    .onTapGesture { chromeHidden.toggle() }
-                Button {
-                    let playable = store.items.filter { $0.isVideo || $0.isAudio }
-                    let queue = playable.map(\.mediaItem)
-                    media.play(queue, startAt: playable.firstIndex { $0.id == it.id } ?? 0)
-                    media.presented = true
-                } label: {
+                if it.isVideo {
+                    // The poster as a photo: from Photos for a phone video, else the cached JPEG XL renditions.
+                    RustPhoto(item: it, onTap: { chromeHidden.toggle() })
+                } else {
+                    GalleryThumb(item: it, large: true)
+                        .contentShape(Rectangle())
+                        .onTapGesture { chromeHidden.toggle() }
+                }
+                Button { play(it) } label: {
                     Image(systemName: "play.circle.fill").font(.system(size: 72)).foregroundStyle(.white).shadow(radius: 6)
                 }
                 .accessibilityIdentifier("galleryPlay")
@@ -616,7 +737,6 @@ private struct FilterChips: View {
                 }
                 ChipButton(title: "Photos", icon: "photo", isOn: store.filter.kind == "photo") { store.filter.kind = "photo" }
                 ChipButton(title: "Videos", icon: "video", isOn: store.filter.kind == "video") { store.filter.kind = "video" }
-                ChipButton(title: "Audio", icon: "waveform", isOn: store.filter.kind == "audio") { store.filter.kind = "audio" }
                 ChipButton(title: "Favourites", icon: "heart", isOn: store.filter.favorites) { store.filter.favorites.toggle() }
             }
             .padding(.horizontal)

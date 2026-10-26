@@ -1,7 +1,13 @@
 import AVFoundation
 import MediaPlayer
 import Observation
+import os
 import UIKit
+
+private let localPlayLog = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
+/// `MediaTiming` lines: where the wait before the first frame goes (server answer, AVPlayer ready,
+/// resume seek, first frame), for every play.
+private let timingLog = Logger(subsystem: "tech.getsecretary.app", category: "MediaTiming")
 
 /// Playback of the owner's videos and audio from the server (docs/media-player.md).
 ///
@@ -13,6 +19,10 @@ import UIKit
 @MainActor
 final class MediaPlayer {
     let player = AVPlayer()
+    /// Item id → this iPhone's Photos asset (the photo backup's ledger): those videos play from the phone,
+    /// with nothing downloaded, also offline.
+    @ObservationIgnored var localVideo: ((String) -> String?)?
+    @ObservationIgnored private var playingLocal = false
 
     private(set) var queue: [MediaItem] = []
     private(set) var currentIndex: Int?
@@ -52,6 +62,11 @@ final class MediaPlayer {
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var artwork: MPMediaItemArtwork?
     @ObservationIgnored private let deviceName = UIDevice.current.name
+    /// The play waiting for its first frame: item, when the tap was, the steps so far.
+    @ObservationIgnored private var firstFrame: (id: String, start: ContinuousClock.Instant, from: TimeInterval, steps: String)?
+    /// Milliseconds from the tap to the first frame of the last play, and its breakdown (the self-test reads them).
+    private(set) var lastFirstFrameMs: Int?
+    private(set) var lastTiming: String?
 
     init(api: @escaping () -> MediaAPI, coreFile: URL = PlayerCore.defaultFileURL) {
         self.api = api
@@ -75,12 +90,21 @@ final class MediaPlayer {
 
     // MARK: Queue
 
-    /// Plays `items` from `index` (the list the owner tapped in becomes the queue).
-    func play(_ items: [MediaItem], startAt index: Int) {
+    /// Plays `items` from `index` (the list the owner tapped in becomes the queue). `fromStart`
+    /// forgets the saved minute of that item first ("Play from the beginning").
+    func play(_ items: [MediaItem], startAt index: Int, fromStart: Bool = false) {
         reportNow(playing: false)
+        // Cleared now, not when the load task starts: a reader must not see the last play's numbers.
+        lastFirstFrameMs = nil
+        lastTiming = nil
+        firstFrame = nil
         guard let core else {
             error = coreError
             return
+        }
+        if fromStart, items.indices.contains(index) {
+            let item = items[index]
+            _ = try? core.position(id: item.id, positionMs: 0, durationMs: item.durationMs ?? 0, playing: false, device: deviceName)
         }
         do {
             apply(try core.setQueue(items, start: index))
@@ -146,6 +170,7 @@ final class MediaPlayer {
         player.pause()
         player.replaceCurrentItem(with: nil)
         info = nil
+        playingLocal = false
         error = nil
         cues = []
         subtitle = nil
@@ -164,12 +189,25 @@ final class MediaPlayer {
 
     private func open(_ item: MediaItem) async {
         defer { if current?.id == item.id { loading = false } }
+        let start = ContinuousClock.now
+        let ms = { Int((ContinuousClock.now - start) / .milliseconds(1)) }
         do {
+            if item.isVideo, let identifier = localVideo?(item.id), let asset = await LocalVideo.asset(identifier) {
+                try await openLocal(item, asset)
+                return
+            }
             let info = try await api().play(id: item.id)
+            let apiMs = ms()
             guard !Task.isCancelled, current?.id == item.id else { return }
             if let saved = info.progress { _ = try? core?.merge([saved]) }
             let resumeMs = (try? core?.resume(id: item.id, durationMs: info.durationMs)) ?? info.resumeMs
-            guard let url = api().absolute(info.url) else { throw APIError.invalidURL }
+            guard var url = api().absolute(info.url) else { throw APIError.invalidURL }
+            // A finished HLS playlist then starts at the resume point (EXT-X-START), so AVPlayer
+            // loads that segment first instead of segment 0 and a seek afterwards.
+            if resumeMs > 0, info.mode != "direct", var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+                parts.queryItems = (parts.queryItems ?? []) + [URLQueryItem(name: "start_ms", value: String(resumeMs))]
+                url = parts.url ?? url
+            }
             self.info = info
             if let ms = info.durationMs { duration = TimeInterval(ms) / 1000 }
             activateAudioSession(video: item.isVideo)
@@ -177,9 +215,14 @@ final class MediaPlayer {
             observeEnd(of: avItem)
             player.replaceCurrentItem(with: avItem)
             try await waitUntilReady(avItem)
+            let readyMs = ms()
             guard !Task.isCancelled, current?.id == item.id else { return }
-            if resumeMs > 0 { await seekWhenAvailable(TimeInterval(resumeMs) / 1000, in: avItem) }
+            // Still needed when the server ignored start_ms (a playlist still being written, an old server).
+            let target = TimeInterval(resumeMs) / 1000
+            if resumeMs > 0, abs(player.currentTime().seconds - target) > 1.5 { await seekWhenAvailable(target, in: avItem) }
             guard !Task.isCancelled, current?.id == item.id else { return }
+            firstFrame = (item.id, start, TimeInterval(resumeMs) / 1000,
+                          "mode=\(info.mode) api_ms=\(apiMs) ready_ms=\(readyMs) seek_ms=\(ms()) resume_s=\(resumeMs / 1000)")
             player.playImmediately(atRate: rate)
             if let pick = core?.pickSubtitle(id: item.id, tracks: info.subtitles),
                let track = info.subtitles.first(where: { $0.id == pick }) {
@@ -191,15 +234,37 @@ final class MediaPlayer {
         } catch {
             guard current?.id == item.id else { return }
             self.error = error.localizedDescription
+            localPlayLog.error("GalleryImages player failed id=\(item.id, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
 
+    /// A video that is on this iPhone plays from Photos (resume positions still come from the core).
+    private func openLocal(_ item: MediaItem, _ asset: AVAsset) async throws {
+        guard !Task.isCancelled, current?.id == item.id else { return }
+        let seconds = (try? await asset.load(.duration))?.seconds ?? 0
+        let durationMs = seconds.isFinite && seconds > 0 ? Int(seconds * 1000) : item.durationMs
+        let resumeMs = (try? core?.resume(id: item.id, durationMs: durationMs)) ?? 0
+        playingLocal = true
+        if let durationMs { duration = TimeInterval(durationMs) / 1000 }
+        activateAudioSession(video: true)
+        let avItem = AVPlayerItem(asset: asset)
+        observeEnd(of: avItem)
+        player.replaceCurrentItem(with: avItem)
+        try await waitUntilReady(avItem)
+        guard !Task.isCancelled, current?.id == item.id else { return }
+        if resumeMs > 0 { await seekWhenAvailable(TimeInterval(resumeMs) / 1000, in: avItem) }
+        guard !Task.isCancelled, current?.id == item.id else { return }
+        player.playImmediately(atRate: rate)
+        updateNowPlaying()
+        localPlayLog.notice("GalleryImages source=local video id=\(item.id, privacy: .public)")
+    }
+
     private func waitUntilReady(_ item: AVPlayerItem) async throws {
-        for _ in 0..<600 {
+        for _ in 0..<2400 {
             switch item.status {
             case .readyToPlay: return
             case .failed: throw item.error ?? APIError.network(message: String(localized: "This file can't be played."))
-            default: try await Task.sleep(for: .milliseconds(100))
+            default: try await Task.sleep(for: .milliseconds(25))
             }
         }
         throw APIError.network(message: String(localized: "The server took too long to start this file."))
@@ -208,7 +273,7 @@ final class MediaPlayer {
     /// Seeks to `target`, waiting (up to 30 s) while an HLS remux is still being written
     /// and does not reach that far yet.
     private func seekWhenAvailable(_ target: TimeInterval, in item: AVPlayerItem) async {
-        for _ in 0..<60 {
+        for _ in 0..<150 {
             let end = item.seekableTimeRanges.last.map { $0.timeRangeValue.end.seconds } ?? 0
             if end >= target - 1 {
                 let time = CMTime(seconds: target, preferredTimescale: 600)
@@ -216,7 +281,7 @@ final class MediaPlayer {
                 position = target
                 return
             }
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: .milliseconds(200))
             if Task.isCancelled { return }
         }
     }
@@ -329,13 +394,20 @@ final class MediaPlayer {
     // MARK: Time and positions
 
     private func tick(_ time: CMTime) {
-        guard info != nil, time.isNumeric else { return }
+        guard info != nil || playingLocal, time.isNumeric else { return }
         position = time.seconds
         if let item = player.currentItem {
             if item.duration.isNumeric, item.duration.seconds.isFinite, item.duration.seconds > 0 { duration = item.duration.seconds }
             seekableEnd = item.seekableTimeRanges.last.map { $0.timeRangeValue.end.seconds } ?? 0
         }
         updateCue()
+        if let f = firstFrame, f.id == current?.id, isPlaying, position > f.from + 0.1 {
+            let total = Int((ContinuousClock.now - f.start) / .milliseconds(1))
+            lastFirstFrameMs = total
+            lastTiming = "\(f.steps) first_frame_ms=\(total)"
+            timingLog.notice("MediaTiming id=\(f.id, privacy: .public) \(f.steps, privacy: .public) first_frame_ms=\(total)")
+            firstFrame = nil
+        }
         if isPlaying, position - lastReport >= 1 || position < lastReport {
             reportNow(playing: true)
         }
@@ -357,7 +429,7 @@ final class MediaPlayer {
 
     /// Tells the core where we are; pushes to the server when it says so.
     private func reportNow(playing: Bool) {
-        guard let core, let item = current, info != nil, item.kind != "photo" else { return }
+        guard let core, let item = current, info != nil || playingLocal, item.kind != "photo" else { return }
         lastReport = position
         guard let tick = try? core.position(id: item.id, positionMs: Int(position * 1000), durationMs: Int(duration * 1000),
                                             playing: playing, device: deviceName) else { return }
@@ -389,6 +461,20 @@ final class MediaPlayer {
         }
         await pushProgress()
     }
+
+    #if DEBUG || SCREENSHOTS
+    // For MediaSelfTest.
+    var cueCount: Int { cues.count }
+    func cueStart(after seconds: TimeInterval) -> TimeInterval? {
+        cues.first { $0.startMs >= Int(seconds * 1000) }.map { TimeInterval($0.startMs) / 1000 }
+    }
+    func savedPositionMs(id: String) -> Int? { core?.entry(id: id)?.positionMs }
+    /// Sets the saved position as if the player had stopped there (and pushes it).
+    func setSavedPosition(id: String, ms: Int, durationMs: Int) async {
+        _ = try? core?.position(id: id, positionMs: ms, durationMs: durationMs, playing: false, device: deviceName)
+        await pushProgress()
+    }
+    #endif
 
     /// Saved position for a list row: fraction played, or nil when unseen/finished.
     func progress(of item: MediaItem) -> Double? {
@@ -430,7 +516,7 @@ final class MediaPlayer {
     }
 
     private func updateNowPlaying() {
-        guard let item = current, info != nil else {
+        guard let item = current, info != nil || playingLocal else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }

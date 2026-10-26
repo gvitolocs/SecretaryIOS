@@ -284,6 +284,9 @@ private enum GalleryRendition {
             }
             let (stream, response) = try await URLSession.shared.bytes(for: request)
             guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+            if offset > 0 {
+                log.notice("GalleryImages resume offset=\(offset) status=\(http.statusCode) key=\(key, privacy: .public)")
+            }
             if http.statusCode == 200 {
                 received = Data()
                 etag = http.value(forHTTPHeaderField: "ETag")
@@ -347,6 +350,9 @@ private enum GalleryRendition {
         } catch {
             if kind == .preview {
                 await disk.savePartial(received, etag: etag, key: key)
+                if !received.isEmpty {
+                    log.notice("GalleryImages partial saved bytes=\(received.count) key=\(key, privacy: .public)")
+                }
                 // A drop can happen before the next normal decoding threshold.
                 if !Task.isCancelled, !received.isEmpty, let prefixDecoder = ProgressiveDecoder(),
                    let (image, _) = try? prefixDecoder.feed(received, done: false) {
@@ -479,7 +485,7 @@ struct RustTile: View {
         }
         .onAppear {
             let scale = UIScreen.main.scale
-            local.load(item.kind == "photo" ? backup.localAsset(for: item.id) : nil,
+            local.load(item.kind == "photo" || item.isVideo ? backup.localAsset(for: item.id) : nil,
                        size: CGSize(width: 256 * scale, height: 256 * scale), tile: true)
             if local.unavailable { loadServer() }
         }
@@ -551,7 +557,8 @@ struct RustPhoto: View {
             .onAppear {
                 fit(geo.size)
                 let scale = UIScreen.main.scale
-                local.load(item.kind == "photo" ? backup.localAsset(for: item.id) : nil,
+                log.notice("GalleryImages page id=\(item.id, privacy: .public) local=\(backup.localAsset(for: item.id) != nil)")
+                local.load(item.kind == "photo" || item.isVideo ? backup.localAsset(for: item.id) : nil,
                            size: CGSize(width: geo.size.width * scale, height: geo.size.height * scale), tile: false)
                 if local.unavailable { loadServer() }
             }

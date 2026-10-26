@@ -41,14 +41,20 @@ impl Config {
             Some(path) => Some(std::fs::read_to_string(&path)?.trim().to_string()),
             None => match var("LUCINA_MEDIA_UPSTREAM_KEY") {
                 Some(k) => Some(k),
-                None if default_key.is_file() => Some(std::fs::read_to_string(&default_key)?.trim().to_string()),
+                None if default_key.is_file() => {
+                    Some(std::fs::read_to_string(&default_key)?.trim().to_string())
+                }
                 None => None,
             },
         };
         let secret_file = var("LUCINA_MEDIA_PLAY_SECRET_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".config/secretary-media/play-token.key"));
-        let play_secret = if secret_file.is_file() { Some(std::fs::read(&secret_file)?) } else { None };
+        let play_secret = if secret_file.is_file() {
+            Some(std::fs::read(&secret_file)?)
+        } else {
+            None
+        };
         let folders = var("LUCINA_MEDIA_FOLDERS")
             .map(|v| {
                 v.split(';')
@@ -60,15 +66,22 @@ impl Config {
         if upstream_key.as_deref().is_some_and(|k| k.len() < 16) {
             anyhow::bail!("upstream key must be at least 16 characters");
         }
-        let data_dir: PathBuf =
-            var("LUCINA_MEDIA_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| home.join("data/lucina-media"));
+        let data_dir: PathBuf = var("LUCINA_MEDIA_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("data/lucina-media"));
         Ok(Self {
-            listen: var("LUCINA_MEDIA_LISTEN").unwrap_or_else(|| "127.0.0.1:8830".into()).parse()?,
+            listen: var("LUCINA_MEDIA_LISTEN")
+                .unwrap_or_else(|| "127.0.0.1:8830".into())
+                .parse()?,
             internal_listen: var("LUCINA_MEDIA_INTERNAL_LISTEN")
                 .unwrap_or_else(|| "127.0.0.1:8830".into())
                 .parse()?,
-            stream_cache_dir: var("LUCINA_MEDIA_STREAM_CACHE").map(PathBuf::from).unwrap_or_else(|| data_dir.join("stream")),
-            progress_path: var("LUCINA_MEDIA_PROGRESS").map(PathBuf::from).unwrap_or_else(|| data_dir.join("progress.json")),
+            stream_cache_dir: var("LUCINA_MEDIA_STREAM_CACHE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_dir.join("stream")),
+            progress_path: var("LUCINA_MEDIA_PROGRESS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_dir.join("progress.json")),
             data_dir,
             play_secret,
             folders,
@@ -76,11 +89,24 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("mnt/mybook/lucina-media")),
             upstream_key,
-            quiet_start: var("LUCINA_MEDIA_QUIET_START").map(|v| v.parse()).transpose()?.unwrap_or(22),
-            quiet_end: var("LUCINA_MEDIA_QUIET_END").map(|v| v.parse()).transpose()?.unwrap_or(9),
-            tz: var("LUCINA_MEDIA_TZ").unwrap_or_else(|| "Europe/Copenhagen".into()).parse().map_err(anyhow::Error::msg)?,
-            ffmpeg: var("LUCINA_MEDIA_FFMPEG").unwrap_or_else(|| "ffmpeg".into()).into(),
-            ffprobe: var("LUCINA_MEDIA_FFPROBE").unwrap_or_else(|| "ffprobe".into()).into(),
+            quiet_start: var("LUCINA_MEDIA_QUIET_START")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(22),
+            quiet_end: var("LUCINA_MEDIA_QUIET_END")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(9),
+            tz: var("LUCINA_MEDIA_TZ")
+                .unwrap_or_else(|| "Europe/Copenhagen".into())
+                .parse()
+                .map_err(anyhow::Error::msg)?,
+            ffmpeg: var("LUCINA_MEDIA_FFMPEG")
+                .unwrap_or_else(|| "ffmpeg".into())
+                .into(),
+            ffprobe: var("LUCINA_MEDIA_FFPROBE")
+                .unwrap_or_else(|| "ffprobe".into())
+                .into(),
         })
     }
 
@@ -119,7 +145,11 @@ impl Config {
 
     /// Whether the big disk should be left alone at `now`.
     pub fn is_quiet(&self, now: DateTime<Utc>) -> bool {
-        is_quiet_hour(now.with_timezone(&self.tz).hour(), self.quiet_start, self.quiet_end)
+        is_quiet_hour(
+            now.with_timezone(&self.tz).hour(),
+            self.quiet_start,
+            self.quiet_end,
+        )
     }
 }
 
