@@ -16,7 +16,8 @@
   pointer-events: none;
 }
 
-.lmap .maplibregl-ctrl-attrib {
+.lmap .maplibregl-ctrl.maplibregl-ctrl-attrib,
+.lmap .maplibregl-ctrl-attrib.maplibregl-compact {
   font: var(--lu-type-caption-2) / var(--lu-type-caption-2-line) var(--lu-font);
   background: color-mix(in srgb, var(--lu-card) 80%, transparent);
   color: var(--lu-text-secondary);

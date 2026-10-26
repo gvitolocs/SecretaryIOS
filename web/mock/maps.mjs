@@ -57,8 +57,41 @@ function serveFile(req, res, file, type) {
   createReadStream(file, { start, end }).pipe(res);
 }
 
-/** Handles `/v1/maps/*`; false for any other path. */
+const dealsDay = (days) => new Date(Date.now() + days * 86_400_000).toISOString();
+const mockDeal = (key, name, priceDkk, normalPriceDkk, source = "food_waste") => ({
+  key, name, priceDkk, normalPriceDkk, discountPct: Math.round((1 - priceDkk / normalPriceDkk) * 100),
+  source, validFrom: dealsDay(-1), validTo: dealsDay(2), stock: 4, unitPrice: null,
+});
+
+/** `GET /v1/grocery/deals/map`: three stores around home (the deals map preview). */
+function dealsMap() {
+  const prosciutto = mockDeal("f1", "Prosciutto crudo 80 g", 22, 30, "flyer");
+  return {
+    generatedAt: new Date().toISOString(),
+    home: HOME,
+    radiusM: 3000,
+    failures: [],
+    maps: { webKey: null, iosKey: null, mapId: null },
+    stores: [
+      { id: "tjek:4412", chain: "Netto", chainKey: "netto", name: "Netto Risskov", street: "Vestre Strandallé 1",
+        lat: 56.1992, lng: 10.2116, distanceM: 240, listMatches: [], clearances: [], flyerOffers: [] },
+      { id: "salling:foetex-skejby", chain: "føtex", chainKey: "foetex", name: "føtex Skejby", street: "Skelagervej 1-9",
+        lat: 56.193657, lng: 10.193406, distanceM: 560,
+        listMatches: [{ item: "Prosciutto crudo", ruleId: "prosciutto_crudo", deal: prosciutto }],
+        clearances: [mockDeal("c1", "Parmesan 250 g", 34, 50), mockDeal("c2", "Smør", 12, 16)], flyerOffers: [prosciutto] },
+      { id: "salling:kvickly-skejby", chain: "Kvickly", chainKey: "kvickly", name: "Kvickly Skejby", street: "Skejby Centret",
+        lat: 56.1984, lng: 10.1868, distanceM: 1200, listMatches: [],
+        clearances: [mockDeal("c3", "Rugbrød", 18, 22)], flyerOffers: [] },
+    ],
+  };
+}
+
+/** Handles `/v1/maps/*` (and the deals map's data); false for any other path. */
 export function handleMaps(req, res, url, path) {
+  if (path === "/v1/grocery/deals/map") {
+    json(res, 200, dealsMap());
+    return true;
+  }
   if (!path.startsWith("/v1/maps/")) return false;
   if (req.method !== "GET" && req.method !== "HEAD") {
     json(res, 405, { error: { code: "method_not_allowed", message: "Method not allowed." } });
