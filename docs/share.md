@@ -53,7 +53,7 @@ when processing ends, one Lucina item (the normal reply item). Timeline `attachm
 extended (all new fields optional, old readers ignore them):
 
 ```json
-{"kind": "image|video|audio|pdf|document|file|link|text|contact|location",
+{"kind": "image|video|audio|voice|pdf|document|file|link|text|contact|location",
  "name": "IMG_1.jpg", "mime": "image/jpeg", "mediaId": "itm_…", "url": "https://…", "bytes": 123}
 ```
 
@@ -107,6 +107,62 @@ Server notes for v1.1:
   `timeline.jsonl` is append-only (Node also appends to it), so items are never rewritten.
 - `LUCINA_SHARE_DIR` defaults to `$LUCINA_DATA_DIR/share`; production sets it explicitly. The attachment
   memory is `$LUCINA_SHARE_DIR/attachments.db`, created on the first share.
+
+## v1.2 voice notes
+
+Chat clients send one `file` part (`audio/mp4`, `.m4a`, or any supported audio),
+`source` = `ios-chat`, `web-chat`, or `android-chat`, and `note` = optional caption
+(usually empty). The optional `meta` field includes:
+
+```json
+{"files":[{"index":0,"voice":true,"transcript":"ricordami di comprare il latte","durationMs":4200,"waveform":"AAEC/w=="}]}
+```
+
+`voice` is accepted only for routed audio; it is ignored on other types. `transcript`
+is optional: a non-empty on-device transcript takes precedence over Whisper.
+`waveform` is optional standard base64 of up to 64 bytes, levels 0–255, oldest first;
+invalid or oversized waveforms are dropped (maximum 88 encoded characters).
+Voice audio is decoded for at most ten minutes and never gets a long-document summary.
+
+The single append-only user item carries what was known at receipt:
+
+```json
+{"role":"user","channel":"ios","text":"📎 note.m4a","meta":{"kind":"share","shareId":"voice-note-0001","intent":"ask"},"attachments":[{"kind":"voice","name":"note.m4a","mime":"audio/mp4","mediaId":"itm_…","bytes":12345,"durationMs":4200,"waveform":"AAEC/w==","transcript":"ricordami di comprare il latte"}]}
+```
+
+Attachment `transcript` is included only if known at receipt; it is trimmed and clipped
+to 4000 characters. `durationMs`, `waveform`, and `mediaId` are optional when unknown.
+The ordinary timeline identity and timestamp fields are unchanged.
+
+Exactly one voice note with an empty/whitespace caption enters the normal typed-chat
+planner with the transcript itself as the user message. A short system addition tells
+Lucina to answer normally in the spoken language, without describing the audio. A caption
+or other shared parts keep the ordinary share turn, with the transcript in Shared content
+and voice guidance. The transcript is remembered as handler `audio`, subtype `voice`.
+If transcription fails or is empty, a single reply in the device language asks the owner
+to repeat, without calling the chat model.
+
+The single reply item adds (other reply metadata may also be present):
+
+```json
+{"role":"lucina","text":"…","replyTo":"<userItemId>","meta":{"transcript":"ricordami di comprare il latte","voiceReply":true}}
+```
+
+`meta.transcript` is the answered text, trimmed and clipped to 4000 characters; it lets
+clients show a server transcript under the owner's bubble after reloading. With several
+voice notes, known transcripts are joined in part order with newlines and clipped together.
+A failed transcription has no transcript. `voiceReply: true` hints that clients may speak
+the reply through the existing `/v1/tts`.
+
+`GET /v1/share/{id}` includes known voice transcripts in its attachments, including those
+obtained by Whisper after receipt:
+
+```json
+{"index":0,"kind":"voice","name":"note.m4a","mime":"audio/mp4","mediaId":"itm_…","bytes":12345,"durationMs":4200,"waveform":"AAEC/w==","transcript":"ricordami di comprare il latte","state":"read","summary":"ricordami di comprare il latte"}
+```
+
+Retries with the same `shareId` return `duplicate: true`, with no extra timeline items
+or model turn, just as for other shares.
 
 ## Server implementation and configuration
 

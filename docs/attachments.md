@@ -101,6 +101,24 @@ Handler kinds are in backticks; `share/guidance.rs` holds the exact guidance tex
 - A transcript made on the iPhone (sent with the file) is used first. Otherwise Whisper runs on nezopt's
   GPU, with CPU fallback, as in the voice-memo pipeline. The first 30 minutes are transcribed.
 
+- **Chat voice notes (v1.2):** send `source` = `ios-chat` / `web-chat` / `android-chat`,
+  an optional caption in `note`, and `meta.files[i]` with `index`, `voice: true`, optional
+  `transcript`, `durationMs`, and `waveform` (standard base64 of up to 64 levels, 0–255,
+  oldest first; at most 88 characters). Only audio accepts the voice flag.
+- Voice notes use handler `audio`, subtype `voice`, timeline kind `voice`. A non-empty
+  on-device transcript is used first; otherwise Whisper reads the first ten minutes.
+  Voice notes skip long-document summaries. The transcript remains searchable in attachment memory.
+- One voice note with no caption is answered as a typed message: reminders, shopping,
+  notes, calendar, and questions use the normal chat planner. A caption or mixed parts
+  keep the share turn, with the transcript and guidance to answer in the spoken language
+  without describing the audio. Empty/failed transcription gets one device-language reply
+  asking the owner to repeat.
+- The user attachment adds optional `durationMs`, validated `waveform`, and `transcript`
+  when known at receipt (trimmed, at most 4000 characters). The reply adds
+  `meta.transcript` (at most 4000 characters) and `meta.voiceReply: true` for optional
+  client TTS through `/v1/tts`. Polling `GET /v1/share/{id}` also returns known transcripts.
+  There is one user item and one reply; retries add nothing. See [the JSON shapes](share.md#v12-voice-notes).
+
 ### Video: `video`
 - Three to six key frames (scene changes, else evenly spaced), each described by vision, plus the audio
   transcript.
