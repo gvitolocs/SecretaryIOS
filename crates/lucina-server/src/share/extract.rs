@@ -642,6 +642,8 @@ async fn read_text_file(path: &Path, max: u64) -> anyhow::Result<(String, bool)>
 /// Read one part with the handler its kind routes to. `extract_files: false`
 /// (library saves) still reads texts, links and locations, but leaves stored
 /// files unread. `on_device` is a transcript the phone already made.
+/// `summarize: false` skips the long-document summary (a chat turn reading a
+/// Drive file has no time for it; it gets the passages it needs instead).
 pub(super) async fn read(
     st: &AppState,
     dir: &Path,
@@ -649,6 +651,7 @@ pub(super) async fn read(
     extract_files: bool,
     on_device: Option<&str>,
     lang: &str,
+    summarize: bool,
 ) -> anyhow::Result<Extracted> {
     if let Some(text) = &part.text {
         let mut x = Extracted::new("text");
@@ -801,7 +804,8 @@ pub(super) async fn read(
     if x.title.is_none() {
         x.title = Some(name.clone());
     }
-    if x.subtype.as_deref() != Some("voice")
+    if summarize
+        && x.subtype.as_deref() != Some("voice")
         && x.text.chars().count() > super::structured::SUMMARY_FROM_CHARS
         && x.summary.is_none()
     {

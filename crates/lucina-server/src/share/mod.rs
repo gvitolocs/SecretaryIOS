@@ -5,6 +5,7 @@
 mod extract;
 pub mod guidance;
 pub mod handlers;
+pub mod library;
 pub mod memory;
 pub mod router;
 mod structured;
@@ -1108,6 +1109,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 extract_files,
                 on_device.as_deref(),
                 &lang,
+                true,
             ),
         )
         .await;
