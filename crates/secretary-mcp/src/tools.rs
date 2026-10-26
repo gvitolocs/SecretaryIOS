@@ -439,6 +439,12 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("library_find_related_notes", "Library find related notes", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read Obsidian notes indexed as referring to a book, cited as [obsidian:<vault>/<path>#L<line>]. Mentions are relations, not reading evidence."),
         spec!("library_sync_status", "Library sync status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs, "Show the last imports and library counts."),
         spec!("library_generate_brief", "Library generate brief", Scope::Write, ro = false, destructive = false, idempotent = true, LibraryBookArgs, "Generate an extractive brief from highlights, with citations. Model briefs are not implemented."),
+        spec!("diagnostics_recent", "Recent crash reports", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::RecentArgs,
+            "Crash reports, errors, hangs and user problem reports from the owner's Lucina clients (Secretary Code on the Mac, the iOS and Android apps, the web app, the servers), newest first. Each shows its id, client, kind, when (owner's time zone), how many times it repeated, version, OS, the message and the top stack frame. Filter by app, kind and since (\"24h\", \"7d\", a date). Use it when the owner asks why something crashed or misbehaved."),
+        spec!("diagnostics_get", "Crash report", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::GetArgs,
+            "One crash report by id: message, stack, context (window, route, engine version, ...), how often and where it repeated, its attachments, and the end of its main log, so you can explain to the owner what happened and why (e.g. \"Secretary Code crashed at 19:44: the background service timed out\"). Secrets were scrubbed before storage."),
+        spec!("diagnostics_file", "Crash report attachment", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::FileArgs,
+            "Read a text attachment of a crash report (a log, a JSON dump), by default its end, up to 60000 characters per call. Binary attachments such as minidumps are not readable here."),
 
     ]
 }
@@ -1401,6 +1407,20 @@ impl Tools<'_> {
         }
         let v = self.app.backend.get("/v1/notes", &q).await?;
         Ok(format::notes_list(&v, words, tag, self.app.cfg.timezone))
+    }
+
+    /// `diagnostics_recent` / `diagnostics_get` / `diagnostics_file`.
+    pub async fn diagnostics(&self, name: &str, args: &JsonObject) -> ToolResult {
+        let d = self.app.diagnostics.as_ref().ok_or_else(|| {
+            bad("Diagnostics are not configured on this server (SECRETARY_MCP_DIAGNOSTICS_URL).")
+        })?;
+        let tz = self.app.cfg.timezone;
+        match name {
+            "diagnostics_recent" => d.recent(parse(args)?, tz).await,
+            "diagnostics_get" => d.get(parse(args)?, tz).await,
+            "diagnostics_file" => d.file(parse(args)?).await,
+            _ => Err(bad(format!("unknown tool {name}"))),
+        }
     }
 
     pub async fn status(&self) -> ToolResult {

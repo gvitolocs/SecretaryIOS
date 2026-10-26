@@ -35,6 +35,7 @@ and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_c
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \
 instead of pasting it into ask_lucina; the owner sees notes in the Secretary app and Lucina recalls them by slug (note_get, notes_search). \
 The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
+When available, diagnostics_recent, diagnostics_get and diagnostics_file show crash reports and logs from the owner's Lucina apps. \
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -77,6 +78,11 @@ fn audit(what: &str, name: &str, c: &Caller, started: Instant, ok: bool) {
 }
 
 impl LucinaMcp {
+    /// Tools of optional backends exist only when the backend is configured.
+    fn offered(&self, name: &str) -> bool {
+        !name.starts_with("diagnostics_") || self.app.diagnostics.is_some()
+    }
+
     fn insufficient(&self, c: &Caller, need: Scope, name: &str) -> CallToolResult {
         let mut r = CallToolResult::error(vec![ContentBlock::text(format!(
             "This connection ({}) lacks the `{need}` scope needed for {name}. Reconnect with that permission, or issue a token with it.",
@@ -156,6 +162,7 @@ impl LucinaMcp {
             "tasks_list" => t.tasks_list(args).await,
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,
+            name if name.starts_with("diagnostics_") => t.diagnostics(name, args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }
     }
@@ -255,7 +262,7 @@ impl ServerHandler for LucinaMcp {
         let c = caller(&ctx)?;
         let tools: Vec<Tool> = tools::specs()
             .iter()
-            .filter(|s| c.has(s.scope))
+            .filter(|s| c.has(s.scope) && self.offered(s.name))
             .map(|s| s.tool())
             .collect();
         Ok(ListToolsResult::with_all_items(tools)
@@ -264,7 +271,9 @@ impl ServerHandler for LucinaMcp {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        tools::spec(name).map(|s| s.tool())
+        tools::spec(name)
+            .filter(|s| self.offered(s.name))
+            .map(|s| s.tool())
     }
 
     async fn call_tool(
@@ -275,7 +284,7 @@ impl ServerHandler for LucinaMcp {
         let started = Instant::now();
         let c = caller(&ctx)?;
         let name = request.name.to_string();
-        let Some(spec) = tools::spec(&name) else {
+        let Some(spec) = tools::spec(&name).filter(|s| self.offered(s.name)) else {
             audit("tool_call", &name, &c, started, false);
             return Err(McpError::invalid_params(
                 format!("unknown tool {name}"),
