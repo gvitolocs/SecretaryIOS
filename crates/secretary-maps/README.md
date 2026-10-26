@@ -129,3 +129,21 @@ MAPS_GOOGLE_KEY_FILE=/home/nez/.config/secretary-maps/google.key
 
 Tests: `cargo test -p secretary-maps` (kernels, the HTTP routes against a local Google stub, and
 `tests/kernel_model.rs`, the differential test against the Verus specs).
+
+## Gazetteer: university room codes
+
+Calendar entries from the Aarhus University timetable give rooms, not addresses (`5125-140 Seminarrum`:
+room 140 in building 5125). No geocoder knows those, so `/v1/maps/geocode` first looks the building up in
+`MAPS_DIR/gazetteer/*.json` (arrays of `{"ref", "name", "lat", "lng"}`), locally and without the Google key.
+Only the `NNNN-room` form is matched, so postcodes such as `8000 Aarhus C` never hit it. A building that is
+not listed falls through to Google.
+
+`au-buildings.json` comes from the building `ref` tags in OpenStreetMap around Aarhus (83 buildings on
+2026-10-26; 5220 and 5522 were missing). Rebuild it with this Overpass query and convert each element to
+`{ref, name, lat: center.lat, lng: center.lon}`:
+
+```
+[out:json][timeout:80];
+nwr["building"]["ref"~"^[1-9][0-9]{3}$"](56.12,10.15,56.20,10.23);
+out center tags;
+```

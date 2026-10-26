@@ -6,6 +6,7 @@
 //! p1's Caddy authenticates the owner (forward_auth) and, when the service is started with
 //! an upstream key, adds `X-Maps-Upstream-Key`.
 pub mod cache;
+pub mod gazetteer;
 pub mod geocode;
 pub mod kernel;
 pub mod provider;
@@ -143,6 +144,7 @@ pub struct AppState {
     pub config: Config,
     http: reqwest::Client,
     cache: Mutex<cache::Cache>,
+    gazetteer: gazetteer::Gazetteer,
 }
 
 impl AppState {
@@ -154,10 +156,13 @@ impl AppState {
             .build()
             .expect("reqwest client");
         let cache = Mutex::new(cache::Cache::load(config.state_dir.join("cache.json")));
+        let gazetteer = gazetteer::Gazetteer::load(&config.dir.join("gazetteer"));
+        tracing::info!(buildings = gazetteer.len(), "gazetteer loaded");
         Arc::new(AppState {
             config,
             http,
             cache,
+            gazetteer,
         })
     }
 
@@ -423,6 +428,11 @@ async fn geocode_route(State(st): State<Arc<AppState>>, Query(p): Query<GeocodeQ
         _ => None,
     };
     let bias = from_query.or(st.config.home.as_ref().map(|h| (h.lat_e7, h.lng_e7)));
+    // University room codes: answered locally, with or without a Google key.
+    if let Some(hit) = st.gazetteer.lookup(q) {
+        tracing::info!(q_len = n, results = 1, "geocode gazetteer");
+        return Json(json!({ "results": [hit] })).into_response();
+    }
     if st.config.google_key.is_none() {
         return error(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable");
     }
