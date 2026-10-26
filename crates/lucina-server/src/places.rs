@@ -22,6 +22,38 @@ pub fn event_place(event: &Value) -> Option<Value> {
     }))
 }
 
+/// The title without parenthesised parts ("Security and Privacy (Aarhus Universitet -
+/// Personal timetable: 810677)"), cut at the first ": ", " - " or " – ".
+fn title_core(title: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0usize;
+    for c in title.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    let cut = [": ", " - ", " – "]
+        .iter()
+        .filter_map(|sep| out.find(sep))
+        .min()
+        .unwrap_or(out.len());
+    out[..cut].split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The reply (lowercased) names the event: its title, the title's core or its
+/// location, each at least 4 characters long.
+fn names_event(haystack: &str, event: &Value) -> bool {
+    let title = text(&event["title"]).to_lowercase();
+    let core = title_core(&title);
+    let location = text(&event["location"]).to_lowercase();
+    [title.as_str(), core.as_str(), location.as_str()]
+        .iter()
+        .any(|needle| needle.chars().count() >= 4 && haystack.contains(*needle))
+}
+
 /// Append a place for every event with a location whose title appears in
 /// `reply` (case-insensitive), unless one with the same title and address is
 /// already there; at most three places in all.
@@ -36,8 +68,7 @@ pub fn add_calendar_places(message: &mut RichMessage, events: &[Value], reply: &
         if places >= MAX_PLACES || message.blocks.len() >= MAX_BLOCKS {
             return;
         }
-        let title = text(&event["title"]).to_lowercase();
-        if title.is_empty() || !haystack.contains(&title) {
+        if !names_event(&haystack, event) {
             continue;
         }
         let Some(place) = event_place(event) else {
@@ -91,6 +122,29 @@ mod tests {
         let mut m = from_plain_text(reply, "it", 3, Vec::new());
         add_calendar_places(&mut m, &[all_day], reply);
         assert!(m.blocks.is_empty());
+    }
+
+    #[test]
+    fn the_title_core_or_the_location_names_the_event() {
+        let lecture = json!({"id": "iphone:7", "title": "Security and Privacy (Aarhus Universitet - Personal timetable: 810677)",
+                             "start": "2026-11-02T07:00:00Z", "location": "5789-003B Seminarrum"});
+        let reply = "Lunedì alle 8 hai Security and Privacy.";
+        let mut m = from_plain_text(reply, "it", 3, Vec::new());
+        add_calendar_places(&mut m, &[lecture.clone()], reply);
+        assert_eq!(m.blocks.len(), 1);
+        let reply = "Hai lezione in 5789-003B Seminarrum.";
+        let mut m = from_plain_text(reply, "it", 3, Vec::new());
+        add_calendar_places(&mut m, &[lecture], reply);
+        assert_eq!(m.blocks.len(), 1);
+        let reply = "Domani alle 18 c'è la Hack Night al Folkehuset.";
+        let mut m = from_plain_text(reply, "it", 3, Vec::new());
+        add_calendar_places(&mut m, &[hack_night()], reply);
+        assert_eq!(m.blocks.len(), 1, "the title's core, before the colon");
+        assert_eq!(title_core("mentor"), "mentor");
+        assert_eq!(
+            title_core("ethical hacking report (optional) – deadline"),
+            "ethical hacking report"
+        );
     }
 
     #[test]
