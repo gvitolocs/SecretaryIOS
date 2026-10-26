@@ -102,6 +102,17 @@ describe("Films", () => {
     expect(playQueue).toHaveBeenLastCalledWith([expect.objectContaining({ id: "itm_up" })], 0, { fromStart: true });
   });
 
+  it("plays the film a /films/play/<id> link names", async () => {
+    serve();
+    renderAt("/films/play/itm_up", () => (
+      <>
+        <Route path="/films" component={FilmsView} />
+        <Route path="/films/play/:id" component={FilmsView} />
+      </>
+    ));
+    await waitFor(() => expect(playQueue).toHaveBeenLastCalledWith([expect.objectContaining({ id: "itm_up" })], 0, { fromStart: false }));
+  });
+
   it("shows an empty state when no folder has films", async () => {
     stubFetch((call) => {
       if (call.url.startsWith("/v1/media/albums")) return { body: { ok: true, albums: [] } };

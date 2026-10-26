@@ -1,5 +1,5 @@
-import { A } from "@solidjs/router";
-import { createMemo, createResource, createSignal, For, onMount, Show } from "solid-js";
+import { A, useNavigate, useParams } from "@solidjs/router";
+import { createEffect, createMemo, createResource, createSignal, For, onMount, Show } from "solid-js";
 import { formatTime, mediaApi, type MediaItem } from "../api/player";
 import { BackIcon, CheckIcon, RepeatIcon, SearchIcon } from "../components/Icons";
 import { t } from "../i18n";
@@ -110,6 +110,17 @@ export default function FilmsView() {
     return all.map((f) => ({ ...f, films: f.films.filter((film) => film.title.toLowerCase().includes(q)) })).filter((f) => f.films.length > 0);
   });
   const resume = () => (query().trim() ? [] : continueItems(allFilms()));
+
+  // `/films/play/<id>` (a film Lucina found): play it once the folders are in, then stay on /films.
+  const params = useParams<{ id?: string }>();
+  const navigate = useNavigate();
+  createEffect(() => {
+    const id = params.id;
+    if (!id || folders.loading) return;
+    const film = allFilms().find((f) => f.id === id);
+    navigate("/films", { replace: true });
+    if (film) playFilm(film);
+  });
 
   return (
     <section class="films" aria-labelledby="films-title" aria-busy={folders.loading}>

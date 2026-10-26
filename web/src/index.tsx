@@ -70,6 +70,7 @@ render(
       <Route path="/memos/:id?" component={MemosView} />
       <Route path="/media" component={MediaView} />
       <Route path="/films" component={FilmsView} />
+      <Route path="/films/play/:id" component={FilmsView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),
