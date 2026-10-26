@@ -90,9 +90,11 @@ final class LucinaSchemeHandler: NSObject, WKURLSchemeHandler {
     private func serveAsset(_ task: any WKURLSchemeTask, name: String) async {
         let file = Self.cacheDirectory.appendingPathComponent(name)
         let tagFile = Self.cacheDirectory.appendingPathComponent(name + ".etag")
+        // The tag first: a write landing in between leaves an old tag with new data (a 200), never the reverse.
         let (cached, tag) = await Task.detached(priority: .userInitiated) { () -> (Data?, String?) in
+            let tag = try? String(contentsOf: tagFile, encoding: .utf8)
             let cached = try? Data(contentsOf: file)
-            return (cached, cached == nil ? nil : (try? String(contentsOf: tagFile, encoding: .utf8)))
+            return (cached, cached == nil ? nil : tag)
         }.value
         let type = name.hasSuffix(".json") ? "application/json" : name.hasSuffix(".glb") ? "model/gltf-binary" : "application/octet-stream"
         do {
@@ -303,7 +305,7 @@ final class LucinaStageController {
     /// changed meanwhile is applied when she is on screen again.
     func setVisible(_ visible: Bool) {
         self.visible = visible
-        guard visible else { return }
+        guard visible else { return stopStudio() }
         if enabled { awake = true }
         if lookPending {
             lookPending = false
@@ -315,6 +317,7 @@ final class LucinaStageController {
     /// out, "Show Lucina" off). On screen, the tab's host loads her again at once.
     func releaseStage() {
         guard let view = webViewStorage else { return }
+        stopStudio()
         voiceStorage?.stop(deliver: false)
         listening = false
         thinking = false
