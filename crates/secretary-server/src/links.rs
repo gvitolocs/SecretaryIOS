@@ -467,6 +467,10 @@ fn private_ip(ip: IpAddr) -> bool {
                 || v.octets()[0] == 100 && (v.octets()[1] & 0xc0) == 64 // 100.64/10 (Tailscale, CGNAT)
         }
         IpAddr::V6(v) => {
+            // ::ffff:a.b.c.d reaches a.b.c.d (verification L1).
+            if let Some(v4) = v.to_ipv4_mapped() {
+                return private_ip(IpAddr::V4(v4));
+            }
             v.is_loopback()
                 || v.is_unspecified()
                 || (v.segments()[0] & 0xfe00) == 0xfc00
