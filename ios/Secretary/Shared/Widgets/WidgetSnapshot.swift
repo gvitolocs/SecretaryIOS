@@ -62,7 +62,10 @@ struct ShoppingSection: WidgetSection {
         var id: String
         var name: String
         var spec: String
+        /// The catalogue emoji (`ShoppingEmojiSection`); nil in a copy saved before it existed.
         var icon: String?
+
+        var emoji: String { icon ?? ShoppingEmojiSection.defaultEmoji }
     }
 
     struct Deal: Codable, Equatable, Sendable, Identifiable {

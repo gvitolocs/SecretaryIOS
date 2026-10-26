@@ -41,7 +41,7 @@ enum WidgetStore {
     /// Sign-out: nothing of the owner's stays behind for the widgets.
     static func removeAll() {
         for key in [AskSection.key, AppointmentSection.key, ShoppingSection.key, WeightSection.key, TrainingSection.key,
-                    TasksSection.key, PokemonSection.key, FilmsSection.key] {
+                    TasksSection.key, PokemonSection.key, FilmsSection.key, ShoppingEmojiSection.key] {
             if let url = fileURL(key) { try? FileManager.default.removeItem(at: url) }
             try? keychain(key)?.delete()
         }

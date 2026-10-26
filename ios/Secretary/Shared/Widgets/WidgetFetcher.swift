@@ -107,14 +107,15 @@ struct WidgetFetcher: Sendable {
                                                     query: [URLQueryItem(name: "lang", value: Self.language)])
         let name = state["list"]?["name"]?.nonEmptyString
             ?? lists.first { $0["id"]?.stringValue == chosen }?["name"]?.nonEmptyString ?? chosen
-        let items = Self.neededItems(state["items"])
+        let emoji = await shoppingEmoji()
+        let items = Self.neededItems(state["items"], emoji: emoji)
         var deals = previous?.listId == chosen ? previous?.deals ?? [] : []
         let dealsAge = previous.map { Date().timeIntervalSince($0.fetchedAt) } ?? .infinity
         if deals.isEmpty || dealsAge > 3 * 3600, let fresh = try? await self.deals() { deals = fresh }
         return ShoppingSection(fetchedAt: Date(), listId: chosen, listName: name, items: items, deals: deals)
     }
 
-    static func neededItems(_ json: JSONValue?) -> [ShoppingSection.Item] {
+    static func neededItems(_ json: JSONValue?, emoji: ShoppingEmojiSection = .empty) -> [ShoppingSection.Item] {
         let rows = (json?.arrayValue ?? []).enumerated().compactMap { index, row -> (Double, ShoppingSection.Item)? in
             guard row["status"]?.stringValue ?? "needed" == "needed" else { return nil }
             let id: String
@@ -125,12 +126,35 @@ struct WidgetFetcher: Sendable {
             }
             let names = row["item"]?["names"]
             guard let name = names?[language]?.nonEmptyString ?? row["name"]?.nonEmptyString else { return nil }
-            let icon = row["icon"]?.nonEmptyString
+            let icon = emoji.emoji(icon: row["icon"]?.nonEmptyString, catalogId: row["catalogId"]?.nonEmptyString,
+                                   name: name, section: row["section"]?.nonEmptyString)
             return (row["position"]?.numberValue ?? Double(index),
-                    ShoppingSection.Item(id: id, name: name, spec: row["spec"]?.stringValue ?? "",
-                                         icon: icon.flatMap { $0.unicodeScalars.first?.properties.isEmojiPresentation == true ? $0 : nil }))
+                    ShoppingSection.Item(id: id, name: name, spec: row["spec"]?.stringValue ?? "", icon: icon))
         }
         return rows.sorted { $0.0 < $1.0 }.map(\.1)
+    }
+
+    /// The catalogue's emoji for the rows, kept a day (then revalidated with its ETag). Never
+    /// throws: without the catalogue, rows fall back to their own icon and their category.
+    func shoppingEmoji(now: Date = Date()) async -> ShoppingEmojiSection {
+        let lang = Self.language
+        let stored = WidgetStore.read(ShoppingEmojiSection.self).flatMap { $0.lang == lang ? $0 : nil }
+        if let stored, now.timeIntervalSince(stored.fetchedAt) < 24 * 3600 { return stored }
+        var headers: [String: String] = [:]
+        if let etag = stored?.etag { headers["If-None-Match"] = etag }
+        guard let response = try? await client.send("GET", "/v1/shopping/catalog", query: [URLQueryItem(name: "lang", value: lang)],
+                                                     body: nil, passThrough: [304], headers: headers) else {
+            return stored ?? .empty
+        }
+        if response.status == 304, var stored {
+            stored.fetchedAt = now
+            WidgetStore.write(stored)
+            return stored
+        }
+        guard response.status != 304, let json = try? client.decode(JSONValue.self, from: response) else { return stored ?? .empty }
+        let table = ShoppingEmojiSection(catalog: json, lang: lang, etag: response.headers["etag"], fetchedAt: now)
+        WidgetStore.write(table)
+        return table
     }
 
     /// The cheapest deal for each list item, across the nearby stores.
