@@ -231,6 +231,15 @@ impl Deliver for AppNotify {
             NotifyResult::Err { code, .. } if code == "disabled" || code == "not_configured" => {
                 Delivery::NotConfigured
             }
+            // Retrying the same notification cannot succeed (429 and 5xx can).
+            NotifyResult::Err { status, code }
+                if matches!(status, 400 | 401 | 403 | 404 | 413 | 422)
+                    || code == "bad_notification" =>
+            {
+                Delivery::Rejected {
+                    reason: "send rejected".into(),
+                }
+            }
             NotifyResult::Err { .. } => Delivery::Failed {
                 reason: "send failed".into(),
             },
