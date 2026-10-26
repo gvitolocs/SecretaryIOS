@@ -3,16 +3,6 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-@main
-struct SecretaryWidgets: WidgetBundle {
-    var body: some Widget {
-        MemoRecordingLiveActivity()
-        if #available(iOS 18.0, *) {
-            MemoRecordControl()
-        }
-    }
-}
-
 /// A voice memo being recorded: Lock Screen banner and Dynamic Island.
 struct MemoRecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {

@@ -6,6 +6,7 @@ import SwiftUI
 struct FitnessView: View {
     @Environment(WeightStore.self) private var weight
     @Environment(GymStore.self) private var gym
+    @Environment(AppModel.self) private var app
     @State private var addingWeight = false
 
     var body: some View {
@@ -28,6 +29,12 @@ struct FitnessView: View {
         }
         .lucinaScreen("Training")
         .sheet(isPresented: $addingWeight) { QuickWeightSheet() }
+        // The Weight widget's "+" and the Log weight control.
+        .onChange(of: app.showQuickWeight, initial: true) { _, show in
+            guard show else { return }
+            app.showQuickWeight = false
+            addingWeight = true
+        }
         .task { if weight.view == nil { await weight.refresh() } }
         .gymHost()
     }

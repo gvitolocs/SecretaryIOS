@@ -200,7 +200,10 @@ struct ChatComposer: View {
         .onChange(of: store.prefill) { _, request in
             // A button asked for text in the composer: the owner finishes and sends it.
             guard let request else { return }
-            model.draft = request.text.isEmpty || request.text.hasSuffix(" ") ? request.text : request.text + " "
+            // Empty (Ask Lucina widget): just the keyboard, keeping any draft.
+            if !request.text.isEmpty {
+                model.draft = request.text.hasSuffix(" ") ? request.text : request.text + " "
+            }
             focused = true
         }
         .photosPicker(isPresented: $showPhotos, selection: $pickerItems, maxSelectionCount: 10,

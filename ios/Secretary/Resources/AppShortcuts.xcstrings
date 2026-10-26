@@ -81,6 +81,22 @@
         }
       }
     },
+    "My next appointment in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Min næste aftale i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Il mio prossimo impegno in ${applicationName}"
+          }
+        }
+      }
+    },
     "New voice memo with ${applicationName}": {
       "localizations": {
         "da": {
@@ -109,6 +125,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "Metti in pausa il memo in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Read my list in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Læs min liste op i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leggi la mia lista in ${applicationName}"
           }
         }
       }
@@ -221,6 +253,70 @@
           "stringUnit": {
             "state": "translated",
             "value": "Ferma il memo in ${applicationName}"
+          }
+        }
+      }
+    },
+    "Today's tasks in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dagens opgaver i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Le attività di oggi in ${applicationName}"
+          }
+        }
+      }
+    },
+    "What do I have to do today in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hvad skal jeg nå i dag i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cosa devo fare oggi in ${applicationName}"
+          }
+        }
+      }
+    },
+    "What's next in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hvad er det næste i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cosa c'è dopo in ${applicationName}"
+          }
+        }
+      }
+    },
+    "What's on my shopping list in ${applicationName}": {
+      "localizations": {
+        "da": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hvad står på min indkøbsliste i ${applicationName}"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cosa c'è sulla mia lista della spesa in ${applicationName}"
           }
         }
       }

@@ -56,6 +56,12 @@ final class AppModel {
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
     var showPokemon = false
+    /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
+    var showQuickWeight = false
+    /// The Shopping tab's add field (Add to shopping control, widget "+").
+    var showShoppingAdd = false
+    /// A widget link that arrived before sign-in finished; opened once the tabs show.
+    @ObservationIgnored var pendingWidgetRoute: String?
 
     @ObservationIgnored let client: APIClient
     /// /v1/media/* (Gallery, photo backup, player) lives in p1's Caddy, not in secretary-server, so it
@@ -190,6 +196,8 @@ final class AppModel {
         #else
         memos.queue.recoverOrphans()
         #endif
+        // Widget and control taps (OpenSecretaryIntent runs in this process).
+        WidgetRouter.open = { route in AppModel.shared.openWidgetRoute(route) }
         let memoStore = memos
         MemoRecordingCommands.handle = { command in
             switch command {
@@ -343,6 +351,8 @@ final class AppModel {
         lucina.stopEverything()
         device.bridge.reset()
         BridgeCredentials.write(nil)
+        WidgetStore.removeAll()
+        WidgetStore.reload()
         lucina.expanded = false
         chat.clear()
         shopping.reset()
