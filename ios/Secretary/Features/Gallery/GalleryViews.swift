@@ -421,6 +421,20 @@ struct AlbumsView: View {
     }
 }
 
+/// The gradient behind the viewer's bars, so the date and the buttons read on any photo.
+private struct ViewerScrim: View {
+    let top: Bool
+
+    var body: some View {
+        LinearGradient(colors: [.black.opacity(0.75), .black.opacity(0)], startPoint: top ? .top : .bottom,
+                       endPoint: top ? .bottom : .top)
+            .frame(height: top ? 140 : 170)
+            .frame(maxWidth: .infinity)
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+    }
+}
+
 /// Full screen, swipe between items. Photos zoom; videos and audio open the media player.
 struct GalleryViewer: View {
     @Environment(GalleryStore.self) private var store
@@ -452,9 +466,15 @@ struct GalleryViewer: View {
             pager
             // Google Photos: swipe down to close, up for the details.
             .photoDragOut(enabled: zoomedID != current, dragging: $dragging, onDismiss: { dismiss() }, onInfo: { showInfo = true })
+            // Google Photos: the photo is always full screen; the bars float over it on dark
+            // gradients (its bottom_dark_gradient: clear to 75% black), so nothing resizes on a tap.
+            .overlay(alignment: .top) { ViewerScrim(top: true).opacity(bare ? 0 : 1) }
+            .overlay(alignment: .bottom) { ViewerScrim(top: false).opacity(bare ? 0 : 1) }
             .clearNavigationBackground()
-            .ignoresSafeArea(edges: bare ? .all : .bottom)
-            .toolbarBackground(.visible, for: .navigationBar, .bottomBar)
+            .ignoresSafeArea()
+            .toolbarBackground(.hidden, for: .navigationBar, .bottomBar)
+            // White date and buttons on the scrims, in light mode too.
+            .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
             .toolbar(bare ? .hidden : .visible, for: .navigationBar, .bottomBar)
             .statusBarHidden(bare)
             .animation(.easeInOut(duration: 0.2), value: bare)
