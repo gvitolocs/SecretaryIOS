@@ -1,0 +1,37 @@
+[package]
+name = "secretary-nclient"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The owner's private reader plugin: HTTP around nclient-core, a hard child-safety filter, an image proxy with a disk cache, favorites and reading progress"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "secretary-nclient"
+path = "src/main.rs"
+
+[dependencies]
+nclient-core = { path = "../nclient-core" }
+axum = "0.8"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hmac = "0.12"
+hex = "0.4"
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = { workspace = true }
+anyhow = "1"
+subtle = "2"
+getrandom = "0.3"
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
