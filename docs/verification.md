@@ -76,6 +76,7 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 | 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
 | 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
+| 15 | In-app maps (place blocks, the map server: tiles, assets, geocoder) | – | – | `map_kernels.rs` (MK1–MK5) | `crates/secretary-maps/src/{kernel,lib,geocode}.rs` (reference `normalize_place`; lucina-rs and the web app mirror it), `deploy/secretary-maps.service`; differential test `crates/secretary-maps/tests/kernel_model.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -866,6 +867,53 @@ dedup: without it the pending re-send repeats (G5, 7 actions).
 **Key domain.** `sources.rs::food_waste` joins raw upstream strings, so `fw:` keys are injective only for store ids
 without `:` (above); `relatedKeys` grouping and `deal_keys` keep every member, so acknowledging a group covers all of
 its branches.
+
+### 15. In-app maps
+
+A place appears as a map card everywhere (contract: the `place` block of `docs/lucina-message-format.md`, a
+proactive `meta.place`). iOS uses MapKit; the web app and the Android WebView use MapLibre GL with the self-hosted
+Protomaps extract from `secretary-maps` on nezopt (`:8840`, behind p1 Caddy `/v1/maps/*` with forward_auth and
+`X-Maps-Upstream-Key`; `crates/secretary-maps/README.md`). There is no multi-process protocol to model: the server is
+stateless apart from two caches (the Photon probe, 60 s, and the geocode results, 512 entries / 24 h), so there is
+no Stateright model or TLA+ twin. The decisions every client depends on are pure functions, proved in Verus on
+integer coordinates in degrees × 10^7 (e7).
+
+Verus (`map_kernels.rs`, 14 verified; no `assume`/`admit`/`external_body`), each mirroring `crates/secretary-maps/src/kernel.rs`:
+- MK1 `coord_valid` is exactly the range predicate: |lat| ≤ 90e7, |lng| ≤ 180e7, not (0, 0) (`parse_coord` rounds a
+  finite f64 pair to e7, then applies it).
+- MK2 `fit_bounds` over valid points: `None` iff empty; otherwise min ≤ max on both axes, every point inside, every
+  bound attained by a point, and the bounds in range. The antimeridian is not special (a set straddling ±180° gets
+  a box around the globe); the maps cover Denmark.
+- MK3 `safe_asset_path` equals its byte-level spec (1..=512 bytes, no leading/trailing `/`, no empty, `.` or `..`
+  segment, no `..` at all, no `\`, `%`, NUL or other control byte); `lemma_safe_rejects_traversal`: every path with
+  a `..` segment or a leading `/` is refused. The server also canonicalizes and checks the result stays in
+  `MAPS_DIR/assets`.
+- MK4 `travel_minutes` (the web "≈" estimate: walk 4.8, bike 15, car 35 km/h, × 1.3 detour, so
+  `ceil(78 d / speed)` minutes for `d` whole metres, clamped to 1e8 m) is at least 1, overflow-free and monotone
+  non-decreasing in the distance for each mode; `travel_estimate_min` rounds the f64 distance up to whole metres.
+- MK5 the normalizer's keep/drop decision `place_keep`: kept iff the title is non-empty and (the address is
+  non-empty or both coordinates are present and valid); a kept block carries both coordinates or neither, and they
+  are the input pair. Examples: title only is dropped; one coordinate with an address keeps the block without
+  coordinates; (0, 0) never counts.
+
+Boundaries: f64 → e7 rounding, the haversine distance, string cleaning (one line, control characters, clipping
+with "…") and JSON. `crates/secretary-maps/tests/kernel_model.rs` (part of `cargo test -p secretary-maps`) runs the
+real functions against a plain-Rust copy of the specs on fixed-seed pseudo-random inputs biased to the boundaries:
+40 000 coordinates and `parse_coord` pairs, 5 000 point sets, 20 000 paths over an adversarial alphabet, 20 000
+distances (with monotonicity), 20 000 keep decisions and 5 000 JSON blocks through `normalize_place`.
+
+```sh
+verify-gate -- ~/tools/verus/verus-x86-linux/verus verification/verus/map_kernels.rs   # 14 verified, 0 errors
+cargo test -p secretary-maps
+```
+
+| Kernel (Verus) | Code |
+|---|---|
+| `coord_valid` | `kernel::coord_valid`, `parse_coord`; `Config::from_env` (home), `geocode::parse_features`, the geocode bias |
+| `fit_bounds` | `kernel::fit_bounds` (the clients' fit-to-pins) |
+| `safe_asset_path` | `kernel::safe_asset_path` → `resolve_asset` → `GET /v1/maps/assets/{*path}` |
+| `travel_minutes` | `kernel::travel_minutes`, `travel_estimate_min` (with `distance_m`) |
+| `coord_pair`, `place_keep` | `kernel::coord_pair`, `place_keep` inside `normalize_place` |
 
 ## Bugs found
 
