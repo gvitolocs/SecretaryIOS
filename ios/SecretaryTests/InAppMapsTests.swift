@@ -58,6 +58,21 @@ final class InAppMapsTests: XCTestCase {
         XCTAssertFalse(ExternalMaps.isExternal(WidgetRoute.url("map/place?title=x&address=y")))
     }
 
+    /// The navigation card's next turn: the step after the one the owner is on, and the metres to it.
+    func testNextTurn() throws {
+        let steps = [NavigationStep(instruction: "", line: [[56.0, 10.0], [56.0, 10.001]]),
+                     NavigationStep(instruction: "Turn left onto A", line: [[56.0, 10.001], [56.001, 10.001]]),
+                     NavigationStep(instruction: "Turn right onto B", line: [[56.001, 10.001], [56.001, 10.002]])]
+        let first = try XCTUnwrap(NavigationGuide.next(steps, at: CLLocationCoordinate2D(latitude: 56.0, longitude: 10.0005)))
+        XCTAssertEqual(first.step.instruction, "Turn left onto A")
+        XCTAssertEqual(first.meters, 31, accuracy: 5)
+        let second = try XCTUnwrap(NavigationGuide.next(steps, at: CLLocationCoordinate2D(latitude: 56.0005, longitude: 10.001)))
+        XCTAssertEqual(second.step.instruction, "Turn right onto B")
+        XCTAssertEqual(second.meters, 56, accuracy: 5)
+        XCTAssertNil(NavigationGuide.next(steps, at: CLLocationCoordinate2D(latitude: 56.001, longitude: 10.0018)), "the last stretch")
+        XCTAssertNil(NavigationGuide.next([], at: CLLocationCoordinate2D(latitude: 56, longitude: 10)))
+    }
+
     /// No source file but ExternalMaps.swift builds or opens a maps app (Place.swift may only
     /// recognise maps links, to open them in the app). Runs where the sources are readable (the
     /// simulator); skipped on a device.
