@@ -1,4 +1,5 @@
-#if DEBUG
+// DEBUG, or Release with the SCREENSHOTS condition: Debug apps do not start on iOS 27 from Xcode 26.6.
+#if DEBUG || SCREENSHOTS
 import Foundation
 import OSLog
 import Photos
