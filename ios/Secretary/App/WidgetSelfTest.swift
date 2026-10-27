@@ -95,7 +95,8 @@ enum WidgetSelfTest {
             note("route \(route) ok=\(pass)")
         }
         let url = WidgetRoute.url("films/play/abc%2F1")
-        note("route parse ok=\(WidgetRoute.route(from: url) == "films/play/abc%2F1" && WidgetRoute.route(from: URL(string: "https://x/open/y")!) == nil)")
+        let mapURL = WidgetRoute.url("map/place?title=A%20B&address=x%26y")
+        note("route parse ok=\(WidgetRoute.route(from: url) == "films/play/abc%2F1" && WidgetRoute.route(from: URL(string: "https://x/open/y")!) == nil && WidgetRoute.route(from: mapURL) == "map/place?title=A%20B&address=x%26y")")
         expect("chat/compose") { app.selectedTab == .chat && app.chat.prefill != nil }
         expect("shopping/add") { app.selectedTab == .shopping }
         expect("weight/log") { app.selectedTab == .fitness }

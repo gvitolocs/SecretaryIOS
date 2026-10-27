@@ -16,6 +16,7 @@ enum WidgetKind: String, CaseIterable, Sendable {
     case memo = "tech.getsecretary.widget.memo"
     case pokemon = "tech.getsecretary.widget.pokemon"
     case films = "tech.getsecretary.widget.films"
+    case countdown = "tech.getsecretary.widget.countdown"
 }
 
 protocol WidgetSection: Codable, Equatable, Sendable {
@@ -41,12 +42,13 @@ struct AppointmentSection: WidgetSection {
         var start: Date
         var end: Date
         var allDay: Bool
-        /// Minutes from where the owner is (or home) to `location`.
+        /// Minutes from home to `location` (maps routes, the quickest mode).
         var travelMinutes: Int?
-        /// `driving`, `walking`, `transit`, `bicycling`.
+        /// `drive`, `walk`, `bike`, `transit`.
         var travelMode: String?
-        /// When to leave (start minus travel time), if known.
-        var leaveAt: Date? { travelMinutes.map { start.addingTimeInterval(-Double($0) * 60) } }
+        /// The server's leave time (start - travel - 5 min); else start minus the travel time.
+        var leaveBy: Date?
+        var leaveAt: Date? { leaveBy ?? travelMinutes.map { start.addingTimeInterval(-Double($0) * 60) } }
     }
 
     var fetchedAt: Date
@@ -61,7 +63,10 @@ struct ShoppingSection: WidgetSection {
         var id: String
         var name: String
         var spec: String
+        /// The catalogue emoji (`ShoppingEmojiSection`); nil in a copy saved before it existed.
         var icon: String?
+
+        var emoji: String { icon ?? ShoppingEmojiSection.defaultEmoji }
     }
 
     struct Deal: Codable, Equatable, Sendable, Identifiable {

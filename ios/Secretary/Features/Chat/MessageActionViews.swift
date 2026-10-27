@@ -137,7 +137,7 @@ final class ChatActions {
 
     func readAloud(_ item: TimelineItem, store: ChatStore) async {
         switch await store.toggleReadAloud(item) {
-        case .refusedRecording: show(String(localized: "Finish the recording first."))
+        case let .refusedRecording(reason): show(reason)
         case .nothingToRead: show(String(localized: "Nothing to read aloud."))
         case let .failed(message): show(message)
         case .started, .stopped: break

@@ -392,4 +392,41 @@ final class ShoppingV2StoreTests: XCTestCase {
         await store.loadCatalog(lang: "da")
         XCTAssertEqual(store.needed.first { $0.id == "a" }?.name, "Mælk")
     }
+
+    func testBackgroundRestoreKeepsOpsQueuedBeforeTheFileWasRead() async throws {
+        StubURLProtocol.handler = { _ in .init(error: URLError(.notConnectedToInternet)) }
+        // The last launch left one op in the outbox (written synchronously by the test store).
+        let previous = makeStore()
+        previous.perform([ShopOp(kind: .need, itemId: "a")])
+        let savedId = try XCTUnwrap(previous.outbox.first?.op.opId)
+
+        // The app's store reads the file off the main thread; a tap (a control at launch) comes first.
+        let client = StubURLProtocol.makeClient()
+        let store = ShoppingV2Store(api: { ShoppingV2Client(client: client) }, fileURL: fileURL, restoresInBackground: true)
+        store.perform([ShopOp(kind: .purchase, itemId: "b")])
+        let earlyId = try XCTUnwrap(store.outbox.last?.op.opId)
+        await store.flush() // waits for the restore
+        XCTAssertEqual(store.outbox.map(\.op.opId), [savedId, earlyId], "the saved ops first, then the early one")
+    }
+
+    func testComingBackToTheTabDoesNotRefetchEverything() async {
+        StubURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/v1/shopping/catalog": return .init(body: #"{"version":1,"lang":"it","sections":[],"items":[]}"#)
+            case "/v1/shopping/items": return .init(body: "[]")
+            case "/v1/shopping/lists": return .init(body: #"[{"id":"default","name":"Casa","theme":"home"}]"#)
+            case "/v1/shopping/lists/default": return .init(body: Self.state)
+            default: return .init(error: URLError(.notConnectedToInternet))
+            }
+        }
+        let store = makeStore()
+        await store.loadIfStale(lang: "it")
+        let afterFirst = StubURLProtocol.requests.count
+        XCTAssertGreaterThan(afterFirst, 0)
+        XCTAssertEqual(store.needed.map(\.id), ["a"])
+        await store.loadIfStale(lang: "it")
+        XCTAssertEqual(StubURLProtocol.requests.count, afterFirst, "a second visit within a minute sends nothing")
+        await store.load(lang: "it")
+        XCTAssertGreaterThan(StubURLProtocol.requests.count, afterFirst, "pull to refresh still reloads")
+    }
 }

@@ -119,6 +119,20 @@ extension LucinaStageController {
         }
     }
 
+    /// The tab went away or the stage was released: no motion updates or dance beat for a stage nobody sees.
+    func stopStudio() {
+        let state = LucinaStudioState.shared
+        if state.tilting {
+            state.motion.stopDeviceMotionUpdates()
+            state.tilting = false
+            run("lucina.setGyro(false)")
+        }
+        if state.dancing {
+            state.dancing = false
+            run("lucina.setDance(false, false)")
+        }
+    }
+
     func takePhoto() { run("lucina.snapshot()") }
 
     /// The stage's PNG into the share sheet (save to Photos, send, …).

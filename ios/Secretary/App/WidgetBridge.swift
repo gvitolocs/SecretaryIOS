@@ -35,6 +35,9 @@ extension AppModel {
         case "pokemon":
             selectedTab = .plugins
             showPokemon = true
+        case let r where r.hasPrefix("map/"):
+            // The maps feature's `/map/place?…` (AppModel.open(route:) on maps-ios).
+            open(route: "/" + r)
         default:
             open(route: route)
         }

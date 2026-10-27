@@ -11,7 +11,8 @@ final class ChatReadAloud: NSObject, AVAudioPlayerDelegate {
     enum Outcome: Equatable {
         case started
         case stopped
-        case refusedRecording
+        /// A memo or a chat voice note is recording (the toast's text).
+        case refusedRecording(String)
         case nothingToRead
         case failed(String)
     }
@@ -31,8 +32,8 @@ final class ChatReadAloud: NSObject, AVAudioPlayerDelegate {
     @ObservationIgnored private var player: AVAudioPlayer?
     @ObservationIgnored private var interruption: NSObjectProtocol?
     @ObservationIgnored let cache: TTSCache
-    /// Some recorder has the microphone: the memos' or the chat's voice notes' (AppModel sets both).
-    @ObservationIgnored var isRecording: @MainActor () -> Bool = { MemoRecorder.isAnyActive }
+    /// Why it may not play now (a memo or a chat voice note records); ChatStore adds its own recorder.
+    @ObservationIgnored var refusal: @MainActor () -> String? = { ChatAudio.recordingNotice }
     /// The self-test plays at volume 0 (it checks the clock, never the speaker).
     @ObservationIgnored var muted = false
 
@@ -54,7 +55,7 @@ final class ChatReadAloud: NSObject, AVAudioPlayerDelegate {
             return .stopped
         }
         guard let text, !text.isEmpty else { return .nothingToRead }
-        guard !isRecording() else { return .refusedRecording }
+        if let refusal = refusal() { return .refusedRecording(refusal) }
         ChatAudio.shared.stopAll(except: self)
         stop()
         loadingId = itemId
@@ -82,9 +83,9 @@ final class ChatReadAloud: NSObject, AVAudioPlayerDelegate {
             return .stopped
         }
         loadingId = nil
-        guard !isRecording() else {
+        if let refusal = refusal() {
             lastReport = report
-            return .refusedRecording
+            return .refusedRecording(refusal)
         }
         do {
             try ChatAudio.activate(spoken: true)

@@ -56,6 +56,9 @@ struct FinishedRecording: Sendable {
     let url: URL
     let startedAt: Date
     let duration: TimeInterval
+    /// Wall-clock end, pauses included (the calendar match uses it).
+    var endedAt: Date = Date()
+    var location: MemoGeoFix?
 }
 
 /// Records one memo at a time like Voice Memos: 48 kHz AAC from the iPhone's own microphones,
@@ -84,6 +87,8 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     /// The Lock Screen / Dynamic Island presence while recording.
     @ObservationIgnored private var activity: Activity<MemoRecordingAttributes>?
+    /// Where this recording started, when location access is already granted.
+    @ObservationIgnored private var location: MemoGeoFix?
 
     var isActive: Bool { state != .idle }
 
@@ -112,6 +117,10 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
 
     /// The file being recorded (diagnostics).
     var currentFileName: String? { current?.url.lastPathComponent }
+    /// The recording in progress (orphan recovery leaves its file alone).
+    var currentClientId: String? { current?.clientId }
+    /// The recorder's own clock: above 0 once audio buffers arrive.
+    var recordedTime: TimeInterval { recorder?.currentTime ?? 0 }
 
     /// Voice Memos' quality: 48 kHz AAC, 128 kbps per channel. The server keeps this file as the
     /// memo and only decodes a 16 kHz copy for Whisper.
@@ -174,6 +183,9 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             self.error = String(localized: "The microphone is busy: \(error.localizedDescription)")
             return
         }
+        // No Lock Screen media player while recording (a paused film's controls go too): only the
+        // memo's Live Activity shows. The film player registers them again when it plays.
+        NowPlayingSession.deactivate()
         let clientId = UUID().uuidString.lowercased()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(clientId).aac")
@@ -188,10 +200,17 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             recorder = r
         } catch {
             self.error = error.localizedDescription
+            // AVAudioRecorder may already have created the (empty) file.
+            try? FileManager.default.removeItem(at: url)
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
             return
         }
         current = (clientId, url, Date())
+        location = nil
+        Task { [weak self] in
+            let fix = await MemoLocation.fix()
+            if self?.current?.clientId == clientId { self?.location = fix }
+        }
         levels = []
         levelHistory = []
         elapsed = 0
@@ -242,7 +261,8 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
             try? FileManager.default.removeItem(at: current.url)
             return nil
         }
-        return FinishedRecording(clientId: current.clientId, url: current.url, startedAt: current.startedAt, duration: duration)
+        return FinishedRecording(clientId: current.clientId, url: current.url, startedAt: current.startedAt, duration: duration,
+                                 endedAt: Date(), location: location)
     }
 
     /// Stops and throws the recording away.
@@ -357,9 +377,11 @@ final class MemoRecorder: NSObject, AVAudioRecorderDelegate {
         Task { await activity.end(content, dismissalPolicy: .immediate) }
     }
 
-    /// Ends Live Activities a previous run left behind (the app was killed while recording).
-    static func endStaleActivities() {
-        for a in Activity<MemoRecordingAttributes>.activities {
+    /// Ends Live Activities a previous run left behind (the app was killed while recording),
+    /// never the one of the recording in progress.
+    static func endStaleActivities(keeping current: MemoRecorder? = nil) {
+        let keep = current?.activity?.id
+        for a in Activity<MemoRecordingAttributes>.activities where a.id != keep {
             Task { await a.end(nil, dismissalPolicy: .immediate) }
         }
     }

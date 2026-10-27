@@ -37,7 +37,7 @@ struct VoiceNoteBubble: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                Button { audio.toggle(key, resolve: resolve) } label: {
+                Button { audio.toggle(key, spoken: true, resolve: resolve) } label: {
                     ZStack {
                         Circle().fill(isUser ? Color.white.opacity(0.22) : Theme.accentSoft)
                         if audio.loadingKey == key {
@@ -62,7 +62,7 @@ struct VoiceNoteBubble: View {
                                 Color.clear.contentShape(Rectangle())
                                     .onTapGesture(coordinateSpace: .local) { point in
                                         if active { audio.seek(key, fraction: point.x / max(1, geometry.size.width)) }
-                                        else { audio.toggle(key, resolve: resolve) }
+                                        else { audio.toggle(key, spoken: true, resolve: resolve) }
                                     }
                             }
                         }

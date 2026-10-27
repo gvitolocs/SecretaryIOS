@@ -9,8 +9,9 @@ import Foundation
 //   weight/log        the quick weight entry sheet
 //   gym/start         start (or resume) a workout
 //   memos/record      start recording a voice memo
-//   map/event/<id>    the in-app map for a calendar event
+//   map/place?title=&address=&when=&end=&eventId=   the in-app place map for an event
 //   films/play/<id>   play a film where it stopped
+//   countdowns        the Countdown plugin (pinned events of the countdown widget)
 enum WidgetRoute {
     static let scheme = "secretary"
 
@@ -24,7 +25,8 @@ enum WidgetRoute {
         guard url.scheme == scheme, url.host == "open" else { return nil }
         // Still percent-encoded: an id may hold a `/` (the app decodes each segment itself).
         let path = url.path(percentEncoded: true)
-        return path.count <= 1 ? "chat" : String(path.dropFirst())
+        let route = path.count <= 1 ? "chat" : String(path.dropFirst())
+        return url.query(percentEncoded: true).map { "\(route)?\($0)" } ?? route
     }
 
     static func segment(_ id: String) -> String {
@@ -32,10 +34,13 @@ enum WidgetRoute {
     }
 }
 
-/// Set by the app at launch; nil in the widget extension, which never runs `OpenSecretaryIntent`
-/// itself (`openAppWhenRun` runs it in the app).
+/// Set by the app model when it is built; nil in the widget extension, which never runs
+/// `OpenSecretaryIntent` itself (`openAppWhenRun` runs it in the app).
 enum WidgetRouter {
     @MainActor static var open: ((String) -> Void)?
+    /// A route that arrived before the app model existed (the app is launched with only the memo
+    /// recorder set up; the model is built with the first window). The model takes it when built.
+    @MainActor static var pending: String?
 }
 
 /// Opens Secretary at a route. Used by the Control Center / Lock Screen controls and by widget
@@ -54,7 +59,7 @@ struct OpenSecretaryIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        WidgetRouter.open?(route)
+        if let open = WidgetRouter.open { open(route) } else { WidgetRouter.pending = route }
         return .result()
     }
 }

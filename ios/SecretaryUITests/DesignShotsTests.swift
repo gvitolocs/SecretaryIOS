@@ -44,20 +44,23 @@ final class DesignShotsTests: XCTestCase {
         if open("tasksButton") { shot("03-tasks"); back() }
         if open("notificationBell") { shot("04-notifications"); back(); app.swipeDown() }
 
-        tab(1); shot("05-shopping", settle: 3)
+        // Chat, Lucina, Shopping, Training (gym + weight), Plugins; Settings is the gear sheet.
+        tab(1); shot("05-lucina", settle: 6)
+
+        tab(2); shot("05-shopping", settle: 3)
         app.swipeUp(); shot("06-shopping-scrolled"); app.swipeDown()
         if open("dealsMapButton") { shot("07-deals-map", settle: 4); back() }
 
-        tab(2); shot("08-gym", settle: 3)
-        app.swipeUp(); shot("09-gym-scrolled"); app.swipeDown()
-
-        tab(3); shot("10-weight", settle: 3)
-        app.swipeUp(); shot("11-weight-scrolled"); app.swipeDown()
+        tab(3); shot("08-training", settle: 3)
+        app.swipeUp(); shot("09-training-scrolled"); app.swipeDown()
         if open("weightQuickAdd") { shot("12-weight-sheet"); app.swipeDown(velocity: .fast); sleep(1) }
 
-        tab(4); shot("13-settings", settle: 2)
-        if open("openLinks") { shot("14-links"); back() }
-        app.swipeUp(); shot("15-settings-scrolled")
-        if open("notificationSettings") { shot("16-notification-settings"); back() }
+        tab(4); shot("10-plugins", settle: 2)
+        if open("settingsButton") {
+            shot("13-settings", settle: 2)
+            if open("openLinks") { shot("14-links"); back() }
+            app.swipeUp(); shot("15-settings-scrolled")
+            if open("notificationSettings") { shot("16-notification-settings"); back() }
+        }
     }
 }

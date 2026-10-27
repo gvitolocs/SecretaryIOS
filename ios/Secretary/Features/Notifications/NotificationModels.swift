@@ -312,7 +312,8 @@ struct CalendarAlert: Equatable, Sendable {
 /// Web routes → app tabs.
 enum NotificationRoute {
     static func isSafe(_ route: String) -> Bool {
-        route.hasPrefix("/") && !route.hasPrefix("//") && !route.contains("\\") && route.count <= 200
+        let limit = route.hasPrefix("/map/place?") ? 4096 : 200
+        return route.hasPrefix("/") && !route.hasPrefix("//") && !route.contains("\\") && route.count <= limit
     }
 
     static func tab(for route: String) -> AppModel.Tab {
@@ -321,6 +322,7 @@ enum NotificationRoute {
         switch first {
         case "shopping": return .shopping
         case "gym", "weight": return .fitness
+        case "lucina", "avatar", "wardrobe": return .lucina
         case "plugins", "notes", "tasks", "memos", "media", "gallery": return .plugins
         default: return .chat
         }

@@ -127,6 +127,8 @@ enum ChatPlainText {
                 lines.append("“\(text)”" + (cite.map { " — \($0)" } ?? ""))
             case let .link(url, title):
                 lines.append(includeLinks ? "\(title): \(url.absoluteString)" : title)
+            case let .place(place):
+                lines.append(placeLine(place, includeLinks: includeLinks))
             }
             let block = lines.filter { !$0.isEmpty }.joined(separator: "\n")
             if !block.isEmpty { parts.append(block) }
@@ -134,10 +136,26 @@ enum ChatPlainText {
         return parts.joined(separator: "\n\n")
     }
 
-    /// The message's words as plain text: a rich reply's summary, or its text without markdown.
+    /// "📍 Title — address", its time, and (in a transcript) the Maps link.
+    static func placeLine(_ place: Place, includeLinks: Bool) -> String {
+        var lines = [place.plainText]
+        if let time = place.timeText { lines.append(time) }
+        if includeLinks, let url = mapsURL(place) { lines.append(url.absoluteString) }
+        return lines.joined(separator: "\n")
+    }
+
+    static func mapsURL(_ place: Place) -> URL? {
+        guard let lat = place.lat, let lng = place.lng, Place.validCoordinate(lat, lng) != nil else { return nil }
+        return ChatShareBuilder.mapsURL(lat: lat, lon: lng, name: place.title)
+    }
+
+    /// The message's words as plain text: a rich reply's summary, or its text without markdown (with the
+    /// place of a proactive reminder under it).
     static func body(of item: TimelineItem, includeLinks: Bool) -> String {
         if let rich = item.rich { return summary(rich, includeLinks: includeLinks) }
-        return from(item.displayText)
+        let text = from(item.displayText)
+        guard let place = item.meta?.place else { return text }
+        return [text, placeLine(place, includeLinks: includeLinks)].filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
 
@@ -274,8 +292,12 @@ enum ChatShareBuilder {
             texts.append(transcript)
         }
         if let rich = item.rich {
-            for case let .link(url, _) in rich.blocks { links.append(url) }
+            for block in rich.blocks {
+                if case let .link(url, _) = block { links.append(url) }
+                if case let .place(place) = block, let url = ChatPlainText.mapsURL(place) { links.append(url) }
+            }
         }
+        if let place = item.meta?.place, let url = ChatPlainText.mapsURL(place) { links.append(url) }
         var out = media
         if !texts.isEmpty { out.append(.text(texts.joined(separator: "\n\n"))) }
         var seen = Set<URL>()

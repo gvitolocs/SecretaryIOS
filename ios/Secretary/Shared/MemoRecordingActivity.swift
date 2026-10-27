@@ -7,8 +7,10 @@ import Foundation
 // extension. The buttons are LiveActivityIntents, which iOS runs in the app's process (the
 // app is alive while it records); the app installs `MemoRecordingCommands.handle`.
 // `StartMemoRecordingIntent` (the Control Center / Lock Screen control, the Action button,
-// Shortcuts) is an AudioRecordingIntent: iOS runs it in the app's process too, in the
-// background, and the recording must show its Live Activity.
+// Shortcuts) is an AudioRecordingIntent and a LiveActivityIntent. The second is what makes iOS
+// run it in the app's process (launched in the background, also with the phone locked): an
+// AudioRecordingIntent alone runs in the widget extension, where there is no recorder and the
+// control did nothing (2026-10-26). The recording must show its Live Activity.
 
 struct MemoRecordingAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
@@ -38,15 +40,26 @@ enum MemoRecordingCommands {
     @MainActor static var start: (() async throws -> Void)?
 }
 
-struct StartMemoRecordingIntent: AppIntent {
+struct StartMemoRecordingIntent: LiveActivityIntent {
     static let title: LocalizedStringResource = "Record a memo with Lucina"
     static let description = IntentDescription("Starts recording a voice memo at once, also from the Lock Screen. Lucina transcribes and summarises it.")
+    /// Like Voice Memos: no unlock needed to start a recording.
+    static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        try await MemoRecordingCommands.start?()
+        guard let start = MemoRecordingCommands.start else {
+            throw MemoRecordingCommandError.notInApp
+        }
+        try await start()
         return .result()
     }
+}
+
+enum MemoRecordingCommandError: Error, CustomLocalizedStringResourceConvertible {
+    case notInApp
+
+    var localizedStringResource: LocalizedStringResource { "Open Secretary once, then try again." }
 }
 
 @available(iOS 18.0, *)

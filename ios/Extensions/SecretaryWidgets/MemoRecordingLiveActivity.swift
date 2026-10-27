@@ -3,7 +3,9 @@ import AppIntents
 import SwiftUI
 import WidgetKit
 
-/// A voice memo being recorded: Lock Screen banner and Dynamic Island.
+/// A voice memo being recorded: Lock Screen banner and Dynamic Island. Laid out like an
+/// incoming call: the title and the running timer on the left, two big round buttons (pause
+/// or resume, stop) side by side on the right.
 struct MemoRecordingLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MemoRecordingAttributes.self) { context in
@@ -17,11 +19,12 @@ struct MemoRecordingLiveActivity: Widget {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(context.state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    ElapsedText(state: context.state).font(.title3.monospacedDigit()).foregroundStyle(LucinaTokens.Colors.text)
-                }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Controls(state: context.state)
+                    HStack {
+                        ElapsedText(state: context.state).font(.title2.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
+                        Spacer()
+                        Controls(state: context.state, size: 50)
+                    }
                 }
             } compactLeading: {
                 Image(systemName: "waveform").foregroundStyle(context.state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
@@ -51,29 +54,43 @@ private struct ElapsedText: View {
     }
 }
 
+/// Pause (or resume) and stop, as round call-style buttons.
 private struct Controls: View {
     let state: MemoRecordingAttributes.ContentState
+    var size: CGFloat = 56
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             if state.paused {
-                Button(intent: ResumeMemoRecordingIntent()) {
-                    Label("Resume", systemImage: "record.circle").frame(maxWidth: .infinity)
-                }
-                .tint(LucinaTokens.Colors.accentFill)
+                RoundButton(intent: ResumeMemoRecordingIntent(), systemImage: "mic.fill", label: "Resume",
+                            color: LucinaTokens.Colors.accentFill, size: size)
             } else {
-                Button(intent: PauseMemoRecordingIntent()) {
-                    Label("Pause", systemImage: "pause.fill").frame(maxWidth: .infinity)
-                }
-                .tint(LucinaTokens.Colors.accentFill)
+                RoundButton(intent: PauseMemoRecordingIntent(), systemImage: "pause.fill", label: "Pause",
+                            color: LucinaTokens.Colors.accentFill, size: size)
             }
-            Button(intent: StopMemoRecordingIntent()) {
-                Label("Done", systemImage: "stop.fill").frame(maxWidth: .infinity)
-            }
-            .tint(LucinaTokens.Colors.negative)
+            RoundButton(intent: StopMemoRecordingIntent(), systemImage: "stop.fill", label: "Done",
+                        color: LucinaTokens.Colors.negative, size: size)
         }
-        .buttonStyle(.borderedProminent)
-        .font(.subheadline.weight(.semibold))
+    }
+}
+
+private struct RoundButton<Intent: AppIntent>: View {
+    let intent: Intent
+    let systemImage: String
+    let label: LocalizedStringKey
+    let color: Color
+    let size: CGFloat
+
+    var body: some View {
+        Button(intent: intent) {
+            Image(systemName: systemImage)
+                .font(.system(size: size * 0.4, weight: .semibold))
+                .foregroundStyle(LucinaTokens.Colors.onAccent)
+                .frame(width: size, height: size)
+                .background(Circle().fill(color))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(label))
     }
 }
 
@@ -81,21 +98,18 @@ private struct LockScreenView: View {
     let state: MemoRecordingAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: state.paused ? "pause.circle.fill" : "record.circle")
-                    .foregroundStyle(state.paused ? LucinaTokens.Colors.warning : LucinaTokens.Colors.negative)
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(state.paused ? (state.interrupted ? "Paused by a call" : "Paused") : "Recording memo")
-                        .font(.headline).foregroundStyle(LucinaTokens.Colors.text)
-                    Text("Secretary · Lucina").font(.caption).foregroundStyle(LucinaTokens.Colors.textSecondary)
-                }
-                Spacer()
-                ElapsedText(state: state).font(.title.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.paused ? (state.interrupted ? "Paused by a call" : "Paused") : "Recording memo")
+                    .font(.headline).foregroundStyle(LucinaTokens.Colors.text)
+                    .lineLimit(1)
+                ElapsedText(state: state).font(.title2.monospacedDigit().weight(.light)).foregroundStyle(LucinaTokens.Colors.text)
+                Text("Secretary · Lucina").font(.caption).foregroundStyle(LucinaTokens.Colors.textSecondary)
             }
+            .layoutPriority(1)
+            Spacer(minLength: 4)
             Controls(state: state)
         }
-        .padding(14)
+        .padding(16)
     }
 }

@@ -206,7 +206,7 @@ final class LucinaVoiceReplies: NSObject, AVAudioPlayerDelegate {
         }) else { return }
         markPlayed(item.id)
         // A recording has the audio session: speaking now would cut it off.
-        guard !MemoRecorder.isAnyActive else { return }
+        guard ChatAudio.recordingNotice == nil else { return }
         play(item, api: api())
     }
 
@@ -216,8 +216,8 @@ final class LucinaVoiceReplies: NSObject, AVAudioPlayerDelegate {
             stop()
             return
         }
-        guard !MemoRecorder.isAnyActive else {
-            error = String(localized: "Finish the recording first.")
+        if let refusal = ChatAudio.recordingNotice {
+            error = refusal
             return
         }
         ChatAudio.shared.stopAll(except: self)
@@ -231,7 +231,7 @@ final class LucinaVoiceReplies: NSObject, AVAudioPlayerDelegate {
                 let data = try await api.tts(text)
                 guard loadingId == item.id else { return }
                 loadingId = nil
-                guard !MemoRecorder.isAnyActive else { return }
+                guard ChatAudio.recordingNotice == nil else { return }
                 ChatAudio.shared.stopAll(except: self)
                 try ChatAudio.activate(spoken: true)
                 let player = try AVAudioPlayer(data: data)

@@ -111,3 +111,59 @@ struct ShoppingWidgetConfiguration: WidgetConfigurationIntent {
     @Parameter(title: "List")
     var list: ShoppingListEntity?
 }
+
+// MARK: - Which events a countdown widget counts down to
+
+struct CountdownEventEntity: AppEntity {
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Event"
+    static let defaultQuery = CountdownEventQuery()
+
+    var id: String
+    var event: CountdownEvent
+
+    init(_ event: CountdownEvent) {
+        id = event.id
+        self.event = event
+    }
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(event.title)", subtitle: "\(Countdown.dateText(event))")
+    }
+}
+
+/// The coming year's events (pinned ones first); a chosen one is found again in the cached list.
+struct CountdownEventQuery: EntityStringQuery {
+    func entities(for identifiers: [String]) async throws -> [CountdownEventEntity] {
+        var known = Self.known(Countdown.pinned + Countdown.upcoming)
+        if identifiers.contains(where: { known[$0] == nil }) {
+            let fresh = await Countdown.refreshUpcoming(force: true)
+            known.merge(Self.known(fresh)) { old, _ in old }
+        }
+        return identifiers.compactMap { known[$0] }.map(CountdownEventEntity.init)
+    }
+
+    func entities(matching string: String) async throws -> [CountdownEventEntity] {
+        try await suggestedEntities().filter { $0.event.title.localizedCaseInsensitiveContains(string) }
+    }
+
+    func suggestedEntities() async throws -> [CountdownEventEntity] {
+        let pinned = Countdown.pinned
+        let upcoming = await Countdown.refreshUpcoming()
+        let first: [CountdownEvent] = Countdown.visible(pinned, fresher: upcoming, now: Date())
+        let rest: [CountdownEvent] = Array(upcoming.filter { event in !pinned.contains { $0.id == event.id } }.prefix(200))
+        return (first + rest).map(CountdownEventEntity.init)
+    }
+
+    private static func known(_ events: [CountdownEvent]) -> [String: CountdownEvent] {
+        Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+}
+
+struct CountdownWidgetConfiguration: WidgetConfigurationIntent {
+    static let title: LocalizedStringResource = "Countdown"
+    static let description = IntentDescription("Choose the events to count down to. Without a choice, the widget shows the events you pinned in Secretary.")
+    static let isDiscoverable = false
+
+    @Parameter(title: "Events")
+    var events: [CountdownEventEntity]?
+}

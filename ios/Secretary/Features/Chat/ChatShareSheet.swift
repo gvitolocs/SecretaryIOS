@@ -128,7 +128,7 @@ enum ChatShareResolver {
     }
 
     /// Share copies from earlier sessions.
-    static func purgeScratch() {
+    nonisolated static func purgeScratch() {
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return }
         try? FileManager.default.removeItem(at: caches.appendingPathComponent("ChatShare", isDirectory: true))
     }

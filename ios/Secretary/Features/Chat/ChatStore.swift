@@ -116,6 +116,11 @@ final class ChatStore {
         // One sound at a time across the chat's players.
         ChatAudio.shared.register(voiceReplies) { [weak voiceReplies] in voiceReplies?.stop() }
         ChatAudio.shared.register(readAloud) { [weak readAloud] in readAloud?.stop() }
+        // Read aloud refuses while the memo recorder or this chat's voice-note recorder has the microphone.
+        readAloud.refusal = { [noteRecorder] in
+            if let notice = ChatAudio.recordingNotice { return notice }
+            return noteRecorder.isActive ? String(localized: "Finish the recording first.") : nil
+        }
     }
 
     // MARK: - Rich replies
