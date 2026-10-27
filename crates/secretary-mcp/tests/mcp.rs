@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 30] = [
+const ALL_TOOLS: [&str; 33] = [
     "ask_lucina",
     "lucina_timeline",
     "shopping_list",
@@ -36,6 +36,9 @@ const ALL_TOOLS: [&str; 30] = [
     "library_find_related_notes",
     "library_sync_status",
     "library_generate_brief",
+    "diagnostics_recent",
+    "diagnostics_get",
+    "diagnostics_file",
 ];
 
 #[tokio::test]

@@ -35,6 +35,7 @@ and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_c
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \
 instead of pasting it into ask_lucina; the owner sees notes in the Secretary app and Lucina recalls them by slug (note_get, notes_search). \
 The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
+When something of the owner's broke (Secretary Code, the apps, a server), read diagnostics_recent and diagnostics_get before asking for screenshots. \
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]
@@ -153,6 +154,9 @@ impl LucinaMcp {
             "note_get" => t.note_get(args).await,
             "notes_search" => t.notes_search(args).await,
             name if name.starts_with("library_") => t.library(name, args).await,
+            name if name.starts_with("diagnostics_") => {
+                crate::diagnostics::run(&self.app, name, args).await
+            }
             "tasks_list" => t.tasks_list(args).await,
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,

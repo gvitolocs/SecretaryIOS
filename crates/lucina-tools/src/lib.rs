@@ -13,7 +13,7 @@
 //!   expiry) is stored and runs only after the owner's explicit yes in a
 //!   later turn.
 //! - [`tools`]: `time`, `weather`, `calculator`, `unit_convert`, `places`,
-//!   `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `shopping`, `presence`, `avatar_outfit`, `notify`,
+//!   `notes`, `reminders`, `calendar`, `tasks`, `memos` (voice memos), `diagnostics` (crash reports), `shopping`, `presence`, `avatar_outfit`, `notify`,
 //!   the owner-only `secrets_status` / `secrets_audit` ([`OWNER_ONLY_TOOLS`]),
 //!   the delegation tools `ask_claude`, `ask_grok`, `ask_chatgpt`, `delegate`
 //!   ([`SideEffect::Delegate`]: Lucina's own decision, no confirmation); none of
@@ -221,6 +221,9 @@ pub struct ToolEnv {
     /// lucina-memo (`memos`): base URL and the file with its service token.
     pub memo_url: Option<String>,
     pub memo_token_file: Option<PathBuf>,
+    /// lucina-diagnostics (`diagnostics`): base URL and the file with its service token.
+    pub diagnostics_url: Option<String>,
+    pub diagnostics_token_file: Option<PathBuf>,
     /// Lucina's own Google Drive (`LUCINA_DRIVE`).
     pub drive: Option<Arc<google::Drive>>,
 }
@@ -268,6 +271,8 @@ impl ToolEnv {
             delegator: None,
             memo_url: None,
             memo_token_file: None,
+            diagnostics_url: None,
+            diagnostics_token_file: None,
             drive: None,
         }
     }
@@ -630,10 +635,11 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 21);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 19);
+        assert_eq!(all.names().len(), 22);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 20);
         let mcp = all.without(NO_MCP_TOOLS);
-        assert_eq!(mcp.names().len(), 15);
+        assert_eq!(mcp.names().len(), 16);
+        assert!(mcp.get("diagnostics").is_some());
         assert!(mcp.get("memos").is_some());
         for t in tools::delegate::DELEGATION_TOOLS
             .iter()

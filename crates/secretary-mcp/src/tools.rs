@@ -439,6 +439,12 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("library_find_related_notes", "Library find related notes", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read Obsidian notes indexed as referring to a book, cited as [obsidian:<vault>/<path>#L<line>]. Mentions are relations, not reading evidence."),
         spec!("library_sync_status", "Library sync status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs, "Show the last imports and library counts."),
         spec!("library_generate_brief", "Library generate brief", Scope::Write, ro = false, destructive = false, idempotent = true, LibraryBookArgs, "Generate an extractive brief from highlights, with citations. Model briefs are not implemented."),
+        spec!("diagnostics_recent", "Recent crashes and errors", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::RecentArgs,
+            "Crash reports, errors, hangs and problem reports from the owner's Lucina clients (Secretary Code on the Mac, the iPhone, Android and web apps, the servers), most recently seen first: id, app and version, kind, time, how often it repeated, OS, device and the message. Filter by app, kind and since (\"24h\", \"7d\", a date). Use it when the owner says something broke, before asking them for screenshots."),
+        spec!("diagnostics_get", "Crash report", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::GetArgs,
+            "One crash or error report by id (dg_…): what failed and when (owner's time zone), version, OS, device, how often it repeated, the message, the top of the stack, the client's context (window, route, engine version…), the attachment list and the end of its main log. Secrets were removed before storage. Explain the cause to the owner from this evidence."),
+        spec!("diagnostics_file", "Crash report file", Scope::Read, ro = true, destructive = false, idempotent = true, crate::diagnostics::FileArgs,
+            "Read a text attachment (log) of a crash report, cut to max_chars from its end (default) or start. Binary files such as minidumps cannot be shown."),
 
     ]
 }

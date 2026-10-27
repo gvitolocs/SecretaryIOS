@@ -29,6 +29,9 @@ sha2 = { workspace = true }
 base64 = "=0.22.1"
 
 [dev-dependencies]
+# The diagnostics tool against the real service (tests/diagnostics.rs).
+lucina-diagnostics = { path = "../lucina-diagnostics" }
+axum = "0.8"
 proptest = "1"
 wiremock = "0.6"
 tempfile = "3"

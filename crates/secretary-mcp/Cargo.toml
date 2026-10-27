@@ -42,6 +42,8 @@ anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# The diagnostics_* tools against the real service (tests/diagnostics.rs).
+lucina-diagnostics = { path = "../lucina-diagnostics" }
 # Interop tests with the official rmcp client (test builds only).
 rmcp = { version = "=3.5.1", default-features = false, features = [
     "client",

@@ -1,0 +1,37 @@
+[package]
+name = "lucina-diagnostics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lucina diagnostics: crash reports and log bundles from every Lucina client (scrubbed, deduplicated, indexed)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lucina-diagnostics"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+flate2 = "1"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+subtle = "2"
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

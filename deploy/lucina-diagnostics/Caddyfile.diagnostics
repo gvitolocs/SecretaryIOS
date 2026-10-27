@@ -1,0 +1,20 @@
+# p1 /etc/caddy/Caddyfile, inside `getsecretary.tech { … }`, beside @memos / @media_upload and BEFORE the
+# catch-all `handle { reverse_proxy 127.0.0.1:8800 }`. Same gate as /v1/memos: secretary-server checks the
+# device token or cookie (forward_auth), then Caddy adds the shared key nezopt checks.
+#   p1:     sudo sh -c 'umask 077; cat > /etc/caddy/diagnostics-gateway.key'   # paste nezopt's gateway.token
+#           sudo chown caddy:caddy /etc/caddy/diagnostics-gateway.key
+#   nezopt: ~/.config/lucina-diagnostics/gateway.token (created by install.sh)
+@diagnostics path /v1/diagnostics /v1/diagnostics/*
+handle @diagnostics {
+	request_body {
+		# lucina-diagnostics caps the body at LUCINA_DIAGNOSTICS_MAX_UPLOAD_MB (20 MB) itself.
+		max_size 21MB
+	}
+	forward_auth 127.0.0.1:8800 {
+		uri /v1/avatar
+	}
+	reverse_proxy 100.107.164.33:8850 {
+		# Sets (replaces) the header: a client-supplied value never reaches nezopt.
+		header_up X-Diagnostics-Gateway {file./etc/caddy/diagnostics-gateway.key}
+	}
+}
