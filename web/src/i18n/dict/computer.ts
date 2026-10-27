@@ -49,6 +49,11 @@ const en = {
   evOther: "{event}",
   modeWatch: "watch",
   modeControl: "control",
+  fullScreen: "Full screen",
+  exitFull: "Exit full screen",
+  fullScreenBar: "Full screen controls",
+  keyboard: "Keyboard",
+  resetZoom: "Fit",
 };
 
 export const computer: FeatureDictionary<typeof en> = {
@@ -100,6 +105,11 @@ export const computer: FeatureDictionary<typeof en> = {
     evOther: "{event}",
     modeWatch: "sola visione",
     modeControl: "controllo",
+    fullScreen: "Schermo intero",
+    exitFull: "Esci da schermo intero",
+    fullScreenBar: "Comandi a schermo intero",
+    keyboard: "Tastiera",
+    resetZoom: "Adatta",
   },
   da: {
     title: "Lucinas computer",
@@ -148,5 +158,10 @@ export const computer: FeatureDictionary<typeof en> = {
     evOther: "{event}",
     modeWatch: "kun visning",
     modeControl: "styring",
+    fullScreen: "Fuld skærm",
+    exitFull: "Forlad fuld skærm",
+    fullScreenBar: "Fuldskærmsknapper",
+    keyboard: "Tastatur",
+    resetZoom: "Tilpas",
   },
 };
