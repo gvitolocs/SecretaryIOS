@@ -82,11 +82,13 @@ pub fn text_of(result: &Value) -> String {
             }
         }
     }
-    if out.is_empty() {
-        // A structured result (`structuredContent`, or a bare object).
-        if let Some(s) = result.get("structuredContent") {
-            out = s.to_string();
+    // Driver browser tools put target/tab IDs and DOM refs in structuredContent,
+    // alongside a short text summary. Preserve both for the next tool call.
+    if let Some(s) = result.get("structuredContent") {
+        if !out.is_empty() {
+            out.push('\n');
         }
+        out.push_str(&s.to_string());
     }
     out
 }
@@ -556,6 +558,11 @@ mod tests {
         let text = json!({"content": [{"type": "text", "text": "hello"},
                                       {"type": "text", "text": "world"}]});
         assert_eq!(text_of(&text), "hello\nworld");
+        let bound = json!({"content":[{"type":"text","text":"bound target"}],
+            "structuredContent":{"target_id":"bt-test","tabs":[{"tab_id":"tab-test"}]}});
+        let bound_text = text_of(&bound);
+        assert!(bound_text.starts_with("bound target\n"));
+        assert!(bound_text.contains("bt-test") && bound_text.contains("tab-test"));
         let image = json!({"content": [{"type": "image", "mimeType": "image/png", "data": "AAA"}]});
         assert_eq!(
             image_of(&image),
