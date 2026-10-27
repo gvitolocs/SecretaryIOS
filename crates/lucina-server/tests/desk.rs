@@ -18,7 +18,8 @@ type Client = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStre
 
 const SB: SandboxId = SandboxId::Workspace;
 
-/// A gateway that says `login`, sends one video frame, and reports what it received.
+/// A gateway that says `login`, pushes the host clipboard, sends one video frame, and reports
+/// what it received.
 // tungstenite's handshake callback returns its own (large) `ErrorResponse`.
 #[allow(clippy::result_large_err)]
 fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
@@ -38,6 +39,9 @@ fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
                 .unwrap();
                 let _ = tx.send(format!("<open {}>", path.lock().unwrap()));
                 ws.send(Message::text(r#"{"type":"login","hostname":"lucina-workspace"}"#))
+                    .await
+                    .unwrap();
+                ws.send(Message::text(r#"{"type":"clipboard","text":"host-secret"}"#))
                     .await
                     .unwrap();
                 ws.send(Message::binary(vec![1u8, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAA]))
@@ -198,7 +202,13 @@ async fn desk_tickets_lease_and_audit() {
     assert_eq!(next_text(&mut ws).await["type"], "login");
     assert_eq!(next_binary(&mut ws).await[..3], [1, 1, 3]);
     ws.send(Message::text(r#"{"type":"mouse","mask":9,"x":5,"y":5}"#)).await.unwrap();
-    assert_eq!(next_text(&mut ws).await, json!({"type": "refused", "what": "mouse", "why": "watch"}));
+    assert_eq!(
+        next_text(&mut ws).await,
+        json!({"type": "refused", "what": "mouse", "why": "watch"}),
+        "and the host clipboard frame before it never reached the watch socket"
+    );
+    ws.send(Message::text(r#"{"type":"clipboard","text":"owner-text"}"#)).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, json!({"type": "refused", "what": "clipboard", "why": "watch"}));
     assert_eq!(gw.recv().await.unwrap(), "<open /v1/session?sandbox=workspace&codecs=av1,vp9>", "the browser's codecs reach the gateway");
     ws.send(Message::text(r#"{"type":"ack"}"#)).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), r#"{"type":"ack"}"#, "only the ack reached the gateway");
@@ -211,6 +221,7 @@ async fn desk_tickets_lease_and_audit() {
     assert_eq!(closed["device"], "test iPhone");
     assert_eq!(closed["via"], "p1");
     assert_eq!(closed["mouse"], 0);
+    assert_eq!((closed["clipboardIn"].as_u64(), closed["clipboardOut"].as_u64()), (Some(0), Some(0)));
     assert!(closed["bytesOut"].as_u64().unwrap() > 13, "{closed}");
     assert!(closed["openMs"].is_u64());
     let open = recent_event("desk_open").unwrap();
@@ -224,17 +235,29 @@ async fn desk_tickets_lease_and_audit() {
     let proto = format!("lucinadesk.v1, ticket.{}", b["data"]["ticket"].as_str().unwrap());
     let mut ws = connect(&h, &proto, true).await.expect("control socket");
     assert_eq!(next_text(&mut ws).await["mode"], "control");
+    assert_eq!(next_text(&mut ws).await["type"], "login");
+    assert_eq!(
+        next_text(&mut ws).await,
+        json!({"type": "clipboard", "text": "host-secret"}),
+        "the host clipboard reaches a control socket"
+    );
     wait_until("the lease", || control().owner_driving(SB)).await;
     assert!(cancel.is_cancelled(), "Lucina's task was stopped");
     assert!(task.preempted());
     drop(task);
     assert_eq!(control().agent_call(SB, "mcp:claude"), Err(Error::OwnerDriving));
     let mouse = r#"{"type":"mouse","mask":9,"x":5,"y":5}"#;
-    assert_eq!(gw.recv().await.unwrap(), "<open /v1/session?sandbox=workspace&codecs=av1,vp9>", "the browser's codecs reach the gateway");
+    assert_eq!(
+        gw.recv().await.unwrap(),
+        "<open /v1/session?sandbox=workspace&codecs=av1,vp9&mode=control>",
+        "the gateway hears the mode (clipboard on)"
+    );
     ws.send(Message::text(mouse)).await.unwrap();
     ws.send(Message::text(r#"{"type":"text","text":"ciao"}"#)).await.unwrap();
+    ws.send(Message::text(r#"{"type":"clipboard","text":"owner-text"}"#)).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), mouse);
     assert_eq!(gw.recv().await.unwrap(), r#"{"type":"text","text":"ciao"}"#);
+    assert_eq!(gw.recv().await.unwrap(), r#"{"type":"clipboard","text":"owner-text"}"#);
     ws.close(None).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), "<closed>");
     wait_until("the give-back", || !control().owner_driving(SB)).await;
@@ -247,6 +270,9 @@ async fn desk_tickets_lease_and_audit() {
     .await;
     let closed = recent_event("desk_closed").unwrap();
     assert_eq!((closed["mouse"].as_u64(), closed["textChars"].as_u64()), (Some(1), Some(4)), "{closed}");
+    assert_eq!((closed["clipboardIn"].as_u64(), closed["clipboardOut"].as_u64()), (Some(10), Some(11)), "bytes");
+    let audit = control().recent(SB, 50).iter().map(Value::to_string).collect::<String>();
+    assert!(!audit.contains("owner-text") && !audit.contains("host-secret") && !audit.contains("ciao"), "no text in the audit");
     let take = control()
         .recent(SB, 50)
         .into_iter()

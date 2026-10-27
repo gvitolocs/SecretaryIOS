@@ -19,15 +19,19 @@
 //!   cannot be enforced by a byte proxy. Here the gateway holds the session key and this
 //!   module sees the plain wire: a watch socket's `mouse`/`key`/`text` never reach the
 //!   gateway (`refused` once per kind, then dropped). Only `ack`, `refresh` and `ping` pass.
+//!   Clipboard (contract section 8) is control-only both ways: the gateway hears `mode=control`
+//!   for control sockets only, a watch socket's `clipboard` is refused, and a `clipboard` frame
+//!   from the gateway never reaches a watch socket.
 //! - **Lease.** A control socket takes the owner's takeover lease when it opens (Lucina's
 //!   task stops, agents get 409 `owner_driving`), renews it every [`RENEW_EVERY`], and gives
 //!   it back when the last control socket of the sandbox closes, unless the owner already
 //!   held it before (a Cua takeover keeps its lease). When the lease ends some other way
 //!   (give-back in another tab, expiry) the socket closes with 4001.
 //! - **Audit** (`computer-audit.jsonl`, through `control()`): `desk_open {device, mode, via}`,
-//!   `desk_closed {device, mode, via, why, code, openMs, mouse, keys, textChars, bytesIn,
-//!   bytesOut}`, the lease's own `take`/`release`, and `input {batch: {via: "desk", …}}`
-//!   every [`INPUT_LOG_EVERY`] while there is input. Typed text is never logged.
+//!   `desk_closed {device, mode, via, why, code, openMs, mouse, keys, textChars, clipboardIn,
+//!   clipboardOut, bytesIn, bytesOut}`, the lease's own `take`/`release`, and `input {batch: {via: "desk", …}}`
+//!   every [`INPUT_LOG_EVERY`] while there is input. Typed and clipboard text is never logged,
+//!   only its size (`clipboardIn`/`clipboardOut` are UTF-8 bytes).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -64,6 +68,8 @@ const MAX_INPUT_PER_SEC: u32 = 200;
 /// Seconds in a row over [`MAX_INPUT_PER_SEC`] before the socket closes with 4008.
 const FLOOD_SECS: u32 = 5;
 const MAX_TEXT_CHARS: usize = 1024;
+/// Largest clipboard text either way (UTF-8 bytes).
+const MAX_CLIPBOARD: usize = 60_000;
 const MINT_BODY_LIMIT: usize = 4096;
 
 /// Close codes (contract section 6).
@@ -197,7 +203,7 @@ pub fn gateway_path() -> PathBuf {
 
 type Gateway = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
 
-async fn connect_gateway(sb: SandboxId, codecs: &str) -> Result<Gateway, String> {
+async fn connect_gateway(sb: SandboxId, codecs: &str, mode: ViewMode) -> Result<Gateway, String> {
     let path = gateway_path();
     let stream = tokio::time::timeout(Duration::from_secs(5), tokio::net::UnixStream::connect(&path))
         .await
@@ -207,6 +213,10 @@ async fn connect_gateway(sb: SandboxId, codecs: &str) -> Result<Gateway, String>
     if !codecs.is_empty() {
         url.push_str("&codecs=");
         url.push_str(codecs);
+    }
+    // The gateway enables clipboard (both ways) on control sessions only; anything else is watch.
+    if mode == ViewMode::Control {
+        url.push_str("&mode=control");
     }
     let (ws, _) = tokio::time::timeout(
         Duration::from_secs(10),
@@ -284,6 +294,8 @@ struct Counts {
     mouse: u64,
     keys: u64,
     text_chars: u64,
+    /// Clipboard text the owner pushed to the host (bytes).
+    clipboard_in: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -303,6 +315,8 @@ struct Filter {
     in_window: u32,
     over_secs: u32,
     counts: Counts,
+    /// Host clipboard text sent to the owner (bytes).
+    clipboard_out: u64,
 }
 
 fn int_in(v: &Value, k: &str, lo: i64, hi: i64) -> bool {
@@ -329,6 +343,10 @@ fn valid_input(kind: &str, v: &Value) -> bool {
             .get("text")
             .and_then(Value::as_str)
             .is_some_and(|t| !t.is_empty() && t.chars().count() <= MAX_TEXT_CHARS),
+        "clipboard" => v
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.len() <= MAX_CLIPBOARD),
         "key" => {
             let key = v.get("key").and_then(Value::as_str);
             let ch = v.get("char").and_then(Value::as_str);
@@ -362,6 +380,7 @@ impl Filter {
             in_window: 0,
             over_secs: 0,
             counts: Counts::default(),
+            clipboard_out: 0,
         }
     }
 
@@ -395,6 +414,25 @@ impl Filter {
         Ok(self.in_window <= MAX_INPUT_PER_SEC)
     }
 
+    /// A text frame from the gateway: `false` drops it. Host clipboard frames reach control
+    /// sockets only (the gateway sends them to control sessions only; this is the second layer).
+    fn host_frame(&mut self, text: &str) -> bool {
+        if !text.contains("clipboard") {
+            return true;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(text) else {
+            return true;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("clipboard") {
+            return true;
+        }
+        if self.mode != ViewMode::Control {
+            return false;
+        }
+        self.clipboard_out += v.get("text").and_then(Value::as_str).map_or(0, str::len) as u64;
+        true
+    }
+
     fn text(&mut self, text: &str, now: Instant) -> Verdict {
         let v: Option<Value> = (text.len() <= MAX_MESSAGE)
             .then(|| serde_json::from_str(text).ok())
@@ -409,6 +447,7 @@ impl Filter {
             "mouse" => "mouse",
             "key" => "key",
             "text" => "text",
+            "clipboard" => "clipboard",
             _ => "unknown",
         };
         if text.len() > MAX_MESSAGE {
@@ -432,6 +471,7 @@ impl Filter {
         match what {
             "mouse" => self.counts.mouse += 1,
             "key" => self.counts.keys += 1,
+            "clipboard" => self.counts.clipboard_in += v["text"].as_str().map_or(0, str::len) as u64,
             _ => {
                 self.counts.text_chars += v["text"].as_str().map_or(0, |t| t.chars().count()) as u64
             }
@@ -557,6 +597,8 @@ async fn session(mut browser: WebSocket, t: Ticket, via: &'static str) {
             "mouse": filter.counts.mouse,
             "keys": filter.counts.keys,
             "textChars": filter.counts.text_chars,
+            "clipboardIn": filter.counts.clipboard_in,
+            "clipboardOut": filter.clipboard_out,
             "bytesIn": bytes.inbound,
             "bytesOut": bytes.outbound,
         }),
@@ -569,7 +611,7 @@ async fn run(browser: &mut WebSocket, t: &Ticket, filter: &mut Filter, bytes: &m
     if browser.send(Message::Text(hello.to_string().into())).await.is_err() {
         return (code::NORMAL, "client gone".into());
     }
-    let mut gw = match connect_gateway(t.sandbox, &t.codecs).await {
+    let mut gw = match connect_gateway(t.sandbox, &t.codecs, t.mode).await {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(error = %e, "desk: gateway unavailable");
@@ -639,7 +681,12 @@ async fn pump(
             }
             m = gw.next() => {
                 let out = match m {
-                    Some(Ok(GwMessage::Text(s))) => Message::Text(s.as_str().into()),
+                    Some(Ok(GwMessage::Text(s))) => {
+                        if !filter.host_frame(s.as_str()) {
+                            continue;
+                        }
+                        Message::Text(s.as_str().into())
+                    }
                     Some(Ok(GwMessage::Binary(b))) => Message::Binary(b),
                     Some(Ok(GwMessage::Close(frame))) => {
                         let (c, r) = frame
@@ -687,6 +734,7 @@ async fn pump(
                             "mouse": c.mouse - logged.mouse,
                             "keys": c.keys - logged.keys,
                             "textChars": c.text_chars - logged.text_chars,
+                            "clipboardIn": c.clipboard_in - logged.clipboard_in,
                         });
                         if control().owner_input(t.sandbox, &t.device, batch).is_err() {
                             let _ = browser.send(closed_frame("control ended")).await;
@@ -768,7 +816,17 @@ mod tests {
         assert_eq!(f.text(mouse, now), Verdict::Drop(None), "refused once per kind");
         assert!(matches!(f.text(r#"{"type":"text","text":"hi"}"#, now), Verdict::Drop(Some(_))));
         assert!(matches!(f.text(r#"{"type":"key","key":"Return"}"#, now), Verdict::Drop(Some(_))));
+        match f.text(r#"{"type":"clipboard","text":"secret"}"#, now) {
+            Verdict::Drop(Some(r)) => assert_eq!(
+                serde_json::from_str::<Value>(&r).unwrap(),
+                json!({"type": "refused", "what": "clipboard", "why": "watch"})
+            ),
+            v => panic!("{v:?}"),
+        }
+        assert!(!f.host_frame(r#"{"type":"clipboard","text":"from the host"}"#), "never to a watch socket");
+        assert!(f.host_frame(r#"{"type":"login","hostname":"clipboard-box"}"#), "other frames pass");
         assert_eq!(f.counts, Counts::default(), "nothing counted as input");
+        assert_eq!(f.clipboard_out, 0);
     }
 
     #[test]
@@ -779,7 +837,12 @@ mod tests {
         assert_eq!(f.text(r#"{"type":"text","text":"ciao"}"#, now), Verdict::Forward);
         assert_eq!(f.text(r#"{"type":"key","char":"l","modifiers":["Control"]}"#, now), Verdict::Forward);
         assert_eq!(f.text(r#"{"type":"key","key":"Return"}"#, now), Verdict::Forward);
-        assert_eq!(f.counts, Counts { mouse: 1, keys: 2, text_chars: 4 });
+        assert_eq!(f.text(r#"{"type":"clipboard","text":"héllo"}"#, now), Verdict::Forward);
+        assert_eq!(f.counts, Counts { mouse: 1, keys: 2, text_chars: 4, clipboard_in: 6 });
+        assert!(f.host_frame(r#"{"type":"clipboard","text":"ciao"}"#));
+        assert_eq!(f.clipboard_out, 4, "bytes, not the text");
+        let big = json!({"type": "clipboard", "text": "x".repeat(MAX_CLIPBOARD + 1)}).to_string();
+        assert!(matches!(f.text(&big, now), Verdict::Drop(_)), "over 60,000 bytes");
         for bad in [
             r#"{"type":"mouse","mask":7,"x":1,"y":1}"#,
             r#"{"type":"mouse","mask":9,"x":"1","y":1}"#,
