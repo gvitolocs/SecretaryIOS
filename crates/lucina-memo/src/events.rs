@@ -30,15 +30,20 @@ const LECTURE: &[&str] = &[
     "class",
     "lesson",
 ];
-/// Calendar labels of a university timetable.
+/// Calendar labels of a university timetable ("Aarhus Universitet - Personal timetable: …").
 const LECTURE_CALENDARS: &[&str] = &[
     "uni",
     "dtu",
     "university",
+    "universitet",
     "università",
+    "universita",
+    "universität",
     "corsi",
     "courses",
     "skema",
+    "timetable",
+    "orario",
 ];
 const MEETING: &[&str] = &[
     "meeting",
@@ -428,6 +433,16 @@ mod tests {
         );
         assert_eq!(
             kind("02105 Algorithms", Some("DTU skema"), None, 0),
+            EventKind::Lecture
+        );
+        // The owner's real timetable (iPhone calendar of Aarhus University).
+        assert_eq!(
+            kind(
+                "Communications and Network Security",
+                Some("Aarhus Universitet - Personal timetable: 810677"),
+                Some("5125-140 Seminarrum"),
+                0
+            ),
             EventKind::Lecture
         );
         assert_eq!(kind("Riunione progetto", None, None, 0), EventKind::Meeting);
