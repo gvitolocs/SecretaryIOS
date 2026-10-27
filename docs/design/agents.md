@@ -29,6 +29,13 @@ version replaces it and must still cover what Paseo's did.
   Dictation goes through Whisper (lucina-memo).
 - **New:** a QR login like Discord's for every Secretary client (below). Hermes (Flareon) can use the agents through
   the Lucina MCP.
+- **References:**
+  - The daemon-side inventory is the session notes' `paseo-0.13.2-features.md`.
+  - The app side is nezopt `~/Projects/ReverseEngineering/paseo`: the decompiled Android 0.13.2 app (the
+    `hermes-bundle.js` keeps its function names), `parity/constants.json` (129 session message types, scopes, timing),
+    and a Rust port of the relay/E2EE core.
+  - The relay/E2EE port is not used here (Lucina Link replaces the relay). The decompiled UI is the reference for
+    phase 8.
 - **Baseline:** Paseo was upgraded from 0.11.1 to 0.13.2 (the latest release, 2026-10-26) before porting, so parity
   is measured against 0.13.2. The state backup from before the upgrade is in nezopt
   `~/scratch/paseo-backup-20261027-1328/`.
@@ -222,6 +229,45 @@ on the phone. It doesn't get a second protocol for that.
   embedded web app. iOS and Android add native screens only for notification actions and the QR scanner.
 - **Ownership:** this design builds agentd, the API, the MCP tools and the web plugin. The Secretary Code session
   builds the desktop embedding, the `secretary-code` provider client, and the Mac build.
+
+## Security requirements (from the Paseo reverse-engineering)
+
+Source: nezopt `~/Projects/ReverseEngineering/paseo/HANDOFF-lucina-integration.md` §5-§6, from a full decompilation of
+the Paseo 0.13.2 Android app. These are design requirements. Each one has a row in the parity matrix (S rows).
+
+1. **Trust boundary first.** Whatever can drive agents can run commands on nezopt and the desktop. Paseo's phone-side
+   scopes `hub.execute`, `daemon.manage`, `access.manage` and `tunnel.manage` amount to remote code execution by design.
+   - The agent-facing surface gets its own separate, revocable, tool-scoped token: secretary-mcp scope `agents`, plus
+     `read`. It is never the owner's token.
+   - Reads are allowed. Mutating Lucina tools (`reminder_create`, `task_add`, `shopping_add`, `calendar_create` and
+     the like) need the owner's confirmation when an agent calls them, because agents are remotely driven. The
+     confirmation goes through the same permission flow as agent permissions (Allow/Deny push).
+   - A stolen agent token is not the owner's identity: it can't answer permissions, change scopes or rotate tokens.
+2. **Lucina as an MCP server attached to agents.** This is Paseo's `mcpServers` pattern.
+   - agentd attaches the Lucina agent MCP to each agent through the provider's MCP config, with that agent's scoped
+     token and a deliberate `toolPolicy`: reads preapproved, mutations gated. It sets `supportsMcpServers` per
+     provider.
+   - The token is handed to the agent process at launch. It is never written to a file the agent can read.
+3. **Token hygiene.** Today the owner's Lucina MCP bearer token sits in plaintext in `~/.claude.json` (Mac and
+   nezopt), and the lucina-link tunnel credentials in `~/.config/lucina-link/secrets.env`. Any agent with file access
+   can read both.
+   - Agent runs can't read those paths: agentd launches providers with deny-read rules for them (bubblewrap, as in
+     lucina-delegate's sandbox, or a separate uid; see below).
+   - Secrets for agents come from the Infisical broker (`infisical-brokerd`, built by another session) through its
+     inject path, not from dotfiles.
+   - Once the scoped token exists, rotate the owner token. The owner decides when.
+4. **No weak spots copied from Paseo.**
+   - No plaintext or legacy hello: Paseo has `acceptLegacyHello`, `shouldIgnorePostHelloPlaintext` and
+     `usesCleartextTraffic`.
+   - No cleartext transport: pairing and device auth go only through secretary-server's device tokens, over TLS (Lucina
+     Link), and agentd itself listens only on a unix socket (or loopback).
+   - The QR login (above) is the only pairing path.
+5. **Phone apps ask only for what a feature needs.** No screen overlay (`SYSTEM_ALERT_WINDOW`), no boot auto-start,
+   no extra launcher-badge permissions. Camera only for the QR scanner, microphone only for dictation, each requested
+   when the feature is first used.
+6. **Same-uid limit.** Until agent processes run under their own uid, anything running as `nez` can read the owner's
+   files. The hardening path is agentd launching providers under a dedicated agents uid, coordinated with the broker's
+   uid split. That needs root once, so the owner approves it first.
 
 ## UIs
 
