@@ -2,7 +2,7 @@
 //
 // Mirrors (simplified, same decisions):
 //   accept_chunk / check_finish / ingest_decision <-> crates/lucina-media/src/protocol.rs
-//                                                      (branch media-library, merged in ios-app)
+//                                                      (on main since the ios-app merge)
 //   after_error / pace                            <-> ios/Secretary/Features/Gallery/PhotoBackup.swift
 //                                                      (run(): 429, transport, 410, other errors)
 // The protocol around them (background-session resends, server restarts, p1's rate limit, two
@@ -21,8 +21,8 @@
 //   (d) ingest_decision + the catalog: an edit of a known phone asset stays on that asset's item;
 //       otherwise known bytes are a duplicate; a new item only for unknown bytes, so the catalog
 //       never holds two items made from the same bytes by New, provided the decision and the
-//       insert see the same catalog. The code decides and inserts under two separate lock
-//       acquisitions (`ingest::ingest_file`): bug M3 in docs/verification.md, found by the model.
+//       insert see the same catalog. Since cc5e663 the code decides again in the insert's own
+//       lock (`ingest::insert_new_or_duplicate`; bug M3 in docs/verification.md, found by the model).
 //   (e) after_error: a 429 pauses at least 10 s (Retry-After or 60 s), transport errors pause
 //       120 s, a lost upload (410) restarts the asset, anything else skips only that asset; the
 //       paced backup (4 s per asset, at most 3 requests each) stays within p1's 60 a minute.

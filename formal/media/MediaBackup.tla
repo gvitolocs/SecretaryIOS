@@ -15,7 +15,7 @@
 (*   Gone410: a finish whose file is gone answers 410 and the client       *)
 (*     starts the asset again (before: 500 on every retry);                *)
 (*   PauseOn429: the client waits for the window (before: retried at once);*)
-(*   RecheckIngest (proposed, M3): the insert decides again under the      *)
+(*   RecheckIngest (M3, fixed in cc5e663): the insert decides again under  *)
 (*     lock, so a concurrent finish of the same bytes is a duplicate.      *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC

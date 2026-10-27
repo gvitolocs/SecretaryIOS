@@ -1,0 +1,22 @@
+[package]
+name = "image-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Gallery rendition formats on real photos: size and time for JPEG, WebP, AVIF, JPEG XL; ThumbHash"
+
+[workspace]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif"] }
+webp = "0.3"
+ravif = { version = "0.13", default-features = false, features = ["threading"] }
+rgb = "0.8"
+jpegxl-rs = { version = "0.16", features = ["vendored"] }
+jpegxl-sys = { version = "=0.13.0", features = ["vendored"] }
+jxl-oxide = "0.12"
+thumbhash = "0.1"
+ssimulacra2 = "0.5"
+
+[profile.release]
+opt-level = 3

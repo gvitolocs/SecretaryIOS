@@ -1,0 +1,12 @@
+[package]
+name = "l10n-merge"
+version = "0.1.0"
+edition = "2021"
+description = "Merges ios/l10n/translations.json (it, da) into the app's String Catalog"
+publish = false
+
+# Standalone: not part of the repository's Rust workspace.
+[workspace]
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }

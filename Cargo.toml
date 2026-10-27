@@ -20,6 +20,9 @@ members = [
     "crates/secretary-player",
     "crates/secretary-player-wasm",
     "verification/models",
+    "crates/secretary-media-stream",
+    "crates/lucina-media",
+    "crates/secretary-image",
 ]
 
 [workspace.package]
