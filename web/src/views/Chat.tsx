@@ -1,6 +1,15 @@
+import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { outreachFromSearch, sendOutreachFeedback } from "../api/proactive";
 import { CHAT_MAX_CHARS } from "../api/secretary";
-import type { Attachment, Channel } from "../api/timeline";
+import {
+  FEEDBACK_ACTIONS,
+  type Channel,
+  type FeedbackAction,
+  type ProactiveAction,
+  type ProactiveMeta,
+  type ProactivePriority,
+} from "../api/timeline";
 import {
   BellIcon,
   BubbleIcon,
@@ -9,11 +18,31 @@ import {
   GlobeIcon,
   PhoneIcon,
   SendIcon,
+  SparkleIcon,
   SpeakerIcon,
 } from "../components/Icons";
+import { ShareComposer } from "../components/ShareComposer";
+import { AttachmentTray } from "../components/AttachmentTray";
+import { Attachments } from "../components/ChatAttachments";
+import {
+  filesFromClipboard,
+  filesFromDataTransfer,
+  formatCoordinate,
+  hasFileTransfer,
+  prepareDraftFiles,
+  releaseDraft,
+  type DraftAttachment,
+  type ShareLocation,
+} from "../lib/attachments";
 import { LinkifiedText } from "../components/LinkifiedText";
+import { Markdown } from "../components/Markdown";
+import { PlaceCard } from "../components/PlaceCard";
+import { RichReply } from "../components/RichReply";
+import Model3dViewer from "../components/Model3dViewer";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
+import type { PlaceInfo } from "../lib/mapKit";
+import { actionText } from "../lib/rich";
 import {
   channelLabel,
   contextCaption,
@@ -21,6 +50,7 @@ import {
   dayLabel,
   fullTimeLabel,
   matchesFilter,
+  mcpSource,
   SOURCE_FILTERS,
   timeLabel,
   type SourceFilter,
@@ -35,7 +65,11 @@ import {
   loadOlder,
   loadState,
   olderState,
+  prefill,
   retryMessage,
+  revealTick,
+  richOf,
+  sendAttachmentMessage,
   sending,
   sendMessage,
   streamStatus,
@@ -61,11 +95,164 @@ const STREAM_LABELS = {
   offline: "chat.streamOffline",
 } as const satisfies Record<string, MessageKey>;
 
-const ATTACHMENT_LABELS: Record<Attachment["kind"], MessageKey> = {
-  image: "chat.photo",
-  voice: "chat.voice",
-  file: "chat.file",
-};
+const PRIORITY_LABELS = {
+  high: "chat.priorityHigh",
+  normal: "chat.priorityNormal",
+  low: "chat.priorityLow",
+} as const satisfies Record<ProactivePriority, MessageKey>;
+
+const FEEDBACK_LABELS = {
+  useful: "chat.fbUseful",
+  not_now: "chat.fbNotNow",
+  stop: "chat.fbStop",
+} as const satisfies Record<FeedbackAction, MessageKey>;
+
+const FEEDBACK_DONE = {
+  useful: "chat.fbThanks",
+  not_now: "chat.fbNotNowDone",
+  stop: "chat.fbStopDone",
+} as const satisfies Record<FeedbackAction, MessageKey>;
+
+/** In-app navigation when a router is around (tests render the view bare). */
+function useOptionalNavigate(): ReturnType<typeof useNavigate> | null {
+  try {
+    return useNavigate();
+  } catch {
+    return null;
+  }
+}
+
+function useOptionalLocation(): ReturnType<typeof useLocation> | null {
+  try {
+    return useLocation();
+  } catch {
+    return null;
+  }
+}
+
+/** "Utile / Non ora / Basta così": labels from the message (her language), else ours. */
+export function FeedbackButtons(props: { outreachId: string; actions?: ProactiveAction[] }) {
+  const [chosen, setChosen] = createSignal<FeedbackAction | null>(null);
+  const [busy, setBusy] = createSignal(false);
+  const [failed, setFailed] = createSignal(false);
+  const buttons = () =>
+    FEEDBACK_ACTIONS.map((id) => ({
+      id,
+      label: props.actions?.find((a) => a.feedback && a.id === id)?.label ?? t(FEEDBACK_LABELS[id]),
+    }));
+
+  async function tap(id: FeedbackAction) {
+    if (busy() || chosen()) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      await sendOutreachFeedback(props.outreachId, id);
+      setChosen(id);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div class="proactive-feedback" role="group" aria-label={t("chat.feedbackGroup")}>
+      <For each={buttons()}>
+        {(b) => (
+          <button
+            type="button"
+            class="chip proactive-fb"
+            classList={{ "chip--active": chosen() === b.id }}
+            aria-pressed={chosen() === b.id ? "true" : "false"}
+            disabled={busy() || chosen() !== null}
+            onClick={() => void tap(b.id)}
+          >
+            {b.label}
+          </button>
+        )}
+      </For>
+      <Show when={chosen()}>
+        {(c) => (
+          <span class="proactive-note" role="status">
+            {t(FEEDBACK_DONE[c()])}
+          </span>
+        )}
+      </Show>
+      <Show when={failed()}>
+        <span class="proactive-note proactive-note--error" role="alert">
+          {t("chat.fbFailed")}
+        </span>
+      </Show>
+    </div>
+  );
+}
+
+/** A message Lucina sent on her own: priority, content buttons, feedback, why. */
+function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: PlaceInfo }) {
+  const navigate = useOptionalNavigate();
+  const [showWhy, setShowWhy] = createSignal(false);
+  const links = () => props.meta.actions.filter((a) => !a.feedback && a.route).slice(0, 2);
+
+  function open(a: ProactiveAction, e: MouseEvent) {
+    void sendOutreachFeedback(props.meta.outreachId, "opened").catch(() => undefined);
+    if (navigate && a.route) {
+      e.preventDefault();
+      navigate(a.route);
+    }
+  }
+
+  return (
+    <section
+      class="proactive"
+      classList={{ "proactive--high": props.meta.priority === "high" }}
+      data-priority={props.meta.priority}
+      aria-label={t("chat.proactiveHead")}
+    >
+      <header class="proactive-head">
+        <span class="proactive-title">
+          <SparkleIcon />
+          {t("chat.proactiveHead")}
+        </span>
+        <span class="prio-chip" data-priority={props.meta.priority}>
+          {t(PRIORITY_LABELS[props.meta.priority])}
+        </span>
+      </header>
+      <LinkifiedText class="proactive-text" text={props.text} />
+      <Show when={props.place}>{(place) => <PlaceCard place={place()} class="proactive-place" />}</Show>
+      <Show when={links().length > 0}>
+        <div class="proactive-actions">
+          <For each={links()}>
+            {(a) => (
+              <a class="btn btn--small proactive-link" href={a.route} onClick={(e) => open(a, e)}>
+                {a.label}
+              </a>
+            )}
+          </For>
+        </div>
+      </Show>
+      <FeedbackButtons outreachId={props.meta.outreachId} actions={props.meta.actions} />
+      <Show when={props.meta.why}>
+        {(why) => (
+          <div class="proactive-why">
+            <button
+              type="button"
+              class="proactive-why-btn"
+              aria-expanded={showWhy() ? "true" : "false"}
+              onClick={() => setShowWhy((v) => !v)}
+            >
+              {t("chat.proactiveWhy")}
+            </button>
+            <Show when={showWhy()}>
+              <p class="proactive-why-text" title={t("chat.proactiveWhyTitle")}>
+                {why()}
+              </p>
+            </Show>
+          </div>
+        )}
+      </Show>
+    </section>
+  );
+}
 
 /** Start loading older items when the list is scrolled this close to the top. */
 const LOAD_OLDER_PX = 200;
@@ -166,11 +353,16 @@ function ChannelGlyph(props: { channel: Channel }) {
 
 /** "via Telegram · Family" badge: glyph plus a text label, read as one phrase. */
 export function SourceBadge(props: { message: ChatMessage }) {
-  const label = () => channelLabel(props.message.channel);
-  const context = () => contextCaption(props.message.channel, props.message.meta);
+  const source = () => mcpSource(props.message.role, props.message.text, props.message.meta);
+  const label = () => source()?.label ?? channelLabel(props.message.channel);
+  const context = () => (source() ? "" : contextCaption(props.message.channel, props.message.meta));
   return (
-    <span class="src-badge" data-channel={props.message.channel}>
-      <ChannelGlyph channel={props.message.channel} />
+    <span class="src-badge" data-channel={source() ? "mcp" : props.message.channel}>
+      <Show when={source()} fallback={<ChannelGlyph channel={props.message.channel} />}>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 3h6v4h1a3 3 0 1 1 0 6h-1v8H9v-4H8a3 3 0 1 1 0-6h1V3z" />
+        </svg>
+      </Show>
       <span class="sr-only">{t("chat.via")} </span>
       <span class="src-label">{label()}</span>
       <Show when={context()}>
@@ -185,26 +377,28 @@ export function SourceBadge(props: { message: ChatMessage }) {
   );
 }
 
-function Attachments(props: { items: Attachment[] }) {
-  return (
-    <ul class="attachments" aria-label={t("chat.attachments")}>
-      <For each={props.items}>
-        {(a) => (
-          <li class="attachment">
-            {t(ATTACHMENT_LABELS[a.kind])}
-            <Show when={a.name}>{(n) => <span class="attachment-name">: {n()}</span>}</Show>
-          </li>
-        )}
-      </For>
-    </ul>
-  );
-}
+export { Attachments };
 
-function MessageItem(props: { message: ChatMessage }) {
+function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string }) {
   const [showTime, setShowTime] = createSignal(false);
   const isUser = () => props.message.role === "user";
   const isReminder = () => props.message.meta?.kind === "reminder";
-  const hasBody = () => !!props.message.text || !!props.message.attachments?.length;
+  const proactive = () =>
+    props.message.role === "lucina" && props.message.meta?.kind === "proactive" ? props.message.meta.proactive : undefined;
+  // Lucina message format v1: bubbles, widgets and buttons (not for reminders or proactive cards).
+  const rich = () => (!isUser() && !isReminder() && !proactive() ? richOf(props.message) : undefined);
+  const text = () => mcpSource(props.message.role, props.message.text, props.message.meta)?.text ?? props.message.text;
+  const hasBody = () => !rich() && (!!text() || !!props.message.attachments?.length);
+  // A photo album's caption sits under it, Telegram-style.
+  const captionUnder = () => isUser() && !!props.message.attachments?.some((a) => a.kind === "image");
+  const shareStatus = () => {
+    const share = props.message.share;
+    if (!share) return "";
+    if (share.phase === "uploading") return t("share.uploadProgress", { percent: Math.round(share.progress * 100) });
+    if (share.phase === "error" || share.phase === "done") return "";
+    return t("share.reading");
+  };
+  const uploading = () => props.message.share?.phase === "uploading";
 
   function toggleTime(e: MouseEvent) {
     // Taps on links open the link; everything else reveals the time.
@@ -219,13 +413,27 @@ function MessageItem(props: { message: ChatMessage }) {
         "msg--user": isUser() && !isReminder(),
         "msg--lucina": !isUser() && !isReminder(),
         "msg--reminder": isReminder(),
+        "msg--proactive": !!proactive(),
+        "msg--focus": !!props.focused,
         "msg--backfilled": !!props.message.backfilled,
         "msg--show-time": showTime(),
       }}
       data-key={props.message.key}
+      data-outreach={proactive()?.outreachId}
     >
       <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
-      <Show when={hasBody() || isReminder()}>
+      <Show when={proactive()}>{(p) => <ProactiveCard text={props.message.text} meta={p()} place={props.message.meta?.place} />}</Show>
+      <Show when={rich()}>
+        {(r) => <RichReply message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
+      </Show>
+      <Show when={rich() && props.message.attachments?.length ? props.message.attachments : null}>
+        {(a) => (
+          <div class="bubble">
+            <Attachments items={a()} />
+          </div>
+        )}
+      </Show>
+      <Show when={!proactive() && (hasBody() || (isReminder() && !rich()))}>
         <div
           class="bubble"
           classList={{
@@ -240,14 +448,35 @@ function MessageItem(props: { message: ChatMessage }) {
               {t("chat.reminder")}
             </span>
           </Show>
-          <Show when={props.message.text}>
-            <LinkifiedText text={props.message.text} />
-          </Show>
-          <Show when={props.message.attachments?.length ? props.message.attachments : null}>
+          <Show when={captionUnder() && props.message.attachments?.length ? props.message.attachments : null}>
             {(a) => <Attachments items={a()} />}
+          </Show>
+          <Show when={text()}>
+            {/* Her plain replies are markdown too (safe renderer from Notes): no more literal "**". */}
+            <Show when={isUser()} fallback={<Markdown text={props.message.text} class="md--chat" />}>
+              <Show when={captionUnder()} fallback={<LinkifiedText text={text()} />}>
+                <div class="bubble-caption"><LinkifiedText text={text()} /></div>
+              </Show>
+            </Show>
+          </Show>
+          <Show when={!captionUnder() && props.message.attachments?.length ? props.message.attachments : null}>
+            {(a) => <Attachments items={a()} />}
+          </Show>
+          <Show when={shareStatus()}>
+            <p class="bubble-status" classList={{ "bubble-status--uploading": uploading() }} role="status">
+              <Show when={uploading()}>
+                <span
+                  class="share-progress-ring"
+                  style={{ "--share-progress": `${Math.round((props.message.share?.progress ?? 0) * 100)}%` }}
+                  aria-hidden="true"
+                />
+              </Show>
+              {shareStatus()}
+            </p>
           </Show>
         </div>
       </Show>
+      <For each={props.message.meta?.blocks ?? []}>{(b) => <Model3dViewer block={b} />}</For>
       <Show when={props.message.job}>{(job) => <JobCard job={job()} />}</Show>
       <div class="msg-info">
         <SourceBadge message={props.message} />
@@ -261,7 +490,7 @@ function MessageItem(props: { message: ChatMessage }) {
         >
           {timeLabel(props.message.createdAt)}
         </time>
-        <Show when={props.message.status === "sending"}>
+        <Show when={props.message.status === "sending" && !props.message.share}>
           <span class="msg-meta">{t("chat.sending")}</span>
         </Show>
       </div>
@@ -282,15 +511,13 @@ function MessageItem(props: { message: ChatMessage }) {
   );
 }
 
+/**
+ * The stream state for screen readers only: the header status dot is the one visible connection
+ * signal (as on iOS).
+ */
 function LiveIndicator() {
   return (
-    <span
-      class="live"
-      classList={{ "live--on": streamStatus() === "live" }}
-      role="status"
-      title={streamStatus() === "live" ? t("chat.liveTitle") : undefined}
-    >
-      <span class="live-dot" aria-hidden="true" />
+    <span class="sr-only" role="status">
       {t(STREAM_LABELS[streamStatus()])}
     </span>
   );
@@ -299,19 +526,101 @@ function LiveIndicator() {
 export default function ChatView() {
   const [draft, setDraft] = createSignal("");
   const [filter, setFilter] = createSignal<SourceFilter>("all");
+  const [drafts, setDrafts] = createSignal<DraftAttachment[]>([]);
+  const [attachLocation, setAttachLocation] = createSignal<ShareLocation | null>(null);
+  const [attachOpen, setAttachOpen] = createSignal(false);
+  const [attachError, setAttachError] = createSignal("");
+  const [dragging, setDragging] = createSignal(false);
+  let dragDepth = 0;
+  let photosInput: HTMLInputElement | undefined;
+  let filesInput: HTMLInputElement | undefined;
+  let cameraInput: HTMLInputElement | undefined;
+  let attachBox: HTMLDivElement | undefined;
+  // The attach menu closes on Escape and on a press anywhere outside it.
+  createEffect(() => {
+    if (!attachOpen()) return;
+    const onPointer = (e: PointerEvent) => {
+      if (attachBox && e.target instanceof Node && !attachBox.contains(e.target)) setAttachOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAttachOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    onCleanup(() => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    });
+  });
   const tooLong = createMemo(() => draft().length > CHAT_MAX_CHARS);
-  const canSend = createMemo(() => draft().trim().length > 0 && !tooLong() && !sending());
+  const canSend = createMemo(
+    () => (draft().trim().length > 0 || drafts().length > 0 || !!attachLocation()) && !tooLong() && !sending(),
+  );
   const visible = createMemo(() => {
     const f = filter();
-    return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m.channel, f));
+    // Filter by the derived source while preserving the stored channel.
+    return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m, f));
   });
   const filterLabel = () => {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
     return key ? t(key) : "";
   };
+  /**
+   * Buttons the owner answered by typing: a Lucina message whose next owner
+   * message equals one of its buttons' text counts as that choice (survives
+   * reloads and other devices).
+   */
+  const inferredChoices = createMemo(() => {
+    const out = new Map<string, string>();
+    const items = chat.messages;
+    for (let i = 0; i < items.length; i++) {
+      const m = items[i]!;
+      const rich = m.role === "lucina" ? richOf(m) : undefined;
+      if (!rich?.actions.length) continue;
+      const next = items.slice(i + 1).find((x) => x.role === "user");
+      const said = next?.text.trim().toLowerCase();
+      if (!said) continue;
+      const hit = rich.actions.find((a) => actionText(a)?.trim().toLowerCase() === said);
+      if (hit) out.set(m.key, hit.id);
+    }
+    return out;
+  });
   let list: HTMLDivElement | undefined;
   let input: HTMLTextAreaElement | undefined;
   let atBottom = true;
+  // Deep link from a push or Telegram: /?outreach=po_… (also while already open:
+  // a notification click navigates here).
+  const location = useOptionalLocation();
+  const navigate = useOptionalNavigate();
+  const search = () => location?.search ?? (typeof window === "undefined" ? "" : window.location.search);
+  const [focusOutreach, setFocusOutreach] = createSignal<string | null>(outreachFromSearch(search()));
+  createEffect(
+    on(
+      search,
+      (q) => {
+        const id = outreachFromSearch(q);
+        if (id) setFocusOutreach(id);
+      },
+      { defer: true },
+    ),
+  );
+  const focused = createMemo(() => {
+    const id = focusOutreach();
+    return id ? (chat.messages.find((m) => m.meta?.proactive?.outreachId === id) ?? null) : null;
+  });
+  /** Drop `?outreach=` from the address, so a reload does not jump again. */
+  function clearOutreachParam() {
+    if (!search().includes("outreach=")) return;
+    if (navigate && location) {
+      navigate(location.pathname, { replace: true, scroll: false });
+    } else if (typeof window !== "undefined") {
+      window.history.replaceState(window.history.state, "", window.location.pathname + window.location.hash);
+    }
+  }
+  function dismissFocus() {
+    setFocusOutreach(null);
+    clearOutreachParam();
+  }
   /** While our own scroll-to-end runs, scroll events are not the reader's. */
   let autoScrollUntil = 0;
 
@@ -367,6 +676,50 @@ export default function ChatView() {
     ),
   );
 
+  // A revealing reply grows bubble by bubble: stay pinned to the end.
+  createEffect(
+    on(
+      revealTick,
+      () => {
+        if (atBottom) requestAnimationFrame(() => scrollToEnd(true));
+      },
+      { defer: true },
+    ),
+  );
+
+  // A button asked for text in the composer ("Ricordami alle 21:30 di …", "Modifica").
+  createEffect(
+    on(
+      prefill,
+      (p) => {
+        if (!p) return;
+        const text = p.text && !/\s$/.test(p.text) ? `${p.text} ` : p.text;
+        setDraft(text);
+        queueMicrotask(() => {
+          autosize();
+          input?.focus();
+          input?.setSelectionRange(text.length, text.length);
+        });
+      },
+      { defer: true },
+    ),
+  );
+
+  // Scroll the deep-linked message into view (after the first fill's jump to the end).
+  createEffect(
+    on(focused, (m) => {
+      if (!m) return;
+      atBottom = false;
+      clearOutreachParam();
+      requestAnimationFrame(() => {
+        const el = list?.querySelector(`[data-outreach="${m.meta?.proactive?.outreachId}"]`);
+        if (el && typeof (el as HTMLElement).scrollIntoView === "function") {
+          (el as HTMLElement).scrollIntoView({ block: "center" });
+        }
+      });
+    }),
+  );
+
   createEffect(
     on(
       filter,
@@ -378,15 +731,91 @@ export default function ChatView() {
     ),
   );
 
+  async function addFiles(files: readonly File[]) {
+    const list = files.filter((file) => file instanceof File);
+    if (!list.length) return;
+    setAttachError("");
+    try {
+      const prepared = await prepareDraftFiles(list);
+      setDrafts((all) => [...all, ...prepared]);
+    } catch {
+      setAttachError(t("share.failed"));
+    }
+  }
+
+  function removeDraft(item: { id?: string }) {
+    const draft = drafts().find((entry) => entry.id === item.id);
+    if (!draft) return;
+    releaseDraft(draft);
+    setDrafts((all) => all.filter((entry) => entry.id !== draft.id));
+  }
+
+  function onPaste(e: ClipboardEvent) {
+    const files = filesFromClipboard(e.clipboardData);
+    // Plain text keeps the browser's default paste.
+    if (!files.length) return;
+    e.preventDefault();
+    void addFiles(files);
+  }
+
+  function onDragEnter(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth++;
+    setDragging(true);
+  }
+
+  function onDragOver(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  }
+
+  function onDragLeave(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDragging(false);
+  }
+
+  function onDrop(e: DragEvent) {
+    if (!hasFileTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    setDragging(false);
+    void addFiles(filesFromDataTransfer(e.dataTransfer));
+  }
+
+  function shareCurrentLocation() {
+    setAttachOpen(false);
+    setAttachError("");
+    const geo = typeof navigator === "undefined" ? undefined : navigator.geolocation;
+    if (!geo) {
+      setAttachError(t("share.locationFailed"));
+      return;
+    }
+    geo.getCurrentPosition(
+      (pos) => setAttachLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => setAttachError(t("share.locationFailed")),
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
+    );
+  }
+
   async function submit() {
     if (!canSend()) return;
     const text = draft();
+    const files = drafts();
+    const sharedLocation = attachLocation();
     setDraft("");
+    setDrafts([]);
+    setAttachLocation(null);
+    setAttachOpen(false);
     queueMicrotask(autosize);
     // Your own message must be visible: leave a filter that would hide it.
     if (filter() !== "all" && filter() !== "app") setFilter("all");
     atBottom = true;
-    await sendMessage(text);
+    if (files.length || sharedLocation) await sendAttachmentMessage(files, text, sharedLocation);
+    else await sendMessage(text);
     input?.focus();
   }
 
@@ -406,7 +835,7 @@ export default function ChatView() {
   }
 
   return (
-    <div class="chat">
+    <div class="chat" onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div class="chat-bar">
         <div class="chip-group" role="group" aria-label={t("chat.filterGroup")}>
           <For each={SOURCE_FILTERS}>
@@ -474,6 +903,17 @@ export default function ChatView() {
             <p class="empty-sub">{t("chat.emptySub")}</p>
           </div>
         </Show>
+        <Show when={chat.loaded && focusOutreach() && !focused() ? focusOutreach() : null}>
+          {(id) => (
+            <div class="proactive-missing" role="status">
+              <p>{t("chat.outreachMissing")}</p>
+              <FeedbackButtons outreachId={id()} />
+              <button type="button" class="btn btn--small" onClick={dismissFocus}>
+                {t("chat.close")}
+              </button>
+            </div>
+          )}
+        </Show>
         <Show when={chat.messages.length > 0 && visible().length === 0}>
           <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
         </Show>
@@ -487,7 +927,11 @@ export default function ChatView() {
                   </div>
                 )}
               </Show>
-              <MessageItem message={m} />
+              <MessageItem
+                message={m}
+                focused={!!focusOutreach() && focused()?.key === m.key}
+                inferredChoice={inferredChoices().get(m.key)}
+              />
             </>
           )}
         </For>
@@ -514,6 +958,58 @@ export default function ChatView() {
           void submit();
         }}
       >
+        <Show when={drafts().length || attachLocation() || attachError()}>
+          <div class="composer-tray">
+            <AttachmentTray items={drafts()} onRemove={removeDraft} />
+            <Show when={attachLocation()}>
+              {(point) => (
+                <div class="composer-location">
+                  <span aria-hidden="true">📍</span>
+                  <span>{t("share.locationShared")}: {formatCoordinate(point().lat)}, {formatCoordinate(point().lon)}</span>
+                  <button
+                    type="button"
+                    aria-label={t("share.remove", { name: t("share.location") })}
+                    onClick={() => setAttachLocation(null)}
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </Show>
+            <Show when={attachError()}>
+              <p class="field-error" role="alert">{attachError()}</p>
+            </Show>
+          </div>
+        </Show>
+        <div class="composer-attach" ref={attachBox}>
+          <button
+            type="button"
+            class="share-attach"
+            aria-label={t("share.attachMenu")}
+            aria-haspopup="menu"
+            aria-expanded={attachOpen() ? "true" : "false"}
+            onClick={() => setAttachOpen((open) => !open)}
+          >
+            📎
+          </button>
+          <Show when={attachOpen()}>
+            <div class="attach-menu" role="menu" aria-label={t("share.attachMenu")}>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); photosInput?.click(); }}>
+                <span aria-hidden="true">🖼</span> {t("share.attachPhotos")}
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); filesInput?.click(); }}>
+                <span aria-hidden="true">📄</span> {t("share.attachFiles")}
+              </button>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); cameraInput?.click(); }}>
+                <span aria-hidden="true">📷</span> {t("share.attachCamera")}
+              </button>
+              <button type="button" role="menuitem" onClick={shareCurrentLocation}>
+                <span aria-hidden="true">📍</span> {t("share.attachLocation")}
+              </button>
+            </div>
+          </Show>
+        </div>
+        <ShareComposer />
         <label class="sr-only" for="composer-input">
           {t("chat.composer")}
         </label>
@@ -528,6 +1024,7 @@ export default function ChatView() {
             setDraft(e.currentTarget.value);
             autosize();
           }}
+          onPaste={onPaste}
           onKeyDown={onKeyDown}
           readOnly={sending()}
           aria-disabled={sending() ? "true" : "false"}
@@ -543,6 +1040,53 @@ export default function ChatView() {
           <SendIcon />
         </button>
       </form>
+      <input
+        ref={photosInput}
+        class="sr-only"
+        type="file"
+        accept="image/*,video/*"
+        multiple
+        tabindex="-1"
+        aria-label={t("share.attachPhotos")}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          void addFiles(files);
+        }}
+      />
+      <input
+        ref={filesInput}
+        class="sr-only"
+        type="file"
+        multiple
+        tabindex="-1"
+        aria-label={t("share.attachFiles")}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          void addFiles(files);
+        }}
+      />
+      <input
+        ref={cameraInput}
+        class="sr-only"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        tabindex="-1"
+        aria-label={t("share.attachCamera")}
+        onChange={(e) => {
+          const files = Array.from(e.currentTarget.files ?? []);
+          e.currentTarget.value = "";
+          void addFiles(files);
+        }}
+      />
+      <Show when={dragging()}>
+        <div class="drop-overlay" role="status">
+          <strong>{t("share.dropTitle")}</strong>
+          <span>{t("share.dropSub")}</span>
+        </div>
+      </Show>
     </div>
   );
 }

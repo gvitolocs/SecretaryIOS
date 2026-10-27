@@ -44,10 +44,29 @@ pub fn is_drive_request(text: &str) -> bool {
     .any(|w| t.contains(w))
 }
 
+/// The owner's documents ("le slide nel mio drive") are his library's Drive
+/// (the media turn); only a Drive named as Google's or Lucina's stays here.
+fn is_owner_document_request(text: &str) -> bool {
+    let t = text.to_lowercase();
+    super::media_turn::is_document_request(text)
+        && ![
+            "google",
+            "gdrive",
+            "g drive",
+            "tuo drive",
+            "your drive",
+            "dit drev",
+            "din drive",
+            "lucina",
+        ]
+        .iter()
+        .any(|w| t.contains(w))
+}
+
 pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
     let st = t.st;
     st.tool_env.drive.as_ref()?;
-    if !is_drive_request(&t.message) {
+    if !is_drive_request(&t.message) || is_owner_document_request(&t.message) {
         return None;
     }
     let mut reg = Registry::new();
@@ -87,7 +106,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         max_rounds: 5,
         ..AgentConfig::default()
     };
-    let timeline = st.timeline.clone();
+    let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {
@@ -144,6 +163,26 @@ mod tests {
             "che tempo fa?",
         ] {
             assert!(!is_drive_request(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn the_owners_documents_go_to_his_library_drive() {
+        for his in [
+            "trovami le slide di Digital Forensics nel mio drive",
+            "find the lecture PDF in my drive",
+        ] {
+            assert!(
+                is_drive_request(his) && is_owner_document_request(his),
+                "{his}"
+            );
+        }
+        for hers in [
+            "Cerca su Drive il file CURSOR_LUCINA_OUTLOOK_RUST_MIGRATION.md",
+            "find the PDF in my Google Drive",
+            "metti il documento nel tuo drive",
+        ] {
+            assert!(!is_owner_document_request(hers), "{hers}");
         }
     }
 }

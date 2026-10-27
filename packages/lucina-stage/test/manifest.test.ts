@@ -101,3 +101,20 @@ describe('resolveBones', () => {
     expect(r.bones.neck).toBeUndefined();
   });
 });
+
+describe('manifest state clip pools', () => {
+  it('reads state_clips for known states only, keeping string names', () => {
+    const m = normalizeManifest({
+      state_clips: { idle: ['status_loop', 'relax_loop', 3, ''], speaking: 'talk_left', dancing: ['x'] },
+    });
+    expect(m.stateClips).toEqual({ idle: ['status_loop', 'relax_loop'] });
+    expect(normalizeManifest({}).stateClips).toEqual({});
+  });
+
+  it('reads pose.armSpreadDeg, clamped, 0 when absent or not a number', () => {
+    expect(normalizeManifest({ pose: { armSpreadDeg: 8 } }).pose.armSpreadDeg).toBe(8);
+    expect(normalizeManifest({ pose: { armSpreadDeg: 90 } }).pose.armSpreadDeg).toBe(25);
+    expect(normalizeManifest({ pose: { armSpreadDeg: '8' } }).pose.armSpreadDeg).toBe(0);
+    expect(normalizeManifest({}).pose.armSpreadDeg).toBe(0);
+  });
+});

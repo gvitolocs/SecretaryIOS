@@ -98,6 +98,9 @@ pålægschokolade, …), Italian staples (passata, parmigiano, guanciale, pecori
 - **Emoji render from the platform font, so nothing is bundled.** That keeps the app and repo licence-clean, because no
   third-party artwork ships with us. The trade-off is that the look varies by platform (Apple, Google, Microsoft), which
   is fine.
+- **Bundled illustrations** (pilot, branch `item-icons`): original SVGs in `assets/icons/items/<catalogId>.svg` and
+  `assets/icons/sections/<sectionId>.svg`, drawn to `docs/design/item-icons.md`. The web shows them in place of the
+  catalog emoji; the catalog keeps its emoji for every other client. An explicit `svg:<key>` icon names one directly.
 - An optional open SVG set can come later, via `svg:<key>` icons. Candidates are **Fluent Emoji** (Microsoft, MIT) and
   **Noto Emoji** (Google, Apache-2.0). Bundle the chosen files with their licence text, and keep an emoji fallback for
   clients without the set. Never use proprietary icon sets (Bring!, shop apps, Apple's emoji images as files).

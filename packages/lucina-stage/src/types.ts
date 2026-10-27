@@ -6,7 +6,9 @@ export const STAGE_STATES: readonly StageState[] = ['idle', 'listening', 'thinki
 export type Expression = 'smile' | 'sad' | 'surprised' | 'angry';
 export const EXPRESSIONS: readonly Expression[] = ['smile', 'sad', 'surprised', 'angry'];
 
-export type Framing = 'bust' | 'full';
+/** Camera framing: full body, head and shoulders, or a face close-up. */
+export type Framing = 'bust' | 'full' | 'face';
+export const FRAMINGS: readonly Framing[] = ['full', 'bust', 'face'];
 
 export const VISEMES = ['a', 'i', 'u', 'e', 'o'] as const;
 export type Viseme = (typeof VISEMES)[number];

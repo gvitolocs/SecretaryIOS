@@ -250,6 +250,17 @@ describe('createWardrobeStage', () => {
     expect(s.modelUrl).toBe('/v1/assets/other.glb');
     expect(s.outfit).toBeNull();
   });
+  it('tells each stage its outfit, hairstyle and quality for the physics variants', async () => {
+    const log: Fake[] = [];
+    const s = await createWardrobeStage(canvas, { ...base, outfit: 'uniform' }, fakeFactory(log));
+    expect(log[0]!.opts.physics).toEqual({ outfit: 'uniform', hair: 'natural' });
+    s.setQuality('low');
+    await s.setOutfit('gym');
+    expect(log[1]!.opts.physics).toEqual({ outfit: 'gym', hair: 'natural', quality: 'low' });
+    const off: Fake[] = [];
+    await createWardrobeStage(canvas, { ...base, outfit: 'gym', physics: false }, fakeFactory(off));
+    expect(off[0]!.opts.physics).toBe(false);
+  });
 });
 
 describe('outfit effect', () => {

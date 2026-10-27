@@ -236,14 +236,22 @@ fn check_title(t: &str) -> Result<String, ApiError> {
 }
 
 /// Markdown text: any size up to the limit, no control characters other than
-/// newline, carriage return and tab. Line endings become `\n`.
+/// newline, carriage return and tab. Line endings become `\n`, except a lone
+/// `\r` at the very end: it stays, so that a CRLF document cut between `\r`
+/// and `\n` across two appends is still one newline (the next append starts
+/// with it; Verus kernel `norm_keep` in verification/verus/notes_kernel.rs).
 fn check_content(field: &str, c: &str) -> Result<String, ApiError> {
     if c.chars()
         .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
     {
         return Err(bad_request(format!("{field}: no control characters")));
     }
-    let c = c.replace("\r\n", "\n").replace('\r', "\n");
+    let trailing_cr = c.ends_with('\r');
+    let mut c = c.replace("\r\n", "\n").replace('\r', "\n");
+    if trailing_cr {
+        c.pop();
+        c.push('\r');
+    }
     if c.len() > MAX_CONTENT_BYTES {
         return Err(too_large());
     }
@@ -790,7 +798,10 @@ impl NoteStore {
                     "separator: at most {MAX_SEPARATOR_CHARS} characters"
                 )))
             }
-            Some(s) => check_content("separator", s)?,
+            Some(s) => {
+                check_content("separator", s)?;
+                s.to_owned()
+            }
             None => String::new(),
         };
         self.with(|st, notes| {
@@ -802,11 +813,21 @@ impl NoteStore {
             } else {
                 sep.as_str()
             };
-            if note.content.len() + sep.len() + add.len() > MAX_CONTENT_BYTES {
+            // Normalise the raw separator + text together, after a '\r' the
+            // previous append left at the end (Verus kernel `join`).
+            let mut content = note.content.clone();
+            let carry = if content.ends_with('\r') {
+                content.pop();
+                "\r"
+            } else {
+                ""
+            };
+            let tail = check_content("content", &format!("{carry}{sep}{}", req.content))?;
+            if content.len() + tail.len() > MAX_CONTENT_BYTES {
                 return Err(too_large());
             }
-            note.content.push_str(sep);
-            note.content.push_str(&add);
+            content.push_str(&tail);
+            note.content = content;
             note.updated_at = rfc3339(now());
             st.write(&note)?;
             notes.insert(note.id.clone(), note.clone());

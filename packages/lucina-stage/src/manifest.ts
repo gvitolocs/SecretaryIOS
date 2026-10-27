@@ -3,7 +3,7 @@
  * plus optional camera framing. Everything is optional; missing names fall back to well-known
  * candidates (MMD Japanese names, VRM names) and finally to "not bound", which the animator tolerates.
  */
-import { LOGICAL_BONES, LOGICAL_MORPHS, type Framing, type LogicalBone, type LogicalMorph, type Vec3 } from './types';
+import { LOGICAL_BONES, LOGICAL_MORPHS, STAGE_STATES, type Framing, type LogicalBone, type LogicalMorph, type StageState, type Vec3 } from './types';
 
 export interface CameraFraming {
   /** Camera position in model space. */
@@ -15,6 +15,8 @@ export interface CameraFraming {
 }
 
 export interface NormalizedManifest {
+  material?: string;
+  toon?: unknown;
   /** Logical morph -> candidate model morph names, most specific first. */
   morphs: Partial<Record<LogicalMorph, string[]>>;
   /** Logical bone -> candidate model node names. */
@@ -26,8 +28,14 @@ export interface NormalizedManifest {
   hideMaterials: string[];
   /** Recommended idle pose: per-node world-space rotations (axis, degrees) and fixed morph weights. */
   idle: { rotations: Record<string, { axis: Vec3; angleDeg: number }>; morphs: Record<string, number> };
+  /** Pose corrections on top of every clip: `armSpreadDeg` holds the arms out (degrees) so the hands clear a skirt. */
+  pose: { armSpreadDeg: number };
   /** Direction the character faces in the model's space. Auto-detected when absent. */
   facing?: '+z' | '-z';
+  /** The raw `physics` block (secondary motion; validated by physics/config.ts). */
+  physics?: unknown;
+  /** Default clip pools per state for this model (`state_clips`); the host's `stateClips` option wins. */
+  stateClips: Partial<Record<StageState, string[]>>;
 }
 
 /** Fallback names, tried after anything the manifest lists. */
@@ -158,9 +166,14 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
     hide: [],
     hideMaterials: [],
     idle: { rotations: {}, morphs: {} },
+    pose: { armSpreadDeg: 0 },
+    stateClips: {},
   };
   if (!raw || typeof raw !== 'object') return out;
   const m = raw as Record<string, unknown>;
+  if (typeof m.material === 'string') out.material = m.material;
+  if (m.toon !== undefined) out.toon = m.toon;
+  if (m.physics !== undefined) out.physics = m.physics;
 
   const morphSrc = (m.morphs ?? m.morph_map ?? m.morphMap ?? m.morphTargets ?? m.blendshapes ?? m.expressions) as unknown;
   if (morphSrc && typeof morphSrc === 'object' && !Array.isArray(morphSrc)) {
@@ -227,6 +240,19 @@ export function normalizeManifest(raw: unknown): NormalizedManifest {
     const morphs = idle.morphs as Record<string, unknown> | undefined;
     if (morphs && typeof morphs === 'object') {
       for (const [k, v] of Object.entries(morphs)) if (typeof v === 'number' && Number.isFinite(v)) out.idle.morphs[k] = v;
+    }
+  }
+
+  const pose = m.pose as Record<string, unknown> | undefined;
+  const spread = pose && typeof pose === 'object' ? pose.armSpreadDeg : undefined;
+  if (typeof spread === 'number' && Number.isFinite(spread)) out.pose.armSpreadDeg = Math.max(-10, Math.min(25, spread));
+
+  const pools = m.state_clips ?? m.stateClips;
+  if (pools && typeof pools === 'object' && !Array.isArray(pools)) {
+    for (const st of STAGE_STATES) {
+      const v = (pools as Record<string, unknown>)[st];
+      const names = Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string' && n.length > 0 && n.length <= 64) : [];
+      if (names.length) out.stateClips[st] = names;
     }
   }
 

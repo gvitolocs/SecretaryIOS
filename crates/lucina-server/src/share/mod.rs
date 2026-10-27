@@ -5,6 +5,7 @@
 mod extract;
 pub mod guidance;
 pub mod handlers;
+pub mod library;
 pub mod memory;
 pub mod router;
 mod structured;
@@ -182,6 +183,10 @@ pub fn router() -> Router<AppState> {
 #[serde(rename_all = "camelCase")]
 struct FileMeta {
     index: usize,
+    #[serde(default)]
+    voice: bool,
+    #[serde(default)]
+    waveform: Option<String>,
     #[serde(default)]
     transcript: Option<String>,
     #[serde(default)]
@@ -634,7 +639,11 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 part.attachment.name.clone().unwrap_or_default(),
                 part.attachment.mime.clone().unwrap_or_default(),
             );
-            let routed = tokio::task::spawn_blocking(move || router::route(&p, &n, &m))
+            let voice = part
+                .file_index
+                .and_then(|fi| meta.files.iter().find(|f| f.index == fi))
+                .is_some_and(|f| f.voice);
+            let routed = tokio::task::spawn_blocking(move || router::route_for(&p, &n, &m, voice))
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?;
             part.attachment.kind = router::timeline_kind(routed).into();
@@ -646,6 +655,19 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 part.attachment.width = fm.width;
                 part.attachment.height = fm.height;
                 part.attachment.duration_ms = fm.duration_ms;
+                part.attachment.kind = router::timeline_kind_for(routed, fm.voice).into();
+                if part.attachment.kind == "voice" {
+                    part.attachment.waveform = fm
+                        .waveform
+                        .as_deref()
+                        .and_then(lucina_store::timeline::valid_waveform);
+                    part.attachment.transcript = fm
+                        .transcript
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| clip(s, 4000));
+                }
             }
             let taken_at = part
                 .file_index
@@ -1074,7 +1096,7 @@ pub(crate) async fn read_local_file(
     };
     let x = match tokio::time::timeout(
         Duration::from_secs(seconds),
-        extract::read(st, dir, &mut part, true, None, ""),
+        extract::read(st, dir, &mut part, true, None, "", true),
     )
     .await
     {
@@ -1096,7 +1118,9 @@ pub(crate) async fn read_local_file(
 
 /// The share pipeline's Whisper (`LUCINA_WHISPER_BIN`, `LUCINA_WHISPER_MODEL`) on a local file.
 pub(crate) async fn transcribe_local(st: &AppState, path: &Path) -> anyhow::Result<String> {
-    extract::transcribe(st, path).await.map(|(text, _)| text)
+    extract::transcribe(st, path, false)
+        .await
+        .map(|(text, _)| text)
 }
 
 /// The share turn message around the read content (see `process`).
@@ -1127,18 +1151,22 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     job.stage = "reading".into();
     save(dir, job).await?;
     let mut content = String::new();
+    let mut voice_transcripts = Vec::new();
     let mut budget = TURN_TEXT_BUDGET;
-    let extract_files = job.intent != "library";
+    let has_voice = job.parts.iter().any(|p| p.attachment.kind == "voice");
+    let voice_only = job.parts.len() == 1 && has_voice && job.note.trim().is_empty();
+    let extract_files = job.intent != "library" || has_voice;
     for i in 0..job.parts.len() {
         let on_device = job.parts[i]
             .file_index
             .and_then(|fi| job.meta.files.iter().find(|f| f.index == fi))
             .and_then(|f| f.transcript.clone());
-        let seconds = if ["audio", "video"].contains(&job.parts[i].attachment.kind.as_str()) {
-            1200
-        } else {
-            300
-        };
+        let seconds =
+            if ["audio", "video", "voice"].contains(&job.parts[i].attachment.kind.as_str()) {
+                1200
+            } else {
+                300
+            };
         job.parts[i].state = "reading".into();
         save(dir, job).await?;
         let original = job.parts[i].path.clone();
@@ -1155,6 +1183,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 extract_files,
                 on_device.as_deref(),
                 &lang,
+                true,
             ),
         )
         .await;
@@ -1181,6 +1210,17 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 x
             }
         };
+        if part.attachment.kind == "voice" {
+            part.attachment.transcript = (!x.text.trim().is_empty()
+                && x.subtype.as_deref() == Some("voice"))
+            .then(|| clip(x.text.trim(), 4000));
+            if part.attachment.transcript.is_some() {
+                voice_transcripts.push(x.text.trim().to_owned());
+            }
+            if part.attachment.transcript.is_none() {
+                part.state = "failed".into();
+            }
+        }
         part.handler = Some(x.kind.into());
         part.summary = x
             .summary
@@ -1216,7 +1256,43 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     }
     job.stage = "thinking".into();
     save(dir, job).await?;
-    if job.intent == "library" {
+    let voice_meta = Meta {
+        transcript: has_voice
+            .then(|| {
+                job.parts
+                    .iter()
+                    .filter(|p| p.attachment.kind == "voice")
+                    .filter_map(|p| p.attachment.transcript.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .filter(|s| !s.is_empty())
+            .map(|s| clip(&s, 4000)),
+        voice_reply: has_voice.then_some(true),
+        ..Meta::default()
+    };
+    if has_voice
+        && job
+            .parts
+            .iter()
+            .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
+    {
+        let reply = match job.lang.split(['-', '_']).next().unwrap_or("") {
+            "it" => "Non sono riuscita a sentirti. Puoi ripetere?",
+            "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
+            _ => "I couldn't hear you. Could you repeat that?",
+        };
+        let item = st.timeline.append(NewItem {
+            channel: job.user_item.channel.clone(),
+            role: "lucina".into(),
+            text: reply.into(),
+            reply_to: Some(job.user_item.id.clone()),
+            meta: Some(voice_meta),
+            ..NewItem::default()
+        })?;
+        job.reply = Some(reply.into());
+        job.lucina_item_id = Some(item.id);
+    } else if job.intent == "library" && !voice_only {
         if job
             .parts
             .iter()
@@ -1242,6 +1318,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             role: "lucina".into(),
             text: reply.into(),
             reply_to: Some(job.user_item.id.clone()),
+            meta: Some(voice_meta),
             ..NewItem::default()
         })?;
         job.reply = Some(reply.into());
@@ -1265,12 +1342,19 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             "Owner's question or note: {owner}\nDevice language: {}\n\n<Shared content>{content}</Shared content>",
             job.lang
         ));
+        if voice_only {
+            message = voice_transcripts.remove(0);
+        }
         let out = crate::chat::share_turn(
             st.clone(),
             message,
             job.session.clone(),
             job.user_item.channel.clone(),
-            job.user_item.clone(),
+            crate::chat::ShareTurn {
+                item: job.user_item.clone(),
+                voice_only,
+                reply_meta: voice_meta,
+            },
         )
         .await
         .map_err(|e| anyhow::anyhow!(e.message))?;

@@ -1,0 +1,20 @@
+[package]
+name = "ink-library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+unicode-normalization = "0.1"
+encoding_rs = "0.8"
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+quick-xml = "0.38.4"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"

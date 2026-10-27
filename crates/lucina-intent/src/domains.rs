@@ -48,7 +48,9 @@ pub fn read_domains(
     if note.is_some() {
         out.push(NOTES);
     }
-    if calendar::parse_question(t, now, tz).is_some() {
+    if calendar::parse_question(t, now, tz).is_some()
+        || crate::calendar_event::parse_event_question(t, now, tz).is_some()
+    {
         out.push(CALENDAR);
     }
     if re!(

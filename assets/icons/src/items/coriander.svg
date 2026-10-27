@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<g transform="translate(32 33) scale(.86) translate(-32 -33)">
+  <path d="M32 60c-3-10-8-18-15-27M32 60c-1-12-3-24-5-36M32 60c1-12 3-24 6-36M32 60c3-10 8-18 15-26M30 46l-12 0M34 46l12-1" fill="none" stroke="#3e9b3e" stroke-width="1.8" stroke-linecap="round"/>
+  <g fill="#a8d84e" stroke="#3e9b3e" stroke-width="1.2" stroke-linejoin="round">
+    <path transform="translate(17 33) rotate(-50) scale(1.05)" d="M0 0C-5-1-10-4-10-9-10-12-8-14-6-14-6-17-3-18-1.5-16-1-18 1-18 1.5-16 3-18 6-17 6-14 8-14 10-12 10-9 10-4 5-1 0 0Z"/>
+    <path transform="translate(47 34) rotate(50) scale(1.05)" d="M0 0C-5-1-10-4-10-9-10-12-8-14-6-14-6-17-3-18-1.5-16-1-18 1-18 1.5-16 3-18 6-17 6-14 8-14 10-12 10-9 10-4 5-1 0 0Z"/>
+    <path transform="translate(18 46) rotate(-88) scale(.8)" d="M0 0C-5-1-10-4-10-9-10-12-8-14-6-14-6-17-3-18-1.5-16-1-18 1-18 1.5-16 3-18 6-17 6-14 8-14 10-12 10-9 10-4 5-1 0 0Z"/>
+    <path transform="translate(46 45) rotate(88) scale(.8)" d="M0 0C-5-1-10-4-10-9-10-12-8-14-6-14-6-17-3-18-1.5-16-1-18 1-18 1.5-16 3-18 6-17 6-14 8-14 10-12 10-9 10-4 5-1 0 0Z"/>
+    <path transform="translate(27 24) rotate(-16) scale(1.15)" d="M0 0C-5-1-10-4-10-9-10-12-8-14-6-14-6-17-3-18-1.5-16-1-18 1-18 1.5-16 3-18 6-17 6-14 8-14 10-12 10-9 10-4 5-1 0 0Z"/>
+    <path transform="translate(38 24) rotate(18) scale(1.15)" d="M0 0C-5-1-10-4-10-9-10-12-8-14-6-14-6-17-3-18-1.5-16-1-18 1-18 1.5-16 3-18 6-17 6-14 8-14 10-12 10-9 10-4 5-1 0 0Z"/>
+  </g>
+  <path transform="translate(38 24) rotate(18) scale(1.15)" d="M0 0c5-1 10-4 10-9 0-3-2-5-4-5 0-3-3-4-4.5-2-.5-2-2.5-2-2.5-2 1 6 1 12 1 18Z" fill="#3d2b2b" opacity=".15"/>
+  <path d="M27 24l-2-15M38 24l3-15M17 33 5 22.5M47 34l12-10" fill="none" stroke="#256b2f" stroke-width="1" stroke-linecap="round"/>
+  <ellipse cx="21.5" cy="12" rx="1.5" ry="3" transform="rotate(25 21.5 12)" fill="#fff" opacity=".55"/>
+</g>
+</svg>

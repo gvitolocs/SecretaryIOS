@@ -321,6 +321,17 @@ fn unknown(code: &str, what: &str, id: &str, known: &[&str]) -> ApiError {
 /// Shape checks on new settings (ids well formed, and known when the
 /// wardrobe lists that kind of item).
 pub fn validate(s: &AvatarSettings, w: &Wardrobe) -> Result<(), ApiError> {
+    validate_changes(s, w, None)
+}
+
+/// Like [`validate`], but ids already present in `prev` (unchanged fields,
+/// e.g. default rules naming outfits that are not installed yet) are only
+/// shape-checked, not required to be in the wardrobe.
+pub fn validate_changes(
+    s: &AvatarSettings,
+    w: &Wardrobe,
+    prev: Option<&AvatarSettings>,
+) -> Result<(), ApiError> {
     let mut outfits: Vec<(String, &str)> = Vec::new();
     if let Some(o) = &s.outfit {
         outfits.push(("outfit".into(), o));
@@ -338,6 +349,23 @@ pub fn validate(s: &AvatarSettings, w: &Wardrobe) -> Result<(), ApiError> {
         .as_deref()
         .map(|c| vec![("hairColor".to_owned(), c)])
         .unwrap_or_default();
+    let mut kept: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    if let Some(p) = prev {
+        if let Some(o) = &p.outfit {
+            kept.insert(("outfit".into(), o.clone()));
+        }
+        if let Some(h) = &p.hair {
+            kept.insert(("hair".into(), h.clone()));
+        }
+        if let Some(c) = &p.hair_color {
+            kept.insert(("hairColor".into(), c.clone()));
+        }
+        for (name, rule) in p.rules() {
+            kept.insert((format!("rules.{name}.outfit"), rule.outfit.clone()));
+            kept.insert((format!("rules.{name}.hair"), rule.hair.clone()));
+        }
+    }
+    let is_new = |(field, id): &&(String, &str)| !kept.contains(&(field.clone(), (*id).to_owned()));
     for (field, id) in outfits.iter().chain(&hairs).chain(&colors) {
         if !valid_id(id) {
             return Err(bad_request(format!(
@@ -347,7 +375,11 @@ pub fn validate(s: &AvatarSettings, w: &Wardrobe) -> Result<(), ApiError> {
     }
     let known = ids(&w.outfits);
     if !known.is_empty() {
-        if let Some((_, bad)) = outfits.iter().find(|(_, id)| !known.contains(id)) {
+        if let Some((_, bad)) = outfits
+            .iter()
+            .filter(is_new)
+            .find(|(_, id)| !known.contains(id))
+        {
             return Err(unknown("unknown_outfit", "outfit", bad, &known));
         }
     }
@@ -356,13 +388,21 @@ pub fn validate(s: &AvatarSettings, w: &Wardrobe) -> Result<(), ApiError> {
         if !known.contains(&NATURAL_HAIR) {
             known.insert(0, NATURAL_HAIR);
         }
-        if let Some((_, bad)) = hairs.iter().find(|(_, id)| !known.contains(id)) {
+        if let Some((_, bad)) = hairs
+            .iter()
+            .filter(is_new)
+            .find(|(_, id)| !known.contains(id))
+        {
             return Err(unknown("unknown_hairstyle", "hairstyle", bad, &known));
         }
     }
     let known = ids(&w.colors);
     if !known.is_empty() {
-        if let Some((_, bad)) = colors.iter().find(|(_, id)| !known.contains(id)) {
+        if let Some((_, bad)) = colors
+            .iter()
+            .filter(is_new)
+            .find(|(_, id)| !known.contains(id))
+        {
             return Err(unknown("unknown_hair_color", "hair colour", bad, &known));
         }
     }
@@ -549,8 +589,9 @@ impl AvatarStore {
         now_ms: u64,
     ) -> Result<AvatarSettings, ApiError> {
         let _guard = self.lock.lock().unwrap_or_else(|p| p.into_inner());
-        let mut next = patch.apply(self.load());
-        validate(&next, wardrobe)?;
+        let prev = self.load();
+        let mut next = patch.apply(prev.clone());
+        validate_changes(&next, wardrobe, Some(&prev))?;
         next.updated_ms = now_ms;
         next.updated_by = by.to_owned();
         save_json_atomic(&self.dir, AVATAR_FILE, &next).map_err(|e| {
@@ -656,6 +697,33 @@ pub fn routes(state: AppState) -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_default_rules_do_not_block_updates() {
+        // Only the uniform is installed; the default rules still name gym/chef/ponytail.
+        let w = Wardrobe {
+            outfits: vec![json!({"id": "uniform"})],
+            hairstyles: Vec::new(),
+            colors: Vec::new(),
+        };
+        let prev = AvatarSettings::default();
+        assert!(
+            validate(&prev, &w).is_err(),
+            "defaults name outfits that are not installed"
+        );
+        let mut next = prev.clone();
+        next.outfit = Some("uniform".into());
+        assert!(
+            validate_changes(&next, &w, Some(&prev)).is_ok(),
+            "pinning a known outfit must work"
+        );
+        let mut bad = prev.clone();
+        bad.outfit = Some("nope".into());
+        assert_eq!(
+            validate_changes(&bad, &w, Some(&prev)).unwrap_err().code,
+            "unknown_outfit"
+        );
+    }
 
     fn wardrobe() -> Wardrobe {
         Wardrobe {

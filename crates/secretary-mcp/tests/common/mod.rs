@@ -35,6 +35,8 @@ pub struct MockState {
     pub legacy: Vec<Value>,
     pub revision: u64,
     pub notes: Vec<Value>,
+    /// Open tasks (task views as `/v1/tasks/state` returns them).
+    pub tasks: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -69,6 +71,13 @@ fn err(status: StatusCode, code: &str) -> Response {
 
 fn device_ok(h: &HeaderMap) -> bool {
     h.get("authorization").and_then(|v| v.to_str().ok()) == Some(&format!("Bearer {DEVICE_TOKEN}"))
+}
+
+fn library_highlight() -> Value {
+    json!({"id":"hl_0123456789abcdef","bookId":"bk_0123456789abcdef","text":"A thought","note":null,"page":"12","location":{"start":170,"end":172},"source":"kindle-clippings"})
+}
+fn library_brief() -> Value {
+    json!({"id":"br_a","kind":"extractive","text":"A thought","basedOn":["hl_0123456789abcdef"]})
 }
 
 async fn handle(
@@ -121,6 +130,18 @@ async fn handle(
             .into_response()
         }
         _ if !device_ok(&headers) => err(StatusCode::UNAUTHORIZED, "unauthorized"),
+        ("GET", ["v1", "library", "books"]) => Json(json!({"books":[{"id":"bk_0123456789abcdef","title":"Book","authors":["Writer"],"status":"unknown"}]})).into_response(),
+        ("GET", ["v1", "library", "search"]) => Json(json!({"results":[{"bookId":"bk_0123456789abcdef","title":"Book","authors":["Writer"],"highlightId":"hl_0123456789abcdef","snippet":"A thought","page":"12","location":{"start":170,"end":172},"source":"kindle-clippings"}]})).into_response(),
+        ("GET", ["v1", "library", "recent"]) => Json(json!({"highlights":[library_highlight()],"changes":[],"sessions":[],"readingSessions":"unavailable_on_stock_kindle"})).into_response(),
+        ("GET", ["v1", "library", "sync"]) => Json(json!({"imports":[],"books":1,"highlights":1})).into_response(),
+        ("GET", ["v1", "library", "books", id]) => Json(json!({"book":{"id":id,"title":"Book","authors":["Writer"],"status":"unknown","progress":null,"relatedNotes":[],"briefs":[library_brief()]},"highlights":[library_highlight()],"sessions":[]})).into_response(),
+        ("GET", ["v1", "library", "books", id, "notes"]) => Json(if *id == "bk_0123456789abcdef" {
+            json!({"bookId":id,"total":1,"notes":[{"vault":"Vault","bookId":id,"notePath":"Reading/Book.md","noteTitle":"Book","how":"frontmatter","excerpt":"title: Book","line":2}],"indexedVaults":[{"vault":"Vault","generatedAt":"2026-10-24T10:00:00Z"}]})
+        } else {
+            json!({"bookId":id,"total":0,"notes":[],"indexedVaults":[]})
+        }).into_response(),
+        ("GET", ["v1", "library", "books", _, "highlights"]) => Json(json!({"highlights":[library_highlight()]})).into_response(),
+        ("POST", ["v1", "library", "books", _, "brief"]) => Json(library_brief()).into_response(),
         ("GET", ["v1", "session"]) => Json(json!({"authenticated": true, "deviceName": "lucina-mcp"})).into_response(),
         ("POST", ["v1", "chat"]) => {
             let msg = body["message"].as_str().unwrap_or("");
@@ -311,8 +332,78 @@ async fn handle(
             }
             None => err(StatusCode::NOT_FOUND, "note_not_found"),
         },
+        ("GET", ["v1", "tasks", "state"]) => {
+            if st.tasks.is_empty() {
+                st.tasks = seed_tasks();
+            }
+            let q = query.to_lowercase().replace('+', " ").replace("%20", " ");
+            let search = q.split('&').find_map(|kv| kv.strip_prefix("query=")).map(str::to_owned);
+            Json(tasks_view(&st.tasks, search.as_deref())).into_response()
+        }
+        ("POST", ["v1", "tasks", "command"]) => {
+            if st.tasks.is_empty() {
+                st.tasks = seed_tasks();
+            }
+            let c = &body["command"];
+            match c["type"].as_str() {
+                Some("quick_add") => {
+                    let text = c["text"].as_str().unwrap_or("");
+                    let t = json!({"id": "tmp-1", "content": text, "project_name": "Inbox", "priority": 4, "labels": [], "pending": true});
+                    st.tasks.push(t);
+                    let mut v = tasks_view(&st.tasks, None);
+                    v["task_id"] = json!("tmp-1");
+                    v["queued"] = json!(true);
+                    v["parsed"] = json!({"content": text, "due_string": "domani", "due_date": "2026-10-23", "is_recurring": false, "lang": "it", "labels": [], "spans": []});
+                    Json(v).into_response()
+                }
+                Some("complete") => {
+                    let id = c["task_id"].as_str().unwrap_or("");
+                    let Some(pos) = st.tasks.iter().position(|t| t["id"] == id) else {
+                        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "replayed": false, "code": "invalid_command", "error": "Task not found"}))).into_response();
+                    };
+                    let t = st.tasks.remove(pos);
+                    if t["due"]["is_recurring"] == true {
+                        let mut t = t;
+                        t["due"]["rel_days"] = json!(1);
+                        t["due"]["date"] = json!("2026-10-23");
+                        st.tasks.push(t);
+                    }
+                    Json(tasks_view(&st.tasks, None)).into_response()
+                }
+                _ => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "code": "invalid_command", "error": "unknown"}))).into_response(),
+            }
+        }
         _ => err(StatusCode::NOT_FOUND, "not_found"),
     }
+}
+
+fn seed_tasks() -> Vec<Value> {
+    let due = |rel: i64, string: &str, rec: bool| json!({"date": format!("2026-10-{}", 22 + rel), "string": string, "is_recurring": rec, "rel_days": rel, "overdue": rel < 0});
+    vec![
+        json!({"id": "a2", "content": "10 min anki/memrise", "project_name": "Inbox", "priority": 4, "labels": ["lingue"], "due": due(-2, "every day", true), "pending": false}),
+        json!({"id": "a1", "content": "15 min shadowing", "project_name": "Inbox", "priority": 4, "labels": [], "due": due(0, "every day", true), "pending": false}),
+        json!({"id": "a5", "content": "20min speaking", "project_name": "Lingue", "priority": 1, "labels": [], "due": due(0, "today", false), "pending": false}),
+        json!({"id": "a6", "content": "speaking club", "project_name": "Lingue", "priority": 4, "labels": [], "pending": false}),
+    ]
+}
+
+fn tasks_view(tasks: &[Value], search: Option<&str>) -> Value {
+    let pick = |f: &dyn Fn(&Value) -> bool| -> Vec<Value> {
+        tasks.iter().filter(|t| f(t)).cloned().collect()
+    };
+    let groups = match search {
+        Some(q) => vec![
+            json!({"key": "none", "kind": "none", "title": "", "tasks": pick(&|t| t["content"].as_str().unwrap_or("").to_lowercase().contains(q))}),
+        ],
+        None => vec![
+            json!({"key": "overdue", "kind": "overdue", "title": "Overdue", "tasks": pick(&|t| t["due"]["rel_days"].as_i64().is_some_and(|r| r < 0))}),
+            json!({"key": "2026-10-22", "kind": "date", "title": "", "date": "2026-10-22", "rel_days": 0, "tasks": pick(&|t| t["due"]["rel_days"] == 0 || t["id"] == "tmp-1")}),
+        ],
+    };
+    json!({"ok": true, "replayed": false, "view": {"revision": 3, "today": "2026-10-22", "timezone": "Europe/Copenhagen",
+        "goal": {"daily_goal": 5, "completed_today": 1, "reached": false},
+        "sync": {"status": "ok", "connected": true, "pending": 0},
+        "list": {"kind": if search.is_some() { "search" } else { "today" }, "title": if search.is_some() { "Search" } else { "Today" }, "groups": groups, "count": 0}}})
 }
 
 /// CIMD document served by the mock (for the CIMD test).

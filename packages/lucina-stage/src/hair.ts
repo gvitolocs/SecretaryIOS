@@ -22,6 +22,7 @@ import {
   type Object3D,
   type SkinnedMesh,
 } from 'three';
+import { tintToonMaterial, toonHandleFor, type ToonHandle } from './toon';
 import { fixMaterials, loadModel, type LoadOptions } from './loader';
 
 export const NATURAL_HAIR = 'natural';
@@ -135,6 +136,7 @@ interface TintUniforms {
 
 /** Recolours `mat` (idempotent): luminance × tint, or back to the original with null. */
 export function tintMaterial(mat: Material, hex: string | null): void {
+  if (tintToonMaterial(mat, hex)) return;
   const m = mat as Material & { color?: Color; userData: Record<string, unknown> };
   const ud = m.userData;
   if (!ud.hairTint) {
@@ -189,6 +191,7 @@ export class HairRig {
   private readonly baseHair: Mesh[];
   private readonly tiara: Mesh[];
   private readonly visibility = new Map<Mesh, boolean>();
+  private partToon: ToonHandle | null = null;
   private part: Group | null = null;
   private entry: HairEntry | null = null;
   private tint: string | null = null;
@@ -249,11 +252,12 @@ export class HairRig {
       this.applyTint();
       return;
     }
+    this.partToon = toonHandleFor(part) ?? null;
     const group = new Group();
     group.name = `Hair:${entry.id}`;
     const skinned: SkinnedMesh[] = [];
     part.traverse((o) => {
-      if ((o as SkinnedMesh).isSkinnedMesh) skinned.push(o as SkinnedMesh);
+      if ((o as SkinnedMesh).isSkinnedMesh && !o.userData.toonOutline) skinned.push(o as SkinnedMesh);
     });
     const bones = this.bonesByName();
     let rebound = 0;
@@ -265,6 +269,7 @@ export class HairRig {
       group.add(sm);
       rebound++;
     }
+    this.partToon?.update();
     const head = this.headBone();
     // Whatever was not re-bound (rigid meshes, or a skin whose bones the model lacks) rides on the head.
     let leftover = false;
@@ -297,6 +302,8 @@ export class HairRig {
 
   /** Remove the part and show the base hair again. */
   detach(): void {
+    this.partToon?.dispose();
+    this.partToon = null;
     for (const [m, v] of this.visibility) m.visible = v;
     if (this.part) {
       const rigid = this.part.userData.rigid as Object3D | undefined;

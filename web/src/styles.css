@@ -1,9 +1,15 @@
-/* Secretary web styles. Design tokens: styles/tokens.css; base, shell, stage and chat: styles/base.css. */
+/* Secretary web styles. Design tokens: styles/lucina-tokens.css (generated from design/tokens.json)
+ * and the aliases in styles/tokens.css; base, shell, stage and chat: styles/base.css; the shared
+ * Lucina look over the older rules: styles/lucina-look.css (last). */
+@import "./styles/lucina-tokens.css";
 @import "./styles/tokens.css";
 @import "./styles/base.css";
 @import "./styles/wardrobe.css";
 @import "./styles/notifications.css";
 @import "./styles/notes.css";
+@import "./styles/library.css";
+@import "./styles/rich.css";
+@import "./styles/models.css";
 
 /* ---------- Shopping ---------- */
 

@@ -1,0 +1,2 @@
+# Preserve the Kindle fixture's BOM and CRLF bytes on every checkout.
+"My Clippings.txt" -text whitespace=cr-at-eol

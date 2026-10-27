@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="21" y="48" width="22" height="12" rx="3" fill="#3e9b3e"/>
+  <path d="M21 51h22" stroke="#256b2f" stroke-width="2"/>
+  <path d="M19 49c-3-9-4-20-2-29 1.4-6.3 7-12 15-12s13.6 5.7 15 12c2 9 1 20-2 29Z" fill="#ffe896"/>
+  <path d="M23 16h.01M30 13h.01M38 15h.01M42 21h.01M22 45h.01M30 46h.01M37 44h.01M43 46h.01" stroke="#a8d84e" stroke-width="2.4" stroke-linecap="round"/><path d="M26 19h.01M35 19.5h.01M26 47h.01M40 47.5h.01" stroke="#3e9b3e" stroke-width="2.2" stroke-linecap="round"/>
+  <rect x="17.5" y="26" width="29" height="15" rx="1" fill="#fff"/>
+  <g transform="translate(32 33.5) rotate(-60)"><ellipse rx="3.6" ry="9" fill="#3e9b3e"/><path d="M0-5h.01M-1.2 0h.01M1 4h.01" stroke="#256b2f" stroke-width="1.6" stroke-linecap="round"/></g>
+  <path d="M47 20c2 9 1 20-2 29h-6c3-9 4-20 2-29-1-4.8-4.5-9.2-9.5-11.4 1-.4 7.5-.4 15.5 11.4Z" fill="#3d2b2b" opacity=".15"/>
+  <path d="M20.5 22c.6-4 3-7.5 6.5-9.5M20 44.5v-1" stroke="#fff" stroke-width="2.6" stroke-linecap="round" opacity=".6"/>
+</svg>

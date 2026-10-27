@@ -667,3 +667,336 @@ async fn a_failed_append_still_processes_the_share() {
     assert_ne!(done["status"], "processing", "{done}");
     std::fs::remove_dir(&lock).unwrap();
 }
+
+const VOICE_TEXT: &str = "ricordami di comprare il latte";
+
+fn voice_form(id: &str, bytes: Vec<u8>, transcript: Option<&str>, caption: &str) -> Form {
+    Form::new()
+        .text("shareId", id.to_owned())
+        .text("source", "ios-chat")
+        .text("channel", "ios")
+        .text("lang", "it")
+        .text("note", caption.to_owned())
+        .text(
+            "meta",
+            json!({"files":[{"index":0,"voice":true,"transcript":transcript,
+            "durationMs":1000,"waveform":"AAEC/w=="}]})
+            .to_string(),
+        )
+        .part(
+            "file",
+            Part::bytes(bytes)
+                .file_name("note.m4a")
+                .mime_str("audio/mp4")
+                .unwrap(),
+        )
+}
+
+async fn voice_setup(services: &Services, tools: bool, whisper_text: &str) -> H {
+    let whisper_json = json!({"result":{"language":"it"},"transcription":[
+        {"offsets":{"from":0,"to":1000},"text":whisper_text}]})
+    .to_string();
+    harness(script(json!({"rules":[
+        {"kind":"intent", "content":"{\"intent\":\"chat\",\"confidence\":0.95,\"reply_mode\":\"chat\",\"needs_tools\":false}"},
+        {"kind":"plan", "content":"{\"action\":\"reply\",\"text\":\"Va bene.\"}"},
+        {"kind":"reply", "content":"Va bene."},
+        {"kind":"agent", "afterTool":false, "toolCalls":[{"name":"calculator", "arguments":{"expression":"2+2"}}]},
+        {"kind":"agent", "afterTool":true, "content":"Va bene."}
+    ]})), |c| {
+        // Force the JSON planner so its exact input is observable, even for tier-0 reminders.
+        c.intent.intent_router = false;
+        c.share.dir = c.data_dir.join("shares");
+        c.share.key_file = Some(c.data_dir.join("share.key"));
+        std::fs::write(c.share.key_file.as_ref().unwrap(), "gateway-test-secret").unwrap();
+        c.share.media_url = services.base.clone();
+        if tools { c.planner = lucina_server::PlannerMode::Tools; }
+        // Exercise ffmpeg + lucina-memo's real Whisper invocation and JSON parser.
+        let cli = c.data_dir.join("whisper-test");
+        std::fs::write(&cli, format!("#!/bin/sh\necho called >> \"$0.calls\"\nwhile [ \"$#\" -gt 0 ]; do\n if [ \"$1\" = -of ]; then shift; prefix=$1; fi\n shift\ndone\ncat > \"$prefix.json\" <<'TRANSCRIPT'\n{whisper_json}\nTRANSCRIPT\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        c.share.whisper.cli = cli;
+        c.share.whisper.model = c.data_dir.join("test-model");
+        std::fs::write(&c.share.whisper.model, "test").unwrap();
+        c.share.whisper.vad_model = None;
+    }).await
+}
+
+async fn voice_bytes(h: &H) -> Vec<u8> {
+    let path = h.dir.path().join("voice.m4a");
+    assert!(tokio::process::Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:a",
+            "aac"
+        ])
+        .arg(&path)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    std::fs::read(path).unwrap()
+}
+
+#[tokio::test]
+async fn voice_notes_use_typed_planner_and_preserve_one_pair_of_items() {
+    for tools in [false, true] {
+        for on_device in [false, true] {
+            let services = services().await;
+            let h = voice_setup(&services, tools, VOICE_TEXT).await;
+            let bytes = voice_bytes(&h).await;
+            let id = "voice-note-0001";
+            let ack: Value = submit(
+                &h,
+                voice_form(id, bytes.clone(), on_device.then_some(VOICE_TEXT), "  "),
+            )
+            .await
+            .json()
+            .await
+            .unwrap();
+            assert_eq!(ack["attachments"][0]["kind"], "voice");
+            let done = finished(&h, id).await;
+            assert_eq!(done["status"], "done", "{done}");
+            assert_eq!(done["attachments"][0]["transcript"], VOICE_TEXT);
+            let lines = h.timeline_lines();
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            assert_eq!(lines[0]["role"], "user");
+            let a = &lines[0]["attachments"][0];
+            assert_eq!(a["kind"], "voice");
+            assert_eq!(a["waveform"], "AAEC/w==");
+            assert_eq!(a["durationMs"], 1000);
+            assert_eq!(a["transcript"].as_str(), on_device.then_some(VOICE_TEXT));
+            assert_eq!(lines[1]["role"], "lucina");
+            assert_eq!(lines[1]["meta"]["transcript"], VOICE_TEXT);
+            assert_eq!(lines[1]["meta"]["voiceReply"], true);
+            assert_eq!(lines[1]["replyTo"], lines[0]["id"]);
+            let requests = h.fake.requests();
+            let all = requests.iter().map(Value::to_string).collect::<String>();
+            assert!(all.contains(VOICE_TEXT), "{all}");
+            assert!(!all.contains("<Shared content>"), "{all}");
+            assert!(
+                all.contains("The owner spoke this as a voice note"),
+                "{all}"
+            );
+            // User text is precisely the typed-turn block, with no share wrapper.
+            assert!(requests
+                .iter()
+                .any(|r| r["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|m| m["role"] == "user"
+                        && m["content"]
+                            .as_str()
+                            .is_some_and(|s| s.ends_with(VOICE_TEXT)
+                                && !s.contains("Owner's question or note")))));
+            let records = h.state.share.memory.recent(0, 10).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].kind, "audio");
+            assert_eq!(records[0].subtype.as_deref(), Some("voice"));
+            assert_eq!(records[0].text, VOICE_TEXT);
+            assert_eq!(
+                h.dir.path().join("whisper-test.calls").exists(),
+                !on_device,
+                "on-device transcript must bypass Whisper"
+            );
+            if tools {
+                assert!(
+                    requests.iter().any(|r| r["messages"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|m| m["role"] == "tool")),
+                    "a tool ran without creating a progress timeline item"
+                );
+            }
+            let count = requests.len();
+            let retry: Value = submit(&h, voice_form(id, bytes, Some(VOICE_TEXT), ""))
+                .await
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(retry["duplicate"], true);
+            assert_eq!(retry["lucinaItemId"], done["lucinaItemId"]);
+            assert_eq!(h.timeline_lines().len(), 2);
+            assert_eq!(h.fake.requests().len(), count);
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_or_empty_voice_transcription_asks_to_repeat_without_model() {
+    for invalid_audio in [false, true] {
+        let services = services().await;
+        let h = voice_setup(&services, false, "").await;
+        let bytes = if invalid_audio {
+            b"unreadable".to_vec()
+        } else {
+            voice_bytes(&h).await
+        };
+        assert_eq!(
+            submit(&h, voice_form("voice-failed-001", bytes, Some("  "), ""))
+                .await
+                .status(),
+            202
+        );
+        let done = finished(&h, "voice-failed-001").await;
+        assert_eq!(done["status"], "done", "{done}");
+        assert_eq!(done["attachments"][0]["state"], "failed");
+        let lines = h.timeline_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[1]["text"],
+            "Non sono riuscita a sentirti. Puoi ripetere?"
+        );
+        assert_eq!(lines[1]["meta"]["voiceReply"], true);
+        assert!(h.fake.requests().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn captioned_and_mixed_voice_notes_keep_the_share_turn() {
+    for mixed in [false, true] {
+        let services = services().await;
+        let h = setup(&services).await;
+        let mut form = voice_form(
+            "voice-caption-01",
+            b"audio".to_vec(),
+            Some(VOICE_TEXT),
+            if mixed { "" } else { "Che ne pensi?" },
+        );
+        if mixed {
+            form = form.text("text", "another shared part");
+        }
+        assert_eq!(submit(&h, form).await.status(), 202);
+        let done = finished(&h, "voice-caption-01").await;
+        assert_eq!(done["status"], "done", "{done}");
+        let all = h
+            .fake
+            .requests()
+            .iter()
+            .map(Value::to_string)
+            .collect::<String>();
+        assert!(all.contains("<Shared content>"), "{all}");
+        assert!(all.contains(VOICE_TEXT));
+        assert!(all.contains("audio/voice"));
+        assert!(all.contains("The owner spoke this as a voice note"));
+        assert_eq!(h.timeline_lines().len(), 2);
+        assert_eq!(h.timeline_lines()[1]["meta"]["voiceReply"], true);
+    }
+}
+
+#[tokio::test]
+async fn whisper_voice_audio_is_capped_at_ten_minutes() {
+    let services = services().await;
+    let h = voice_setup(&services, false, VOICE_TEXT).await;
+    let path = h.dir.path().join("long.m4a");
+    assert!(tokio::process::Command::new("ffmpeg")
+        .args([
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=16000:cl=mono",
+            "-t",
+            "601",
+            "-c:a",
+            "aac"
+        ])
+        .arg(&path)
+        .status()
+        .await
+        .unwrap()
+        .success());
+    assert_eq!(
+        submit(
+            &h,
+            voice_form("voice-duration-01", std::fs::read(path).unwrap(), None, "")
+        )
+        .await
+        .status(),
+        202
+    );
+    assert_eq!(finished(&h, "voice-duration-01").await["status"], "done");
+    let dir = h
+        .state
+        .cfg
+        .share
+        .dir
+        .join(chrono::Utc::now().format("%Y-%m").to_string())
+        .join("voice-duration-01");
+    let wav = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.to_string_lossy().ends_with(".share.wav"))
+        .unwrap();
+    let duration = lucina_memo::transcribe::duration(&h.state.cfg.share.whisper, &wav)
+        .await
+        .unwrap();
+    assert!((599.9..=600.0).contains(&duration), "{duration}");
+}
+
+#[tokio::test]
+async fn long_voice_transcripts_skip_summary_and_reach_planner_without_timeline_caps() {
+    let services = services().await;
+    let h = voice_setup(&services, false, "unused").await;
+    let transcript = format!("{} END_OF_VOICE", "parola ".repeat(2000));
+    assert_eq!(
+        submit(
+            &h,
+            voice_form(
+                "voice-longtext-01",
+                b"audio".to_vec(),
+                Some(&transcript),
+                ""
+            )
+        )
+        .await
+        .status(),
+        202
+    );
+    let done = finished(&h, "voice-longtext-01").await;
+    assert_eq!(done["status"], "done", "{done}");
+    let records = h.state.share.memory.recent(0, 10).unwrap();
+    assert_eq!(records[0].text, transcript);
+    assert!(records[0].summary.is_none());
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        lines[0]["attachments"][0]["transcript"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        4000
+    );
+    assert_eq!(
+        lines[1]["meta"]["transcript"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        4000
+    );
+    assert!(h
+        .fake
+        .requests()
+        .iter()
+        .any(|r| r["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["role"] == "user"
+                && m["content"]
+                    .as_str()
+                    .is_some_and(|s| s.ends_with("END_OF_VOICE")))));
+}
