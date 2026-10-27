@@ -21,6 +21,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use axum::serve::ListenerExt as _;
 use clap::{Parser, Subcommand};
 use lucina_server::{app, AppState, Config};
 use lucina_tools::google;
@@ -643,7 +644,11 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             let discord = state.spawn_discord(stop_rx.clone());
             let mut servers = tokio::task::JoinSet::new();
             for bind in binds {
-                let listener = tokio::net::TcpListener::bind(bind).await?;
+                // TCP_NODELAY: the live view's and LucinaDesk's sockets carry small messages
+                // (acks, input) that Nagle plus delayed ACKs would hold for ~40 ms each.
+                let listener = tokio::net::TcpListener::bind(bind).await?.tap_io(|tcp| {
+                    let _ = tcp.set_nodelay(true);
+                });
                 tracing::info!(%bind, "listening");
                 let router = app(state.clone());
                 let mut rx = stop_rx.clone();

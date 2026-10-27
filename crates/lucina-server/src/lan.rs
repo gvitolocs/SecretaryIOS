@@ -281,6 +281,8 @@ pub async fn serve(cfg: &'static LanConfig, mut stop: tokio::sync::watch::Receiv
                 }
             },
         };
+        // Small socket messages (acks, input) must not wait for Nagle.
+        let _ = tcp.set_nodelay(true);
         let acceptor = acceptor.clone();
         let app = app.clone();
         tokio::spawn(async move {
