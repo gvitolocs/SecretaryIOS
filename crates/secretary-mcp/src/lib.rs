@@ -12,11 +12,13 @@
 //! - [`oauth`]: the OAuth 2.1 authorization server for ChatGPT connectors.
 //! - [`mcp`] / [`tools`]: the MCP handler and its tools.
 //! - [`backend`]: the secretary-server client.
+//! - [`diagnostics`]: crash reports from lucina-diagnostics (optional).
 
 pub mod auth;
 pub mod backend;
 pub mod cli;
 pub mod config;
+pub mod diagnostics;
 pub mod format;
 pub mod login;
 pub mod mcp;
@@ -49,6 +51,8 @@ pub struct App {
     pub tokens: tokens::TokenStore,
     pub oauth: oauth::OAuth,
     pub backend: backend::Backend,
+    /// `None` when `SECRETARY_MCP_DIAGNOSTICS_URL` is unset.
+    pub diagnostics: Option<diagnostics::Diagnostics>,
 }
 
 pub type AppState = Arc<App>;
@@ -61,7 +65,12 @@ impl App {
             cfg.backend_token.clone(),
             cfg.service_token.clone(),
         );
+        let diagnostics = cfg
+            .diagnostics_url
+            .as_deref()
+            .map(|u| diagnostics::Diagnostics::new(u, cfg.diagnostics_token.clone()));
         Ok(Arc::new(App {
+            diagnostics,
             tokens: tokens::TokenStore::new(&cfg.data_dir),
             oauth: oauth::OAuth::new(&cfg),
             backend,
