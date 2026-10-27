@@ -729,44 +729,191 @@ pub fn calendar(r: &Value, tz: Tz) -> String {
 
 // -- notes -------------------------------------------------------------------------
 
-fn note_head(n: &Value, tz: Tz) -> String {
-    let tags = n
-        .get("tags")
-        .and_then(Value::as_array)
-        .map(|t| {
-            t.iter()
-                .filter_map(Value::as_str)
-                .map(|t| format!("#{t}"))
-                .collect::<Vec<_>>()
-                .join(" ")
+/// "3/7 done" for checklist items (`{text, checked, indent}`).
+pub fn progress(items: &[Value]) -> String {
+    let done = items
+        .iter()
+        .filter(|i| i.get("checked").and_then(Value::as_bool) == Some(true))
+        .count();
+    format!("{done}/{} done", items.len())
+}
+
+/// Numbered checklist lines, as note_update's `check` / `uncheck` / `removeItems` count them.
+pub fn checklist(items: &[Value]) -> String {
+    let mut out: Vec<String> = items
+        .iter()
+        .enumerate()
+        .take(300)
+        .map(|(i, it)| {
+            let mark = if it.get("checked").and_then(Value::as_bool) == Some(true) {
+                "x"
+            } else {
+                " "
+            };
+            let indent = if it.get("indent").and_then(Value::as_u64).unwrap_or(0) > 0 {
+                "   "
+            } else {
+                ""
+            };
+            format!(
+                "{indent}{}. [{mark}] {}",
+                i + 1,
+                s(it, "text").unwrap_or("")
+            )
         })
+        .collect();
+    if items.len() > 300 {
+        out.push(format!("… and {} more items.", items.len() - 300));
+    }
+    out.join("\n")
+}
+
+fn flag(n: &Value, key: &str) -> bool {
+    n.get(key).and_then(Value::as_bool) == Some(true)
+}
+
+fn byte_size(b: u64) -> String {
+    match b {
+        0..=1023 => format!("{b} B"),
+        1024..=1_048_575 => format!("{} KB", b / 1024),
+        _ => format!("{:.1} MB", b as f64 / 1_048_576.0),
+    }
+}
+
+/// The reminder of a note or summary: `2026-11-03 09:00 (weekly)`.
+fn reminder_text(n: &Value, tz: Tz) -> Option<String> {
+    let (at, rec) = match n.get("reminder").filter(|r| r.is_object()) {
+        Some(r) => (r.get("at"), s(r, "recurrence")),
+        None => (n.get("reminderAt").filter(|v| !v.is_null()), None),
+    };
+    let at = at?;
+    let mut t = local_time(Some(at), tz);
+    if let Some(rec) = rec {
+        t.push_str(&format!(" ({rec})"));
+    }
+    Some(t)
+}
+
+/// Checklist progress of a summary (`itemsTotal`, `itemsDone`) or a full note (`items`).
+fn list_progress(n: &Value) -> Option<String> {
+    if let Some(items) = n.get("items").and_then(Value::as_array) {
+        return Some(progress(items));
+    }
+    if flag(n, "isList") {
+        let total = n.get("itemsTotal").and_then(Value::as_u64).unwrap_or(0);
+        let done = n.get("itemsDone").and_then(Value::as_u64).unwrap_or(0);
+        return Some(format!("{done}/{total} done"));
+    }
+    None
+}
+
+fn note_head(n: &Value, tz: Tz) -> String {
+    // Display names (`labels`) when the answer has them, else the stored tags.
+    let labels: Vec<&str> = ["labels", "tags"]
+        .iter()
+        .find_map(|k| n.get(*k).and_then(Value::as_array))
+        .map(|t| t.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
+    let title = s(n, "title").filter(|t| !t.trim().is_empty());
     let mut line = format!(
         "\"{}\" (slug {}, id {})",
-        s(n, "title").unwrap_or("untitled"),
+        title.unwrap_or("untitled"),
         s(n, "slug").unwrap_or("?"),
         s(n, "id").unwrap_or("?"),
     );
-    if n.get("pinned").and_then(Value::as_bool) == Some(true) {
+    if flag(n, "pinned") {
         line.push_str(" [pinned]");
+    }
+    if flag(n, "archived") {
+        line.push_str(" [archived]");
+    }
+    if n.get("deletedAt").is_some_and(|d| !d.is_null()) {
+        line.push_str(" [in the trash]");
     }
     line.push_str(&format!(
         " · by {} · updated {}",
         s(n, "source").unwrap_or("owner"),
         local_time(n.get("updatedAt"), tz)
     ));
-    if !tags.is_empty() {
-        line.push_str(&format!(" · {tags}"));
+    if let Some(c) = s(n, "color").filter(|c| *c != "default") {
+        line.push_str(&format!(" · colour {c}"));
+    }
+    if !labels.is_empty() {
+        line.push_str(&format!(" · labels: {}", labels.join(", ")));
+    }
+    if let Some(p) = list_progress(n) {
+        line.push_str(&format!(" · checklist {p}"));
+    }
+    if let Some(r) = reminder_text(n, tz) {
+        line.push_str(&format!(" · reminder {r}"));
     }
     line
 }
 
-/// One note with its content from `offset` (characters), at most `max`.
+/// Attachments, links and collaborators of a full note, one line each.
+fn note_extras(n: &Value) -> String {
+    let mut out = String::new();
+    let list = |k: &str| {
+        n.get(k)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let atts = list("attachments");
+    if !atts.is_empty() {
+        let parts: Vec<String> = atts
+            .iter()
+            .map(|a| {
+                format!(
+                    "{} ({}, {})",
+                    s(a, "name").or_else(|| s(a, "file")).unwrap_or("file"),
+                    s(a, "mimetype").unwrap_or("?"),
+                    byte_size(a.get("size").and_then(Value::as_u64).unwrap_or(0))
+                )
+            })
+            .collect();
+        out.push_str(&format!("\nAttachments: {}", parts.join("; ")));
+    }
+    let links = list("annotations");
+    if !links.is_empty() {
+        let parts: Vec<String> = links
+            .iter()
+            .map(|l| match s(l, "title").filter(|t| !t.is_empty()) {
+                Some(t) => format!("{t} <{}>", s(l, "url").unwrap_or("?")),
+                None => format!("<{}>", s(l, "url").unwrap_or("?")),
+            })
+            .collect();
+        out.push_str(&format!("\nLinks: {}", parts.join("; ")));
+    }
+    let people: Vec<String> = list("collaborators")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    if !people.is_empty() {
+        out.push_str(&format!("\nShared with: {}", people.join(", ")));
+    }
+    out
+}
+
+/// One note with its content from `offset` (characters), at most `max`. A
+/// checklist note shows its numbered items instead of the derived content.
 pub fn note(n: &Value, offset: usize, max: usize, tz: Tz) -> String {
+    let mut out = format!("Note {}", note_head(n, tz));
+    out.push_str(&note_extras(n));
+    if let Some(items) = n.get("items").and_then(Value::as_array) {
+        out.push_str(&format!("\nChecklist, {}:\n", progress(items)));
+        if items.is_empty() {
+            out.push_str("(no items)");
+        } else {
+            out.push_str(&checklist(items));
+        }
+        return out;
+    }
     let content = s(n, "content").unwrap_or("");
     let total = content.chars().count();
     let part: String = content.chars().skip(offset).take(max).collect();
-    let mut out = format!("Note {}\n{total} characters.", note_head(n, tz));
+    out.push_str(&format!("\n{total} characters."));
     if offset > 0 || offset + max < total {
         let end = (offset + max).min(total);
         out.push_str(&format!(" Showing characters {offset}-{end}."));
@@ -788,19 +935,13 @@ pub fn note(n: &Value, offset: usize, max: usize, tz: Tz) -> String {
     out
 }
 
-/// `GET /v1/notes` answer as a list.
-pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> String {
+/// `GET /v1/notes` answer as a list; `what` describes the filters (" matching \"x\"").
+pub fn notes_list(v: &Value, what: &str, tz: Tz) -> String {
     let notes = v
         .get("notes")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let what = match (q, tag) {
-        (Some(q), Some(t)) => format!(" matching {q:?} tagged #{t}"),
-        (Some(q), None) => format!(" matching {q:?}"),
-        (None, Some(t)) => format!(" tagged #{t}"),
-        (None, None) => String::new(),
-    };
     if notes.is_empty() {
         return format!("No notes{what}.");
     }
@@ -808,11 +949,34 @@ pub fn notes_list(v: &Value, q: Option<&str>, tag: Option<&str>, tz: Tz) -> Stri
     for n in &notes {
         let size = n.get("size").and_then(Value::as_u64).unwrap_or(0);
         out.push_str(&format!("- {} · {size} bytes\n", note_head(n, tz)));
-        if let Some(e) = s(n, "excerpt") {
+        if let Some(e) = s(n, "excerpt").filter(|e| !e.is_empty()) {
             out.push_str(&format!("  {}\n", clip(e, 240)));
         }
     }
     out.push_str("Read one with note_get (slug or id).");
+    out
+}
+
+/// `GET /v1/notes/labels`.
+pub fn note_labels(v: &Value) -> String {
+    let labels = v
+        .get("labels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if labels.is_empty() {
+        return "No labels yet.".to_owned();
+    }
+    let mut out = format!("{} label(s):\n", labels.len());
+    for l in &labels {
+        let n = l.get("count").and_then(Value::as_u64).unwrap_or(0);
+        out.push_str(&format!(
+            "- {} ({n} note{})\n",
+            s(l, "name").or_else(|| s(l, "tag")).unwrap_or("?"),
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    out.push_str("Find a label's notes with notes_search label=<name>.");
     out
 }
 
