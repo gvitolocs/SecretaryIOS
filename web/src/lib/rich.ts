@@ -22,7 +22,22 @@ export type RichAction =
   | { id: string; label: string; emoji?: string; kind: "reply"; payload: { text: string; prefill?: boolean } }
   | { id: string; label: string; emoji?: string; kind: "route"; payload: { path: string } }
   | { id: string; label: string; emoji?: string; kind: "confirm"; payload: { answer: "yes" | "no" | "edit"; text?: string } }
-  | { id: string; label: string; emoji?: string; kind: "dismiss"; payload: Record<string, never> };
+  | { id: string; label: string; emoji?: string; kind: "dismiss"; payload: Record<string, never> }
+  | { id: string; label: string; emoji?: string; kind: "secret"; payload: SecretActionPayload };
+
+/** Opens the "Add secret" sheet. Names only: a value never travels in a message. */
+export interface SecretActionPayload {
+  mode: "save" | "project";
+  name?: string;
+  project?: string;
+  environment?: string;
+  path?: string;
+  /** `/secret` target text (`poko`, `poko/prod/Pokobot`). */
+  target?: string;
+  /** A value Lucina holds in memory for the owner (the sheet sends the id). */
+  held?: string;
+  projectName?: string;
+}
 
 export interface RichMessage {
   format: "v1";
@@ -235,6 +250,18 @@ function parseAction(v: unknown, index: number): RichAction | null {
     }
     case "dismiss":
       return { ...base, kind: "dismiss", payload: {} };
+    case "secret": {
+      if (p.mode !== "save" && p.mode !== "project") return null;
+      const payload: SecretActionPayload = { mode: p.mode };
+      const NAME = /^[A-Za-z0-9_.@/-]{1,256}$/;
+      for (const k of ["name", "project", "environment", "path", "target", "held"] as const) {
+        const v = p[k];
+        if (typeof v === "string" && NAME.test(v)) payload[k] = v;
+      }
+      const projectName = line(p.projectName, 64);
+      if (projectName) payload.projectName = projectName;
+      return { ...base, kind: "secret", payload };
+    }
     default:
       return null;
   }

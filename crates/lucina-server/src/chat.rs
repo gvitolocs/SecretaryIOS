@@ -139,14 +139,62 @@ pub async fn handle_chat(
     {
         return Ok(out);
     }
+    // "Add secret": `/secret …` never reaches a sink; tokens in a normal
+    // message are masked before the turn and offered for saving after it.
+    if crate::owner_secrets::is_secret_command(&text) {
+        let (reply, lucina_item_id) =
+            crate::owner_secrets::answer_secret_command(&st, &text, &st.timeline_for(&session));
+        return Ok(json!({
+            "reply": reply,
+            "action": "secret_command",
+            "sensitive": true,
+            "sessionId": session,
+            "clientMessageId": (!client_message_id.is_empty()).then_some(client_message_id),
+            "job": null,
+            "userItemId": null,
+            "lucinaItemId": lucina_item_id,
+        }));
+    }
+    let (text, held) = crate::owner_secrets::mask_message(&st, &text);
+    if let Some(name) = held
+        .is_empty()
+        .then(|| crate::owner_secrets::project_request(&text))
+        .flatten()
+    {
+        let timeline = st.timeline_for(&session);
+        let user = timeline.record(lucina_store::timeline::NewItem {
+            channel: channel.clone(),
+            role: "user".into(),
+            text: text.clone(),
+            client_message_id: (!client_message_id.is_empty()).then(|| client_message_id.clone()),
+            reply_to: reply_to.clone(),
+            ..Default::default()
+        });
+        let (reply, lucina_item_id) = crate::owner_secrets::answer_project_request(
+            &timeline,
+            &name,
+            crate::owner_secrets::lang_of(&text),
+        );
+        return Ok(json!({
+            "reply": reply,
+            "action": "secret_project_offer",
+            "sessionId": session,
+            "clientMessageId": (!client_message_id.is_empty()).then_some(client_message_id),
+            "job": null,
+            "userItemId": user.map(|u| u.id),
+            "lucinaItemId": lucina_item_id,
+        }));
+    }
     let device_meta = Meta {
         device: body["device"].as_str().map(str::to_owned),
         device_name: body["deviceName"].as_str().map(str::to_owned),
         ..Meta::default()
     };
+    let offer_timeline = st.timeline_for(&session);
+    let offer_lang = crate::owner_secrets::lang_of(&text);
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
-        return run_turn(
+        let out = run_turn(
             st,
             text,
             session,
@@ -158,6 +206,8 @@ pub async fn handle_chat(
             device_meta,
         )
         .await;
+        crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
+        return out;
     };
     let key = format!("{session}:{cmid_value}");
     enum Slot {
@@ -207,6 +257,7 @@ pub async fn handle_chat(
         Slot::Fresh(fut) => fut,
     };
     let out = shared.await;
+    crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
     if out.is_err() {
         st.client_messages
             .lock()
@@ -294,10 +345,34 @@ pub async fn channel_turn(
     session: String,
     channel: String,
     surface: TurnSurface,
-    origin: ChannelOrigin,
+    mut origin: ChannelOrigin,
 ) -> Result<Value, ApiError> {
-    run_turn_inner(
-        st,
+    // "Add secret" (see handle_chat): the owner's `/secret …` is answered
+    // here; tokens are masked before the turn, then offered in the app.
+    if origin.owner && crate::owner_secrets::is_secret_command(&message) {
+        let (mut reply, _) =
+            crate::owner_secrets::answer_secret_command(&st, &message, &st.timeline);
+        reply.push_str(crate::owner_secrets::chat_app_note(
+            crate::owner_secrets::lang_of(message.trim_start().get(7..).unwrap_or("")),
+        ));
+        return Ok(
+            json!({"reply": reply, "action": "secret_command", "sensitive": true, "job": null}),
+        );
+    }
+    let offer_lang = crate::owner_secrets::lang_of(&message);
+    let (message, held) = if origin.owner {
+        crate::owner_secrets::mask_message(&st, &message)
+    } else {
+        (
+            lucina_secrets::redactor().redact(&message).into_owned(),
+            vec![],
+        )
+    };
+    if let Some(t) = origin.timeline_text.as_mut() {
+        *t = lucina_secrets::redactor().redact(t).into_owned();
+    }
+    let out = run_turn_inner(
+        st.clone(),
         message,
         session,
         None,
@@ -309,7 +384,9 @@ pub async fn channel_turn(
         None,
         Meta::default(),
     )
-    .await
+    .await;
+    crate::owner_secrets::offer_held(&st.timeline, &held, offer_lang);
+    out
 }
 
 /// What the turn answered.
@@ -1521,7 +1598,10 @@ async fn json_turn(
             .unwrap_or(&t.message)
             .to_owned();
         if !lucina_computer_use::shared_client().ready() {
-            return Finish::reply("My own computer is switched off on this runtime.", "computer");
+            return Finish::reply(
+                "My own computer is switched off on this runtime.",
+                "computer",
+            );
         }
         return match lucina_computer_use::run_task("lucina", &task, &lucina_computer_use::Cancel::new()).await {
             Ok(r) => {

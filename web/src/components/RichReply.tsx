@@ -1,3 +1,4 @@
+import { openSecretSheet } from "../state/secretSheet";
 import { useNavigate } from "@solidjs/router";
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { t } from "../i18n";
@@ -242,6 +243,10 @@ function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?
         navigate(a.payload.path);
         break;
       case "dismiss":
+        break;
+      case "secret":
+        // Names only; the sheet asks for the value (or sends the held id).
+        openSecretSheet(a.payload);
         break;
     }
     chooseAction(props.message, a.id);

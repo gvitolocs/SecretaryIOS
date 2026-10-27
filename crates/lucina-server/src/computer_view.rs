@@ -107,7 +107,11 @@ pub fn open(sandbox: SandboxId, mode: ViewMode, device: &str, epoch: u64, machin
     map.retain(|_, v| v.expires > now);
     if map.len() >= MAX_VIEWS {
         // Oldest first: a forgotten tab never blocks a new view.
-        if let Some(oldest) = map.iter().min_by_key(|(_, v)| v.expires).map(|(k, _)| k.clone()) {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, v)| v.expires)
+            .map(|(k, _)| k.clone())
+        {
             map.remove(&oldest);
         }
     }
@@ -182,9 +186,18 @@ fn is_upgrade(headers: &HeaderMap) -> bool {
 }
 
 fn harden(h: &mut HeaderMap) {
-    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(VIEW_CSP));
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(VIEW_CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     h.insert(
         HeaderName::from_static("cross-origin-resource-policy"),
         HeaderValue::from_static("same-site"),
@@ -215,7 +228,12 @@ pub async fn proxy(
         return ApiError::new(401, "unauthorized", "").into_response();
     }
     let Some(view) = live(&view_id) else {
-        return ApiError::new(410, "view_ended", "this live view has ended; open a new one").into_response();
+        return ApiError::new(
+            410,
+            "view_ended",
+            "this live view has ended; open a new one",
+        )
+        .into_response();
     };
     let upgrade = is_upgrade(req.headers());
     let Some(target) = classify(req.method(), &rest, upgrade) else {
@@ -279,7 +297,10 @@ async fn read_head(s: &mut TcpStream) -> std::io::Result<(u16, Vec<(String, Stri
     loop {
         let n = s.read(&mut chunk).await?;
         if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "closed before the response head"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "closed before the response head",
+            ));
         }
         buf.extend_from_slice(&chunk[..n]);
         if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
@@ -298,7 +319,10 @@ async fn read_head(s: &mut TcpStream) -> std::io::Result<(u16, Vec<(String, Stri
             return Ok((status, headers, rest));
         }
         if buf.len() > 16 * 1024 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "response head too large"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "response head too large",
+            ));
         }
     }
 }
@@ -316,7 +340,9 @@ async fn socket(view: View, mut req: Request) -> Response {
         Some(q) => format!("/media?{q}"),
         None => "/media".to_owned(),
     };
-    let mut head = format!("GET {path_q} HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n");
+    let mut head = format!(
+        "GET {path_q} HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+    );
     for name in [
         "sec-websocket-key",
         "sec-websocket-version",
@@ -332,10 +358,11 @@ async fn socket(view: View, mut req: Request) -> Response {
         }
     }
     head.push_str("\r\n");
-    let mut upstream = match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await {
-        Ok(Ok(s)) => s,
-        _ => return ApiError::new(502, "sandbox_unreachable", "").into_response(),
-    };
+    let mut upstream =
+        match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await {
+            Ok(Ok(s)) => s,
+            _ => return ApiError::new(502, "sandbox_unreachable", "").into_response(),
+        };
     let _ = upstream.set_nodelay(true);
     if upstream.write_all(head.as_bytes()).await.is_err() {
         return ApiError::new(502, "sandbox_unreachable", "").into_response();
@@ -346,8 +373,13 @@ async fn socket(view: View, mut req: Request) -> Response {
             _ => return ApiError::new(502, "sandbox_unreachable", "").into_response(),
         };
     if status != 101 {
-        tracing::warn!(sandbox = view.sandbox.as_str(), status, "live view socket refused by the sandbox");
-        return ApiError::new(502, "sandbox_refused", format!("sandbox answered {status}")).into_response();
+        tracing::warn!(
+            sandbox = view.sandbox.as_str(),
+            status,
+            "live view socket refused by the sandbox"
+        );
+        return ApiError::new(502, "sandbox_refused", format!("sandbox answered {status}"))
+            .into_response();
     }
     let on_upgrade = hyper::upgrade::on(&mut req);
     let mut resp = Response::new(Body::empty());
@@ -355,14 +387,22 @@ async fn socket(view: View, mut req: Request) -> Response {
     for (k, v) in &up_headers {
         if matches!(
             k.as_str(),
-            "upgrade" | "connection" | "sec-websocket-accept" | "sec-websocket-protocol" | "sec-websocket-extensions"
+            "upgrade"
+                | "connection"
+                | "sec-websocket-accept"
+                | "sec-websocket-protocol"
+                | "sec-websocket-extensions"
         ) {
             if let (Ok(n), Ok(v)) = (HeaderName::try_from(k.as_str()), HeaderValue::from_str(v)) {
                 resp.headers_mut().insert(n, v);
             }
         }
     }
-    control().note(view.sandbox, "view_socket_open", json!({"device": view.device, "mode": view.mode.as_str()}));
+    control().note(
+        view.sandbox,
+        "view_socket_open",
+        json!({"device": view.device, "mode": view.mode.as_str()}),
+    );
     tokio::spawn(async move {
         let client = match on_upgrade.await {
             Ok(u) => TokioIo::new(u),
@@ -414,14 +454,19 @@ where
                 return "expired";
             }
             if watch_view.mode == ViewMode::Control {
-                if !control().owner_driving(watch_view.sandbox) || control().epoch(watch_view.sandbox) != watch_view.epoch {
+                if !control().owner_driving(watch_view.sandbox)
+                    || control().epoch(watch_view.sandbox) != watch_view.epoch
+                {
                     return "control ended";
                 }
                 if last_log.elapsed() >= INPUT_LOG_EVERY {
                     let total = input.load(Ordering::Relaxed);
                     if total > logged {
                         let batch = json!({"via": "live", "bytes": total - logged});
-                        if control().owner_input(watch_view.sandbox, &watch_view.device, batch).is_err() {
+                        if control()
+                            .owner_input(watch_view.sandbox, &watch_view.device, batch)
+                            .is_err()
+                        {
                             return "control ended";
                         }
                         logged = total;
@@ -436,7 +481,11 @@ where
         _ = down => "sandbox closed",
         why = watchdog => why,
     };
-    control().note(view.sandbox, "view_socket_closed", json!({"device": view.device, "mode": view.mode.as_str(), "why": why}));
+    control().note(
+        view.sandbox,
+        "view_socket_closed",
+        json!({"device": view.device, "mode": view.mode.as_str(), "why": why}),
+    );
 }
 
 #[cfg(test)]
@@ -448,11 +497,23 @@ mod tests {
         let get = Method::GET;
         let post = Method::POST;
         assert_eq!(classify(&get, "viewer/", false), Some(Target::Asset));
-        assert_eq!(classify(&get, "viewer/viewer.js", false), Some(Target::Asset));
+        assert_eq!(
+            classify(&get, "viewer/viewer.js", false),
+            Some(Target::Asset)
+        );
         assert_eq!(classify(&post, "viewer/viewer.js", false), None);
-        assert_eq!(classify(&post, "cua.env.v1.StreamService/OpenMedia", false), Some(Target::Rpc));
-        assert_eq!(classify(&Method::OPTIONS, "cua.env.v1.PresenceService/Join", false), Some(Target::Rpc));
-        assert_eq!(classify(&post, "cua.env.v1.SystemService/GetCapabilities", false), Some(Target::Rpc));
+        assert_eq!(
+            classify(&post, "cua.env.v1.StreamService/OpenMedia", false),
+            Some(Target::Rpc)
+        );
+        assert_eq!(
+            classify(&Method::OPTIONS, "cua.env.v1.PresenceService/Join", false),
+            Some(Target::Rpc)
+        );
+        assert_eq!(
+            classify(&post, "cua.env.v1.SystemService/GetCapabilities", false),
+            Some(Target::Rpc)
+        );
         assert_eq!(classify(&get, "media", true), Some(Target::Socket));
         for (m, p, up) in [
             (&post, "cua.env.v1.SystemService/CreateViewerTicket", false),
@@ -512,7 +573,10 @@ mod tests {
         let task = tokio::spawn(splice(view, theirs, upstream, b"hi".to_vec()));
         let mut got = [0u8; 2];
         ours.read_exact(&mut got).await.unwrap();
-        assert_eq!(&got, b"hi", "bytes after the 101 head reach the viewer first");
+        assert_eq!(
+            &got, b"hi",
+            "bytes after the 101 head reach the viewer first"
+        );
         ours.write_all(b"ping").await.unwrap();
         let mut echo = [0u8; 4];
         ours.read_exact(&mut echo).await.unwrap();

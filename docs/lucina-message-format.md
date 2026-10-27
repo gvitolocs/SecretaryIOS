@@ -80,6 +80,7 @@ table cells 80 characters.
 | `route` | `{path}` | Navigates in the app: `/notes/<slug>`, `/notes`, `/shopping`, `/links`, `/gym`, `/weight`, `/tasks` (when the app has it). Must start with `/`; no `..`, no scheme. Unknown paths fall back to the chat. |
 | `confirm` | `{answer: yes\|no\|edit, text}` | Answers Lucina's pending confirmation (today: calendar events). `yes`/`no` send `text` (`sì`/`no`, which her yes/no flow understands). `edit` prefills the composer with `text` instead; the pending action is dropped when the next message is not a yes or no. |
 | `dismiss` | `{}` | Nothing is sent; the buttons are just marked as answered. |
+| `secret` | `{mode: save\|project, name?, project?, environment?, path?, target?, held?, projectName?}` | Opens the "Add secret" sheet with those names filled in (`project` is an Infisical id, `target` the `/secret` alias form, `held` the id of a value Lucina holds in memory for 10 minutes). Never carries a value: clients and servers drop any other field. The owner still confirms in the sheet. |
 
 `id`: 1-48 characters `[A-Za-z0-9_.:-]`, unique within the message. `label`: up to
 40 characters. `emoji`: optional, one emoji.

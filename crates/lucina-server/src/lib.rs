@@ -13,9 +13,9 @@ pub mod api;
 pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
+pub mod chat;
 pub mod computer;
 pub mod computer_view;
-pub mod chat;
 pub mod config;
 pub mod context;
 pub mod deals;
@@ -27,6 +27,7 @@ pub mod geocode;
 pub mod grocery_turn;
 pub mod jobs;
 pub mod otp;
+pub mod owner_secrets;
 pub mod parity;
 pub mod places;
 pub mod planner;
@@ -103,6 +104,8 @@ pub struct Inner {
     pub secretary: bridges::Secretary,
     pub bridge_state: bridges::BridgeState,
     pub client_messages: Mutex<HashMap<String, (Instant, SharedChat)>>,
+    /// Values the owner put in chat, waiting for "Save as secret" (memory only).
+    pub held_secrets: owner_secrets::HeldSecrets,
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
@@ -323,7 +326,9 @@ impl AppState {
                 .expect("drive tool registers");
         }
         // Lucina's own computers (LUCINA_COMPUTER_USE_ENABLED=true, crate lucina_computer_use).
-        if std::env::var("LUCINA_COMPUTER_USE_ENABLED").as_deref() == Ok("true") && cfg.tools.allows("computer") {
+        if std::env::var("LUCINA_COMPUTER_USE_ENABLED").as_deref() == Ok("true")
+            && cfg.tools.allows("computer")
+        {
             registry
                 .register(Arc::new(lucina_tools::tools::computer::ComputerTool))
                 .expect("computer tool registers");
@@ -407,6 +412,7 @@ impl AppState {
             },
             bridge_state: bridges::BridgeState::default(),
             client_messages: Mutex::new(HashMap::new()),
+            held_secrets: owner_secrets::HeldSecrets::default(),
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),

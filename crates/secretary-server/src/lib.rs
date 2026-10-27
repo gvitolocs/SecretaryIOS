@@ -26,6 +26,7 @@ pub mod models;
 pub mod notes;
 pub mod notify;
 pub mod owner;
+pub mod owner_secrets;
 pub mod proactive;
 pub mod ratelimit;
 pub mod routes;
@@ -134,6 +135,8 @@ pub struct Inner {
     pub proactive: Arc<proactive::FeedbackStore>,
     /// Tasks engine (`tasks.json`) and the Todoist client.
     pub tasks: Arc<tasks::TasksHub>,
+    /// Signs the owner grants of "Add secret" (`secret-grant.key`).
+    pub grant_signer: owner_secrets::GrantSigner,
 }
 
 #[derive(Clone)]
@@ -185,6 +188,7 @@ impl AppState {
             links: links::Hub::open(cfg)?,
             proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
+            grant_signer: owner_secrets::GrantSigner::new(&cfg.data_dir),
         })))
     }
 
@@ -260,6 +264,7 @@ pub fn app(state: AppState) -> Router {
         .merge(proactive::routes())
         .merge(links::routes())
         .merge(todoist::routes())
+        .merge(owner_secrets::routes())
         .merge(computer::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
