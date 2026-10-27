@@ -1227,8 +1227,9 @@ Notification:
   "data": {}, "read": false, "readAt": null }
 ```
 
-`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
-`shopping`, `presence`, `system`. Without `title`, clients title it by category.
+`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`, `agent`,
+`shopping`, `presence`, `system`. Without `title`, clients title it by category
+(`agent`: by `data.reason`, `finished`, `permission` or `error`).
 `route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
 
 | Route | |
@@ -1249,7 +1250,7 @@ Settings:
 
 ```json
 { "categories": {"lucina_message": true, "reminder": true, "calendar": true, "device_confirm": true,
-                 "shopping": true, "presence": false, "system": false},
+                 "agent": true, "shopping": true, "presence": false, "system": false},
   "quietHours": {"enabled": false, "start": "22:30", "end": "07:30"},
   "timeZone": "Europe/Rome", "dndUntil": null, "calendarLeadMinutes": 10,
   "remindersBypassQuiet": true, "digest": true, "previews": true, "language": "en",
