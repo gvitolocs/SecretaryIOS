@@ -666,6 +666,19 @@ describe("ComputerView with LucinaDesk", () => {
     expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
   });
 
+  it("the player's own full screen does not switch on the page's classic full-screen layout", async () => {
+    fakeLucina(state(), undefined, true);
+    renderComputer();
+    const canvas = await screen.findByRole("img", { name: "Lucina's screen" });
+    Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => canvas.closest(".ldesk-stage") });
+    try {
+      document.dispatchEvent(new Event("fullscreenchange"));
+      expect(document.querySelector(".computer-page")!.getAttribute("data-full")).toBe("no");
+    } finally {
+      delete (document as { fullscreenElement?: unknown }).fullscreenElement;
+    }
+  });
+
   it("falls back to the Cua viewer when the server has no desk endpoint", async () => {
     const calls = fakeLucina(state());
     renderComputer();

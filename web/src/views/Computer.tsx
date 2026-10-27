@@ -694,6 +694,8 @@ export default function ComputerView() {
       }
     };
     const onFullscreen = () => {
+      // LucinaDesk full-screens its own stage; that is not this page's classic full screen.
+      if (desk()) return;
       if (document.fullscreenElement) setFull(true);
       else if (full() && !hasFocusMode()) leftFull();
     };
