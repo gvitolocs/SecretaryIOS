@@ -8,7 +8,7 @@
 //! `docs/meetings.md` (one-time download).
 //!
 //! [`profiles`] keeps a voice per named person and matches clusters to them (cosine
-//! similarity, kernel MK5); unknown voices that recur are asked about once (MK6).
+//! similarity, kernel MT5); unknown voices that recur are asked about once (MT6).
 //!
 //! The pipeline sees only the [`Diarizer`] trait, so tests run with a fake.
 pub mod cluster;
@@ -104,7 +104,8 @@ impl DiarizeConfig {
             return None;
         }
         let home = get("HOME").unwrap_or_else(|| "/home/nez".into());
-        let dir = get("LUCINA_DIARIZE_MODELS").unwrap_or_else(|| format!("{home}/models/diarization"));
+        let dir =
+            get("LUCINA_DIARIZE_MODELS").unwrap_or_else(|| format!("{home}/models/diarization"));
         let num = |k: &str, d: f64| {
             get(k)
                 .and_then(|v| v.trim().parse::<f64>().ok())
@@ -170,7 +171,11 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 /// `v / |v|` (unchanged when zero).
 pub fn normalize(v: &mut [f32]) {
-    let n = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let n = v
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if n > 0.0 {
         for x in v.iter_mut() {
             *x = (*x as f64 / n) as f32;
@@ -219,6 +224,8 @@ mod tests {
         );
         assert_eq!(c.match_threshold, 0.6);
         assert!(c.missing().is_some());
-        assert!(DiarizeConfig::from_lookup(|k| (k == "LUCINA_DIARIZE").then(|| "off".into())).is_none());
+        assert!(
+            DiarizeConfig::from_lookup(|k| (k == "LUCINA_DIARIZE").then(|| "off".into())).is_none()
+        );
     }
 }

@@ -3,14 +3,14 @@
 //!
 //! The memo's audio is diarized; each cluster is the owner (his voice profile), a named person
 //! (their profile) or `Speaker N`; each line gets the speaker whose turns overlap it most
-//! (kernel MK7). Best effort: a failure leaves the transcript as it was. Kernel K11 decides
+//! (kernel MT7). Best effort: a failure leaves the transcript as it was. Kernel K11 decides
 //! when to run (once per transcript; a new transcript is labelled again).
 use std::path::Path;
 
 use chrono::Utc;
 
 use super::profiles::{Identity, Sighting};
-use super::{cosine, wav, DiarizeError, Diarization};
+use super::{cosine, wav, Diarization, DiarizeError};
 use crate::kernel::overlap_ms;
 use crate::meetings::kernel::speaker_for;
 use crate::model::{Memo, Status, Transcript};
@@ -67,7 +67,11 @@ pub fn apply(t: &Transcript, d: &Diarization, labels: &[String]) -> Option<Trans
         last = who;
         s.speaker = who.map(|i| labels[i].clone());
     }
-    let distinct: std::collections::HashSet<_> = out.segments.iter().filter_map(|s| s.speaker.as_deref()).collect();
+    let distinct: std::collections::HashSet<_> = out
+        .segments
+        .iter()
+        .filter_map(|s| s.speaker.as_deref())
+        .collect();
     if distinct.len() < 2 {
         return None;
     }
@@ -76,7 +80,12 @@ pub fn apply(t: &Transcript, d: &Diarization, labels: &[String]) -> Option<Trans
 }
 
 /// Diarizes the memo's audio (`work` holds the WAV while it runs). `Ok(None)`: one voice.
-pub async fn label(app: &App, m: &Memo, t: &Transcript, work: &Path) -> Result<Option<Transcript>, DiarizeError> {
+pub async fn label(
+    app: &App,
+    m: &Memo,
+    t: &Transcript,
+    work: &Path,
+) -> Result<Option<Transcript>, DiarizeError> {
     let Some(dz) = app.diarizer()? else {
         return Ok(None);
     };
@@ -104,7 +113,11 @@ pub fn rename_speaker(app: &App, id: &str, label: &str, name: &str) {
         return;
     };
     let mut changed = false;
-    for s in t.segments.iter_mut().filter(|s| s.speaker.as_deref() == Some(label)) {
+    for s in t
+        .segments
+        .iter_mut()
+        .filter(|s| s.speaker.as_deref() == Some(label))
+    {
         s.speaker = Some(name.to_owned());
         changed = true;
     }
@@ -148,16 +161,32 @@ mod tests {
         };
         let d = Diarization {
             turns: vec![
-                Turn { start: 0.0, end: 3.2, speaker: 0 },
-                Turn { start: 3.2, end: 6.2, speaker: 1 },
-                Turn { start: 7.0, end: 9.0, speaker: 0 },
+                Turn {
+                    start: 0.0,
+                    end: 3.2,
+                    speaker: 0,
+                },
+                Turn {
+                    start: 3.2,
+                    end: 6.2,
+                    speaker: 1,
+                },
+                Turn {
+                    start: 7.0,
+                    end: 9.0,
+                    speaker: 0,
+                },
             ],
             centroids: vec![vec![1.0, 0.0], vec![0.0, 1.0]],
             engine: "e".into(),
         };
         let labels = vec!["Giuseppe".to_owned(), "Speaker 1".to_owned()];
         let out = apply(&t, &d, &labels).unwrap();
-        let who: Vec<_> = out.segments.iter().map(|s| s.speaker.clone().unwrap()).collect();
+        let who: Vec<_> = out
+            .segments
+            .iter()
+            .map(|s| s.speaker.clone().unwrap())
+            .collect();
         // The third line has no turn: it stays with the previous speaker.
         assert_eq!(who, ["Giuseppe", "Speaker 1", "Speaker 1", "Giuseppe"]);
         assert!(out.speakers);

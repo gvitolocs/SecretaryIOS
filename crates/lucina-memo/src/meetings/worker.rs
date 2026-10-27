@@ -11,9 +11,9 @@
 //! 3. `analyzing`: roles and utterance kinds ([`super::analyze`]), then the brief
 //!    ([`super::brief`]); the model unreachable on the last attempt → deterministic versions.
 //! 4. `publishing`: the files in the meeting folder, the Obsidian note (path recorded before the
-//!    push), the memory entry and the Telegram message (MK8 markers first), the media library,
-//!    the notification; unknown recurring voices are asked about once (MK6).
-//! 5. `done` only with every output (MK4).
+//!    push), the memory entry and the Telegram message (MT8 markers first), the media library,
+//!    the notification; unknown recurring voices are asked about once (MT6).
+//! 5. `done` only with every output (MT4).
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,7 +28,7 @@ use super::model::{Brief, Meeting, MeetingTranscript, Speaker, Status, Utterance
 use super::store::MeetingStore;
 use super::timeline;
 use crate::diarize::profiles::{Identity, Sighting};
-use crate::diarize::{cosine, wav, DiarizeError, Diarization};
+use crate::diarize::{cosine, wav, Diarization, DiarizeError};
 use crate::model::Transcript;
 use crate::store::{read_json, write_atomic, write_json};
 use crate::transcribe::SttError;
@@ -94,7 +94,8 @@ pub async fn process(app: &App, id: &str) -> Result<(), String> {
             let _ = store.update(id, |m| {
                 m.status = Status::Queued;
                 m.error = Some(why.clone());
-                m.next_attempt_at = Some(Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default());
+                m.next_attempt_at =
+                    Some(Utc::now() + chrono::Duration::from_std(wait).unwrap_or_default());
             });
             Err(why)
         }
@@ -107,7 +108,8 @@ pub async fn process(app: &App, id: &str) -> Result<(), String> {
                     m.next_attempt_at = None;
                 } else {
                     m.status = Status::Queued;
-                    m.next_attempt_at = Some(Utc::now() + chrono::Duration::minutes(2i64.pow(m.attempts.min(6))));
+                    m.next_attempt_at =
+                        Some(Utc::now() + chrono::Duration::minutes(2i64.pow(m.attempts.min(6))));
                 }
             });
             Err(why)
@@ -153,7 +155,9 @@ fn speech_samples(samples: &[f32], t: &Transcript, max_sec: f64) -> Vec<f32> {
 }
 
 async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepError> {
-    let mut m = store.get(id).ok_or_else(|| StepError::Failed("meeting vanished".into()))?;
+    let mut m = store
+        .get(id)
+        .ok_or_else(|| StepError::Failed("meeting vanished".into()))?;
     let work = store.work(&m);
     tokio::fs::create_dir_all(&work).await?;
     let tz = app.cfg.timezone;
@@ -189,7 +193,11 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
                 None => {
                     let wav = work.join(format!("{kind}.wav"));
                     let dur = app.stt.decode(&store.track_path(&m, &track), &wav).await?;
-                    let wait = if app.stt.gpu_free().await { Duration::from_secs(120) } else { Duration::ZERO };
+                    let wait = if app.stt.gpu_free().await {
+                        Duration::from_secs(120)
+                    } else {
+                        Duration::ZERO
+                    };
                     let sub = work.join(format!("whisper-{kind}"));
                     tokio::fs::create_dir_all(&sub).await?;
                     match app.stt.transcribe_words(&wav, &sub, dur, wait).await {
@@ -199,7 +207,9 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
                         }
                         Err(e) if e.is_transient() => {
                             let why = match e {
-                                SttError::ModelMissing(_) => "waiting for the Whisper model (MyBook locked?)",
+                                SttError::ModelMissing(_) => {
+                                    "waiting for the Whisper model (MyBook locked?)"
+                                }
                                 _ => "waiting for the GPU",
                             };
                             return Err(StepError::Later(Duration::from_secs(60), why.into()));
@@ -235,12 +245,18 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
     let analysis_path = work.join("analysis.json");
     if m.steps.analyzed_at.is_none() || !analysis_path.exists() {
         m = set(store, id, Status::Analyzing)?;
-        let Labelled { mut speakers, mut utterances } = read_json(&timeline_path)?.unwrap_or_default();
+        let Labelled {
+            mut speakers,
+            mut utterances,
+        } = read_json(&timeline_path)?.unwrap_or_default();
         let a = match analyze::analyze(app.llm.as_ref(), &m, &utterances, &speakers).await {
             Ok(a) => a,
-            Err(e) if m.attempts + 1 >= max => {
-                analyze::fallback(&utterances, &speakers, m.event.as_ref().map(|e| e.kind), Some(e.to_string()))
-            }
+            Err(e) if m.attempts + 1 >= max => analyze::fallback(
+                &utterances,
+                &speakers,
+                m.event.as_ref().map(|e| e.kind),
+                Some(e.to_string()),
+            ),
             Err(e) => return Err(StepError::Failed(format!("analysis: {e}"))),
         };
         for s in speakers.iter_mut() {
@@ -253,7 +269,13 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
             u.kind = *k;
         }
         relabel(&mut utterances, &speakers);
-        write_json(&analysis_path, &Labelled { speakers, utterances })?;
+        write_json(
+            &analysis_path,
+            &Labelled {
+                speakers,
+                utterances,
+            },
+        )?;
         let source = a.source.clone();
         m = store.update(id, |m| {
             m.analysis_source = Some(source);
@@ -261,16 +283,31 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
             m.steps.briefed_at = None;
         })?;
     }
-    let Labelled { speakers, utterances } = read_json(&analysis_path)?.unwrap_or_default();
+    let Labelled {
+        speakers,
+        utterances,
+    } = read_json(&analysis_path)?.unwrap_or_default();
     let brief_path = work.join("brief.json");
     if m.steps.briefed_at.is_none() || !brief_path.exists() {
-        let b = match brief::write(app.llm.as_ref(), &app.llm_label, &m, &utterances, &speakers, &language, tz).await {
+        let b = match brief::write(
+            app.llm.as_ref(),
+            &app.llm_label,
+            &m,
+            &utterances,
+            &speakers,
+            &language,
+            tz,
+        )
+        .await
+        {
             Ok(Ok(b)) => b,
             Ok(Err(why)) => {
                 tracing::warn!(%id, %why, "brief reply rejected; deterministic brief");
                 brief::fallback(&m, &utterances, &speakers, &language)
             }
-            Err(_) if m.attempts + 1 >= max => brief::fallback(&m, &utterances, &speakers, &language),
+            Err(_) if m.attempts + 1 >= max => {
+                brief::fallback(&m, &utterances, &speakers, &language)
+            }
             Err(e) => return Err(StepError::Failed(format!("brief: {e}"))),
         };
         write_json(&brief_path, &b)?;
@@ -282,7 +319,8 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
             m.steps.noted_at = None;
         })?;
     }
-    let b: Brief = read_json(&brief_path)?.ok_or_else(|| StepError::Failed("brief.json missing".into()))?;
+    let b: Brief =
+        read_json(&brief_path)?.ok_or_else(|| StepError::Failed("brief.json missing".into()))?;
 
     // 4. Publishing.
     let url = app.cfg.meeting_transcript_url(id);
@@ -336,7 +374,9 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
         app.memory.is_some(),
         m.steps.notified_at.is_some(),
     ) {
-        return Err(StepError::Failed("a step is missing; not marking done".into()));
+        return Err(StepError::Failed(
+            "a step is missing; not marking done".into(),
+        ));
     }
     store.update(id, |m| {
         m.status = Status::Done;
@@ -355,7 +395,12 @@ async fn steps(app: &App, store: &MeetingStore, id: &str) -> Result<(), StepErro
 }
 
 async fn link_event(app: &App, m: &Meeting) -> Result<Option<crate::model::EventLink>, String> {
-    let events = crate::events::fetch(app, m.started_at - chrono::Duration::hours(1), m.end() + chrono::Duration::hours(1)).await?;
+    let events = crate::events::fetch(
+        app,
+        m.started_at - chrono::Duration::hours(1),
+        m.end() + chrono::Duration::hours(1),
+    )
+    .await?;
     if let Some(want) = &m.calendar_event_id {
         if let Some(e) = events.iter().find(|e| &e.id == want) {
             return Ok(Some(e.link()));
@@ -370,7 +415,12 @@ async fn link_event(app: &App, m: &Meeting) -> Result<Option<crate::model::Event
             loc_match: false,
         })
         .collect();
-    Ok(crate::kernel::pick_event(m.started_at.timestamp_millis(), m.end().timestamp_millis(), &cands).map(|i| events[i].link()))
+    Ok(crate::kernel::pick_event(
+        m.started_at.timestamp_millis(),
+        m.end().timestamp_millis(),
+        &cands,
+    )
+    .map(|i| events[i].link()))
 }
 
 /// Display names from the speakers (name, else role, else label).
@@ -388,7 +438,10 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
     let mic: Option<Transcript> = read_json(&work.join("mic.json"))?;
     let sys: Option<Transcript> = read_json(&work.join("system.json"))?;
     let sources = sources(m);
-    let sys_track = sources.iter().find(|s| s.0 == "system").map(|s| s.1.clone());
+    let sys_track = sources
+        .iter()
+        .find(|s| s.0 == "system")
+        .map(|s| s.1.clone());
     let diarizer = match app.diarizer() {
         Ok(d) => d,
         Err(e) => {
@@ -402,12 +455,16 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
     if let (true, Some(dz), Some(track), Some(_)) = (fresh, &diarizer, &sys_track, &sys) {
         let wav_path = work.join("system.wav");
         if !wav_path.exists() {
-            app.stt.decode(&app.meetings()?.track_path(m, track), &wav_path).await?;
+            app.stt
+                .decode(&app.meetings()?.track_path(m, track), &wav_path)
+                .await?;
         }
         let dz = dz.clone();
-        d = tokio::task::spawn_blocking(move || -> Result<Diarization, DiarizeError> { dz.diarize(&wav::read(&wav_path)?) })
-            .await?
-            .map_err(|e| StepError::Failed(e.to_string()))?;
+        d = tokio::task::spawn_blocking(move || -> Result<Diarization, DiarizeError> {
+            dz.diarize(&wav::read(&wav_path)?)
+        })
+        .await?
+        .map_err(|e| StepError::Failed(e.to_string()))?;
     }
     // The owner's voice from his microphone (feeds his profile; recognises him in the system
     // track, e.g. a meeting room's audio).
@@ -415,7 +472,9 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
         let wav_path = work.join("mic.wav");
         if !wav_path.exists() {
             if let Some((_, track)) = sources.iter().find(|s| s.0 == "mic") {
-                app.stt.decode(&app.meetings()?.track_path(m, track), &wav_path).await?;
+                app.stt
+                    .decode(&app.meetings()?.track_path(m, track), &wav_path)
+                    .await?;
             }
         }
         let (dz, t) = (dz.clone(), t.clone());
@@ -451,7 +510,10 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
     }
     let mut n = 0;
     for c in &d.centroids {
-        if owner_voice.as_ref().is_some_and(|o| cosine(o, c) >= threshold) {
+        if owner_voice
+            .as_ref()
+            .is_some_and(|o| cosine(o, c) >= threshold)
+        {
             ids.push("me".into());
             if !speakers.iter().any(|s| s.id == "me") {
                 speakers.push(owner_speaker(&app.cfg.owner_name));
@@ -472,8 +534,17 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
         )?;
         let mut s = system_speaker(&sid, n);
         match identity {
-            Identity::Known { profile, name, owner, similarity } => {
-                s.name = Some(if owner { app.cfg.owner_name.clone() } else { name });
+            Identity::Known {
+                profile,
+                name,
+                owner,
+                similarity,
+            } => {
+                s.name = Some(if owner {
+                    app.cfg.owner_name.clone()
+                } else {
+                    name
+                });
                 s.name_source = Some("profile".into());
                 s.profile_id = Some(profile);
                 s.similarity = Some(similarity);
@@ -497,7 +568,9 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
         .map(|t| timeline::mic_parts(&t.segments, offset(m, "mic.m4a"), "me"))
         .unwrap_or_default();
     let sys_parts = match (&sys, &sys_track) {
-        (Some(t), Some(track)) => timeline::system_parts(&t.segments, &d.turns, &ids, offset(m, track)),
+        (Some(t), Some(track)) => {
+            timeline::system_parts(&t.segments, &d.turns, &ids, offset(m, track))
+        }
         _ => Vec::new(),
     };
     let parts = timeline::merge(mic_parts, sys_parts);
@@ -522,7 +595,10 @@ async fn diarize(app: &App, m: &Meeting, work: &Path) -> Result<Labelled, StepEr
     }
     speakers.retain(|s| s.utterances > 0);
     relabel(&mut utterances, &speakers);
-    Ok(Labelled { speakers, utterances })
+    Ok(Labelled {
+        speakers,
+        utterances,
+    })
 }
 
 fn owner_speaker(name: &str) -> Speaker {
@@ -573,7 +649,11 @@ pub fn write_outputs(
     let voices: Voices = read_json(&store.work(m).join("voices.json"))?.unwrap_or_default();
     let mic: Option<Transcript> = read_json(&store.work(m).join("mic.json"))?;
     let sys: Option<Transcript> = read_json(&store.work(m).join("system.json"))?;
-    let engine = sys.as_ref().or(mic.as_ref()).map(|t| t.engine.clone()).unwrap_or_default();
+    let engine = sys
+        .as_ref()
+        .or(mic.as_ref())
+        .map(|t| t.engine.clone())
+        .unwrap_or_default();
     write_json(
         &dir.join("transcript.json"),
         &MeetingTranscript {
@@ -587,7 +667,13 @@ pub fn write_outputs(
         },
     )?;
     write_json(&dir.join("speakers.json"), &speakers)?;
-    write_atomic(&dir.join("transcript.md"), brief::transcript_md(m, utts, tz).as_bytes())?;
-    write_atomic(&dir.join("brief.md"), brief::markdown(m, b, speakers, tz, url).as_bytes())?;
+    write_atomic(
+        &dir.join("transcript.md"),
+        brief::transcript_md(m, utts, tz).as_bytes(),
+    )?;
+    write_atomic(
+        &dir.join("brief.md"),
+        brief::markdown(m, b, speakers, tz, url).as_bytes(),
+    )?;
     Ok(())
 }

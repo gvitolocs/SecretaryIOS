@@ -104,7 +104,7 @@ pub async fn send(
 }
 
 /// One message to the owner: the app inbox (deduplicated by `dedup_key`) and, when
-/// `telegram`, Lucina's Telegram bot (no deduplication: callers mark first, kernel K6/MK8).
+/// `telegram`, Lucina's Telegram bot (no deduplication: callers mark first, kernel K6/MT8).
 pub struct Outgoing<'a> {
     pub title: &'a str,
     pub body: &'a str,

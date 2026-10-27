@@ -1,7 +1,7 @@
 //! One timeline from two tracks: the owner's microphone (every line is the owner's) and the
 //! system audio (everyone else, diarized into clusters).
 //!
-//! - A system segment's words get the speaker whose turn overlaps each word most (kernel MK7);
+//! - A system segment's words get the speaker whose turn overlaps each word most (kernel MT7);
 //!   a segment that spans two speakers is split where the speaker changes.
 //! - Track offsets (`start_offset_ms`) put both tracks on the shared recording clock.
 //! - A microphone line that repeats a system line at the same time is the remote voices
@@ -83,7 +83,12 @@ fn nearest(turns: &[Turn], a: f64, b: f64) -> Option<usize> {
 
 /// System lines with speakers. `ids[c]` is cluster `c`'s speaker id (`S1`, or `me` when the
 /// cluster is the owner's voice). Without turns everything is `ids[0]` (or `S1`).
-pub fn system_parts(segments: &[Segment], turns: &[Turn], ids: &[String], offset: f64) -> Vec<Part> {
+pub fn system_parts(
+    segments: &[Segment],
+    turns: &[Turn],
+    ids: &[String],
+    offset: f64,
+) -> Vec<Part> {
     let id = |c: Option<usize>| {
         c.and_then(|c| ids.get(c).cloned())
             .or_else(|| ids.first().cloned())
@@ -91,7 +96,8 @@ pub fn system_parts(segments: &[Segment], turns: &[Turn], ids: &[String], offset
     };
     let mut out = Vec::new();
     for s in segments.iter().filter(|s| !s.text.trim().is_empty()) {
-        let fallback = cluster_at(turns, ids.len(), s.start, s.end).or_else(|| nearest(turns, s.start, s.end));
+        let fallback =
+            cluster_at(turns, ids.len(), s.start, s.end).or_else(|| nearest(turns, s.start, s.end));
         if s.words.is_empty() {
             out.push(Part {
                 start: s.start + offset,
@@ -116,7 +122,11 @@ pub fn system_parts(segments: &[Segment], turns: &[Turn], ids: &[String], offset
             }
         }
         for (c, ws) in runs {
-            let text = ws.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
+            let text = ws
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             out.push(Part {
                 start: ws.first().map_or(s.start, |w| w.start) + offset,
                 end: ws.last().map_or(s.end, |w| w.end) + offset,
@@ -203,7 +213,11 @@ mod tests {
     }
 
     fn turn(start: f64, end: f64, speaker: usize) -> Turn {
-        Turn { start, end, speaker }
+        Turn {
+            start,
+            end,
+            speaker,
+        }
     }
 
     #[test]
@@ -212,14 +226,25 @@ mod tests {
             0.0,
             4.0,
             "Any questions? Yes, one.",
-            vec![w(0.0, 0.5, "Any"), w(0.5, 1.4, "questions?"), w(2.1, 2.6, "Yes,"), w(2.6, 3.4, "one.")],
+            vec![
+                w(0.0, 0.5, "Any"),
+                w(0.5, 1.4, "questions?"),
+                w(2.1, 2.6, "Yes,"),
+                w(2.6, 3.4, "one."),
+            ],
         );
         let turns = [turn(0.0, 1.6, 0), turn(2.0, 3.6, 1)];
         let ids = vec!["S1".to_owned(), "S2".to_owned()];
         let p = system_parts(&[s], &turns, &ids, 0.25);
         assert_eq!(p.len(), 2);
-        assert_eq!((p[0].speaker.as_str(), p[0].text.as_str()), ("S1", "Any questions?"));
-        assert_eq!((p[1].speaker.as_str(), p[1].text.as_str()), ("S2", "Yes, one."));
+        assert_eq!(
+            (p[0].speaker.as_str(), p[0].text.as_str()),
+            ("S1", "Any questions?")
+        );
+        assert_eq!(
+            (p[1].speaker.as_str(), p[1].text.as_str()),
+            ("S2", "Yes, one.")
+        );
         assert_eq!((p[1].start, p[1].end), (2.35, 3.65));
         assert_eq!(p[1].words[0].start, 2.35);
     }
@@ -227,7 +252,12 @@ mod tests {
     #[test]
     fn unmarked_words_and_segments_follow_their_neighbours() {
         // "um" falls in a gap: it stays with the speaker before it.
-        let s = seg(0.0, 3.0, "so um right", vec![w(0.0, 0.5, "so"), w(1.0, 1.2, "um"), w(2.0, 2.5, "right")]);
+        let s = seg(
+            0.0,
+            3.0,
+            "so um right",
+            vec![w(0.0, 0.5, "so"), w(1.0, 1.2, "um"), w(2.0, 2.5, "right")],
+        );
         let turns = [turn(0.0, 0.8, 1), turn(1.9, 3.0, 1)];
         let ids = vec!["S1".to_owned(), "S2".to_owned()];
         let p = system_parts(&[s], &turns, &ids, 0.0);
@@ -263,7 +293,10 @@ mod tests {
             words: vec![],
         }];
         let m = merge(mic, system);
-        let lines: Vec<(&str, &str)> = m.iter().map(|p| (p.speaker.as_str(), p.text.as_str())).collect();
+        let lines: Vec<(&str, &str)> = m
+            .iter()
+            .map(|p| (p.speaker.as_str(), p.text.as_str()))
+            .collect();
         assert_eq!(
             lines,
             [
@@ -280,7 +313,12 @@ mod tests {
     fn track_offsets_align_the_two_tracks() {
         // The mic started 2 s after the system audio: its 1 s is 3 s on the shared clock.
         let mic = mic_parts(&[seg(1.0, 2.0, "Mine.", vec![])], 2.0, "me");
-        let sys = system_parts(&[seg(2.5, 3.5, "Theirs.", vec![])], &[turn(0.0, 10.0, 0)], &["S1".into()], 0.0);
+        let sys = system_parts(
+            &[seg(2.5, 3.5, "Theirs.", vec![])],
+            &[turn(0.0, 10.0, 0)],
+            &["S1".into()],
+            0.0,
+        );
         let m = merge(mic, sys);
         assert_eq!(m[0].text, "Theirs.");
         assert_eq!(m[1].start, 3.0);

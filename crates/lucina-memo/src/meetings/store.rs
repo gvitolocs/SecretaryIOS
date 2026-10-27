@@ -88,13 +88,18 @@ pub fn parse_content_range(h: &str) -> Option<Range> {
 pub fn valid_id(id: &str) -> bool {
     id.len() == 20
         && id.starts_with("mtg_")
-        && id[4..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && id[4..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn new_id() -> String {
     let mut b = [0u8; 8];
     getrandom::fill(&mut b).expect("system randomness");
-    format!("mtg_{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+    format!(
+        "mtg_{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
 }
 
 /// `<YYYY-MM-DD HHmm> <prefix> – <title>` in the owner's zone; the prefix is left out when it
@@ -106,7 +111,10 @@ pub fn folder_name(start: DateTime<Utc>, tz: Tz, prefix: Option<&str>, title: &s
         s.chars().take(60).collect::<String>().trim().to_owned()
     };
     let title = clean(title);
-    match prefix.map(clean).filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case(&title)) {
+    match prefix
+        .map(clean)
+        .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case(&title))
+    {
         Some(p) => format!("{when} {p} – {title}"),
         None => format!("{when} {title}"),
     }
@@ -114,13 +122,25 @@ pub fn folder_name(start: DateTime<Utc>, tz: Tz, prefix: Option<&str>, title: &s
 
 /// The audio MIME types the recorder sends (and close relatives).
 fn mime_ok(name: &str, mime: &str) -> bool {
-    let base = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     if name == "video.mp4" {
         matches!(base.as_str(), "video/mp4" | "video/quicktime")
     } else {
         matches!(
             base.as_str(),
-            "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" | "audio/mpeg" | "audio/wav" | "audio/x-wav" | "audio/webm"
+            "audio/mp4"
+                | "audio/m4a"
+                | "audio/x-m4a"
+                | "audio/aac"
+                | "audio/mpeg"
+                | "audio/wav"
+                | "audio/x-wav"
+                | "audio/webm"
         )
     }
 }
@@ -151,7 +171,10 @@ impl MeetingStore {
         for year in std::fs::read_dir(base)? {
             let year = year?;
             let yname = year.file_name().to_string_lossy().into_owned();
-            if yname.len() != 4 || !yname.bytes().all(|b| b.is_ascii_digit()) || !year.path().is_dir() {
+            if yname.len() != 4
+                || !yname.bytes().all(|b| b.is_ascii_digit())
+                || !year.path().is_dir()
+            {
                 continue;
             }
             for entry in std::fs::read_dir(year.path())? {
@@ -169,10 +192,14 @@ impl MeetingStore {
                     continue;
                 }
                 // The folder is where the file is (a moved archive still loads).
-                m.folder = format!("{yname}/{}", dir.file_name().and_then(|n| n.to_str()).unwrap_or_default());
+                m.folder = format!(
+                    "{yname}/{}",
+                    dir.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                );
                 let mut changed = false;
                 for t in m.tracks.iter_mut().filter(|t| !t.whole()) {
-                    let len = std::fs::metadata(dir.join(part_name(&t.name))).map_or(0, |md| md.len());
+                    let len =
+                        std::fs::metadata(dir.join(part_name(&t.name))).map_or(0, |md| md.len());
                     if len != t.received {
                         t.received = len;
                         changed = true;
@@ -226,7 +253,7 @@ impl MeetingStore {
         v
     }
 
-    /// Applies `f` and saves `meeting.json`. Every status change is a kernel transition (MK1).
+    /// Applies `f` and saves `meeting.json`. Every status change is a kernel transition (MT1).
     pub fn update(&self, id: &str, f: impl FnOnce(&mut Meeting)) -> Result<Meeting> {
         let mut g = self.lock();
         let m = g.meetings.get_mut(id).ok_or(StoreError::NotFound)?;
@@ -248,7 +275,11 @@ impl MeetingStore {
     pub fn create(&self, n: NewMeeting) -> Result<(Meeting, bool)> {
         let bad = |m: &str| Err(StoreError::Invalid(m.into()));
         if let Some(k) = &n.idempotency_key {
-            if !(1..=128).contains(&k.len()) || !k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+            if !(1..=128).contains(&k.len())
+                || !k
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
                 return bad("Idempotency-Key: 1-128 letters, digits, '-' or '_'");
             }
         }
@@ -259,7 +290,9 @@ impl MeetingStore {
         if n.started_at > Utc::now() + chrono::Duration::days(1) {
             return bad("started_at is in the future");
         }
-        if n.ended_at.is_some_and(|e| e < n.started_at || e > n.started_at + chrono::Duration::hours(24)) {
+        if n.ended_at
+            .is_some_and(|e| e < n.started_at || e > n.started_at + chrono::Duration::hours(24))
+        {
             return bad("ended_at must be within 24 hours after started_at");
         }
         if n.tracks.is_empty() || n.tracks.len() > 3 {
@@ -273,7 +306,11 @@ impl MeetingStore {
             if tracks.iter().any(|x: &Track| x.name == name) {
                 return bad("a track is listed twice");
             }
-            let max = if name == "video.mp4" { MAX_VIDEO_BYTES } else { MAX_AUDIO_BYTES };
+            let max = if name == "video.mp4" {
+                MAX_VIDEO_BYTES
+            } else {
+                MAX_AUDIO_BYTES
+            };
             if t.bytes == 0 || t.bytes > max {
                 return bad("track bytes: 1 byte up to 4 GiB (audio) or 64 GiB (video)");
             }
@@ -287,7 +324,13 @@ impl MeetingStore {
                 name: name.into(),
                 bytes: t.bytes,
                 sha256: t.sha256.to_ascii_lowercase(),
-                mime: t.mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase(),
+                mime: t
+                    .mime
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase(),
                 start_offset_ms: t.start_offset_ms.filter(|o| (0..86_400_000).contains(o)),
                 received: 0,
                 verified_at: None,
@@ -306,7 +349,11 @@ impl MeetingStore {
                 break id;
             }
         };
-        let year = n.started_at.with_timezone(&self.tz).format("%Y").to_string();
+        let year = n
+            .started_at
+            .with_timezone(&self.tz)
+            .format("%Y")
+            .to_string();
         let name = folder_name(n.started_at, self.tz, n.folder_prefix.as_deref(), &title);
         std::fs::create_dir_all(self.base.join(&year))?;
         // A second recording with the same name gets " 2", " 3", … (like the Mac's folders).
@@ -379,9 +426,15 @@ impl MeetingStore {
             .clone()
     }
 
-    /// One `PUT …/tracks/{name}` (kernel MK2). Bytes that arrived before a broken connection
+    /// One `PUT …/tracks/{name}` (kernel MT2). Bytes that arrived before a broken connection
     /// are kept; a track that reaches its size is verified against the declared SHA-256.
-    pub async fn put<S, E>(&self, id: &str, name: &str, range: Range, mut body: S) -> Result<PutResult>
+    pub async fn put<S, E>(
+        &self,
+        id: &str,
+        name: &str,
+        range: Range,
+        mut body: S,
+    ) -> Result<PutResult>
     where
         S: Stream<Item = std::result::Result<axum::body::Bytes, E>> + Unpin,
         E: std::fmt::Display,
@@ -421,7 +474,10 @@ impl MeetingStore {
                 MAX_CHUNK_BYTES >> 20
             )));
         }
-        let mut f = tokio::fs::OpenOptions::new().append(true).open(&part).await?;
+        let mut f = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&part)
+            .await?;
         let mut written = 0u64;
         let mut too_long = false;
         while let Some(next) = body.next().await {
@@ -448,7 +504,9 @@ impl MeetingStore {
         let now_stored = stored + written;
         if too_long {
             self.update(id, |m| set_received(m, name, now_stored))?;
-            return Err(StoreError::Invalid("the body is longer than Content-Range".into()));
+            return Err(StoreError::Invalid(
+                "the body is longer than Content-Range".into(),
+            ));
         }
         if now_stored < t.bytes {
             self.update(id, |m| set_received(m, name, now_stored))?;
@@ -479,7 +537,7 @@ impl MeetingStore {
         Ok(complete)
     }
 
-    /// Ends the upload (MK3): every track whole and verified. Idempotent.
+    /// Ends the upload (MT3): every track whole and verified. Idempotent.
     pub fn complete(&self, id: &str) -> Result<Meeting> {
         let m = self.get(id).ok_or(StoreError::NotFound)?;
         if m.status != Status::Uploading {
@@ -488,8 +546,16 @@ impl MeetingStore {
         let verified: Vec<bool> = m.tracks.iter().map(Track::whole).collect();
         let audio: Vec<bool> = m.tracks.iter().map(Track::has_audio).collect();
         if !kernel::may_complete(&verified, &audio) {
-            let missing: Vec<&str> = m.tracks.iter().filter(|t| !t.whole()).map(|t| t.name.as_str()).collect();
-            return Err(StoreError::Conflict(format!("tracks not uploaded yet: {}", missing.join(", "))));
+            let missing: Vec<&str> = m
+                .tracks
+                .iter()
+                .filter(|t| !t.whole())
+                .map(|t| t.name.as_str())
+                .collect();
+            return Err(StoreError::Conflict(format!(
+                "tracks not uploaded yet: {}",
+                missing.join(", ")
+            )));
         }
         self.update(id, |m| {
             m.status = Status::Queued;
@@ -527,16 +593,26 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     fn hex(b: &[u8]) -> String {
-        Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+        Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect()
     }
 
-    fn body(b: &'static [u8]) -> impl Stream<Item = std::result::Result<axum::body::Bytes, String>> + Unpin {
+    fn body(
+        b: &'static [u8],
+    ) -> impl Stream<Item = std::result::Result<axum::body::Bytes, String>> + Unpin {
         stream::iter(vec![Ok(axum::body::Bytes::from_static(b))])
     }
 
     /// A body cut off after its first piece.
-    fn broken(b: &'static [u8]) -> impl Stream<Item = std::result::Result<axum::body::Bytes, String>> + Unpin {
-        stream::iter(vec![Ok(axum::body::Bytes::from_static(b)), Err("reset".to_owned())])
+    fn broken(
+        b: &'static [u8],
+    ) -> impl Stream<Item = std::result::Result<axum::body::Bytes, String>> + Unpin {
+        stream::iter(vec![
+            Ok(axum::body::Bytes::from_static(b)),
+            Err("reset".to_owned()),
+        ])
     }
 
     pub fn new_meeting(key: &str, tracks: &[(&str, &[u8])]) -> NewMeeting {
@@ -556,7 +632,12 @@ mod tests {
                     name: (*n).into(),
                     bytes: b.len() as u64,
                     sha256: hex(b),
-                    mime: if *n == "video.mp4" { "video/mp4" } else { "audio/mp4" }.into(),
+                    mime: if *n == "video.mp4" {
+                        "video/mp4"
+                    } else {
+                        "audio/mp4"
+                    }
+                    .into(),
                     start_offset_ms: Some(12),
                 })
                 .collect(),
@@ -570,10 +651,22 @@ mod tests {
     fn folder_names() {
         let t: DateTime<Utc> = "2026-10-26T13:30:00Z".parse().unwrap();
         let tz = chrono_tz::Europe::Copenhagen;
-        assert_eq!(folder_name(t, tz, Some("Acme"), "Weekly sync"), "2026-10-26 1430 Acme – Weekly sync");
-        assert_eq!(folder_name(t, tz, None, "Weekly sync"), "2026-10-26 1430 Weekly sync");
-        assert_eq!(folder_name(t, tz, Some("weekly SYNC"), "Weekly sync"), "2026-10-26 1430 Weekly sync");
-        assert_eq!(folder_name(t, tz, Some("A/B: c"), "x/../y"), "2026-10-26 1430 A B c – x .. y");
+        assert_eq!(
+            folder_name(t, tz, Some("Acme"), "Weekly sync"),
+            "2026-10-26 1430 Acme – Weekly sync"
+        );
+        assert_eq!(
+            folder_name(t, tz, None, "Weekly sync"),
+            "2026-10-26 1430 Weekly sync"
+        );
+        assert_eq!(
+            folder_name(t, tz, Some("weekly SYNC"), "Weekly sync"),
+            "2026-10-26 1430 Weekly sync"
+        );
+        assert_eq!(
+            folder_name(t, tz, Some("A/B: c"), "x/../y"),
+            "2026-10-26 1430 A B c – x .. y"
+        );
         let long = "x".repeat(300);
         assert!(folder_name(t, tz, Some(&long), &long).chars().count() < 140);
         assert_eq!(
@@ -582,7 +675,11 @@ mod tests {
         );
         assert_eq!(
             parse_content_range("bytes 0-9/100"),
-            Some(Range::Bytes { start: 0, end: 9, total: 100 })
+            Some(Range::Bytes {
+                start: 0,
+                end: 9,
+                total: 100
+            })
         );
         assert_eq!(parse_content_range("items 0-9/100"), None);
         assert!(valid_id("mtg_0123456789abcdef") && !valid_id("mtg_../../etc/pas"));
@@ -604,20 +701,52 @@ mod tests {
         assert_eq!(other.folder, "2026/2026-10-26 1430 Acme – Weekly sync 2");
 
         let q = Range::Query { total: 10 };
-        let b = |start, end| Range::Bytes { start, end, total: 10 };
-        assert_eq!(s.put(&m.id, "mic", q, body(b"")).await.unwrap(), PutResult::Partial(0));
+        let b = |start, end| Range::Bytes {
+            start,
+            end,
+            total: 10,
+        };
+        assert_eq!(
+            s.put(&m.id, "mic", q, body(b"")).await.unwrap(),
+            PutResult::Partial(0)
+        );
         // The connection drops after 3 bytes of a 4-byte chunk: the 3 bytes stay.
-        assert_eq!(s.put(&m.id, "mic.m4a", b(0, 3), broken(b"012")).await.unwrap(), PutResult::Partial(3));
-        assert_eq!(s.put(&m.id, "mic.m4a", b(0, 3), body(b"0123")).await.unwrap(), PutResult::Mismatch(3));
-        assert_eq!(s.put(&m.id, "mic.m4a", b(3, 10), body(b"3")).await.unwrap(), PutResult::Unsatisfiable(3));
+        assert_eq!(
+            s.put(&m.id, "mic.m4a", b(0, 3), broken(b"012"))
+                .await
+                .unwrap(),
+            PutResult::Partial(3)
+        );
+        assert_eq!(
+            s.put(&m.id, "mic.m4a", b(0, 3), body(b"0123"))
+                .await
+                .unwrap(),
+            PutResult::Mismatch(3)
+        );
+        assert_eq!(
+            s.put(&m.id, "mic.m4a", b(3, 10), body(b"3")).await.unwrap(),
+            PutResult::Unsatisfiable(3)
+        );
         assert!(s.complete(&m.id).is_err());
         // Restart: the offset comes from the file on disk.
         drop(s);
         let s = MeetingStore::open(dir.path(), tz).unwrap();
         assert_eq!(s.get(&m.id).unwrap().tracks[0].received, 3);
-        assert_eq!(s.put(&m.id, "mic.m4a", q, body(b"")).await.unwrap(), PutResult::Partial(3));
-        let done = s.put(&m.id, "mic.m4a", b(3, 9), body(b"3456789")).await.unwrap();
-        assert_eq!(done, PutResult::Complete { bytes: 10, sha256: hex(mic) });
+        assert_eq!(
+            s.put(&m.id, "mic.m4a", q, body(b"")).await.unwrap(),
+            PutResult::Partial(3)
+        );
+        let done = s
+            .put(&m.id, "mic.m4a", b(3, 9), body(b"3456789"))
+            .await
+            .unwrap();
+        assert_eq!(
+            done,
+            PutResult::Complete {
+                bytes: 10,
+                sha256: hex(mic)
+            }
+        );
         assert_eq!(s.put(&m.id, "mic.m4a", q, body(b"")).await.unwrap(), done);
         assert_eq!(std::fs::read(s.track_path(&m, "mic.m4a")).unwrap(), mic);
         let q2 = s.complete(&m.id).unwrap();
@@ -633,16 +762,31 @@ mod tests {
     async fn a_wrong_digest_resets_the_track() {
         let dir = tempfile::tempdir().unwrap();
         let s = MeetingStore::open(dir.path(), chrono_tz::UTC).unwrap();
-        let (m, _) = s.create(new_meeting("k", &[("system.m4a", b"abcd")])).unwrap();
+        let (m, _) = s
+            .create(new_meeting("k", &[("system.m4a", b"abcd")]))
+            .unwrap();
         let r = s
-            .put(&m.id, "system", Range::Bytes { start: 0, end: 3, total: 4 }, body(b"abXd"))
+            .put(
+                &m.id,
+                "system",
+                Range::Bytes {
+                    start: 0,
+                    end: 3,
+                    total: 4,
+                },
+                body(b"abXd"),
+            )
             .await
             .unwrap();
-        assert!(matches!(r, PutResult::DigestMismatch { bytes: 4, ref sha256 } if *sha256 == hex(b"abXd")));
+        assert!(
+            matches!(r, PutResult::DigestMismatch { bytes: 4, ref sha256 } if *sha256 == hex(b"abXd"))
+        );
         let t = &s.get(&m.id).unwrap().tracks[0];
         assert_eq!((t.received, t.mismatches, t.whole()), (0, 1, false));
         assert_eq!(
-            s.put(&m.id, "system", Range::Query { total: 4 }, body(b"")).await.unwrap(),
+            s.put(&m.id, "system", Range::Query { total: 4 }, body(b""))
+                .await
+                .unwrap(),
             PutResult::Partial(0)
         );
     }

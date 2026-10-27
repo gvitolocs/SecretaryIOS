@@ -13,8 +13,22 @@ pub mod worker;
 
 /// Mail providers that say nothing about who someone works for.
 const PERSONAL_DOMAINS: &[&str] = &[
-    "gmail", "googlemail", "outlook", "hotmail", "live", "icloud", "me", "mac", "yahoo", "proton", "protonmail",
-    "pm", "gmx", "libero", "aol", "mail",
+    "gmail",
+    "googlemail",
+    "outlook",
+    "hotmail",
+    "live",
+    "icloud",
+    "me",
+    "mac",
+    "yahoo",
+    "proton",
+    "protonmail",
+    "pm",
+    "gmx",
+    "libero",
+    "aol",
+    "mail",
 ];
 
 /// The company most attendees write from ("anna@acme.com" → "Acme"); None for personal
@@ -32,7 +46,10 @@ pub fn company(attendees: &[String]) -> Option<String> {
             continue;
         };
         let domain = domain.to_ascii_lowercase();
-        if own.iter().any(|o| domain == *o || domain.ends_with(&format!(".{o}"))) {
+        if own
+            .iter()
+            .any(|o| domain == *o || domain.ends_with(&format!(".{o}")))
+        {
             continue;
         }
         let labels: Vec<&str> = domain.split('.').filter(|l| !l.is_empty()).collect();
@@ -63,7 +80,10 @@ mod tests {
     #[test]
     fn companies() {
         let a = |v: &[&str]| super::company(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert_eq!(a(&["Anna <anna@acme.com>", "bo@acme.com", "x@gmail.com"]), Some("Acme".into()));
+        assert_eq!(
+            a(&["Anna <anna@acme.com>", "bo@acme.com", "x@gmail.com"]),
+            Some("Acme".into())
+        );
         assert_eq!(a(&["p@mail.bigco.co.uk"]), Some("Bigco".into()));
         assert_eq!(a(&["me@gmail.com", "Prof. Hansen"]), None);
         assert_eq!(a(&[]), None);

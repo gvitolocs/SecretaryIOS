@@ -71,12 +71,13 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 7 | Multi-session merge and deploy (`/tmp/lucina-merge.lock`, the shared main checkout, deploys of secretary-server, the web app, lucina-rs) | `deploy.rs` (D1–D5) | `deploy/Deploy.tla` | `deploy_guard.rs` | `tools/deploy-guard`; the merge/deploy steps in each session's runbook (`deploy/README.md`, `deploy/lucina-rs/`) |
 | 8 | Lucina's Pokémon Red: game control (one emulator, macros, pause/play from chat, iPhone, web, viewer) and the planner | `game.rs` (Pk) | `game/GameControl.tla` | `game_planner.rs` (P1–P4) | Lucina repo `rust/lucina-pokemon/src/{main,macros,world,plan}.rs` (branch `lucina-game-link`); `/control` callers: `src/game-bridge.js`, lucina-rs `lucina_intent::game` and `api.rs::game`, secretary-server `/v1/game/*` |
 | 9 | Lucina media library: iPhone photo backup (resumable upload, dedupe, p1 rate limit) | `media_backup.rs` (M) | `media/MediaBackup.tla` | `media_upload.rs` | `crates/lucina-media/src/{protocol,http,ingest}.rs`, `ios/Secretary/Features/Gallery/PhotoBackup.swift` (branch `media-library`, merged in `ios-app`); p1 Caddy `@media_upload` (forward_auth, 60/min per device) |
-| 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
+| 10 | Voice memos: recorder + Live Activity, upload queue, pipeline, GPU lease, speaker labels, vault, notifications | `memos.rs` (V) | `memos/Memos.tla` | `memo_kernel.rs` (K1–K7, K11) | `crates/lucina-memo` (`kernel.rs`, `worker.rs`, `store.rs`, `notify.rs`; branch `lucina-rs`), `tests/upload_model.rs` (upload protocol, Stateright); iOS `Features/Memos/*` (`MemoRecorder`, `MemoUploadQueue.recoverOrphans`, `MemoOnDeviceTranscriber`; branch `ios-app`) |
 | 11 | Media player resume positions across devices (iPhone, web, Mac) and the server | `player.rs` (`ResumeSync`) | `player/ResumeSync.tla` | `player_kernels.rs` MP1–MP5 | `crates/secretary-player/src/{progress,prefs}.rs` (every device: iOS through `secretary-ffi`, web through `crates/secretary-player-wasm`); server `crates/secretary-media-stream/src/{progress,token}.rs` (branch `media-player`, mounted by `lucina-media`) |
 | 12 | Share to Lucina (`POST /v1/share`: clients, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 | 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
 | 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
 | 15 | In-app maps (place blocks, the map server: tiles, assets, geocoder, routes) | – | – | `map_kernels.rs` (MK1–MK7) | `crates/secretary-maps/src/{kernel,lib,geocode,routes,provider,cache}.rs` (reference `normalize_place`; lucina-rs and the web app mirror it), `deploy/secretary-maps.service`; differential test `crates/secretary-maps/tests/kernel_model.rs` |
+| 16 | Meetings: Mac recorder upload (create, resumable tracks, complete), meetings pipeline (Whisper per track, diarization, voice profiles, roles/kinds, brief, archive, note, memory, notification, voice question) | `meetings.rs` (MT) | `meetings/Meetings.tla` | `meeting_kernel.rs` (MT1–MT8) | `crates/lucina-memo/src/meetings/{kernel,store,api,worker,publish,timeline}.rs`, `src/diarize/profiles.rs` (branch `meetings-local`); differential test `tests/verus_meeting_kernel.rs`; Mac uploader `SecretaryCode/packages/desktop/src/main/secretary/recorder/uploader.ts` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -138,9 +139,15 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | M before fixes (500 on a lost upload, retry on 429) | 4 088 275 | 25 | `stored_once`, `no_dead_end_finish`, `no_request_storm` **violated** |
 | M current (410 + pause on 429; ingest decides once) | 3 019 895 | 25 | `stored_once` **violated** (M3) |
 | M + fix M3 (ingest decides again under the lock) | 2 000 522 | 25 | all hold |
-| V voice memos, current code (before 2026-10-25) | 26 253 | 43 | `no_duplicate_notes`, `telegram_at_most_once`, `whisper_never_downgraded`, `no_lost_audio`, `finished_…` **violated** |
-| V + fixes (kernel K1/K6/K7, iPhone recovery) | 24 930 | 37 | all hold |
-| V fixed, gpu-lease without dead-holder pruning | 21 906 | 36 | `finished_with_one_note_pdf_notification` **violated** |
+| V voice memos, current code (before 2026-10-25) | 27 999 | 47 | `no_duplicate_notes`, `telegram_at_most_once`, `whisper_never_downgraded`, `no_lost_audio`, `finished_…` **violated** |
+| V + fixes (kernel K1/K6/K7/K11, iPhone recovery) | 26 874 | 40 | all hold |
+| V fixed, gpu-lease without dead-holder pruning | 23 490 | 39 | `finished_with_one_note_pdf_notification` **violated** |
+| V fixed, a new transcript keeps the old diarization attempt | 25 842 | 38 | `done_labels_follow_transcript` **violated** |
+| MT meetings, current code (kernel MT1–MT8) | 18 605 | 36 | all hold |
+| MT ablation: append at any offset | 18 971 | 36 | `stored_is_prefix` **violated** |
+| MT ablation: create without the idempotency key | 18 605 | 36 | `one_meeting_per_recording` **violated** |
+| MT ablation: complete without checking the tracks | 66 979 | 36 | `queued_only_when_whole`, `done_has_every_output` **violated** |
+| MT ablation: side effect before its marker | 29 405 | 36 | `telegram_at_most_once`, `memory_at_most_once`, `voice_asked_at_most_once` **violated** |
 | R before fixes R1, R2 (`updated_at` only) | 86 766 | 22 | `no_position_lost`, `devices_converge` **violated** |
 | R + fix R1 only (device clock stamps) | 157 777 | 24 | `devices_converge` **violated** |
 | R + fixes R1, R2 | 514 139 | 26 | all hold |
@@ -530,6 +537,9 @@ Invariants (Stateright name / TLA+ name):
 - `live_activity_matches_recorder` / `LiveActivityMatchesRecorder`: while the app runs, the Live Activity shows
   exactly the recorder's state (recording, paused, none).
 - `done_has_every_output` / `DoneHasEveryOutput`: `done` only with transcript, summary, PDF, note and notification.
+- `done_labels_follow_transcript` / `DoneLabelsFollowTranscript`: a finished memo's speaker labels (step 1a) were made
+  for its current transcript (a Whisper upgrade or reprocess clears the attempt, K11); `Memos_diarize_reset_bug.cfg`
+  and the Stateright ablation show the stale labels without the reset.
 - `finished_with_one_note_pdf_notification` (eventually, Stateright): every recording ends done with one note, the
   PDF, its notification, and the GPU lease released. Witnesses: `gpu_busy_then_free` / `Memos_fixed_witness.cfg`,
   `device_transcript_replaced` / `Memos_fixed_upgrade_witness.cfg`.
@@ -545,7 +555,9 @@ model for the language and up to the threshold), K4 `status_allowed` (`uploading
 re-entered; `done`/`failed` entered only from a pipeline step; everything else can be re-queued), K5
 `ready_to_finish`, K6 `send_telegram` with `lemma_telegram_at_most_once` (any number of retries from any marker:
 at most one send), K7 `note_base` with `lemma_one_note` (a memo keeps its first note name over any sequence of
-titles). Mutations checked: the old step 1 fails K1; sending before recording the marker fails K6. Differential
+titles), K11 `diarize_memo` with `lemma_diarize_once_per_transcript` (labels only when a diarizer is available,
+none yet and no attempt on this transcript; at most one attempt per transcript over any runs). Mutations checked:
+the old step 1 fails K1; sending before recording the marker fails K6. Differential
 test: `crates/lucina-memo/tests/verus_kernel.rs` (production kernel vs the proved bodies, every small input);
 `Store::update` asserts `status_allowed` on every write.
 
@@ -927,6 +939,56 @@ cargo test -p secretary-maps
 | `safe_asset_path` | `kernel::safe_asset_path` → `resolve_asset` → `GET /v1/maps/assets/{*path}` |
 | `travel_minutes` | `kernel::travel_minutes`, `travel_estimate_min` (with `distance_m`) |
 | `coord_pair`, `place_keep` | `kernel::coord_pair`, `place_keep` inside `normalize_place` |
+
+### 16. Meetings
+
+The owner's Mac uploads a meeting (Secretary Code's recorder, `MEETINGS_API.md`) and `lucina-memo` turns it into a
+diarized transcript, a brief, an archive folder on the MyBook, a note, a memory entry and a notification
+(`docs/meetings.md`). The Mac creates the meeting (a lost response is retried with the same `Idempotency-Key`), asks
+for the stored offset and sends chunks; the network reorders, duplicates and cuts requests; the store appends by MT2,
+checks the SHA-256 at the declared size and queues on `complete` by MT3. The worker transcribes under the GPU lease,
+diarizes, analyses and briefs (the model may fail; on the last attempt the deterministic versions), writes the folder,
+the note, the memory entry, the notification and the voice question (each side effect after its marker, MT6/MT8),
+and finishes by MT4; it may crash anywhere, another job may hold the GPU, the owner may name a speaker afterwards.
+
+Invariants (Stateright name / TLA+ name):
+
+- `stored_is_prefix` / `StoredIsPrefix`: the stored bytes are always a prefix of the Mac's file.
+- `one_meeting_per_recording` / `OneMeetingPerRecording`: a retried create returns the same meeting.
+- `queued_only_when_whole` / `QueuedOnlyWhenWhole`: the pipeline starts only on whole, verified tracks.
+- `status_transitions_allowed` / `StatusTransitionsAllowed`: every status change is an MT1 transition.
+- `telegram_at_most_once`, `memory_at_most_once`, `voice_asked_at_most_once` (and the TLA+ names): one Telegram
+  message, one memory entry, one "who is this voice?" question, whatever the crashes.
+- `done_has_every_output` / `DoneHasEveryOutput`: `done` only with every output.
+- `finished_with_brief_note_and_notification` (eventually, Stateright).
+- Witnesses: `resumed_after_a_cut`, `fallback_brief_done`, `gpu_busy_then_done` (TLA+: the `Meetings_witness_*` cfgs).
+
+Each fix switched off is caught: append at any offset (`Meetings_offset_bug.cfg`), create without the key
+(`Meetings_idempotency_bug.cfg`), complete without checking the tracks (`Meetings_complete_bug.cfg`), side effects
+before their markers (`Meetings_marker_bug.cfg`). The Stateright cases and TLC explore the same 18 605 states.
+
+Verus (`meeting_kernel.rs`, 24 verified): MT1 `status_allowed`; MT2 `chunk` (append only at the stored offset, never
+past the declared size, never to a whole track) with `lemma_prefix_after_appends` (over any sequence of requests,
+cut-off bodies included, the stored length stays within the size); MT3 `may_complete`; MT4 `ready_to_finish`; MT5
+`best_match` (reaches the threshold, the highest, the first of equals; None only when nothing reaches it); MT6
+`should_ask` with `lemma_ask_at_most_once`; MT7 `speaker_for`; MT8 `send_once` with `lemma_send_at_most_once`.
+Mutations checked: MT2 without the offset check and MT8 always sending both fail. Differential test
+`crates/lucina-memo/tests/verus_meeting_kernel.rs` (every small input); `MeetingStore::update` refuses any status
+change MT1 does not allow.
+
+| Model action | Code |
+|---|---|
+| `Create`, `RetryCreate` | `uploader.ts` `uploadRecording` (`Idempotency-Key`) → `meetings::api::create` → `MeetingStore::create` |
+| `Query`, `Send` | `uploader.ts` `uploadTrack` (`bytes */N`, then chunks at the server's offset) |
+| `Deliver`, `Duplicate`, `Cut` | `meetings::api::upload` → `MeetingStore::put` (`kernel::chunk`, kept bytes of a broken body, SHA-256 at the size, reset on mismatch) |
+| `Complete` | `meetings::api::complete` → `MeetingStore::complete` (`kernel::may_complete`) |
+| `WorkerStep` transcribe / `FinishStep` | `meetings::worker::steps` step 1 (`Stt::transcribe_words`, the `gpu-lease` shim) |
+| `WorkerStep` diarize, analyze | steps 2 and 3 (`diarize`, `analyze::analyze`, `brief::write`, fallbacks on the last attempt) |
+| `LlmFails` | `process` → `StepError::Failed` (attempt counted, back to `queued`) |
+| `WorkerStep` publish | step 4: `write_outputs`, `publish::note`, `publish::remember` (`memory_rev` first), `publish::notify` (`notify_telegram_rev` first), `publish::ask_unknown_voices` (`VoiceBook::mark_asked` first) |
+| `WorkerStep` done | `kernel::ready_to_finish`, `status = done` |
+| `WorkerCrash`, `OtherTakesGpu`, `PruneDeadLease` | process death; other `gpu-lease` jobs; `gpu-lease` prunes dead pids |
+| `OwnerNamesSpeaker` | `POST /v1/meetings/{id}/speakers` (`rename_in_meeting`: files and note again, no new notification) |
 
 ## Bugs found
 

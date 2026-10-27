@@ -1,0 +1,31 @@
+	# lucina-memo meetings (nezopt :8795, docs/meetings.md): Secretary Code's meeting uploads.
+	# The same gate as @memos (device auth through forward_auth, CSRF for cookie writes, the
+	# memo gateway key); chunks are 8 MiB (the service accepts up to 64 MiB per request).
+	# 308 answers carry "Range" and no Location: Caddy passes them through unchanged.
+	# Place this block next to @memos, before the catch-all `handle` (or add /v1/meetings and
+	# /v1/meetings/* to the @memos matcher and raise its request_body max_size to 65MiB).
+	@meetings path /v1/meetings /v1/meetings/*
+	handle @meetings {
+		route {
+			@meetings_csrf {
+				not method GET HEAD
+				not header Authorization *
+				not header X-Secretary-CSRF 1
+			}
+			respond @meetings_csrf `{"ok":false,"error":"csrf"}` 403
+			forward_auth 127.0.0.1:8800 {
+				uri /v1/avatar
+			}
+			request_body {
+				max_size 65MiB
+			}
+			reverse_proxy 100.107.164.33:8795 {
+				header_up X-Memo-Gateway {file./etc/caddy/memo-gateway.key}
+				flush_interval -1
+				transport http {
+					read_timeout 10m
+					write_timeout 10m
+				}
+			}
+		}
+	}

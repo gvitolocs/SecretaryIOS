@@ -16,10 +16,10 @@
 //! to Lucina's chat model for the summary.
 pub mod api;
 pub mod diarize;
-pub mod meetings;
 pub mod events;
 pub mod kernel;
 pub mod library;
+pub mod meetings;
 pub mod model;
 pub mod notify;
 pub mod obsidian;
@@ -121,13 +121,15 @@ impl Config {
                 .map(|n| n.trim().to_owned())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| "Giuseppe".into()),
-            voices_path: get("LUCINA_VOICES_FILE").map(PathBuf::from).unwrap_or_else(|| {
-                PathBuf::from(
-                    get("LUCINA_MEMO_DIR")
-                        .unwrap_or_else(|| format!("{home}/Projects/Lucina/data/memos")),
-                )
-                .join("voices.json")
-            }),
+            voices_path: get("LUCINA_VOICES_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(
+                        get("LUCINA_MEMO_DIR")
+                            .unwrap_or_else(|| format!("{home}/Projects/Lucina/data/memos")),
+                    )
+                    .join("voices.json")
+                }),
             diarize: diarize::DiarizeConfig::from_lookup(get),
             memory_mode: get("LUCINA_MEETINGS_MEMORY_MODE")
                 .or_else(|| get("LUCINA_MEMORY_MODE"))
@@ -196,9 +198,10 @@ impl App {
         let store = store::Store::open(&cfg.data_dir)?;
         let voices = diarize::profiles::VoiceBook::open(&cfg.voices_path)?;
         let memory = match cfg.memory_mode {
-            lucina_memory::MemoryMode::ReadWrite => {
-                Some(lucina_memory::Memory::new(cfg.memory_mode, cfg.honcho.clone())?)
-            }
+            lucina_memory::MemoryMode::ReadWrite => Some(lucina_memory::Memory::new(
+                cfg.memory_mode,
+                cfg.honcho.clone(),
+            )?),
             _ => None,
         };
         Ok(Arc::new(Self {

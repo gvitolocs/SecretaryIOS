@@ -22,6 +22,15 @@ mkdir -p "$CFG" "$UNITS" "$HOME/Projects/Lucina/data/memos"; chmod 700 "$CFG" "$
   done
   [ -f "$CFG/memo.env" ] || sed "s|@TAILNET@|$(tailscale ip -4 | head -1)|" "$REPO/deploy/lucina-memo/memo.env.example" > "$CFG/memo.env" )
 
+# The meetings archive lives on the MyBook; create it only when the disk is mounted (never on
+# the system disk under an empty mount point).
+if mountpoint -q "$HOME/mnt/mybook"; then
+  mkdir -p "$HOME/mnt/mybook/lucina-meetings" && chmod 700 "$HOME/mnt/mybook/lucina-meetings"
+else
+  echo "note: $HOME/mnt/mybook is not mounted; meetings answer 503 until $HOME/mnt/mybook/lucina-meetings exists" >&2
+fi
+[ -f "$HOME/models/diarization/onnxruntime/lib/libonnxruntime.so" ] || echo "note: diarization models/ONNX Runtime missing (docs/meetings.md, one-time download)" >&2
+
 install -m 0644 "$REPO/deploy/lucina-memo/lucina-memo.service" "$UNITS/"
 systemctl --user daemon-reload
 systemctl --user enable lucina-memo.service >/dev/null

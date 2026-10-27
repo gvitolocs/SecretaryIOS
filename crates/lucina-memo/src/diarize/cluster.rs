@@ -15,7 +15,9 @@ pub fn agglomerative(points: &[Vec<f32>], threshold: f32) -> Vec<usize> {
     }
     if n > MAX_POINTS {
         let step = n as f64 / MAX_POINTS as f64;
-        let picked: Vec<usize> = (0..MAX_POINTS).map(|i| (i as f64 * step) as usize).collect();
+        let picked: Vec<usize> = (0..MAX_POINTS)
+            .map(|i| (i as f64 * step) as usize)
+            .collect();
         let sample: Vec<Vec<f32>> = picked.iter().map(|&i| points[i].clone()).collect();
         let labels = agglomerative(&sample, threshold);
         let k = labels.iter().max().map_or(0, |m| m + 1);
@@ -34,7 +36,10 @@ pub fn agglomerative(points: &[Vec<f32>], threshold: f32) -> Vec<usize> {
             .iter()
             .map(|p| {
                 (0..k)
-                    .max_by(|a, b| super::cosine(p, &centroids[*a]).total_cmp(&super::cosine(p, &centroids[*b])))
+                    .max_by(|a, b| {
+                        super::cosine(p, &centroids[*a])
+                            .total_cmp(&super::cosine(p, &centroids[*b]))
+                    })
                     .unwrap_or(0)
             })
             .collect();
@@ -189,7 +194,13 @@ mod tests {
         let a = [1.0, 0.0];
         let b = [0.0, 1.0];
         let pts: Vec<Vec<f32>> = (0..MAX_POINTS + 50)
-            .map(|i| if i % 2 == 0 { around(&a, 0.1, i) } else { around(&b, 0.1, i) })
+            .map(|i| {
+                if i % 2 == 0 {
+                    around(&a, 0.1, i)
+                } else {
+                    around(&b, 0.1, i)
+                }
+            })
             .collect();
         let l = agglomerative(&pts, 0.5);
         assert!(l.iter().enumerate().all(|(i, x)| *x == i % 2));

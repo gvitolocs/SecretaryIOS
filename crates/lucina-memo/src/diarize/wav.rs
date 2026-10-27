@@ -4,7 +4,8 @@ use std::path::Path;
 use super::DiarizeError;
 
 pub fn read(path: &Path) -> Result<Vec<f32>, DiarizeError> {
-    let bytes = std::fs::read(path).map_err(|e| DiarizeError::Failed(format!("{}: {e}", path.display())))?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| DiarizeError::Failed(format!("{}: {e}", path.display())))?;
     parse(&bytes)
 }
 
@@ -31,7 +32,11 @@ pub fn parse(b: &[u8]) -> Result<Vec<f32>, DiarizeError> {
                 let rate = u32::from_le_bytes([f[4], f[5], f[6], f[7]]);
                 let bits = u16::from_le_bytes([f[14], f[15]]);
                 // 1 = PCM; 0xFFFE = extensible (ffmpeg may write it), PCM inside.
-                if !(format == 1 || format == 0xFFFE) || channels != 1 || bits != 16 || rate != 16_000 {
+                if !(format == 1 || format == 0xFFFE)
+                    || channels != 1
+                    || bits != 16
+                    || rate != 16_000
+                {
                     return Err(bad("expected 16 kHz mono 16-bit PCM"));
                 }
                 format_ok = true;

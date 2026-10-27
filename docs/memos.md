@@ -1,5 +1,7 @@
 # Voice memos
 
+(Meetings recorded on the Mac run in the same service: `docs/meetings.md`.)
+
 Lucina as a voice-memo app, like Apple's Voice Memos. The owner records in the Secretary app (iPhone, web), and
 without doing anything else gets a transcript, Lucina's summary (*resoconto*), a PDF, a note in the Obsidian vault and
 a notification.
@@ -77,6 +79,10 @@ One memo at a time, oldest first; each step writes its output before recording i
    the iPhone's transcript when there is one (memo continues now; the idle worker upgrades it to Whisper later
    and re-summarises without a second notification), otherwise the memo waits and retries every minute.
    No CPU Whisper model is installed (owner's choice, 2026-10-24).
+1a. **Speakers** (best effort, kernel K11): when the diarizer is available (`docs/meetings.md`: models, voice
+   profiles), once per transcript: two or more voices give each transcript line a `speaker` (the owner's name, a
+   named person's, or `Speaker N`) and `speakers: true`; the summary sees them. A new transcript (Whisper upgrade,
+   reprocess) is labelled again. The memo API is unchanged.
 1b. **Calendar event** (best effort, before the summary): secretary-server's `/v1/calendar/events` (Google, ICS,
    iPhone calendars; service token) for the recording ± 30 min. `kernel::pick_event` (K8): timed events covering
    half the recording or ≥ 10 min of it; the one at the device's location first (optional: `LUCINA_MEMO_GEOCODE_URL`
@@ -116,7 +122,7 @@ plus words; without words every memo of the range with its summary; "last Tuesda
 ## Verification
 
 `docs/verification.md` §7 (branch main): the Stateright model `verification/models/src/memos.rs`, its TLA+ twin
-`formal/memos/Memos.tla`, and the Verus kernel `verification/verus/memo_kernel.rs` (K1–K10) whose function bodies are
+`formal/memos/Memos.tla`, and the Verus kernel `verification/verus/memo_kernel.rs` (K1–K11) whose function bodies are
 `crates/lucina-memo/src/kernel.rs` (differential test `tests/verus_kernel.rs`). Bugs found and fixed there: B1 a
 second vault note after a crash and a rename, B2 Whisper replaced by the iPhone transcript on a reprocess, B3 Telegram
 sent twice after a crash, B4 a recording lost when iOS killed the app.

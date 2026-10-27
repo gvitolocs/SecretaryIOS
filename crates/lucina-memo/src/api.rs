@@ -32,7 +32,12 @@ use crate::model::{Status, Summary, Transcript};
 use crate::store::{read_json, valid_id, NewMemo, StoreError};
 use crate::{search, worker, App};
 
-pub struct ApiError(pub(crate) StatusCode, pub(crate) &'static str, pub(crate) String, pub(crate) Option<u64>);
+pub struct ApiError(
+    pub(crate) StatusCode,
+    pub(crate) &'static str,
+    pub(crate) String,
+    pub(crate) Option<u64>,
+);
 
 impl ApiError {
     pub(crate) fn new(s: StatusCode, code: &'static str, msg: impl Into<String>) -> Self {
