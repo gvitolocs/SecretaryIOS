@@ -78,6 +78,18 @@ CREATE TABLE IF NOT EXISTS album_items (
     PRIMARY KEY (album_id, item_id)
 );
 CREATE INDEX IF NOT EXISTS album_items_item ON album_items(item_id);
+-- Album share links (`share.rs`): a random token per link; rows stay after a revoke.
+CREATE TABLE IF NOT EXISTS album_shares (
+    token TEXT PRIMARY KEY,
+    album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    allow_original INTEGER NOT NULL DEFAULT 0,
+    views INTEGER NOT NULL DEFAULT 0,
+    last_view_at TEXT
+);
+CREATE INDEX IF NOT EXISTS album_shares_album ON album_shares(album_id);
 CREATE TABLE IF NOT EXISTS uploads (
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
@@ -772,6 +784,112 @@ pub fn list_albums_in(
     } else {
         albums
     })
+}
+
+const SHARE_COLS: &str =
+    "token, album_id, created_at, expires_at, revoked_at, allow_original, views, last_view_at";
+
+fn share_from_row(r: &Row) -> rusqlite::Result<crate::share::ShareRow> {
+    Ok(crate::share::ShareRow {
+        token: r.get(0)?,
+        album_id: r.get(1)?,
+        created_at: r.get(2)?,
+        expires_at: r.get(3)?,
+        revoked_at: r.get(4)?,
+        allow_original: r.get::<_, i64>(5)? != 0,
+        views: r.get(6)?,
+        last_view_at: r.get(7)?,
+    })
+}
+
+pub fn insert_share(c: &Connection, s: &crate::share::ShareRow) -> rusqlite::Result<()> {
+    c.execute(
+        "INSERT INTO album_shares (token, album_id, created_at, expires_at, allow_original) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![s.token, s.album_id, s.created_at, s.expires_at, s.allow_original as i64],
+    )?;
+    Ok(())
+}
+
+pub fn get_share(c: &Connection, token: &str) -> rusqlite::Result<Option<crate::share::ShareRow>> {
+    c.query_row(
+        &format!("SELECT {SHARE_COLS} FROM album_shares WHERE token = ?1"),
+        [token],
+        share_from_row,
+    )
+    .optional()
+}
+
+/// The shares of one album, or of every album; newest first.
+pub fn list_shares(
+    c: &Connection,
+    album_id: Option<&str>,
+) -> rusqlite::Result<Vec<crate::share::ShareRow>> {
+    let mut st = c.prepare(&format!(
+        "SELECT {SHARE_COLS} FROM album_shares WHERE ?1 IS NULL OR album_id = ?1 ORDER BY created_at DESC"
+    ))?;
+    let rows = st.query_map([album_id], share_from_row)?;
+    rows.collect()
+}
+
+/// Sets `revoked_at` once; false for an unknown token.
+pub fn revoke_share(c: &Connection, token: &str) -> rusqlite::Result<bool> {
+    let n = c.execute(
+        "UPDATE album_shares SET revoked_at = COALESCE(revoked_at, ?2) WHERE token = ?1",
+        params![token, now_str()],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn count_share_view(c: &Connection, token: &str) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE album_shares SET views = views + 1, last_view_at = ?2 WHERE token = ?1",
+        params![token, now_str()],
+    )?;
+    Ok(())
+}
+
+/// Whether the item is in the album now and visible (not trashed, not hidden): a share serves
+/// nothing else.
+pub fn item_visible_in_album(
+    c: &Connection,
+    album_id: &str,
+    item_id: &str,
+) -> rusqlite::Result<bool> {
+    c.prepare_cached(
+        "SELECT 1 FROM album_items ai JOIN items i ON i.id = ai.item_id \
+         WHERE ai.album_id = ?1 AND ai.item_id = ?2 AND i.trashed_at IS NULL AND i.hidden = 0",
+    )?
+    .exists(params![album_id, item_id])
+}
+
+/// The visible items of an album, newest first, from `offset` (a share's page and its item list).
+pub fn album_visible_items(
+    c: &Connection,
+    album_id: &str,
+    offset: usize,
+    limit: usize,
+) -> rusqlite::Result<(Vec<Item>, i64)> {
+    let total: i64 = c.query_row(
+        "SELECT COUNT(*) FROM album_items ai JOIN items i ON i.id = ai.item_id \
+         WHERE ai.album_id = ?1 AND i.trashed_at IS NULL AND i.hidden = 0",
+        [album_id],
+        |r| r.get(0),
+    )?;
+    let cols = ITEM_COLS
+        .split(", ")
+        .map(|c| format!("i.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut st = c.prepare(&format!(
+        "SELECT {cols} FROM album_items ai JOIN items i ON i.id = ai.item_id \
+         WHERE ai.album_id = ?1 AND i.trashed_at IS NULL AND i.hidden = 0 \
+         ORDER BY i.sort_at DESC, i.id DESC LIMIT ?2 OFFSET ?3"
+    ))?;
+    let rows = st.query_map(
+        params![album_id, limit as i64, offset as i64],
+        item_from_row,
+    )?;
+    Ok((rows.collect::<rusqlite::Result<_>>()?, total))
 }
 
 pub fn get_album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
