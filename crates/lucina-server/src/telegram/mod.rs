@@ -778,9 +778,11 @@ impl Bot {
             user_attachments: attachments,
             reminder_chat_id: m.chat_id.clone(),
             reminder_source: "telegram",
+            reminders_refused: None,
             owner: surface.is_owner(),
             share,
             on_job_done: Some(self.job_sink(&m.chat_id)),
+            channel_actions: None,
         };
         let typing = self.typing(&m.chat_id);
         let started = Instant::now();

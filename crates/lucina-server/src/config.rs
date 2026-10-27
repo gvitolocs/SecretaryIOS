@@ -142,11 +142,16 @@ pub struct Config {
     pub device_retention_days: i64,
     pub device_command_ttl_ms: i64,
     pub device_reachable_minutes: i64,
-    // channels: Telegram (`LUCINA_TELEGRAM_ENABLED`, see `telegram`); Discord not in this build
+    // channels: Telegram (`LUCINA_TELEGRAM_ENABLED`, see `telegram`), Discord
+    // (`LUCINA_DISCORD_ENABLED`, see `discord`)
     pub telegram_requested: bool,
     /// The Telegram bot (`crate::telegram`).
     pub telegram: crate::telegram::TelegramConfig,
     pub discord_requested: bool,
+    /// The Discord message session (`crate::discord`).
+    pub discord: crate::discord::DiscordConfig,
+    /// `DISCORD_BOT_TOKEN_LUCINA`, else `LUCINA_DISCORD_TOKEN_FILE` (never logged).
+    pub discord_token: Option<String>,
     // discord presence (watcher: `lucina presence-watch`)
     pub owner_discord_user_id: Option<String>,
     pub presence_dir: PathBuf,
@@ -211,6 +216,7 @@ impl std::fmt::Debug for Config {
             .field("drive", &self.drive_enabled)
             .field("mcp_trusted", &self.mcp_trusted)
             .field("telegram", &self.telegram.enabled)
+            .field("discord", &self.discord.enabled)
             .field("maps_geocode", &self.maps_geocode.is_some())
             .finish_non_exhaustive()
     }
@@ -505,6 +511,8 @@ impl Config {
                     )
                 }),
             telegram: crate::telegram::TelegramConfig::from_lookup(&get, &data_dir),
+            discord: crate::discord::DiscordConfig::from_lookup(&get, &data_dir),
+            discord_token: crate::discord::token_from_lookup(&get),
             data_dir,
         })
     }

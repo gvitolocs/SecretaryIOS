@@ -19,6 +19,7 @@ pub mod context;
 pub mod deals;
 pub mod delegation;
 pub mod delivery_monitor;
+pub mod discord;
 pub mod fake;
 pub mod geocode;
 pub mod grocery_turn;
@@ -108,6 +109,8 @@ pub struct Inner {
     pub telegram_health: lucina_telegram::poller::SharedHealth,
     /// Node's `recent-telegram-chat.json`, written only while the Telegram bot runs here.
     pub telegram_recent: Arc<RecentChat>,
+    /// The Discord message session (`/health` → `discord`).
+    pub discord_health: lucina_discord::session::SharedHealth,
     pub hospital_health: Arc<Mutex<bot_hospital::HospitalHealth>>,
     /// Delivery-path alerts (`delivery_monitor`).
     pub monitor: Arc<delivery_monitor::Monitor>,
@@ -414,6 +417,10 @@ impl AppState {
             })),
             telegram_health: Default::default(),
             telegram_recent: Arc::new(RecentChat::new(Some(cfg.telegram.recent_path.clone()))),
+            discord_health: Arc::new(Mutex::new(lucina_discord::session::SessionHealth {
+                state: "off".into(),
+                ..Default::default()
+            })),
             cfg,
         };
         Ok(Self(Arc::new(inner)))
@@ -431,6 +438,34 @@ impl AppState {
     /// `LUCINA_TELEGRAM_ENABLED=true` and a Lucina bot token.
     pub fn telegram_active(&self) -> bool {
         self.cfg.telegram.enabled && self.cfg.telegram_token.is_some()
+    }
+
+    /// `LUCINA_DISCORD_ENABLED=true` and a Lucina Discord bot token.
+    pub fn discord_active(&self) -> bool {
+        self.cfg.discord.enabled && self.cfg.discord_token.is_some()
+    }
+
+    /// The Discord message session (`LUCINA_DISCORD_ENABLED=true`); `None`
+    /// when off. It closes the session and releases its lease when
+    /// `shutdown` turns true: await the handle before exiting.
+    pub fn spawn_discord(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.cfg.discord.enabled {
+            return None;
+        }
+        let Some(token) = self.cfg.discord_token.clone() else {
+            tracing::warn!("LUCINA_DISCORD_ENABLED=true but no Lucina Discord token (DISCORD_BOT_TOKEN_LUCINA or LUCINA_DISCORD_TOKEN_FILE): Discord stays off");
+            return None;
+        };
+        match discord::spawn(self, token, shutdown) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "discord message session not started");
+                None
+            }
+        }
     }
 
     /// The Telegram bot's poller (`LUCINA_TELEGRAM_ENABLED=true`); `None`
@@ -473,11 +508,6 @@ impl AppState {
                     }
                 });
             }
-        }
-        if self.cfg.discord_requested {
-            tracing::warn!(
-                "LUCINA_DISCORD_ENABLED: Discord is not part of this build; it stays off"
-            );
         }
         // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
         if let Some(h) = deals::spawn_watch(self) {
