@@ -99,6 +99,8 @@ pub fn infer_node_action(reply: &str, meta: &Value, persona: &str) -> &'static s
     if starts(&["Reminder set for ", "That reminder was already scheduled. "])
         || reply.starts_with(&format!("{persona}: I could not parse that reminder"))
         || reply.starts_with(&format!("{persona}: timed reminders are disabled"))
+        || reply.starts_with("I could not work out when to remind you")
+        || reply.starts_with("Timed reminders are disabled")
     {
         return "schedule_reminder";
     }

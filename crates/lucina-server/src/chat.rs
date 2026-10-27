@@ -1341,7 +1341,7 @@ async fn json_turn(
     if action == "schedule_reminder" {
         if !st.cfg.reminders_enabled {
             return Finish::reply(
-                format!("{persona}: timed reminders are disabled on this host."),
+                "Timed reminders are disabled on this host.".to_owned(),
                 &action,
             );
         }
@@ -1350,7 +1350,10 @@ async fn json_turn(
             None => st.cfg.owner_chat_id.clone(),
         };
         let Some(chat) = chat.filter(|c| !c.is_empty()) else {
-            return Finish::reply(format!("{persona}: no owner Telegram chat is configured, so I cannot schedule reminders."), &action);
+            return Finish::reply(
+                "No owner Telegram chat is configured, so I cannot schedule reminders.".to_owned(),
+                &action,
+            );
         };
         let o = ParseOptions {
             tz,
@@ -1359,7 +1362,7 @@ async fn json_turn(
             now: Utc::now(),
         };
         let Some((text, due)) = resolve_reminder(&t.message, &plan, &o) else {
-            return Finish::reply(format!("{persona}: I could not parse that reminder. Examples: \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\"."), &action);
+            return Finish::reply("I could not work out when to remind you. Try \"domani mattina di comprare il latte\", \"alle 21:30 di fare la doccia\" or \"28 August 2026 — unsubscribe from Google AI Plus\".".to_owned(), &action);
         };
         return match st
             .writer
@@ -1398,10 +1401,7 @@ async fn json_turn(
                 f
             }
             Err(e) => Finish::reply(
-                format!(
-                    "{persona}: I could not schedule that reminder ({}).",
-                    e.code
-                ),
+                format!("I could not schedule that reminder ({}).", e.code),
                 &action,
             ),
         };
