@@ -39,7 +39,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(125);
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TaskArgs {
-    /// The whole job in words, e.g. "open example.com in Firefox and tell me the page title".
+    /// The whole job in words, e.g. "open example.com in Chromium and tell me the page title".
     pub task: String,
     /// Seconds to wait for the result before returning the job id (0-50, default 45).
     #[serde(default)]
@@ -81,7 +81,7 @@ pub struct ToolsArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallArgs {
-    /// A driver tool from `computer_tools`, e.g. click, type_text, press_key, scroll, launch_app, get_window_state, browser_navigate (browser_* tools need start_session first).
+    /// A driver tool from `computer_tools`, e.g. click, type_text, press_key, scroll, launch_app, get_window_state, browser_navigate (browser_* tools need start_session first). The workspace uses Chromium only; never install or launch Firefox. Android is separate.
     pub tool: String,
     /// The tool's arguments. Most take the pid and window_id that a screenshot lists.
     #[serde(default)]
