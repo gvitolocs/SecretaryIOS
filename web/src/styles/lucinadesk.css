@@ -1,0 +1,233 @@
+/* LucinaDesk (components/DeskPlayer.tsx). The stage is black and the picture is letterboxed in it;
+   the pill floats over the top edge. In focus mode (Secretary Code's content area, the Fullscreen
+   API, or the iPhone's fixed stage) it fills everything and the page under it scrolls no more. */
+.ldesk-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ldesk-screen {
+  position: relative;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  aspect-ratio: 1280 / 800;
+  max-height: calc(100dvh - 200px);
+  width: 100%;
+  min-height: 200px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.ldesk-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  outline: none;
+  touch-action: none;
+  transform-origin: center;
+  cursor: default;
+}
+.ldesk-stage[data-driving="no"] .ldesk-canvas { cursor: pointer; }
+
+/* Focus: the stage takes the whole viewport (Secretary Code's content area, the Fullscreen API's
+   screen, or the iPhone's visual viewport) and the pill floats over the picture. */
+.ldesk-stage--focus,
+.ldesk-stage:fullscreen {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--desk-top, 0px);
+  height: var(--desk-vh, 100dvh);
+  width: 100vw;
+  z-index: 60;
+  display: block;
+  background: #000;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  box-sizing: border-box;
+}
+.ldesk-stage:fullscreen { top: 0; height: 100vh; }
+.ldesk-stage--focus .ldesk-screen,
+.ldesk-stage:fullscreen .ldesk-screen {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+  aspect-ratio: auto;
+  border-radius: 0;
+}
+html.ldesk-focus,
+html.ldesk-focus body {
+  overflow: hidden !important;
+  overscroll-behavior: none;
+  background: #000;
+}
+
+.ldesk-cursor {
+  position: absolute;
+  display: block;
+  width: 12px;
+  height: 18px;
+  /* The arrow's tip is the host's pointer. */
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 50%));
+  pointer-events: none;
+}
+.ldesk-cursor svg { display: block; }
+
+.ldesk-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  color: #e8ebf0;
+  background: rgb(0 0 0 / 55%);
+  text-align: center;
+  font-size: 0.95rem;
+}
+.ldesk-confirm { background: rgb(0 0 0 / 70%); }
+.ldesk-confirm span { max-width: 32em; }
+.ldesk-overlay-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.ldesk-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgb(255 255 255 / 25%);
+  border-top-color: #fff;
+  animation: ldesk-spin 0.9s linear infinite;
+}
+@keyframes ldesk-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ldesk-spinner { animation: none; } }
+
+.ldesk-btn {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 25%);
+  background: rgb(255 255 255 / 8%);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.ldesk-btn--primary { background: #4f8cff; border-color: #4f8cff; }
+
+/* The pill: who drives, and the few controls. Above the picture on the page; floating top centre
+   over it in focus. */
+.ldesk-pill {
+  order: -1;
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  padding: 3px 4px 3px 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: rgb(22 25 30 / 88%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 999px;
+  box-shadow: 0 6px 22px rgb(0 0 0 / 40%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #e8ebf0;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.ldesk-stage--focus .ldesk-pill,
+.ldesk-stage:fullscreen .ldesk-pill {
+  position: absolute;
+  top: calc(6px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  opacity: 0.75;
+  transition: opacity 0.2s;
+}
+.ldesk-stage--focus .ldesk-pill:hover,
+.ldesk-stage--focus .ldesk-pill:focus-within { opacity: 1; }
+/* With a mouse, the floating pill tucks up into a handle (Lucina's panel is at the top of her
+   screen) and comes back on hover, for a few seconds after focus starts, or while asking. */
+@media (hover: hover) {
+  .ldesk-stage--focus .ldesk-pill {
+    transition: transform 0.2s, opacity 0.2s;
+    transform: translate(-50%, calc(-100% - 6px + 7px));
+  }
+  .ldesk-stage--focus .ldesk-pill:hover,
+  .ldesk-stage--focus .ldesk-pill:focus-within,
+  .ldesk-stage--focus[data-peek="yes"] .ldesk-pill {
+    transform: translateX(-50%);
+  }
+}
+.ldesk-pill-dot { width: 8px; height: 8px; border-radius: 50%; background: #8a93a3; flex: none; }
+.ldesk-stage[data-driving="yes"] .ldesk-pill { border-color: rgb(255 176 32 / 70%); }
+.ldesk-stage[data-driving="yes"] .ldesk-pill-dot { background: #ffb020; }
+.ldesk-pill-label { font-weight: 600; }
+.ldesk-pill-hint { color: #9aa3b2; padding: 0 4px; }
+.ldesk-pill-btn {
+  flex: none;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 10%);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.ldesk-pill-btn:hover { background: rgb(255 255 255 / 18%); }
+.ldesk-pill-btn[aria-pressed="true"] { background: rgb(79 140 255 / 30%); }
+.ldesk-pill-btn:disabled { opacity: 0.45; }
+.ldesk-pill-btn--quiet { background: transparent; color: #9aa3b2; }
+
+/* Touch keys, above the iPhone keyboard while it is open. */
+.ldesk-keys {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(6px + env(safe-area-inset-bottom));
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  padding: 0 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.ldesk-key {
+  flex: none;
+  min-width: 44px;
+  min-height: 36px;
+  border-radius: 10px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  background: rgb(22 25 30 / 90%);
+  color: #fff;
+  font: inherit;
+}
+
+/* Focusable for the iPhone keyboard, but invisible and out of the layout. 16px avoids iOS zooming in. */
+.ldesk-kbd {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  resize: none;
+  font-size: 16px;
+  pointer-events: none;
+}
+
+@media (max-width: 600px) {
+  .ldesk-stage:not(.ldesk-stage--focus) .ldesk-screen { border-radius: 8px; max-height: none; }
+  .ldesk-pill { font-size: 0.8rem; }
+  .ldesk-pill-hint { display: none; }
+}
