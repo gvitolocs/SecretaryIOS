@@ -130,11 +130,12 @@ fn shell_segments(command: &str) -> Vec<Vec<String>> {
             word.push(c);
         } else if c == '\'' || c == '"' {
             quote = Some(c);
-        } else if c.is_whitespace() || matches!(c, ';' | '&' | '|') {
+        } else if c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')') {
             if !word.is_empty() {
                 words.push(std::mem::take(&mut word));
             }
-            if matches!(c, ';' | '&' | '|' | '\n') && !words.is_empty() {
+            // Subshells and `$(...)` start a new command too.
+            if matches!(c, ';' | '&' | '|' | '\n' | '(' | ')') && !words.is_empty() {
                 segments.push(std::mem::take(&mut words));
             }
         } else {
@@ -167,7 +168,12 @@ fn forbidden_browser_command(command: &str) -> bool {
         // Common launcher wrappers, their options, and environment assignments.
         while let Some(word) = words.get(i) {
             let name = word.rsplit('/').next().unwrap_or(word);
-            if matches!(name, "env" | "nohup" | "setsid" | "exec" | "sudo") {
+            if matches!(word.as_str(), "{" | "!" | "then" | "do" | "else" | "time") {
+                i += 1;
+            } else if matches!(
+                name,
+                "env" | "nohup" | "setsid" | "exec" | "sudo" | "command"
+            ) {
                 i += 1;
                 while words.get(i).is_some_and(|s| s.starts_with('-')) {
                     let option = words[i].as_str();
@@ -201,6 +207,15 @@ fn forbidden_browser_command(command: &str) -> bool {
             return true;
         }
         let name = program.rsplit('/').next().unwrap_or(program);
+        // `sh -c 'firefox'`: check the inner script too.
+        if matches!(name, "sh" | "bash" | "dash")
+            && words.get(i + 1).is_some_and(|w| w == "-c")
+            && words
+                .get(i + 2)
+                .is_some_and(|w| forbidden_browser_command(w))
+        {
+            return true;
+        }
         matches!(name, "apt" | "apt-get" | "snap" | "flatpak")
             && words[i + 1..].iter().any(|w| w == "install")
             && words[i + 1..].iter().any(|w| firefox_package(w))
@@ -444,6 +459,12 @@ mod tests {
             "DISPLAY=:1 /usr/bin/firefox",
             "'firefox'",
             "fire\\fox",
+            "(firefox &)",
+            "echo $(firefox)",
+            "{ firefox; }",
+            "if true; then firefox; fi",
+            "bash -c 'DISPLAY=:1 firefox &'",
+            "sh -c \"sleep 1; firefox\"",
             "sudo apt-get install -y firefox",
             "apt install firefox-esr:amd64",
             "snap install firefox",
@@ -487,6 +508,8 @@ mod tests {
             "apt install chromium",
             "snap list firefox",
             "which firefox",
+            "bash -c 'echo firefox'",
+            "(chromium https://example.com &)",
         ] {
             assert!(!forbidden_browser_command(command), "{command}");
             assert!(sb

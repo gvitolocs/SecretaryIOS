@@ -3,7 +3,9 @@
 //! `lucina-android`. Registered by the server when
 //! `LUCINA_COMPUTER_USE_ENABLED=true` (crate `lucina_computer_use`).
 //!
-//! Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (call `start_session` first, then `browser_navigate`, etc.) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox.
+//! The desktop is a sandbox container on nezopt (not nezopt's host, not the
+//! owner's Mac) and its only browser is Chromium; the sandbox layer refuses
+//! Firefox launches and installs.
 //!
 //! `task` hands a whole job to her computer-use engine (Hermes + Cua, capped at
 //! 200 s) and returns its receipts; the other actions call the sandbox directly.
@@ -76,7 +78,7 @@ impl Tool for ComputerTool {
     }
 
     fn description(&self) -> &'static str {
-        "Your own isolated computers on nezopt: a Linux desktop (lucina-workspace, with Chromium, a terminal and files) and an Android sandbox (lucina-android). Use it yourself whenever a request needs a real browser or desktop: visiting a website, downloading and inspecting a file, filling a web page, checking how something looks. Prefer action `task` for multi-step work; use `bash`, `screenshot` and `tool` for quick direct steps. Nothing here can reach Giuseppe's own machines or files. Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (call `start_session` first, then `browser_navigate`, etc.) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox."
+        "Your own isolated computers on nezopt: a Linux desktop (lucina-workspace, with Chromium, a terminal and files) and an Android sandbox (lucina-android). Use it yourself whenever a request needs a real browser or desktop: visiting a website, downloading and inspecting a file, filling a web page, checking how something looks. Prefer action `task` for multi-step work; use `bash`, `screenshot` and `tool` for quick direct steps. Nothing here can reach Giuseppe's own machines or files. The desktop is a sandbox container on nezopt, not nezopt's host and not Giuseppe's Mac. Its only browser is Chromium: for web pages prefer action `tool` with the driver's browser_* tools (start_session first, then browser_navigate), or click/type_text/press_key. Never install or launch Firefox."
     }
 
     fn parameters(&self) -> Value {
