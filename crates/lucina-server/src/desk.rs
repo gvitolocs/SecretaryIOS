@@ -7,8 +7,9 @@
 //! (`LUCINA_DESK_GATEWAY`, default [`DEFAULT_GATEWAY`]). This module
 //! stands between the owner's socket and the gateway:
 //!
-//! - `POST /api/secretary/computer/desk` `{sandbox, mode, device}` (bearer; secretary-server
-//!   names the device): a single-use ticket, 32 random bytes in base64url, good for
+//! - `POST /api/secretary/computer/desk` `{sandbox, mode, device, codecs?}` (bearer;
+//!   secretary-server names the device; `codecs` is what the browser decodes, best first,
+//!   passed to the gateway): a single-use ticket, 32 random bytes in base64url, good for
 //!   [`TICKET_TTL`] to connect, at most [`MAX_UNREDEEMED`] waiting per device.
 //! - `GET /api/secretary/computer/desk/ws` (bearer; p1 splices the owner's socket here) and
 //!   `GET /v1/computer/desk/ws` on the home-network door (`lan.rs`; no bearer, the page
@@ -81,7 +82,25 @@ struct Ticket {
     sandbox: SandboxId,
     mode: ViewMode,
     device: String,
+    /// `vp9,av1`: the gateway's `codecs` query; empty = its default.
+    codecs: String,
     expires: Instant,
+}
+
+/// Codecs the gateway knows.
+const CODECS: [&str; 5] = ["vp8", "vp9", "av1", "h264", "h265"];
+
+/// The browser's list, known codecs only, in its order; anything malformed is ignored.
+fn codecs(v: &Value) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for c in v.get("codecs").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(c) = c.as_str().and_then(|c| CODECS.iter().find(|k| **k == c)) {
+            if !out.contains(c) {
+                out.push(c);
+            }
+        }
+    }
+    out.join(",")
 }
 
 fn tickets() -> &'static Mutex<HashMap<String, Ticket>> {
@@ -96,7 +115,7 @@ fn valid_ticket(t: &str) -> bool {
 }
 
 /// A new ticket for `device`, or 429 when it already has [`MAX_UNREDEEMED`] waiting.
-fn mint(sandbox: SandboxId, mode: ViewMode, device: &str) -> Result<String, ApiError> {
+fn mint(sandbox: SandboxId, mode: ViewMode, device: &str, codecs: &str) -> Result<String, ApiError> {
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).map_err(|_| ApiError::internal())?;
     let ticket = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
@@ -116,6 +135,7 @@ fn mint(sandbox: SandboxId, mode: ViewMode, device: &str) -> Result<String, ApiE
             sandbox,
             mode,
             device: device.to_owned(),
+            codecs: codecs.to_owned(),
             expires: now + TICKET_TTL,
         },
     );
@@ -177,13 +197,17 @@ pub fn gateway_path() -> PathBuf {
 
 type Gateway = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
 
-async fn connect_gateway(sb: SandboxId) -> Result<Gateway, String> {
+async fn connect_gateway(sb: SandboxId, codecs: &str) -> Result<Gateway, String> {
     let path = gateway_path();
     let stream = tokio::time::timeout(Duration::from_secs(5), tokio::net::UnixStream::connect(&path))
         .await
         .map_err(|_| "gateway connect timed out".to_owned())?
         .map_err(|e| format!("gateway {}: {e}", path.display()))?;
-    let url = format!("ws://lucinadesk-gateway/v1/session?sandbox={}", sb.as_str());
+    let mut url = format!("ws://lucinadesk-gateway/v1/session?sandbox={}", sb.as_str());
+    if !codecs.is_empty() {
+        url.push_str("&codecs=");
+        url.push_str(codecs);
+    }
     let (ws, _) = tokio::time::timeout(
         Duration::from_secs(10),
         tokio_tungstenite::client_async(url, stream),
@@ -453,7 +477,7 @@ async fn mint_body(v: Result<Value, ApiError>) -> Result<Response, ApiError> {
             "the LucinaDesk gateway is not running",
         ));
     }
-    let ticket = mint(sb, mode, &label(&v))?;
+    let ticket = mint(sb, mode, &label(&v), &codecs(&v))?;
     Ok(ok(json!({
         "ticket": ticket,
         "protocol": PROTOCOL,
@@ -545,7 +569,7 @@ async fn run(browser: &mut WebSocket, t: &Ticket, filter: &mut Filter, bytes: &m
     if browser.send(Message::Text(hello.to_string().into())).await.is_err() {
         return (code::NORMAL, "client gone".into());
     }
-    let mut gw = match connect_gateway(t.sandbox).await {
+    let mut gw = match connect_gateway(t.sandbox, &t.codecs).await {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(error = %e, "desk: gateway unavailable");
@@ -684,25 +708,33 @@ mod tests {
     #[test]
     fn tickets_are_single_use_bounded_and_opaque() {
         let dev = "tickets-test";
-        let t = mint(SandboxId::Workspace, ViewMode::Watch, dev).unwrap();
+        let t = mint(SandboxId::Workspace, ViewMode::Watch, dev, "").unwrap();
         assert!(valid_ticket(&t), "{t}");
         let got = redeem(&t).expect("redeemed once");
         assert_eq!((got.sandbox, got.mode, got.device.as_str()), (SandboxId::Workspace, ViewMode::Watch, dev));
         assert!(redeem(&t).is_none(), "single use");
         assert!(redeem("nope").is_none());
         let waiting: Vec<_> = (0..MAX_UNREDEEMED)
-            .map(|_| mint(SandboxId::Workspace, ViewMode::Control, dev).unwrap())
+            .map(|_| mint(SandboxId::Workspace, ViewMode::Control, dev, "").unwrap())
             .collect();
-        let e = mint(SandboxId::Workspace, ViewMode::Control, dev).unwrap_err();
+        let e = mint(SandboxId::Workspace, ViewMode::Control, dev, "").unwrap_err();
         assert_eq!((e.status.as_u16(), e.code.as_str()), (429, "too_many_tickets"));
-        assert!(mint(SandboxId::Workspace, ViewMode::Control, "another-device").is_ok());
+        assert!(mint(SandboxId::Workspace, ViewMode::Control, "another-device", "").is_ok());
         assert!(redeem(&waiting[0]).is_some());
-        assert!(mint(SandboxId::Workspace, ViewMode::Control, dev).is_ok(), "one slot free again");
+        assert!(mint(SandboxId::Workspace, ViewMode::Control, dev, "").is_ok(), "one slot free again");
+    }
+
+    #[test]
+    fn codecs_keep_the_browsers_order_and_drop_the_rest() {
+        assert_eq!(codecs(&json!({"codecs": ["vp9", "av1", "h264"]})), "vp9,av1,h264");
+        assert_eq!(codecs(&json!({"codecs": ["h264", "vp9", "h264", "x;rm", 7, "VP9"]})), "h264,vp9");
+        assert_eq!(codecs(&json!({"codecs": "vp9"})), "", "not a list: ignored");
+        assert_eq!(codecs(&json!({})), "");
     }
 
     #[test]
     fn expired_tickets_are_refused() {
-        let t = mint(SandboxId::Workspace, ViewMode::Watch, "expiry-test").unwrap();
+        let t = mint(SandboxId::Workspace, ViewMode::Watch, "expiry-test", "").unwrap();
         tickets().lock().unwrap().get_mut(&t).unwrap().expires = Instant::now();
         assert!(redeem(&t).is_none());
     }

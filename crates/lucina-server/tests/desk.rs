@@ -26,7 +26,15 @@ fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
             let Ok((s, _)) = listener.accept().await else { return };
             let tx = tx.clone();
             tokio::spawn(async move {
-                let mut ws = tokio_tungstenite::accept_async(s).await.unwrap();
+                let path = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+                let seen = path.clone();
+                let mut ws = tokio_tungstenite::accept_hdr_async(s, move |req: &tungstenite::handshake::server::Request, resp| {
+                    *seen.lock().unwrap() = req.uri().to_string();
+                    Ok(resp)
+                })
+                .await
+                .unwrap();
+                let _ = tx.send(format!("<open {}>", path.lock().unwrap()));
                 ws.send(Message::text(r#"{"type":"login","hostname":"lucina-workspace"}"#))
                     .await
                     .unwrap();
@@ -53,7 +61,7 @@ async fn mint(h: &common::H, mode: &str, bearer: bool) -> (u16, Value) {
     let mut rb = h
         .http
         .post(h.url("/computer/desk"))
-        .json(&json!({"sandbox": "workspace", "mode": mode, "device": "test iPhone"}));
+        .json(&json!({"sandbox": "workspace", "mode": mode, "device": "test iPhone", "codecs": ["av1", "vp9", "nope"]}));
     if bearer {
         rb = rb.bearer_auth(TOKEN);
     }
@@ -189,6 +197,7 @@ async fn desk_tickets_lease_and_audit() {
     assert_eq!(next_binary(&mut ws).await[..3], [1, 1, 3]);
     ws.send(Message::text(r#"{"type":"mouse","mask":9,"x":5,"y":5}"#)).await.unwrap();
     assert_eq!(next_text(&mut ws).await, json!({"type": "refused", "what": "mouse", "why": "watch"}));
+    assert_eq!(gw.recv().await.unwrap(), "<open /v1/session?sandbox=workspace&codecs=av1,vp9>", "the browser's codecs reach the gateway");
     ws.send(Message::text(r#"{"type":"ack"}"#)).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), r#"{"type":"ack"}"#, "only the ack reached the gateway");
     assert!(!control().owner_driving(SB), "watching never takes the lease");
@@ -219,6 +228,7 @@ async fn desk_tickets_lease_and_audit() {
     drop(task);
     assert_eq!(control().agent_call(SB, "mcp:claude"), Err(Error::OwnerDriving));
     let mouse = r#"{"type":"mouse","mask":9,"x":5,"y":5}"#;
+    assert_eq!(gw.recv().await.unwrap(), "<open /v1/session?sandbox=workspace&codecs=av1,vp9>", "the browser's codecs reach the gateway");
     ws.send(Message::text(mouse)).await.unwrap();
     ws.send(Message::text(r#"{"type":"text","text":"ciao"}"#)).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), mouse);
