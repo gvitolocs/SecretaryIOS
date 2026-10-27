@@ -225,6 +225,19 @@ on the phone. It doesn't get a second protocol for that.
   - It posts the session's timeline items to `POST /v1/agents/{id}/events`.
   - It receives `agent.command` events (send, steer, stop, permission answers) for the sessions it owns on the
     stream.
+- **External agents, auth:**
+  - A `secretary-code` agent is registered with the desktop's existing Secretary device token. The agent records
+    that device as its `ownerDeviceId`.
+  - Only that device can post its events and receive its `agent.command`s.
+  - Any of the owner's signed-in devices (phone, web) can send, steer, stop and answer permissions. Those become
+    commands queued for the owning device.
+  - Other devices, and MCP tokens, can't post events for it.
+- **Resumable delivery:**
+  - Every stream event has a monotonic `id:`, and a client reconnecting with `Last-Event-ID` gets what it missed.
+    Events are kept for 24 h or 10,000 entries; a client that fell further behind gets `stream.reset` and refetches.
+  - `agent.command`s are also stored until the owning device acknowledges them
+    (`POST /v1/agents/{id}/commands/{commandId}/ack`), so a Mac that sleeps misses none.
+  - A command not acknowledged in 24 h expires. An expired permission answer counts as denied.
 - **UI:** the web `/agents` plugin is the agents UI everywhere. Secretary Code's `agents` slot loads it from the
   embedded web app. iOS and Android add native screens only for notification actions and the QR scanner.
 - **Ownership:** this design builds agentd, the API, the MCP tools and the web plugin. The Secretary Code session
