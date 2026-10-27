@@ -57,6 +57,14 @@
 //   unfixed_window_scan: with the newest-500 window, a reply followed by 500 other items
 //     before the restart is not found, and the share is answered twice (fixed in 485d658).
 //
+//   SK3.3 voice_recovery_once (branch voice-notes, 438d748): every item a voice note can get
+//     is a Lucina item with replyTo = the share's user item: the answer to the device or
+//     whisper transcript (chat::share_turn / tools_turn, TimelineTurn::with_user_item), the
+//     "couldn't hear it" item (share::process) and a tools-planner progress item (on_tool).
+//     Each is found by the full scan after a crash, so the share is not answered again; and
+//     because a progress item is found too, it would become "the answer" after a crash:
+//     tools_turn must not write it for a share turn (the Stateright ablation shows the second
+//     Lucina item it adds without a crash).
 // No assume, admit or external_body.
 use vstd::prelude::*;
 
@@ -777,6 +785,46 @@ pub proof fn answered_at_most_once(j: Job, u: nat, sts: Seq<Step3>)
             },
         }
     }
+}
+
+/// The items a voice note can get. Text, meta.transcript and meta.voiceReply do not take
+/// part in recovery: existing_reply matches role and replyTo only.
+pub enum VoiceOutcome {
+    /// the answer to the on-device transcript
+    Device,
+    /// the answer to the whisper transcript
+    Server,
+    /// "couldn't hear it" (share::process, `reply_to: Some(job.user_item.id)`)
+    Unheard,
+    /// a tools-planner progress item (on_tool: TimelineTurn::record_lucina)
+    ToolProgress,
+}
+
+/// The item each outcome appends: every path writes role lucina, replyTo = u.
+pub open spec fn voice_reply(id: nat, u: nat, outcome: VoiceOutcome) -> Entry {
+    match outcome {
+        VoiceOutcome::Device
+        | VoiceOutcome::Server
+        | VoiceOutcome::Unheard
+        | VoiceOutcome::ToolProgress => Entry { id, share: None, role: Role::Lucina, reply_to: Some(u) },
+    }
+}
+
+/// SK3.3: every voice outcome is found on restart, including "couldn't hear it" (and a
+/// progress item, which is why tools_turn suppresses them for share turns).
+pub proof fn voice_recovery_once(j: Job, u: nat, outcome: VoiceOutcome)
+    requires !j.done, replies(j.timeline, u) == 0,
+    ensures
+        replies(j.timeline.push(voice_reply(j.next, u, outcome)), u) == 1,
+        process(Job { timeline: j.timeline.push(voice_reply(j.next, u, outcome)),
+            next: j.next + 1, ..j }, u, false, None).timeline
+            == j.timeline.push(voice_reply(j.next, u, outcome)),
+        process(Job { timeline: j.timeline.push(voice_reply(j.next, u, outcome)),
+            next: j.next + 1, ..j }, u, false, None).done,
+{
+    let t = j.timeline.push(voice_reply(j.next, u, outcome));
+    lemma_replies_push(j.timeline, voice_reply(j.next, u, outcome), u);
+    lemma_scan_count(t, u);
 }
 
 pub open spec fn filler(i: int) -> Entry {

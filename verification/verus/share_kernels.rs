@@ -26,10 +26,25 @@
 //                            source/title character limits after the loop
 //   sanitize             <-> mod.rs::sanitize (map, replace(".."), trim_matches(['.', ' ']),
 //                            "file", the 120-byte cut that keeps a <= 20-byte extension)
+// Voice notes (branch voice-notes, commit 438d748):
+//   route_for            <-> router::route_for (`container`: head[4..8] == "ftyp" or the
+//                            Matroska magic 1A 45 DF A3)
+//   timeline_kind_for    <-> router::timeline_kind_for
+//   received_kind        <-> the attachment kind mod.rs::receive stores for a file part
+//   extract_handler      <-> extract::read's route_for(.., kind == "voice") and the `voice`
+//   / voice_subtype          argument of extract::audio (subtype "voice")
+//   b64_decoded_len      <-> base64 0.22.1 STANDARD, DecodePaddingMode::Indifferent,
+//                            trailing bits rejected: ENGINE.decode(s).map(|b| b.len())
+//   valid_waveform       <-> lucina-store timeline::valid_waveform (after `trim`)
+//   clip16 / stored_transcript <-> timeutil::clip_utf16 / clean_string(.., MAX_TRANSCRIPT_CHARS)
+//                            (after js_trim); `clip` above <-> share/mod.rs::clip (chars)
 // Differential test: crates/lucina-server/tests/verus_share.rs (branch lucina-rs): the real
 // route/sniff/timeline_kind/normalize over every magic header x extension x mime (and random
 // names), the real sanitize over random and adversarial names, and the real receive endpoint
-// at the part, byte, field and id limits.
+// at the part, byte, field and id limits. On branch voice-notes (0ce757c) the same file also
+// runs the real route_for / timeline_kind_for over every header x extension x mime x voice
+// flag, valid_waveform and the base64 engine against b64_decoded_len / valid_waveform, and
+// normalize's stored transcripts against clip16.
 //
 // Proven:
 //   SK1.1 route_total_in_kinds: for every well-formed input, route returns one kind, and it
@@ -58,6 +73,23 @@
 //         accepted shareId is 8-64 of [A-Za-z0-9-] (never "." / "..", no separator), the
 //         default uuid is valid, sessionId is 0-64 of [A-Za-z0-9_-], note <= 4000 chars,
 //         lang <= 32, source <= 120, title <= 1000.
+//   SK1.6 voice_routing / timeline_kind_for_whitelisted: the voice flag keeps route total and
+//         in KINDS; it changes the handler only for an audio-MIME MP4/Matroska container that
+//         sniff calls video (to audio); the timeline kind is `voice` exactly for a flagged part
+//         routed audio; a flagged part not routed audio gets the unflagged timeline kind; every
+//         result passes normalize's whitelist.
+//   SK1.7 receive_and_extract_agree: extract::read, re-routing with the flag read back from
+//         the stored kind, picks receive's handler, and exactly the parts stored as `voice` run
+//         the audio handler with subtype voice.
+//   SK4.5 valid_waveform_exactly: valid_waveform keeps exactly the trimmed strings that
+//         base64-decode to 1..=64 bytes (the 88-character pre-check never rejects one), so a
+//         stored waveform is 1..=88 bytes of base64 for 1..=64 levels; waveform_limits_witness:
+//         88 chars can decode to 66 bytes (both checks are needed), 86 unpadded / 88 padded
+//         chars decode to 64 and are kept. voice_transcript_bounded: a stored transcript
+//         (attachment or meta.transcript) is non-empty, <= 4000 UTF-16 units (so <= 4000
+//         chars) and a prefix of its input; clip16 after the 4000-char clip of receive and
+//         process keeps what clip16 alone keeps (normalize's js_trim in between can still
+//         drop whitespace left at that cut).
 //   SK4.4 sanitize_fixed_safe: with the proposed fix, sanitize's output is non-empty, at
 //         most 120 bytes, without '/', '\\', ':' or control characters, and has no "..";
 //         sanitize_safe_but_dotdot: today's sanitize has every property except the last.
@@ -1611,6 +1643,552 @@ pub proof fn unfixed_sanitize_keeps_dotdot()
     assert(o[115] == '.');
     assert(o[116] == '.');
     sanitize_fixed_safe(w);
+}
+
+// ================================================================ SK1.6-SK1.7: voice notes
+// Branch voice-notes (438d748): router::route_for, router::timeline_kind_for, the attachment
+// kind receive stores (mod.rs::receive) and the handler extract::read picks.
+
+/// router::route_for. `container` <-> head[4..8] == "ftyp" || head starts with 1A 45 DF A3
+/// (MP4 / Matroska containers, which sniff calls video); `i.mime == Some(Audio)` <->
+/// `mime_kind(mime) == Some("audio")`.
+pub open spec fn route_for_spec(i: Input, voice: bool, container: bool) -> Word {
+    if voice && route_spec(i) == Word::Video && i.mime == Some(Word::Audio) && container {
+        Word::Audio
+    } else {
+        route_spec(i)
+    }
+}
+
+pub fn route_for(i: &Input, voice: bool, container: bool) -> (r: Word)
+    ensures
+        r == route_for_spec(*i, voice, container),
+{
+    let k = route(i);
+    if voice && matches!(k, Word::Video) && matches!(i.mime, Some(Word::Audio)) && container {
+        Word::Audio
+    } else {
+        k
+    }
+}
+
+/// router::timeline_kind_for: only audio may opt into voice-note rendering.
+pub open spec fn timeline_kind_for_spec(w: Word, voice: bool) -> Word {
+    if w == Word::Audio && voice {
+        Word::Voice
+    } else {
+        timeline_kind_spec(w)
+    }
+}
+
+pub fn timeline_kind_for(w: Word, voice: bool) -> (r: Word)
+    ensures
+        r == timeline_kind_for_spec(w, voice),
+{
+    if matches!(w, Word::Audio) && voice {
+        Word::Voice
+    } else {
+        timeline_kind(w)
+    }
+}
+
+/// The attachment kind receive stores for a file part whose `meta.files[i].voice` is `voice`
+/// (a part without a meta entry gets `timeline_kind(route_for(.., false))`, the same value).
+pub open spec fn received_kind(i: Input, voice: bool, container: bool) -> Word {
+    timeline_kind_for_spec(route_for_spec(i, voice, container), voice)
+}
+
+/// SK1.6: the voice flag. It never makes the router partial or leave KINDS; it changes the
+/// handler only for an audio-MIME MP4/Matroska container that sniff calls video (to audio);
+/// a part gets timeline kind `voice` exactly when it is flagged and routed audio; a flagged
+/// part that is not routed audio gets exactly the timeline kind of the same upload without
+/// the flag; every result passes normalize's whitelist.
+pub proof fn voice_routing(i: Input, voice: bool, container: bool)
+    requires
+        well_formed(i),
+    ensures
+        kinds().contains(route_for_spec(i, voice, container)),
+        route_for_spec(i, false, container) == route_spec(i),
+        route_for_spec(i, voice, container) != route_spec(i) ==> voice && route_spec(i)
+            == Word::Video && i.mime == Some(Word::Audio) && container && route_for_spec(
+            i,
+            voice,
+            container,
+        ) == Word::Audio,
+        received_kind(i, voice, container) == Word::Voice <==> voice && route_for_spec(
+            i,
+            voice,
+            container,
+        ) == Word::Audio,
+        route_for_spec(i, voice, container) != Word::Audio ==> received_kind(i, voice, container)
+            == received_kind(i, false, container) && received_kind(i, voice, container)
+            == timeline_kind_spec(route_spec(i)),
+        attachment_kinds().contains(received_kind(i, voice, container)),
+        received_kind(i, false, container) == timeline_kind_spec(route_spec(i)),
+{
+    route_total_in_kinds(i);
+    lemma_kinds_exactly(route_for_spec(i, voice, container));
+    lemma_attachment_kinds_exactly(received_kind(i, voice, container));
+}
+
+/// SK1.6 for every string: timeline_kind_for is whitelisted, and the flag changes nothing
+/// but audio.
+pub proof fn timeline_kind_for_whitelisted(w: Word, voice: bool)
+    ensures
+        attachment_kinds().contains(timeline_kind_for_spec(w, voice)),
+        w != Word::Audio ==> timeline_kind_for_spec(w, voice) == timeline_kind_spec(w),
+        timeline_kind_for_spec(w, voice) == Word::Voice <==> w == Word::Audio && voice,
+{
+    lemma_attachment_kinds_exactly(timeline_kind_for_spec(w, voice));
+}
+
+/// extract::read: the handler (`route_for(.., kind == "voice")`) and whether `audio` runs with
+/// `voice = true` (subtype "voice": the bare transcript becomes the message).
+pub open spec fn extract_handler(i: Input, kind: Word, container: bool) -> Word {
+    route_for_spec(i, kind == Word::Voice, container)
+}
+
+pub open spec fn voice_subtype(handler: Word, kind: Word) -> bool {
+    handler == Word::Audio && kind == Word::Voice
+}
+
+/// SK1.7: receive and extract agree. extract re-routes with the flag read back from the
+/// stored kind; it picks the handler receive picked, and a part stored as `voice` always
+/// reaches the audio handler with subtype voice (so its transcript, or "couldn't hear it",
+/// decides the reply), while no other part does.
+pub proof fn receive_and_extract_agree(i: Input, voice: bool, container: bool)
+    requires
+        well_formed(i),
+    ensures
+        extract_handler(i, received_kind(i, voice, container), container) == route_for_spec(
+            i,
+            voice,
+            container,
+        ),
+        voice_subtype(
+            extract_handler(i, received_kind(i, voice, container), container),
+            received_kind(i, voice, container),
+        ) <==> received_kind(i, voice, container) == Word::Voice,
+{
+    voice_routing(i, voice, container);
+}
+
+// ================================================================ SK4.5: voice-note fields
+// lucina-store/src/timeline.rs (branch voice-notes): valid_waveform (base64 0.22.1, STANDARD
+// alphabet, padding Indifferent, trailing bits rejected), clean_string(.., MAX_TRANSCRIPT_CHARS)
+// = clip_utf16(js_trim(..), 4000); share/mod.rs clip(.., 4000) (chars) at receive and in
+// process. Strings are taken after the trim.
+
+pub open spec fn b64_sym(c: u8) -> bool {
+    (0x41 <= c <= 0x5a) || (0x61 <= c <= 0x7a) || (0x30 <= c <= 0x39) || c == 0x2b || c == 0x2f
+}
+
+pub open spec fn b64_val(c: u8) -> int {
+    if 0x41 <= c <= 0x5a {
+        c - 0x41
+    } else if 0x61 <= c <= 0x7a {
+        c - 0x61 + 26
+    } else if 0x30 <= c <= 0x39 {
+        c - 0x30 + 52
+    } else if c == 0x2b {
+        62
+    } else {
+        63
+    }
+}
+
+/// The chunk base64's decode_suffix reads: the last n % 4 bytes, or the last 4.
+pub open spec fn tail_len(n: nat) -> nat {
+    if n == 0 {
+        0
+    } else if n % 4 == 0 {
+        4
+    } else {
+        n % 4
+    }
+}
+
+/// '=' at the end of the tail (at most two can be legal).
+pub open spec fn tail_pads(t: Seq<u8>) -> nat {
+    if t.len() >= 1 && t[t.len() - 1] == 0x3d {
+        if t.len() >= 2 && t[t.len() - 2] == 0x3d {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    }
+}
+
+/// `ENGINE.decode(s).map(|b| b.len())`: Some(decoded length) or None (an error). The
+/// complete quads before the tail are symbols only; the tail is k >= 2 symbols then '='
+/// (padding optional: Indifferent); the bits after the last whole byte must be zero.
+pub open spec fn b64_decoded_len_spec(s: Seq<u8>) -> Option<nat> {
+    if s.len() == 0 {
+        Some(0)
+    } else {
+        let n = s.len();
+        let tl = tail_len(n);
+        let p = n - tl;
+        let t = s.subrange(p, n as int);
+        let k = tl - tail_pads(t);
+        if (forall|j: int| 0 <= j < p ==> b64_sym(#[trigger] s[j])) && k >= 2 && (forall|j: int|
+            0 <= j < k ==> b64_sym(#[trigger] t[j])) && (k == 2 ==> b64_val(t[1]) % 16 == 0) && (k
+            == 3 ==> b64_val(t[2]) % 4 == 0) {
+            Some((3 * (p / 4) + (k - 1)) as nat)
+        } else {
+            None
+        }
+    }
+}
+
+pub fn b64_sym_exec(c: u8) -> (r: bool)
+    ensures
+        r == b64_sym(c),
+{
+    (0x41 <= c && c <= 0x5a) || (0x61 <= c && c <= 0x7a) || (0x30 <= c && c <= 0x39) || c == 0x2b
+        || c == 0x2f
+}
+
+pub fn b64_val_exec(c: u8) -> (r: u8)
+    requires
+        b64_sym(c),
+    ensures
+        r as int == b64_val(c),
+        r < 64,
+{
+    if 0x41 <= c && c <= 0x5a {
+        c - 0x41
+    } else if 0x61 <= c && c <= 0x7a {
+        c - 0x61 + 26
+    } else if 0x30 <= c && c <= 0x39 {
+        c - 0x30 + 52
+    } else if c == 0x2b {
+        62
+    } else {
+        63
+    }
+}
+
+pub fn b64_decoded_len(s: &[u8]) -> (r: Option<usize>)
+    ensures
+        r matches Some(x) ==> b64_decoded_len_spec(s@) == Some(x as nat),
+        r is None ==> b64_decoded_len_spec(s@) is None,
+{
+    let n = s.len();
+    if n == 0 {
+        return Some(0);
+    }
+    let tl: usize = if n % 4 == 0 {
+        4
+    } else {
+        n % 4
+    };
+    assert(tl == tail_len(n as nat));
+    let p = n - tl;
+    let ghost t = s@.subrange(p as int, n as int);
+    let mut j: usize = 0;
+    while j < p
+        invariant
+            j <= p,
+            p == n - tl,
+            n == s@.len(),
+            n > 0,
+            tl == tail_len(n as nat),
+            forall|m: int| 0 <= m < j ==> b64_sym(#[trigger] s@[m]),
+        decreases p - j,
+    {
+        if !b64_sym_exec(s[j]) {
+            assert(!b64_sym(s@[j as int]));
+            assert(!(forall|m: int| 0 <= m < p ==> b64_sym(#[trigger] s@[m])));
+            assert(b64_decoded_len_spec(s@) is None);
+            return None;
+        }
+        j += 1;
+    }
+    let pads: usize = if s[n - 1] == 0x3d {
+        if tl >= 2 && s[n - 2] == 0x3d {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
+    assert(t.len() == tl);
+    assert(t[t.len() - 1] == s@[n - 1]);
+    assert(tl >= 2 ==> t[t.len() - 2] == s@[n - 2]);
+    assert(pads == tail_pads(t));
+    if tl < pads + 2 {
+        return None;
+    }
+    let k = tl - pads;
+    let mut m: usize = 0;
+    while m < k
+        invariant
+            m <= k,
+            k == tl - pads,
+            k <= tl,
+            n > 0,
+            tl == tail_len(n as nat),
+            pads == tail_pads(t),
+            p + tl == n,
+            n == s@.len(),
+            t == s@.subrange(p as int, n as int),
+            forall|x: int| 0 <= x < m ==> b64_sym(#[trigger] t[x]),
+        decreases k - m,
+    {
+        assert(t[m as int] == s@[p + m]);
+        if !b64_sym_exec(s[p + m]) {
+            assert(!b64_sym(t[m as int]));
+            assert(!(forall|x: int| 0 <= x < k ==> b64_sym(#[trigger] t[x])));
+            assert(b64_decoded_len_spec(s@) is None);
+            return None;
+        }
+        m += 1;
+    }
+    if k == 2 {
+        assert(t[1] == s@[p + 1]);
+        if b64_val_exec(s[p + 1]) % 16 != 0 {
+            return None;
+        }
+    }
+    if k == 3 {
+        assert(t[2] == s@[p + 2]);
+        if b64_val_exec(s[p + 2]) % 4 != 0 {
+            return None;
+        }
+    }
+    Some(3 * (p / 4) + (k - 1))
+}
+
+/// timeline::valid_waveform on the trimmed string: Some iff this holds (then the trimmed
+/// string is stored).
+pub open spec fn valid_waveform_spec(s: Seq<u8>) -> bool {
+    s.len() != 0 && s.len() <= 88 && (b64_decoded_len_spec(s) matches Some(d) && 1 <= d <= 64)
+}
+
+pub fn valid_waveform(s: &[u8]) -> (r: bool)
+    ensures
+        r == valid_waveform_spec(s@),
+{
+    if s.len() == 0 || s.len() > 88 {
+        return false;
+    }
+    match b64_decoded_len(s) {
+        Some(d) => 1 <= d && d <= 64,
+        None => false,
+    }
+}
+
+/// A string that decodes to at most 64 bytes has at most 88 characters (22 quads, the
+/// last one padded); one that decodes to at least one byte is not empty.
+pub proof fn lemma_decoded_len_bounds_chars(s: Seq<u8>)
+    requires
+        b64_decoded_len_spec(s) matches Some(d) && d <= 64,
+    ensures
+        s.len() <= 88,
+        b64_decoded_len_spec(s) matches Some(d) && (d >= 1 ==> s.len() != 0),
+{
+    if s.len() != 0 {
+        let n = s.len();
+        let tl = tail_len(n);
+        let p = n - tl;
+        assert(p % 4 == 0 && 1 <= tl <= 4) by {
+            assert(n == 4 * (n / 4) + n % 4);
+        }
+        assert(p == 4 * (p / 4));
+    }
+}
+
+/// SK4.5: valid_waveform accepts exactly the (trimmed) strings that base64-decode to 1..=64
+/// bytes: the 88-character pre-check never rejects one of them, and a stored waveform is
+/// at most 88 bytes of base64 that decodes to 1..=64 levels.
+pub proof fn valid_waveform_exactly(s: Seq<u8>)
+    ensures
+        valid_waveform_spec(s) <==> (b64_decoded_len_spec(s) matches Some(d) && 1 <= d <= 64),
+        valid_waveform_spec(s) ==> 1 <= s.len() <= 88,
+{
+    if b64_decoded_len_spec(s) matches Some(d) && 1 <= d <= 64 {
+        lemma_decoded_len_bounds_chars(s);
+    }
+}
+
+pub open spec fn all_a(s: Seq<u8>) -> bool {
+    forall|j: int| 0 <= j < s.len() ==> #[trigger] s[j] == 0x41
+}
+
+/// Witnesses: both waveform checks are needed and the 88 cap is tight. 88 'A's decode to
+/// 66 bytes (the length cap alone would keep them); 86 'A's (unpadded) and 84 'A's + "AA=="
+/// (padded, 88 chars) decode to exactly 64 bytes and are kept.
+pub proof fn waveform_limits_witness()
+    ensures
+        ({
+            let s = Seq::new(88, |j: int| 0x41u8);
+            s.len() == 88 && b64_decoded_len_spec(s) == Some(66nat) && !valid_waveform_spec(s)
+        }),
+        ({
+            let s = Seq::new(86, |j: int| 0x41u8);
+            b64_decoded_len_spec(s) == Some(64nat) && valid_waveform_spec(s)
+        }),
+        ({
+            let s = Seq::new(84, |j: int| 0x41u8) + seq![0x41u8, 0x41u8, 0x3du8, 0x3du8];
+            s.len() == 88 && b64_decoded_len_spec(s) == Some(64nat) && valid_waveform_spec(s)
+        }),
+{
+    let a = Seq::new(88, |j: int| 0x41u8);
+    let ta = a.subrange(84, 88);
+    assert(tail_len(88) == 4);
+    assert(ta[3] == 0x41u8);
+    assert(tail_pads(ta) == 0);
+    assert(forall|j: int| 0 <= j < 84 ==> b64_sym(#[trigger] a[j]));
+    assert(forall|j: int| 0 <= j < 4 ==> b64_sym(#[trigger] ta[j]));
+    assert(b64_decoded_len_spec(a) == Some(66nat));
+    let b = Seq::new(86, |j: int| 0x41u8);
+    let tb = b.subrange(84, 86);
+    assert(tail_len(86) == 2);
+    assert(tb[1] == 0x41u8);
+    assert(tail_pads(tb) == 0);
+    assert(forall|j: int| 0 <= j < 84 ==> b64_sym(#[trigger] b[j]));
+    assert(forall|j: int| 0 <= j < 2 ==> b64_sym(#[trigger] tb[j]));
+    assert(b64_val(tb[1]) == 0);
+    assert(b64_decoded_len_spec(b) == Some(64nat));
+    let c = Seq::new(84, |j: int| 0x41u8) + seq![0x41u8, 0x41u8, 0x3du8, 0x3du8];
+    let tc = c.subrange(84, 88);
+    assert(c.len() == 88);
+    assert(tail_len(88) == 4);
+    assert(tc =~= seq![0x41u8, 0x41u8, 0x3du8, 0x3du8]);
+    assert(tail_pads(tc) == 2);
+    assert(forall|j: int| 0 <= j < 84 ==> b64_sym(#[trigger] c[j])) by {
+        assert forall|j: int| 0 <= j < 84 implies b64_sym(#[trigger] c[j]) by {
+            assert(c[j] == 0x41u8);
+        }
+    }
+    assert(forall|j: int| 0 <= j < 2 ==> b64_sym(#[trigger] tc[j]));
+    assert(b64_val(tc[1]) == 0);
+    assert(b64_decoded_len_spec(c) == Some(64nat));
+}
+
+/// UTF-16 code units of a char (`char::len_utf16`).
+pub open spec fn u16len(c: char) -> nat {
+    if (c as u32) >= 0x10000 {
+        2
+    } else {
+        1
+    }
+}
+
+pub open spec fn units(s: Seq<char>) -> nat
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        u16len(s[0]) + units(s.drop_first())
+    }
+}
+
+/// timeutil::clip_utf16: the longest prefix of whole chars within `max` UTF-16 units.
+pub open spec fn clip16(s: Seq<char>, max: nat) -> Seq<char>
+    decreases s.len(),
+{
+    if s.len() == 0 || u16len(s[0]) > max {
+        Seq::empty()
+    } else {
+        seq![s[0]] + clip16(s.drop_first(), (max - u16len(s[0])) as nat)
+    }
+}
+
+/// A transcript as the timeline stores it (attachment or meta): clean_string(.., 4000).
+pub open spec fn stored_transcript(s: Seq<char>) -> Option<Seq<char>> {
+    let c = clip16(s, 4000);
+    if c.len() == 0 {
+        None
+    } else {
+        Some(c)
+    }
+}
+
+proof fn lemma_clip16(s: Seq<char>, max: nat)
+    ensures
+        units(clip16(s, max)) <= max,
+        clip16(s, max).len() <= max,
+        clip16(s, max).len() <= s.len(),
+        clip16(s, max) == s.take(clip16(s, max).len() as int),
+    decreases s.len(),
+{
+    if s.len() > 0 && u16len(s[0]) <= max {
+        let r = clip16(s.drop_first(), (max - u16len(s[0])) as nat);
+        lemma_clip16(s.drop_first(), (max - u16len(s[0])) as nat);
+        let c = seq![s[0]] + r;
+        assert(c.drop_first() =~= r);
+        assert(c[0] == s[0]);
+        assert(c =~= s.take(c.len() as int)) by {
+            assert forall|j: int| 0 <= j < c.len() implies #[trigger] c[j] == s.take(c.len() as int)[j] by {
+                if j > 0 {
+                    assert(c[j] == r[j - 1]);
+                    assert(r[j - 1] == s.drop_first().take(r.len() as int)[j - 1]);
+                }
+            }
+        }
+    } else {
+        assert(clip16(s, max) =~= s.take(0));
+    }
+}
+
+/// receive's and process's `clip(.., n)` (chars) before normalize's clip16 to m <= n units
+/// never changes what clip16 keeps.
+proof fn lemma_clip16_of_take(s: Seq<char>, n: nat, m: nat)
+    requires
+        m <= n,
+    ensures
+        clip16(clip(s, n as int), m) == clip16(s, m),
+    decreases s.len(),
+{
+    if n < s.len() {
+        lemma_clip16_take(s, n, m);
+    }
+}
+
+proof fn lemma_clip16_take(s: Seq<char>, n: nat, m: nat)
+    requires
+        m <= n,
+        n <= s.len(),
+    ensures
+        clip16(s.take(n as int), m) == clip16(s, m),
+    decreases s.len(),
+{
+    let t = s.take(n as int);
+    if n == 0 {
+        assert(t.len() == 0);
+        assert(m == 0);
+        if s.len() > 0 {
+            assert(u16len(s[0]) >= 1);
+        }
+    } else {
+        assert(t[0] == s[0]);
+        if u16len(s[0]) <= m {
+            let m2 = (m - u16len(s[0])) as nat;
+            assert(t.drop_first() =~= s.drop_first().take((n - 1) as int));
+            lemma_clip16_take(s.drop_first(), (n - 1) as nat, m2);
+        }
+    }
+}
+
+/// SK4.5: transcripts. What the timeline stores on a voice attachment (`transcript`) and on
+/// Lucina's reply (`meta.transcript`) is non-empty and at most 4000 UTF-16 units, so at most
+/// 4000 chars; and the 4000-char clip that receive/process apply first (the copy in
+/// status.json) never cuts what clip16 keeps (normalize trims between the two clips, which
+/// can drop whitespace left at the cut; that trim is outside this lemma).
+pub proof fn voice_transcript_bounded(s: Seq<char>)
+    ensures
+        stored_transcript(s) matches Some(c) ==> 1 <= c.len() <= 4000 && units(c) <= 4000
+            && c == s.take(c.len() as int),
+        stored_transcript(clip(s, 4000)) == stored_transcript(s),
+{
+    lemma_clip16(s, 4000);
+    lemma_clip16_of_take(s, 4000, 4000);
 }
 
 } // verus!
