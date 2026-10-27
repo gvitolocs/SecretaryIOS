@@ -35,6 +35,8 @@ export interface DeskSink {
   drawn(width: number, height: number): void;
   cursor?(x: number, y: number): void;
   refused?(what: string, why: string): void;
+  /** Lucina's clipboard changed (control sockets only; a watch socket never passes it on). */
+  clipboard?(text: string): void;
   /** The socket is gone. `code` per CONTRACT §6 (1006 also for a refused ticket). */
   closed(code: number, reason: string, wasOpen: boolean): void;
   /** The host sends a codec this browser cannot decode. */
@@ -320,6 +322,9 @@ export class DeskSocket {
         break;
       case "pong":
         if (typeof m.t === "number") this.stats.rttMs = Math.round(performance.now() - m.t);
+        break;
+      case "clipboard":
+        if (this.mode === "control") this.sink.clipboard?.(m.text);
         break;
       case "closed":
         this.closedReason = m.reason;

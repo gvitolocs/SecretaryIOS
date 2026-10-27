@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { createWheel, encodeVideo, fitRect, keyButton, keyMessage, mouse, mouseMask, parseServer, parseVideo, textMessages, toHost } from "./deskWire";
+import {
+  clipboardMessage,
+  CLIPBOARD_MAX_BYTES,
+  createWheel,
+  encodeVideo,
+  fitRect,
+  isMacPaste,
+  keyButton,
+  keyMessage,
+  mouse,
+  mouseMask,
+  parseServer,
+  parseVideo,
+  textMessages,
+  toHost,
+} from "./deskWire";
 
 const key = (k: string, mods: Partial<{ ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean; isComposing: boolean }> = {}) => ({
   key: k,
@@ -114,5 +129,30 @@ describe("deskWire geometry", () => {
     expect(w(0, -120)).toEqual({ x: 0, y: 2 });
     // A mouse notch in lines (Firefox: 3 lines) is one step.
     expect(createWheel(50)(0, 3, 1)).toEqual({ x: 0, y: -1 });
+  });
+});
+
+describe("deskWire clipboard", () => {
+  it("parses the clipboard frame and needs its text", () => {
+    expect(parseServer('{"type":"clipboard","text":"hej"}')).toEqual({ type: "clipboard", text: "hej" });
+    expect(parseServer('{"type":"clipboard"}')).toBeNull();
+  });
+
+  it("caps a paste at 60,000 UTF-8 bytes, not characters", () => {
+    expect(clipboardMessage("a".repeat(CLIPBOARD_MAX_BYTES))).toEqual({ type: "clipboard", text: "a".repeat(CLIPBOARD_MAX_BYTES) });
+    expect(clipboardMessage("a".repeat(CLIPBOARD_MAX_BYTES + 1))).toBeNull();
+    // 3 bytes each in UTF-8: 20,001 of them are over the limit though far under 60,000 characters.
+    expect(clipboardMessage("€".repeat(20_000))).not.toBeNull();
+    expect(clipboardMessage("€".repeat(20_001))).toBeNull();
+  });
+
+  it("maps ⌘C/⌘X to Control, keeps ⌘V for the page and the Mac's own shortcuts local", () => {
+    expect(keyMessage(key("c", { metaKey: true }))).toEqual({ type: "key", char: "c", modifiers: ["Control"] });
+    expect(keyMessage(key("x", { metaKey: true }))).toEqual({ type: "key", char: "x", modifiers: ["Control"] });
+    expect(isMacPaste(key("v", { metaKey: true }))).toBe(true);
+    expect(isMacPaste(key("v", { ctrlKey: true }))).toBe(false);
+    for (const k of ["q", "w", "h", "m", "Tab", "`", " "]) expect(keyMessage(key(k, { metaKey: true }))).toBeNull();
+    // Ctrl is Lucina's own: Ctrl+W closes her tab, it is not the Mac's.
+    expect(keyMessage(key("w", { ctrlKey: true }))).toEqual({ type: "key", char: "w", modifiers: ["Control"] });
   });
 });

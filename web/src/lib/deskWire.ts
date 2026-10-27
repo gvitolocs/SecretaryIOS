@@ -100,9 +100,11 @@ export type ServerMessage =
   | { type: "cursor"; x: number; y: number }
   | { type: "refused"; what: string; why: string }
   | { type: "pong"; t: number }
+  /** Control sockets only: Lucina's clipboard changed (text). */
+  | { type: "clipboard"; text: string }
   | { type: "closed"; reason: string };
 
-const KNOWN = new Set(["hello", "status", "login", "cursor", "refused", "pong", "closed"]);
+const KNOWN = new Set(["hello", "status", "login", "cursor", "refused", "pong", "clipboard", "closed"]);
 
 /** A text frame → a message we understand, or null (unknown types are ignored, per the contract). */
 export function parseServer(text: string): ServerMessage | null {
@@ -115,6 +117,7 @@ export function parseServer(text: string): ServerMessage | null {
   if (!m || typeof m !== "object") return null;
   const type = (m as { type?: unknown }).type;
   if (typeof type !== "string" || !KNOWN.has(type)) return null;
+  if (type === "clipboard" && typeof (m as { text?: unknown }).text !== "string") return null;
   if (type === "login") {
     const ds = (m as { displays?: unknown }).displays;
     if (!Array.isArray(ds) || ds.length === 0) return null;
@@ -141,6 +144,7 @@ export type ClientMessage =
   | { type: "ping"; t: number }
   | { type: "mouse"; mask: number; x: number; y: number }
   | { type: "text"; text: string }
+  | { type: "clipboard"; text: string }
   | { type: "key"; key?: string; char?: string; modifiers?: string[] };
 
 export const mouse = (kind: MouseKind, x: number, y: number, button?: MouseButton): ClientMessage => ({
@@ -152,6 +156,17 @@ export const mouse = (kind: MouseKind, x: number, y: number, button?: MouseButto
 
 /** Wheel steps: `y` > 0 scrolls up, like RustDesk. */
 export const wheel = (stepsX: number, stepsY: number): ClientMessage => ({ type: "mouse", mask: mouseMask("wheel"), x: stepsX, y: stepsY });
+
+/** The contract's clipboard limit (CONTRACT §8): text only, this many UTF-8 bytes. */
+export const CLIPBOARD_MAX_BYTES = 60_000;
+
+/** Sets Lucina's clipboard; null when the text is over the limit (the server would refuse it). */
+export function clipboardMessage(text: string): ClientMessage | null {
+  return new TextEncoder().encode(text).byteLength <= CLIPBOARD_MAX_BYTES ? { type: "clipboard", text } : null;
+}
+
+/** Ctrl+V on Lucina's computer: sent right after `clipboardMessage` (the gateway holds it until the text is there). */
+export const PASTE_KEY: ClientMessage = { type: "key", char: "v", modifiers: ["Control"] };
 
 /** The contract caps `text` at 1024 characters: longer pastes go as several messages. */
 export function textMessages(text: string): ClientMessage[] {
@@ -187,6 +202,14 @@ for (let i = 1; i <= 12; i++) CONTROL_KEYS[`F${i}`] = `F${i}`;
 
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "OS", "Hyper", "Super", "Fn"]);
 
+/** ⌘ shortcuts that stay the Mac's: quit, close, hide, minimise, switch apps or windows. */
+const MAC_ONLY = new Set(["q", "w", "h", "m", "tab", "`", " "]);
+
+/** ⌘V: the page pastes the Mac's clipboard (`clipboard` + Ctrl+V), it is not a key for Lucina. */
+export function isMacPaste(e: KeyLike): boolean {
+  return e.metaKey && !e.ctrlKey && !e.altKey && e.key.toLowerCase() === "v";
+}
+
 export interface KeyLike {
   key: string;
   ctrlKey: boolean;
@@ -198,12 +221,13 @@ export interface KeyLike {
 
 /**
  * A keydown → what to send, or null to let it be (a bare modifier, an IME composition, a key we do
- * not know). Lucina's computer is Linux, the owner's is a Mac: ⌘ is sent as Control so ⌘C/⌘L/⌘T do
- * there what they do here. Plain typing (no Control/⌘/Alt) goes as `text`, so the layout the owner
+ * not know, a ⌘ shortcut that is the Mac's own). Lucina's computer is Linux, the owner's is a Mac: ⌘
+ * is sent as Control so ⌘C/⌘X/⌘L/⌘T do there what they do here (⌘V is the page's, see `isMacPaste`). Plain typing (no Control/⌘/Alt) goes as `text`, so the layout the owner
  * types on is the one that counts.
  */
 export function keyMessage(e: KeyLike): ClientMessage | null {
   if (e.isComposing || MODIFIER_KEYS.has(e.key) || e.key === "Unidentified" || e.key === "Dead") return null;
+  if (e.metaKey && !e.ctrlKey && MAC_ONLY.has(e.key.toLowerCase())) return null;
   const mods: string[] = [];
   if (e.ctrlKey || e.metaKey) mods.push("Control");
   if (e.altKey) mods.push("Alt");

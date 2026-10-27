@@ -7,10 +7,13 @@ import { createDeskPipe, type DeskPipe } from "../lib/deskPipe";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { createTouchMouse } from "../lib/touch";
 import {
+  clipboardMessage,
   createWheel,
   fitRect,
+  isMacPaste,
   keyButton,
   keyMessage,
+  PASTE_KEY,
   mouse,
   textMessages,
   toHost,
@@ -33,7 +36,12 @@ import "../styles/lucinadesk.css";
 // picture never goes black.
 //
 // Keyboard: the canvas takes focus on a click and gets keydowns (⌘ is sent as Control: the owner is
-// on a Mac, Lucina on Linux). On a touch screen nothing raises the keyboard but the Keyboard button,
+// on a Mac, Lucina on Linux; ⌘Q/W/H/M/Tab stay the Mac's).
+//
+// Clipboard (control only, CONTRACT §8): ⌘V (or the iPhone's Paste) puts the Mac's text on Lucina's
+// clipboard, then presses Ctrl+V there; what she copies comes back as a `clipboard` frame and goes on the
+// Mac's clipboard, or, where the browser refuses that, on a "tap to copy" chip. Watching, none of it.
+// The text is never logged. On a touch screen nothing raises the keyboard but the Keyboard button,
 // which focuses a hidden textarea and reads its `input` events (what the iPhone keyboard produces).
 //
 // Touch: tap = click, long press = right click, drag = left drag, two fingers = scroll, two-finger
@@ -113,6 +121,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
   const [zoom, setZoom] = createSignal({ scale: 1, dx: 0, dy: 0 });
   const [cursor, setCursor] = createSignal<{ x: number; y: number } | null>(null);
+  /** Text Lucina copied that the browser would not let us put on the clipboard: tap to copy. */
+  const [copied, setCopied] = createSignal<string | null>(null);
   const [stats, setStats] = createSignal<{ codec: string; fps: number; rtt: number; firstFrameMs: number | null }>({
     codec: "",
     fps: 0,
@@ -180,9 +190,13 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       cursor: (x, y) => {
         if (s === cur) setCursor({ x, y });
       },
-      refused: (_what, why) => {
+      refused: (what, why) => {
         // A watch socket refusing input means we raced a give-back; nothing to tell the owner.
-        if (why !== "watch") console.warn("[lucinadesk] input refused:", why);
+        if (what === "clipboard" && why === "too_large") setNotice(t("desk.pasteTooLarge"));
+        else if (why !== "watch") console.warn("[lucinadesk] input refused:", what, why);
+      },
+      clipboard: (text) => {
+        if (s === cur && driving()) copyLocal(text);
       },
       closed: (code, reason, wasOpen) => onClosed(s, code, reason, wasOpen),
       unsupported: (codec: DeskCodec) => {
@@ -483,22 +497,106 @@ export default function DeskPlayer(props: DeskPlayerProps) {
 
   // ------------------------------------------------------------------ keyboard
 
+  // ------------------------------------------------------------------ clipboard (control only)
+
+  /** The Mac's text onto Lucina's clipboard, then Ctrl+V there (the gateway holds the key until it is set). */
+  const pasteText = (text: string) => {
+    if (!driving() || !text) return;
+    const msg = clipboardMessage(text);
+    if (!msg) {
+      setNotice(t("desk.pasteTooLarge"));
+      return;
+    }
+    input(msg);
+    input(PASTE_KEY);
+  };
+
+  /** A ⌘V waiting for the Mac's clipboard: the Clipboard API or the browser's own paste event, first wins. */
+  let pendingPaste: ((text: string) => void) | null = null;
+  const PASTE_WAIT_MS = 1500;
+
+  const macPaste = () => {
+    let done = false;
+    const finish = (text: string) => {
+      if (done) return;
+      done = true;
+      pendingPaste = null;
+      window.clearTimeout(timer);
+      pasteText(text);
+    };
+    pendingPaste = finish;
+    const timer = window.setTimeout(() => {
+      if (done) return;
+      done = true;
+      pendingPaste = null;
+      setNotice(t("desk.pasteDenied"));
+    }, PASTE_WAIT_MS);
+    navigator.clipboard?.readText?.().then(finish, () => undefined);
+  };
+
+  const onPaste = (e: ClipboardEvent) => {
+    if (!pendingPaste || (document.activeElement !== canvas && document.activeElement !== kbd)) return;
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (!text) return;
+    e.preventDefault();
+    pendingPaste(text);
+  };
+
+  let copiedTimer: number | undefined;
+  /** Lucina copied something: onto the Mac's clipboard, or a chip to tap where the browser says no. */
+  const copyLocal = (text: string) => {
+    const chip = () => {
+      setCopied(text);
+      window.clearTimeout(copiedTimer);
+      copiedTimer = window.setTimeout(() => setCopied(null), 20_000);
+    };
+    const write = navigator.clipboard?.writeText?.(text);
+    if (!write) chip();
+    else
+      write.then(
+        () => setCopied(null),
+        () => chip(),
+      );
+  };
+
+  /** The chip's tap: a user gesture, so the Clipboard API works, or the old copy command does. */
+  const copyChip = () => {
+    const text = copied();
+    if (text === null) return;
+    const viaCommand = () => {
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.cssText = "position:fixed;opacity:0;left:0;top:0";
+      document.body.appendChild(area);
+      area.select();
+      try {
+        document.execCommand("copy");
+      } finally {
+        area.remove();
+      }
+    };
+    const write = navigator.clipboard?.writeText?.(text);
+    (write ?? Promise.reject(new Error("no clipboard API"))).catch(viaCommand).finally(() => setCopied(null));
+  };
+
   /** Desktop keys on the focused canvas. */
   const onKeyDown = (e: KeyboardEvent) => {
-    // ⌘V pastes the Mac's clipboard as text (the `paste` handler); Ctrl+V is Lucina's own paste.
-    if (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "v") return;
+    if (isMacPaste(e)) {
+      if (!driving()) {
+        // Watching: ⌘V only asks to take over; nothing of the clipboard moves.
+        e.preventDefault();
+        requestTakeover(null);
+        return;
+      }
+      // Not prevented: where the Clipboard API is not allowed, the browser's own paste event brings the text.
+      macPaste();
+      return;
+    }
     const msg = keyMessage(e);
     if (!msg) return;
     e.preventDefault();
     input(msg, { kind: "msg", msg });
-  };
-
-  const onPaste = (e: ClipboardEvent) => {
-    if (document.activeElement !== canvas && document.activeElement !== kbd) return;
-    const text = e.clipboardData?.getData("text/plain") ?? "";
-    if (!text) return;
-    e.preventDefault();
-    for (const m of textMessages(text)) input(m, { kind: "msg", msg: m });
   };
 
   const resetKbd = () => {
@@ -516,7 +614,11 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
   const onKbdInput = (e: InputEvent) => {
     const kind = e.inputType ?? "";
-    if (kind === "deleteContentBackward") input({ type: "key", key: "Backspace" });
+    if (kind === "insertFromPaste") {
+      // The iPhone's Paste: a real paste on Lucina's side (clipboard, then Ctrl+V), not typing.
+      const v = kbd?.value ?? "";
+      pasteText(e.data ?? (v.startsWith(SENTINEL) ? v.slice(SENTINEL.length) : v));
+    } else if (kind === "deleteContentBackward") input({ type: "key", key: "Backspace" });
     else if (kind === "insertLineBreak" || kind === "insertParagraph") input({ type: "key", key: "Return" });
     else if (e.data) for (const m of textMessages(e.data)) input(m, { kind: "msg", msg: m });
     resetKbd();
@@ -564,6 +666,15 @@ export default function DeskPlayer(props: DeskPlayerProps) {
 
   createEffect(on([focus, driving, switching], () => peekPill()));
   createEffect(on(driving, (d) => props.onDriving?.(d)));
+
+  // Over a live picture a notice is a toast that goes by itself (before that, the overlay shows it).
+  createEffect(
+    on([notice, phase], ([n, p]) => {
+      if (!n || p !== "live") return;
+      const timer = window.setTimeout(() => setNotice(null), 5000);
+      onCleanup(() => window.clearTimeout(timer));
+    }),
+  );
 
   /** What the shell last said or was told, so its own changes are not echoed back to it. */
   let shellFocus = false;
@@ -650,6 +761,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       window.clearTimeout(retryTimer);
       window.clearTimeout(idleTimer);
       window.clearTimeout(peekTimer);
+      window.clearTimeout(copiedTimer);
       unFocus();
       window.removeEventListener("pagehide", exitPage);
       exitPage();
@@ -829,6 +941,18 @@ export default function DeskPlayer(props: DeskPlayerProps) {
             )}
           </For>
         </div>
+      </Show>
+
+      <Show when={notice() && phase() === "live"}>
+        <div class="ldesk-toast" role="status">
+          {notice()}
+        </div>
+      </Show>
+
+      <Show when={copied() !== null && driving()}>
+        <button type="button" class="ldesk-chip" onClick={copyChip}>
+          {t("desk.copiedChip")}
+        </button>
       </Show>
 
       <textarea

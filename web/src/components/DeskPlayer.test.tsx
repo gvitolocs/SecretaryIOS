@@ -296,6 +296,104 @@ describe("DeskPlayer", () => {
     expect(fetches).toEqual([{ url: "/v1/computer/control", body: JSON.stringify({ sandbox: "workspace", action: "release" }) }]);
   });
 
+  describe("clipboard", () => {
+    let readText: ReturnType<typeof vi.fn>;
+    let writeText: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      readText = vi.fn(async () => "from the Mac");
+      writeText = vi.fn(async () => undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText, writeText } });
+    });
+    afterEach(() => {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    });
+
+    /** Watching, then driving through a key that is not ⌘V; returns the control socket. */
+    async function drive() {
+      render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+      await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+      await live(FakeWS.all[0]!);
+      fireEvent.keyDown(screen.getByRole("img"), { key: "Shift" });
+      fireEvent.pointerDown(screen.getByRole("img"), { pointerType: "mouse", button: 0, clientX: 1, clientY: 1 });
+      await waitFor(() => expect(FakeWS.all).toHaveLength(2));
+      const control = FakeWS.all[1]!;
+      control.open();
+      control.text(LOGIN);
+      control.frame();
+      control.sent.length = 0;
+      return control;
+    }
+    const nonAcks = (ws: FakeWS) => ws.sent.filter((m) => (m as { type: string }).type !== "ack" && (m as { type: string }).type !== "ping");
+
+    it("⌘V while driving: the Mac's text onto Lucina's clipboard, then Ctrl+V, in that order", async () => {
+      const control = await drive();
+      fireEvent.keyDown(screen.getByRole("img"), { key: "v", metaKey: true });
+      await waitFor(() => expect(nonAcks(control)).toHaveLength(2));
+      expect(nonAcks(control)).toEqual([
+        { type: "clipboard", text: "from the Mac" },
+        { type: "key", char: "v", modifiers: ["Control"] },
+      ]);
+    });
+
+    it("⌘C while driving is Ctrl+C there; what she copied comes back onto the Mac's clipboard", async () => {
+      const control = await drive();
+      fireEvent.keyDown(screen.getByRole("img"), { key: "c", metaKey: true });
+      expect(nonAcks(control)).toEqual([{ type: "key", char: "c", modifiers: ["Control"] }]);
+      control.text({ type: "clipboard", text: "from Lucina" });
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("from Lucina"));
+      expect(screen.queryByRole("button", { name: /tap to copy/ })).toBeNull();
+    });
+
+    it("where the browser refuses to write, a chip copies on tap", async () => {
+      writeText.mockRejectedValueOnce(new Error("not focused"));
+      const control = await drive();
+      control.text({ type: "clipboard", text: "from Lucina" });
+      const chip = await screen.findByRole("button", { name: /tap to copy/ });
+      fireEvent.click(chip);
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+      expect(writeText).toHaveBeenLastCalledWith("from Lucina");
+      await waitFor(() => expect(screen.queryByRole("button", { name: /tap to copy/ })).toBeNull());
+    });
+
+    it("refuses a paste over 60,000 bytes before sending anything", async () => {
+      readText.mockResolvedValueOnce("x".repeat(60_001));
+      const control = await drive();
+      fireEvent.keyDown(screen.getByRole("img"), { key: "v", metaKey: true });
+      expect(await screen.findByText("Too much to paste: the limit is 60 KB of text.")).toBeInTheDocument();
+      expect(nonAcks(control)).toEqual([]);
+    });
+
+    it("the iPhone's Paste is a real paste on her side too", async () => {
+      const control = await drive();
+      const kbd = document.querySelector("textarea.ldesk-kbd") as HTMLTextAreaElement;
+      kbd.value = " pasted words";
+      fireEvent(kbd, new InputEvent("input", { inputType: "insertFromPaste", data: null, bubbles: true }));
+      expect(nonAcks(control)).toEqual([
+        { type: "clipboard", text: "pasted words" },
+        { type: "key", char: "v", modifiers: ["Control"] },
+      ]);
+    });
+
+    it("watching: no clipboard either way; ⌘V only asks to take over", async () => {
+      render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+      await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+      const watch = FakeWS.all[0]!;
+      await live(watch);
+      watch.text({ type: "clipboard", text: "should not land" });
+      fireEvent.keyDown(screen.getByRole("img"), { key: "v", metaKey: true });
+      expect(readText).not.toHaveBeenCalled();
+      expect(writeText).not.toHaveBeenCalled();
+      expect(nonAcks(watch)).toEqual([]);
+      await waitFor(() => expect(FakeWS.all).toHaveLength(2));
+      const control = FakeWS.all[1]!;
+      control.open();
+      control.frame();
+      // The ⌘V that took over is not replayed as a paste.
+      expect(nonAcks(control)).toEqual([]);
+      expect(readText).not.toHaveBeenCalled();
+    });
+  });
+
   it("when the lease ends elsewhere (4001) it goes back to watching", async () => {
     render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
     await waitFor(() => expect(FakeWS.all).toHaveLength(1));

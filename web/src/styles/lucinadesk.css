@@ -231,3 +231,41 @@ html.ldesk-focus body {
   .ldesk-pill { font-size: 0.8rem; }
   .ldesk-pill-hint { display: none; }
 }
+
+/* Lucina copied something the browser would not let us put on the clipboard: tap to copy. */
+.ldesk-chip {
+  position: absolute;
+  left: 50%;
+  bottom: calc(52px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: calc(100% - 24px);
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 999px;
+  background: rgb(22 25 30 / 94%);
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.ldesk-toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(96px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: calc(100% - 24px);
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgb(22 25 30 / 94%);
+  border: 1px solid rgb(255 255 255 / 16%);
+  color: #e8ebf0;
+  font-size: 0.85rem;
+  text-align: center;
+  pointer-events: none;
+}
