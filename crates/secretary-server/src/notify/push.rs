@@ -367,6 +367,40 @@ impl PushOpts {
             topic: c.collapse_key().map(str::to_owned),
         }
     }
+
+    /// [`Self::for_category`], plus a per-key topic for categories whose
+    /// `dedupKey` names a replaceable slot ([`Category::replaces_by_key`]).
+    pub fn for_notification(n: &super::Notification) -> Self {
+        let mut opts = Self::for_category(n.category);
+        if let Some(k) = replace_key(n) {
+            opts.topic = Some(key_topic(k));
+        }
+        opts
+    }
+}
+
+fn replace_key(n: &super::Notification) -> Option<&str> {
+    n.dedup_key
+        .as_deref()
+        .filter(|_| n.category.replaces_by_key())
+}
+
+/// RFC 8030 `Topic` (≤ 32 base64url characters) and APNs collapse id for a
+/// dedup key: the first 24 bytes of its SHA-256, base64url.
+pub fn key_topic(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    URL_SAFE_NO_PAD.encode(&Sha256::digest(key.as_bytes())[..24])
+}
+
+/// The notification tag a client shows it under: a newer one with the same
+/// tag replaces it.
+pub fn tag_for(n: &super::Notification) -> String {
+    if let Some(k) = replace_key(n) {
+        return format!("k:{}", key_topic(k));
+    }
+    n.category
+        .collapse_key()
+        .map_or_else(|| n.id.clone(), str::to_owned)
 }
 
 /// The JSON a service worker (or the app) receives.
