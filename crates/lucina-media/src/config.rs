@@ -207,7 +207,7 @@ impl Config {
             prepare_max_temp_c: var("LUCINA_MEDIA_PREPARE_MAX_TEMP")
                 .map(|v| v.parse())
                 .transpose()?
-                .unwrap_or(80),
+                .unwrap_or(90),
             prepare_max_load: var("LUCINA_MEDIA_PREPARE_MAX_LOAD")
                 .map(|v| v.parse())
                 .transpose()?
