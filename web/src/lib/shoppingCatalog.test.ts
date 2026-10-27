@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildIndex, exactMatch, fold, itemKey, parseCatalog, searchCatalog } from "./shoppingCatalog";
+import { buildIndex, exactMatch, fold, itemKey, parseCatalog, resolveByName, searchCatalog } from "./shoppingCatalog";
 
 const catalog = parseCatalog({
   version: 1,
@@ -83,5 +83,30 @@ describe("searchCatalog", () => {
     expect(exactMatch(it_, "caffe")?.id).toBe("coffee");
     expect(exactMatch(it_, "Avena")?.id).toBe("oat-milk");
     expect(exactMatch(it_, "latt")).toBeNull();
+  });
+});
+
+describe("resolveByName (rows with no catalog id)", () => {
+  const hit = (q: string) => {
+    const r = resolveByName(it_, q);
+    return r ? [r.item.id, r.exact] : null;
+  };
+  it("matches a name in any language exactly", () => {
+    expect(hit("latte")).toEqual(["milk", true]);
+    expect(hit("Milk")).toEqual(["milk", true]);
+    expect(hit("MÆLK")).toEqual(["milk", true]);
+    expect(hit("aebler")).toEqual(["apple", true]);
+    expect(hit("caffe")).toEqual(["coffee", true]);
+  });
+  it("falls back to aliases", () => {
+    expect(hit("espresso")).toEqual(["coffee", false]);
+    expect(hit("Grana Padano")).toEqual(["parmesan", false]);
+  });
+  it("never guesses", () => {
+    expect(hit("latt")).toBeNull();
+    expect(hit("milks")).toBeNull();
+    expect(hit("the milk")).toBeNull();
+    expect(hit("detersivo piatti")).toBeNull();
+    expect(hit("")).toBeNull();
   });
 });

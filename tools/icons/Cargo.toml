@@ -1,0 +1,22 @@
+[package]
+name = "icon-tools"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Validates, renders and lays out contact sheets for the shopping item SVG icons (assets/icons)"
+
+# Standalone on purpose: not a member of the repo workspace.
+[workspace]
+
+[[bin]]
+name = "icons"
+path = "src/main.rs"
+
+[dependencies]
+resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+roxmltree = "0.20"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

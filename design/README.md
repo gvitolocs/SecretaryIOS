@@ -25,6 +25,7 @@ iOS **Weight**, **Settings** and **Chat** tabs, picked by the owner on 2026-10-2
 ```sh
 cargo run --manifest-path tools/design-tokens/Cargo.toml             # regenerate
 cargo run --manifest-path tools/design-tokens/Cargo.toml -- --check  # fails if a file is stale
+cargo run --manifest-path tools/design-tokens/Cargo.toml -- --only android  # one platform: ios, web, compose, android
 ```
 
 ## Using them

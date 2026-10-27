@@ -11,6 +11,8 @@ import { request } from "./client";
 // POST   /v1/links/custom {kind?, label, url, icon?, tags?}
 // PATCH  /v1/links/custom/{id} · DELETE /v1/links/custom/{id}
 // POST   /v1/calendar/sync
+// POST   /v1/links/todoist/token {token} · POST /v1/links/todoist/connect -> {authorizeUrl}
+// POST   /v1/links/todoist/sync · DELETE /v1/links/todoist
 // GET    /v1/calendar/events?from&to&days
 // POST   /v1/calendar/proposals/{id}/accept {confirm: true} · DELETE /v1/calendar/proposals/{id}
 
@@ -25,7 +27,7 @@ export type LinkStatus =
   | "unknown"
   | "saved";
 
-export type LinkAction = "connect" | "disconnect" | "reconnect" | "sync" | "remove" | "edit";
+export type LinkAction = "connect" | "disconnect" | "reconnect" | "sync" | "remove" | "edit" | "token";
 
 export interface LinkCard {
   id: string;
@@ -43,9 +45,13 @@ export interface LinkCard {
   icon?: string | null;
   tags?: string[];
   actions: LinkAction[];
+  /** Todoist: an OAuth app is configured (else only the personal token). */
+  oauth?: boolean;
+  /** Todoist: `token` or `oauth`. */
+  method?: string;
 }
 
-export type GroupId = "calendars" | "channels" | "ai" | "google" | "custom";
+export type GroupId = "calendars" | "tasks" | "channels" | "ai" | "google" | "custom";
 
 export interface LinkGroup {
   id: GroupId | string;
@@ -140,3 +146,14 @@ export const acceptProposal = (id: string) =>
 
 export const dismissProposal = (id: string) =>
   request<unknown>("DELETE", `/v1/calendar/proposals/${encodeURIComponent(id)}`);
+
+export const saveTodoistToken = (token: string) =>
+  request<{ connected: boolean; account: string | null }>("POST", "/v1/links/todoist/token", { body: { token }, timeoutMs: 30_000 });
+
+export const connectTodoist = () =>
+  request<{ authorizeUrl: string }>("POST", "/v1/links/todoist/connect", { body: { client: "web" } });
+
+export const syncTodoist = () => request<unknown>("POST", "/v1/links/todoist/sync", { body: {}, timeoutMs: 45_000 });
+
+export const disconnectTodoist = () =>
+  request<{ disconnected: boolean; revokedAtTodoist: boolean }>("DELETE", "/v1/links/todoist");

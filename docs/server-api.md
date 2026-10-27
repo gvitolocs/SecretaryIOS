@@ -32,7 +32,7 @@ Every `/v1` route except `GET /v1/health`, `/v1/session` and
 |---|---|---|
 | iOS app, scripts | `Authorization: Bearer sec_…` (a device token) | If an `Authorization` header is present, it alone decides; the cookie is ignored. |
 | Browser | the `sec_session` cookie from `POST /v1/session` | State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) must also send `X-Secretary-CSRF: 1`, else `403 csrf`. |
-| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` (see [Notifications](#notifications)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)). |
+| Lucina | `Authorization: Bearer svc_…` (the service token) | `GET /v1/insights/summary` (see [Insights](#insights-for-lucina)), `/v1/avatar*` (see [Avatar wardrobe](#avatar-wardrobe)), `POST /v1/notify` and `GET /v1/notify/settings` (see [Notifications](#notifications)), `GET /v1/proactive/feedback` (see [Proactive outreach](#proactive-outreach)), the `/v1/calendar/*` routes (see [Calendar](#calendar)) and `/v1/notes*` (see [Notes](#notes)) and `/v1/library/*` (see [Library](#library)). |
 
 There is exactly **one user**, the owner. Ways in:
 
@@ -1025,7 +1025,9 @@ these files, and they are never written to the web build.
 - `name`: `[a-z0-9][a-z0-9._-]*`, at most 128 bytes, no `..`, no slashes.
 - Extensions and content types: `.glb` `model/gltf-binary`, `.json`
   `application/json`, `.png` `image/png`, `.webp` `image/webp`, `.mp3`
-  `audio/mpeg`, `.vmd` `application/octet-stream`. Anything else is `404`.
+  `audio/mpeg`, `.vmd` `application/octet-stream`, `.usdz` `model/vnd.usdz+zip`
+  (the iOS AR model, `lucina.usdz` with its clip table `lucina-ar.json`, built by
+  `tools/lucina-usdz/run.sh`). Anything else is `404`.
 - `200` with `Cache-Control: private, max-age=86400`, `ETag`,
   `Last-Modified`. `If-None-Match` → `304`. `Range: bytes=…` → `206`.
 - `404 not_found` for a missing or refused name; `401 unauthorized` without
@@ -1239,6 +1241,38 @@ or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
 `disabled` (category off) or `present` (a Lucina message while the owner is in
 the app). Device tokens and cookies get `401`.
 
+### `GET /v1/notify/settings` (service token)
+
+`{settings, present}`: the settings object above plus whether the app is in
+front, so Lucina's proactive engine plans around quiet hours and Do Not
+Disturb. No subscriptions or device list.
+
+## Proactive outreach
+
+Lucina's proactive engine (`crates/lucina-proactive`) reaches out with a
+timeline item `{role: "lucina", channel: "other", meta: {kind: "proactive",
+topic, priority: low|normal|high, outreachId: "po_…", why, actions: [{id,
+label, route?, feedback?}]}}` plus a `lucina_message` push whose route is
+`/?outreach=<id>`. Telegram copies carry the deep link
+`https://getsecretary.tech/?outreach=<id>`. The app renders the item as a
+"Lucina reached out" card: content buttons navigate to their `route`, the
+feedback buttons (`useful`, `not_now`, `stop`: "Utile / Non ora / Basta così")
+post here.
+
+### `POST /v1/proactive/outreach/{id}/feedback` (device)
+
+`{action: "useful" | "not_now" | "stop" | "opened"}` → `201 {feedback: {id,
+outreachId, action, at, device, source}}`; the same (outreach, action) again
+returns the stored tap with `200`. `400` for another action or an id that is
+not `po_` + 26 base-32 characters. Cookie requests need `X-Secretary-CSRF: 1`.
+
+### `GET /v1/proactive/feedback?after=<id>&limit=500` (service token)
+
+The taps after the cursor, oldest first: `{items: [tap], cursor}` (`cursor`
+is the last id returned, or `after` when there is nothing new). The engine
+pulls this every tick: "Non ora" holds that kind for a few hours, "Basta
+così" mutes it, everything is stored for learning.
+
 ## Links
 
 The connections hub behind the Links tab (web and iOS). The server computes
@@ -1357,6 +1391,119 @@ google_unreachable` / `google_error`, `400 bad_request`.
 
 `GET /v1/agenda` also carries `events`: the merged events of that date.
 
+
+## Tasks
+
+The owner's tasks, synced both ways with Todoist (official API v1: `/api/v1/sync`
+with sync tokens, `/api/v1/tasks/completed/by_completion_date`). The engine is
+`crates/secretary-tasks` (`$SECRETARY_DATA_DIR/tasks.json`, atomic 0600, an
+exclusive lock) on the gym/body command protocol; the server runs the Todoist
+sync worker. Callers: the owner's devices (Bearer, or cookie + CSRF for writes)
+or Lucina's service token.
+
+### Connecting Todoist (Links)
+
+- `GET /v1/links` has a `tasks` group with one card: `{id: "todoist", kind:
+  "todoist", status: connected|reconnect|error|disconnected, account,
+  lastSyncAt, count, method: token|oauth, oauth: bool, actions}`. Actions:
+  `token` (paste the personal API token), `connect`/`reconnect` (Todoist's
+  OAuth, only when `oauth` is true), `sync`, `disconnect`.
+- `POST /v1/links/todoist/token {token}` → `{connected, account}`. The token is
+  checked with `GET /api/v1/user` first: 422 `todoist_token_rejected` when
+  Todoist refuses it, 502 `todoist_unavailable` when Todoist is down.
+- `POST /v1/links/todoist/connect {client?: web|ios}` → `{authorizeUrl}` (503
+  `todoist_oauth_not_configured` without `SECRETARY_TODOIST_CLIENT_ID_FILE` and
+  `_SECRET_FILE`); Todoist returns to `GET /v1/links/todoist/callback` (public;
+  single-use `state`), which redirects to `/links?todoist=connected|error`
+  (`secretary://links?…` for iOS).
+- `POST /v1/links/todoist/sync`, `DELETE /v1/links/todoist` (OAuth tokens are
+  revoked at Todoist; the synced data is dropped; local-only tasks stay).
+- Tokens are sealed with `links.key` (purposes `todoist-token`,
+  `todoist-refresh`) and never returned. Owner devices only (not the service
+  token).
+
+### `GET /v1/tasks/state?view=&id=&query=&days=&timezone=`
+
+`view`: `today` (default; an `overdue` group then today's date), `upcoming`
+(`overdue` + one `date` group per day, `days` default 7), `inbox`, `project`
+(`id` = project id; groups per section, sub-tasks nested in `children`),
+`label` (`id` = label name), `filter` (`id` = saved filter, or `query` = a
+Todoist filter: `today`, `overdue`, `no date`, `recurring`, `p1`…`p4`,
+`7 days`, `@label`, `#Project`, `##Project`, `/Section`, `search: x`,
+`due before: <date>`, `&`, `|`, `!`, `( )`, `,`; other words are reported in
+`list.warning`), `search` (`query`), `completed` (`days`, default 7).
+`timezone` defaults to the owner's (`SECRETARY_TIMEZONE`).
+
+Answer: `{ok, replayed, view}` with `view = {revision, today, timezone,
+counts: {inbox, today, overdue, upcoming}, goal: {daily_goal, completed_today,
+reached}, inbox_id, projects: [{id, name, color, parent_id?, inbox, favorite,
+count, sections: [{id, name}]}], labels: [{id, name, color, favorite,
+count}], filters: [{id, name, query, color, favorite, count}], sync: {status:
+disconnected|ok|syncing|error|rate_limited|reconnect, connected, account?,
+last_sync_ms?, pending, error?, retry_after_ms?}, conflicts: [{id, task_id?,
+content, kind, message, at_ms}], undo: [task ids inside the delete undo
+window], list: {kind, id?, title, query?, count, warning?, groups: [{key,
+kind: overdue|date|section|none|completed, title, date?, rel_days?, tasks}]}}`.
+
+A task: `{id, content, description, project_id, project_name, project_color,
+section_id?, section_name?, parent_id?, parent_content?, priority: 1 (urgent)
+… 4, due?: {date, time?, string, is_recurring, rel_days, overdue,
+provisional?}, deadline?, labels, checked, subtasks, subtasks_done, pending,
+duration_minutes?, children?, completed_ms?}`. `id` is Todoist's, or `tmp-…`
+until Todoist confirms a new task. `due.string` is Todoist's recurrence text,
+kept verbatim; `provisional` marks this engine's guess of the next date after
+completing a recurring task (Todoist's answer replaces it at the next sync).
+
+### `POST /v1/tasks/command`
+
+`{op_id, expected_revision?, timezone?, view?, command}`. `expected_revision`
+is optional here (when given it must match: 409 `conflict`); each command
+targets one task, so offline queues and Lucina send none. `view` (`{kind, id?,
+query?, days?}`) picks the list in the answer. Same receipts as gym/body
+(`replayed`, 422 `op_id_reused`), 422 `invalid_command` with `error`.
+
+Commands (`type`): `quick_add {text, lang?, project_id?, section_id?,
+default_due?}` (Todoist quick add: dates and recurrence in it/en/da such as
+"tomorrow 9am", "ogni lunedì", "hver dag", "every 2 weeks"; `#Project`,
+`/Section`, `@label`, `p1`…`p4`, `{deadline}`, ` // description`; answers
+`task_id` and `parsed`), `add {content, description?, project_id?, section_id?,
+parent_id?, due_string? | due_date?, lang?, priority?, labels?}`, `complete
+{task_id}` (a recurring task moves to its next date on Todoist), `uncomplete
+{task_id}`, `update {task_id, content?, description?, priority?, labels?,
+due_string? | due_date? | clear_due?}`, `reschedule {task_id, date}` (YYYY-MM-DD
+or a phrase; keeps the time and the recurrence), `reschedule_overdue {date?}`
+(default today), `delete {task_id}` (soft: hidden at once, sent to Todoist after
+20 s), `undo_delete {task_id}` (also after it reached Todoist: re-created),
+`move {task_id, project_id | section_id | parent_id}`, `set_daily_goal {goal}`,
+`dismiss_conflict {conflict_id}`. Queries: `snapshot {view?}`,
+`parse_quick_add {text, lang?}` (answers `parsed`, no view; no op_id needed).
+
+### Sync
+
+Every edit is applied at once and queued as a Todoist sync command (its `uuid`
+makes Todoist idempotent too). The worker runs every
+`SECRETARY_TODOIST_SYNC_SECS` (90 s), 1.5 s after an edit and when a delete's
+undo window ends: pull (incremental sync token; full the first time or after a
+rejected command) → push the queue (≤ 100 commands) → completed history (every
+10 min). Conflict policy: an edit carries the task's Todoist `updated_at`; if
+Todoist's copy changed since, Todoist wins, the edit is dropped and a
+`changed_remotely` conflict is listed (also `deleted_remotely`,
+`completed_remotely`, `rejected`, `recurrence_lost`). 401/403 → the card shows
+`reconnect` and edits keep queueing; 429 → `rate_limited` until Retry-After;
+other failures back off up to 15 minutes. `POST /v1/tasks/sync` runs a cycle
+now (409 `todoist_not_connected` / `todoist_reconnect`, 429 with Retry-After).
+
+### `GET /v1/tasks/signals?timezone=`
+
+For Lucina and the proactive engine (also `tasks` in `/v1/insights/summary`):
+`{today, timezone, today_open, overdue_open, completed_today, daily_goal,
+goal_reached, load_minutes, unestimated, today_tasks: [TaskRef], overdue:
+[TaskRef] (longest overdue first), routines: [{id, content, recurrence,
+due_date, days_overdue, streak_days, done_last_7, last_completed_ms}],
+sync_status, pending_edits, conflicts}` with `TaskRef = {id, content, project,
+priority, due_date, time?, recurring, days_overdue, minutes?}`. Minutes come
+from Todoist durations or the title ("15 min shadowing").
+
 ## Notes
 
 Briefings, notes and documents the owner reads in the app (Notes view on
@@ -1460,6 +1607,362 @@ block (`slug`, `title`, `tags: a, b`, `source`, `pinned`) or `.json` files
 kept unless `--replace`. `secretary-server notes list` prints id, slug,
 size, source and title. The running server picks imported notes up on its
 next request.
+
+## Library
+
+Books and clippings imported from a read-only Kindle USB scan. Ownership,
+device presence, mentions and reading status are independent: importing a book
+never sets it to started or completed. DRM-protected files contribute only
+unencrypted header metadata and a fingerprint; text is never decrypted.
+**KFX CONT/ION entity decoding is deferred**: no container/symbol-table reader
+is implemented. KFX stays `drm: unknown`, using filename metadata only; no DRM
+wrappers are decoded. Undocumented sidecars are not parsed. Sidecar extensions
+appear in scan JSON. Topaz (`azw1`, `tpz`) likewise uses filename metadata and
+unknown DRM. MOBI names and EXTH strings honor header encoding 1252 or 65001;
+unsupported encodings produce a scan warning and filename fallback.
+
+Auth: a device (Bearer, or session cookie plus `X-Secretary-CSRF: 1` for writes)
+**or** Lucina's service token. Writes log the caller, never book/highlight content.
+Library request bodies may be up to **32 MiB**. Invalid JSON or metadata returns
+`400 bad_request` (syntax errors: `invalid_json`); oversized bodies return 413.
+
+Storage under `$SECRETARY_DATA_DIR/library/`: `books/<id>.json`,
+`highlights/<bookId>.json` (array), `activity.json` (explicit owner changes and
+sessions), `notes/<bookId>.json` (Obsidian note references, only for books that
+have some), `notes-index.json` (last index per vault), and `imports.jsonl`
+(time, caller, source, counts only). JSON writes
+are atomic with mode 0600; a temporary `pending.json` snapshot allows recovery
+of interrupted multi-file writes. Records load lazily under a mutex.
+
+A book has `id` (`bk_` + 16 lowercase hex digits), `title`, `authors`, nullable
+`isbn`/`doi`/`asin`, `fingerprints` (SHA-256), `formats`, `sources`, `drm`
+(`none|protected|unknown`), `owned`, nullable `onKindle`
+(`{path,sizeBytes,lastSeenAt}`), nullable `removedFromKindleAt`, `mentionedOnly`,
+`kind` (`book|dictionary|document`, default `book` for older records),
+`status` (`unknown|not_started|reading|completed|abandoned`), `statusSource`,
+nullable `progress` (`{percent,location,page,source,at}`), `lastOpenedAt`, `tags`,
+`briefs`, `relatedNotes`, `memoryRefs`, `createdAt` and `updatedAt`.
+
+Unknown values stay null/unknown. A clipping without a matching file creates
+an unowned book with no Kindle presence. Dates from clippings lack a timezone:
+parsed `addedAt` is an ISO local datetime, and `addedAtRaw` always preserves the
+original. Unparseable dates remain null. No serial numbers are collected;
+`device` is an optional user-supplied friendly label.
+
+### `GET /v1/library/books?q=&status=&onKindle=&kind=book,document&limit=200`
+
+`{"books":[BookSummary]}`, newest updated first, ties by id. `q` searches
+case/diacritic-insensitive terms in titles, authors, tags, highlight text and
+notes. `status` takes one of the values above; `onKindle=true|false` filters
+presence. `kind` is a comma-separated list of `book`, `document`, `dictionary`;
+omitting it defaults to `book,document`. Invalid kinds return 400. Dictionaries
+remain addressable by id and with `kind=dictionary`.
+`limit` is clamped to 1–500; queries have at most 200 characters.
+A summary contains `id,kind,title,authors,status,progress,onKindle,owned,formats,drm,
+highlightCount,lastHighlightAt,updatedAt`.
+
+### `GET /v1/library/books/{id}`
+
+`{"book":Book,"highlights":[Highlight],"sessions":[ReadingSession]}`.
+Unknown ids return `404 book_not_found`. Highlights contain `id`, `bookId`,
+`kind` (`highlight|note|bookmark`), `text`, nullable attached `note`, `location`
+(`{start,end}`), `page`, `addedAt`, `addedAtRaw`, `source`, `provenance`
+(`{file,entryIndex,device}`), and `dedupKey`. Notes remain separate records even
+when attached to a highlight ending at the same location.
+
+### `PATCH /v1/library/books/{id}`
+
+Any of `{status,tags,progress,baseUpdatedAt}`. Absent fields keep their value.
+Status edits set `statusSource:"owner"`; progress edits set `source:"owner"`
+and a server timestamp. Percent must be 0–100. Tags use the Notes limits
+(16 tags, 32 characters each). A stale `baseUpdatedAt` returns `409 conflict`.
+Imports preserve owner status, progress and tags. Explicit status/progress
+edits are retained for recent-reading reports.
+
+### `GET /v1/library/books/{id}/highlights?q=&limit=200`
+
+`{"highlights":[Highlight]}`, filtered by terms in text and attached notes.
+Same query and limit bounds as the book list.
+
+### `GET /v1/library/search?q=&limit=200`
+
+`{"results":[{bookId,title,authors,highlightId,snippet,location,page,source}]}`.
+Title/author/tag matches rank before highlight matches. Nullable reference
+fields are null on book hits. Optional `kind` filters results with the same
+comma-separated values as the list; search includes dictionaries when omitted.
+Sources are explicit (`library`,
+`kindle-clippings`, …); page and location are never invented.
+
+### `GET /v1/library/recent?days=7&limit=200`
+
+`{"highlights":[Highlight],"changes":[{bookId,status,progress,at,source}],
+"sessions":[],"readingSessions":"unavailable_on_stock_kindle",
+"unknownDateHighlightsExcluded":true,"kindleDatesHaveNoTimezone":true}`.
+`days` is 1–3650. Highlights use `addedAt` when known, newest first; unknown
+dates are excluded. Local Kindle dates are compared against the window's UTC
+wall-clock boundary without claiming a timezone. Changes are explicit owner
+edits, newest first. Stock Kindle USB storage provides no session producer:
+reading time and last-opened time remain unknown.
+
+### `GET /v1/library/stats`
+
+`{books,dictionaries,byStatus,byFormat,byDrm,highlights,booksOnKindle,lastImport}`;
+`books`, `booksOnKindle` and the status/format/DRM maps exclude dictionaries
+(documents are included). `dictionaries` reports their separate count. Highlights
+count all records. Count maps use canonical enum values. `lastImport` is the
+latest import log record or null.
+
+### `POST /v1/library/import`
+
+Body: `{source,device,scannedAt,books:[ScannedBook],clippings:[ClippingEntry]}`.
+`lucina-ink scan <mount> --json` produces this JSON. A scanned book contains
+`path,sizeBytes,fingerprint,format,kind,metadata,sidecarPresent,sidecarExtensions`;
+metadata contains `title,authors,publisher,isbn,asin,cdetype,language,drm,dictionary`.
+The scanner sets `dictionary` when EXTH 531/532 is present and classifies the
+scanned book as `kind:dictionary`; files under `documents/dictionaries/` also
+have dictionary kind. PDOC personal documents and PDF/TXT/MD files are documents;
+other files are books. Older batches without `kind` default to book. A clipping entry contains
+`title,authors,highlight` (the Highlight shape above; ids and dedup keys are
+recomputed). Titles are bounded to 1000 bytes, highlight/note text to 256 KiB;
+paths must be relative without `..`, fingerprints 64 lowercase hex digits,
+sources `[a-z0-9][a-z0-9-]*` up to 32 bytes. Capacity: 50k books, 200k highlights.
+
+Returns `{booksAdded,booksUpdated,booksUnchanged,highlightsAdded,
+highlightsSkipped,removedFromKindle,conflicts,warnings}`. Identity priority:
+fingerprint, ISBN, ASIN. A file can also promote an unowned clipping-only record
+using the matching rules below. Distinct files are **never** merged merely because
+their titles match; collisions are reported in `conflicts`. Existing ids never
+change; conflicting identifiers keep the existing value and are reported.
+
+Clipping matches use a dedicated title key, without altering display titles:
+strip balanced trailing parenthesized edition/series groups, cut at the first
+`:` / `_ ` / ` - ` separator, then lowercase, remove diacritics and punctuation,
+collapse spaces and remove a leading article (including `L'`/`L’`). A period is
+not a subtitle separator. Author keys lowercase, remove diacritics/punctuation
+and collapse spaces, using the first author. A unique title-key + author-key
+candidate wins; otherwise a title-key candidate wins only when exactly one
+exists. Ambiguity creates an unowned clipping-only record.
+
+Canonical `dedupKey` (UTF-8, no Rust Debug output):
+`<titleKey>|<authorKey>|<kind lowercase>|<start>-<end or start>|<normalised text>`.
+Unknown author/location segments are empty; a known single location repeats
+start as end. Quoted text retains case, accents and punctuation and collapses
+whitespace only. Highlight id = `hl_` + the first 16 lowercase SHA-256 hex digits
+of this exact key. For example,
+`great gatsby|fitzgerald f scott|highlight|170-172|A thought.` has the pinned id
+`hl_8c6f78e9e5e5c21e`. This replaces the initial experimental Debug-based keys before
+real-data storage; no migration of old highlight ids is provided.
+Replaying a saved batch leaves records and `updatedAt` unchanged.
+A complete `kindle-usb` inventory clears missing Kindle presence and sets
+`removedFromKindleAt`; books and highlights are never deleted. This slice models
+one Kindle inventory, not independent per-device inventories.
+
+### `GET /v1/library/sync`
+
+`{"imports":[…],"books":N,"highlights":N,"serverClock":N,"devices":{device:N},
+"pendingTombstones":[Tombstone],"recentConflicts":[Conflict]}`. Last 20 import log
+records, oldest first; logs contain counts and caller/source, never content.
+`serverClock` counts the device ops recorded; `devices` maps each device id to its
+largest contiguous applied counter; `recentConflicts` holds the 20 newest
+conflicts, newest first.
+
+### `POST /v1/library/sync`
+
+Local-first sync for reader devices (crate `ink-sync`; the future native reader,
+Mode B). A device appends every op durably to its own log (`ink_sync::outbox`,
+JSONL + fsync) before any network I/O, then sends unacked ops oldest first, in
+batches, retrying with exponential backoff and jitter. It never drops an unacked
+op and never re-sends an acked one after a restart.
+
+Body: `{"device":"kobo-1","ops":[Op]}`, at most 500 ops, every `opId` of that
+device (else `400`). Device ids are 1–64 characters `[A-Za-z0-9_.-]`.
+An op is `{"opId":"<device>:<counter>","at":RFC3339,"type":…,…}`; counters start at 1
+and only grow (the client never reuses one). Types:
+
+| `type` | fields | rule |
+|---|---|---|
+| `setProgress` | `bookId, anchor?, percent?, location?` | last writer wins by `(at, device, counter)`; an owner `PATCH` of progress sets a floor: device ops stamped at or before it lose |
+| `setStatus` | `bookId, status` (not `unknown`) | last writer wins by `(status = completed, at, device, counter)`: a device never moves a book back from `completed` (`protected`); an owner `PATCH` sets a floor like progress, and an owner `completed` freezes the status against every device op. Only the owner moves a book back from completed |
+| `addHighlight` | `bookId, kind? (highlight), text, anchor, note?` | grow-only set keyed by `device|bookId|kind|anchor|text` (whitespace collapsed); id `hl_` + 16 hex of SHA-256 of that key; the earliest op names `addedAt` |
+| `editNote` | `bookId, highlightId, note` (`null` clears) | last-writer-wins note per highlight id, device or Kindle highlights; a note also survives Kindle re-imports |
+| `deleteHighlight` | `bookId, highlightId` | recorded as an unconfirmed tombstone; **nothing is removed** until the owner confirms |
+| `startSession` / `endSession` | `bookId, sessionId, location?` | session start is the earliest, end the latest; sessions appear in `GET …/books/{id}` with `source:"device:<id>"` |
+
+Response: `{"acked":[opId],"conflicts":[Conflict],"serverClock":N}`. Every op the
+server recorded is acked, including duplicates, ops that lost, protected ops and
+invalid ops (rejected once, reported, never retried). An op far ahead of the
+device's applied counters (more than 1024 out of order) is not acked; the client
+retries it later. Apply is idempotent by op id (a replay changes nothing) and
+commutative, so two servers that apply the same ops in different orders hold the
+same content. A `Conflict` is `{opId,bookId,opType,kind,winner,detail}` with `kind`
+`superseded | protected | rejected | deleted`; conflicts are reported per request
+and kept in a bounded log (1000). Projected values carry `source:"device:<id>"`
+(progress, status) or `source:"device-sync"` (highlights). Ops on a book not in
+the library are kept and appear once the book is imported.
+
+Storage: `library/sync.json` (0600, atomic) holds the per-device watermarks (the
+largest contiguous counter plus a sparse set of out-of-order counters), the
+registers, tombstones and the conflict log. It is written before the book
+records it projects onto; loading re-projects it, so a crash between the two
+writes heals itself. Times are device clocks: a device with a fast clock wins
+last-writer-wins ties against others.
+
+### `POST /v1/library/sync/tombstones/{opId}/confirm`
+
+The owner confirms a device's `deleteHighlight`: the highlight is hidden from the
+library and stays hidden (Kindle re-imports and later `addHighlight` ops do not
+bring it back; such ops are reported as `deleted` conflicts). Device auth only:
+Lucina's service token gets `403 owner_required`. Unknown op ids return
+`404 tombstone_not_found`. Returns `{"tombstone":Tombstone}` with
+`{opId,bookId,highlightId,at,confirmed}`.
+
+### `POST /v1/library/books/{id}/brief`
+
+Creates and returns `{id,kind:"extractive",text,generatedAt,model:null,basedOn}`.
+Uses the first ten highlights by position (unknown positions last), with
+highlight ids as references. Repeating against the same highlight set returns
+the stored brief. Briefs are always generated, never the owner's words.
+**Model briefs are not implemented.** Memory refs have no automatic producer
+yet. `relatedNotes` is filled only by the Obsidian notes index below; empty
+means none indexed, not "no relationship".
+
+### `POST /v1/library/notes-index`
+
+Body: `{vault,generatedAt,refs:[BookRef]}`, produced by
+`lucina-ink obsidian-index <vault> --library <file> --json` (or posted directly
+with `--server … --token-file …`). A BookRef is
+`{bookId,notePath,noteTitle,how,excerpt,line}`: `how` is one of
+`frontmatter|wikilink|mention|isbn|asin`, `excerpt` at most 240 characters of
+the matching line, `line` 1-based. `vault` is 1–64 ASCII letters, digits,
+spaces, `.`, `_` or `-` (first character alphanumeric); `notePath` a relative
+`.md` path without `..`; titles at most 1000 bytes; at most 200k refs.
+Invalid input returns 400.
+
+The index **replaces** every reference of that vault (other vaults are kept),
+so posting the same refs again is idempotent: books and their `updatedAt` do
+not change, and `relatedNotes[].linkedAt` keeps the first time a note was
+linked. References to unknown book ids are counted and dropped. Each book's
+`relatedNotes` holds one `{vault,path,title,linkedAt,how}` per note, with the
+strongest kind (frontmatter > isbn > asin > wikilink > mention). Returns
+`{vault,refsStored,booksLinked,booksUpdated,unknownBooks,changed}`; the import
+log records caller, `source:"obsidian"` and the counts, never paths or text.
+
+A reference is a relation found in the owner's notes. A `mention` (a title in
+plain text) is never evidence that a book was read and never changes status
+or progress.
+
+### `GET /v1/library/books/{id}/notes?limit=200`
+
+`{"bookId","total","notes":[NoteLink],"indexedVaults":[{vault,generatedAt,indexedAt,refs,books}]}`.
+A NoteLink is `{vault,bookId,notePath,noteTitle,how,excerpt,line}`, sorted by
+vault, path, kind and line. Unknown ids return 404. Empty `indexedVaults` means
+no vault has been indexed yet, so relationships are unknown.
+
+The `lucina-ink` CLI also supports `import <mount> --server <url> --token-file
+<path>` and `import-json <batch.json> --server <url> --token-file <path>`.
+`--dry-run` merges against an empty local state and prints the outcome without
+sending or reading a token. Tokens are read from files, never passed as argv
+values. Scans never write to the device, follow symlinks, or parse sidecars;
+they cap depth at 8, total entries at 50k, and clippings at 64 MiB/200k entries.
+Filename fallback removes trailing `_B0…` ASINs or ISBN-10-style ids (stored as
+ASIN when header metadata lacks one), removes 32-character base32 personal ids
+without making them ASINs, and reverses `_ ` to `: `. Every clipping title drops
+invisible formatting characters, including repeated per-entry BOMs.
+
+The human scan summary reports marker names and booleans `jailbreak`, `kual`,
+`mrpi`, `otaBlocker`, `koreader`. Detection checks names only, including
+`winterbreak.log`, `jb.sh`, `patchedUks.sqsh`, `mkk/`, `developer.keystore`,
+`documents/KUAL.kual`, `extensions/KUAL.cfg`, `extensions/MRInstaller/`,
+`extensions/renameotabin/`, `koreader/`, `libkh/`. macOS litter is ignored
+throughout: `._*`, `.DS_Store`, `.Spotlight-V100/`, `.fseventsd/`, `.Trashes/`.
+
+`lucina-ink obsidian-index <vault> --library <file>` indexes an Obsidian vault
+**read-only**. `--library` takes a saved ImportBatch (ids as an empty server
+would assign them), a library state snapshot, or a `{"books":[…]}` listing such
+as `GET /v1/library/books`. Default output: counts, then one
+`<bookId> <how> <path>#L<line>` per reference (warnings on stderr); `--summary`
+prints counts only; `--json` prints the notes-index body with excerpts.
+`--vault-name` sets the citation name (default: the folder name),
+`--include`/`--exclude` take patterns, `--no-default-excludes` drops the
+privacy defaults, and `--state <file>` (outside the vault) keeps a manifest of
+`path → (mtime, size, sha256)` so only changed notes are read again.
+
+The walk never follows symlinks, rejects paths whose canonical form leaves the
+vault, caps 20k files, 2 MiB per note and depth 32, and skips non-UTF-8 notes
+with a warning. Excluded by default: `.obsidian/`, `.trash/`, `.backups/`,
+`.git/`, `Templates/`, `_tmp*` folders and files, `._*`, `.DS_Store`, and any
+folder named `Private`, `private`, `Journal`, `journal`, `Diary` or `diary`.
+Patterns: `name/` is a folder at any depth, `a/b/` a folder path from the root,
+`name` a file name, `a/*.md` a path; `*` stays within a segment, `**` crosses.
+
+Parsing: frontmatter `key: value`, flow `[a, b]` and block `- item` lists (nested
+maps and block scalars are ignored); title from frontmatter `title`, the first
+`# ` heading, or the file name; tags from frontmatter and inline `#tag`; links
+`[[T]]`, `[[T|alias]]`, `[[T#Heading]]`, embeds `![[…]]`, and Markdown links to
+`.md` files, outside code. Links resolve like Obsidian: exact path, then a
+unique path-suffix or basename match, else unresolved/ambiguous. Book
+references: frontmatter `lucina_book_id`, `isbn`, `asin`, `book`/`books`, and
+`title` + `author`/`authors` (a note about the book; links to it count as
+wikilinks to the book); wikilink targets or aliases naming a title; plain-text
+title mentions; checksum-valid ISBN-10 (after an `ISBN` label) or ISBN-13, and
+`B0…` ASINs, matched against library identifiers. Titles use the clipping
+title and author keys above. A title needs a key with at least two significant
+words (3+ letters, not a function word), or must equal the main or full title
+for frontmatter/wikilinks; plain-text mentions of single-word titles are never
+matched, and weak multi-word titles must appear exactly as written. Ambiguous
+titles match nothing. A mention is dropped when the same note refers to the
+book more strongly.
+
+`ink_obsidian::render` can render an opt-in generated book note
+(`Books/<Title>.md`, frontmatter `lucina_book_id,title,authors,status,source,
+progress,generated_by: lucina-ink`, highlights with Kindle locations) and plan
+a write: create when absent; otherwise replace only the region between
+`<!-- lucina-ink:begin -->` and `<!-- lucina-ink:end -->` of a note we generated;
+anything else needs the owner's approval. **No code path writes to a vault
+yet.**
+
+Lucina MCP exposes `library_list_books`, `library_search`, `library_get_book`,
+`library_get_progress`, `library_get_highlights`, `library_get_recent_reading`,
+`library_get_brief`, `library_find_related_notes`, `library_sync_status` (read
+scope), and `library_generate_brief` (write scope). Results cite book/page/
+location/source and say when progress, sessions or relationships are unknown.
+`library_find_related_notes` reads `/v1/library/books/{id}/notes` and cites each
+note as `[obsidian:<vault>/<path>#L<line>]`, stating that mentions are not
+reading evidence and saying plainly when no vault has been indexed.
+
+## Models
+
+The owner's private 3D gallery: models Lucina made with Meshy AI (crate
+`lucina-meshy` on the Rust Lucina), each with its prompt, Meshy task ids,
+clips, credits and files. Lucina adds models with her service token; the
+apps list, view and delete them. Files are never served without auth.
+
+| Route | Who | |
+|---|---|---|
+| `GET /v1/models?limit=50&q=` | device, Lucina | `{models: [Model]}`, newest first; `q` searches title, prompt, animations |
+| `GET /v1/models/{id}` | device, Lucina | `{model}` |
+| `DELETE /v1/models/{id}` | device (cookie + `X-Secretary-CSRF: 1`), Lucina | `{ok, id}`; the model and its files are gone |
+| `GET /v1/models/{id}/files/{name}` | device, Lucina | the file; `Cache-Control: private, max-age=3600`, `ETag`, `Range` |
+| `POST /v1/models` | Lucina only (403 for devices) | 201 `{model}` |
+| `PUT /v1/models/{id}/files/{name}` | Lucina only | raw body → `{model}` |
+
+`Model`: `{id: "mdl_…", title, prompt, source: "meshy"|"upload", jobId,
+credits, animations: [name], clips: [{actionId, name, inPlace}], formats,
+parent, meshy: {taskId, taskKind, rigTaskId, finalTaskId, aiModel, steps},
+files: [{name, bytes, contentType, updatedAt}], createdAt, updatedAt,
+createdBy}`. `meshy.taskId`/`taskKind`/`rigTaskId` let Lucina post-process a
+model later (remesh, retexture, rig, animate, export).
+
+File names: `model.glb`, `thumb.png|jpg|webp`, `preview.mp4` (the CPU turntable
+video), `model.fbx|usdz|obj|stl|3mf`. Uploads are checked against the format's
+magic bytes (`glTF`, PNG, JPEG, WebP, `ftyp`, zip for USDZ/3MF); at most 200 MB
+(20 MB for thumbnails and the preview). Storage:
+`$SECRETARY_DATA_DIR/models/<id>/` (0700) with `model.json` and the files
+(0600); at most 500 models.
+
+The chat shows a model as the v1 `model3d` block (`meta.blocks`): `{type:
+"model3d", id, title, prompt?, animations?, credits?, formats?, poster?,
+video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 
 ## Error codes
 

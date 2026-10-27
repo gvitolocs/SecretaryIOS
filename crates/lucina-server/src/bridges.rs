@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lucina_intent::calendar::{self as cal, Create};
+use lucina_intent::calendar_event as ev;
 use lucina_intent::notes::{self as nt, NotesIntent};
 use lucina_intent::outfit::{self, LookIntent};
 use lucina_intent::tasks as tk;
@@ -136,6 +137,10 @@ pub struct Outcome {
     pub read_note: Option<Value>,
     /// Notes: a saved note for Honcho.
     pub memory_note: Option<Value>,
+    /// Calendar: the events the answer was made from (place blocks).
+    pub events: Vec<Value>,
+    /// Calendar: the answer is an agenda (one sentence, then a card per event).
+    pub agenda: Option<crate::agenda::Agenda>,
 }
 
 fn meta_note(slug: &str) -> lucina_store::timeline::Meta {
@@ -362,6 +367,8 @@ pub async fn notes_turn(
                 meta: Some(meta_note(&saved_slug)),
                 memory_note: Some(r.data),
                 read_note: None,
+                events: Vec::new(),
+                agenda: None,
             }
         }
         NotesIntent::Part { content, more, .. } => {
@@ -401,6 +408,8 @@ pub async fn notes_turn(
                 meta: Some(meta_note(&slug)),
                 memory_note: Some(r.data),
                 read_note: None,
+                events: Vec::new(),
+                agenda: None,
             }
         }
     }
@@ -496,11 +505,20 @@ pub async fn calendar_turn(
                         .await;
                     let title = created.event["title"].as_str().unwrap_or("");
                     if r.ok {
-                        return Some(Ok(out(
-                            cal::created_text(&created, tz),
-                            "calendar_create",
-                            format!("[calendar event created: {title}]"),
-                        )));
+                        return Some(Ok(Outcome {
+                            events: r
+                                .data
+                                .get("event")
+                                .filter(|e| e.is_object())
+                                .cloned()
+                                .into_iter()
+                                .collect(),
+                            ..out(
+                                cal::created_text(&created, tz),
+                                "calendar_create",
+                                format!("[calendar event created: {title}]"),
+                            )
+                        }));
                     }
                     let reply = if r.code == "google_reconnect_needed"
                         || r.code == "google_not_connected"
@@ -550,31 +568,87 @@ pub async fn calendar_turn(
             }
         }));
     }
-    let q = cal::parse_question(message, now, tz)?;
+    calendar_read(s, message, now, tz).await.map(Ok)
+}
+
+fn calendar_outcome(reply: String, action_result: String) -> Outcome {
+    Outcome {
+        reply,
+        action: "calendar".into(),
+        action_result,
+        meta: Some(lucina_store::timeline::Meta::kind("calendar")),
+        ..Outcome::default()
+    }
+}
+
+/// A calendar read: the events of the days asked ("cosa ho domani?") or the event asked about
+/// ("dove si tiene la Hack Night di domani?"). `None` when the text is neither, or when no event
+/// matches the one asked about (the planner then answers with [`calendar_context`]).
+pub async fn calendar_read(
+    s: &Secretary,
+    message: &str,
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> Option<Outcome> {
+    if let Some(q) = cal::parse_question(message, now, tz) {
+        let r = events(s, &q.from, &q.to).await;
+        if !r.ok {
+            return Some(calendar_outcome(
+                cal::text(q.lang, "unavailable").into(),
+                format!("[calendar unavailable: {}]", r.code),
+            ));
+        }
+        let evs = r.data["events"].as_array().cloned().unwrap_or_default();
+        let mut reply = cal::format_answer(&q, &evs, now, tz);
+        let mut sentence = (!evs.is_empty()).then(|| ev::listing_sentence(&q, evs.len(), now, tz));
+        if r.data["sources"]["google"]["status"] == "reconnect" {
+            reply.push_str(cal::text(q.lang, "reconnect_note"));
+            if let Some(s) = sentence.as_mut() {
+                s.push_str(cal::text(q.lang, "reconnect_note"));
+            }
+        }
+        let action_result = format!("[calendar {}..{}: {} events]", q.from, q.to, evs.len());
+        return Some(Outcome {
+            events: evs,
+            agenda: sentence.map(|sentence| crate::agenda::Agenda {
+                sentence,
+                lang: q.lang,
+            }),
+            ..calendar_outcome(reply, action_result)
+        });
+    }
+    let q = ev::parse_event_question(message, now, tz)?;
+    // Unreachable calendar: the planner answers, told so by [`calendar_context`].
     let r = events(s, &q.from, &q.to).await;
     if !r.ok {
-        return Some(Ok(out(
-            cal::text(q.lang, "unavailable").into(),
-            "calendar",
-            format!("[calendar unavailable: {}]", r.code),
-        )));
+        return None;
     }
     let evs = r.data["events"].as_array().cloned().unwrap_or_default();
-    let mut reply = cal::format_answer(&q, &evs, now, tz);
-    if r.data["sources"]["google"]["status"] == "reconnect" {
-        reply.push_str(cal::text(q.lang, "reconnect_note"));
-    }
-    Some(Ok(out(
-        reply,
-        "calendar",
-        format!("[calendar {}..{}: {} events]", q.from, q.to, evs.len()),
-    )))
+    let hits = ev::select(&q, &evs, now, tz);
+    let first = hits.first()?;
+    let sentence = ev::answer_sentence(first, now, tz, q.lang);
+    let action_result = format!(
+        "[calendar event \"{}\" {}..{}: {} of {} events]",
+        q.topic,
+        q.from,
+        q.to,
+        hits.len(),
+        evs.len()
+    );
+    Some(Outcome {
+        agenda: Some(crate::agenda::Agenda {
+            sentence: sentence.clone(),
+            lang: q.lang,
+        }),
+        events: hits,
+        ..calendar_outcome(sentence, action_result)
+    })
 }
 
 /// `buildCalendarContext`: the events a calendar question asks about.
 pub async fn calendar_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, tz: Tz) -> String {
     let Some(q) = cal::parse_question(prompt, now, tz) else {
-        return String::new();
+        return event_context(s, prompt, now, tz).await;
     };
     let r = events(s, &q.from, &q.to).await;
     if !r.ok {
@@ -594,6 +668,32 @@ pub async fn calendar_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, t
         "Giuseppe's calendar {range} ({}, Google + iPhone + subscriptions): {}. Answer from this list only.",
         tz.name(),
         if lines.is_empty() { "nothing scheduled".to_owned() } else { lines.join("; ") }
+    )
+}
+
+/// The calendar's answer to a question about one event, for the planner: the matching events,
+/// or that none matches (so the model never answers it from memory or notes).
+async fn event_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, tz: Tz) -> String {
+    let Some(q) = ev::parse_event_question(prompt, now, tz) else {
+        return String::new();
+    };
+    let r = events(s, &q.from, &q.to).await;
+    if !r.ok {
+        return format!(
+            "Calendar ({}..{}): unavailable right now; do not guess appointments.",
+            q.from, q.to
+        );
+    }
+    let evs = r.data["events"].as_array().cloned().unwrap_or_default();
+    let hits = ev::select(&q, &evs, now, tz);
+    if hits.is_empty() {
+        return ev::no_match_context(&q);
+    }
+    format!(
+        "Giuseppe's calendar, events matching \"{}\" ({}): {}. Answer from this list only.",
+        q.topic,
+        tz.name(),
+        cal::event_lines(&hits, tz, "en").join("; ")
     )
 }
 

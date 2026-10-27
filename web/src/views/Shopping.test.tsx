@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
+import { Route } from "@solidjs/router";
 import { beforeEach, describe, expect, it } from "vitest";
 import { setLocale } from "../i18n";
 import { resetShopping, shop } from "../state/shopping";
+import { renderAt } from "../test/router";
 import { stubFetch } from "../test/fetch";
 import { toggleChip } from "./shopping/DetailsSheet";
 import { fakeShoppingServer, testItem, type FakeServer } from "./shopping/fakeServer";
@@ -19,7 +21,7 @@ const lists = () => screen.queryAllByRole("list").map((l) => l.getAttribute("ari
 const opTypes = () => srv.opsPosts().flatMap((p) => p.ops.map((o) => o.type));
 
 async function renderView() {
-  render(() => <ShoppingView />);
+  renderAt("/shopping", () => <Route path="/shopping" component={ShoppingView} />);
   await screen.findByRole("button", { name: /^Latte, da comprare/ });
   await waitFor(() => expect(shop.pending).toBe(0));
   await waitFor(() => expect(shop.lists.length).toBe(2));

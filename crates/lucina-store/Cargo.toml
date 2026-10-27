@@ -17,6 +17,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 fancy-regex = "0.19"
 getrandom = "0.3"
+base64 = "=0.22.1"
 
 [dev-dependencies]
 proptest = "1"

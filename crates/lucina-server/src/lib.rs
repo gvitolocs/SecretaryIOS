@@ -8,6 +8,7 @@
 //! are off; reminder writes are forwarded to the Node Lucina; Honcho is read
 //! only. See `README` in the crate docs of [`config`].
 
+pub mod agenda;
 pub mod api;
 pub mod bridges;
 pub mod capabilities;
@@ -17,14 +18,17 @@ pub mod context;
 pub mod deals;
 pub mod delegation;
 pub mod fake;
+pub mod geocode;
 pub mod grocery_turn;
 pub mod jobs;
 pub mod otp;
 pub mod parity;
+pub mod places;
 pub mod planner;
 pub mod prompts;
 pub mod rich;
 pub mod secrets;
+pub mod selftest;
 pub mod share;
 pub mod surface;
 
@@ -57,6 +61,8 @@ pub struct Inner {
     pub share: crate::share::ShareRuntime,
     pub cfg: Config,
     pub timeline: Arc<TimelineStore>,
+    /// Self-test and diagnostic turns (crate::selftest), never the owner's timeline.
+    pub selftest_timeline: Arc<TimelineStore>,
     pub reminders: Arc<ReminderStore>,
     pub writer: Arc<dyn ReminderWriter>,
     pub jobs: Arc<JobStore>,
@@ -68,6 +74,8 @@ pub struct Inner {
     pub grocery: Option<Arc<GroceryRepo>>,
     /// The grocery deals engine (`crate::deals`); `None` without home coordinates.
     pub deals: Option<Arc<lucina_deals::DealsEngine>>,
+    /// Coordinates for place blocks (`LUCINA_MAPS_GEOCODE_URL`); `None`: off.
+    pub geocoder: Option<Arc<geocode::Geocoder>>,
     pub tool_env: Arc<ToolEnv>,
     pub registry: Arc<Registry>,
     /// The registry for Lucina MCP turns: no owner-only tools (secrets).
@@ -103,6 +111,18 @@ impl std::ops::Deref for AppState {
     }
 }
 
+impl Inner {
+    /// The timeline a turn of `session` writes: the owner's, or for a self-test its own
+    /// (crate::selftest).
+    pub fn timeline_for(&self, session: &str) -> Arc<TimelineStore> {
+        if selftest::is_session(session) {
+            self.selftest_timeline.clone()
+        } else {
+            self.timeline.clone()
+        }
+    }
+}
+
 impl AppState {
     /// Wire everything from the config. `model: None` uses DeepSeek.
     pub fn build(cfg: Config, model: Option<Arc<dyn ChatModel>>) -> anyhow::Result<Self> {
@@ -126,6 +146,11 @@ impl AppState {
         let secret_store = secrets::open_store(&cfg);
         let timeline = Arc::new(TimelineStore::new(
             &cfg.timeline_path,
+            cfg.timeline_max_bytes,
+            cfg.timeline_enabled,
+        ));
+        let selftest_timeline = Arc::new(TimelineStore::new(
+            cfg.timeline_path.with_file_name(selftest::TIMELINE_FILE),
             cfg.timeline_max_bytes,
             cfg.timeline_enabled,
         ));
@@ -200,6 +225,24 @@ impl AppState {
                 std::env::var("LUCINA_MEMO_URL").unwrap_or_else(|_| "http://127.0.0.1:8795".into()),
             );
             env.memo_token_file = Some(token);
+        }
+        // Crash reports (lucina-diagnostics on this host): on when its service token is readable.
+        let diagnostics_token = std::env::var("LUCINA_DIAGNOSTICS_SERVICE_TOKEN_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME").ok().map(|h| {
+                    std::path::Path::new(&h).join(".config/lucina-diagnostics/service.token")
+                })
+            })
+            .filter(|p| p.is_file());
+        if let Some(token) = diagnostics_token {
+            env.diagnostics_url = Some(
+                std::env::var("LUCINA_DIAGNOSTICS_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:8794".into()),
+            );
+            env.diagnostics_token_file = Some(token);
         }
         // Lucina's own Google Drive: only with a grant (`lucina google-auth drive`).
         if cfg.drive_enabled {
@@ -282,9 +325,15 @@ impl AppState {
         let registry = Arc::new(registry);
         let prompts = prompts::Prompts::load(&cfg);
         let deals = deals::engine(&cfg, grocery.clone());
+        let geocoder = cfg
+            .maps_geocode
+            .clone()
+            .map(|c| Arc::new(geocode::Geocoder::new(c)));
         let inner = Inner {
+            geocoder,
             share,
             timeline,
+            selftest_timeline,
             reminders,
             writer,
             jobs,

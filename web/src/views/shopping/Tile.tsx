@@ -1,4 +1,5 @@
 import { onCleanup, Show } from "solid-js";
+import { ItemIcon } from "./ItemIcon";
 
 /**
  * Tile colours follow the Bring! roles: `need` red (to buy), `recent` and
@@ -14,6 +15,10 @@ export interface TileProps {
   flipId: string;
   kind: TileKind;
   icon: string | null;
+  /** Catalog entry, for its bundled illustration. */
+  catalogId?: string | null | undefined;
+  /** The row's own section, for art of free text and custom items (ItemIcon). */
+  section?: string | null | undefined;
   name: string;
   spec?: string;
   /** Accessible label of the main button. */
@@ -26,11 +31,6 @@ export interface TileProps {
   /** Opens the details sheet (long-press, right-click, Shift+F10, or the focus-only ⓘ button). */
   onDetails?: () => void;
   detailsLabel?: string;
-}
-
-/** First letter for items without an emoji. */
-function initial(name: string): string {
-  return Array.from(name.trim())[0]?.toUpperCase() ?? "?";
 }
 
 export function Tile(props: TileProps) {
@@ -119,8 +119,8 @@ export function Tile(props: TileProps) {
         }}
       >
         <span class="tile-icon" aria-hidden="true">
-          <Show when={props.icon} fallback={<span class="tile-initial">{props.kind === "custom" ? "+" : initial(props.name)}</span>}>
-            {(icon) => icon()}
+          <Show when={props.kind !== "custom"} fallback={<span class="tile-initial">+</span>}>
+            <ItemIcon icon={props.icon} catalogId={props.catalogId} name={props.name} section={props.section} />
           </Show>
         </span>
         <span class="tile-name" classList={{ "tile-name--long": long() }}>

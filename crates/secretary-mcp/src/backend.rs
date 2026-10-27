@@ -201,6 +201,44 @@ impl Backend {
         .map(|(_, _, v)| v)
     }
 
+    /// Library reads accept either the configured device or Lucina service token.
+    pub async fn library_get(&self, path: &str, query: &[(&str, String)]) -> BResult<Value> {
+        self.send(
+            Method::GET,
+            path,
+            query,
+            None,
+            if self.has_device_token() {
+                Cred::Device
+            } else {
+                Cred::Service
+            },
+            DEFAULT_TIMEOUT,
+            HeaderMap::new(),
+        )
+        .await
+        .map(|(_, _, v)| v)
+    }
+
+    /// Generate an extractive brief; the caller's MCP write scope is checked first.
+    pub async fn library_brief(&self, id: &str) -> BResult<Value> {
+        self.send(
+            Method::POST,
+            &format!("/v1/library/books/{}/brief", seg(id)),
+            &[],
+            Some(&json!({})),
+            if self.has_device_token() {
+                Cred::Device
+            } else {
+                Cred::Service
+            },
+            DEFAULT_TIMEOUT,
+            HeaderMap::new(),
+        )
+        .await
+        .map(|(_, _, v)| v)
+    }
+
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> BResult<Value> {
         self.call(Method::GET, path, query, None).await
     }
@@ -218,9 +256,9 @@ impl Backend {
     }
 
     /// `POST /v1/chat` as the web channel.
-    // TODO(secretary-server): whitelist channel `mcp` in `X-Secretary-Client`
-    // (and Lucina's `channel`), then send `X-Secretary-Client: mcp` here and
-    // drop the `meta` note; today only `web|ios` are accepted.
+    // The turn enters as channel `web`. Lucina recognises the `mcp-<caller>`
+    // session id and `[via Lucina MCP, from …]` prefix, tagging both timeline
+    // items with meta.via = "mcp" and meta.caller; clients label them by caller.
     pub async fn chat(&self, body: &Value) -> BResult<Value> {
         let mut h = HeaderMap::new();
         h.insert("x-secretary-client", HeaderValue::from_static("web"));

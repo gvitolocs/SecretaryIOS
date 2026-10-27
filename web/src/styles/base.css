@@ -902,6 +902,8 @@ select.text-input option {
 /* Phones: the page ends above the floating dock. */
 .shell-body {
   position: relative;
+  /* The last row (minmax(0, 1fr)) even without a banner, so short pages fill the height. */
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1019,6 +1021,7 @@ select.text-input option {
 
   .shell-body {
     grid-column: 2;
+    grid-row: 2;
     padding-bottom: 0;
   }
 
@@ -1245,8 +1248,12 @@ select.text-input option {
   display: block;
   width: 100%;
   height: 100%;
-  touch-action: manipulation;
-  cursor: pointer;
+  /* The stage takes every touch on itself (orbit, pinch, taps); the page scrolls elsewhere. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
   animation: fade-in var(--dur-4) var(--ease-out) both;
 }
 
@@ -1534,6 +1541,50 @@ select.text-input option {
   overflow: hidden;
   text-overflow: ellipsis;
   animation: rise-in var(--dur-3) var(--ease-spring) both;
+}
+
+/* Face tracking is on: a clear camera indicator with Recenter and Stop (top, under the HUD). */
+.stage-face {
+  position: absolute;
+  z-index: 3;
+  top: 52px;
+  left: 14px;
+  right: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  padding: 6px 8px 6px 12px;
+  border-radius: 18px;
+  background: rgb(40 6 12 / 0.62);
+  border: 1px solid rgb(255 90 110 / 0.55);
+  color: #ffe9ec;
+  font-size: var(--fs-xs);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.stage-face-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff3b55;
+  box-shadow: 0 0 10px rgb(255 59 85 / 0.8);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.stage-face-label {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-face-dot {
+    animation: none;
+  }
 }
 
 .stage-pill--note {
@@ -2130,4 +2181,289 @@ select.text-input option {
 .empty-sub {
   margin: 0 0 16px;
   color: var(--text-muted);
+}
+
+/* ---- Lucina reached out (proactive outreach) ---- */
+
+.msg--proactive {
+  align-items: flex-start;
+}
+
+.proactive {
+  max-width: min(92%, 580px);
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--violet) 42%, transparent);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(var(--glass-strong), var(--glass-strong)) padding-box,
+    var(--grad-holo-soft);
+  color: var(--text);
+  box-shadow: 0 0 28px color-mix(in srgb, var(--violet) 20%, transparent);
+}
+
+.proactive--high {
+  border-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  box-shadow: 0 0 30px color-mix(in srgb, var(--amber) 22%, transparent);
+}
+
+.msg--focus .proactive {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.proactive-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.proactive-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--violet);
+}
+
+.proactive-title .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.prio-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.prio-chip[data-priority="high"] {
+  color: var(--notice-text);
+  background: var(--notice-bg);
+  border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+}
+
+.proactive-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.proactive-actions,
+.proactive-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.proactive-feedback .chip:disabled:not(.chip--active) {
+  opacity: 0.5;
+}
+
+.proactive-note {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+}
+
+.proactive-note--error {
+  color: var(--danger-text);
+}
+
+.proactive-why {
+  margin-top: 8px;
+}
+
+.proactive-why-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-2xs);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.proactive-why-text {
+  margin: 4px 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.proactive-missing {
+  margin: 8px auto;
+  max-width: min(92%, 580px);
+  padding: 12px 14px;
+  border: 1px dashed color-mix(in srgb, var(--violet) 42%, transparent);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+.proactive-missing .proactive-feedback {
+  justify-content: center;
+  margin-bottom: 8px;
+}
+
+.stage-canvas:active {
+  cursor: grabbing;
+}
+
+/* Lucina's studio: a glass sheet over the bottom of the stage (Custom Cast's slide-up panels). */
+.stage-studio {
+  position: absolute;
+  z-index: 3;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 18px;
+  background: rgb(8 10 30 / 0.62);
+  border: 1px solid rgb(160 200 255 / 0.22);
+  color: #e9edff;
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  backdrop-filter: blur(14px) saturate(1.4);
+  animation: sheet-up var(--dur-4) var(--ease-out) both;
+}
+
+.stage-studio-tabs,
+.stage-studio-chips,
+.stage-studio-actions,
+.stage-photo-bar {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.stage-studio-chips {
+  flex-wrap: wrap;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.studio-tab,
+.studio-chip,
+.studio-action,
+.studio-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgb(160 200 255 / 0.22);
+  background: rgb(255 255 255 / 0.06);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.studio-tab[aria-selected="true"],
+.studio-chip[aria-pressed="true"],
+.studio-action[aria-pressed="true"] {
+  background: var(--grad-primary);
+  border-color: transparent;
+  color: #fff;
+}
+
+.studio-close {
+  margin-left: auto;
+  padding: 0 10px;
+  font-size: var(--fs-md);
+}
+
+.studio-empty {
+  font-size: var(--fs-xs);
+  opacity: 0.7;
+}
+
+.studio-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgb(255 255 255 / 0.4);
+}
+
+.studio-swatch[data-color="#101426"] { background: #101426; }
+.studio-swatch[data-color="#f4f1ec"] { background: #f4f1ec; }
+.studio-swatch[data-color="#ffd6e5"] { background: #ffd6e5; }
+.studio-swatch[data-color="#cfe8ff"] { background: #cfe8ff; }
+
+/* Photo mode: only her (and the shutter) on screen. */
+.stage--photo .stage-hud,
+.stage--photo .stage-controls,
+.stage--photo .stage-pill,
+.stage--photo .stage-wave {
+  display: none;
+}
+
+.stage-photo-bar {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  overflow: visible;
+}
+
+.stage-photo-bar .studio-action {
+  background: rgb(8 10 30 / 0.55);
+  color: #fff;
+}
+
+.stage-shutter {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 4px solid #fff;
+  background: rgb(255 255 255 / 0.25);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 0.35);
+  cursor: pointer;
+}
+
+.stage-shutter:active {
+  background: rgb(255 255 255 / 0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-studio {
+    animation: none;
+  }
+}
+
+/* One subtle connection indicator (iOS parity): a faint 6 px dot while all is well; the full,
+   glowing 8 px dot only on problems. */
+.status {
+  min-width: 0;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.dot--ok {
+  width: 6px;
+  height: 6px;
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.dot--ok::after {
+  animation: none;
 }

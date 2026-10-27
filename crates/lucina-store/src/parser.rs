@@ -327,7 +327,7 @@ fn parse_duration_expression(value: &str) -> Option<Duration2> {
         last_unit = unit;
         segments += 1;
     }
-    if segments < 1 || total < 5_000.0 || total > 180.0 * UNIT_D {
+    if segments < 1 || !(5_000.0..=180.0 * UNIT_D).contains(&total) {
         return None;
     }
     Some(Duration2 {

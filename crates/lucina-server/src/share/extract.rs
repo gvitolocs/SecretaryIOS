@@ -469,8 +469,8 @@ async fn pdf(st: &AppState, path: &Path) -> anyhow::Result<Extracted> {
     }
     Ok(x)
 }
-/// 16 kHz mono WAV of the first 30 minutes, then Whisper.
-async fn transcribe(st: &AppState, path: &Path) -> anyhow::Result<(String, f64)> {
+/// 16 kHz mono WAV of the first ten minutes for voice notes, otherwise 30, then Whisper.
+async fn transcribe(st: &AppState, path: &Path, voice: bool) -> anyhow::Result<(String, f64)> {
     let wav = path.with_extension("share.wav");
     command(
         "ffmpeg",
@@ -480,7 +480,7 @@ async fn transcribe(st: &AppState, path: &Path) -> anyhow::Result<(String, f64)>
             "-i",
             path.to_str().context("invalid path")?,
             "-t",
-            "1800",
+            if voice { "600" } else { "1800" },
             "-vn",
             "-ac",
             "1",
@@ -500,11 +500,16 @@ async fn transcribe(st: &AppState, path: &Path) -> anyhow::Result<(String, f64)>
         lucina_memo::transcribe::transcribe(cfg, &wav, &work, duration, cfg.gpu_wait).await?;
     Ok((transcript.text(), duration))
 }
-async fn audio(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::Result<Extracted> {
+async fn audio(
+    st: &AppState,
+    path: &Path,
+    on_device: Option<&str>,
+    voice: bool,
+) -> anyhow::Result<Extracted> {
     let mut x = Extracted::new("audio");
     let (transcript, source) = match on_device.filter(|t| !t.trim().is_empty()) {
         Some(t) => (t.trim().to_owned(), "on-device"),
-        None => match transcribe(st, path).await {
+        None => match transcribe(st, path, voice).await {
             Ok((t, _)) => (t, "whisper"),
             Err(e) => {
                 x.warnings.push(format!("transcription failed: {e}"));
@@ -516,7 +521,12 @@ async fn audio(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::R
         .await
         .ok();
     x.structured = serde_json::json!({ "duration_s": duration, "transcript_source": source });
-    x.text = format!("Transcript ({source}):\n{transcript}");
+    if voice {
+        x.subtype = Some("voice".into());
+        x.text = transcript.trim().to_owned();
+    } else {
+        x.text = format!("Transcript ({source}):\n{transcript}");
+    }
     Ok(x)
 }
 /// Up to six key frames: scene changes, else evenly spaced.
@@ -576,7 +586,7 @@ async fn key_frames(path: &Path, duration: f64) -> Vec<std::path::PathBuf> {
     frames
 }
 async fn video(st: &AppState, path: &Path, on_device: Option<&str>) -> anyhow::Result<Extracted> {
-    let mut x = audio(st, path, on_device).await?;
+    let mut x = audio(st, path, on_device, false).await?;
     x.kind = "video";
     let duration = x.structured["duration_s"].as_f64().unwrap_or(0.0);
     let frames = key_frames(path, duration).await;
@@ -632,6 +642,8 @@ async fn read_text_file(path: &Path, max: u64) -> anyhow::Result<(String, bool)>
 /// Read one part with the handler its kind routes to. `extract_files: false`
 /// (library saves) still reads texts, links and locations, but leaves stored
 /// files unread. `on_device` is a transcript the phone already made.
+/// `summarize: false` skips the long-document summary (a chat turn reading a
+/// Drive file has no time for it; it gets the passages it needs instead).
 pub(super) async fn read(
     st: &AppState,
     dir: &Path,
@@ -639,6 +651,7 @@ pub(super) async fn read(
     extract_files: bool,
     on_device: Option<&str>,
     lang: &str,
+    summarize: bool,
 ) -> anyhow::Result<Extracted> {
     if let Some(text) = &part.text {
         let mut x = Extracted::new("text");
@@ -693,7 +706,9 @@ pub(super) async fn read(
     let mime = part.attachment.mime.clone().unwrap_or_default();
     let routed = {
         let (path, name, mime) = (path.clone(), name.clone(), mime.clone());
-        tokio::task::spawn_blocking(move || super::router::route(&path, &name, &mime)).await?
+        let voice = part.attachment.kind == "voice";
+        tokio::task::spawn_blocking(move || super::router::route_for(&path, &name, &mime, voice))
+            .await?
     };
     let ext = Path::new(&name)
         .extension()
@@ -764,7 +779,7 @@ pub(super) async fn read(
             }
             x
         }
-        "audio" => audio(st, &path, on_device).await?,
+        "audio" => audio(st, &path, on_device, part.attachment.kind == "voice").await?,
         "video" => video(st, &path, on_device).await?,
         _ => {
             let mut x = Extracted::new("other");
@@ -789,7 +804,11 @@ pub(super) async fn read(
     if x.title.is_none() {
         x.title = Some(name.clone());
     }
-    if x.text.chars().count() > super::structured::SUMMARY_FROM_CHARS && x.summary.is_none() {
+    if summarize
+        && x.subtype.as_deref() != Some("voice")
+        && x.text.chars().count() > super::structured::SUMMARY_FROM_CHARS
+        && x.summary.is_none()
+    {
         match super::structured::summarize(st.model.as_ref(), &x.text, lang).await {
             Ok(s) => x.summary = Some(s),
             Err(e) => x.warnings.push(format!("summary failed: {e}")),

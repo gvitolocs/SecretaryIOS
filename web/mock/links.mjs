@@ -28,6 +28,8 @@ let proposals = [
   },
 ];
 let lastSync = ago(2 * 60_000);
+/** Todoist link (POST /v1/links/todoist/token); connected when MOCK_TASKS_URL proxies a real server. */
+let todoist = process.env.MOCK_TASKS_URL ? { account: "owner@example.com" } : null;
 
 function dayAt(offset, h, m = 0) {
   const d = new Date();
@@ -147,6 +149,24 @@ function overview() {
         ],
       },
       {
+        id: "tasks",
+        cards: [
+          {
+            id: "todoist",
+            kind: "todoist",
+            name: "Todoist",
+            status: todoist ? "connected" : "disconnected",
+            account: todoist ? todoist.account : null,
+            oauth: false,
+            method: todoist ? "token" : undefined,
+            scopes: ["data:read_write"],
+            lastSyncAt: todoist ? ago(40_000) : null,
+            count: todoist ? 14 : undefined,
+            actions: todoist ? ["sync", "disconnect"] : ["token"],
+          },
+        ],
+      },
+      {
         id: "channels",
         cards: [
           { id: "channel:telegram", kind: "channel", name: "Telegram", status: "connected", lastSyncAt: ago(14 * 60_000), actions: [] },
@@ -185,6 +205,21 @@ function overview() {
 
 export async function handleLinks(req, res, { path, method, url, send, fail, readJson }) {
   if (path === "/v1/links" && method === "GET") return send(res, 200, overview()), true;
+  if (path === "/v1/links/todoist/token" && method === "POST") {
+    const body = await readJson(req);
+    const token = String(body.token ?? "").trim();
+    if (token.length < 20 || token.startsWith("bad")) return fail(res, 422, "todoist_token_rejected", "Todoist did not accept that token"), true;
+    todoist = { account: "owner@example.com" };
+    return send(res, 200, { connected: true, account: todoist.account }), true;
+  }
+  if (path === "/v1/links/todoist/connect" && method === "POST") {
+    return fail(res, 503, "todoist_oauth_not_configured", "Todoist sign-in is not configured on the server; paste the API token instead"), true;
+  }
+  if (path === "/v1/links/todoist/sync" && method === "POST") return send(res, 200, { ok: true }), true;
+  if (path === "/v1/links/todoist" && method === "DELETE") {
+    todoist = null;
+    return send(res, 200, { disconnected: true, revokedAtTodoist: false }), true;
+  }
   if (path === "/v1/links/google/connect" && method === "POST") {
     const body = await readJson(req);
     for (const s of body.services ?? ["calendar"]) services.add(s);

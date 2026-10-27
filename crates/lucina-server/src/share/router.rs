@@ -210,6 +210,24 @@ pub fn route(path: &Path, name: &str, mime: &str) -> &'static str {
     }
 }
 
+/// Route a voice upload, disambiguating audio/video containers with the audio MIME hint.
+/// Recognizable non-audio formats (PDF, images, archives, …) retain their normal route.
+pub fn route_for(path: &Path, name: &str, mime: &str, voice: bool) -> &'static str {
+    let kind = route(path, name, mime);
+    if voice && kind == "video" && mime_kind(mime) == Some("audio") {
+        let mut head = [0u8; 12];
+        let n = std::fs::File::open(path)
+            .and_then(|mut f| f.read(&mut head))
+            .unwrap_or(0);
+        let head = &head[..n];
+        // These signatures describe shared containers, not necessarily video tracks.
+        if head.get(4..8) == Some(b"ftyp") || head.starts_with(b"\x1a\x45\xdf\xa3") {
+            return "audio";
+        }
+    }
+    kind
+}
+
 /// The coarse kind stored on timeline attachments (what the apps draw).
 pub fn timeline_kind(kind: &str) -> &'static str {
     match kind {
@@ -226,6 +244,15 @@ pub fn timeline_kind(kind: &str) -> &'static str {
     }
 }
 
+/// Only audio may opt into voice-note rendering.
+pub fn timeline_kind_for(kind: &str, voice: bool) -> &'static str {
+    if kind == "audio" && voice {
+        "voice"
+    } else {
+        timeline_kind(kind)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +262,29 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, bytes).unwrap();
         p
+    }
+
+    #[test]
+    fn audio_container_hints_and_voice_routing() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes, mime) in [
+            ("note.webm", &b"\x1a\x45\xdf\xa3"[..], "audio/webm"),
+            ("note.m4a", &b"\0\0\0\x18ftypisom"[..], "audio/mp4"),
+        ] {
+            let path = file(dir.path(), name, bytes);
+            assert_eq!(route_for(&path, name, mime, true), "audio");
+            assert_eq!(
+                timeline_kind_for(route_for(&path, name, mime, true), true),
+                "voice"
+            );
+            assert_eq!(route(&path, name, "video/mp4"), "video");
+        }
+        let pdf = file(dir.path(), "note.m4a", b"%PDF-1.7");
+        assert_eq!(
+            timeline_kind_for(route_for(&pdf, "note.m4a", "audio/mp4", true), true),
+            "pdf"
+        );
+        assert_eq!(timeline_kind_for("unknown", true), "file");
     }
 
     #[test]
@@ -313,6 +363,9 @@ mod tests {
         assert_eq!(route(&unknown, "note", "application/octet-stream"), "text");
         let bin = file(d, "blob.txt", b"\0\x01\x02garbage");
         assert_eq!(route(&bin, "blob.txt", "text/plain"), "other");
+        assert_eq!(timeline_kind_for("audio", true), "voice");
+        assert_eq!(timeline_kind_for("audio", false), "audio");
+        assert_eq!(timeline_kind_for("pdf", true), "pdf");
         assert_eq!(timeline_kind("sheet"), "document");
         assert_eq!(timeline_kind("code"), "file");
         assert!(KINDS.iter().all(|k| !timeline_kind(k).is_empty()));

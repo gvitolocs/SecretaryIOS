@@ -77,7 +77,7 @@ impl Source for NotesSource {
                     .signal(format!("pinned note \"{}\" matches an event in {hours} h", n.slug))
                     .payload(json!({
                         "note": {"slug": n.slug, "title": n.title, "excerpt": text::clip(&n.excerpt, 300)},
-                        "event": {"title": e.title, "start": e.start, "allDay": e.all_day, "location": e.location},
+                        "event": {"id": e.id, "title": e.title, "start": e.start, "end": e.end, "allDay": e.all_day, "location": e.location},
                     })),
                 );
             }

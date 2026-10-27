@@ -21,6 +21,8 @@ pub struct AgentConfig {
     pub deadline: Duration,
     pub model: Option<String>,
     pub temperature: Option<f32>,
+    /// Characters of one tool result the model sees (longer ones are cut).
+    pub max_tool_output_chars: usize,
 }
 
 impl Default for AgentConfig {
@@ -30,6 +32,7 @@ impl Default for AgentConfig {
             deadline: Duration::from_secs(90),
             model: None,
             temperature: Some(0.4),
+            max_tool_output_chars: MAX_TOOL_OUTPUT_CHARS,
         }
     }
 }
@@ -74,12 +77,12 @@ pub struct AgentOutcome {
     pub messages: Vec<Message>,
 }
 
-fn clip_output(v: &Value) -> String {
+fn clip_output(v: &Value, max: usize) -> String {
     let s = v.to_string();
-    if s.chars().count() <= MAX_TOOL_OUTPUT_CHARS {
+    if s.chars().count() <= max {
         s
     } else {
-        let cut: String = s.chars().take(MAX_TOOL_OUTPUT_CHARS).collect();
+        let cut: String = s.chars().take(max).collect();
         json!({"truncated": true, "partial": cut}).to_string()
     }
 }
@@ -325,7 +328,7 @@ pub async fn run(
             tracing::info!(tool = %record.name, ok = record.ok, deferred = record.pending.is_some(), ms = record.ms, "tool call");
             messages.push(Message::tool_result(
                 call.id.clone(),
-                clip_output(&record.output),
+                clip_output(&record.output, cfg.max_tool_output_chars),
             ));
             records.push(record);
         }

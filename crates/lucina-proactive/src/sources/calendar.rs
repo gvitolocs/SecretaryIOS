@@ -75,6 +75,7 @@ pub async fn related_notes(api: &dyn SecretaryApi, title: &str) -> Vec<NoteSumma
 
 fn event_facts(e: &CalEvent, now: DateTime<Utc>) -> Value {
     json!({
+        "id": e.id,
         "title": e.title,
         "start": e.start,
         "end": e.end,

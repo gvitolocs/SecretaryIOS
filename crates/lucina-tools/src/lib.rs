@@ -109,10 +109,16 @@ pub enum Effect {
         outfit: Option<String>,
         hair: Option<String>,
     },
-    /// Photos to show: the reply gets a button that opens this Gallery path in the app.
+    /// Photos to show: the reply gets a button that opens this path in the app (the Gallery,
+    /// `/films…` for films, `/drive…` for Drive documents).
     Gallery {
         path: String,
         count: usize,
+    },
+    /// Calendar events the tool returned (secretary-server shape, RFC 3339
+    /// times): the reply gets a map card for those it names that have a location.
+    CalendarEvents {
+        events: Vec<Value>,
     },
 }
 
@@ -216,6 +222,9 @@ pub struct ToolEnv {
     /// lucina-memo (`memos`): base URL and the file with its service token.
     pub memo_url: Option<String>,
     pub memo_token_file: Option<PathBuf>,
+    /// lucina-diagnostics (`diagnostics`): base URL and the file with its service token.
+    pub diagnostics_url: Option<String>,
+    pub diagnostics_token_file: Option<PathBuf>,
     /// Lucina's own Google Drive (`LUCINA_DRIVE`).
     pub drive: Option<Arc<google::Drive>>,
 }
@@ -263,6 +272,8 @@ impl ToolEnv {
             delegator: None,
             memo_url: None,
             memo_token_file: None,
+            diagnostics_url: None,
+            diagnostics_token_file: None,
             drive: None,
         }
     }
@@ -625,11 +636,12 @@ mod tests {
             .unwrap_err()
             .contains("no money movement"));
         let all = Registry::builtin(&ToolSelection::All);
-        assert_eq!(all.names().len(), 21);
-        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 19);
+        assert_eq!(all.names().len(), 22);
+        assert_eq!(all.without(OWNER_ONLY_TOOLS).names().len(), 20);
         let mcp = all.without(NO_MCP_TOOLS);
-        assert_eq!(mcp.names().len(), 15);
+        assert_eq!(mcp.names().len(), 16);
         assert!(mcp.get("memos").is_some());
+        assert!(mcp.get("diagnostics").is_some());
         for t in tools::delegate::DELEGATION_TOOLS
             .iter()
             .chain(OWNER_ONLY_TOOLS)

@@ -122,6 +122,7 @@ pub fn composer_system_prompt(lang: &str) -> String {
         "  {\"type\":\"steps\",\"title\":\"…\",\"items\":[\"…\"]}  — numbered steps".into(),
         "  {\"type\":\"quote\",\"text\":\"…\",\"cite\":\"…\"}".into(),
         "  {\"type\":\"link_preview\",\"url\":\"https://…\",\"title\":\"…\"}".into(),
+        "  {\"type\":\"place\",\"title\":\"…\",\"address\":\"…\",\"when\":\"<RFC 3339 if it's an appointment>\",\"kind\":\"event|place\"}  — an appointment with a location, an address, a shop or restaurant mentioned in the draft (only places the draft names; never invent an address; at most 3)".into(),
         "- Use 0-4 blocks; none when the draft is a simple answer. Group related lines into one block. A \"present vs missing\" inventory is best as a checklist (done = present).".into(),
         "- actions: 0-3 buttons {\"id\":\"…\",\"label\":\"…\",\"emoji\":\"…\",\"kind\":\"reply\",\"payload\":{\"text\":\"…\"}}. kind \"reply\" sends payload.text as Giuseppe's next message; add \"prefill\":true to payload to put it in his composer instead of sending (use it for anything that would start real work). kind \"route\" opens an app page: payload {\"path\":\"/notes/<slug>\"} and the like (/notes, /shopping, /links, /gym, /weight).".into(),
         format!("- If you left details out of the bubbles and blocks, add {{\"id\":\"details\",\"label\":\"{label}\",\"emoji\":\"🔎\",\"kind\":\"reply\",\"payload\":{{\"text\":\"{text}\"}}}}. Offer at most one natural follow-up question as a reply button."),
@@ -426,6 +427,13 @@ mod tests {
         assert!(r
             .plain_text(true)
             .ends_with("↪︎ rispondi: «sì» · «no» · «Modifica …»"));
+    }
+
+    #[test]
+    fn the_composer_knows_place_blocks() {
+        let p = composer_system_prompt("it");
+        assert!(p.contains(r#"{"type":"place","title":"…","address":"…","when":"<RFC 3339 if it's an appointment>","kind":"event|place"}"#), "{p}");
+        assert!(p.contains("never invent an address; at most 3"));
     }
 
     #[test]
