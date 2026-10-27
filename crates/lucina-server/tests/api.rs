@@ -1006,3 +1006,185 @@ async fn scheduler_health_reports_failures_without_failing_health() {
         json!({"enabled":true,"lastTickAt":tick_at,"lastError":"delivery uncertain; not resent: read timeout","delivered":2,"notDelivered":3,"uncertain":1})
     );
 }
+
+#[tokio::test]
+async fn device_chat_and_conversation_sync_contract() {
+    use lucina_store::timeline::{Meta, NewItem};
+    for planner in [PlannerMode::Json, PlannerMode::Tools] {
+        let fake = if planner == PlannerMode::Tools {
+            script(json!({"rules": [{"kind": "agent", "content": "hello"}]}))
+        } else {
+            chat_script("hello")
+        };
+        let h = harness(fake, |c| c.planner = planner).await;
+        let (status, _, _) = h.call(Method::POST, "/chat", Some(json!({
+            "message": "hi", "device": "phone-A", "deviceName": " My phone ", "channel": "ios"
+        }))).await;
+        assert_eq!(status, 200);
+        let lines = h.timeline_lines();
+        assert_eq!(lines.len(), 2);
+        for item in &lines {
+            assert_eq!(item["meta"]["device"], "phone-A");
+            assert_eq!(item["meta"]["deviceName"], "My phone");
+        }
+        let (status, b) = h
+            .post(
+                "/chat",
+                json!({
+                    "message": "[via Lucina MCP, from grok] what do you think?",
+                    "sessionId": "mcp-grok", "device": "desktop", "deviceName": "Desktop"
+                }),
+            )
+            .await;
+        assert_eq!(status, 200, "{b}");
+        for item in h.timeline_lines().iter().skip(2) {
+            assert_eq!(item["meta"]["device"], "desktop");
+            assert_eq!(item["meta"]["deviceName"], "Desktop");
+            assert_eq!(item["meta"]["via"], "mcp");
+            assert_eq!(item["meta"]["caller"], "grok");
+        }
+    }
+    let h = harness(chat_script("hello"), |_| {}).await;
+    for bad in [
+        "scope=unknown",
+        "scope=mine",
+        "scope=mine&device=A",
+        "scope=mine&channel=ios",
+        "scope=mine&device=A&channel=other",
+        "scope=mine&device=bad.id&channel=web",
+        "conversation=device:A&scope=mine&device=A&channel=web",
+        "conversation=Device:A",
+        "conversation=device:",
+        "conversation=device:bad.id",
+        "conversation=a:b:c",
+        "conversation=",
+        "after=bad",
+        "before=01K83ZK4Q6X1V9W2D3E4F5G6H7&after=01K83ZK4Q6X1V9W2D3E4F5G6H7",
+    ] {
+        assert_eq!(h.get(&format!("/timeline?{bad}")).await.0, 400, "{bad}");
+    }
+    let (_, empty) = h.get("/timeline").await;
+    assert!(empty["data"]["cursor"].is_null());
+    assert_eq!(empty["data"]["hasMore"], false);
+    let mut ids = Vec::new();
+    for (channel, device, text) in [
+        ("ios", Some("A"), "a"),
+        ("web", Some("B"), "b"),
+        ("ios", None, "legacy"),
+        ("other", None, "lucina"),
+    ] {
+        let i = h
+            .state
+            .timeline
+            .append(NewItem {
+                channel: channel.into(),
+                role: "user".into(),
+                text: text.into(),
+                meta: device.map(|d| Meta {
+                    device: Some(d.into()),
+                    ..Meta::default()
+                }),
+                ..NewItem::default()
+            })
+            .unwrap();
+        ids.push(i.id);
+    }
+    let late = "00000000000000000000000001";
+    h.state
+        .timeline
+        .append(NewItem {
+            id: Some(late.into()),
+            channel: "ios".into(),
+            role: "lucina".into(),
+            text: "late".into(),
+            meta: Some(Meta {
+                device: Some("A".into()),
+                ..Meta::default()
+            }),
+            ..NewItem::default()
+        })
+        .unwrap();
+    let (_, b) = h
+        .get("/timeline?scope=mine&device=A&channel=ios&limit=2")
+        .await;
+    assert_eq!(b["data"]["items"][0]["text"], "lucina");
+    assert_eq!(b["data"]["items"][1]["text"], "legacy");
+    assert_eq!(b["data"]["cursor"], late);
+    let next = b["data"]["nextBefore"].as_str().unwrap();
+    let (_, b) = h
+        .get(&format!(
+            "/timeline?scope=mine&device=A&channel=ios&before={next}"
+        ))
+        .await;
+    assert_eq!(b["data"]["items"].as_array().unwrap().len(), 2);
+    assert!(b["data"]["nextBefore"].is_null());
+    let (_, b) = h.get("/timeline?conversation=device:A").await;
+    assert_eq!(b["data"]["items"].as_array().unwrap().len(), 2);
+    let (_, b) = h
+        .get(&format!(
+            "/timeline?after={}&scope=mine&device=A&channel=ios&limit=1",
+            ids[0]
+        ))
+        .await;
+    assert_eq!(b["data"]["items"][0]["text"], "legacy");
+    assert_eq!(b["data"]["cursor"], ids[2]);
+    assert_eq!(b["data"]["hasMore"], true);
+    let (_, b) = h.get(&format!("/timeline?after={}&limit=1", ids[2])).await;
+    assert_eq!(b["data"]["cursor"], ids[3]);
+    assert_eq!(b["data"]["hasMore"], true);
+    let (_, b) = h.get(&format!("/timeline?after={}&limit=1", ids[3])).await;
+    assert_eq!(b["data"]["items"][0]["text"], "late");
+    assert_eq!(b["data"]["cursor"], late);
+    assert_eq!(b["data"]["hasMore"], false);
+    let (status, b) = h.get("/timeline?after=00000000000000000000000002").await;
+    assert_eq!(status, 410);
+    assert_eq!(b["error"], "cursor_expired");
+    let (status, b, headers) = h.call(Method::GET, "/timeline/conversations", None).await;
+    assert_eq!(status, 200);
+    assert_eq!(headers["cache-control"], "no-store");
+    assert_eq!(b["ok"], true);
+    let items = b["data"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    let device = items.iter().find(|i| i["key"] == "device:A").unwrap();
+    assert_eq!(device["kind"], "device");
+    assert_eq!(device["title"], "A");
+    assert_eq!(device["count"], 2);
+    assert_eq!(device["lastId"], ids[0]);
+}
+
+#[tokio::test]
+async fn device_context_reaches_later_job_timeline_item() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "content": "{\"intent\":\"unknown\",\"confidence\":0.2,\"reply_mode\":\"full_plan\"}"},
+            {"kind": "plan", "content": "{\"action\":\"generate_image\",\"prompt\":\"a cat\"}"}
+        ]})),
+        |c| c.image_jobs = true,
+    ).await;
+    let (status, b) = h
+        .post(
+            "/chat",
+            json!({
+                "message": "draw a cat", "device": "phone", "deviceName": "Phone", "channel": "ios"
+            }),
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert!(b["data"]["job"]["id"].is_string(), "{b}");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if h.timeline_lines().len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let lines = h.timeline_lines();
+    assert_eq!(lines.len(), 3);
+    for item in lines {
+        assert_eq!(item["meta"]["device"], "phone");
+        assert_eq!(item["meta"]["deviceName"], "Phone");
+    }
+}

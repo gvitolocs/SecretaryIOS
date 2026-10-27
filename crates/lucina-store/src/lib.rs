@@ -33,6 +33,8 @@ pub use timeline::{Attachment, Meta, NewItem, TimelineItem, TimelineStore, Timel
 /// Store errors.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("timeline cursor expired")]
+    CursorExpired,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]

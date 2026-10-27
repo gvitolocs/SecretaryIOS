@@ -139,10 +139,23 @@ pub async fn handle_chat(
     {
         return Ok(out);
     }
+    let device_meta = Meta {
+        device: body["device"].as_str().map(str::to_owned),
+        device_name: body["deviceName"].as_str().map(str::to_owned),
+        ..Meta::default()
+    };
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
         return run_turn(
-            st, text, session, None, channel, mcp_turn, surface, reply_to,
+            st,
+            text,
+            session,
+            None,
+            channel,
+            mcp_turn,
+            surface,
+            reply_to,
+            device_meta,
         )
         .await;
     };
@@ -176,6 +189,7 @@ pub async fn handle_chat(
                     mcp_turn,
                     surface,
                     reply_to,
+                    device_meta,
                 )
                 .boxed()
                 .shared();
@@ -293,6 +307,7 @@ pub async fn channel_turn(
         None,
         Some(Arc::new(origin)),
         None,
+        Meta::default(),
     )
     .await
 }
@@ -505,9 +520,20 @@ async fn run_turn(
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
     reply_to: Option<String>,
+    device_meta: Meta,
 ) -> Result<Value, ApiError> {
     run_turn_inner(
-        st, message, session, cmid, channel, mcp_turn, surface, None, None, reply_to,
+        st,
+        message,
+        session,
+        cmid,
+        channel,
+        mcp_turn,
+        surface,
+        None,
+        None,
+        reply_to,
+        device_meta,
     )
     .await
 }
@@ -544,6 +570,7 @@ pub(crate) async fn share_turn(
         Some(input),
         None,
         reply_to,
+        Meta::default(),
     )
     .await
 }
@@ -560,6 +587,7 @@ async fn run_turn_inner(
     existing: Option<ShareTurn>,
     origin: Option<Arc<ChannelOrigin>>,
     reply_to: Option<String>,
+    device_meta: Meta,
 ) -> Result<Value, ApiError> {
     let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
     let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
@@ -572,13 +600,32 @@ async fn run_turn_inner(
     };
     // An id that names nothing readable is ignored, on the timeline too.
     let reply_to = reply_to.filter(|_| !reply_block.is_empty());
+    // MCP turns are labelled with their caller; app turns with their device.
+    let turn_meta = mcp_turn
+        .as_ref()
+        .map(|m| Meta {
+            via: Some("mcp".into()),
+            caller: Some(m.caller.clone()),
+            ..Meta::default()
+        })
+        .unwrap_or_default()
+        .merge(device_meta);
     if st.cfg.planner == PlannerMode::Tools && !normal_share && origin.is_none() {
         let from_mcp = mcp_turn.is_some();
         return crate::planner::TURN_REPLY
             .scope(
                 reply_block,
                 tools_turn(
-                    st, message, session, cmid, channel, surface, from_mcp, existing, reply_to,
+                    st,
+                    message,
+                    session,
+                    cmid,
+                    channel,
+                    surface,
+                    from_mcp,
+                    existing,
+                    reply_to,
+                    turn_meta.clone(),
                 ),
             )
             .await;
@@ -612,17 +659,12 @@ async fn run_turn_inner(
         (None, None) => (USER_LABEL.to_owned(), base_system.to_owned()),
     };
     let share = normal_share || origin.as_ref().is_some_and(|o| o.share);
-    let turn_meta = mcp_turn.as_ref().map(|m| Meta {
-        via: Some("mcp".into()),
-        caller: Some(m.caller.clone()),
-        ..Meta::default()
-    });
     let (timeline_store, turn_meta) = match &origin {
         Some(o) => (o.timeline.clone(), o.timeline_meta.clone()),
-        None => (st.timeline_for(&session), turn_meta),
+        None => (st.timeline_for(&session), Some(turn_meta)),
     };
     let timeline = TimelineTurn::new(timeline_store, &channel, cmid.clone())
-        .with_meta(turn_meta)
+        .with_meta(turn_meta.clone())
         .with_reply_to(reply_to);
     let timeline = if let Some(item) = existing {
         timeline.with_user_item(item.item)
@@ -754,6 +796,7 @@ async fn run_turn_inner(
             JobDest {
                 session: t.session.clone(),
                 user_item: timeline.user_item_id(),
+                turn_meta,
                 channel: t.channel.clone(),
                 surface: t.surface.clone(),
                 origin: t.origin.clone(),
@@ -1867,6 +1910,7 @@ fn remember_note(st: &AppState, surface: &TurnSurface, session: &str, note: &Val
 /// Where a job reports: the turn's session, owner item, channel and surface,
 /// and for a chat channel its timeline, recent turns, peer and reply sink.
 struct JobDest {
+    turn_meta: Option<Meta>,
     session: String,
     user_item: Option<String>,
     channel: String,
@@ -1880,6 +1924,7 @@ struct JobDest {
 fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: String, dest: JobDest) {
     tokio::spawn(async move {
         let JobDest {
+            turn_meta,
             session,
             user_item,
             channel,
@@ -1894,7 +1939,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 job_id: Some(job.id.clone()),
                 ..Meta::default()
             });
-            let meta = match origin.as_ref().and_then(|o| o.timeline_meta.clone()) {
+            let meta = match turn_meta.clone() {
                 Some(base) => meta.map(|m| base.merge(m)),
                 None => meta,
             };
@@ -2210,6 +2255,7 @@ async fn tools_turn(
     from_mcp: bool,
     existing: Option<ShareTurn>,
     reply_to: Option<String>,
+    device_meta: Meta,
 ) -> Result<Value, ApiError> {
     // The tool set follows `origin` (trusted MCP turns get the owner's);
     // memory reads and writes follow `surface`.
@@ -2230,6 +2276,7 @@ async fn tools_turn(
         ""
     };
     let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
+        .with_meta(Some(device_meta))
         .with_reply_to(reply_to);
     let turn = if let Some(s) = existing {
         turn.with_user_item(s.item)

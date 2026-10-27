@@ -505,6 +505,14 @@ async fn route(
             only(&["GET"])?;
             timeline_list(st, uri)
         }
+        (Some("timeline"), Some("conversations")) => {
+            only(&["GET"])?;
+            let items = st
+                .timeline
+                .conversations()
+                .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
+            Ok(ok(serde_json::json!({"items": items})))
+        }
         (Some("timeline"), Some("stream")) => {
             only(&["GET"])?;
             timeline_stream(st, uri, headers)
@@ -1309,21 +1317,69 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
             }
         }
     };
-    // `conversation=selftest`: the self-test conversation (crate::selftest), never mixed in.
-    let store =
-        if query_param(uri, "conversation").as_deref() == Some(crate::selftest::CONVERSATION) {
-            st.selftest_timeline.clone()
+    use lucina_store::timeline::{valid_device, ConversationFilter};
+    let after = timeline_id_param(query_param(uri, "after"), "after")?;
+    let conversation = query_param(uri, "conversation");
+    let scope = query_param(uri, "scope");
+    if before.is_some() && after.is_some() {
+        return Err(ApiError::bad_request(
+            "before and after are mutually exclusive",
+        ));
+    }
+    if conversation.is_some() && scope.is_some() {
+        return Err(ApiError::bad_request(
+            "conversation and scope are mutually exclusive",
+        ));
+    }
+    let filter = if let Some(key) = &conversation {
+        let (kind, suffix) = key
+            .split_once(':')
+            .map_or((key.as_str(), None), |(k, s)| (k, Some(s)));
+        if kind.is_empty()
+            || !kind.bytes().all(|b| b.is_ascii_lowercase())
+            || suffix.is_some_and(|s| !valid_device(s))
+        {
+            return Err(ApiError::bad_request("invalid conversation key"));
+        }
+        if key == crate::selftest::CONVERSATION {
+            ConversationFilter::All
         } else {
-            st.timeline.clone()
-        };
-    let (items, next) = store
-        .list(before.as_deref(), limit)
-        .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
-    // Items are served as stored: Node-written lines reach the client verbatim.
+            ConversationFilter::Key(key.clone())
+        }
+    } else if let Some(scope) = scope {
+        let device = query_param(uri, "device").filter(|d| valid_device(d));
+        let channel = query_param(uri, "channel").filter(|c| c == "web" || c == "ios");
+        match (scope.as_str(), device, channel) {
+            ("mine", Some(device), Some(channel)) => ConversationFilter::Mine { device, channel },
+            _ => {
+                return Err(ApiError::bad_request(
+                    "scope=mine requires a valid device and web or ios channel",
+                ))
+            }
+        }
+    } else {
+        ConversationFilter::All
+    };
+    let store = if conversation.as_deref() == Some(crate::selftest::CONVERSATION) {
+        &st.selftest_timeline
+    } else {
+        &st.timeline
+    };
+    let page = store
+        .page(before.as_deref(), after.as_deref(), limit, &filter)
+        .map_err(|e| match e {
+            lucina_store::StoreError::CursorExpired => {
+                ApiError::new(410, "cursor_expired", e.to_string())
+            }
+            _ => ApiError::new(500, "internal_error", e.to_string()),
+        })?;
+    // Preserve each stored JSON line verbatim.
     let body = format!(
-        r#"{{"ok":true,"data":{{"items":{},"nextBefore":{}}}}}"#,
-        raw_array(&items),
-        serde_json::to_string(&next).unwrap_or_else(|_| "null".into())
+        r#"{{"ok":true,"data":{{"items":{},"nextBefore":{},"cursor":{},"hasMore":{}}}}}"#,
+        raw_array(&page.items),
+        serde_json::to_string(&page.next_before).unwrap(),
+        serde_json::to_string(&page.cursor).unwrap(),
+        page.has_more,
     );
     let mut resp = (StatusCode::OK, body).into_response();
     resp.headers_mut().insert(

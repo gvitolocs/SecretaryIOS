@@ -342,19 +342,56 @@ Other fields may appear and are passed through unchanged.
 
 ### `GET /v1/timeline?before=<id>&limit=50`
 
-Newest first. `200`:
+Also served at `GET /api/secretary/timeline`, with the same bearer authentication.
+Items are raw stored JSON, newest id first (including incremental responses).
+The success envelope is:
 
 ```json
-{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…" }
+{"ok":true,"data":{"items":[],"nextBefore":null,"cursor":null,"hasMore":false}}
 ```
 
 | Query | Rules |
 |---|---|
-| `before` | Optional item id (`[A-Za-z0-9_.:-]{1,128}`): only older items. Pass the previous page's `nextBefore`. |
-| `limit` | Optional integer 1–200; Lucina's default is 50. |
+| `before` | Optional timeline id (`[A-Za-z0-9_.:-]{1,128}`): only older ids. Pass the previous page's `nextBefore`. |
+| `limit` | Optional integer 1–200, default 50. |
+| `after` | Optional timeline id: scan items that arrived after this item, in file arrival order, returning at most `limit` matches. Mutually exclusive with `before`. Unknown or rotated-away cursor: HTTP 410, `{"ok":false,"error":"cursor_expired","message":"timeline cursor expired"}`. |
+| `conversation` | Optional key matching `^[a-z]+(:[A-Za-z0-9_-]{1,64})?$`. Only that conversation. `selftest` retains its separate diagnostic store. Mutually exclusive with `scope`. |
+| `scope` | Only `mine` is accepted; requires `device` (valid id) and `channel` (`web` or `ios`). Includes `device:<device>`, `legacy:<channel>`, and `lucina`. |
 
-`nextBefore` is `null` at the start of history. Anything else is `400
-bad_request` before Lucina is called. Timeout 15 s.
+Invalid queries return HTTP 400 `bad_request`. All responses have
+`Cache-Control: no-store`. `nextBefore` is the oldest returned id if more matching
+older items remain, otherwise `null`. `cursor` is the newest arrival id at read
+time for ordinary pages. For `after` pages, it is the last scanned id when more
+items remain to scan, otherwise the newest arrival id. It is `null` only for an
+empty store. Save `cursor` as the next `after`, and continue while `hasMore` is
+true. A scan may cross nonmatching items; always advance using `cursor`, not a
+returned item's id. A late writer can append an older id, so incremental sync
+uses arrival order while responses display items newest id first. On 410, rebuild
+the local snapshot using ordinary pages. The SSE stream is unchanged.
+
+Chat bodies accept optional `device` (`[A-Za-z0-9_-]{1,64}`; invalid values are
+dropped) and `deviceName` (controls removed, trimmed, clipped to 64 UTF-16 code
+units). Both are stored on the user and reply meta, also on MCP turns and later
+job results when the turn context is available. Existing lines remain unchanged.
+
+Conversation keys are `agent:<caller>` for MCP turns (`via=mcp`, lowercased caller
+with characters outside `[a-z0-9_-]` removed, empty becomes `mcp`), otherwise
+`device:<device>` for web/iOS with a device, `legacy:web` or `legacy:ios` without
+one, `telegram`, `discord`, `alexa`, or `lucina` for other channels.
+
+### `GET /v1/timeline/conversations`
+
+Also `GET /api/secretary/timeline/conversations`, same authentication,
+`Cache-Control: no-store`. Returns `{"ok":true,"data":{"items":[...]}}`, excluding
+the selftest store. Summaries are newest `lastTs` first and contain `key`, `kind`,
+`title`, `channel`, optional `device`, `deviceName`, `caller`, `count`, `lastId`,
+`lastTs`, `lastRole`, and `lastText`. Counts cover retained generations only.
+The last fields describe the newest item by id; `lastText` is plain text with
+whitespace collapsed and clipped to 160 UTF-16 code units. Device titles use the
+latest deviceName seen, otherwise the device id; legacy titles are “iPhone
+(before devices)” and “Web (before devices)”. Agent titles are ChatGPT, Claude,
+Claude Code, Grok Bot (grok or grok-bot), Cursor, Codex, otherwise the stored
+caller. Other titles are Telegram, Discord, Alexa, and Lucina.
 
 ### `GET /v1/timeline/stream`
 

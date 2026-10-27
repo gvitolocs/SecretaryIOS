@@ -110,6 +110,10 @@ pub struct Meta {
     /// The MCP caller ("chatgpt", "claude-code", …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
     /// With `kind: "avatar_outfit"`: the outfit Lucina put on (none = back to automatic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outfit: Option<String>,
@@ -168,6 +172,8 @@ impl Meta {
             && self.list_id.is_none()
             && self.via.is_none()
             && self.caller.is_none()
+            && self.device.is_none()
+            && self.device_name.is_none()
             && self.command_id.is_none()
             && self.transcript.is_none()
             && self.voice_reply.is_none()
@@ -209,6 +215,8 @@ impl Meta {
             list_id,
             via,
             caller,
+            device,
+            device_name,
             command_id,
             transcript,
             outfit,
@@ -227,6 +235,91 @@ impl Meta {
         );
         self
     }
+}
+
+/// Secretary device identifiers are deliberately narrower than timeline ids.
+pub fn valid_device(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+pub fn conversation_key(channel: &str, meta: Option<&Meta>) -> String {
+    if meta.is_some_and(|m| m.via.as_deref() == Some("mcp")) {
+        let caller: String = meta
+            .and_then(|m| m.caller.as_deref())
+            .unwrap_or("")
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '-')
+            .collect();
+        return format!("agent:{}", if caller.is_empty() { "mcp" } else { &caller });
+    }
+    match channel {
+        "web" | "ios" => match meta
+            .and_then(|m| m.device.as_deref())
+            .filter(|d| valid_device(d))
+        {
+            Some(device) => format!("device:{device}"),
+            None => format!("legacy:{channel}"),
+        },
+        "telegram" | "discord" | "alexa" => channel.to_owned(),
+        _ => "lucina".into(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conversation {
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub channel: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    pub count: usize,
+    pub last_id: String,
+    pub last_ts: String,
+    pub last_role: String,
+    pub last_text: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum ConversationFilter {
+    #[default]
+    All,
+    Key(String),
+    Mine {
+        device: String,
+        channel: String,
+    },
+}
+
+impl ConversationFilter {
+    fn matches(&self, key: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Key(k) => k == key,
+            Self::Mine { device, channel } => {
+                key == "lucina"
+                    || key.strip_prefix("device:") == Some(device.as_str())
+                    || key.strip_prefix("legacy:") == Some(channel.as_str())
+            }
+        }
+    }
+}
+
+pub struct TimelinePage {
+    pub items: Vec<StoredItem>,
+    pub next_before: Option<String>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
 }
 
 /// One stored item (Node field order).
@@ -353,6 +446,11 @@ fn normalize_meta(meta: Option<Meta>) -> Option<Meta> {
         list_id: s(m.list_id),
         via: s(m.via),
         caller: s(m.caller),
+        device: m.device.filter(|v| valid_device(v)),
+        device_name: m.device_name.and_then(|v| {
+            let clean: String = v.chars().filter(|c| !c.is_control()).collect();
+            clean_string(Some(&clean), 64)
+        }),
         outfit: s(m.outfit),
         hair: s(m.hair),
         slug: s(m.slug),
@@ -477,6 +575,7 @@ impl StoredItem {
 #[derive(Debug, Clone)]
 struct Entry {
     id: String,
+    key: usize,
     gen: u64,
     offset: u64,
     length: usize,
@@ -489,6 +588,8 @@ struct Inner {
     cache_size: usize,
     /// Sorted by id (pages, `before` cursors).
     entries: Vec<Entry>,
+    conversations: Vec<Conversation>,
+    keys: HashMap<String, usize>,
     /// id → arrival sequence number.
     by_id: HashMap<String, u64>,
     /// `(seq, id)` in arrival order, which is file order: the order the
@@ -543,6 +644,65 @@ struct IdOnly {
 }
 
 impl Inner {
+    fn index_conversation(&mut self, item: &TimelineItem) -> usize {
+        let key = conversation_key(&item.channel, item.meta.as_ref());
+        let meta = item.meta.as_ref().cloned().unwrap_or_default();
+        let kind = key.split(':').next().unwrap_or("lucina");
+        let title = match kind {
+            "device" => meta.device_name.clone().unwrap_or_else(|| key[7..].into()),
+            "legacy" if item.channel == "ios" => "iPhone (before devices)".into(),
+            "legacy" => "Web (before devices)".into(),
+            "agent" => match &key[6..] {
+                "chatgpt" => "ChatGPT",
+                "claude" => "Claude",
+                "claude-code" => "Claude Code",
+                "grok" | "grok-bot" => "Grok Bot",
+                "cursor" => "Cursor",
+                "codex" => "Codex",
+                _ => meta.caller.as_deref().unwrap_or("mcp"),
+            }
+            .into(),
+            "telegram" => "Telegram".into(),
+            "discord" => "Discord".into(),
+            "alexa" => "Alexa".into(),
+            _ => "Lucina".into(),
+        };
+        let index = *self.keys.entry(key.clone()).or_insert_with(|| {
+            let index = self.conversations.len();
+            self.conversations.push(Conversation {
+                key: key.clone(),
+                kind: kind.into(),
+                title: title.clone(),
+                channel: item.channel.clone(),
+                device: meta.device.clone(),
+                device_name: None,
+                caller: meta.caller.clone(),
+                count: 0,
+                last_id: String::new(),
+                last_ts: String::new(),
+                last_role: String::new(),
+                last_text: String::new(),
+            });
+            index
+        });
+        let summary = &mut self.conversations[index];
+        summary.count += 1;
+        if let Some(name) = meta.device_name.filter(|_| summary.kind == "device") {
+            summary.title = name.clone();
+            summary.device_name = Some(name);
+        }
+        if item.id > summary.last_id {
+            summary.last_id.clone_from(&item.id);
+            summary.last_ts.clone_from(&item.ts);
+            summary.last_role.clone_from(&item.role);
+            summary.last_text = clip_utf16(
+                &item.text.split_whitespace().collect::<Vec<_>>().join(" "),
+                160,
+            );
+        }
+        index
+    }
+
     fn path_for_gen(&self, gen: u64) -> PathBuf {
         let suffix = self.current_gen - gen;
         if suffix == 0 {
@@ -605,7 +765,29 @@ impl Inner {
                     serde_json::from_slice::<IdOnly>(line),
                 ) {
                     if is_timeline_id(&id) {
+                        if self.by_id.contains_key(&id) {
+                            line_start = i + 1;
+                            boundary = i + 1;
+                            continue;
+                        }
+                        let item =
+                            serde_json::from_slice::<TimelineItem>(line).unwrap_or_else(|_| {
+                                TimelineItem {
+                                    id: id.clone(),
+                                    ts: String::new(),
+                                    channel: "other".into(),
+                                    role: String::new(),
+                                    text: String::new(),
+                                    client_message_id: None,
+                                    reply_to: None,
+                                    attachments: None,
+                                    meta: None,
+                                    backfilled: None,
+                                }
+                            });
+                        let key = self.index_conversation(&item);
                         let entry = Entry {
+                            key,
                             id: id.clone(),
                             gen,
                             offset: base + line_start as u64,
@@ -628,6 +810,8 @@ impl Inner {
 
     fn load_all(&mut self) -> Result<()> {
         self.entries.clear();
+        self.conversations.clear();
+        self.keys.clear();
         self.by_id.clear();
         // Rebuilt in file order (oldest generation first): the arrival order.
         self.arrival.clear();
@@ -722,17 +906,7 @@ impl Inner {
             }
         }
         self.current_gen += 1;
-        let oldest = self.current_gen - self.keep_rotated;
-        self.entries.retain(|e| e.gen >= oldest);
-        let kept: HashSet<&str> = self.entries.iter().map(|e| e.id.as_str()).collect();
-        self.by_id.retain(|k, _| kept.contains(k.as_str()));
-        self.arrival.retain(|(_, k)| kept.contains(k.as_str()));
-        let by_id = &self.by_id;
-        self.cache.retain(|k, _| by_id.contains_key(k));
-        self.cache_order.retain(|k| by_id.contains_key(k));
-        self.known_size = 0;
-        self.known_ino = None;
-        self.needs_leading_newline = false;
+        self.load_all()?;
         Ok(())
     }
 
@@ -869,6 +1043,8 @@ impl TimelineStore {
                 keep_rotated: DEFAULT_KEEP_ROTATED,
                 cache_size: DEFAULT_CACHE_SIZE,
                 entries: Vec::new(),
+                conversations: Vec::new(),
+                keys: HashMap::new(),
                 by_id: HashMap::new(),
                 arrival: VecDeque::new(),
                 next_seq: 0,
@@ -980,6 +1156,74 @@ impl TimelineStore {
         items.reverse();
         let next = (start > 0 && !items.is_empty()).then(|| items[items.len() - 1].id.clone());
         Ok((items, next))
+    }
+
+    /// Filter using interned conversation ids; only returned lines are read.
+    pub fn page(
+        &self,
+        before: Option<&str>,
+        after: Option<&str>,
+        limit: usize,
+        filter: &ConversationFilter,
+    ) -> Result<TimelinePage> {
+        let mut inner = self.lock();
+        let found = inner.refresh()?;
+        self.publish(found);
+        let size = limit.clamp(1, MAX_LIST_LIMIT);
+        let mut cursor = inner.arrival.back().map(|(_, id)| id.clone());
+        let matches = |e: &&Entry| filter.matches(&inner.conversations[e.key].key);
+        let (mut selected, next_before, has_more) = if let Some(after) = after {
+            let seq = inner.by_id.get(after).ok_or(StoreError::CursorExpired)?;
+            let start = inner.arrival.partition_point(|(s, _)| s <= seq);
+            let mut selected = Vec::new();
+            let mut scanned = start;
+            for (_, id) in inner.arrival.range(start..) {
+                scanned += 1;
+                let entry = inner.entry(id).expect("arrival is indexed");
+                if matches(&entry) {
+                    selected.push(entry.clone());
+                }
+                if selected.len() == size {
+                    cursor = Some(id.clone());
+                    break;
+                }
+            }
+            let more = scanned < inner.arrival.len();
+            if !more {
+                cursor = inner.arrival.back().map(|(_, id)| id.clone());
+            }
+            (selected, None, more)
+        } else {
+            let end = before.map_or(inner.entries.len(), |b| {
+                inner.entries.partition_point(|e| e.id.as_str() < b)
+            });
+            let mut candidates = inner.entries[..end].iter().rev().filter(matches);
+            let selected: Vec<Entry> = candidates.by_ref().take(size).cloned().collect();
+            let next = candidates
+                .next()
+                .and_then(|_| selected.last().map(|e| e.id.clone()));
+            (selected, next, false)
+        };
+        selected.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(TimelinePage {
+            items: inner.read_entries(&selected)?,
+            next_before,
+            cursor,
+            has_more,
+        })
+    }
+
+    pub fn conversations(&self) -> Result<Vec<Conversation>> {
+        let mut inner = self.lock();
+        let found = inner.refresh()?;
+        self.publish(found);
+        let mut items = inner.conversations.clone();
+        items.sort_by(|a, b| {
+            b.last_ts
+                .cmp(&a.last_ts)
+                .then_with(|| b.last_id.cmp(&a.last_id))
+        });
+        Ok(items)
     }
 
     /// Items with an id strictly after `after_id`, oldest id first. Not for
