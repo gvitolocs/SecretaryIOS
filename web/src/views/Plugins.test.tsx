@@ -16,9 +16,15 @@ describe("Plugins", () => {
 
   it("lists the plugin cards", () => {
     renderPlugins();
-    for (const name of ["Voice memos", "Media", "Notes", "Tasks", "Connections", "Pokémon", "Wardrobe"]) {
+    for (const name of ["Voice memos", "Films", "Notes", "Tasks", "Connections", "Pokémon", "Wardrobe"]) {
       expect(screen.getByRole("button", { name: new RegExp(name) })).toBeInTheDocument();
     }
+  });
+
+  it("opens Films from its card and has no Media card", () => {
+    renderPlugins();
+    expect(screen.getByRole("button", { name: /Films.*Film and Dansk film/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Media/ })).toBeNull();
   });
 
   it("shows the Phone card only inside the Android app", () => {

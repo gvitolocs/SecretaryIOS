@@ -135,9 +135,19 @@ function apply(view: QueueView): void {
   });
 }
 
-export async function playQueue(items: MediaItem[], index: number): Promise<void> {
+/** Plays `items` from `index`. `fromStart` forgets that item's saved minute first ("Play from
+ *  the beginning"); the reset reaches the server like any other position. */
+export async function playQueue(items: MediaItem[], index: number, options: { fromStart?: boolean } = {}): Promise<void> {
   report(false);
   const c = await getCore();
+  const item = items[index];
+  if (options.fromStart && item) {
+    const tick = c.request({ cmd: "position", id: item.id, position_ms: 0, duration_ms: item.duration_ms ?? 0, playing: false, device: "web" });
+    if (tick.sync) {
+      setRevision((r) => r + 1);
+      void pushProgress();
+    }
+  }
   const answer = c.request({ cmd: "queue_set", items, start: index });
   apply(answer.queue as QueueView);
   await load();

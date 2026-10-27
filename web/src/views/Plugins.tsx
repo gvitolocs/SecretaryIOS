@@ -6,6 +6,7 @@ import { openWardrobe } from "../state/wardrobe";
 
 // The Plugins page (owner, 2026-10-24): every feature that is not Chat, Shopping or
 // Training + Weight is a card here instead of a tab. A new feature adds one entry to PLUGINS.
+// /media (audio and photos) has no card while the web Drive does not exist; Films replaced it.
 
 export type Plugin = {
   id: string;
@@ -27,7 +28,7 @@ export function inAndroidApp(): boolean {
 export const PLUGINS: Plugin[] = [
   { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
-  { id: "media", icon: FilmIcon, title: () => t("plugins.media"), detail: () => t("plugins.mediaDetail"), href: "/media" },
+  { id: "films", icon: FilmIcon, title: () => t("plugins.films"), detail: () => t("plugins.filmsDetail"), href: "/films" },
   { id: "library", icon: BookIcon, title: () => t("plugins.library"), detail: () => t("plugins.libraryDetail"), href: "/library" },
   { id: "notes", icon: NoteIcon, title: () => t("plugins.notes"), detail: () => t("plugins.notesDetail"), href: "/notes" },
   { id: "tasks", icon: CheckCircleIcon, title: () => t("plugins.tasks"), detail: () => t("plugins.tasksDetail"), href: "/tasks" },
