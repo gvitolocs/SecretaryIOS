@@ -2,10 +2,11 @@
 // login / registration / token request may be tried).
 //
 // Production (branch lucina-rs, crates/secretary-mcp/src/):
-//   Mask (bit 1 read, 2 chat, 4 write) <-> scope::Scopes (sorted, deduplicated Vec<Scope>)
+//   Mask (bit 1 read, 2 chat, 4 write, 8 computer) <-> scope::Scopes (sorted, deduplicated Vec<Scope>)
 //   parse_lenient / parse_list         <-> Scopes::parse_lenient / Scopes::parse_list over
 //                                          the names split on ' ' and ',' (a name is a
-//                                          token id: 1 read, 2 chat, 3 write, 0 unknown)
+//                                          token id: 1 read, 2 chat, 3 write, 4 computer,
+//                                          0 unknown)
 //   intersect / subset / has           <-> Scopes::intersect / is_subset_of / contains
 //   authorize_scopes                   <-> oauth.rs `authorize`: requested = parse_lenient,
 //                                          absent or empty -> all
@@ -21,7 +22,7 @@
 //
 // Proven:
 //   M1 unknown_names_add_nothing: parse_lenient ignores unknown names; parse_list refuses
-//      them; both only ever yield read/chat/write.
+//      them; both only ever yield read/chat/write/computer.
 //   M2 consent_within_request: the scopes the owner grants are within what the client
 //      asked for and within the ticked boxes; an empty pick is refused.
 //   M3 refresh_never_widens: a refreshed token's scopes are within its grant, so along any
@@ -45,12 +46,13 @@ verus! {
 pub const READ: u8 = 1;
 pub const CHAT: u8 = 2;
 pub const WRITE: u8 = 4;
-pub const ALL: u8 = 7;
+pub const COMPUTER: u8 = 8;
+pub const ALL: u8 = 15;
 
 // ---------------------------------------------------------------- scopes
 
 pub open spec fn wf(m: u8) -> bool {
-    m <= 7
+    m <= 15
 }
 
 pub open spec fn bit(name: u8) -> u8 {
@@ -60,6 +62,8 @@ pub open spec fn bit(name: u8) -> u8 {
         CHAT
     } else if name == 3 {
         WRITE
+    } else if name == 4 {
+        COMPUTER
     } else {
         0
     }
@@ -84,7 +88,7 @@ pub open spec fn lenient(names: Seq<u8>) -> u8
 }
 
 pub open spec fn all_known(names: Seq<u8>) -> bool {
-    forall|i: int| 0 <= i < names.len() ==> 1 <= #[trigger] names[i] <= 3
+    forall|i: int| 0 <= i < names.len() ==> 1 <= #[trigger] names[i] <= 4
 }
 
 proof fn lemma_lenient_wf(names: Seq<u8>)
@@ -96,14 +100,14 @@ proof fn lemma_lenient_wf(names: Seq<u8>)
         lemma_lenient_wf(names.drop_last());
         let a = lenient(names.drop_last());
         let b = bit(names.last());
-        assert(a <= 7 && b <= 7 ==> a | b <= 7) by (bit_vector);
+        assert(a <= 15 && b <= 15 ==> a | b <= 15) by (bit_vector);
     }
 }
 
 /// M1: a scope is in the result exactly when one of its names is in the list.
 pub proof fn unknown_names_add_nothing(names: Seq<u8>, s: u8)
     requires
-        s == READ || s == CHAT || s == WRITE,
+        s == READ || s == CHAT || s == WRITE || s == COMPUTER,
     ensures
         has(lenient(names), s) <==> exists|i: int| 0 <= i < names.len() && bit(#[trigger] names[i])
             == s,
@@ -114,7 +118,7 @@ pub proof fn unknown_names_add_nothing(names: Seq<u8>, s: u8)
     if names.len() == 0 {
         assert(0u8 & s != s) by (bit_vector)
             requires
-                s == 1 || s == 2 || s == 4,
+                s == 1 || s == 2 || s == 4 || s == 8,
         ;
     } else {
         let p = names.drop_last();
@@ -123,8 +127,8 @@ pub proof fn unknown_names_add_nothing(names: Seq<u8>, s: u8)
         let b = bit(names.last());
         assert((a | b) & s == s <==> (a & s == s || b == s)) by (bit_vector)
             requires
-                s == 1 || s == 2 || s == 4,
-                b == 0 || b == 1 || b == 2 || b == 4,
+                s == 1 || s == 2 || s == 4 || s == 8,
+                b == 0 || b == 1 || b == 2 || b == 4 || b == 8,
         ;
         if exists|i: int| 0 <= i < p.len() && bit(#[trigger] p[i]) == s {
             let i = choose|i: int| 0 <= i < p.len() && bit(#[trigger] p[i]) == s;
@@ -259,6 +263,8 @@ pub fn bit_exec(name: u8) -> (b: u8)
         CHAT
     } else if name == 3 {
         WRITE
+    } else if name == 4 {
+        COMPUTER
     } else {
         0
     }
@@ -296,10 +302,10 @@ pub fn parse_list(names: &Vec<u8>) -> (r: Option<u8>)
     while i < names.len()
         invariant
             i <= names.len(),
-            forall|j: int| 0 <= j < i ==> 1 <= #[trigger] names@[j] <= 3,
+            forall|j: int| 0 <= j < i ==> 1 <= #[trigger] names@[j] <= 4,
         decreases names.len() - i,
     {
-        if names[i] < 1 || names[i] > 3 {
+        if names[i] < 1 || names[i] > 4 {
             return None;
         }
         i += 1;

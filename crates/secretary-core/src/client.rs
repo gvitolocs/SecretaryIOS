@@ -69,6 +69,8 @@ pub struct Call {
     class: TimeoutClass,
     /// Unwrap this key of `data` (`{items}` -> array, `{item}` -> item).
     extract: Option<&'static str>,
+    /// `x-lucina-caller`: who asks (`app`, `mcp:claude`), for Lucina's computer log.
+    caller: Option<String>,
 }
 
 impl fmt::Debug for Call {
@@ -123,7 +125,18 @@ impl Call {
             body: None,
             class: TimeoutClass::Default,
             extract: None,
+            caller: None,
         }
+    }
+
+    /// Names the caller for Lucina (`[a-z0-9:-]{1,40}`; anything else is dropped).
+    pub fn with_caller(mut self, caller: &str) -> Self {
+        let ok = (1..=40).contains(&caller.len())
+            && caller
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b':' || b == b'-');
+        self.caller = ok.then(|| caller.to_owned());
+        self
     }
 
     fn extracting(mut self, key: &'static str) -> Self {
@@ -159,6 +172,71 @@ impl Call {
     /// `GET /game/screenshot`: the current screen as PNG (send with [`LucinaClient::bytes`]).
     pub fn game_screenshot() -> Self {
         Self::new(Method::GET, &["game", "screenshot"])
+    }
+
+    /// `GET /computer`: Lucina's computer: task engine, sandboxes, who drives each.
+    pub fn computer_status() -> Self {
+        Self::new(Method::GET, &["computer"])
+    }
+
+    /// `POST /computer/task` as a job (`{task}` → 202 `{jobId}`): a task runs up to 200 s.
+    pub fn computer_task(task: &str) -> Result<Self> {
+        let task = task.trim();
+        if task.is_empty() || task.chars().count() > 16_000 {
+            return Err(Error::Invalid { field: "task", message: "must be 1..16000 chars".into() });
+        }
+        Ok(Self::new(Method::POST, &["computer", "task"])
+            .with_body(serde_json::json!({"task": task, "async": true})))
+    }
+
+    /// `GET /computer/task/{id}`.
+    pub fn computer_job(id: &str) -> Result<Self> {
+        validate::id("jobId", id)?;
+        Ok(Self::new(Method::GET, &["computer", "task", id]))
+    }
+
+    /// `POST /computer/task/{id}/cancel`.
+    pub fn computer_job_cancel(id: &str) -> Result<Self> {
+        validate::id("jobId", id)?;
+        Ok(Self::new(Method::POST, &["computer", "task", id, "cancel"]))
+    }
+
+    /// `POST /computer/call`: `{sandbox?, op, ...}` (a bash command may run a while).
+    pub fn computer_call(body: Value) -> Self {
+        let mut c = Self::new(Method::POST, &["computer", "call"]).with_body(body);
+        c.class = TimeoutClass::Chat;
+        c
+    }
+
+    /// `GET /computer/screenshot?sandbox=`: PNG (use [`LucinaClient::bytes`]).
+    pub fn computer_screenshot(sandbox: &str) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["computer", "screenshot"]);
+        c.query.push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
+        Ok(c)
+    }
+
+    /// `GET /computer/control?sandbox=`: who drives, and the recent takeover/input log.
+    pub fn computer_control_state(sandbox: &str) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["computer", "control"]);
+        c.query.push(("sandbox", computer_sandbox(sandbox)?.to_owned()));
+        Ok(c)
+    }
+
+    /// `POST /computer/control`: `{sandbox, action: take|release|heartbeat, device}`.
+    pub fn computer_control(body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "control"]).with_body(body)
+    }
+
+    /// `POST /computer/input`: the owner's input batch (each event is a driver call).
+    pub fn computer_input(body: Value) -> Self {
+        let mut c = Self::new(Method::POST, &["computer", "input"]).with_body(body);
+        c.class = TimeoutClass::Chat;
+        c
+    }
+
+    /// `POST /computer/view`: a live-view ticket and its view id.
+    pub fn computer_view(body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "view"]).with_body(body)
     }
 
     /// `POST /game/control`: start (`true`) or pause the run.
@@ -465,6 +543,14 @@ impl Call {
     }
 }
 
+/// `workspace` | `android` (Lucina also accepts their aliases; the apps use these two).
+fn computer_sandbox(s: &str) -> Result<&str> {
+    match s {
+        "workspace" | "android" => Ok(s),
+        _ => Err(Error::Invalid { field: "sandbox", message: "must be workspace or android".into() }),
+    }
+}
+
 /// `Invalid{field}` of item `i` of list `list` -> `Invalid{list, "[i].field: ..."}`.
 fn index_error(list: &'static str, i: usize, e: Error) -> Error {
     match e {
@@ -619,6 +705,18 @@ impl LucinaClient {
         self.timeouts
     }
 
+    /// `http://host:port` Lucina origin and the `Authorization` value, for the
+    /// computer live-view proxy (it splices a WebSocket and streams viewer
+    /// responses, which the typed calls cannot). `None` over https.
+    pub fn passthrough(&self) -> Option<(String, String)> {
+        if self.base.scheme() != "http" {
+            return None;
+        }
+        let host = self.base.host_str()?;
+        let port = self.base.port_or_known_default()?;
+        Some((format!("{host}:{port}"), format!("Bearer {}", self.token)))
+    }
+
     fn url(&self, call: &Call) -> Url {
         let mut url = self.base.clone();
         {
@@ -692,6 +790,9 @@ impl LucinaClient {
             .bearer_auth(&self.token)
             .header(reqwest::header::ACCEPT, "application/json")
             .timeout(timeout);
+        if let Some(caller) = &call.caller {
+            req = req.header("x-lucina-caller", caller);
+        }
         if let Some(body) = &call.body {
             req = req.json(body);
         }

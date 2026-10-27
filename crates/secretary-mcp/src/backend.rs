@@ -239,6 +239,20 @@ impl Backend {
         .map(|(_, _, v)| v)
     }
 
+    /// A device-token call with its own deadline and headers (`crate::computer`).
+    pub(crate) async fn send_device(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        timeout: Duration,
+        extra: HeaderMap,
+    ) -> BResult<Value> {
+        self.send(method, path, &[], body, Cred::Device, timeout, extra)
+            .await
+            .map(|(_, _, v)| v)
+    }
+
     pub async fn get(&self, path: &str, query: &[(&str, String)]) -> BResult<Value> {
         self.call(Method::GET, path, query, None).await
     }

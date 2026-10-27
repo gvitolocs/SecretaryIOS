@@ -194,6 +194,24 @@ fn read_ledger(runtime: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix("commit ").map(|s| s.trim().to_string()))
 }
 
+/// Whether someone holds the merge lock. Two styles are in use: the older
+/// directory lock (`mkdir /tmp/lucina-merge.lock`, optionally with an `owner`
+/// file inside) and a `flock(1)` on the file itself (`exec 9>/tmp/lucina-merge.lock;
+/// flock 9`). A flock is held when a non-blocking `flock -n` on the same path
+/// fails; the caller's own held descriptor counts, since it is a separate open.
+fn lock_is_held(lock: &Path) -> bool {
+    if lock.is_dir() || lock.join("owner").exists() {
+        return true;
+    }
+    if !lock.is_file() {
+        return false;
+    }
+    match Command::new("flock").arg("-n").arg(lock).arg("true").status() {
+        Ok(st) => !st.success(),
+        Err(_) => false,
+    }
+}
+
 fn facts(a: &Args, runtime: &str, target: &str) -> Result<Facts, String> {
     let repo = &a.repo;
     let commit = git_ok(
@@ -248,7 +266,7 @@ fn facts(a: &Args, runtime: &str, target: &str) -> Result<Facts, String> {
             }
         }
     };
-    let lock_held = a.no_lock_check || a.lock.join("owner").exists() || a.lock.is_dir();
+    let lock_held = a.no_lock_check || lock_is_held(&a.lock);
     Ok(Facts {
         dirty_paths,
         commit,
@@ -420,5 +438,29 @@ mod tests {
             panic!("must refuse")
         };
         assert!(why[0].contains("not an ancestor"));
+    }
+    #[test]
+    fn flock_held_lock_file_counts_as_held() {
+        let dir = std::env::temp_dir().join(format!("dg-flock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("lucina-merge.lock");
+        std::fs::write(&lock, "").unwrap();
+        assert!(!super::lock_is_held(&lock), "a free lock file is not held");
+        let mut holder = Command::new("flock")
+            .arg("-o")
+            .arg(&lock)
+            .args(["sleep", "5"])
+            .spawn()
+            .expect("flock(1) available");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(super::lock_is_held(&lock), "a flock-held file is held");
+        let _ = holder.kill();
+        let _ = holder.wait();
+        assert!(!super::lock_is_held(&lock), "released again");
+        let d = dir.join("dir-style.lock");
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(super::lock_is_held(&d), "the directory style still counts");
+        assert!(!super::lock_is_held(&dir.join("missing.lock")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

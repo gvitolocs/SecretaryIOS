@@ -11,6 +11,7 @@ pub mod avatar;
 pub mod calendar;
 pub mod calls;
 pub mod cli;
+pub mod computer;
 pub mod config;
 pub mod device;
 pub mod devices;
@@ -263,7 +264,8 @@ pub fn app(state: AppState) -> Router {
         .merge(proactive::routes())
         .merge(links::routes())
         .merge(todoist::routes())
-        .merge(owner_secrets::routes());
+        .merge(owner_secrets::routes())
+        .merge(computer::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -291,6 +293,7 @@ pub fn app(state: AppState) -> Router {
         .merge(device_events)
         .merge(auth::session_routes())
         .merge(protected)
+        .merge(computer::view_routes())
         .merge(insights::routes(state.clone()))
         .merge(avatar::routes(state.clone()))
         .merge(notify::routes::service_routes(state.clone()))

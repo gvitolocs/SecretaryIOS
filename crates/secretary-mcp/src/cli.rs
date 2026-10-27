@@ -49,6 +49,9 @@ pub enum TokenCmd {
     List,
     /// Revoke by token id, or every token with this name.
     Revoke { id_or_name: String },
+    /// Add scopes to an active token (by id, or every active token with this name),
+    /// e.g. `add-scope grok computer`.
+    AddScope { id_or_name: String, scopes: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -57,6 +60,9 @@ pub enum OauthCmd {
     List,
     /// Revoke a grant (by grant id or client id), or `all`.
     Revoke { target: String },
+    /// Add scopes to a grant (by grant id or client id) and its live tokens,
+    /// e.g. `add-scope grant_… computer`. The owner's decision, as on the consent page.
+    AddScope { target: String, scopes: String },
 }
 
 fn data_dir() -> PathBuf {
@@ -105,6 +111,18 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
                     }
                     Ok(0)
                 }
+                TokenCmd::AddScope { id_or_name, scopes } => {
+                    let add = Scopes::parse_list(&scopes).map_err(anyhow::Error::msg)?;
+                    let hit = store.add_scopes(&id_or_name, &add)?;
+                    if hit.is_empty() {
+                        eprintln!("no active token with id or name {id_or_name:?}");
+                        return Ok(1);
+                    }
+                    for t in hit {
+                        println!("{} ({}) scopes={}", t.id, t.name, t.scopes);
+                    }
+                    Ok(0)
+                }
                 TokenCmd::Revoke { id_or_name } => {
                     let hit = store.revoke(&id_or_name)?;
                     if hit.is_empty() {
@@ -149,6 +167,12 @@ pub fn run_admin(cmd: Cmd) -> anyhow::Result<i32> {
                         );
                     }
                     Ok(0)
+                }
+                OauthCmd::AddScope { target, scopes } => {
+                    let add = Scopes::parse_list(&scopes).map_err(anyhow::Error::msg)?;
+                    let n = oauth.add_scopes(&target, &add)?;
+                    println!("updated {n} grant(s)");
+                    Ok(if n == 0 { 1 } else { 0 })
                 }
                 OauthCmd::Revoke { target } => {
                     let n = oauth.revoke(&target)?;
