@@ -253,8 +253,17 @@ the Paseo 0.13.2 Android app. These are design requirements. Each one has a row 
    can read both.
    - Agent runs can't read those paths: agentd launches providers with deny-read rules for them (bubblewrap, as in
      lucina-delegate's sandbox, or a separate uid; see below).
-   - Secrets for agents come from the Infisical broker (`infisical-brokerd`, built by another session) through its
-     inject path, not from dotfiles.
+   - Secrets for agents come from the Infisical broker (`infisical-brokerd`, built by another session), not from
+     dotfiles.
+     - They live in their own Infisical project `agents` (env `prod`, root `/`). Its broker identity `broker-agents`
+       can read only that project, not Lucina/prod. Custom roles are Enterprise-only, so folder scoping isn't
+       possible.
+     - agentd is a `services`-class broker caller and uses the `exec` op:
+       `infisical-broker exec --env VAR=secret://agents/prod#KEY -- <provider>`, or the same op over the socket.
+     - Its caller entry is bound to the unit (`bind_unit = "lucina-agentd.service"`), so only processes in that
+       unit's cgroup can use its token.
+     - Keys: `LUCINA_MCP_AGENTS_TOKEN` (the `read`+`agents` token for the Lucina agent MCP). Provider API keys go
+       under their own names when a provider needs one.
    - Once the scoped token exists, rotate the owner token. The owner decides when.
 4. **No weak spots copied from Paseo.**
    - No plaintext or legacy hello: Paseo has `acceptLegacyHello`, `shouldIgnorePostHelloPlaintext` and
@@ -266,8 +275,13 @@ the Paseo 0.13.2 Android app. These are design requirements. Each one has a row 
    no extra launcher-badge permissions. Camera only for the QR scanner, microphone only for dictation, each requested
    when the feature is first used.
 6. **Same-uid limit.** Until agent processes run under their own uid, anything running as `nez` can read the owner's
-   files. The hardening path is agentd launching providers under a dedicated agents uid, coordinated with the broker's
-   uid split. That needs root once, so the owner approves it first.
+   files. The hardening path is agentd launching providers under a dedicated agents uid that can't read `~nez`.
+   - That needs root once, so the owner approves it first. It is a separate step from the broker's `secretsd`
+     (uid 995, already approved).
+   - P0 found by the broker session (2026-10-27): `~/secrets/nezopt-sudo.honcho` and its AES key
+     `~/secrets/honcho-aes256.key` are both readable by `nez`, so any agent running as `nez` can sudo.
+   - The agents uid fixes this for agents agentd launches. Interactive Claude and Codex sessions running as `nez`
+     stay exposed until the owner moves that blob.
 
 ## UIs
 
