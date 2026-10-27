@@ -76,6 +76,18 @@ pub fn timeline_ref(field: &'static str, s: &str) -> Result<()> {
     session_id(field, s)
 }
 
+/// Conversation key: lowercase kind, optionally a 1..=64 character token.
+pub fn conversation(s: &str) -> Result<()> {
+    let (kind, token) = s.split_once(':').map_or((s, None), |(k, t)| (k, Some(t)));
+    if kind.is_empty() || !kind.bytes().all(|b| b.is_ascii_lowercase()) {
+        return Err(invalid("conversation", "must have a lowercase kind"));
+    }
+    if let Some(token) = token {
+        session_id("conversation", token)?;
+    }
+    Ok(())
+}
+
 /// Optional id: absent is fine, present must pass [`id`].
 pub fn opt_id(field: &'static str, s: Option<&str>) -> Result<()> {
     s.map_or(Ok(()), |s| id(field, s))

@@ -53,6 +53,11 @@ pub struct ChatRequest {
     /// secretary-server always sets it before forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// Authenticated device; secretary-server overwrites client values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
     /// Swipe to reply: the timeline id of the earlier message this one
     /// answers (`[A-Za-z0-9_-]{1,64}`, see [`crate::validate::timeline_ref`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -725,8 +730,8 @@ pub struct TimelineItem {
     pub extra: Map<String, Value>,
 }
 
-/// `GET /timeline` data: newest first; `nextBefore` is the cursor for the
-/// next (older) page, `null` at the start of history.
+/// `GET /timeline` data: `nextBefore` pages older history; `cursor` tracks
+/// arrivals for incremental requests.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelinePage {
@@ -734,6 +739,42 @@ pub struct TimelinePage {
     pub items: Vec<TimelineItem>,
     #[serde(default)]
     pub next_before: Option<Scalar>,
+    /// Arrival-order id to use as the next `after` cursor.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /timeline/conversations` data, with forward-compatible fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineConversations {
+    pub items: Vec<TimelineConversation>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineConversation {
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub channel: Channel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    pub count: u64,
+    pub last_id: Scalar,
+    pub last_ts: Scalar,
+    pub last_role: Role,
+    pub last_text: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -748,6 +789,13 @@ pub struct TimelineQuery {
     /// Cursor: an item id; only older items are returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<String>,
+    /// Arrival-order cursor: fetch items received after this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     /// 1..=200; Lucina defaults to 50.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<String>,
@@ -893,6 +941,29 @@ mod tests {
         let req: ChatRequest = serde_json::from_value(raw.clone()).unwrap();
         assert_eq!(req.reply_to, None);
         assert_eq!(serde_json::to_value(&req).unwrap(), raw);
+    }
+
+    #[test]
+    fn device_chat_and_incremental_page_shapes() {
+        let req: ChatRequest = serde_json::from_value(json!({"message": "hi"})).unwrap();
+        assert!(req.device.is_none());
+        assert!(req.device_name.is_none());
+        let body = serde_json::to_value(req).unwrap();
+        assert!(body.get("device").is_none());
+        assert!(body.get("deviceName").is_none());
+        let raw = json!({"items": [], "nextBefore": null, "cursor": "arrival_1",
+            "hasMore": true, "futurePage": 42});
+        let page: TimelinePage = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(page.cursor.as_deref(), Some("arrival_1"));
+        assert_eq!(page.has_more, Some(true));
+        assert!(!page.extra.contains_key("cursor"));
+        assert!(!page.extra.contains_key("hasMore"));
+        assert_eq!(serde_json::to_value(page).unwrap(), raw);
+        let old: TimelinePage = serde_json::from_value(json!({"items": []})).unwrap();
+        assert_eq!(old.cursor, None);
+        assert_eq!(old.has_more, None);
+        assert!(serde_json::from_value::<TimelinePage>(json!({"cursor": 1})).is_err());
+        assert!(serde_json::from_value::<TimelinePage>(json!({"hasMore": "yes"})).is_err());
     }
 
     #[test]

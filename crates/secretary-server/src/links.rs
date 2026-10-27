@@ -616,6 +616,7 @@ async fn channel_activity(st: &AppState) -> HashMap<String, i64> {
         let q = secretary_core::models::TimelineQuery {
             before: None,
             limit: Some("200".into()),
+            ..Default::default()
         };
         if let Ok(call) = secretary_core::Call::timeline(&q) {
             let page =
