@@ -6,6 +6,7 @@ license.workspace = true
 description = "Lucina Agents: wire types and pure kernels (lifecycle, timeline projection, activity curator) shared by lucina-agentd, secretary-server, secretary-mcp and the apps"
 
 [dependencies]
+regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

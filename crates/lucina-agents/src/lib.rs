@@ -24,6 +24,11 @@
 //! - [`bucket`]: state buckets and status priority (`agent-state-bucket.js`).
 //! - [`lifecycle`]: the agent state machine (`server/agent/agent-manager.js`),
 //!   proven in `verification/verus/agent_lifecycle.rs`.
+//! - [`notification`]: attention notification titles and previews
+//!   (`protocol/agent-attention-notification.js`).
+//! - Lucina only: [`permission_gate`] (who may answer a permission request, and
+//!   until when) and [`run_gate`] (the finished-run gate's verdict), proven in
+//!   `verification/verus/permission_gate.rs` and `run_gate.rs`.
 //!
 //! String lengths and cuts follow JavaScript (UTF-16 code units, JS whitespace;
 //! see [`jsstr`]), so truncated texts match Paseo's byte for byte.
@@ -36,8 +41,11 @@ pub mod display;
 pub mod events;
 pub mod jsstr;
 pub mod lifecycle;
+pub mod notification;
 pub mod permission;
+pub mod permission_gate;
 pub mod projection;
+pub mod run_gate;
 pub mod timeline;
 pub mod title;
 pub mod types;

@@ -58,13 +58,35 @@ pub enum AttentionReason {
 #[serde(rename_all = "camelCase")]
 pub struct GateResult {
     pub verdict: GateVerdict,
+    /// Refusals, the proof's failing output, the judge's reasons.
     #[serde(default)]
     pub details: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffgate: Option<crate::run_gate::Check>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<crate::run_gate::Check>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judge: Option<crate::run_gate::Judge>,
+    /// The run changed the workspace's gate config (`.lucina/agents.toml`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tampered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_command: Option<String>,
+    /// The commit (or `git stash create` snapshot) the diff is taken from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// 0 for the run itself, then one more per auto-fix follow-up.
+    #[serde(default)]
+    pub round: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GateVerdict {
+    /// The checks are still running.
+    Running,
     Verified,
     Refused,
     Suspicious,

@@ -157,6 +157,49 @@ for (const status of ["initializing", "idle", "running", "error", "closed"]) {
   }
 }
 
+const attention = await load("protocol/dist/agent-attention-notification.js");
+const messages = [
+  null,
+  "",
+  "   \n\t ",
+  "Done.",
+  "## Summary\n\n- **Fixed** the `scroll` anchor in [the list](https://example.com/a_(b))\n- Added _tests_ and ~~removed~~ code\n> quoted *line*\n\n```rust\nfn main() {}\n```\n---\n1. one\n<https://example.com>",
+  "![logo](img.png) and __bold__ text\r\nnext line　wide",
+  "word ".repeat(60),
+  "x".repeat(219) + "😀😀",
+  " ".repeat(10) + "y".repeat(300),
+  "~~~\ncode\n~~~\n***\n  3. item\n####### seven hashes",
+];
+const permissions = [
+  null,
+  { id: "p1", provider: "claude", name: "Bash", kind: "tool", title: "Run npm test", description: "Runs the tests" },
+  { id: "p2", provider: "claude", name: "Bash", kind: "tool", title: "  Same  ", description: "Same" },
+  { id: "p3", provider: "codex", name: "apply_patch", kind: "tool", input: { a: "x".repeat(300), b: 1 } },
+  { id: "p4", provider: "mock", name: "MockQuestions", kind: "question", metadata: { source: "mock_questions" } },
+  { id: "p5", provider: "mock", name: "  ", kind: "plan" },
+  { id: "p6", provider: "mock", name: "ExitPlanMode", kind: "plan", description: "**Plan**: do `x`" },
+];
+const attentionCases = [];
+for (const reason of ["finished", "permission", "error"]) {
+  for (const assistantMessage of messages) {
+    for (const permissionRequest of permissions) {
+      if (reason === "finished" && permissionRequest) continue;
+      if (reason !== "finished" && assistantMessage) continue;
+      const payload = attention.buildAgentAttentionNotificationPayload({
+        reason, serverId: "s", agentId: "a", assistantMessage, permissionRequest,
+      });
+      attentionCases.push({ reason, assistantMessage, permissionRequest, title: payload.title, body: payload.body });
+    }
+  }
+}
+const latestTimelines = [
+  [],
+  [{ type: "user_message", text: "hi" }],
+  [{ type: "assistant_message", text: "a" }, { type: "assistant_message", text: "b" }],
+  [{ type: "assistant_message", text: "old" }, { type: "tool_call", callId: "c", name: "Bash", detail: { type: "shell", command: "ls" }, status: "completed", error: null }, { type: "assistant_message", text: "new " }, { type: "assistant_message", text: "end" }, { type: "user_message", text: "after" }],
+];
+const latestCases = latestTimelines.map((items) => ({ items, expected: attention.findLatestAssistantMessageFromTimeline(items) }));
+
 // A cut through a surrogate pair leaves a lone surrogate, which Node prints as U+FFFD
 // and serde_json refuses to parse; store it as U+FFFD.
 const wellFormed = (_key, v) => (typeof v === "string" ? v.toWellFormed() : v);
@@ -165,4 +208,5 @@ const write = (file, value) =>
 write("curator.json", curatorCases);
 write("titles.json", titleCases);
 write("buckets.json", bucketCases);
-console.log(`curator ${curatorCases.length}, titles ${titleCases.length}, buckets ${bucketCases.length}`);
+write("attention.json", { payloads: attentionCases, latest: latestCases });
+console.log(`curator ${curatorCases.length}, titles ${titleCases.length}, buckets ${bucketCases.length}, attention ${attentionCases.length}+${latestCases.length}`);

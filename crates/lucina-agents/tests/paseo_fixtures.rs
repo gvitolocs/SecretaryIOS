@@ -135,3 +135,45 @@ fn buckets_match_paseo() {
         assert_eq!(status_priority(input), case.priority, "{input:?}");
     }
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttentionCase {
+    reason: AttentionReason,
+    assistant_message: Option<String>,
+    permission_request: Option<lucina_agents::PermissionRequest>,
+    title: String,
+    body: String,
+}
+
+#[derive(Deserialize)]
+struct LatestCase {
+    items: Vec<TimelineItem>,
+    expected: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AttentionFixtures {
+    payloads: Vec<AttentionCase>,
+    latest: Vec<LatestCase>,
+}
+
+#[test]
+fn attention_notifications_match_paseo() {
+    use lucina_agents::notification::{body, latest_assistant_message, title};
+    let f: AttentionFixtures = serde_json::from_str(include_str!("fixtures/attention.json")).expect("attention fixtures parse");
+    assert!(f.payloads.len() >= 30);
+    let mut failures = Vec::new();
+    for c in &f.payloads {
+        let got = (title(c.reason).to_string(), body(c.reason, c.assistant_message.as_deref(), c.permission_request.as_ref()));
+        if got != (c.title.clone(), c.body.clone()) {
+            failures.push(format!("{:?} {:?} {:?}\n--- paseo\n{}\n--- lucina\n{}", c.reason, c.assistant_message, c.permission_request.as_ref().map(|p| &p.id), c.body, got.1));
+        }
+    }
+    for c in &f.latest {
+        if latest_assistant_message(&c.items) != c.expected {
+            failures.push(format!("latest of {:?}", c.items));
+        }
+    }
+    assert!(failures.is_empty(), "{} of {} differ:\n{}", failures.len(), f.payloads.len() + f.latest.len(), failures.join("\n\n"));
+}
