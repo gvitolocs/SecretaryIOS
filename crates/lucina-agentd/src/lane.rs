@@ -23,6 +23,13 @@ pub struct Lane {
     pub effort: Option<String>,
     #[serde(default)]
     pub dir: Option<String>,
+    #[serde(default)]
+    pub worker: Option<String>,
+}
+
+/// Owner rule (2026-10-27): the paid DeepSeek key is never used, through any lane.
+pub fn is_forbidden(name: &str, lane: &Lane) -> bool {
+    name == "deepseek-paid" || lane.worker.as_deref() == Some("deepseek-flash") || lane.model.as_deref().is_some_and(|m| m.contains("paid"))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,6 +161,9 @@ impl LaneConfig {
             .flatten()
             .filter_map(|name| {
                 let lane = self.lanes.get(name)?;
+                if is_forbidden(name, lane) {
+                    return None;
+                }
                 provider_of_kind(&lane.kind).map(|p| (name.clone(), p, lane.clone()))
             })
             .collect()
@@ -175,8 +185,12 @@ model = "gpt-6.1-sol"
 effort = "medium"
 [lanes.zen]
 kind = "orchestra"
+[lanes.deepseek-paid]
+kind = "codex"
+worker = "deepseek-flash"
+model = "deepseek-flash (paid API)"
 [categories]
-deep = ["claude-cli", "codex", "zen"]
+deep = ["claude-cli", "codex", "zen", "deepseek-paid"]
 [[detectors]]
 name = "claude-usage-limit"
 kinds = ["claude"]
@@ -197,7 +211,7 @@ pattern = '(?i)not logged in'
         assert_eq!(c.classify("codex", "codex", "Not logged in", None), Outcome::Unavailable("codex-auth".into()));
         assert_eq!(c.classify("codex", "codex", "syntax error", None), Outcome::Failed);
         let chain: Vec<&str> = c.chain("deep").iter().map(|(_, p, _)| *p).collect();
-        assert_eq!(chain, ["claude", "codex"], "orchestra lanes are not agentd providers");
+        assert_eq!(chain, ["claude", "codex"], "orchestra lanes are not agentd providers, and deepseek-paid never runs");
     }
 
     /// The owner's real config must keep parsing: a schema change in lane breaks this
