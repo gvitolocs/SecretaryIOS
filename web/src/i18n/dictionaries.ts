@@ -21,8 +21,9 @@ import { shell } from "./dict/shell";
 import { studio } from "./dict/studio";
 import { tasks } from "./dict/tasks";
 import { wardrobe } from "./dict/wardrobe";
+import { viewer } from "./dict/viewer";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { library, common, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins };
+export const dictionaries = { library, common, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, viewer };
 
 export type Dictionaries = typeof dictionaries;

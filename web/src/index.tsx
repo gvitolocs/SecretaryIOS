@@ -8,6 +8,8 @@ import "./styles.css";
 import "./styles/lucina-look.css";
 import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
+import { DesktopViewerHost } from "./components/DesktopViewer";
+import { installDesktopViewer } from "./lib/desktopViewer";
 
 const DealsMapView = lazy(() => import("./views/shopping/DealsMap"));
 const PlaceMapView = lazy(() => import("./views/PlaceMap"));
@@ -32,6 +34,7 @@ const PokemonView = lazy(() => import("./views/Pokemon"));
 const MediaView = lazy(() => import("./views/Media"));
 const FilmsView = lazy(() => import("./views/Films"));
 const DriveView = lazy(() => import("./views/Drive"));
+const ViewerView = lazy(() => import("./views/Viewer"));
 
 // The service worker (Web Push, static asset cache). It never caches /v1.
 void registerServiceWorker();
@@ -75,8 +78,15 @@ render(
       <Route path="/films" component={FilmsView} />
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/drive/*rest" component={DriveView} />
+      <Route path="/viewer" component={ViewerView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),
   root,
 );
+// The gallery photo viewer for the desktop shell (window.lucinaViewer): outside the router,
+// so it opens over any page.
+const viewerRoot = document.createElement("div");
+document.body.append(viewerRoot);
+render(() => <DesktopViewerHost />, viewerRoot);
+installDesktopViewer();
