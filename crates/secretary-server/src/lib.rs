@@ -88,8 +88,11 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// sprites are same-origin fetches, the MapLibre worker is a same-origin
 /// module (`worker-src 'self'`), and its canvas images are `data:`/`blob:`.
 /// No third-party origin is allowed; `font-src data:` admits fonts inlined
-/// into the app's own CSS.
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
+/// into the app's own CSS. The one other origin is Lucina's own home-network
+/// door to the live view (`https://lan.getsecretary.tech:9443`, lucina-server
+/// `lan.rs`): the computer page probes it (`connect-src`) and frames the viewer
+/// from it (`frame-src`) when the owner is at home.
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,

@@ -655,6 +655,16 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                         .await
                 });
             }
+            // The home-network door to the live view (lan.rs), when configured. Its own task:
+            // a door that cannot open (port taken, no certificate) never stops Lucina.
+            if let Some(lan) = lucina_server::lan::config() {
+                let rx = stop_rx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = lucina_server::lan::serve(lan, rx).await {
+                        tracing::warn!(error = %e, "home-network door closed");
+                    }
+                });
+            }
             tokio::select! {
                 _ = shutdown_signal() => tracing::info!("shutting down"),
                 Some(r) = servers.join_next() => {

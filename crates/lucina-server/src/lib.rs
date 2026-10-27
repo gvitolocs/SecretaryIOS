@@ -27,6 +27,7 @@ pub mod fake;
 pub mod geocode;
 pub mod grocery_turn;
 pub mod jobs;
+pub mod lan;
 pub mod otp;
 pub mod owner_secrets;
 pub mod parity;
