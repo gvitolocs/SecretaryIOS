@@ -101,6 +101,8 @@ struct ChatTranscript: View {
                         switch row {
                         case let .day(date):
                             DaySeparator(date: date)
+                        case let .tools(steps):
+                            ToolStepsRow(steps: steps).id("tools-" + steps[0].id)
                         case let .message(item):
                             MessageRow(item: item, job: store.jobs[item.id])
                                 .modifier(MessageActionsModifier(item: item))
@@ -145,27 +147,38 @@ struct ChatTranscript: View {
     enum Row: Identifiable {
         case day(Date)
         case message(TimelineItem)
+        /// A run of Lucina's tool calls, shown as one line (ToolSteps).
+        case tools([TimelineItem])
 
         var id: String {
             switch self {
             case let .day(date): return "day-\(date.timeIntervalSince1970)"
             case let .message(item): return item.id
+            case let .tools(steps): return "tools-" + (steps.first?.id ?? "")
             }
         }
     }
 
-    /// Items with a separator before each new calendar day.
+    /// Items with a separator before each new calendar day; a turn's tool calls fold into one row.
     private var rows: [Row] {
         var out: [Row] = []
         var lastDay: Date?
         let calendar = Calendar.current
-        for item in store.items where !store.isHidden(item.id) {
-            let day = calendar.startOfDay(for: item.ts)
+        for entry in ToolSteps.entries(store.items.filter { !store.isHidden($0.id) }) {
+            let first: TimelineItem
+            switch entry {
+            case let .item(item): first = item
+            case let .tools(steps): first = steps[0]
+            }
+            let day = calendar.startOfDay(for: first.ts)
             if day != lastDay {
                 out.append(.day(day))
                 lastDay = day
             }
-            out.append(.message(item))
+            switch entry {
+            case let .item(item): out.append(.message(item))
+            case let .tools(steps): out.append(.tools(steps))
+            }
         }
         return out
     }

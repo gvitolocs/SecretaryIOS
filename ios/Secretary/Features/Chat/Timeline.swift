@@ -143,6 +143,9 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var channelName: String?
     var isDm: Bool?
     var kind: String?
+    /// With `kind == "tool"`: the tool Lucina called for this step, and whether it succeeded.
+    var tool: String?
+    var ok: Bool?
     /// `{id, type, args}` when `kind == "device_command"`.
     var command: JSONValue?
     /// With `kind == "avatar_outfit"`: the outfit / hairstyle Lucina put on (neither: back to automatic).
@@ -194,6 +197,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
         channelName = c.lenientOptional(String.self, .channelName)
         isDm = c.lenientOptional(Bool.self, .isDm)
         kind = c.lenientOptional(String.self, .kind)
+        tool = c.lenientOptional(String.self, .tool)
+        ok = c.lenientOptional(Bool.self, .ok)
         command = c.lenientOptional(JSONValue.self, .command)
         outfit = c.lenientOptional(String.self, .outfit)
         hair = c.lenientOptional(String.self, .hair)
@@ -210,7 +215,7 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case device, deviceName, via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
+        case device, deviceName, via, caller, chatTitle, guildName, channelName, isDm, kind, tool, ok, command, outfit, hair, slug
         case outreachId, priority, topic, why, actions, place, shareId, transcript, voiceReply
     }
 }

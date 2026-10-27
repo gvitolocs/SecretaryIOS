@@ -220,8 +220,7 @@
           }
         }
       }
-    }
-,
+    },
     "Next up" : {
       "localizations" : {
         "it" : {
@@ -17953,6 +17952,70 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Widgetgalleri · side %lld"
+          }
+        }
+      }
+    },
+    "Worked on %@ · 1 step" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ha lavorato su %@ · 1 passaggio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arbejdede med %@ · 1 trin"
+          }
+        }
+      }
+    },
+    "Worked on %@ · %lld steps" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ha lavorato su %@ · %lld passaggi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arbejdede med %@ · %lld trin"
+          }
+        }
+      }
+    },
+    "%lld failed" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld non riusciti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld mislykkedes"
+          }
+        }
+      }
+    },
+    "(failed)" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "(non riuscito)"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "(mislykkedes)"
           }
         }
       }

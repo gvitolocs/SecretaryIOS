@@ -120,8 +120,13 @@ struct ConversationView: View {
                             }
                             .disabled(store?.isLoadingOlder == true)
                         }
-                        ForEach(store?.items ?? []) { item in
-                            MessageRow(item: item, job: nil, readOnly: true).id(item.id)
+                        ForEach(ToolSteps.entries(store?.items ?? [])) { entry in
+                            switch entry {
+                            case let .item(item):
+                                MessageRow(item: item, job: nil, readOnly: true).id(item.id)
+                            case let .tools(steps):
+                                ToolStepsRow(steps: steps).id(entry.id)
+                            }
                         }
                     }
                     .padding(12)
