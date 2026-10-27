@@ -26,6 +26,7 @@ pub mod models;
 pub mod notes;
 pub mod notify;
 pub mod owner;
+pub mod owner_secrets;
 pub mod proactive;
 pub mod ratelimit;
 pub mod routes;
@@ -137,6 +138,8 @@ pub struct Inner {
     pub tasks: Arc<tasks::TasksHub>,
     /// Host health snapshots and their state changes (`system-health.json`).
     pub system_health: Arc<system_health::HealthStore>,
+    /// Signs the owner grants of "Add secret" (`secret-grant.key`).
+    pub grant_signer: owner_secrets::GrantSigner,
 }
 
 #[derive(Clone)]
@@ -189,6 +192,7 @@ impl AppState {
             proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
             system_health: system_health::store(&cfg.data_dir),
+            grant_signer: owner_secrets::GrantSigner::new(&cfg.data_dir),
         })))
     }
 
@@ -265,7 +269,8 @@ pub fn app(state: AppState) -> Router {
         .merge(links::routes())
         .merge(todoist::routes())
         .merge(system_health::routes())
-        .merge(computer::routes());
+        .merge(computer::routes())
+        .merge(owner_secrets::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
