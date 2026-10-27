@@ -446,6 +446,22 @@ fn words_of(tokens: &[WhisperToken]) -> Vec<Word> {
     out.retain(|w| !w.text.is_empty());
     out
 }
+/// With `--vad`, whisper.cpp maps segment offsets back to the original audio but leaves token
+/// offsets relative to the VAD-trimmed audio; shift such words to start at the segment's start.
+fn align_words(mut words: Vec<Word>, s0: f64, s1: f64) -> Vec<Word> {
+    let Some(first) = words.first() else {
+        return words;
+    };
+    if (first.start - s0).abs() <= 0.5 {
+        return words;
+    }
+    let (delta, hi) = (s0 - first.start, s1.max(s0));
+    for w in &mut words {
+        w.start = (w.start + delta).clamp(s0, hi);
+        w.end = (w.end + delta).clamp(w.start, hi);
+    }
+    words
+}
 #[derive(Deserialize)]
 struct Offsets {
     from: i64,
@@ -475,12 +491,16 @@ pub fn parse_output(json: &str, engine: String, duration_sec: f64) -> Result<Tra
             }
             continue;
         }
+        let (start, end) = (
+            s.offsets.from.max(0) as f64 / 1000.0,
+            s.offsets.to.max(0) as f64 / 1000.0,
+        );
         segments.push(Segment {
-            start: s.offsets.from.max(0) as f64 / 1000.0,
-            end: s.offsets.to.max(0) as f64 / 1000.0,
+            start,
+            end,
             text,
             speaker: None,
-            words: words_of(&s.tokens),
+            words: align_words(words_of(&s.tokens), start, end),
         });
     }
     Ok(Transcript {
@@ -568,6 +588,37 @@ mod tests {
             ["Hello", "there,", "Anna."]
         );
         assert_eq!((w[2].start, w[2].end), (0.9, 1.5));
+    }
+
+    #[test]
+    fn vad_word_timings_are_moved_into_their_segment() {
+        // whisper.cpp --vad: segment offsets are on the original audio, token offsets on the
+        // trimmed one.
+        let json = r#"{"result":{"language":"en"},"transcription":[
+          {"offsets":{"from":4930,"to":9470},"text":" Hello there, Anna.","tokens":[
+            {"text":"[_BEG_]","offsets":{"from":0,"to":0}},
+            {"text":" Hello","offsets":{"from":20,"to":460}},
+            {"text":" there","offsets":{"from":460,"to":900}},
+            {"text":",","offsets":{"from":900,"to":920}},
+            {"text":" An","offsets":{"from":1000,"to":1300}},
+            {"text":"na.","offsets":{"from":1300,"to":1600}}]},
+          {"offsets":{"from":14220,"to":18580},"text":" How are you?","tokens":[
+            {"text":" How","offsets":{"from":4880,"to":5200}},
+            {"text":" are","offsets":{"from":5200,"to":5500}},
+            {"text":" you?","offsets":{"from":5500,"to":9900}}]}]}"#;
+        let t = parse_output(json, "test".into(), 20.0).unwrap();
+        let (a, b) = (&t.segments[0], &t.segments[1]);
+        assert!((a.words[0].start - 4.93).abs() < 1e-9);
+        assert!((b.words[0].start - 14.22).abs() < 1e-9);
+        for s in [a, b] {
+            assert!(!s.words.is_empty());
+            for w in &s.words {
+                assert!(
+                    s.start <= w.start && w.start <= w.end && w.end <= s.end,
+                    "{w:?} in {s:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
