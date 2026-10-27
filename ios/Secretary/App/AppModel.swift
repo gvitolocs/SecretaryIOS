@@ -185,7 +185,9 @@ final class AppModel {
             return mediaClient
         }
         media = PerfLog.measure("media") { MediaPlayer(api: { MediaAPI(client: mediaAPI()) }) }
-        gallery = PerfLog.measure("gallery") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery") }
+        gallery = PerfLog.measure("gallery") {
+            GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery", thisDevice: PhotoBackup.stableDeviceId())
+        }
         drive = PerfLog.measure("drive") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive") }
         backup = PerfLog.measure("backup") { PhotoBackup(api: { GalleryAPI(client: mediaAPI()) }) }
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)

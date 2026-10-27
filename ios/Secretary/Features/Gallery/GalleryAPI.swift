@@ -89,12 +89,37 @@ struct GalleryAlbum: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// A device the library has photos from (`GET /v1/media/devices`).
+struct GalleryDevice: Decodable, Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let kind: String
+    var photos: Int
+    var videos: Int
+
+    var icon: String {
+        switch kind {
+        case "iphone": "iphone"
+        case "ipad": "ipad"
+        case "android": "smartphone"
+        case "mac": "laptopcomputer"
+        case "pc": "desktopcomputer"
+        case "camera": "camera"
+        case "backup": "externaldrive"
+        default: "photo.on.rectangle"
+        }
+    }
+}
+
 struct GalleryAPI: Sendable {
     let client: APIClient
 
     struct Filter: Hashable, Sendable {
         /// `gallery` (the phones' photos and videos) or `drive` (everything else); nil: both.
         var scope: String?
+        /// One device's photos (the Gallery opens on this iPhone's); nil: every device. Albums and
+        /// search always span every device.
+        var device: String?
         var kind: String?
         var album: String?
         var query: String = ""
@@ -104,12 +129,22 @@ struct GalleryAPI: Sendable {
     func items(_ filter: Filter, cursor: String? = nil, limit: Int = 200) async throws -> GalleryPage {
         var q: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
         if let scope = filter.scope { q.append(URLQueryItem(name: "scope", value: scope)) }
+        if let device = filter.device, filter.album == nil, filter.query.trimmingCharacters(in: .whitespaces).isEmpty {
+            q.append(URLQueryItem(name: "device", value: device))
+        }
         if let kind = filter.kind { q.append(URLQueryItem(name: "kind", value: kind)) }
         if let album = filter.album { q.append(URLQueryItem(name: "album", value: album)) }
         if !filter.query.trimmingCharacters(in: .whitespaces).isEmpty { q.append(URLQueryItem(name: "q", value: filter.query)) }
         if filter.favorites { q.append(URLQueryItem(name: "favorite", value: "true")) }
         if let cursor { q.append(URLQueryItem(name: "cursor", value: cursor)) }
         return try await client.get("/v1/media/items", query: q)
+    }
+
+    /// Every device photos came from (this iPhone, a Mac, the old backups), with what each holds.
+    func devices() async throws -> [GalleryDevice] {
+        struct Page: Decodable { let devices: [GalleryDevice] }
+        let page: Page = try await client.get("/v1/media/devices")
+        return page.devices
     }
 
     /// With a scope: only the albums with items there, counted there.

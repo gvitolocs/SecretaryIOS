@@ -155,7 +155,7 @@ final class PhotoBackup {
     }
 
     /// One id per iPhone that survives reinstalls (Keychain), so edits keep versioning the same items.
-    private static func stableDeviceId() -> String {
+    static func stableDeviceId() -> String {
         let store = KeychainStore(service: "tech.getsecretary.app", account: "photo-backup-device")
         if let id = try? store.read(), !id.isEmpty { return id }
         let id = "ios-" + (UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString).lowercased()

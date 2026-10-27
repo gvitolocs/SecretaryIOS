@@ -15,6 +15,11 @@ final class GalleryStore {
     var filter: GalleryAPI.Filter
     /// `gallery` (the Gallery: the phones' photos and videos) or `drive` (the Drive plugin).
     let scope: String?
+    /// This iPhone's device id (the photo backup's): the Gallery opens on its photos.
+    let thisDevice: String?
+    private(set) var devices: [GalleryDevice] = []
+    /// What the store shows when nothing is filtered: this device's photos, in this scope.
+    var defaultFilter: GalleryAPI.Filter { GalleryAPI.Filter(scope: scope, device: thisDevice) }
     @ObservationIgnored private var cursor: String?
     @ObservationIgnored let api: () -> GalleryAPI
 
@@ -33,10 +38,11 @@ final class GalleryStore {
             .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI, scope: String? = nil) {
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil, thisDevice: String? = nil) {
         self.api = api
         self.scope = scope
-        filter = GalleryAPI.Filter(scope: scope)
+        self.thisDevice = thisDevice
+        filter = GalleryAPI.Filter(scope: scope, device: thisDevice)
         // The saved listing can be thousands of items: decoded off the main thread, not at launch.
         let url = listingURL
         Task { [weak self] in
@@ -68,7 +74,7 @@ final class GalleryStore {
             error = nil
             showingCachedListing = false
             hasServerPage = true
-            if requestedFilter == GalleryAPI.Filter(scope: scope) {
+            if requestedFilter == defaultFilter {
                 let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
                 let url = listingURL
                 await Task.detached(priority: .utility) {
@@ -92,6 +98,10 @@ final class GalleryStore {
             items += page.items.filter { !known.contains($0.id) }
             self.cursor = page.nextCursor
         }
+    }
+
+    func loadDevices() async {
+        if let d = try? await api().devices() { devices = d }
     }
 
     func loadAlbums() async {
@@ -188,6 +198,7 @@ struct GalleryScreen: View {
             await store.reload()
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) { DeviceMenu() }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button { showAlbums = true } label: { Image(systemName: "rectangle.stack") }
                     .accessibilityLabel("Albums")
@@ -305,6 +316,45 @@ struct GalleryThumb: View {
                 }
             }
         }
+    }
+}
+
+/// The owner's devices (2026-10-27): the Gallery opens on this iPhone's photos; the menu shows another
+/// device's (a Mac, an Android, the old backups) or every device's. Everything is in the Lucina cloud.
+private struct DeviceMenu: View {
+    @Environment(GalleryStore.self) private var store
+
+    var body: some View {
+        @Bindable var store = store
+        Menu {
+            Picker("Device", selection: $store.filter.device) {
+                if let mine = store.thisDevice {
+                    Label("This iPhone", systemImage: "iphone").tag(Optional(mine))
+                }
+                ForEach(store.devices.filter { $0.id != store.thisDevice }) { d in
+                    Label("\(d.name) · \(d.photos + d.videos)", systemImage: d.icon).tag(Optional(d.id))
+                }
+                Label("All devices", systemImage: "square.stack.3d.up").tag(String?.none)
+            }
+        } label: {
+            Label(title, systemImage: icon)
+                .labelStyle(.iconOnly)
+        }
+        .accessibilityLabel("Device: \(title)")
+        .accessibilityIdentifier("galleryDevice")
+        .task { await store.loadDevices() }
+    }
+
+    private var title: String {
+        guard let id = store.filter.device else { return String(localized: "All devices") }
+        if id == store.thisDevice { return String(localized: "This iPhone") }
+        return store.devices.first { $0.id == id }?.name ?? id
+    }
+
+    private var icon: String {
+        guard let id = store.filter.device else { return "square.stack.3d.up" }
+        if id == store.thisDevice { return "iphone" }
+        return store.devices.first { $0.id == id }?.icon ?? "photo.on.rectangle"
     }
 }
 
