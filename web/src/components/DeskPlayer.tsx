@@ -54,6 +54,8 @@ export interface DeskPlayerProps {
   onFallback: (why: DeskFallback) => void;
   /** Something changed who drives: poll now. */
   onChanged?: () => void;
+  /** This player holds the takeover (the page's own status reads it). */
+  onDriving?: (driving: boolean) => void;
 }
 
 /** A takeover's trigger, delivered once the control socket is live. */
@@ -561,6 +563,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
 
   createEffect(on([focus, driving, switching], () => peekPill()));
+  createEffect(on(driving, (d) => props.onDriving?.(d)));
 
   /** What the shell last said or was told, so its own changes are not echoed back to it. */
   let shellFocus = false;

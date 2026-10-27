@@ -664,6 +664,7 @@ describe("ComputerView with LucinaDesk", () => {
     expect(calls.some((c) => c.url === "/v1/computer/view")).toBe(false);
     expect(screen.queryByTitle("Lucina's screen")).toBeNull();
     expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
+    expect(screen.queryByText("You are watching. Take over to use the mouse and keyboard.")).toBeNull();
   });
 
   it("the player's own full screen does not switch on the page's classic full-screen layout", async () => {

@@ -196,6 +196,8 @@ export default function ComputerView() {
   const [classic, setClassic] = createSignal(readString("local", "computer.classic") === "yes");
   /** LucinaDesk failed on this page (no endpoint, not the owner, a codec, no picture): Cua until reload. */
   const [deskBroken, setDeskBroken] = createSignal(false);
+  /** LucinaDesk's player holds the takeover (its own control socket, not this page's lease calls). */
+  const [deskDriving, setDeskDriving] = createSignal(false);
   /**
    * The desktop's Live view is LucinaDesk (components/DeskPlayer.tsx), not Cua's viewer. It drives
    * itself (first click or key takes over, its own pill, its own focus mode), so this page's full
@@ -807,9 +809,10 @@ export default function ComputerView() {
       <div class="computer-status" data-driver={state()?.driver ?? "loading"} data-mine={mine() ? "yes" : "no"}>
         <span class="computer-dot" aria-hidden="true" />
         <div class="computer-status-text">
-          <strong role="status">{driverLabel(state(), mine())}</strong>
+          <strong role="status">{driverLabel(state(), mine() || (desk() && deskDriving()))}</strong>
           <Show when={state()?.task}>{(task) => <span class="computer-muted">{t("computer.working", { what: task().what })}</span>}</Show>
-          <Show when={!mine()}>
+          {/* LucinaDesk's pill says it (and its first click takes over, no button needed). */}
+          <Show when={!mine() && !desk()}>
             <span class="computer-muted">{t("computer.watchOnly")}</span>
           </Show>
           <Show when={mode() === "live" && view() && via()}>
@@ -844,7 +847,13 @@ export default function ComputerView() {
       </Show>
 
       <Show when={desk()}>
-        <LucinaDesk sandbox={sandbox()} state={state()} onFallback={deskFallback} onChanged={() => void loadState()} />
+        <LucinaDesk
+          sandbox={sandbox()}
+          state={state()}
+          onFallback={deskFallback}
+          onChanged={() => void loadState()}
+          onDriving={setDeskDriving}
+        />
       </Show>
 
       <Show when={!desk()}>
