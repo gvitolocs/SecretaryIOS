@@ -185,6 +185,31 @@ pub async fn handle_chat(
 pub type ReplySink =
     Arc<dyn Fn(String) -> futures_util::future::BoxFuture<'static, ()> + Send + Sync>;
 
+/// What a channel's own planner action produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelActionOutcome {
+    /// The skill ran: the reply is Node's `generateSkillReply` over its
+    /// result, and Honcho keeps `[<memo>]\n<result>` with it.
+    Skill {
+        name: String,
+        result: String,
+        instruction: String,
+        memo: String,
+    },
+    /// A fixed reply (a refusal, a failure).
+    Reply(String),
+}
+
+/// A channel's own planner actions (Discord: `discord_admin_task`): called
+/// with the action and the plan; `None` when the channel does not handle
+/// that action. It runs before the turn's guard and does its own
+/// authorisation.
+pub type ChannelActions = Arc<
+    dyn Fn(String, Value) -> futures_util::future::BoxFuture<'static, Option<ChannelActionOutcome>>
+        + Send
+        + Sync,
+>;
+
 /// A turn from a chat channel other than the Secretary app (Telegram): where
 /// it comes from and where its effects go. The Secretary path has none and
 /// keeps its own values.
@@ -212,6 +237,9 @@ pub struct ChannelOrigin {
     /// Reminders created in this turn are delivered here.
     pub reminder_chat_id: String,
     pub reminder_source: &'static str,
+    /// Reminder actions (schedule, list, the reminders of a compound
+    /// question) are refused with this text (Discord: anyone but the owner).
+    pub reminders_refused: Option<String>,
     /// The owner himself: otherwise the turn is held to the MCP allowlist
     /// (no owner tools, no secrets).
     pub owner: bool,
@@ -219,6 +247,8 @@ pub struct ChannelOrigin {
     pub share: bool,
     /// Where a started job's result is sent when it finishes.
     pub on_job_done: Option<ReplySink>,
+    /// Planner actions the channel runs itself.
+    pub channel_actions: Option<ChannelActions>,
 }
 
 /// A chat channel's text (or attachment) turn through the Secretary turn
@@ -375,6 +405,13 @@ impl Turn<'_> {
 
     fn recent(&self) -> &RecentChat {
         self.origin.as_ref().map_or(&self.st.recent, |o| &o.recent)
+    }
+
+    /// The channel refuses reminder actions for this sender.
+    fn reminders_refused(&self) -> Option<&str> {
+        self.origin
+            .as_ref()
+            .and_then(|o| o.reminders_refused.as_deref())
     }
 
     fn recent_key(&self) -> &str {
@@ -761,6 +798,9 @@ fn remember_turn(st: &AppState, t: &Turn<'_>, action: &str, reply: &str, action_
         // (grocery replies carry their intent).
         let assistant = if action == "grocery" && !action_result.is_empty() {
             format!("[{action_result}] {reply}")
+        } else if action == "discord_admin_task" && !action_result.is_empty() {
+            // Node: `[discord admin]\n<result>\n\n[reply]\n<reply>`.
+            format!("{action_result}\n\n[reply]\n{reply}")
         } else {
             reply.to_owned()
         };
@@ -929,6 +969,10 @@ async fn compound_blocks(t: &Turn<'_>, domains: &[&'static str], memory: &str) -
                 )
             }
             _ => {
+                if let Some(refused) = t.reminders_refused() {
+                    add(format!("Reminders: not available here ({refused})."));
+                    continue;
+                }
                 let pending: Vec<_> = owner_reminders(st)
                     .unwrap_or_default()
                     .into_iter()
@@ -1241,6 +1285,39 @@ async fn json_turn(
         .unwrap_or("reply")
         .to_owned();
 
+    // The channel's own actions (Discord admin): before the guard, which
+    // they replace with their own authorisation.
+    if let Some(run) = t.origin.as_ref().and_then(|o| o.channel_actions.clone()) {
+        if let Some(outcome) = run(action.clone(), plan.clone()).await {
+            return match outcome {
+                ChannelActionOutcome::Reply(text) => Finish::reply(text, &action),
+                ChannelActionOutcome::Skill {
+                    name,
+                    result,
+                    instruction,
+                    memo,
+                } => {
+                    let text = st
+                        .planner
+                        .generate_skill_reply(
+                            &t.input(memory, t.platform_label()),
+                            &name,
+                            &result,
+                            &instruction,
+                        )
+                        .await
+                        .unwrap_or_default();
+                    let text = if text.trim().is_empty() {
+                        "I could not generate a reply.".to_owned()
+                    } else {
+                        text
+                    };
+                    Finish::reply(text, &action).with(format!("[{memo}]\n{result}"), None)
+                }
+            };
+        }
+    }
+
     if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&action.as_str()) {
         tracing::warn!(session_id = %t.session, blocked = %action, "secretary mcp turn refused");
         return Finish::refusal(&persona, &action);
@@ -1322,6 +1399,11 @@ async fn json_turn(
     }
 
     let tz = st.cfg.time_zone;
+    if action == "list_reminders" || action == "schedule_reminder" {
+        if let Some(refused) = t.reminders_refused() {
+            return Finish::reply(refused, &action);
+        }
+    }
     if action == "list_reminders" && st.cfg.reminders_enabled {
         let scope = plan["scope"]
             .as_str()

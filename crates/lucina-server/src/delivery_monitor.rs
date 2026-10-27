@@ -314,6 +314,47 @@ pub fn telegram_probe(health: lucina_telegram::poller::SharedHealth) -> Probe {
     })
 }
 
+/// Discord is down while the message session holds no lease, the gateway is
+/// not connected, the token was refused, or no gateway event (heartbeat
+/// acknowledgements included, every ~41 s) arrived for 2 minutes.
+pub fn discord_probe(health: lucina_discord::session::SharedHealth) -> Probe {
+    let started = Utc::now();
+    Arc::new(move |now| {
+        let h = health.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !h.enabled {
+            return None;
+        }
+        let last = h
+            .last_event_at
+            .as_deref()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or(started);
+        let fresh = now - last <= chrono::Duration::minutes(2);
+        let up = h.lease_held && h.connected && fresh;
+        Some(Observation {
+            up,
+            detail: if up {
+                String::new()
+            } else if h.state == "unauthorized" {
+                "the Discord token was refused (4004)".into()
+            } else if !h.lease_held {
+                match &h.lease_holder {
+                    Some(o) => format!("another session holds the Discord lease ({o})"),
+                    None => h
+                        .last_error
+                        .unwrap_or_else(|| "no Discord session lease".into()),
+                }
+            } else if !h.connected {
+                h.last_error
+                    .unwrap_or_else(|| "the Discord gateway is not connected".into())
+            } else {
+                "no Discord gateway event or heartbeat for 2 minutes".into()
+            },
+        })
+    })
+}
+
 /// Owner Telegram message (used when the app path is the one down).
 async fn telegram_owner(st: &AppState, text: &str) {
     let (Some(token), Some(chat)) = (&st.cfg.telegram_token, &st.cfg.owner_chat_id) else {
@@ -552,6 +593,52 @@ mod tests {
         let alerts = m2.check(t0 + chrono::Duration::minutes(31));
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].1, Alert::Recovered);
+    }
+
+    #[test]
+    fn discord_probe_needs_lease_connection_and_fresh_events() {
+        use lucina_discord::session::SessionHealth;
+        let h = Arc::new(Mutex::new(SessionHealth::default()));
+        let probe = discord_probe(h.clone());
+        let now = Utc::now();
+        // Off: not a path.
+        assert_eq!(probe(now), None);
+        *h.lock().unwrap() = SessionHealth {
+            enabled: true,
+            state: "lease_wait".into(),
+            lease_holder: Some("lucina-rs pid 7 on nezopt".into()),
+            ..Default::default()
+        };
+        let o = probe(now).unwrap();
+        assert!(!o.up);
+        assert_eq!(
+            o.detail,
+            "another session holds the Discord lease (lucina-rs pid 7 on nezopt)"
+        );
+        {
+            let mut g = h.lock().unwrap();
+            g.lease_held = true;
+            g.connected = true;
+            g.state = "connected".into();
+            g.last_event_at = Some(now.to_rfc3339());
+        }
+        assert!(probe(now + chrono::Duration::seconds(60)).unwrap().up);
+        let stale = probe(now + chrono::Duration::minutes(3)).unwrap();
+        assert!(!stale.up);
+        assert_eq!(
+            stale.detail,
+            "no Discord gateway event or heartbeat for 2 minutes"
+        );
+        {
+            let mut g = h.lock().unwrap();
+            g.lease_held = false;
+            g.connected = false;
+            g.state = "unauthorized".into();
+        }
+        assert_eq!(
+            probe(now).unwrap().detail,
+            "the Discord token was refused (4004)"
+        );
     }
 
     #[test]
