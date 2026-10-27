@@ -27,8 +27,10 @@ import { studio } from "./dict/studio";
 import { tasks } from "./dict/tasks";
 import { wardrobe } from "./dict/wardrobe";
 import { viewer } from "./dict/viewer";
+import { gallery } from "./dict/gallery";
+import { galleryInfo } from "./dict/galleryInfo";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets };
+export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo };
 
 export type Dictionaries = typeof dictionaries;
