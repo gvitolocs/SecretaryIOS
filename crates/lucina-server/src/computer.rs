@@ -194,6 +194,10 @@ fn job_json(id: &str, j: &Job) -> Value {
     })
 }
 
+fn job_not_found() -> ApiError {
+    ApiError::new(404, "job_not_found", "no such computer job (jobs are kept for an hour)")
+}
+
 fn prune_jobs(map: &mut HashMap<String, Job>) {
     map.retain(|_, j| j.finished.is_none_or(|t| t.elapsed() < JOB_KEEP));
 }
@@ -390,13 +394,13 @@ pub async fn computer(
             only(Method::GET)?;
             let mut map = jobs().lock().unwrap_or_else(|e| e.into_inner());
             prune_jobs(&mut map);
-            let j = map.get(id).ok_or_else(ApiError::not_found)?;
+            let j = map.get(id).ok_or_else(job_not_found)?;
             Ok(ok(job_json(id, j)))
         }
         (Some("task"), Some(id), Some("cancel"), 3) => {
             only(Method::POST)?;
             let map = jobs().lock().unwrap_or_else(|e| e.into_inner());
-            let j = map.get(id).ok_or_else(ApiError::not_found)?;
+            let j = map.get(id).ok_or_else(job_not_found)?;
             j.cancel.cancel();
             tracing::info!(job = %id, who = %caller(headers), "computer job cancel requested");
             Ok(ok(job_json(id, j)))
