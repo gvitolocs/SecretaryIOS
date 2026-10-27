@@ -8,6 +8,7 @@ import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode"
 import { createTouchMouse } from "../lib/touch";
 import {
   clipboardMessage,
+  clipImageFrame,
   createWheel,
   fitRect,
   isMacPaste,
@@ -121,8 +122,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
   const [zoom, setZoom] = createSignal({ scale: 1, dx: 0, dy: 0 });
   const [cursor, setCursor] = createSignal<{ x: number; y: number } | null>(null);
-  /** Text Lucina copied that the browser would not let us put on the clipboard: tap to copy. */
-  const [copied, setCopied] = createSignal<string | null>(null);
+  /** What Lucina copied that the browser would not let us put on the clipboard: tap to copy. */
+  const [copied, setCopied] = createSignal<{ text?: string; png?: Uint8Array; thumb?: string } | null>(null);
   const [stats, setStats] = createSignal<{ codec: string; fps: number; rtt: number; firstFrameMs: number | null }>({
     codec: "",
     fps: 0,
@@ -193,10 +194,14 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       refused: (what, why) => {
         // A watch socket refusing input means we raced a give-back; nothing to tell the owner.
         if (what === "clipboard" && why === "too_large") setNotice(t("desk.pasteTooLarge"));
+      else if (what === "clipboard" && why === "invalid") setNotice(t("desk.pasteRefused"));
         else if (why !== "watch") console.warn("[lucinadesk] input refused:", what, why);
       },
       clipboard: (text) => {
-        if (s === cur && driving()) copyLocal(text);
+        if (s === cur && driving()) fromLucina({ text });
+      },
+      clipboardImage: (png) => {
+        if (s === cur && driving()) fromLucina({ png });
       },
       closed: (code, reason, wasOpen) => onClosed(s, code, reason, wasOpen),
       unsupported: (codec: DeskCodec) => {
@@ -511,18 +516,58 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     input(PASTE_KEY);
   };
 
+  /** The Mac's image (PNG) onto Lucina's clipboard, then Ctrl+V there. */
+  const pasteImage = (png: Uint8Array) => {
+    if (!driving() || cur?.mode !== "control") return;
+    const frame = clipImageFrame(png);
+    if (!frame) {
+      setNotice(t("desk.imageTooLarge"));
+      return;
+    }
+    cur.sendBinary(frame);
+    input(PASTE_KEY);
+  };
+
+  type MacClip = { text: string } | { png: Uint8Array };
+  const pasteClip = (c: MacClip) => ("png" in c ? pasteImage(c.png) : pasteText(c.text));
+
+  /** The Mac's clipboard through the Clipboard API: an image first (PNG), else text; null if refused. */
+  const readMacClipboard = async (): Promise<MacClip | null> => {
+    const cb = navigator.clipboard;
+    if (cb?.read) {
+      try {
+        const items = await cb.read();
+        for (const it of items) {
+          if (it.types.includes("image/png")) return { png: new Uint8Array(await (await it.getType("image/png")).arrayBuffer()) };
+        }
+        for (const it of items) {
+          if (it.types.includes("text/plain")) return { text: await (await it.getType("text/plain")).text() };
+        }
+        return null;
+      } catch {
+        // not allowed here: try text only
+      }
+    }
+    try {
+      const text = await cb?.readText?.();
+      return text ? { text } : null;
+    } catch {
+      return null;
+    }
+  };
+
   /** A ⌘V waiting for the Mac's clipboard: the Clipboard API or the browser's own paste event, first wins. */
-  let pendingPaste: ((text: string) => void) | null = null;
+  let pendingPaste: ((c: MacClip) => void) | null = null;
   const PASTE_WAIT_MS = 1500;
 
   const macPaste = () => {
     let done = false;
-    const finish = (text: string) => {
+    const finish = (c: MacClip) => {
       if (done) return;
       done = true;
       pendingPaste = null;
       window.clearTimeout(timer);
-      pasteText(text);
+      pasteClip(c);
     };
     pendingPaste = finish;
     const timer = window.setTimeout(() => {
@@ -531,41 +576,75 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       pendingPaste = null;
       setNotice(t("desk.pasteDenied"));
     }, PASTE_WAIT_MS);
-    navigator.clipboard?.readText?.().then(finish, () => undefined);
+    void readMacClipboard().then((c) => c && finish(c));
   };
 
   const onPaste = (e: ClipboardEvent) => {
     if (!pendingPaste || (document.activeElement !== canvas && document.activeElement !== kbd)) return;
-    const text = e.clipboardData?.getData("text/plain") ?? "";
-    if (!text) return;
+    const data = e.clipboardData;
+    const image = Array.from(data?.files ?? []).find((f) => f.type === "image/png");
+    const text = data?.getData("text/plain") ?? "";
+    if (!image && !text) return;
     e.preventDefault();
-    pendingPaste(text);
+    const finish = pendingPaste;
+    if (image) void image.arrayBuffer().then((b) => finish({ png: new Uint8Array(b) }));
+    else finish({ text });
+  };
+
+  // What Lucina copies can come as a text frame and an image frame; within this long they are one copy.
+  const COPY_MERGE_MS = 200;
+  let incoming: { text?: string; png?: Uint8Array } = {};
+  let incomingTimer: number | undefined;
+  const fromLucina = (part: { text?: string; png?: Uint8Array }) => {
+    incoming = { ...incoming, ...part };
+    window.clearTimeout(incomingTimer);
+    if (incoming.text !== undefined && incoming.png) flushIncoming();
+    else incomingTimer = window.setTimeout(flushIncoming, COPY_MERGE_MS);
+  };
+  const flushIncoming = () => {
+    window.clearTimeout(incomingTimer);
+    const got = incoming;
+    incoming = {};
+    if (got.text !== undefined || got.png) copyLocal(got);
+  };
+
+  // The PNG's bytes are never shared memory; TypeScript cannot know that of a plain Uint8Array.
+  const pngBlob = (png: Uint8Array) => new Blob([png as Uint8Array<ArrayBuffer>], { type: "image/png" });
+
+  /** A copy as one clipboard write: text, an image, or both (the image as PNG). */
+  const writeMac = (c: { text?: string; png?: Uint8Array }): Promise<void> => {
+    const cb = navigator.clipboard;
+    if (!c.png) return cb?.writeText ? cb.writeText(c.text ?? "") : Promise.reject(new Error("no clipboard API"));
+    if (!cb?.write || typeof ClipboardItem !== "function") return Promise.reject(new Error("no image clipboard"));
+    const parts: Record<string, Blob> = { "image/png": pngBlob(c.png) };
+    if (c.text !== undefined) parts["text/plain"] = new Blob([c.text], { type: "text/plain" });
+    return cb.write([new ClipboardItem(parts)]);
   };
 
   let copiedTimer: number | undefined;
+  const clearCopied = () => {
+    const c = copied();
+    if (c?.thumb) URL.revokeObjectURL(c.thumb);
+    setCopied(null);
+  };
   /** Lucina copied something: onto the Mac's clipboard, or a chip to tap where the browser says no. */
-  const copyLocal = (text: string) => {
-    const chip = () => {
-      setCopied(text);
+  const copyLocal = (c: { text?: string; png?: Uint8Array }) => {
+    writeMac(c).then(clearCopied, () => {
+      clearCopied();
+      setCopied({ ...c, thumb: c.png ? URL.createObjectURL(pngBlob(c.png)) : undefined });
       window.clearTimeout(copiedTimer);
-      copiedTimer = window.setTimeout(() => setCopied(null), 20_000);
-    };
-    const write = navigator.clipboard?.writeText?.(text);
-    if (!write) chip();
-    else
-      write.then(
-        () => setCopied(null),
-        () => chip(),
-      );
+      copiedTimer = window.setTimeout(clearCopied, 20_000);
+    });
   };
 
-  /** The chip's tap: a user gesture, so the Clipboard API works, or the old copy command does. */
+  /** The chip's tap: a user gesture, so the Clipboard API works, or (text) the old copy command does. */
   const copyChip = () => {
-    const text = copied();
-    if (text === null) return;
+    const c = copied();
+    if (!c) return;
     const viaCommand = () => {
+      if (c.text === undefined) return;
       const area = document.createElement("textarea");
-      area.value = text;
+      area.value = c.text;
       area.setAttribute("readonly", "");
       area.style.cssText = "position:fixed;opacity:0;left:0;top:0";
       document.body.appendChild(area);
@@ -576,8 +655,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
         area.remove();
       }
     };
-    const write = navigator.clipboard?.writeText?.(text);
-    (write ?? Promise.reject(new Error("no clipboard API"))).catch(viaCommand).finally(() => setCopied(null));
+    writeMac(c).catch(viaCommand).finally(clearCopied);
   };
 
   /** Desktop keys on the focused canvas. */
@@ -762,6 +840,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       window.clearTimeout(idleTimer);
       window.clearTimeout(peekTimer);
       window.clearTimeout(copiedTimer);
+      window.clearTimeout(incomingTimer);
+      clearCopied();
       unFocus();
       window.removeEventListener("pagehide", exitPage);
       exitPage();
@@ -949,10 +1029,13 @@ export default function DeskPlayer(props: DeskPlayerProps) {
         </div>
       </Show>
 
-      <Show when={copied() !== null && driving()}>
-        <button type="button" class="ldesk-chip" onClick={copyChip}>
-          {t("desk.copiedChip")}
-        </button>
+      <Show when={copied() !== null && driving() ? copied() : null}>
+        {(c) => (
+          <button type="button" class="ldesk-chip" onClick={copyChip}>
+            <Show when={c().thumb}>{(src) => <img class="ldesk-chip-thumb" src={src()} alt="" />}</Show>
+            {t("desk.copiedChip")}
+          </button>
+        )}
       </Show>
 
       <textarea

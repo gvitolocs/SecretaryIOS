@@ -252,7 +252,11 @@ html.ldesk-focus body {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
+.ldesk-chip-thumb { height: 26px; max-width: 48px; object-fit: cover; border-radius: 4px; }
 .ldesk-toast {
   position: absolute;
   left: 50%;

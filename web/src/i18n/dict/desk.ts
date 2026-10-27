@@ -38,6 +38,8 @@ const en = {
   copiedChip: "Copied on Lucina's computer · tap to copy",
   pasteDenied: "Allow clipboard access to paste into Lucina's computer.",
   pasteTooLarge: "Too much to paste: the limit is 60 KB of text.",
+  imageTooLarge: "That image is too large to paste: the limit is 10 MB.",
+  pasteRefused: "Lucina's computer did not take that paste.",
 };
 
 export const desk: FeatureDictionary<typeof en> = {
@@ -78,6 +80,8 @@ export const desk: FeatureDictionary<typeof en> = {
     copiedChip: "Copiato sul computer di Lucina · tocca per copiare",
     pasteDenied: "Consenti l'accesso agli appunti per incollare sul computer di Lucina.",
     pasteTooLarge: "Troppo da incollare: il limite è 60 KB di testo.",
+    imageTooLarge: "Immagine troppo grande da incollare: il limite è 10 MB.",
+    pasteRefused: "Il computer di Lucina non ha accettato l'incolla.",
   },
   da: {
     screen: "Lucinas skærm",
@@ -115,5 +119,7 @@ export const desk: FeatureDictionary<typeof en> = {
     copiedChip: "Kopieret på Lucinas computer · tryk for at kopiere",
     pasteDenied: "Giv adgang til udklipsholderen for at indsætte på Lucinas computer.",
     pasteTooLarge: "For meget at indsætte: grænsen er 60 KB tekst.",
+    imageTooLarge: "Billedet er for stort til at indsætte: grænsen er 10 MB.",
+    pasteRefused: "Lucinas computer tog ikke imod indsætningen.",
   },
 };

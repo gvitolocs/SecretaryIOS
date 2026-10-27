@@ -165,6 +165,26 @@ export function clipboardMessage(text: string): ClientMessage | null {
   return new TextEncoder().encode(text).byteLength <= CLIPBOARD_MAX_BYTES ? { type: "clipboard", text } : null;
 }
 
+/** Clipboard images (CONTRACT "Clipboard images"): PNG, both ways, control sockets only, this big at most. */
+export const CLIP_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** A binary frame of kind 2 (clipboard image, PNG) → the PNG bytes, or null for anything else. */
+export function parseClipImage(buf: ArrayBuffer): Uint8Array | null {
+  if (buf.byteLength <= 4) return null;
+  const v = new Uint8Array(buf, 0, 2);
+  if (v[0] !== 2 || v[1] !== 1) return null;
+  return new Uint8Array(buf, 4);
+}
+
+/** The PNG as a kind-2 frame for Lucina's clipboard; null over the limit (the server would refuse it). */
+export function clipImageFrame(png: Uint8Array): ArrayBuffer | null {
+  if (png.byteLength > CLIP_IMAGE_MAX_BYTES) return null;
+  const out = new Uint8Array(4 + png.byteLength);
+  out.set([2, 1, 0, 0]);
+  out.set(png, 4);
+  return out.buffer;
+}
+
 /** Ctrl+V on Lucina's computer: sent right after `clipboardMessage` (the gateway holds it until the text is there). */
 export const PASTE_KEY: ClientMessage = { type: "key", char: "v", modifiers: ["Control"] };
 

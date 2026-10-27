@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   clipboardMessage,
+  clipImageFrame,
+  CLIP_IMAGE_MAX_BYTES,
+  parseClipImage,
   CLIPBOARD_MAX_BYTES,
   createWheel,
   encodeVideo,
@@ -154,5 +157,22 @@ describe("deskWire clipboard", () => {
     for (const k of ["q", "w", "h", "m", "Tab", "`", " "]) expect(keyMessage(key(k, { metaKey: true }))).toBeNull();
     // Ctrl is Lucina's own: Ctrl+W closes her tab, it is not the Mac's.
     expect(keyMessage(key("w", { ctrlKey: true }))).toEqual({ type: "key", char: "w", modifiers: ["Control"] });
+  });
+});
+
+describe("deskWire clipboard images", () => {
+  it("frames a PNG as kind 2 and reads it back; refuses over 10 MiB", () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const frame = clipImageFrame(png)!;
+    expect([...new Uint8Array(frame)]).toEqual([2, 1, 0, 0, 0x89, 0x50, 0x4e, 0x47]);
+    expect([...parseClipImage(frame)!]).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect(clipImageFrame(new Uint8Array(CLIP_IMAGE_MAX_BYTES))).not.toBeNull();
+    expect(clipImageFrame(new Uint8Array(CLIP_IMAGE_MAX_BYTES + 1))).toBeNull();
+  });
+
+  it("ignores video and unknown formats", () => {
+    expect(parseClipImage(new Uint8Array([1, 1, 0, 0, 9]).buffer)).toBeNull();
+    expect(parseClipImage(new Uint8Array([2, 7, 0, 0, 9]).buffer)).toBeNull();
+    expect(parseClipImage(new Uint8Array([2, 1, 0, 0]).buffer)).toBeNull();
   });
 });

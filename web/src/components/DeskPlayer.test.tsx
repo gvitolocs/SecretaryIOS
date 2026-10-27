@@ -25,8 +25,8 @@ class FakeWS {
   ) {
     FakeWS.all.push(this);
   }
-  send(d: string) {
-    this.sent.push(JSON.parse(d));
+  send(d: string | ArrayBuffer) {
+    this.sent.push(typeof d === "string" ? JSON.parse(d) : { binary: [...new Uint8Array(d)] });
   }
   close(code = 1000) {
     this.closedWith = code;
@@ -41,6 +41,10 @@ class FakeWS {
   }
   text(m: unknown) {
     this.onmessage?.({ data: JSON.stringify(m) });
+  }
+  /** A clipboard image frame (kind 2, PNG) from the server. */
+  image(png: number[]) {
+    this.onmessage?.({ data: new Uint8Array([2, 1, 0, 0, ...png]).buffer });
   }
   drop(code: number, reason = "") {
     this.readyState = 3;
@@ -372,6 +376,62 @@ describe("DeskPlayer", () => {
         { type: "clipboard", text: "pasted words" },
         { type: "key", char: "v", modifiers: ["Control"] },
       ]);
+    });
+
+    describe("images", () => {
+      let write: ReturnType<typeof vi.fn>;
+      class FakeItem {
+        constructor(readonly parts: Record<string, Blob>) {}
+      }
+      beforeEach(() => {
+        write = vi.fn(async () => undefined);
+        vi.stubGlobal("ClipboardItem", FakeItem);
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText, writeText, write, read: vi.fn(async () => []) } });
+      });
+      const pngItem = (bytes: number[]) => ({
+        types: ["image/png"],
+        getType: async () => new Blob([new Uint8Array(bytes)], { type: "image/png" }),
+      });
+
+      it("a copy on her side that brings text and an image is one clipboard write with both", async () => {
+        const control = await drive();
+        control.text({ type: "clipboard", text: "caption" });
+        control.image([0x89, 0x50]);
+        await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+        const item = (write.mock.calls[0]![0] as FakeItem[])[0]!;
+        expect(Object.keys(item.parts).sort()).toEqual(["image/png", "text/plain"]);
+        expect([...new Uint8Array(await item.parts["image/png"]!.arrayBuffer())]).toEqual([0x89, 0x50]);
+        expect(writeText).not.toHaveBeenCalled();
+      });
+
+      it("⌘V with an image on the Mac: the kind-2 frame, then Ctrl+V", async () => {
+        (navigator.clipboard as unknown as { read: ReturnType<typeof vi.fn> }).read.mockResolvedValueOnce([pngItem([1, 2, 3])]);
+        const control = await drive();
+        fireEvent.keyDown(screen.getByRole("img"), { key: "v", metaKey: true });
+        await waitFor(() => expect(nonAcks(control)).toHaveLength(2));
+        expect(nonAcks(control)).toEqual([{ binary: [2, 1, 0, 0, 1, 2, 3] }, { type: "key", char: "v", modifiers: ["Control"] }]);
+        expect(readText).not.toHaveBeenCalled();
+      });
+
+      it("an image over 10 MiB is not sent", async () => {
+        (navigator.clipboard as unknown as { read: ReturnType<typeof vi.fn> }).read.mockResolvedValueOnce([
+          { types: ["image/png"], getType: async () => new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: "image/png" }) },
+        ]);
+        const control = await drive();
+        fireEvent.keyDown(screen.getByRole("img"), { key: "v", metaKey: true });
+        expect(await screen.findByText("That image is too large to paste: the limit is 10 MB.")).toBeInTheDocument();
+        expect(nonAcks(control)).toEqual([]);
+      });
+
+      it("watching: an image frame is ignored", async () => {
+        render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+        await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+        const watch = FakeWS.all[0]!;
+        await live(watch);
+        watch.image([0x89]);
+        await new Promise((r) => setTimeout(r, 300));
+        expect(write).not.toHaveBeenCalled();
+      });
     });
 
     it("watching: no clipboard either way; ⌘V only asks to take over", async () => {

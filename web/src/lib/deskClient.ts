@@ -15,6 +15,7 @@ import {
   CODEC_PREFERENCE,
   DESK_PROTOCOL,
   WEBCODECS,
+  parseClipImage,
   parseServer,
   type ClientMessage,
   type DeskCodec,
@@ -37,6 +38,8 @@ export interface DeskSink {
   refused?(what: string, why: string): void;
   /** Lucina's clipboard changed (control sockets only; a watch socket never passes it on). */
   clipboard?(text: string): void;
+  /** Lucina's clipboard holds an image (PNG; control sockets only). */
+  clipboardImage?(png: Uint8Array): void;
   /** The socket is gone. `code` per CONTRACT §6 (1006 also for a refused ticket). */
   closed(code: number, reason: string, wasOpen: boolean): void;
   /** The host sends a codec this browser cannot decode. */
@@ -247,6 +250,7 @@ export class DeskSocket {
           frame: (f) => this.onFrame(f.width, f.height, f.codec, f.bytes),
           closed,
           unsupported: (codec) => this.sink.unsupported(codec),
+          image: (data) => this.onImage(data),
         });
         this.pipeId = id;
         if (this.current) pipe.setCurrent(id);
@@ -283,7 +287,10 @@ export class DeskSocket {
       };
       ws.onopen = opened;
       ws.onmessage = (m) => {
-        if (m.data instanceof ArrayBuffer) video.push(m.data);
+        if (m.data instanceof ArrayBuffer) {
+          if (new Uint8Array(m.data, 0, 1)[0] === 2) this.onImage(m.data);
+          else video.push(m.data);
+        }
         else if (typeof m.data === "string") this.onText(m.data);
       };
       ws.onclose = (e) => closed(e.code, e.reason);
@@ -301,6 +308,11 @@ export class DeskSocket {
       this.stats.marks.frame = this.stats.firstFrameMs;
       this.sink.phase("live");
     }
+  }
+
+  private onImage(data: ArrayBuffer) {
+    const png = this.mode === "control" ? parseClipImage(data) : null;
+    if (png) this.sink.clipboardImage?.(png);
   }
 
   private onText(data: string) {
@@ -344,6 +356,13 @@ export class DeskSocket {
     if (!this.isOpen) return;
     if (this.pipe) this.pipe.send(this.pipeId, m);
     else if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
+  }
+
+  /** A binary frame (a clipboard image, kind 2). */
+  sendBinary(data: ArrayBuffer): void {
+    if (!this.isOpen) return;
+    if (this.pipe) this.pipe.sendBinary(this.pipeId, data);
+    else if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data);
   }
 
   /** Pointer moves, at most one per animation frame (the last one wins). */

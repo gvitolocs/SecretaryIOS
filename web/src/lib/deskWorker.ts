@@ -5,9 +5,10 @@
 // tickets, the text messages and the input; it sends input through here.
 //
 // Page → worker: {type:"canvas", canvas} | {type:"open", id, url, protocols} | {type:"send", id, text}
-//   | {type:"close", id} | {type:"current", id}
+//   | {type:"sendBinary", id, data} | {type:"close", id} | {type:"current", id}
 // Worker → page: {type:"ready", webcodecs} | {type:"open", id} | {type:"text", id, data}
-//   | {type:"frame", id, width, height, codec, bytes} | {type:"closed", id, code, reason} | {type:"unsupported", id, codec}
+//   | {type:"frame", id, width, height, codec, bytes} | {type:"image", id, data} (a clipboard image frame)
+//   | {type:"closed", id, code, reason} | {type:"unsupported", id, codec}
 
 import { DeskVideo, warmDecoder } from "./deskVideo";
 import type { ClientMessage } from "./deskWire";
@@ -55,7 +56,11 @@ function open(id: number, url: string, protocols: string[]) {
   });
   ws.onopen = () => post({ type: "open", id });
   ws.onmessage = (e) => {
-    if (e.data instanceof ArrayBuffer) video.push(e.data);
+    if (e.data instanceof ArrayBuffer) {
+      // Kind 1 is video; kind 2 a clipboard image, which is the page's business.
+      if (new Uint8Array(e.data, 0, 1)[0] === 2) self.postMessage({ type: "image", id, data: e.data }, [e.data]);
+      else video.push(e.data);
+    }
     else if (typeof e.data === "string") post({ type: "text", id, data: e.data });
   };
   ws.onclose = (e) => {
@@ -67,7 +72,7 @@ function open(id: number, url: string, protocols: string[]) {
 }
 
 self.onmessage = (e: MessageEvent) => {
-  const m = e.data as { type: string; id?: number; url?: string; protocols?: string[]; text?: string; canvas?: OffscreenCanvas };
+  const m = e.data as { type: string; id?: number; url?: string; protocols?: string[]; text?: string; data?: ArrayBuffer; canvas?: OffscreenCanvas };
   switch (m.type) {
     case "canvas":
       canvas = m.canvas ?? null;
@@ -79,6 +84,11 @@ self.onmessage = (e: MessageEvent) => {
     case "send": {
       const s = socks.get(m.id!);
       if (s?.ws.readyState === WebSocket.OPEN) s.ws.send(m.text!);
+      break;
+    }
+    case "sendBinary": {
+      const s = socks.get(m.id!);
+      if (s?.ws.readyState === WebSocket.OPEN) s.ws.send(m.data!);
       break;
     }
     case "close": {

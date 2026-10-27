@@ -11,6 +11,8 @@ export interface PipeEvents {
   frame(info: { width: number; height: number; codec: DeskCodec | null; bytes: number }): void;
   closed(code: number, reason: string): void;
   unsupported(codec: DeskCodec): void;
+  /** A binary frame of kind 2 (a clipboard image), whole. */
+  image(data: ArrayBuffer): void;
 }
 
 const READY_TIMEOUT_MS = 2000;
@@ -22,7 +24,7 @@ export class DeskPipe {
   /** Use `createDeskPipe`. */
   constructor(private readonly worker: Worker) {
     worker.onmessage = (e: MessageEvent) => {
-      const m = e.data as { type: string; id: number; data?: string; code?: number; reason?: string; codec?: DeskCodec; width?: number; height?: number; bytes?: number };
+      const m = e.data as { type: string; id: number; data?: string | ArrayBuffer; code?: number; reason?: string; codec?: DeskCodec; width?: number; height?: number; bytes?: number };
       const h = this.handlers.get(m.id);
       if (!h) return;
       switch (m.type) {
@@ -30,7 +32,10 @@ export class DeskPipe {
           h.open();
           break;
         case "text":
-          h.text(m.data ?? "");
+          h.text(typeof m.data === "string" ? m.data : "");
+          break;
+        case "image":
+          if (m.data instanceof ArrayBuffer) h.image(m.data);
           break;
         case "frame":
           h.frame({ width: m.width ?? 0, height: m.height ?? 0, codec: m.codec ?? null, bytes: m.bytes ?? 0 });
@@ -55,6 +60,11 @@ export class DeskPipe {
 
   send(id: number, m: ClientMessage): void {
     this.worker.postMessage({ type: "send", id, text: JSON.stringify(m) });
+  }
+
+  /** A binary frame (a clipboard image); the buffer is handed over. */
+  sendBinary(id: number, data: ArrayBuffer): void {
+    this.worker.postMessage({ type: "sendBinary", id, data }, [data]);
   }
 
   close(id: number): void {
