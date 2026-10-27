@@ -311,6 +311,10 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/api/secretary", any(secretary))
         .route("/api/secretary/", any(secretary))
+        .route(
+            "/api/secretary/computer/view/{view_id}/{*rest}",
+            any(crate::computer_view::proxy),
+        )
         .route("/api/secretary/{*rest}", any(secretary))
         .with_state(state)
 }
@@ -359,15 +363,10 @@ async fn health(State(st): State<AppState>) -> Response {
     )
 }
 
-async fn secretary(
-    State(st): State<AppState>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
+/// The Secretary API bearer (`SECRETARY_API_TOKEN`), compared in constant time.
+pub(crate) fn bearer_ok(st: &AppState, headers: &HeaderMap) -> bool {
     if !st.cfg.secretary_enabled {
-        return ApiError::not_found().into_response();
+        return false;
     }
     let provided = headers
         .get(header::AUTHORIZATION)
@@ -378,14 +377,26 @@ async fn secretary(
                 .map(|(_, t)| t.trim().to_owned())
         })
         .unwrap_or_default();
-    let authorized = match st.cfg.token.as_deref() {
+    match st.cfg.token.as_deref() {
         Some(expected) if !provided.is_empty() => {
             provided.len() == expected.len()
                 && bool::from(provided.as_bytes().ct_eq(expected.as_bytes()))
         }
         _ => false,
-    };
-    if !authorized {
+    }
+}
+
+async fn secretary(
+    State(st): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if !st.cfg.secretary_enabled {
+        return ApiError::not_found().into_response();
+    }
+    if !bearer_ok(&st, &headers) {
         return ApiError::new(401, "unauthorized", "").into_response();
     }
     let path = uri.path().trim_start_matches("/api/secretary").to_owned();
@@ -456,9 +467,10 @@ async fn route(
     if resource == Some("game") && extra.is_none() {
         return game(st, method, id, body).await;
     }
-    // Lucina's own computer (crate::computer): status, tasks, sandbox calls, screenshot.
-    if resource == Some("computer") && extra.is_none() {
-        return crate::computer::computer(method, uri, id, body).await;
+    // Lucina's own computer (crate::computer): status, tasks and jobs, sandbox calls,
+    // screenshot, the owner's takeover and input, live-view tickets.
+    if resource == Some("computer") && parts.len() <= 4 {
+        return crate::computer::computer(method, uri, headers, &parts[1..], body).await;
     }
     if extra.is_some() {
         return Err(ApiError::not_found());

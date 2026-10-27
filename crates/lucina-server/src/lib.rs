@@ -14,6 +14,7 @@ pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
 pub mod computer;
+pub mod computer_view;
 pub mod chat;
 pub mod config;
 pub mod context;

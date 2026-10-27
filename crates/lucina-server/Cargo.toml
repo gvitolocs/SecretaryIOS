@@ -28,6 +28,8 @@ lucina-intent = { path = "../lucina-intent" }
 lucina-phone-core = { path = "../lucina-phone-core" }
 lucina-discord = { path = "../lucina-discord", features = ["gateway"] }
 axum = { version = "0.8", features = ["multipart"] }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { workspace = true }
 tokio-stream = "0.1"
 futures-util = { workspace = true }

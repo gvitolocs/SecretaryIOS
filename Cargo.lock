@@ -2770,6 +2770,8 @@ dependencies = [
  "clap",
  "flate2",
  "futures-util",
+ "hyper",
+ "hyper-util",
  "libc",
  "lopdf",
  "lucina-computer-use",

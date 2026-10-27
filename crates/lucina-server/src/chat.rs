@@ -1477,13 +1477,10 @@ async fn json_turn(
             .filter(|s| !s.is_empty())
             .unwrap_or(&t.message)
             .to_owned();
-        let client = lucina_computer_use::Client::new(lucina_computer_use::ComputerUseConfig::from_lookup(
-            &|k: &str| std::env::var(k).ok(),
-        ));
-        if !client.ready() {
+        if !lucina_computer_use::shared_client().ready() {
             return Finish::reply("My own computer is switched off on this runtime.", "computer");
         }
-        return match client.run(&task, &lucina_computer_use::Cancel::new()).await {
+        return match lucina_computer_use::run_task("lucina", &task, &lucina_computer_use::Cancel::new()).await {
             Ok(r) => {
                 let status = r.status.as_str();
                 let text = if r.reply.trim().is_empty() {
@@ -1496,6 +1493,11 @@ async fn json_turn(
                     Some(Meta::kind("computer")),
                 )
             }
+            Err(lucina_computer_use::Error::OwnerDriving) => Finish::reply(
+                "You're driving my computer from the live view right now, so I left it alone. Give it back and ask me again.",
+                "computer",
+            )
+            .with("[computer: owner driving]", Some(Meta::kind("computer"))),
             Err(e) => {
                 tracing::warn!(error = %e, "computer task failed");
                 Finish::reply(

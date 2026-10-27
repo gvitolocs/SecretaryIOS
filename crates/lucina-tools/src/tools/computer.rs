@@ -8,7 +8,7 @@
 //! Nothing here touches the host: the sandboxes have no host mounts and guest
 //! paths naming host locations are refused.
 
-use lucina_computer_use::{image_of, text_of, Cancel, Client, ComputerUseConfig, Sandbox};
+use lucina_computer_use::{control, image_of, run_task, text_of, Cancel, Sandbox, SandboxId};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -97,23 +97,20 @@ impl Tool for ComputerTool {
 
     async fn call(&self, args: Value, _ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
-        let sb = match a.sandbox.unwrap_or(Which::Workspace) {
-            Which::Workspace => Sandbox::workspace(),
-            Which::Android => Sandbox::android(),
+        let (sb, id) = match a.sandbox.unwrap_or(Which::Workspace) {
+            Which::Workspace => (Sandbox::workspace(), SandboxId::Workspace),
+            Which::Android => (Sandbox::android(), SandboxId::Android),
         };
+        // While the owner drives from the live view, only looking is allowed.
+        let mutating = matches!(a.action, Action::Bash | Action::Tool);
         let err = |e: lucina_computer_use::Error| ToolError::new(format!("{}: {e}", e.code()));
+        if mutating {
+            control().agent_call(id, "lucina").map_err(err)?;
+        }
         match a.action {
             Action::Task => {
                 let task = need(&a.task, "task")?;
-                let client = Client::new(ComputerUseConfig::from_lookup(&|k: &str| {
-                    std::env::var(k).ok()
-                }));
-                if !client.ready() {
-                    return Err(ToolError::new(
-                        "the computer-use engine is not enabled or its launcher is missing",
-                    ));
-                }
-                let r = client.run(task, &Cancel::new()).await.map_err(err)?;
+                let r = run_task("lucina", task, &Cancel::new()).await.map_err(err)?;
                 Ok(r.to_json())
             }
             Action::Bash => {

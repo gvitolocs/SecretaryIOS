@@ -22,12 +22,16 @@
 //! pinned to `local:lucina-workspace`.
 
 mod client;
+pub mod control;
 mod sandbox;
+pub mod viewer;
 
 pub use client::{
     is_computer_use_ready, Cancel, Client, ComputerUseConfig, DEFAULT_LAUNCHER, MAX_PROMPT_CHARS,
     TASK_TIMEOUT,
 };
+pub use control::{control, run_task, shared_client, Control, SandboxId, Takeover, OWNER_LEASE};
+pub use viewer::{ViewMode, ViewTicket, ViewerConfig};
 pub use sandbox::{
     guest_path, image_of, text_of, Sandbox, ANDROID_SANDBOX_SHELL, ANDROID_SPACE,
     WORKSPACE_SANDBOX_SHELL, WORKSPACE_SPACE,
@@ -124,6 +128,15 @@ pub enum Error {
     /// The Cua stdio MCP proxy failed (daemon down, MCP error, timeout).
     #[error("Lucina's sandbox daemon is unavailable: {0}")]
     Sandbox(String),
+    /// The owner took over this sandbox from the apps' live view.
+    #[error("The owner is driving this computer from the live view; try again once it is given back.")]
+    OwnerDriving,
+    /// An owner-only action without the owner's takeover lease.
+    #[error("Take over the computer first.")]
+    NotDriving,
+    /// A live-view ticket could not be minted.
+    #[error("Live view unavailable: {0}")]
+    Viewer(String),
 }
 
 impl Error {
@@ -145,6 +158,9 @@ impl Error {
             Self::UnconfirmedCancel => "unconfirmed_cancel",
             Self::GatewayStopFailed => "gateway_stop_failed",
             Self::Sandbox(_) => "sandbox_unavailable",
+            Self::OwnerDriving => "owner_driving",
+            Self::NotDriving => "not_driving",
+            Self::Viewer(_) => "viewer_unavailable",
         }
     }
 }
