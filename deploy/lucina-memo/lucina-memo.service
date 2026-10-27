@@ -9,7 +9,7 @@ Type=simple
 WorkingDirectory=%h/Projects/Lucina
 # DEEPSEEK_KEY_FILE, LUCINA_SECRETARY_SERVER_URL, LUCINA_SECRETARY_SERVICE_TOKEN_FILE,
 # TELEGRAM_ALLOWED_CHAT_IDS come from Lucina's generated env; memo.env is this service's own.
-EnvironmentFile=%h/.config/lucina-rs/node.env
+EnvironmentFile=%h/.config/lucina-rs/lucina.env
 EnvironmentFile=%h/.config/lucina-memo/memo.env
 Environment=RUST_LOG=info
 ExecStart=%h/.local/bin/lucina-memo serve

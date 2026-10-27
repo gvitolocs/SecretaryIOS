@@ -17,7 +17,7 @@ iPhone / web ──HTTPS──► p1 Caddy /v1/memos* ──tailnet──► luc
 | Piece | Where |
 | --- | --- |
 | Service, pipeline, CLI | `crates/lucina-memo` (binary `lucina-memo`), user unit `lucina-memo.service`, `deploy/lucina-memo/` |
-| Config | `~/.config/lucina-memo/memo.env` (template `deploy/lucina-memo/memo.env.example`) plus Lucina's `~/.config/lucina-rs/node.env` (DeepSeek key file, secretary-server URL and service token, Telegram chat) |
+| Config | `~/.config/lucina-memo/memo.env` (template `deploy/lucina-memo/memo.env.example`) plus Lucina's `~/.config/lucina-rs/lucina.env` (DeepSeek key file, secretary-server URL and service token, Telegram chat) |
 | Gateway | p1 `/etc/caddy/Caddyfile`, block `@memos` (same gate as `/v1/media`); key `/etc/caddy/memo-gateway.key` = nezopt `~/.config/lucina-memo/gateway.token` |
 | iOS | `ios/Secretary/Features/Memos/*`, Live Activity `ios/Extensions/SecretaryWidgets`, `ios/Secretary/Shared/MemoRecordingActivity.swift` |
 | Web | `web/src/views/Memos.tsx`, `web/src/lib/memoRecorder.ts`, `web/src/api/memos.ts` |
