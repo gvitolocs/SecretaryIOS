@@ -15,8 +15,10 @@ struct VoiceNote: Sendable {
     var levels: [Float] = []
     var recordedAt = Date()
 
-    /// Notes up to this long are transcribed on the iPhone before they are sent; longer ones go to Whisper.
-    static let transcribeLimit: TimeInterval = 60
+    /// Notes up to this long would be transcribed on the iPhone before they are sent; longer ones go to Whisper.
+    /// 0: every note goes to Whisper on nezopt. The on-device recognizer listens in the phone's language and
+    /// turned spoken Italian into "China" on the iPhone self-test, while Whisper detects the language spoken.
+    static let transcribeLimit: TimeInterval = 0
     /// The on-device transcription gives up after this.
     static let transcribeTimeout: Duration = .seconds(30)
     /// Recording stops and sends at this length.

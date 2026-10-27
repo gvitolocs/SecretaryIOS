@@ -202,7 +202,10 @@ struct SecretaryAPI: Sendable {
     /// `POST /v1/tts`: MP3 bytes of Lucina's voice for `text` (1-1200 characters).
     func tts(_ text: String, lang: String? = nil) async throws -> Data {
         struct Body: Encodable { let text: String; let lang: String? }
-        let body = try APIClient.encoder.encode(Body(text: String(text.prefix(1200)), lang: lang))
+        // The server's voices are Italian and English only (it answers 400 "lang: it or en" otherwise);
+        // for other languages it picks the voice from the text itself.
+        let voiceLang = lang.map { String($0.prefix(2)).lowercased() }.flatMap { ["it", "en"].contains($0) ? $0 : nil }
+        let body = try APIClient.encoder.encode(Body(text: String(text.prefix(1200)), lang: voiceLang))
         let response = try await client.send("POST", "/v1/tts", body: body, timeout: 60, idempotent: true,
                                              headers: ["Accept": "audio/mpeg"])
         return response.data
