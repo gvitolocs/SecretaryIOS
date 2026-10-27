@@ -1133,3 +1133,23 @@ async fn a_share_can_reply_to_an_earlier_message() {
         .unwrap();
     assert!(user.get("replyTo").is_none(), "{user}");
 }
+
+#[tokio::test]
+async fn shared_text_about_secrets_is_not_the_owner_asking() {
+    let services = services().await;
+    let h = setup(&services).await;
+    // OCR of a screenshot (or any shared text) can read like a secrets question; the owner's
+    // caption decides, so this is a normal share turn, not the secrets status reply.
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-secrets-0001")
+            .text("note", "riassumi")
+            .text("text", "is the todoist token configured? which secrets are set?"),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    let done = finished(&h, "share-secrets-0001").await;
+    assert_eq!(done["status"], "done", "{done}");
+    assert_eq!(done["reply"], "I read your shared text, article and image.", "{done}");
+}

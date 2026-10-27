@@ -1289,6 +1289,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         if voice_only {
             message = voice_transcripts.remove(0);
         }
+        let owner_text = if voice_only {
+            message.clone()
+        } else {
+            job.note.clone()
+        };
         let out = crate::chat::share_turn(
             st.clone(),
             message,
@@ -1298,6 +1303,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 item: job.user_item.clone(),
                 voice_only,
                 reply_meta: voice_meta,
+                owner_text,
             },
         )
         .await

@@ -338,6 +338,9 @@ pub(crate) struct ShareTurn {
     pub item: lucina_store::timeline::TimelineItem,
     pub voice_only: bool,
     pub reply_meta: Meta,
+    /// What the owner wrote or said (the caption, or a voice note's transcript). The secrets
+    /// pre-check reads only this: shared content (OCR of a screenshot, a page) is not the owner asking.
+    pub owner_text: String,
 }
 
 /// Share ingestion has already written the owner's timeline item (with its
@@ -379,6 +382,7 @@ async fn run_turn_inner(
     reply_to: Option<String>,
 ) -> Result<Value, ApiError> {
     let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
+    let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
     // Swipe to reply: the quoted message rides in every model call's user part.
@@ -454,7 +458,13 @@ async fn run_turn_inner(
     };
     // Secrets first, without the model: a fixed refusal for reveal requests
     // (MCP included), status and audit for the owner.
-    let (finish, prepared) = match secrets_finish(&st, &t.message, t.mcp.is_some()).await {
+    let (finish, prepared) = match secrets_finish(
+        &st,
+        secrets_text.as_deref().unwrap_or(&t.message),
+        t.mcp.is_some(),
+    )
+    .await
+    {
         Some(f) => {
             st.recent.append(&t.session, "user", &t.message, Utc::now());
             (f, None)
@@ -1797,6 +1807,7 @@ async fn tools_turn(
     let tz = st.cfg.time_zone;
     let persona = st.cfg.persona.clone();
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
+    let secrets_text = existing.as_ref().map(|s| s.owner_text.clone());
     let voice_system = if existing.is_some() {
         crate::share::guidance::VOICE_SYSTEM
     } else {
@@ -1819,7 +1830,7 @@ async fn tools_turn(
     } else {
         st.registry.clone()
     };
-    let secrets = secrets_finish(&st, &message, from_mcp).await;
+    let secrets = secrets_finish(&st, secrets_text.as_deref().unwrap_or(&message), from_mcp).await;
     let (memory_context, game_system) = if secrets.is_some() {
         (String::new(), String::new())
     } else {
