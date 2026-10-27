@@ -422,6 +422,7 @@ impl Planner {
             | "revive_qwen_task"
             | "discord_admin_task"
             | "delegate_task"
+            | "computer_task"
             | "game_hint"
             | "game_start"
             | "game_pause" => parsed.clone(),

@@ -1469,6 +1469,44 @@ async fn json_turn(
         );
     }
 
+    // Lucina's own computer (lucina_computer_use): she does the job herself in her sandbox.
+    if action == "computer_task" {
+        let task = plan["task"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&t.message)
+            .to_owned();
+        let client = lucina_computer_use::Client::new(lucina_computer_use::ComputerUseConfig::from_lookup(
+            &|k: &str| std::env::var(k).ok(),
+        ));
+        if !client.ready() {
+            return Finish::reply("My own computer is switched off on this runtime.", "computer");
+        }
+        return match client.run(&task, &lucina_computer_use::Cancel::new()).await {
+            Ok(r) => {
+                let status = r.status.as_str();
+                let text = if r.reply.trim().is_empty() {
+                    format!("Done on my computer ({status}).")
+                } else {
+                    r.reply.clone()
+                };
+                Finish::reply(text, "computer").with(
+                    format!("[computer {status}: {} tool calls]", r.executed_tools.len()),
+                    Some(Meta::kind("computer")),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "computer task failed");
+                Finish::reply(
+                    format!("My computer couldn't finish that ({}).", e.code()),
+                    "computer",
+                )
+                .with("[computer failed]", Some(Meta::kind("computer")))
+            }
+        };
+    }
+
     // Lucina decided herself that another agent should do it.
     if action == "delegate_task" {
         if let Some(d) = st.delegator.clone() {
