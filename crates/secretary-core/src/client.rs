@@ -88,6 +88,7 @@ impl fmt::Debug for Call {
             )
             .field("class", &self.class)
             .field("extract", &self.extract)
+            .field("caller", &self.caller)
             .finish()
     }
 }
