@@ -193,7 +193,9 @@ export default function ComputerView() {
   const [text, setText] = createSignal("");
   const [clip, setClip] = createSignal("");
   const [full, setFull] = createSignal(false);
-  const [classic, setClassic] = createSignal(readString("local", "computer.classic") === "yes");
+  // Cua's viewer is the default (measured 2026-10-27 on the 2-core sandbox: first frame ~240 ms vs
+  // LucinaDesk's ~600 ms, 54 vs ~47 fps); LucinaDesk is one remembered click away ("Use LucinaDesk").
+  const [classic, setClassic] = createSignal(readString("local", "computer.classic") !== "no");
   /** LucinaDesk failed on this page (no endpoint, not the owner, a codec, no picture): Cua until reload. */
   const [deskBroken, setDeskBroken] = createSignal(false);
   /** LucinaDesk's player holds the takeover (its own control socket, not this page's lease calls). */

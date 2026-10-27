@@ -637,7 +637,9 @@ describe("ComputerView with LucinaDesk", () => {
   const sockets: string[][] = [];
   beforeEach(() => {
     sockets.length = 0;
-    // A browser with WebCodecs: LucinaDesk is the Live view.
+    // The owner chose LucinaDesk on this device (Cua's viewer is the default).
+    localStorage.setItem("computer.classic", "no");
+    // A browser with WebCodecs: LucinaDesk can be the Live view.
     vi.stubGlobal("VideoDecoder", Object.assign(function () {}, { isConfigSupported: async () => ({ supported: true }) }));
     vi.stubGlobal("EncodedVideoChunk", function () {});
     vi.stubGlobal(
@@ -652,6 +654,15 @@ describe("ComputerView with LucinaDesk", () => {
         send() {}
       },
     );
+  });
+
+  it("defaults to Cua's viewer, with LucinaDesk one click away", async () => {
+    localStorage.removeItem("computer.classic");
+    const calls = fakeLucina(state(), undefined, true);
+    renderComputer();
+    await waitFor(() => expect(calls.some((c) => c.url === "/v1/computer/view")).toBe(true));
+    expect(calls.some((c) => c.url === "/v1/computer/desk")).toBe(false);
+    expect(screen.getByRole("button", { name: "Use LucinaDesk" })).toBeInTheDocument();
   });
 
   it("shows LucinaDesk and mints no Cua view; the page's takeover bar steps aside", async () => {
