@@ -27,6 +27,8 @@ export interface AuditEntry {
   device?: string;
   mode?: string;
   why?: string;
+  /** Clipboard sync: how much text went one way (never the text). */
+  bytes?: number;
   stoppedTask?: string | null;
   batch?: { via?: string; events?: number; kinds?: string[]; textChars?: number; bytes?: number } | null;
 }

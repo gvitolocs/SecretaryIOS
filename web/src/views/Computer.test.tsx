@@ -7,7 +7,7 @@ import { setLocale } from "../i18n";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
 import { deferred } from "../test/fetch";
-import ComputerView, { auditLine, callerName, contentRect, driverLabel, meaningful, passKey, pointIn } from "./Computer";
+import ComputerView, { auditLine, callerName, contentRect, driverLabel, meaningful, passKey, pointIn, relayClipboard } from "./Computer";
 
 const VIEW_ID = "v".repeat(64);
 
@@ -630,6 +630,30 @@ describe("page helpers", () => {
     expect(meaningful({ at: 1, event: "view_ticket" } as never)).toBe(false);
     expect(meaningful({ at: 1, event: "input", batch: { via: "live", bytes: 1210 } } as never)).toBe(false);
     expect(meaningful({ at: 1, event: "input", batch: { kinds: ["click"] } } as never)).toBe(true);
+  });
+
+  it("writes what was copied on her desktop to this computer only while driving", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      const replies: boolean[] = [];
+      await relayClipboard({ id: 1, text: "copied there" }, true, (ok) => replies.push(ok));
+      expect(writeText).toHaveBeenCalledWith("copied there");
+      await relayClipboard({ id: 2, text: "while watching" }, false, (ok) => replies.push(ok));
+      await relayClipboard({ id: 3, text: 42 }, true, (ok) => replies.push(ok));
+      await relayClipboard({ id: 4, text: "x".repeat(256 * 1024 + 1) }, true, (ok) => replies.push(ok));
+      expect(writeText).toHaveBeenCalledTimes(1);
+      writeText.mockImplementationOnce(() => Promise.reject(new Error("Document is not focused.")));
+      await relayClipboard({ id: 5, text: "unfocused" }, true, (ok) => replies.push(ok));
+      expect(replies).toEqual([true, false, false, false, false]);
+    } finally {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  it("shows clipboard syncs as byte counts", () => {
+    expect(auditLine({ at: 1, event: "clipboard_to_desktop", bytes: 12 } as never)).toBe("Clipboard → her desktop (12 B)");
+    expect(auditLine({ at: 1, event: "clipboard_from_desktop", bytes: 3 } as never)).toBe("Clipboard → this computer (3 B)");
   });
 });
 

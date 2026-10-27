@@ -98,6 +98,28 @@ export function passKey(e: { key: string; ctrlKey?: boolean; metaKey?: boolean; 
   return { keys: [...mods, key] };
 }
 
+/** Text copied on her desktop, relayed by the viewer frame (`lucina:clipboard`) for this page to write. */
+export type ClipboardRelay = { id?: unknown; text?: unknown };
+
+/** lucina-server's cap on synced clipboard text. */
+const CLIP_TEXT_LIMIT = 256 * 1024;
+
+/**
+ * Writes relayed desktop clipboard text to this computer's clipboard, only while this page drives,
+ * and answers the frame (`lucina:clipboard-done`) so the viewer can offer its "Copy" chip on failure.
+ */
+export async function relayClipboard(data: ClipboardRelay, driving: boolean, reply: (ok: boolean) => void): Promise<void> {
+  const text = data.text;
+  let ok = false;
+  if (driving && typeof text === "string" && text.length <= CLIP_TEXT_LIMIT && navigator.clipboard?.writeText) {
+    ok = await navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false,
+    );
+  }
+  reply(ok);
+}
+
 /** `mcp:claude` → "Claude", `app` → "App". */
 export function callerName(who: string): string {
   const name = who.replace(/^mcp:/, "").replace(/-/g, " ");
@@ -140,6 +162,10 @@ export function auditLine(e: AuditEntry): string {
       return t("computer.evSocketOpen");
     case "view_socket_closed":
       return t("computer.evSocketClosed", { why: e.why ?? "" });
+    case "clipboard_to_desktop":
+      return t("computer.evClipToDesktop", { bytes: String(e.bytes ?? 0) });
+    case "clipboard_from_desktop":
+      return t("computer.evClipFromDesktop", { bytes: String(e.bytes ?? 0) });
     default:
       return t("computer.evOther", { event: e.event });
   }
@@ -695,6 +721,12 @@ export default function ComputerView() {
       if (data.type === "lucina:escape" && full() && !mine()) {
         if (confirming()) setConfirming(null);
         else exitFull();
+      }
+      // Something copied on her desktop: the frame's opaque origin cannot write this computer's clipboard.
+      if (data.type === "lucina:clipboard") {
+        const relay = data as ClipboardRelay;
+        const source = e.source as Window;
+        void relayClipboard(relay, mine(), (ok) => source.postMessage({ type: "lucina:clipboard-done", id: relay.id, ok }, "*"));
       }
     };
     const onFullscreen = () => {
