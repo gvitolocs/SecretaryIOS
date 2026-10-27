@@ -233,7 +233,7 @@ on the phone. It doesn't get a second protocol for that.
 ## Security requirements (from the Paseo reverse-engineering)
 
 Source: nezopt `~/Projects/ReverseEngineering/paseo/HANDOFF-lucina-integration.md` §5-§6, from a full decompilation of
-the Paseo 0.13.2 Android app. These are design requirements. Each one has a row in the parity matrix (S rows).
+the Paseo 0.13.2 Android app. These are design requirements. Each one has a row in the parity matrix (SEC rows).
 
 1. **Trust boundary first.** Whatever can drive agents can run commands on nezopt and the desktop. Paseo's phone-side
    scopes `hub.execute`, `daemon.manage`, `access.manage` and `tunnel.manage` amount to remote code execution by design.
