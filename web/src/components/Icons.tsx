@@ -152,6 +152,15 @@ export function GamepadIcon() {
   );
 }
 
+export function ComputerIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8.5 20h7M12 16v4" />
+    </svg>
+  );
+}
+
 export function SpeakerIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">

@@ -74,6 +74,10 @@ pub const LUCINA_503_PASSTHROUGH: &[&str] = &[
     "reminders_disabled",
     "owner_chat_unconfigured",
     "grocery_unavailable",
+    "computer_use_disabled",
+    "sandbox_unavailable",
+    "viewer_unavailable",
+    "recovery_required",
 ];
 
 /// Lucina failures → app-facing errors.

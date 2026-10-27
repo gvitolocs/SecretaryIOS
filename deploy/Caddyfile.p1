@@ -29,6 +29,10 @@ getsecretary.tech {
 		format filter {
 			request>headers>Authorization delete
 			request>headers>Cookie delete
+			# Lucina's computer live view: the media socket carries its viewer ticket in the query.
+			request>uri query {
+				delete ticket
+			}
 			resp_headers>Set-Cookie delete
 		}
 	}

@@ -31,6 +31,7 @@ const DeskView = lazy(() => import("./views/Desk"));
 const ModelsView = lazy(() => import("./views/Models"));
 const MemosView = lazy(() => import("./views/Memos"));
 const PokemonView = lazy(() => import("./views/Pokemon"));
+const ComputerView = lazy(() => import("./views/Computer"));
 const MediaView = lazy(() => import("./views/Media"));
 const FilmsView = lazy(() => import("./views/Films"));
 const DriveView = lazy(() => import("./views/Drive"));
@@ -68,6 +69,7 @@ render(
       <Route path="/training" component={TrainingView} />
       <Route path="/plugins" component={PluginsView} />
       <Route path="/pokemon" component={PokemonView} />
+      <Route path="/computer" component={ComputerView} />
       <Route path="/links" component={LinksView} />
       <Route path="/library/:id?" component={LibraryView} />
       <Route path="/notes/:key?" component={NotesView} />

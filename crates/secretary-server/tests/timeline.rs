@@ -623,3 +623,50 @@ async fn chat_channel_from_header_or_body_defaults_to_web() {
     }
     assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
 }
+
+// -- POST /v1/chat replyTo ---------------------------------------------------------
+
+#[tokio::test]
+async fn chat_forwards_reply_to_and_rejects_a_bad_one() {
+    let h = harness(|_| {}).await;
+    let chat = |body: Value| {
+        h.http
+            .post(h.url("/v1/chat"))
+            .bearer_auth(&h.token)
+            .json(&body)
+    };
+    let last = || {
+        h.mock
+            .seen("/api/secretary/chat")
+            .last()
+            .unwrap()
+            .body
+            .clone()
+    };
+
+    let (s, b) = h
+        .json(chat(
+            json!({"message": "e questo?", "replyTo": "01K83ZK4Q6X1V9W2D3E4F5G6H7"}),
+        ))
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(last()["replyTo"], "01K83ZK4Q6X1V9W2D3E4F5G6H7");
+    assert_eq!(last()["message"], "e questo?");
+
+    // Absent: the forwarded body has no replyTo key at all.
+    let (s, _) = h.json(chat(json!({"message": "ciao"}))).await;
+    assert_eq!(s, 200);
+    assert!(last().get("replyTo").is_none(), "{}", last());
+
+    let before = h.mock.seen("/api/secretary/chat").len();
+    for bad in [
+        json!({"message": "ciao", "replyTo": "../x"}),
+        json!({"message": "ciao", "replyTo": ""}),
+        json!({"message": "ciao", "replyTo": "x".repeat(65)}),
+        json!({"message": "ciao", "replyTo": 5}),
+    ] {
+        let (s, b) = h.json(chat(bad.clone())).await;
+        assert_eq!((s, code(&b)), (400, "bad_request"), "{bad}");
+    }
+    assert_eq!(h.mock.seen("/api/secretary/chat").len(), before);
+}

@@ -6,6 +6,7 @@ import { chat } from "./dict/chat";
 import { common } from "./dict/common";
 import { films } from "./dict/films";
 import { drive } from "./dict/drive";
+import { computer } from "./dict/computer";
 import { gym } from "./dict/gym";
 import { links } from "./dict/links";
 import { maps } from "./dict/maps";
@@ -25,6 +26,6 @@ import { wardrobe } from "./dict/wardrobe";
 import { viewer } from "./dict/viewer";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { library, common, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer };
+export const dictionaries = { library, common, computer, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer };
 
 export type Dictionaries = typeof dictionaries;
