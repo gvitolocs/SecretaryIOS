@@ -20,10 +20,14 @@ const CODEC_BY_ID: Record<number, DeskCodec> = { 1: "vp9", 2: "h264", 3: "h265",
 export const WEBCODECS: Record<DeskCodec, string> = {
   vp9: "vp09.00.41.08",
   av1: "av01.0.08M.08",
-  h264: "avc1.42E033",
+  // VAAPI may emit Main or High: a High string decodes all three (see H264_FALLBACKS).
+  h264: "avc1.640033",
   h265: "hvc1.1.6.L123.B0",
   vp8: "vp8",
 };
+
+/** If a decoder refuses the High-profile string, these in turn (Main, then Baseline). */
+export const H264_FALLBACKS = ["avc1.4D0033", "avc1.42E033"];
 
 /** The order we would like the host to pick, best first (a hint for the ticket; the host decides). */
 export const CODEC_PREFERENCE: DeskCodec[] = ["vp9", "av1", "h264", "vp8", "h265"];

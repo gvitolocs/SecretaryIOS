@@ -1,15 +1,10 @@
 // One desk socket's video: the server's binary frames → a WebCodecs decoder → decoded frames, with the
 // acks the host paces itself on. No DOM, no window: it runs on the page or in lib/deskWorker.ts.
 
-import { parseVideo, WEBCODECS, type ClientMessage, type DeskCodec } from "./deskWire";
+import { H264_FALLBACKS, parseVideo, WEBCODECS, type ClientMessage, type DeskCodec } from "./deskWire";
 
 /** Frames waiting in the decoder before acks wait for it (see `ackAt`). */
 const DECODE_BACKLOG = 3;
-/**
- * The gateway asks the host for a key frame when a socket joins; if none came after this long, ask
- * once more. Each ask makes the host rebuild its encoder (and it throttles them), so never more.
- */
-const REFRESH_AFTER_MS = 1000;
 
 export interface DeskVideoHost {
   send(m: ClientMessage): void;
@@ -25,8 +20,8 @@ export class DeskVideo {
   private decoder: VideoDecoder | null = null;
   private waitingKey = true;
   private closed = false;
-  private waitSince = performance.now();
-  private askedWhileWaiting = false;
+  /** Which H.264 codec string the next decoder uses (High, Main, Baseline). */
+  private h264Try = 0;
   /**
    * Timestamps (µs) of frames flagged "last" whose ack waits for the decoder. The host sends the next
    * batch only after an ack; acking once the frame is drawn would tie the stream to whatever thread
@@ -48,18 +43,13 @@ export class DeskVideo {
       this.waitingKey = true;
     }
     if (this.waitingKey && !f.key) {
-      // Nothing to show until a key frame; keep the host going and ask for one.
+      // Nothing to show until a key frame; keep the host going. The gateway sends a joining socket
+      // its last key frame and asks the host itself, so no refresh from here (each one rebuilds the
+      // host's encoder); a codec switch starts at a key frame too.
       if (f.last) this.host.send({ type: "ack" });
-      if (!this.askedWhileWaiting && performance.now() - this.waitSince >= REFRESH_AFTER_MS) {
-        this.askedWhileWaiting = true;
-        this.host.send({ type: "refresh" });
-      }
       return;
     }
-    if (this.waitingKey) {
-      this.waitingKey = false;
-      this.askedWhileWaiting = false;
-    }
+    this.waitingKey = false;
     const timestamp = f.pts * 1000;
     if (f.last) {
       if ((this.decoder!.decodeQueueSize ?? DECODE_BACKLOG) < DECODE_BACKLOG) this.host.send({ type: "ack" });
@@ -89,14 +79,22 @@ export class DeskVideo {
       },
       error: (e) => {
         if (e?.name === "NotSupportedError") {
+          if (codec === "h264" && this.h264Try < H264_FALLBACKS.length) {
+            this.h264Try++;
+            this.recover();
+            return;
+          }
           this.host.unsupported(codec);
           return;
         }
         this.recover();
       },
     });
+    // Annex B H.264 and VP9/AV1 need no description. H.264 is configured as High, then Main, then
+    // Baseline if the decoder refuses (it says so through `error`, see there).
+    const string = codec === "h264" ? [WEBCODECS.h264, ...H264_FALLBACKS][this.h264Try] : WEBCODECS[codec];
     try {
-      this.decoder.configure({ codec: WEBCODECS[codec], optimizeForLatency: true, hardwareAcceleration: "no-preference" });
+      this.decoder.configure({ codec: string!, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
     } catch {
       this.host.unsupported(codec);
       return false;
@@ -113,8 +111,6 @@ export class DeskVideo {
     if (this.ackAt.size) this.host.send({ type: "ack" });
     this.ackAt.clear();
     // The stream broke here, not at a join: the gateway will not ask for us.
-    this.waitSince = performance.now();
-    this.askedWhileWaiting = true;
     this.host.send({ type: "refresh" });
   }
 
