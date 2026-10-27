@@ -202,7 +202,7 @@ async fn input(
 
 /// Lucina's home-network door (`GET /computer/lan`): `(url, the house's public IP)`.
 #[derive(Clone, Debug, PartialEq)]
-struct LanDoor {
+pub(crate) struct LanDoor {
     url: String,
     public_ip: String,
 }
@@ -211,7 +211,7 @@ struct LanDoor {
 type LanCache = Mutex<Option<(Instant, Option<LanDoor>)>>;
 
 /// The door, asked of Lucina at most once a minute (`None`: not set up, or Lucina unreachable).
-async fn lan_door(st: &AppState) -> Option<LanDoor> {
+pub(crate) async fn lan_door(st: &AppState) -> Option<LanDoor> {
     static CACHE: OnceLock<LanCache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(None));
     if let Some((at, door)) = cache.lock().unwrap_or_else(|e| e.into_inner()).clone() {
@@ -230,7 +230,7 @@ async fn lan_door(st: &AppState) -> Option<LanDoor> {
 
 /// The door is offered to the owner's own app (never an MCP agent) only when the request
 /// comes from the house itself, i.e. from the public IP Lucina sees as her own.
-fn lan_offer(who: &str, client_ip: &str, door: Option<&LanDoor>) -> Option<Value> {
+pub(crate) fn lan_offer(who: &str, client_ip: &str, door: Option<&LanDoor>) -> Option<Value> {
     let door = door?;
     (who == "app" && client_ip == door.public_ip).then(|| json!({"url": door.url}))
 }

@@ -9,7 +9,7 @@ use axum::extract::ws::{Message as AxMessage, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use secretary_server::config::Config;
@@ -82,6 +82,11 @@ async fn harness() -> H {
     let lucina = Router::new()
         .route("/api/secretary/computer/desk", post(mint))
         .route("/api/secretary/computer/desk/ws", any(socket))
+        // The door, with the house at the test client's address.
+        .route(
+            "/api/secretary/computer/lan",
+            get(|| async { Json(json!({"ok": true, "data": {"url": "https://lan.getsecretary.tech:9443", "publicIp": "127.0.0.1"}})) }),
+        )
         .with_state(mock.clone());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let lucina_url = format!("http://{}", l.local_addr().unwrap());
@@ -135,11 +140,23 @@ async fn desk_tickets_for_owner_devices_only() {
     assert_eq!(b["expiresInSecs"], 30);
     assert_eq!(b["mode"], "control");
     assert_eq!(b["sandbox"], "workspace");
-    assert!(b["lan"].is_null());
+    assert_eq!(b["lan"], json!({"url": "https://lan.getsecretary.tech:9443"}), "at home: the door");
     let (auth, body) = h.mock.minted.lock().unwrap().last().cloned().unwrap();
     assert_eq!(auth.as_deref(), Some(&*format!("Bearer {LUCINA_TOKEN}")));
     assert_eq!(body["device"], "test iPhone", "the device is the authenticated one, not the body's");
     assert_eq!(body["mode"], "control");
+
+    let r = h
+        .http
+        .post(format!("{}/v1/computer/desk", h.base))
+        .bearer_auth(&h.token)
+        .header("x-secretary-caller", "mcp:claude")
+        .json(&json!({"mode": "watch"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert!(r.json::<Value>().await.unwrap()["lan"].is_null(), "agents never get the door");
 
     let (s, b) = h.mint(json!({"sandbox": "android"}), true).await;
     assert_eq!((s, b["error"]["code"].as_str()), (400, Some("desk_unsupported")));

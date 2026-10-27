@@ -5,14 +5,18 @@
 //! - `POST /v1/computer/desk` `{sandbox?, mode?}` (owner device: device token or web
 //!   session) → `{ticket, protocol, wsPath, expiresInSecs, sandbox, mode, lan}`. The audit
 //!   `device` is the authenticated device's name, never a body value. `lan` is the
-//!   home-network door, offered like the live view's (`computer::lan_offer`), else null.
+//!   home-network door (`{url}`), offered like the live view's (`computer::lan_offer`): to
+//!   the owner's app, from the house's public IP only; else null. Its socket is the same
+//!   `wsPath` on that origin.
 //! - `GET /v1/computer/desk/ws` (WebSocket) **without** device auth, like the live view: the
 //!   single-use ticket in the `ticket.<t>` subprotocol is the capability, and Lucina checks
 //!   it. The socket is spliced byte for byte to Lucina's `/api/secretary/computer/desk/ws`
 //!   with the server's bearer; cookies are never forwarded. Caddy drops
 //!   `Sec-WebSocket-Protocol` from its log.
 
-use axum::extract::{Request, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -21,7 +25,7 @@ use secretary_core::Call;
 use serde_json::{json, Value};
 
 use crate::auth::Identity;
-use crate::computer::{caller, device_label};
+use crate::computer::{caller, device_label, lan_door, lan_offer};
 use crate::error::{ApiError, JsonBody};
 use crate::AppState;
 
@@ -40,6 +44,7 @@ fn valid_ticket(t: &str) -> bool {
 async fn mint(
     State(st): State<AppState>,
     Extension(ident): Extension<Identity>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: axum::http::HeaderMap,
     JsonBody(body): JsonBody<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -78,6 +83,9 @@ async fn mint(
     if !valid_ticket(ticket) {
         return Err(unavailable("Lucina sent no usable desk ticket"));
     }
+    // The home-network door, like the live view's: the owner's app, from the house only.
+    let client_ip = crate::auth::client_ip(&st, &headers, peer.map(|Extension(c)| c.0));
+    let lan = if who == "app" { lan_offer(&who, &client_ip, lan_door(&st).await.as_ref()) } else { None };
     Ok((
         StatusCode::OK,
         Json(json!({
@@ -87,7 +95,7 @@ async fn mint(
             "expiresInSecs": data.get("expiresInSecs").cloned().unwrap_or(json!(30)),
             "sandbox": sandbox,
             "mode": mode,
-            "lan": Value::Null,
+            "lan": lan,
         })),
     ))
 }
