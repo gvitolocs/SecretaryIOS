@@ -52,3 +52,21 @@ Every Node change is an override at the end of `~/Projects/Lucina/private/lucina
    `WorkingDirectory=%h`. `lucina-memo.service` loads `lucina.env` too.
 8. **Archive.** `~/Projects/Lucina` becomes read-only (the data directory `data/` and the `rust/lucina-pokemon`
    crate stay writable: other services use them). The repo itself is deleted only with the owner's approval.
+
+## Record (2026-10-27, UTC)
+
+| Time | Step | lucina-rs |
+|---|---|---|
+| 08:24 | Reminders: Node `LUCINA_REMINDERS_ENABLED=false` (idle tick), Rust `writer=local` + scheduler | `8fda1b6` |
+| 09:00 | First Rust delivery in production (reminder due 09:00, sent 09:00:23, Telegram + timeline + app) | |
+| 12:38 | Merge deploy: relative-day reminders ("domani mattina", regression test from the iPhone), chat-reply, memo-events, share secrets fix | `1b210c7` |
+| 12:40 | Telegram: Node token emptied (no update handled for 6 h, nothing unconfirmed), Rust poller holds `telegram-8781061108` (flock + record `instance: lucina-rs`); unit on `lucina.env`, `WorkingDirectory=%h`, new watchdog | `1b210c7` |
+| 12:41 | Bot Hospital: Node off, Rust on (`BOT_HOSPITAL_DEDUPE_MS=86400000`); first Rust audit 12:48 healthy | `1b210c7` |
+| 12:43 | Discord: Node token emptied, Rust message session ready (3 guilds), `DISCORD_ALLOWED_USER_IDS` = the owner | `1b210c7` |
+| 12:44 | `lucina-proactive` live (`dry_run=false`, drop-in `live.conf`), timeline sink `file` | |
+| 12:45–12:49 | `lucina-nez` stopped, image saved, container and image removed; Node app files read-only, tag `node-lucina-final` | |
+| 12:50 | `node.env` retired (`lucina-memo`, `lucina-diagnostics` load `lucina.env`) | |
+| 12:55 | Bot Hospital waits a day across restarts; default paths after the Projects reorganisation; `mode.env` without the Node settings | `9418561` |
+
+Backups: `~/mnt/mybook/backups/lucina-node-retired-20261027/` (0600: image, container config, git bundle, uncommitted diff),
+`~/.local/bin/lucina-rs.bak-*`, `~/.config/lucina-rs/*.bak-*`, `lucina.nez.env.bak-*`.
