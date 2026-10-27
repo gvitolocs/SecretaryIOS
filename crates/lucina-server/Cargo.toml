@@ -23,6 +23,7 @@ lucina-deals = { path = "../lucina-deals" }
 lucina-tools = { path = "../lucina-tools" }
 lucina-meshy = { path = "../lucina-meshy" }
 lucina-delegate = { path = "../lucina-delegate" }
+lucina-computer-use = { path = "../lucina-computer-use" }
 lucina-intent = { path = "../lucina-intent" }
 lucina-phone-core = { path = "../lucina-phone-core" }
 lucina-discord = { path = "../lucina-discord", features = ["gateway"] }

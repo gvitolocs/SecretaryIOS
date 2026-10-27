@@ -456,6 +456,10 @@ async fn route(
     if resource == Some("game") && extra.is_none() {
         return game(st, method, id, body).await;
     }
+    // Lucina's own computer (crate::computer): status, tasks, sandbox calls, screenshot.
+    if resource == Some("computer") && extra.is_none() {
+        return crate::computer::computer(method, uri, id, body).await;
+    }
     if extra.is_some() {
         return Err(ApiError::not_found());
     }

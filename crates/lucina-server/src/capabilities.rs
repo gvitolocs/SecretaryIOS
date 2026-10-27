@@ -47,6 +47,8 @@ pub struct Capabilities {
     pub mcp_trusted: bool,
     /// `LUCINA_DRIVE`: Lucina's own Google Drive (read-only).
     pub drive: bool,
+    /// My own Cua computers (`LUCINA_COMPUTER_USE_ENABLED`, the `computer` tool).
+    pub computer_use: bool,
 }
 
 impl Capabilities {
@@ -85,6 +87,7 @@ impl Capabilities {
             oracle_monitor: is_true("LUCINA_ORACLE_MONITOR_ENABLED"),
             mcp_trusted: is_true("LUCINA_MCP_TRUSTED"),
             drive: is_true("LUCINA_DRIVE"),
+            computer_use: is_true("LUCINA_COMPUTER_USE_ENABLED"),
         }
     }
 
@@ -152,6 +155,7 @@ impl Capabilities {
         } else {
             add(self.secretary, format!("Lucina MCP: ChatGPT, Grok and Claude Code can ask me on Giuseppe's behalf. MCP guard: they may only {}; anything else waits for Giuseppe's own yes in the app or on Telegram.", Self::mcp_allowed_phrase()), None);
         }
+        add(self.computer_use, "My own isolated computers on nezopt (the `computer` tool): a Linux desktop, lucina-workspace, with Chromium, Firefox, a terminal and files, and an Android sandbox, lucina-android. I use them myself for real browsing, downloads, web forms and checking how things look: a whole job via action `task` (my computer-use engine, Hermes with the official Cua plugin), or direct steps (bash, screenshot, driver tools). They have no access to Giuseppe's own machines or files. Giuseppe can watch and take over the desktop from the Secretary apps.".into(), Some("My own computers are off on this runtime (LUCINA_COMPUTER_USE_ENABLED)."));
         add(self.drive, "My own Google Drive (mylucina20@gmail.com): list, search, read and write my files, make folders, rename, move and trash (the `drive` tool); the operator moves files in and out with `lucina drive get` / `lucina drive put`.".into(), None);
         add(
             self.reminders,

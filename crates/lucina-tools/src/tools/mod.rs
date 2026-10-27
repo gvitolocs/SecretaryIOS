@@ -1,5 +1,6 @@
 //! Built-in tools.
 
+pub mod computer;
 pub mod avatar;
 pub mod calculator;
 pub mod calendar;

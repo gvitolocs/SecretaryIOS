@@ -2456,6 +2456,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-computer-use"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "lucina-deals"
 version = "0.1.0"
 dependencies = [
@@ -2759,6 +2772,7 @@ dependencies = [
  "futures-util",
  "libc",
  "lopdf",
+ "lucina-computer-use",
  "lucina-deals",
  "lucina-delegate",
  "lucina-discord",
@@ -2844,6 +2858,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "jsonschema",
+ "lucina-computer-use",
  "lucina-delegate",
  "lucina-discord",
  "lucina-grocery",

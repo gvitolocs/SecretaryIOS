@@ -13,6 +13,7 @@ pub mod api;
 pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
+pub mod computer;
 pub mod chat;
 pub mod config;
 pub mod context;
@@ -319,6 +320,12 @@ impl AppState {
             registry
                 .register(Arc::new(lucina_tools::tools::drive::DriveTool))
                 .expect("drive tool registers");
+        }
+        // Lucina's own computers (LUCINA_COMPUTER_USE_ENABLED=true, crate lucina_computer_use).
+        if std::env::var("LUCINA_COMPUTER_USE_ENABLED").as_deref() == Ok("true") && cfg.tools.allows("computer") {
+            registry
+                .register(Arc::new(lucina_tools::tools::computer::ComputerTool))
+                .expect("computer tool registers");
         }
         let meshy_registry = meshy.as_ref().map(|svc| {
             let tool = Arc::new(lucina_tools::tools::meshy::MeshyTool::new(svc.clone()));
