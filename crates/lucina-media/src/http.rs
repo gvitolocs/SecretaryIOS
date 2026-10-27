@@ -101,6 +101,8 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         )
         .route("/v1/media/uploads", post(create_upload))
         .route("/v1/media/uploads/{id}/finish", post(finish_upload))
+        .route("/v1/media/devices", get(list_devices))
+        .route("/v1/media/devices/{device}", put(register_device))
         .route("/v1/media/devices/{device}/assets", get(device_assets))
         .route("/v1/media/events", get(events))
         .merge(uploads)
@@ -1285,6 +1287,12 @@ async fn create_upload(
     if r.filename.is_empty() || r.filename.len() > 255 || r.filename.contains('/') {
         return Err(bad("bad filename"));
     }
+    if let Some(d) = r.meta.device.clone() {
+        if !device_id_ok(&d) {
+            return Err(bad("bad device id"));
+        }
+        lib.db.call(move |c| db::touch_device(c, &d)).await?;
+    }
     if let Some(h) = &r.hash {
         if !valid_hash(h) {
             return Err(bad("hash must be 64 hex characters (blake3)"));
@@ -1607,6 +1615,56 @@ async fn finish_upload(
 }
 
 /// What the library holds for one phone, so a reinstalled app can skip assets already backed up.
+/// `[A-Za-z0-9._-]{1,64}`: what the apps send (`ios-<uuid>`, `mac-<uuid>`).
+fn device_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+#[derive(Deserialize)]
+struct DeviceReq {
+    name: String,
+    kind: Option<String>,
+}
+
+const DEVICE_KINDS: &[&str] = &[
+    "iphone", "ipad", "android", "mac", "pc", "backup", "camera", "other",
+];
+
+async fn register_device(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+    Json(r): Json<DeviceReq>,
+) -> ApiResult<Json<Value>> {
+    let name = r.name.trim().to_string();
+    if !device_id_ok(&id) || name.is_empty() || name.chars().count() > 80 {
+        return Err(bad("bad device id or name"));
+    }
+    let kind = match r.kind.as_deref() {
+        Some(k) if DEVICE_KINDS.contains(&k) => k.to_string(),
+        Some(_) => {
+            return Err(bad(
+                "kind must be one of iphone, ipad, android, mac, pc, backup, camera, other",
+            ))
+        }
+        None => db::guess_device_kind(&id).to_string(),
+    };
+    let i = id.clone();
+    lib.db
+        .call(move |c| db::upsert_device(c, &i, &name, &kind))
+        .await?;
+    let all = lib.db.call(|c| db::list_devices(c)).await?;
+    Ok(Json(json!(all.into_iter().find(|d| d.id == id))))
+}
+
+async fn list_devices(State(lib): State<Library>) -> ApiResult<Json<Value>> {
+    let all = lib.db.call(|c| db::list_devices(c)).await?;
+    Ok(Json(json!({ "devices": all })))
+}
+
 async fn device_assets(
     State(lib): State<Library>,
     Path(device): Path<String>,

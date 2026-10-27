@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS album_items (
 );
 CREATE INDEX IF NOT EXISTS album_items_item ON album_items(item_id);
 -- Album share links (`share.rs`): a random token per link; rows stay after a revoke.
+-- The devices photos come from (2026-10-27: one gallery per device, all in the Lucina cloud). Clients
+-- register themselves (`PUT /v1/media/devices/{id}`); an upload from an unknown device adds it.
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS album_shares (
     token TEXT PRIMARY KEY,
     album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
@@ -485,7 +494,9 @@ pub struct ListQuery {
     /// `lat,lon,km`
     pub near: Option<String>,
     pub source: Option<String>,
-    /// `gallery`: what the phones backed up (`source` phone-…), the Gallery. `films`: the film
+    /// One device's photos (`items.device`): the Gallery's device switcher.
+    pub device: Option<String>,
+    /// `gallery`: what came from a device (`FROM_DEVICE`), the Gallery. `films`: the film
     /// folders (`film_folders`), the Films plugin. `drive`: everything else (old Nextcloud files,
     /// computer photo backups, audio, other folders, shared files, voice memos), the Drive.
     pub scope: Option<String>,
@@ -596,6 +607,9 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
     }
     if let Some(s) = &q.source {
         add(&mut wh, &mut args, "i.source = ?", s.clone().into());
+    }
+    if let Some(d) = &q.device {
+        add(&mut wh, &mut args, "i.device = ?", d.clone().into());
     }
     if let Some(cond) = scope_condition(q.scope.as_deref(), &q.film_folders, &mut args) {
         wh.push(cond);
@@ -749,11 +763,104 @@ pub fn scope_condition(
         )
     };
     match scope {
-        Some("gallery") => Some("i.source LIKE 'phone%'".into()),
-        Some("films") => Some(format!("i.source NOT LIKE 'phone%' AND {}", in_films())),
-        Some("drive") => Some(format!("i.source NOT LIKE 'phone%' AND NOT {}", in_films())),
+        Some("gallery") => Some(FROM_DEVICE.into()),
+        Some("films") => Some(format!("NOT {FROM_DEVICE} AND {}", in_films())),
+        Some("drive") => Some(format!("NOT {FROM_DEVICE} AND NOT {}", in_films())),
         _ => None,
     }
+}
+
+/// The kernel's `phone` input (DK2) in SQL: the item came from a device, a phone backup (`source`
+/// phone-…) or anything a registered device uploaded (`device` set: the iPhone, a Mac, an Android).
+pub const FROM_DEVICE: &str = "(i.source LIKE 'phone%' OR i.device IS NOT NULL)";
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DeviceOut {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub created_at: String,
+    pub last_seen_at: String,
+    pub photos: i64,
+    pub videos: i64,
+    pub latest_taken_at: Option<String>,
+}
+
+/// Registers a device or renames it; `last_seen_at` moves on every call.
+pub fn upsert_device(c: &Connection, id: &str, name: &str, kind: &str) -> rusqlite::Result<()> {
+    let now = now_str();
+    c.execute(
+        "INSERT INTO devices (id, name, kind, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?4) \
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, kind = excluded.kind, last_seen_at = excluded.last_seen_at",
+        params![id, name, kind, now],
+    )?;
+    Ok(())
+}
+
+/// An upload names its device: a known one is seen now, an unknown one is added with its id as name.
+pub fn touch_device(c: &Connection, id: &str) -> rusqlite::Result<()> {
+    let now = now_str();
+    let kind = guess_device_kind(id);
+    c.execute(
+        "INSERT INTO devices (id, name, kind, created_at, last_seen_at) VALUES (?1, ?1, ?2, ?3, ?3) \
+         ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+        params![id, kind, now],
+    )?;
+    Ok(())
+}
+
+/// From the id's prefix, for a device that never registered (`ios-…` is the iPhone app's).
+pub fn guess_device_kind(id: &str) -> &'static str {
+    let id = id.to_ascii_lowercase();
+    if id.starts_with("ios-") || id.starts_with("iphone") {
+        "iphone"
+    } else if id.starts_with("ipad") {
+        "ipad"
+    } else if id.starts_with("android") {
+        "android"
+    } else if id.starts_with("mac") {
+        "mac"
+    } else if id.contains("backup") {
+        "backup"
+    } else {
+        "other"
+    }
+}
+
+/// Every device with what the library has from it (visible items only), most recently seen first.
+/// Devices that only appear on items (photos imported before the registry) are listed too.
+pub fn list_devices(c: &Connection) -> rusqlite::Result<Vec<DeviceOut>> {
+    let mut st = c.prepare(
+        "WITH ids AS (SELECT id FROM devices UNION SELECT DISTINCT device FROM items WHERE device IS NOT NULL) \
+         SELECT ids.id, d.name, d.kind, d.created_at, d.last_seen_at, \
+           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'photo' AND i.trashed_at IS NULL AND i.hidden = 0), \
+           (SELECT COUNT(*) FROM items i WHERE i.device = ids.id AND i.kind = 'video' AND i.trashed_at IS NULL AND i.hidden = 0), \
+           (SELECT MAX(i.taken_at) FROM items i WHERE i.device = ids.id AND i.trashed_at IS NULL AND i.hidden = 0) \
+         FROM ids LEFT JOIN devices d ON d.id = ids.id",
+    )?;
+    let rows = st.query_map([], |r| {
+        let id: String = r.get(0)?;
+        let kind = r
+            .get::<_, Option<String>>(2)?
+            .unwrap_or_else(|| guess_device_kind(&id).into());
+        Ok(DeviceOut {
+            name: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| id.clone()),
+            kind,
+            created_at: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            last_seen_at: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            photos: r.get(5)?,
+            videos: r.get(6)?,
+            latest_taken_at: r.get(7)?,
+            id,
+        })
+    })?;
+    let mut out: Vec<DeviceOut> = rows.collect::<rusqlite::Result<_>>()?;
+    out.sort_by(|a, b| {
+        b.last_seen_at
+            .cmp(&a.last_seen_at)
+            .then(b.photos.cmp(&a.photos))
+    });
+    Ok(out)
 }
 
 pub fn list_albums(c: &Connection) -> rusqlite::Result<Vec<Album>> {

@@ -113,7 +113,8 @@ fn setup(with_tools: bool) -> Env {
     // A search lists the newest first. Written a moment apart, the two lectures can share a
     // second and then come back in name order: give them the dates a course would.
     for (name, day) in [("L01 Introduction.pdf", 0u64), ("L05 File carving.pdf", 28)] {
-        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_727_740_800 + day * 86_400);
+        let when =
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_727_740_800 + day * 86_400);
         std::fs::File::options()
             .write(true)
             .open(root.join("Digital Forensics").join(name))

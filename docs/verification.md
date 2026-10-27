@@ -1110,7 +1110,7 @@ Witnesses (`sometimes` / `DriveIndex_witness_*.cfg`): `pruned_a_deleted_file`, `
 Verus (`drive_kernels.rs`, the same bodies the server compiles from `drive_kernel_shared.rs`):
 DK1 `segment_ok` accepts only Normal segments, and a root joined with Normal segments never climbs out of it, while
 one `..` can (`safe_rel` / `join_under` split on `/` and require every segment to pass, so `browse?path=`, catalog
-paths and the walk's paths all stay inside the folder); DK2 `scope_of` / `in_scope` partition the library into
+paths and the walk's paths all stay inside the folder); DK2 `scope_of` / `in_scope` (its `phone` input is "came from a device" since 2026-10-27: `db::FROM_DEVICE`, a phone source or a `device` set) partition the library into
 gallery, films and drive (`db::scope_condition` is that predicate in SQL; `tests/drive.rs::scope_sql_matches_the_kernel`
 checks all four combinations through the API); DK3 `blob_action`; DK4 `may_prune` / `may_adopt_fs`; DK5
 `drive_may_work` (Tctl at or above `LUCINA_MEDIA_DRIVE_MAX_TEMP`, 90 °C, or the load limit pauses the hashing, text
