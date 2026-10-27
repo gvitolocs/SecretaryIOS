@@ -9,6 +9,7 @@ import { StatusDot } from "../components/StatusDot";
 import { listShares } from "../lib/share";
 import { t } from "../i18n";
 import { showWebChrome } from "../lib/desktopShell";
+import "../styles/embedded.css";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
@@ -127,8 +128,9 @@ export default function Shell(props: { children?: JSX.Element }) {
     }
   }
 
-  // Inside Secretary Code the desktop rail replaces the top bar and the tab bar.
+  // Inside Secretary Code the desktop rail replaces the top bar and the tab bar, and names the pages (styles/embedded.css).
   const chrome = showWebChrome();
+  if (!chrome) document.documentElement.dataset.shell = "desktop";
 
   return (
     <div class="shell shell--character" classList={{ "shell--desktop": !chrome }}>

@@ -26,9 +26,29 @@ declare global {
   }
 }
 
+const EMBEDDED_KEY = "secretary.shell";
+
+/**
+ * Inside Secretary Code: its bridge is there, or the shell opened this page with `?shell=1` (remembered for the
+ * browser session, since the app's own navigation drops the query).
+ */
+export function embedded(): boolean {
+  if (desktopShell()) return true;
+  if (typeof window === "undefined") return false;
+  try {
+    if (new URLSearchParams(window.location.search).get("shell") === "1") {
+      sessionStorage.setItem(EMBEDDED_KEY, "1");
+      return true;
+    }
+    return sessionStorage.getItem(EMBEDDED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 /** The web app's own top bar and tab bar: shown everywhere except inside Secretary Code, whose rail replaces them. */
 export function showWebChrome(): boolean {
-  return !desktopShell();
+  return !embedded();
 }
 
 /** The desktop bridge, when this page runs inside Secretary Code. */

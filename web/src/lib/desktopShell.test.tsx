@@ -3,11 +3,22 @@ import { fireEvent, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "../test/router";
 import PluginsView from "../views/Plugins";
-import { showWebChrome } from "./desktopShell";
+import { embedded, showWebChrome } from "./desktopShell";
 
 describe("Code plugin", () => {
   afterEach(() => {
     delete window.secretaryShell;
+    sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("counts as embedded with ?shell=1 and remembers it after the query is gone", () => {
+    expect(embedded()).toBe(false);
+    window.history.replaceState(null, "", "/computer?shell=1");
+    expect(embedded()).toBe(true);
+    window.history.replaceState(null, "", "/computer");
+    expect(embedded()).toBe(true);
+    expect(showWebChrome()).toBe(false);
   });
 
   it("is hidden in a browser", () => {
