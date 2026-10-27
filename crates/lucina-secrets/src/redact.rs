@@ -212,6 +212,21 @@ fn detectors() -> &'static [Detector] {
             d(r"\bAIza[0-9A-Za-z_-]{35}", "token"),
             d(r"\b\d{8,10}:AA[A-Za-z0-9_-]{30,}", "token"),
             d(r"\bst\.[A-Za-z0-9-]{8,}\.[a-f0-9]{16,}\.[a-f0-9]{16,}", "token"),
+            // More vendor shapes (Add secret safety net, 2026-10-27).
+            d(r"\bxapp-[0-9]-[A-Za-z0-9-]{10,}", "token"),
+            d(r"\bhf_[A-Za-z0-9]{30,}", "token"),
+            d(r"\bnpm_[A-Za-z0-9]{36}\b", "token"),
+            d(r"\bpypi-AgE[A-Za-z0-9_-]{50,}", "token"),
+            d(r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}", "token"),
+            d(r"\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{16,}", "token"),
+            d(r"\bdop_v1_[a-f0-9]{64}\b", "token"),
+            d(r"\bAGE-SECRET-KEY-1[0-9A-Z]{58}\b", "token"),
+            d(r"\bya29\.[A-Za-z0-9_-]{20,}", "token"),
+            d(r"\b1//0[A-Za-z0-9_-]{30,}", "token"),
+            d(r"\b(?:glsa|sntrys|lin_api)_[A-Za-z0-9_=-]{20,}", "token"),
+            d(r"\bSK[0-9a-f]{32}\b", "token"),
+            // Discord bot tokens: base64 user id . timestamp . hmac.
+            d(r"\b[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,40}", "token"),
             // `Bearer <x>`, `Basic <x>`: keep the scheme word.
             d(r"(?i)\b(?:bearer|basic)\s+(?P<s>[A-Za-z0-9._~+/-]{16,}=*)", "token"),
             // `password=…`, `"token": "…"`, `api_key: …`: keep the name.
@@ -357,6 +372,72 @@ fn mask_detectors(text: &str) -> Cow<'_, str> {
         Cow::Borrowed(_) => cur,
         Cow::Owned(s) => Cow::Owned(s),
     }
+}
+
+/// One token shape found by the detector: byte offsets into the text and
+/// the placeholder label. No value is kept beyond the caller's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detected {
+    pub start: usize,
+    pub end: usize,
+    pub label: &'static str,
+}
+
+/// Where the detector would mask `text` (detector shapes and high-entropy
+/// strings, not known values), merged where they overlap. The spans are
+/// what [`Redactor::redact`] replaces; the caller can offer to store them.
+pub fn detect(text: &str) -> Vec<Detected> {
+    let mut spans: Vec<Detected> = Vec::new();
+    for d in detectors() {
+        for caps in d.re.captures_iter(text) {
+            let whole = caps.get(0).expect("match");
+            let after_bracket = whole.start() > 0 && text.as_bytes()[whole.start() - 1] == b'[';
+            let s = caps.name("s").unwrap_or(whole);
+            if after_bracket || s.as_str().starts_with("secret://") {
+                continue;
+            }
+            spans.push(Detected {
+                start: s.start(),
+                end: s.end(),
+                label: d.label,
+            });
+        }
+    }
+    for m in entropy_candidates().find_iter(text) {
+        let s = m.as_str();
+        if is_drive_ref(text, m.start(), s) {
+            continue;
+        }
+        let base64ish = s.contains('+') || s.ends_with('=');
+        if !base64ish && s.matches('/').count() >= 2 {
+            let mut offset = m.start();
+            for seg in s.split('/') {
+                if looks_random(seg) {
+                    spans.push(Detected {
+                        start: offset,
+                        end: offset + seg.len(),
+                        label: "token",
+                    });
+                }
+                offset += seg.len() + 1;
+            }
+        } else if looks_random(s) {
+            spans.push(Detected {
+                start: m.start(),
+                end: m.end(),
+                label: "token",
+            });
+        }
+    }
+    spans.sort_by_key(|d| (d.start, std::cmp::Reverse(d.end)));
+    let mut out: Vec<Detected> = Vec::new();
+    for d in spans {
+        match out.last_mut() {
+            Some(last) if d.start < last.end => last.end = last.end.max(d.end),
+            _ => out.push(d),
+        }
+    }
+    out
 }
 
 impl Redactor {
@@ -859,5 +940,79 @@ mod overlap_tests {
             mask_entropy(&format!("gdrive:{b64}")),
             format!("gdrive:{b64}")
         );
+    }
+}
+
+/// The chat safety net (Add secret): what `detect` finds is exactly what
+/// `redact` hides, new vendor shapes are caught, ordinary chat is not.
+#[cfg(test)]
+mod detect_tests {
+    use super::*;
+
+    const TOKENS: &[&str] = &[
+        "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx0123456789",
+        "sk-ant-api03-AbCdEfGhIjKlMnOp-0123456789",
+        "ghp_ABCDEFGHIJKLMNOPQRSTuvwx1234",
+        "xoxb-123456789012-abcdefghijkl",
+        "xapp-1-A0123456789-abcdefghijklmnop",
+        "hf_AbCdEfGhIjKlMnOpQrStUvWxYz0123456",
+        "npm_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+        "SG.AbCdEfGhIjKlMnOpQr.StUvWxYz0123456789AbCd",
+        "re_AbCd1234_EfGhIjKlMnOpQrStUv",
+        "ya29.a0AfH6SMBxAbCdEfGhIjKlMnOpQr",
+        "1//0gAbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "glsa_AbCdEfGhIjKlMnOpQrStUvWx_0123abcd",
+        "SK0123456789abcdef0123456789abcdef",
+        "MTA4NjU0MjE2OTk5NzQ1NTQwMA.GbCdEf.AbCdEfGhIjKlMnOpQrStUvWxYz0123",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0123\n-----END RSA PRIVATE KEY-----",
+        "Q9zX4mL7pR2tV8wY3nB6cK1jH5gF0dS9aE7uI2oP",
+    ];
+
+    #[test]
+    fn detect_finds_what_redact_hides() {
+        let r = Redactor::new();
+        for t in TOKENS {
+            let text = format!("ecco la chiave {t} grazie");
+            let spans = detect(&text);
+            assert_eq!(spans.len(), 1, "{t}: {spans:?}");
+            let got = &text[spans[0].start..spans[0].end];
+            assert!(t.contains(got) && got.len() * 2 > t.len(), "{t} -> {got}");
+            let masked = r.redact(&text);
+            assert!(!masked.contains(got), "{t} survives: {masked}");
+            assert!(masked.contains("[secret:"), "{masked}");
+        }
+        // Name/value pairs keep the name; only the value is a span.
+        let text = "password=hunter2hunter2 and api_key: Zz9xYy8wWw7v";
+        let spans = detect(text);
+        let got: Vec<&str> = spans.iter().map(|d| &text[d.start..d.end]).collect();
+        assert_eq!(got, vec!["hunter2hunter2", "Zz9xYy8wWw7v"]);
+        // Two tokens in one message.
+        let text = format!("{} e {}", TOKENS[0], TOKENS[2]);
+        assert_eq!(detect(&text).len(), 2);
+    }
+
+    #[test]
+    fn ordinary_chat_has_no_detections() {
+        for k in [
+            "Ricordami di comprare il latte domani alle 9",
+            "The meeting is at 10:30, room SK-4, ask for Søren",
+            "01JABCDEFGHJKMNPQRSTVWXYZ0",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "https://github.com/gvitolocs/SecretaryCode/pull/123/files",
+            "secret://lucina/prod/lucina#OPEN_METEO_API_KEY",
+            "[secret:token] and [secret:OPENAI_API_KEY]",
+            "Salva la password di Gmail in Infisical, per favore",
+            "the npm_modules folder and hf_hub are fine",
+            "sk-short",
+            "re_play the song",
+            "ThisIsAnExtremelyLongCamelCaseIdentifierName",
+            "/secret is a command",
+            "gdrive:150qHWei8cXQbw1ssTSWFjEgC-XsmyKX3",
+        ] {
+            assert!(detect(k).is_empty(), "{k}: {:?}", detect(k));
+            assert_eq!(Redactor::new().redact(k), k, "{k}");
+        }
     }
 }

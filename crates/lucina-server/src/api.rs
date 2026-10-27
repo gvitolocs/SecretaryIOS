@@ -501,6 +501,14 @@ async fn route(
             lucina_secrets::redactor().redact_json(&mut out);
             Ok(ok(out))
         }
+        (Some("secrets"), Some("grant")) => {
+            // "Add secret": an owner grant from secretary-server, relayed to the broker.
+            only(&["POST"])?;
+            let body = read_json(body, MAX_BODY_BYTES).await?;
+            let mut v = crate::owner_secrets::relay(st, body).await?;
+            lucina_secrets::redactor().redact_json(&mut v);
+            Ok(ok(v))
+        }
         (Some("timeline"), None) => {
             only(&["GET"])?;
             timeline_list(st, uri)

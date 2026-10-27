@@ -58,8 +58,9 @@ pub enum TimeoutClass {
     Default,
 }
 
-/// One validated request against the contract.
-#[derive(Debug, Clone, PartialEq)]
+/// One validated request against the contract. `Debug` names the body's
+/// size only: a body may carry a secret value ([`Call::secrets_grant`]).
+#[derive(Clone, PartialEq)]
 pub struct Call {
     method: Method,
     segments: Vec<String>,
@@ -70,7 +71,50 @@ pub struct Call {
     extract: Option<&'static str>,
 }
 
+impl fmt::Debug for Call {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Call")
+            .field("method", &self.method)
+            .field("segments", &self.segments)
+            .field("query", &self.query)
+            .field(
+                "body",
+                &self
+                    .body
+                    .as_ref()
+                    .map(|b| format!("<{} bytes>", b.to_string().len())),
+            )
+            .field("class", &self.class)
+            .field("extract", &self.extract)
+            .finish()
+    }
+}
+
 impl Call {
+    /// `POST /secrets/grant {grant, value?, held?}`: relay an owner grant
+    /// to the broker ("Add secret"). The grant is already signed and checked
+    /// by secretary-server; `value` only for `put_secret`.
+    pub fn secrets_grant(
+        grant: String,
+        value: Option<String>,
+        held: Option<String>,
+    ) -> Result<Self> {
+        if !grant.starts_with("g1.") || grant.len() > 4096 {
+            return Err(Error::Invalid {
+                field: "grant",
+                message: "malformed".into(),
+            });
+        }
+        let mut body = serde_json::json!({ "grant": grant });
+        if let Some(v) = value {
+            body["value"] = Value::String(v);
+        }
+        if let Some(h) = held {
+            body["held"] = Value::String(h);
+        }
+        Ok(Self::new(Method::POST, &["secrets", "grant"]).with_body(body))
+    }
+
     fn new(method: Method, segments: &[&str]) -> Self {
         Self {
             method,

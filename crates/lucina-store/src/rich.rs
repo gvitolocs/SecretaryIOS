@@ -533,7 +533,7 @@ fn valid_route(p: &str) -> bool {
 /// One action (button), or `None`.
 pub fn normalize_action(raw: &Value, index: usize) -> Option<Value> {
     let kind = raw.get("kind")?.as_str()?;
-    if !matches!(kind, "reply" | "route" | "confirm" | "dismiss") {
+    if !matches!(kind, "reply" | "route" | "confirm" | "dismiss" | "secret") {
         return None;
     }
     let label = line(&raw["label"], MAX_LABEL);
@@ -576,6 +576,36 @@ pub fn normalize_action(raw: &Value, index: usize) -> Option<Value> {
             }
             if !text.is_empty() {
                 payload.insert("text".into(), str_v(&text));
+            }
+        }
+        "secret" => {
+            // Opens the app's "Add secret" sheet: names only, never a value
+            // (`held` names a value Lucina holds in memory for the owner).
+            let mode = p["mode"]
+                .as_str()
+                .filter(|m| matches!(*m, "save" | "project"))?;
+            payload.insert("mode".into(), str_v(mode));
+            let name_like = |s: &str, max: usize| {
+                (1..=max).contains(&s.len())
+                    && s.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-' | b'/')
+                    })
+            };
+            for (key, max) in [
+                ("name", 256),
+                ("project", 128),
+                ("environment", 128),
+                ("path", 512),
+                ("held", 64),
+                ("target", 200),
+            ] {
+                if let Some(v) = p[key].as_str().filter(|v| name_like(v, max)) {
+                    payload.insert(key.into(), str_v(v));
+                }
+            }
+            let project_name = line(&p["projectName"], 64);
+            if !project_name.is_empty() {
+                payload.insert("projectName".into(), str_v(&project_name));
             }
         }
         _ => {}
@@ -1655,5 +1685,46 @@ mod tests {
             m.speech_text(),
             "Ecco Place 1 — Street 1 Place 2 — Street 2 Place 3 — Street 3"
         );
+    }
+}
+
+#[cfg(test)]
+mod secret_action_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn secret_actions_keep_names_and_drop_values() {
+        let a = normalize_action(
+            &json!({"id": "save-secret", "label": "Save as secret", "kind": "secret",
+                    "payload": {"mode": "save", "held": "held-0123abcd", "name": "OPENAI_API_KEY",
+                                "project": "proj-1", "environment": "prod", "path": "/Pokobot",
+                                "value": "sk-should-never-pass-0123456789", "secretValue": "x"}}),
+            0,
+        )
+        .unwrap();
+        let p = &a["payload"];
+        assert_eq!(p["mode"], "save");
+        assert_eq!(p["held"], "held-0123abcd");
+        assert_eq!(p["path"], "/Pokobot");
+        assert!(p.get("value").is_none() && p.get("secretValue").is_none());
+        let a = normalize_action(
+            &json!({"label": "Create project", "kind": "secret", "payload": {"mode": "project", "projectName": "Poko Shorts"}}),
+            1,
+        )
+        .unwrap();
+        assert_eq!(a["payload"]["projectName"], "Poko Shorts");
+        // Unknown mode, or a name with spaces (dropped, the action stays).
+        assert!(normalize_action(
+            &json!({"label": "x", "kind": "secret", "payload": {"mode": "reveal"}}),
+            0
+        )
+        .is_none());
+        let a = normalize_action(
+            &json!({"label": "x", "kind": "secret", "payload": {"mode": "save", "name": "a b"}}),
+            0,
+        )
+        .unwrap();
+        assert!(a["payload"].get("name").is_none());
     }
 }

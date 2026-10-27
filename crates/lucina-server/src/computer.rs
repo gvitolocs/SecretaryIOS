@@ -89,7 +89,10 @@ fn sandbox(id: SandboxId) -> Sandbox {
 
 pub(crate) fn cu_error(e: lucina_computer_use::Error) -> ApiError {
     let status = match e.code() {
-        "not_enabled" | "launcher_unavailable" | "sandbox_unavailable" | "recovery_required"
+        "not_enabled"
+        | "launcher_unavailable"
+        | "sandbox_unavailable"
+        | "recovery_required"
         | "viewer_unavailable" => 503,
         "bad_request" | "output_limit" => 400,
         "busy" | "owner_driving" | "not_driving" => 409,
@@ -176,9 +179,11 @@ fn job_json(id: &str, j: &Job) -> Value {
     let (status, result, error) = match &j.result {
         None => ("running", None, None),
         Some(Ok(v)) => ("done", Some(v.clone()), None),
-        Some(Err((code, msg))) if code == "cancelled" => {
-            ("cancelled", None, Some(json!({"code": code, "message": msg})))
-        }
+        Some(Err((code, msg))) if code == "cancelled" => (
+            "cancelled",
+            None,
+            Some(json!({"code": code, "message": msg})),
+        ),
         Some(Err((code, msg))) => ("failed", None, Some(json!({"code": code, "message": msg}))),
     };
     json!({
@@ -205,7 +210,11 @@ fn start_job(who: String, task: String) -> Result<String, ApiError> {
         let mut map = jobs().lock().unwrap_or_else(|e| e.into_inner());
         prune_jobs(&mut map);
         if map.len() >= MAX_JOBS {
-            return Err(ApiError::new(429, "too_many_jobs", "too many computer jobs kept; try later"));
+            return Err(ApiError::new(
+                429,
+                "too_many_jobs",
+                "too many computer jobs kept; try later",
+            ));
         }
         if map.values().any(|j| j.result.is_none()) {
             return Err(cu_error(lucina_computer_use::Error::Busy));
@@ -231,7 +240,11 @@ fn start_job(who: String, task: String) -> Result<String, ApiError> {
             .map(|r| r.to_json())
             .map_err(|e| (e.code().to_owned(), e.to_string()));
         let status = match &out {
-            Ok(v) => v.get("status").and_then(Value::as_str).unwrap_or("").to_owned(),
+            Ok(v) => v
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
             Err((code, _)) => code.clone(),
         };
         tracing::info!(job = %jid, status = %status, "computer job finished");
@@ -259,7 +272,9 @@ pub(crate) fn input_event(e: &Value) -> Result<(&'static str, Value), ApiError> 
     let text = |k: &str| -> Result<String, ApiError> {
         let t = e.get(k).and_then(Value::as_str).unwrap_or("");
         if t.is_empty() || t.chars().count() > MAX_TYPE_CHARS {
-            return Err(ApiError::bad_request(format!("{kind}: {k} must be 1..{MAX_TYPE_CHARS} chars")));
+            return Err(ApiError::bad_request(format!(
+                "{kind}: {k} must be 1..{MAX_TYPE_CHARS} chars"
+            )));
         }
         Ok(t.to_owned())
     };
@@ -267,18 +282,36 @@ pub(crate) fn input_event(e: &Value) -> Result<(&'static str, Value), ApiError> 
         "click" => {
             let button = e.get("button").and_then(Value::as_str).unwrap_or("left");
             if !["left", "right", "middle"].contains(&button) {
-                return Err(ApiError::bad_request("click: button must be left, right or middle"));
+                return Err(ApiError::bad_request(
+                    "click: button must be left, right or middle",
+                ));
             }
-            let count = e.get("count").and_then(Value::as_u64).unwrap_or(1).clamp(1, 3);
-            Ok(("click", json!({"scope": "desktop", "x": coord("x")?, "y": coord("y")?, "button": button, "count": count})))
+            let count = e
+                .get("count")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .clamp(1, 3);
+            Ok((
+                "click",
+                json!({"scope": "desktop", "x": coord("x")?, "y": coord("y")?, "button": button, "count": count}),
+            ))
         }
         "scroll" => {
             let dir = e.get("direction").and_then(Value::as_str).unwrap_or("");
             if !["up", "down", "left", "right"].contains(&dir) {
-                return Err(ApiError::bad_request("scroll: direction must be up, down, left or right"));
+                return Err(ApiError::bad_request(
+                    "scroll: direction must be up, down, left or right",
+                ));
             }
-            let amount = e.get("amount").and_then(Value::as_u64).unwrap_or(3).clamp(1, 20);
-            Ok(("scroll", json!({"scope": "desktop", "x": coord("x")?, "y": coord("y")?, "direction": dir, "amount": amount})))
+            let amount = e
+                .get("amount")
+                .and_then(Value::as_u64)
+                .unwrap_or(3)
+                .clamp(1, 20);
+            Ok((
+                "scroll",
+                json!({"scope": "desktop", "x": coord("x")?, "y": coord("y")?, "direction": dir, "amount": amount}),
+            ))
         }
         "move" => Ok(("move_cursor", json!({"x": coord("x")?, "y": coord("y")?}))),
         "type" => Ok(("type_text", json!({"text": text("text")?}))),
@@ -292,8 +325,13 @@ pub(crate) fn input_event(e: &Value) -> Result<(&'static str, Value), ApiError> 
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
-            if mods.iter().any(|m| !["ctrl", "shift", "alt", "super"].contains(m)) {
-                return Err(ApiError::bad_request("key: modifiers are ctrl, shift, alt, super"));
+            if mods
+                .iter()
+                .any(|m| !["ctrl", "shift", "alt", "super"].contains(m))
+            {
+                return Err(ApiError::bad_request(
+                    "key: modifiers are ctrl, shift, alt, super",
+                ));
             }
             let mut args = json!({"key": key});
             if !mods.is_empty() {
@@ -376,13 +414,22 @@ pub async fn computer(
                 }
                 let id = start_job(who, task)?;
                 let map = jobs().lock().unwrap_or_else(|e| e.into_inner());
-                let j = map.get(&id).map(|j| job_json(&id, j)).unwrap_or(json!({"jobId": id}));
+                let j = map
+                    .get(&id)
+                    .map(|j| job_json(&id, j))
+                    .unwrap_or(json!({"jobId": id}));
                 return Ok(ok_status(202, j));
             }
             tracing::info!(who = %who, chars = task.chars().count(), "computer task started");
-            let result = run_task(&who, &task, &Cancel::new()).await.map_err(cu_error)?;
+            let result = run_task(&who, &task, &Cancel::new())
+                .await
+                .map_err(cu_error)?;
             let out = result.to_json();
-            let status = out.get("status").and_then(Value::as_str).unwrap_or("").to_owned();
+            let status = out
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
             tracing::info!(status = %status, "computer task finished");
             Ok(ok(out))
         }
@@ -421,17 +468,25 @@ pub async fn computer(
             let r = match op {
                 "spaces" => sb.spaces().await,
                 "bash" => {
-                    let cmd = s("command").ok_or_else(|| ApiError::bad_request("command is required"))?;
-                    sb.bash(cmd, v.get("timeoutSecs").and_then(Value::as_u64)).await
+                    let cmd =
+                        s("command").ok_or_else(|| ApiError::bad_request("command is required"))?;
+                    sb.bash(cmd, v.get("timeoutSecs").and_then(Value::as_u64))
+                        .await
                 }
                 "write" => {
-                    let path = s("path").ok_or_else(|| ApiError::bad_request("path is required"))?;
+                    let path =
+                        s("path").ok_or_else(|| ApiError::bad_request("path is required"))?;
                     sb.write(path, s("content").unwrap_or("")).await
                 }
                 "tools" => sb.tools(s("tool")).await,
                 "tool" => {
-                    let tool = s("tool").ok_or_else(|| ApiError::bad_request("tool is required"))?;
-                    sb.call_tool(tool, v.get("arguments").cloned().unwrap_or_else(|| json!({}))).await
+                    let tool =
+                        s("tool").ok_or_else(|| ApiError::bad_request("tool is required"))?;
+                    sb.call_tool(
+                        tool,
+                        v.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                    )
+                    .await
                 }
                 "screenshot" => {
                     let (img, text) = screen(&sb).await?;
@@ -458,7 +513,8 @@ pub async fn computer(
             let (img, _) = tokio::time::timeout(Duration::from_secs(30), screen(&sb))
                 .await
                 .map_err(|_| ApiError::new(504, "timeout", "screenshot timed out"))??;
-            let (mime, data) = img.ok_or_else(|| ApiError::new(502, "no_image", "the sandbox returned no screen"))?;
+            let (mime, data) = img
+                .ok_or_else(|| ApiError::new(502, "no_image", "the sandbox returned no screen"))?;
             let png = base64::engine::general_purpose::STANDARD
                 .decode(data)
                 .map_err(|e| ApiError::new(502, "bad_image", e.to_string()))?;
@@ -501,7 +557,9 @@ pub async fn computer(
                     crate::computer_view::drop_control_views(id);
                     Ok(ok(json!({"state": control().state(id)})))
                 }
-                _ => Err(ApiError::bad_request("action must be take, release or heartbeat")),
+                _ => Err(ApiError::bad_request(
+                    "action must be take, release or heartbeat",
+                )),
             }
         }
         (Some("input"), None, _, 1) => {
@@ -513,9 +571,16 @@ pub async fn computer(
                 .get("events")
                 .and_then(Value::as_array)
                 .filter(|a| !a.is_empty() && a.len() <= MAX_EVENTS)
-                .ok_or_else(|| ApiError::bad_request(format!("events must be 1..{MAX_EVENTS} items")))?;
-            let calls = events.iter().map(input_event).collect::<Result<Vec<_>, _>>()?;
-            control().owner_input(id, &dev, batch_summary(events)).map_err(cu_error)?;
+                .ok_or_else(|| {
+                    ApiError::bad_request(format!("events must be 1..{MAX_EVENTS} items"))
+                })?;
+            let calls = events
+                .iter()
+                .map(input_event)
+                .collect::<Result<Vec<_>, _>>()?;
+            control()
+                .owner_input(id, &dev, batch_summary(events))
+                .map_err(cu_error)?;
             let sb = sandbox(id);
             let mut done = 0usize;
             let mut outputs = Vec::new();
@@ -553,7 +618,11 @@ pub async fn computer(
                 .await
                 .map_err(cu_error)?;
             let view_id = crate::computer_view::open(id, mode, &dev, epoch, &ticket.machine);
-            control().note(id, "view_open", json!({"device": dev, "mode": mode.as_str()}));
+            control().note(
+                id,
+                "view_open",
+                json!({"device": dev, "mode": mode.as_str()}),
+            );
             Ok(ok(json!({
                 "viewId": view_id,
                 "sandbox": id.as_str(),
@@ -576,12 +645,25 @@ mod tests {
     fn input_events_map_to_driver_tools() {
         let (t, a) = input_event(&json!({"kind": "click", "x": 10, "y": 20})).unwrap();
         assert_eq!(t, "click");
-        assert_eq!(a, json!({"scope": "desktop", "x": 10, "y": 20, "button": "left", "count": 1}));
-        let (t, a) = input_event(&json!({"kind": "scroll", "x": 1, "y": 2, "direction": "down"})).unwrap();
+        assert_eq!(
+            a,
+            json!({"scope": "desktop", "x": 10, "y": 20, "button": "left", "count": 1})
+        );
+        let (t, a) =
+            input_event(&json!({"kind": "scroll", "x": 1, "y": 2, "direction": "down"})).unwrap();
         assert_eq!((t, a["amount"].clone()), ("scroll", json!(3)));
-        let (t, a) = input_event(&json!({"kind": "key", "key": "Return", "modifiers": ["ctrl"]})).unwrap();
-        assert_eq!((t, a), ("press_key", json!({"key": "Return", "modifiers": ["ctrl"]})));
-        assert_eq!(input_event(&json!({"kind": "type", "text": "hi"})).unwrap().0, "type_text");
+        let (t, a) =
+            input_event(&json!({"kind": "key", "key": "Return", "modifiers": ["ctrl"]})).unwrap();
+        assert_eq!(
+            (t, a),
+            ("press_key", json!({"key": "Return", "modifiers": ["ctrl"]}))
+        );
+        assert_eq!(
+            input_event(&json!({"kind": "type", "text": "hi"}))
+                .unwrap()
+                .0,
+            "type_text"
+        );
         for bad in [
             json!({"kind": "click", "x": -1, "y": 0}),
             json!({"kind": "click", "x": 1}),
@@ -599,7 +681,10 @@ mod tests {
 
     #[test]
     fn the_audit_summary_never_carries_typed_text() {
-        let s = batch_summary(&[json!({"kind": "type", "text": "hunter2"}), json!({"kind": "key", "key": "Return"})]);
+        let s = batch_summary(&[
+            json!({"kind": "type", "text": "hunter2"}),
+            json!({"kind": "key", "key": "Return"}),
+        ]);
         assert_eq!(s["textChars"], 7);
         assert_eq!(s["kinds"], json!(["type", "key"]));
         assert!(!s.to_string().contains("hunter2"));

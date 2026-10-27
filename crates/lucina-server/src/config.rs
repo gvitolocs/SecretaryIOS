@@ -182,6 +182,8 @@ pub struct Config {
     /// OTP requests in chat (`LUCINA_OTP_OWNER_TOKEN_FILE`, unset by default:
     /// "the OTP bridge is unavailable"), see [`crate::otp`].
     pub otp: crate::otp::OtpConfig,
+    /// infisical-brokerd for "Add secret" (`LUCINA_BROKER_*`).
+    pub broker: crate::owner_secrets::BrokerConfig,
     /// Bot Hospital daily Poko-news audit (`BOT_HOSPITAL_*`), see [`crate::bot_hospital`].
     pub hospital: crate::bot_hospital::HospitalConfig,
     /// `LUCINA_DELIVERY_ALERT_AFTER_MIN` (default 5): a delivery path down this long alerts the owner.
@@ -493,6 +495,7 @@ impl Config {
             delegate_enabled: flag("LUCINA_DELEGATE", false),
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
+            broker: crate::owner_secrets::BrokerConfig::from_lookup(&get),
             hospital,
             delivery_alert_after: Duration::from_secs(
                 num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
