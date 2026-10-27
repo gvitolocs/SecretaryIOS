@@ -66,6 +66,9 @@ pub struct Config {
     pub pdftotext: Option<PathBuf>,
     pub pdftoppm: Option<PathBuf>,
     pub soffice: Option<PathBuf>,
+    /// Days an item stays in the Trash before it is purged for good (`LUCINA_MEDIA_TRASH_DAYS`,
+    /// 30; 0 keeps the Trash forever).
+    pub trash_days: u32,
 }
 
 /// `LUCINA_MEDIA_FILM_FOLDERS` when unset.
@@ -233,6 +236,10 @@ impl Config {
                 .transpose()?
                 .unwrap_or(50),
             drive_isolate: true,
+            trash_days: var("LUCINA_MEDIA_TRASH_DAYS")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(30),
             pdftotext,
             pdftoppm,
             soffice,
@@ -274,6 +281,7 @@ impl Config {
             drive_max_temp_c: 90,
             drive_cpu_quota: 50,
             drive_isolate: false,
+            trash_days: 30,
             pdftotext: None,
             pdftoppm: None,
             soffice: None,

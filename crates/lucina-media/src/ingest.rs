@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::db::{self, now_str, Db};
 use crate::meta::{self, ClientMeta, Extracted};
 use crate::protocol::{ingest_decision, IngestDecision, Known};
-use crate::{geo, store, thumbs};
+use crate::{gallery, geo, store, thumbs};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Event {
@@ -318,9 +318,9 @@ fn insert_item(
     tx.execute(
         "INSERT INTO items (id, kind, title, caption, hash, mime, bytes, taken_at, sort_at, width, height, duration_ms,
             video_codec, audio_codec, lat, lon, place_name, admin1, admin2, cc, camera, source, device, asset_id,
-            hidden, favorite, added_at, updated_at)
+            hidden, favorite, added_at, updated_at, origin_name, origin_folder, origin_root)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22,
-            ?23, ?24, ?25, ?26, ?27, ?27)",
+            ?23, ?24, ?25, ?26, ?27, ?27, ?28, ?29, ?30)",
         params![
             id,
             x.kind,
@@ -349,6 +349,12 @@ fn insert_item(
             client.live_motion.unwrap_or(false) as i64,
             client.favorite.unwrap_or(false) as i64,
             now,
+            // Where it came from, for `gallery::origin_of`: never a path outside the import root.
+            client.filename.as_deref().and_then(|f| {
+                gallery::clean_name(f.rsplit(['/', '\\']).next().unwrap_or(f))
+            }),
+            client.origin_folder.as_deref().and_then(gallery::clean_folder),
+            client.origin_root.as_deref().and_then(gallery::clean_name),
         ],
     )?;
     if let (Some(dev), Some(pair)) = (&client.device, &client.live_pair_asset) {
@@ -508,6 +514,11 @@ pub fn register_external(
     let mime = meta::mime_for(&path, req.mime.as_deref());
     let ext = meta::ext_for(&path, &mime);
     let bytes = std::fs::metadata(&path)?.len() as i64;
+    // An in-place file's provenance: its name, and its folder under the configured root.
+    let (root, folder) = match gallery::relative_to_roots(&lib.cfg.folders, &path) {
+        Some((label, dir)) => (Some(label), dir),
+        None => (None, None),
+    };
     let client = ClientMeta {
         taken_at: req.created_at.clone(),
         duration_ms: req.duration_ms,
@@ -515,6 +526,12 @@ pub fn register_external(
         title: req.title.clone(),
         caption: req.caption.clone(),
         album: req.album.clone(),
+        filename: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string),
+        origin_folder: folder,
+        origin_root: root,
         ..Default::default()
     };
     let mut x = meta::extract(&path, &mime, &client, lib.cfg.tz, &lib.cfg.ffprobe);

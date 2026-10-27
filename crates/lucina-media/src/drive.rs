@@ -656,7 +656,7 @@ pub fn browse(c: &Connection, q: &BrowseQuery) -> Result<Browse, BrowseError> {
     ))?;
     let files: Vec<(Item, DriveInfo)> = st
         .query_map(rusqlite::params_from_iter(args.iter()), |r| {
-            Ok((db::item_from_row(r)?, info_from_row(r, 29)?))
+            Ok((db::item_from_row(r)?, info_from_row(r, db::ITEM_COL_COUNT)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let next = offset as i64 + files.len() as i64;

@@ -22,13 +22,16 @@ use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
+use crate::batch::{self, BatchReq, Outcome};
 use crate::db::{self, now_str, Item, ListQuery};
 use crate::doctype::{self, DocType};
 use crate::drive::{self, DriveInfo};
+use crate::gallery::{self, OriginOut};
 use crate::ingest::{self, ExternalReq, Library};
 use crate::meta::ClientMeta;
 use crate::protocol::{self, ChunkOutcome, UploadState};
 use crate::thumbs::{self, ThumbSize};
+use crate::{deletions, trash};
 
 /// Sent by p1's Caddy (`header_up X-Media-Upstream-Key {file./etc/caddy/media-upstream.key}`).
 pub const UPSTREAM_KEY_HEADER: &str = "x-media-upstream-key";
@@ -69,11 +72,14 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/v1/media/items", get(list_items))
+        .route("/v1/media/items/months", get(list_months))
+        .route("/v1/media/items/batch", post(batch_items))
         .route(
             "/v1/media/items/{id}",
             get(get_item).patch(patch_item).delete(trash_item),
         )
         .route("/v1/media/items/{id}/restore", post(restore_item))
+        .route("/v1/media/items/{id}/details", get(item_details))
         .route("/v1/media/items/{id}/original", get(original))
         .route("/v1/media/items/{id}/thumb", get(thumb))
         .route("/v1/media/items/{id}/poster", get(poster))
@@ -104,6 +110,15 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/devices", get(list_devices))
         .route("/v1/media/devices/{device}", put(register_device))
         .route("/v1/media/devices/{device}/assets", get(device_assets))
+        .route(
+            "/v1/media/devices/{device}/deletions",
+            get(device_deletions),
+        )
+        .route(
+            "/v1/media/devices/{device}/deletions/ack",
+            post(ack_deletions),
+        )
+        .route("/v1/media/sources", get(list_sources))
         .route("/v1/media/events", get(events))
         .merge(uploads)
         .merge(crate::share_http::owner_routes())
@@ -163,6 +178,11 @@ pub struct ItemOut {
     pub album: Option<String>,
     /// The file's place in a Drive folder; `null` for other items.
     pub drive: Option<DriveInfo>,
+    /// Where it came from: the original name, the folder under the import root, the import.
+    pub origin: OriginOut,
+    /// `trashed_at` plus the retention (RFC 3339) while in the Trash; `null` otherwise, and when
+    /// the Trash is kept forever.
+    pub trash_expires_at: Option<String>,
     /// Text around the search words, when a search matched the file's content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -232,6 +252,11 @@ pub fn item_out_full(
         (doc == DocType::Archive && crate::archive::format_of(name).is_some())
             .then(|| format!("/v1/media/items/{id}/archive"))
     );
+    let origin = gallery::origin_of(&it.origin_cols, &it.title, &it.source, drive.as_ref());
+    let trash_expires_at = it
+        .trashed_at
+        .as_deref()
+        .and_then(|t| trash::trash_expiry(t, lib.cfg.trash_days));
     ItemOut {
         item: it,
         urls,
@@ -239,6 +264,8 @@ pub fn item_out_full(
         thumb_url,
         album,
         drive,
+        origin,
+        trash_expires_at,
         snippet,
     }
 }
@@ -270,6 +297,13 @@ async fn list_items(
     Query(mut q): Query<ListQuery>,
 ) -> ApiResult<Json<Value>> {
     q.film_folders = lib.cfg.film_folders.clone();
+    q.origin = q.origin.take().filter(|o| !o.is_empty());
+    if q.origin
+        .as_deref()
+        .is_some_and(|o| gallery::Origin::parse(o).is_none())
+    {
+        return Err(bad("origin must be all, device:<id>, chat or lucina"));
+    }
     if q.doc_type
         .as_deref()
         .is_some_and(|t| DocType::parse(t).is_none())
@@ -367,6 +401,14 @@ struct ItemPatch {
     caption: Option<String>,
     favorite: Option<bool>,
     taken_at: Option<String>,
+    /// Clockwise degrees the client draws the picture at: 0, 90, 180 or 270. The renditions are
+    /// not re-rendered; the original is untouched.
+    rotation: Option<i64>,
+}
+
+/// The rotations a client can draw.
+pub fn valid_rotation(r: i64) -> bool {
+    matches!(r, 0 | 90 | 180 | 270)
 }
 
 async fn patch_item(
@@ -374,6 +416,9 @@ async fn patch_item(
     Path(id): Path<String>,
     Json(p): Json<ItemPatch>,
 ) -> ApiResult<Json<ItemOut>> {
+    if p.rotation.is_some_and(|r| !valid_rotation(r)) {
+        return Err(bad("rotation must be 0, 90, 180 or 270"));
+    }
     let taken = match p.taken_at.as_deref() {
         Some(t) => Some(
             crate::meta::parse_loose_datetime(t).ok_or_else(|| bad("taken_at must be RFC 3339"))?,
@@ -389,8 +434,8 @@ async fn patch_item(
             let n = tx.execute(
                 "UPDATE items SET title = COALESCE(?2, title), caption = COALESCE(?3, caption),
                     favorite = COALESCE(?4, favorite), taken_at = COALESCE(?5, taken_at), sort_at = COALESCE(?5, sort_at),
-                    updated_at = ?6 WHERE id = ?1",
-                params![iid, p.title, p.caption, p.favorite.map(|f| f as i64), taken, now_str()],
+                    rotation = COALESCE(?7, rotation), updated_at = ?6 WHERE id = ?1",
+                params![iid, p.title, p.caption, p.favorite.map(|f| f as i64), taken, now_str(), p.rotation],
             )?;
             if n == 0 {
                 return Ok(None);
@@ -1854,4 +1899,146 @@ async fn item_path(State(lib): State<Library>, Path(id): Path<String>) -> ApiRes
     Ok(Json(
         json!({ "path": path, "mime": item.mime, "hash": item.hash, "kind": item.kind }),
     ))
+}
+
+// ---- the Gallery ---------------------------------------------------------------------------
+
+/// `GET items/months?origin=&kind=`: how many items each month holds, for the scrubber and the
+/// month headers. Takes the listing's filters.
+async fn list_months(
+    State(lib): State<Library>,
+    Query(mut q): Query<ListQuery>,
+) -> ApiResult<Json<Value>> {
+    q.film_folders = lib.cfg.film_folders.clone();
+    q.origin = q.origin.take().filter(|o| !o.is_empty());
+    if q.origin
+        .as_deref()
+        .is_some_and(|o| gallery::Origin::parse(o).is_none())
+    {
+        return Err(bad("origin must be all, device:<id>, chat or lucina"));
+    }
+    let months = lib.db.call(move |c| db::list_months(c, &q)).await?;
+    Ok(Json(json!({
+        "months": months
+            .into_iter()
+            .map(|(month, count)| json!({ "month": month, "count": count }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// `GET sources`: the Gallery's source switcher.
+async fn list_sources(State(lib): State<Library>) -> ApiResult<Json<gallery::Sources>> {
+    Ok(Json(lib.db.call(|c| gallery::list_sources(c)).await?))
+}
+
+/// `GET items/{id}/details`: the item and its camera data, read from the original when asked.
+async fn item_details(
+    State(lib): State<Library>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    if !valid_item_id(&id) {
+        return Err(not_found());
+    }
+    let iid = id.clone();
+    let (it, album, info) = lib
+        .db
+        .call(move |c| {
+            let Some(it) = db::get_item(c, &iid)? else {
+                return Ok(None);
+            };
+            let a = first_album_titles(c, std::slice::from_ref(&it))?
+                .pop()
+                .flatten();
+            let info = drive::info_for(c, &iid)?;
+            Ok(Some((it, a, info)))
+        })
+        .await?
+        .ok_or_else(not_found)?;
+    let (kind, tz) = (it.kind.clone(), lib.cfg.tz);
+    let l = lib.clone();
+    let exif = tokio::task::spawn_blocking(move || {
+        let (path, _) = ingest::original_path(&l, &id).ok()??;
+        path.is_file()
+            .then(|| crate::meta::read_details(&path, &kind, tz))
+            .flatten()
+    })
+    .await?;
+    Ok(Json(json!({
+        "item": item_out_full(&lib, it, album, info, None),
+        "exif": exif,
+        // Faces are not recognised yet; the field is here for the viewer.
+        "people": [],
+    })))
+}
+
+/// `POST items/batch`: one operation on up to 500 items.
+async fn batch_items(
+    State(lib): State<Library>,
+    Json(req): Json<BatchReq>,
+) -> ApiResult<Json<Value>> {
+    let plan = batch::plan(req).map_err(bad)?;
+    let op = plan.op;
+    let outcome = lib.db.call(move |c| batch::apply(c, &plan)).await?;
+    let res = match outcome {
+        Outcome::NoAlbum => {
+            return Err(ApiError(StatusCode::NOT_FOUND, "album not found".into()));
+        }
+        Outcome::Applied(r) => r,
+    };
+    if op == batch::BatchOp::Purge {
+        let report = trash::PurgeReport {
+            done: res.done.clone(),
+            failed: Vec::new(),
+            orphans: res.orphans,
+        };
+        let cfg = lib.cfg.clone();
+        tokio::task::spawn_blocking(move || trash::finish_purge(&cfg, &report)).await?;
+    }
+    for id in &res.done {
+        lib.emit(op.event(), id);
+    }
+    Ok(Json(json!({
+        "done": res.done,
+        "failed": res.failed,
+        "queued": res.queued,
+    })))
+}
+
+/// `GET devices/{id}/deletions`: what Lucina asks the device to delete.
+async fn device_deletions(
+    State(lib): State<Library>,
+    Path(device): Path<String>,
+) -> ApiResult<Json<Value>> {
+    if !device_id_ok(&device) {
+        return Err(bad("bad device id"));
+    }
+    let pending = lib.db.call(move |c| deletions::pending(c, &device)).await?;
+    Ok(Json(json!({ "pending": pending })))
+}
+
+#[derive(Deserialize)]
+struct AckReq {
+    asset_ids: Vec<String>,
+}
+
+/// `POST devices/{id}/deletions/ack`: the device deleted these assets.
+async fn ack_deletions(
+    State(lib): State<Library>,
+    Path(device): Path<String>,
+    Json(r): Json<AckReq>,
+) -> ApiResult<Json<Value>> {
+    if !device_id_ok(&device) {
+        return Err(bad("bad device id"));
+    }
+    if r.asset_ids.len() > batch::MAX_BATCH {
+        return Err(bad(format!(
+            "at most {} asset ids per call",
+            batch::MAX_BATCH
+        )));
+    }
+    let acked = lib
+        .db
+        .call(move |c| deletions::ack(c, &device, &r.asset_ids))
+        .await?;
+    Ok(Json(json!({ "acked": acked })))
 }
