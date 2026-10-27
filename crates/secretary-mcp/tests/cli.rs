@@ -117,3 +117,21 @@ async fn token_issue_list_revoke() {
     assert_eq!(code, 0);
     assert!(out.contains("active grants: 0"), "{out}");
 }
+
+#[tokio::test]
+async fn token_add_scope_gives_the_computer_tools() {
+    let h = start().await;
+    let dir = h.data_dir();
+    let (code, out, err) = cli(&dir, &["token", "issue", "--name", "grok", "--scopes", "read,chat,write"]);
+    assert_eq!(code, 0, "{err}");
+    let grok = out.trim().to_owned();
+    assert!(!h.tool_names(&grok).await.iter().any(|n| n == "computer_task"));
+    let (code, out, err) = cli(&dir, &["token", "add-scope", "grok", "computer"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("scopes=read,chat,write,computer"), "{out}");
+    assert!(h.tool_names(&grok).await.iter().any(|n| n == "computer_task"));
+    let (code, _, _) = cli(&dir, &["token", "add-scope", "nobody", "computer"]);
+    assert_eq!(code, 1);
+    let (code, _, _) = cli(&dir, &["token", "add-scope", "grok", "admin"]);
+    assert_ne!(code, 0, "unknown scopes are refused");
+}

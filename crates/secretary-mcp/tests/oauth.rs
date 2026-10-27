@@ -155,7 +155,7 @@ async fn discovery_metadata() {
             v["authorization_servers"],
             json!(["https://getsecretary.tech"])
         );
-        assert_eq!(v["scopes_supported"], json!(["read", "chat", "write"]));
+        assert_eq!(v["scopes_supported"], json!(["read", "chat", "write", "computer"]));
     }
     let v: Value = h
         .http

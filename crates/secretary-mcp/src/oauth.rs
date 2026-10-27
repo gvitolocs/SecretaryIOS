@@ -227,6 +227,26 @@ impl OAuth {
         self.file.read(Clone::clone)
     }
 
+    /// Add `add` to active grants (by grant id or client id) and to their live
+    /// access and refresh tokens, so the next refresh keeps them. Returns how many grants.
+    pub fn add_scopes(&self, target: &str, add: &Scopes) -> std::io::Result<usize> {
+        self.file.update(|d| {
+            let mut ids = Vec::new();
+            for g in d.grants.iter_mut() {
+                if !g.revoked && (g.id == target || g.client_id == target) {
+                    g.scopes = Scopes::of(g.scopes.iter().chain(add.iter()));
+                    ids.push(g.id.clone());
+                }
+            }
+            for t in d.tokens.iter_mut() {
+                if ids.contains(&t.grant_id) {
+                    t.scopes = Scopes::of(t.scopes.iter().chain(add.iter()));
+                }
+            }
+            (!ids.is_empty(), ids.len())
+        })
+    }
+
     /// Revoke grants by grant id, client id, or `all`. Returns how many.
     pub fn revoke(&self, target: &str) -> std::io::Result<usize> {
         self.file.update(|d| {
@@ -1028,6 +1048,8 @@ pub struct AuthorizeForm {
     scope_chat: Option<String>,
     #[serde(default)]
     scope_write: Option<String>,
+    #[serde(default)]
+    scope_computer: Option<String>,
 }
 
 pub async fn authorize_post(
@@ -1082,6 +1104,7 @@ pub async fn authorize_post(
             (Scope::Read, &f.scope_read),
             (Scope::Chat, &f.scope_chat),
             (Scope::Write, &f.scope_write),
+            (Scope::Computer, &f.scope_computer),
         ]
         .into_iter()
         .filter(|(_, v)| v.is_some())

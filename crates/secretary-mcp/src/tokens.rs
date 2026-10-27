@@ -82,6 +82,21 @@ impl TokenStore {
         self.file.read(Clone::clone)
     }
 
+    /// Add `add` to an active token's scopes (by id, or every active token with
+    /// that name). Returns the updated records.
+    pub fn add_scopes(&self, id_or_name: &str, add: &Scopes) -> io::Result<Vec<ServiceToken>> {
+        self.file.update(|v| {
+            let mut hit = Vec::new();
+            for t in v.iter_mut() {
+                if !t.revoked && (t.id == id_or_name || t.name == id_or_name) {
+                    t.scopes = Scopes::of(t.scopes.iter().chain(add.iter()));
+                    hit.push(t.clone());
+                }
+            }
+            (!hit.is_empty(), hit)
+        })
+    }
+
     /// Revoke by id, or by name (every active token with that name).
     /// Returns the revoked records.
     pub fn revoke(&self, id_or_name: &str) -> io::Result<Vec<ServiceToken>> {
