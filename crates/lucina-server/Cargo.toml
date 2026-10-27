@@ -29,7 +29,9 @@ lucina-computer-use = { path = "../lucina-computer-use" }
 lucina-intent = { path = "../lucina-intent" }
 lucina-phone-core = { path = "../lucina-phone-core" }
 lucina-discord = { path = "../lucina-discord", features = ["gateway"] }
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
+# LucinaDesk (src/desk.rs): the gateway socket; axum's own ws uses the same version.
+tokio-tungstenite = "0.29"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { workspace = true }

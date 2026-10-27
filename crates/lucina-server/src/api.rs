@@ -319,6 +319,9 @@ pub fn router(state: AppState) -> Router {
             "/api/secretary/computer/viewer-assets/{version}/{file}",
             get(crate::computer_view::assets),
         )
+        // LucinaDesk (crate::desk): ticket minting and the owner's socket.
+        .route("/api/secretary/computer/desk", any(crate::desk::mint_route))
+        .route("/api/secretary/computer/desk/ws", any(crate::desk::ws_route))
         .route("/api/secretary/{*rest}", any(secretary))
         .with_state(state)
 }

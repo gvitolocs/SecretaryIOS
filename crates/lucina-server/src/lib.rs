@@ -16,6 +16,7 @@ pub mod capabilities;
 pub mod chat;
 pub mod computer;
 pub mod computer_view;
+pub mod desk;
 pub mod config;
 pub mod context;
 pub mod deals;
