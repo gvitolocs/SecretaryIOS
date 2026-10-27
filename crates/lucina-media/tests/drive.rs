@@ -106,14 +106,6 @@ fn setup(with_tools: bool) -> Env {
         &root.join("Digital Forensics/L01 Introduction.pdf"),
         &pdf("Introduction to digital forensics"),
     );
-    // An hour older than L05: written one after the other they often share a modification time
-    // to the millisecond, and searches (newest first) then returned the two in either order.
-    std::fs::File::options()
-        .write(true)
-        .open(root.join("Digital Forensics/L01 Introduction.pdf"))
-        .unwrap()
-        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
-        .unwrap();
     write(
         &root.join("Digital Forensics/L05 File carving.pdf"),
         &pdf("File carving with scalpel and foremost"),
