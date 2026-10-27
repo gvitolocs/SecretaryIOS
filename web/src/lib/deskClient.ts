@@ -10,7 +10,7 @@
 import { deskApi, type DeskTicket } from "../api/desk";
 import type { Sandbox } from "../api/computer";
 import type { DeskPipe } from "./deskPipe";
-import { DeskVideo } from "./deskVideo";
+import { DeskVideo, warmDecoder } from "./deskVideo";
 import {
   CODEC_PREFERENCE,
   DESK_PROTOCOL,
@@ -168,6 +168,8 @@ export class DeskSocket {
     this.t0 = performance.now();
     this.sink.phase("ticket");
     const codecs = knownCodecs();
+    // No worker: warm the page's own decoder while the ticket is minted (the worker warms its own).
+    void this.pipeReady.then((p) => p || warmDecoder("h264"));
     const mark = (k: keyof DeskStats["marks"]) => <T,>(v: T) => ((this.stats.marks[k] ??= Math.round(performance.now() - this.t0)), v);
     let [ticket, pipe] = await Promise.all([deskApi.ticket(this.sandbox, this.mode, codecs).then(mark("ticket")), this.pipeReady.then(mark("pipe"))]);
     this.pipe = pipe;

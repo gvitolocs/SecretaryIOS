@@ -9,7 +9,7 @@
 // Worker → page: {type:"ready", webcodecs} | {type:"open", id} | {type:"text", id, data}
 //   | {type:"frame", id, width, height, codec, bytes} | {type:"closed", id, code, reason} | {type:"unsupported", id, codec}
 
-import { DeskVideo } from "./deskVideo";
+import { DeskVideo, warmDecoder } from "./deskVideo";
 import type { ClientMessage } from "./deskWire";
 
 declare const self: DedicatedWorkerGlobalScope;
@@ -102,3 +102,5 @@ self.onmessage = (e: MessageEvent) => {
 };
 
 post({ type: "ready", webcodecs: typeof VideoDecoder === "function" && typeof EncodedVideoChunk === "function" });
+// The host streams H.264 (hardware): have its decoder set up before the first key frame arrives.
+warmDecoder("h264");

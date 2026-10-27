@@ -14,6 +14,47 @@ export interface DeskVideoHost {
   unsupported(codec: DeskCodec): void;
 }
 
+interface DecoderHandlers {
+  output(frame: VideoFrame): void;
+  error(e: DOMException): void;
+}
+
+/**
+ * A decoder configured ahead of the first frame: setting one up costs a few hundred ms the first time
+ * (the media stack, the hardware decoder), so the worker starts it while the ticket is still being
+ * minted, and the first socket whose stream has that codec adopts it.
+ */
+let warm: { codec: DeskCodec; decoder: VideoDecoder; adopt(h: DecoderHandlers): void } | null = null;
+
+export function warmDecoder(codec: DeskCodec): void {
+  if (warm || typeof VideoDecoder !== "function") return;
+  let handlers: DecoderHandlers | null = null;
+  try {
+    const decoder = new VideoDecoder({
+      output: (f) => (handlers ? handlers.output(f) : f.close()),
+      error: (e) => handlers?.error(e),
+    });
+    decoder.configure({ codec: WEBCODECS[codec], optimizeForLatency: true, hardwareAcceleration: "no-preference" });
+    warm = {
+      codec,
+      decoder,
+      adopt: (h) => {
+        handlers = h;
+      },
+    };
+  } catch {
+    // no warm-up then
+  }
+}
+
+function takeWarm(codec: DeskCodec, handlers: DecoderHandlers): VideoDecoder | null {
+  if (!warm || warm.codec !== codec || warm.decoder.state !== "configured") return null;
+  const d = warm.decoder;
+  warm.adopt(handlers);
+  warm = null;
+  return d;
+}
+
 export class DeskVideo {
   codec: DeskCodec | null = null;
   bytes = 0;
@@ -64,7 +105,7 @@ export class DeskVideo {
 
   private makeDecoder(codec: DeskCodec): boolean {
     this.closeDecoder();
-    this.decoder = new VideoDecoder({
+    const handlers: DecoderHandlers = {
       output: (frame) => {
         if (this.closed) {
           frame.close();
@@ -89,7 +130,15 @@ export class DeskVideo {
         }
         this.recover();
       },
-    });
+    };
+    // The warm decoder is configured with the first (High) string, so only a first try adopts it.
+    const adopted = codec !== "h264" || this.h264Try === 0 ? takeWarm(codec, handlers) : null;
+    if (adopted) {
+      this.decoder = adopted;
+      this.codec = codec;
+      return true;
+    }
+    this.decoder = new VideoDecoder(handlers);
     // Annex B H.264 and VP9/AV1 need no description. H.264 is configured as High, then Main, then
     // Baseline if the decoder refuses (it says so through `error`, see there).
     const string = codec === "h264" ? [WEBCODECS.h264, ...H264_FALLBACKS][this.h264Try] : WEBCODECS[codec];

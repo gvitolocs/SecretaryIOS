@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DeskVideo } from "./deskVideo";
+import { DeskVideo, warmDecoder } from "./deskVideo";
 import { encodeVideo, type DeskCodec } from "./deskWire";
 
 // A WebCodecs decoder that records its configuration and can refuse a codec string, like a browser
@@ -88,5 +88,20 @@ describe("DeskVideo", () => {
     v.push(frame("vp9", false, 1));
     v.push(frame("vp9", false, 2));
     expect(sent).toEqual([{ type: "ack" }, { type: "ack" }]);
+  });
+
+  it("adopts the decoder warmed before the first frame (configured once, no second decoder)", () => {
+    warmDecoder("h264");
+    expect(decoders.map((d) => d.codec)).toEqual(["avc1.640033"]);
+    const { v, out } = setup();
+    v.push(frame("h264", true, 1));
+    v.push(frame("h264", false, 2));
+    expect(decoders).toHaveLength(1);
+    expect(decoders[0]!.decoded).toBe(2);
+    expect(out).toEqual([1000, 2000]);
+    // Used up: the next stream sets up its own.
+    const second = setup();
+    second.v.push(frame("h264", true, 3));
+    expect(decoders).toHaveLength(2);
   });
 });
