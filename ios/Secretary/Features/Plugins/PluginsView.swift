@@ -28,6 +28,8 @@ struct Plugin: Identifiable {
                    detail: app.media.current.map(\.title) ?? String(localized: "Film and Dansk film")) { app.showMedia = true },
             Plugin(id: "pokemon", icon: "gamecontroller", title: "Pokémon",
                    detail: String(localized: "Lucina's game")) { app.showPokemon = true },
+            Plugin(id: "computer", icon: "desktopcomputer", title: "Lucina's computer",
+                   detail: String(localized: "Watch her desktop live, take over")) { app.showComputer = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
             Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
@@ -63,6 +65,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
         .navigationDestination(isPresented: $app.showCountdowns) { CountdownsView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
+        .navigationDestination(isPresented: $app.showComputer) { LucinaComputerView() }
     }
 }
 
