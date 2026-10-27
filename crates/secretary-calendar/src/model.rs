@@ -104,6 +104,8 @@ impl Moment {
 /// `original`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Item {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<String>,
     /// Provider id: Google event id, ICS UID, iPhone EventKit id.
     pub uid: String,
     /// For overrides: the master's uid.
@@ -142,6 +144,8 @@ pub struct Item {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<String>,
     /// Unique across sources: `google:<event or instance id>`,
     /// `ics:<subscription>:<hash>`, `iphone:<id>`.
     pub id: String,

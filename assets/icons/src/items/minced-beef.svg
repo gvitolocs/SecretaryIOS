@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="4" y="30" width="56" height="28" rx="7" fill="#fff"/>
+  <rect x="8.5" y="34" width="47" height="19.5" rx="4.5" fill="#e6dccb"/>
+  <path d="M60 46v5c0 3.9-3.1 7-7 7H11c-3.9 0-7-3.1-7-7 2 1.6 4 2.2 6.5 2.2h43c3.5 0 6-2.6 6.5-7.2Z" fill="#3d2b2b" opacity=".13"/>
+  <path d="M10 49c-3-6 0-13 6-14-.5-7 6-11.5 12-9.5 3-7 13-7.5 16-1.5 6-2 12 3.5 10.5 9.5 5 3 5 11.5.5 15.5-14 3-31 3-45 0Z" fill="#e0352b" stroke="#a91e2c" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M54.5 33.5c4.5 3 4.6 11.5.5 15.5-7 1.5-15 2.2-23 2.2 9-1.6 17-4.4 20.5-8.5 2.4-2.8 2.8-6 2-9.2Z" fill="#3d2b2b" opacity=".18"/>
+  <path d="M15 43c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0M28 35c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0M40 43c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0M29 46c1.5-1.5 3-1.5 4.5 0M22 31c1.5-1.5 3-1.5 4.5 0M43 30c1.5-1.5 3-1.5 4.5 0M46 37c1.5-1.5 3-1.5 4.5 0M17 37.5c1.5-1.5 3-1.5 4.5 0M33 27.5c1.5-1.5 3-1.5 4.5 0" fill="none" stroke="#a91e2c" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M13.5 40c0-2 1.5-3.5 3.5-4M25 29c1-1.5 2.5-2.5 4.5-2.8" stroke="#fff" stroke-width="2.2" stroke-linecap="round" opacity=".5"/>
+</svg>

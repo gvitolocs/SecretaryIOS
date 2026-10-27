@@ -5,6 +5,8 @@
 //! when a reminder is cancelled), so a read/write round trip of a
 //! Node-written file is byte-identical. Unknown fields are kept.
 
+use crate::scheduler::DeliveryOutcome;
+use fs4::fs_std::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -117,13 +119,15 @@ impl Reminder {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoreFile {
     #[serde(default)]
     reminders: Vec<Reminder>,
     #[serde(default)]
     updated_at: Option<String>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 /// Input of [`ReminderStore::create`].
@@ -149,8 +153,8 @@ pub enum CancelOutcome {
     NotFound,
 }
 
-/// The reminders store. One process-wide lock serializes writes; Node
-/// does not lock across processes, so only one Lucina may write a file.
+/// Reminder writes are serialized by the in-process mutex and a cross-process flock.
+/// Node writers must be stopped or forwarded before local ownership is enabled.
 #[derive(Debug)]
 pub struct ReminderStore {
     path: PathBuf,
@@ -171,22 +175,36 @@ impl ReminderStore {
         &self.path
     }
 
+    fn file_lock(&self) -> Result<std::fs::File> {
+        if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut path = self.path.as_os_str().to_os_string();
+        path.push(".lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(PathBuf::from(path))?;
+        file.lock_exclusive()?;
+        Ok(file)
+    }
+
     fn read(&self) -> Result<StoreFile> {
         match std::fs::read(&self.path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StoreFile {
                 reminders: Vec::new(),
                 updated_at: None,
+                extra: Map::new(),
             }),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn write(&self, reminders: Vec<Reminder>) -> Result<()> {
-        let file = StoreFile {
-            reminders,
-            updated_at: Some(now_iso()),
-        };
+    fn write(&self, mut file: StoreFile) -> Result<()> {
+        file.updated_at = Some(now_iso());
         let mut text = serde_json::to_string_pretty(&file)?;
         text.push('\n');
         write_atomic(&self.path, text.as_bytes())?;
@@ -216,6 +234,7 @@ impl ReminderStore {
             return Err(StoreError::Invalid("Reminder chatId is required".into()));
         }
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_guard = self.file_lock()?;
         let mut store = self.read()?;
         let key = input
             .dedupe_key
@@ -270,7 +289,8 @@ impl ReminderStore {
             })
             .collect();
         let skip = kept.len().saturating_sub(self.max_stored);
-        self.write(kept.into_iter().skip(skip).collect())?;
+        store.reminders = kept.into_iter().skip(skip).collect();
+        self.write(store)?;
         Ok((true, reminder))
     }
 
@@ -280,6 +300,7 @@ impl ReminderStore {
             return Ok(CancelOutcome::NotFound);
         }
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_guard = self.file_lock()?;
         let mut store = self.read()?;
         let Some(reminder) = store
             .reminders
@@ -296,7 +317,7 @@ impl ReminderStore {
         reminder.status = "cancelled".into();
         reminder.cancelled_at = Some(now_iso());
         let out = reminder.clone();
-        self.write(store.reminders)?;
+        self.write(store)?;
         Ok(CancelOutcome::Cancelled(out))
     }
 
@@ -311,26 +332,32 @@ impl ReminderStore {
     /// 2. the due reminders are claimed (`sending`) and the claim is written
     ///    **before** the first send;
     /// 3. each one is sent; `sent`, or back to `pending` with `lastError`
-    ///    when the sink says it was not delivered (retried next tick).
+    ///    when the sink says it was not delivered (retried next tick). An uncertain
+    ///    delivery becomes `failed` and is never resent, to avoid duplicates.
     ///
     /// Returns the due reminders with their outcome.
     pub fn process_due<F>(&self, now: DateTime<Utc>, mut send: F) -> Result<Vec<Reminder>>
     where
-        F: FnMut(&Reminder) -> std::result::Result<(), String>,
+        F: FnMut(&Reminder) -> DeliveryOutcome,
     {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _file_guard = self.file_lock()?;
         let mut store = self.read()?;
         let recovered = fail_stale_claims(&mut store.reminders);
         let claimed: Vec<usize> = store
             .reminders
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.status == "pending" && r.due().is_some_and(|d| d <= now))
+            .filter(|(_, r)| {
+                r.status == "pending"
+                    && (r.persona.is_empty() || r.persona == "Lucina")
+                    && r.due().is_some_and(|d| d <= now)
+            })
             .map(|(i, _)| i)
             .collect();
         if claimed.is_empty() {
             if recovered > 0 {
-                self.write(store.reminders)?;
+                self.write(store)?;
             }
             return Ok(Vec::new());
         }
@@ -342,26 +369,33 @@ impl ReminderStore {
                 .insert("claimedAt".into(), Value::String(claimed_at.clone()));
         }
         // The claim is on disk before anything is sent.
-        self.write(store.reminders.clone())?;
+        self.write(store.clone())?;
         let mut due = Vec::new();
         for &i in &claimed {
             let reminder = &mut store.reminders[i];
             let outcome = send(reminder);
             reminder.extra.remove("claimedAt");
             match outcome {
-                Ok(()) => {
+                DeliveryOutcome::Delivered => {
                     reminder.status = "sent".into();
                     reminder.sent_at = Some(now_iso());
                     reminder.last_error = None;
                 }
-                Err(e) => {
+                DeliveryOutcome::NotDelivered(e) => {
                     reminder.status = "pending".into();
                     reminder.last_error = Some(e.chars().take(500).collect());
+                }
+                DeliveryOutcome::Uncertain(e) => {
+                    reminder.status = STATUS_FAILED.into();
+                    reminder.last_error = Some(format!(
+                        "delivery uncertain; not resent: {}",
+                        e.chars().take(500).collect::<String>()
+                    ));
                 }
             }
             due.push(reminder.clone());
         }
-        self.write(store.reminders)?;
+        self.write(store)?;
         Ok(due)
     }
 
@@ -547,7 +581,7 @@ mod claim_tests {
         let due = restarted
             .process_due(Utc::now(), |_| {
                 sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(())
+                DeliveryOutcome::Delivered
             })
             .unwrap();
         assert!(due.is_empty(), "nothing is due again");
@@ -568,16 +602,100 @@ mod claim_tests {
         let store = ReminderStore::new(dir.path().join("r.json"), 100);
         store.create(due_input("x")).unwrap();
         let due = store
-            .process_due(Utc::now(), |_| Err("telegram down".into()))
+            .process_due(Utc::now(), |_| {
+                DeliveryOutcome::NotDelivered("telegram down".into())
+            })
             .unwrap();
         assert_eq!(due[0].status, "pending");
         assert_eq!(due[0].last_error.as_deref(), Some("telegram down"));
-        let due = store.process_due(Utc::now(), |_| Ok(())).unwrap();
+        let due = store
+            .process_due(Utc::now(), |_| DeliveryOutcome::Delivered)
+            .unwrap();
         assert_eq!(due[0].status, "sent");
         assert!(store
-            .process_due(Utc::now(), |_| Ok(()))
+            .process_due(Utc::now(), |_| DeliveryOutcome::Delivered)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn uncertain_delivery_is_failed_and_never_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReminderStore::new(dir.path().join("r.json"), 100);
+        store.create(due_input("x")).unwrap();
+        let due = store
+            .process_due(Utc::now(), |_| {
+                DeliveryOutcome::Uncertain("read timeout".into())
+            })
+            .unwrap();
+        assert_eq!(due[0].status, "failed");
+        assert_eq!(
+            due[0].last_error.as_deref(),
+            Some("delivery uncertain; not resent: read timeout")
+        );
+        assert!(due[0].sent_at.is_none());
+        assert!(store
+            .process_due(Utc::now(), |_| panic!("must not resend"))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn separate_stores_serialize_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            for thread in 0..2 {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    let store = ReminderStore::new(path, 1000);
+                    barrier.wait();
+                    for n in 0..50 {
+                        store.create(due_input(&format!("{thread}-{n}"))).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            ReminderStore::new(path, 1000).list(true).unwrap().len(),
+            100
+        );
+    }
+
+    #[test]
+    fn separate_schedulers_do_not_interleave_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.json");
+        ReminderStore::new(&path, 100)
+            .create(due_input("x"))
+            .unwrap();
+        let sends = std::sync::atomic::AtomicUsize::new(0);
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let path = &path;
+                let sends = &sends;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let store = ReminderStore::new(path, 100);
+                    barrier.wait();
+                    store
+                        .process_due(Utc::now(), |_| {
+                            sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                            DeliveryOutcome::Delivered
+                        })
+                        .unwrap();
+                });
+            }
+        });
+        assert_eq!(sends.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            ReminderStore::new(&path, 100).list(true).unwrap()[0].status,
+            "sent"
+        );
     }
 
     #[test]
@@ -630,7 +748,9 @@ mod tests {
         ));
         assert_eq!(s.cancel(&r.id, Some("7")).unwrap(), CancelOutcome::NotFound);
         let (_, r2) = s.create(input("Due", "2020-01-01T09:00:00.000Z")).unwrap();
-        let due = s.process_due(Utc::now(), |_| Ok(())).unwrap();
+        let due = s
+            .process_due(Utc::now(), |_| DeliveryOutcome::Delivered)
+            .unwrap();
         assert_eq!(due.len(), 1);
         assert!(matches!(
             s.cancel(&r2.id, None).unwrap(),

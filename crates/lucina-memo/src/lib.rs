@@ -10,6 +10,7 @@
 //! Recordings stay on this host and the owner's Pi; only transcript text goes
 //! to Lucina's chat model for the summary.
 pub mod api;
+pub mod events;
 pub mod kernel;
 pub mod library;
 pub mod model;
@@ -44,6 +45,8 @@ pub struct Config {
     pub whisper: transcribe::WhisperConfig,
     pub vault: Option<obsidian::VaultTarget>,
     pub notify: notify::NotifyConfig,
+    pub calendar_url: Option<String>,
+    pub geocode_url: Option<String>,
     pub chrome: PathBuf,
     /// Max pipeline attempts before a memo is `failed`.
     pub max_attempts: u32,
@@ -77,6 +80,8 @@ impl Config {
             whisper: transcribe::WhisperConfig::from_lookup(get),
             vault: obsidian::VaultTarget::from_lookup(get),
             notify: notify::NotifyConfig::from_lookup(get),
+            calendar_url: get("LUCINA_SECRETARY_SERVER_URL"),
+            geocode_url: get("LUCINA_MEMO_GEOCODE_URL"),
             chrome: PathBuf::from(
                 get("LUCINA_MEMO_CHROME").unwrap_or_else(|| "/usr/bin/google-chrome".into()),
             ),

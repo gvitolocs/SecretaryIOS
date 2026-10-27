@@ -124,6 +124,18 @@ tokio::task_local! {
     /// Fixed system text for every model call of the current chat turn (her live game: state, identity and
     /// priority rule). Lives in the system part, so no context trimming (casual shortcut, budgets) can drop it.
     pub static TURN_SYSTEM: String;
+    /// Swipe to reply: the earlier message the owner is answering
+    /// (`chat::reply::block`). Every user part of the turn's model calls
+    /// carries it right before the message (`Prompts::user_block`,
+    /// `Prompts::plan_user`), so the casual memory clip never drops it.
+    pub static TURN_REPLY: String;
+}
+
+/// The current turn's reply block ("" outside a turn or with no `replyTo`).
+pub fn turn_reply() -> String {
+    TURN_REPLY
+        .try_with(|r| r.trim().to_owned())
+        .unwrap_or_default()
 }
 
 /// `system` plus the turn's fixed system text (none for the intent classifier, or outside a chat turn).

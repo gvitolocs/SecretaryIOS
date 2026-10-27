@@ -28,6 +28,11 @@ const MAX_PAYLOAD_TEXT: usize = 500;
 pub const MAX_PLACES: usize = 3;
 const MAX_ADDRESS: usize = 200;
 const MAX_EVENT_ID: usize = 200;
+/// A `route` to the in-app place map, `/map/place?<query>` (iOS: `secretary://open/map/place?…`).
+pub const MAX_MAP_ROUTE: usize = 600;
+/// A place's travel time from home, in minutes.
+const MAX_TRAVEL_MIN: u64 = 1440;
+const TRAVEL_MODES: [&str; 4] = ["walk", "bike", "transit", "drive"];
 
 /// A validated v1 message. `blocks` and `actions` are normalized JSON objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -481,6 +486,19 @@ fn normalize_place(raw: &Value) -> Option<Value> {
         "place"
     };
     b.insert("kind".into(), str_v(kind));
+    let minutes = raw["travelMin"]
+        .as_u64()
+        .filter(|m| (1..=MAX_TRAVEL_MIN).contains(m));
+    let mode = raw["travelMode"]
+        .as_str()
+        .filter(|m| TRAVEL_MODES.contains(m));
+    if let (Some(minutes), Some(mode)) = (minutes, mode) {
+        b.insert("travelMin".into(), json!(minutes));
+        b.insert("travelMode".into(), str_v(mode));
+        if raw["travelApprox"] == Value::Bool(true) {
+            b.insert("travelApprox".into(), Value::Bool(true));
+        }
+    }
     Some(Value::Object(b))
 }
 
@@ -490,6 +508,17 @@ fn valid_id(s: &str) -> bool {
     (1..=48).contains(&s.len())
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
+}
+
+/// `/map/place?` and a percent-encoded query (no `+`, no raw spaces), at most
+/// [`MAX_MAP_ROUTE`] bytes.
+pub fn valid_map_route(p: &str) -> bool {
+    p.len() <= MAX_MAP_ROUTE
+        && p.strip_prefix("/map/place?").is_some_and(|q| {
+            !q.is_empty()
+                && q.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"%=&_.~-".contains(&b))
+        })
 }
 
 fn valid_route(p: &str) -> bool {
@@ -530,8 +559,8 @@ pub fn normalize_action(raw: &Value, index: usize) -> Option<Value> {
             }
         }
         "route" => {
-            let path = line(&p["path"], 128);
-            if !valid_route(&path) {
+            let path = line(&p["path"], MAX_MAP_ROUTE + 1);
+            if !valid_route(&path) && !valid_map_route(&path) {
                 return None;
             }
             payload.insert("path".into(), str_v(&path));
@@ -894,7 +923,33 @@ pub fn block_to_text(block: &Value, lang: &str, list_limit: usize) -> Vec<String
 
 /// `📍 <title> — <address>` (Telegram, the plain fallback).
 pub fn place_text(block: &Value) -> String {
-    format!("📍 {}", place_speech(block))
+    match travel_text(block) {
+        Some(t) => format!("📍 {} · {t}", place_speech(block)),
+        None => format!("📍 {}", place_speech(block)),
+    }
+}
+
+/// `🚌 18 min` (`≈ 12 min 🚶` when estimated) for a place with a travel time.
+pub fn travel_text(block: &Value) -> Option<String> {
+    let minutes = block["travelMin"].as_u64()?;
+    let emoji = match block["travelMode"].as_str()? {
+        "walk" => "🚶",
+        "bike" => "🚲",
+        "transit" => "🚌",
+        _ => "🚗",
+    };
+    let time = if minutes < 60 {
+        format!("{minutes} min")
+    } else if minutes % 60 == 0 {
+        format!("{} h", minutes / 60)
+    } else {
+        format!("{} h {} min", minutes / 60, minutes % 60)
+    };
+    Some(if block["travelApprox"] == Value::Bool(true) {
+        format!("{emoji} ≈ {time}")
+    } else {
+        format!("{emoji} {time}")
+    })
 }
 
 /// `<title> — <address>`: what a voice reads of a place.
@@ -1411,6 +1466,68 @@ mod tests {
                 "end": "2026-10-27T20:00:00+01:00", "eventId": "iphone:abc", "kind": "event"
             })
         );
+    }
+
+    #[test]
+    fn a_place_keeps_a_valid_travel_time() {
+        let b = place(
+            json!({"type": "place", "title": "Folkehuset", "address": "Møllestien",
+            "travelMin": 18, "travelMode": "transit", "travelApprox": false}),
+        )
+        .unwrap();
+        assert_eq!(
+            (b["travelMin"].clone(), b["travelMode"].clone()),
+            (json!(18), json!("transit"))
+        );
+        assert!(b.get("travelApprox").is_none());
+        assert_eq!(place_text(&b), "📍 Folkehuset — Møllestien · 🚌 18 min");
+        let b = place(json!({"type": "place", "title": "F", "address": "M",
+            "travelMin": 75, "travelMode": "walk", "travelApprox": true}))
+        .unwrap();
+        assert_eq!(travel_text(&b).as_deref(), Some("🚶 ≈ 1 h 15 min"));
+        for (min, mode) in [
+            (json!(0), "walk"),
+            (json!(1441), "walk"),
+            (json!(5), "car"),
+            (json!("5"), "walk"),
+        ] {
+            let b = place(json!({"type": "place", "title": "F", "address": "M", "travelMin": min, "travelMode": mode})).unwrap();
+            assert!(
+                b.get("travelMin").is_none() && b.get("travelMode").is_none(),
+                "{min} {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_place_routes() {
+        let path = "/map/place?title=Hack%20Night&address=Folkehuset%20M%C3%B8llestien&when=2026-10-27T16%3A00%3A00.000Z";
+        let a = normalize_action(
+            &json!({"id": "nav-1", "label": "Naviga", "kind": "route", "payload": {"path": path}}),
+            0,
+        )
+        .unwrap();
+        assert_eq!(a["payload"]["path"], path);
+        for bad in [
+            "/map/place?",
+            "/map/place?title=a b",
+            "/map/place?title=a+b",
+            "/map/other?title=a",
+            "/map/place?title=<script>",
+        ] {
+            assert!(!valid_map_route(bad), "{bad}");
+        }
+        let long = format!("/map/place?title={}", "a".repeat(MAX_MAP_ROUTE));
+        assert!(normalize_action(
+            &json!({"label": "Naviga", "kind": "route", "payload": {"path": long}}),
+            0
+        )
+        .is_none());
+        assert!(normalize_action(
+            &json!({"label": "x", "kind": "route", "payload": {"path": "/notes?x=1"}}),
+            0
+        )
+        .is_none());
     }
 
     #[test]

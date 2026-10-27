@@ -163,6 +163,35 @@ async fn chat_schedules_and_lists_reminders_in_json_mode() {
     );
 }
 
+/// The iPhone voice note of 2026-10-27: a relative day plus a part of the day and no
+/// time. The planner gives no dueDate; the parser alone must schedule it.
+#[tokio::test]
+async fn chat_schedules_a_relative_day_reminder_without_a_time() {
+    let h = harness(
+        script(json!({"rules": [
+            {"kind": "intent", "contains": "ricordami", "content": "{\"intent\":\"schedule_reminder\",\"confidence\":0.95,\"reply_mode\":\"direct\"}"}
+        ]})),
+        |_| {},
+    )
+    .await;
+    let d = h
+        .chat("Ciao Lucina, ricordami di comprare il latte domani mattina.")
+        .await;
+    assert_eq!(d["action"], "schedule_reminder", "{d}");
+    assert_eq!(d["reminder"]["text"], "comprare il latte", "{d}");
+    let reply = d["reply"].as_str().unwrap();
+    assert!(reply.starts_with("Reminder set for "), "{reply}");
+    assert!(!reply.starts_with("Lucina: "), "{reply}");
+    let due = chrono::DateTime::parse_from_rfc3339(d["reminder"]["dueAt"].as_str().unwrap())
+        .unwrap()
+        .with_timezone(&chrono_tz::Europe::Rome);
+    let tomorrow = (chrono::Utc::now().with_timezone(&chrono_tz::Europe::Rome)
+        + chrono::Duration::days(1))
+    .date_naive();
+    assert_eq!(due.date_naive(), tomorrow);
+    assert_eq!(due.format("%H:%M").to_string(), "09:00");
+}
+
 async fn weather_mock() -> MockServer {
     let s = MockServer::start().await;
     Mock::given(method("GET")).and(path("/v1/search"))
@@ -949,4 +978,31 @@ async fn shopping_routes() {
         .call(Method::DELETE, "/shopping/lists/default", None)
         .await;
     assert_eq!(b["error"], "default_list");
+}
+
+#[tokio::test]
+async fn scheduler_health_reports_failures_without_failing_health() {
+    let h = harness(chat_script("x"), |c| c.scheduler = true).await;
+    let tick_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    {
+        let mut health = h.state.scheduler_health.lock().unwrap();
+        // A recent tick: a stalled scheduler (no tick for 10 polls) is a liveness failure.
+        health.last_tick_at = Some(tick_at.clone());
+        health.last_error = Some("delivery uncertain; not resent: read timeout".into());
+        health.delivered = 2;
+        health.not_delivered = 3;
+        health.uncertain = 1;
+    }
+    let response = h
+        .http
+        .get(format!("{}/health", h.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(
+        body["scheduler"],
+        json!({"enabled":true,"lastTickAt":tick_at,"lastError":"delivery uncertain; not resent: read timeout","delivered":2,"notDelivered":3,"uncertain":1})
+    );
 }

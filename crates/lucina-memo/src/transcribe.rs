@@ -135,13 +135,17 @@ pub async fn remux_adts(cfg: &WhisperConfig, input: &Path, output: &Path) -> Res
             .await
             .map_err(|e| SttError::Decode(format!("ffmpeg: {e}")))?;
         if out.status.success() && tokio::fs::metadata(&tmp).await.is_ok_and(|m| m.len() > 0) {
-            tokio::fs::rename(&tmp, output).await.map_err(|e| SttError::Decode(e.to_string()))?;
+            tokio::fs::rename(&tmp, output)
+                .await
+                .map_err(|e| SttError::Decode(e.to_string()))?;
             return Ok(());
         }
         tracing::info!(error = %tail(&out.stderr), "ADTS remux with {:?} failed", codec);
     }
     let _ = tokio::fs::remove_file(&tmp).await;
-    Err(SttError::Decode("the ADTS recording could not be read".into()))
+    Err(SttError::Decode(
+        "the ADTS recording could not be read".into(),
+    ))
 }
 
 /// Decodes `input` to `wav` (16 kHz mono s16) and returns its duration.
@@ -444,8 +448,13 @@ mod tests {
         let mut cfg = WhisperConfig::from_lookup(|_| None);
         cfg.model = "/nonexistent/ggml-large-v3.bin".into();
         let dir = std::env::temp_dir();
-        let e = transcribe(&cfg, &dir.join("x.wav"), &dir, 1.0, Duration::ZERO).await.unwrap_err();
-        assert!(matches!(e, SttError::ModelMissing(_)) && e.is_transient(), "{e}");
+        let e = transcribe(&cfg, &dir.join("x.wav"), &dir, 1.0, Duration::ZERO)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e, SttError::ModelMissing(_)) && e.is_transient(),
+            "{e}"
+        );
     }
 
     /// A recording cut off mid-frame (iOS killed the app) still becomes a playable .m4a.
@@ -458,7 +467,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let full = dir.path().join("full.aac");
         let st = std::process::Command::new(&cfg.ffmpeg)
-            .args(["-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "aac", "-f", "adts"])
+            .args([
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=4",
+                "-c:a",
+                "aac",
+                "-f",
+                "adts",
+            ])
             .arg(&full)
             .status()
             .unwrap();

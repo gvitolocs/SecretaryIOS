@@ -317,10 +317,19 @@ pub fn router(state: AppState) -> Router {
 
 async fn health(State(st): State<AppState>) -> Response {
     let c = &st.cfg;
+    // 503 only when a background loop died (the watchdog restarts on it);
+    // upstream outages are delivery alerts, not restarts.
+    let liveness = crate::delivery_monitor::liveness(&st, Utc::now());
     json_response(
-        StatusCode::OK,
+        if liveness.is_empty() {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         &json!({
-            "ok": true,
+            "ok": liveness.is_empty(),
+            "liveness": {"problems": liveness, "loops": st.supervisor.names()},
+            "delivery": st.monitor.health(),
             "service": "lucina-rs",
             "version": env!("CARGO_PKG_VERSION"),
             "uptimeSeconds": st.started.elapsed().as_secs(),
@@ -335,9 +344,13 @@ async fn health(State(st): State<AppState>) -> Response {
             "tools": st.registry.names(),
             "memory": {"provider": "honcho", "mode": st.memory.mode().as_str(), "workspace": c.honcho.workspace_id},
             "reminders": {"enabled": c.reminders_enabled, "writer": st.writer.kind(), "scheduler": c.scheduler && c.reminders_writer == crate::WriterKind::Local},
-            "channels": {"telegram": false, "discord": false},
+            "scheduler": st.scheduler_health.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "channels": {"telegram": st.telegram_active(), "discord": st.discord_active()},
+            "telegram": st.telegram_health.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            "discord": st.discord_health.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             "grocery": st.grocery.is_some(),
             "delegation": {"enabled": st.delegator.is_some()},
+            "botHospital": crate::bot_hospital::health_value(&st.hospital_health),
             "presence": {"context": c.presence_context, "fresh": lucina_discord::store::context_line(&c.presence_dir, c.time_zone, Utc::now(), c.presence_max_age).is_some()},
             "deepseek": {"model": c.deepseek.model, "hasKey": (st.deepseek_has_key)(), "usage": st.usage.as_ref().map(|u| u.snapshot())},
             "timelineStreams": st.streams.load(Ordering::Relaxed),
@@ -1280,8 +1293,14 @@ fn timeline_list(st: &AppState, uri: &Uri) -> ApiResult {
             }
         }
     };
-    let (items, next) = st
-        .timeline
+    // `conversation=selftest`: the self-test conversation (crate::selftest), never mixed in.
+    let store =
+        if query_param(uri, "conversation").as_deref() == Some(crate::selftest::CONVERSATION) {
+            st.selftest_timeline.clone()
+        } else {
+            st.timeline.clone()
+        };
+    let (items, next) = store
         .list(before.as_deref(), limit)
         .map_err(|e| ApiError::new(500, "internal_error", e.to_string()))?;
     // Items are served as stored: Node-written lines reach the client verbatim.

@@ -18,6 +18,7 @@
 pub mod jsre;
 
 pub mod calendar;
+pub mod calendar_event;
 pub mod domains;
 pub mod game;
 pub mod grocery;

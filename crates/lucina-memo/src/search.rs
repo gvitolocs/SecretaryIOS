@@ -23,6 +23,7 @@ pub struct Line {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hit {
+    pub event: Option<crate::model::EventLink>,
     pub id: String,
     pub title: String,
     pub recorded_at: DateTime<Utc>,
@@ -115,14 +116,30 @@ fn hit(
                     .iter()
                     .chain(&s.decisions)
                     .chain(&s.action_items)
+                    .chain(&s.definitions)
+                    .chain(&s.questions)
                     .map(|i| i.text.clone()),
             );
             v.extend(s.tags.iter().cloned());
             v.join(" ")
         })
         .unwrap_or_default();
+    let event_text = m
+        .event
+        .as_ref()
+        .map(|e| {
+            format!(
+                "{} {} {} {} {}",
+                e.title,
+                e.series,
+                e.location.as_deref().unwrap_or_default(),
+                e.attendees.join(" "),
+                e.calendar.as_deref().unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
     let all = fold(&format!(
-        "{} {summary_text} {}",
+        "{} {summary_text} {event_text} {}",
         m.title,
         t.map(Transcript::text).unwrap_or_default()
     ));
@@ -150,6 +167,7 @@ fn hit(
         lines.sort_by(|a, b| a.1.at.total_cmp(&b.1.at));
     }
     Some(Hit {
+        event: m.event.clone(),
         id: m.id.clone(),
         title: m.title.clone(),
         recorded_at: m.recorded_at,

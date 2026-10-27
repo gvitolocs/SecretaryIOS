@@ -38,6 +38,7 @@ impl Status {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Steps {
+    pub linked_at: Option<DateTime<Utc>>,
     pub transcribed_at: Option<DateTime<Utc>>,
     pub summarized_at: Option<DateTime<Utc>>,
     pub rendered_at: Option<DateTime<Utc>>,
@@ -53,7 +54,8 @@ pub struct Memo {
     /// The device's own id for this recording (idempotent create).
     pub client_id: String,
     pub title: String,
-    /// `auto` (placeholder), `lucina` (from the summary), `owner` (sent by the device or renamed).
+    /// `auto` (placeholder), `lucina` (from the summary), `event` (the linked calendar event's),
+    /// `owner` (sent by the device or renamed).
     pub title_source: String,
     pub recorded_at: DateTime<Utc>,
     /// IANA zone of the recording device, for local dates in titles and notes.
@@ -109,6 +111,23 @@ pub struct Memo {
     /// skips Telegram, which cannot deduplicate (kernel::send_telegram).
     #[serde(default)]
     pub notify_telegram_rev: Option<u32>,
+    /// Wall-clock end of the recording (pauses included), sent by the device; see [`Memo::recording_end`].
+    #[serde(default)]
+    pub ended_at: Option<DateTime<Utc>>,
+    /// Where the device was when the recording started (optional).
+    #[serde(default)]
+    pub location: Option<GeoFix>,
+    /// The calendar event the memo was recorded in.
+    #[serde(default)]
+    pub event: Option<EventLink>,
+    /// `auto` (linked by the worker) or `owner` (chosen by the owner; with `event: None` = no
+    /// event). The worker never replaces the owner's choice (kernel K9).
+    #[serde(default)]
+    pub event_source: Option<String>,
+    /// Earlier note paths of this memo still to delete from the vault after the note moved to
+    /// another folder (its event changed). Recorded before the push, cleared after the deletes.
+    #[serde(default)]
+    pub obsidian_old_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,6 +185,12 @@ pub struct Item {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Summary {
+    #[serde(default)]
+    pub template: Option<String>,
+    #[serde(default)]
+    pub definitions: Vec<Item>,
+    #[serde(default)]
+    pub questions: Vec<Item>,
     pub title: String,
     /// Language the summary is written in.
     pub language: String,
@@ -207,5 +232,53 @@ mod tests {
         assert_eq!(clock(65.9), "1:05");
         assert_eq!(clock(3725.0), "1:02:05");
         assert_eq!(clock(-3.0), "0:00");
+    }
+}
+
+/// A device location fix.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoFix {
+    pub lat: f64,
+    pub lon: f64,
+    pub accuracy_m: Option<f64>,
+}
+
+/// What a linked event is, for the summary template and the Obsidian folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventKind {
+    Lecture,
+    Meeting,
+    Other,
+}
+
+/// The calendar event a memo belongs to: secretary-server's event plus its kind and series
+/// (memos of the same course or recurring meeting share `series`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventLink {
+    pub id: String,
+    pub source: String,
+    pub calendar: Option<String>,
+    pub title: String,
+    pub start: String,
+    pub end: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub location: Option<String>,
+    #[serde(default)]
+    pub attendees: Vec<String>,
+    pub recurring: bool,
+    pub series: String,
+    pub kind: EventKind,
+}
+
+impl Memo {
+    /// The device's `ended_at`, else start + duration.
+    pub fn recording_end(&self) -> DateTime<Utc> {
+        self.ended_at.unwrap_or_else(|| {
+            self.recorded_at + chrono::Duration::milliseconds((self.duration_sec * 1000.0) as i64)
+        })
     }
 }

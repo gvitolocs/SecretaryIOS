@@ -3,7 +3,8 @@
 //! `reminders.json` would race. When enabled here, a delivery is recorded in
 //! the owner timeline (Telegram delivery is not part of this crate).
 
-use std::sync::Arc;
+use serde::Serialize;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -11,9 +12,28 @@ use chrono::Utc;
 use crate::reminders::{format_delivery, Reminder, ReminderStore};
 use crate::timeline::{Meta, NewItem, TimelineStore};
 
-/// Where a due reminder goes. `Err` keeps it pending with `lastError`.
+/// Only definite rejection is retried; ambiguous sends must never be resent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    Delivered,
+    NotDelivered(String),
+    Uncertain(String),
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchedulerHealth {
+    pub enabled: bool,
+    pub last_tick_at: Option<String>,
+    pub last_error: Option<String>,
+    pub delivered: u64,
+    pub not_delivered: u64,
+    pub uncertain: u64,
+}
+
+/// Where a due reminder goes.
 pub trait ReminderSink: Send + Sync + 'static {
-    fn deliver(&self, reminder: &Reminder, text: &str) -> Result<(), String>;
+    fn deliver(&self, reminder: &Reminder, text: &str) -> DeliveryOutcome;
 }
 
 /// Records owner reminders in the timeline as Node does
@@ -24,12 +44,12 @@ pub struct TimelineSink {
     pub owner_peer_id: String,
 }
 
-impl ReminderSink for TimelineSink {
-    fn deliver(&self, reminder: &Reminder, text: &str) -> Result<(), String> {
+impl TimelineSink {
+    pub fn record(&self, reminder: &Reminder, text: &str) -> Option<crate::timeline::TimelineItem> {
         let is_owner = (!self.owner_chat_id.is_empty() && reminder.chat_id == self.owner_chat_id)
             || (!reminder.user_peer_id.is_empty() && reminder.user_peer_id == self.owner_peer_id);
         if is_owner {
-            self.timeline.record(NewItem {
+            return self.timeline.record(NewItem {
                 channel: "telegram".into(),
                 role: "lucina".into(),
                 text: text.to_owned(),
@@ -40,26 +60,58 @@ impl ReminderSink for TimelineSink {
                 ..NewItem::default()
             });
         }
-        Ok(())
+        None
+    }
+    pub fn is_owner(&self, reminder: &Reminder) -> bool {
+        (!self.owner_chat_id.is_empty() && reminder.chat_id == self.owner_chat_id)
+            || (!reminder.user_peer_id.is_empty() && reminder.user_peer_id == self.owner_peer_id)
+    }
+}
+impl ReminderSink for TimelineSink {
+    fn deliver(&self, reminder: &Reminder, text: &str) -> DeliveryOutcome {
+        self.record(reminder, text);
+        DeliveryOutcome::Delivered
     }
 }
 
-/// One scheduler pass.
+/// One scheduler pass (compatibility helper for callers without health reporting).
 pub fn tick(store: &ReminderStore, sink: &dyn ReminderSink, persona: &str) -> usize {
-    match store.process_due(Utc::now(), |r| {
-        if !r.persona.is_empty() && r.persona != persona {
-            return Ok(());
-        }
-        sink.deliver(r, &format_delivery(r))
-    }) {
+    tick_with_health(
+        store,
+        sink,
+        persona,
+        &Mutex::new(SchedulerHealth::default()),
+    )
+}
+
+pub fn tick_with_health(
+    store: &ReminderStore,
+    sink: &dyn ReminderSink,
+    _persona: &str,
+    health: &Mutex<SchedulerHealth>,
+) -> usize {
+    let result = store.process_due(Utc::now(), |r| sink.deliver(r, &format_delivery(r)));
+    let mut h = health.lock().unwrap_or_else(|e| e.into_inner());
+    h.last_tick_at = Some(crate::timeutil::now_iso());
+    h.last_error = None;
+    match result {
         Ok(due) => {
-            if !due.is_empty() {
-                tracing::info!(count = due.len(), "reminder scheduler tick delivered");
+            for r in &due {
+                match r.status.as_str() {
+                    "sent" => h.delivered += 1,
+                    "pending" => h.not_delivered += 1,
+                    "failed" => h.uncertain += 1,
+                    _ => {}
+                }
+                if r.last_error.is_some() {
+                    h.last_error = r.last_error.clone();
+                }
             }
             due.len()
         }
         Err(e) => {
             tracing::error!(error = %e, "reminder scheduler tick failed");
+            h.last_error = Some(e.to_string());
             0
         }
     }
@@ -71,17 +123,35 @@ pub fn spawn(
     sink: Arc<dyn ReminderSink>,
     persona: String,
     every: Duration,
+    initial_delay: Duration,
+    health: Arc<Mutex<SchedulerHealth>>,
 ) -> tokio::task::JoinHandle<()> {
     tracing::info!(
         poll_ms = every.as_millis() as u64,
         "reminder scheduler started"
     );
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(every.max(Duration::from_secs(1)));
+        // Node starts a 15s initial timer and a poll interval measured from startup.
+        let start = tokio::time::Instant::now();
+        let every = every.max(Duration::from_millis(1));
+        let mut interval = tokio::time::interval_at(start + every, every);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let initial = tokio::time::sleep(initial_delay);
+        tokio::pin!(initial);
+        let mut initial_done = false;
         loop {
-            interval.tick().await;
-            let (s, k, p) = (store.clone(), sink.clone(), persona.clone());
-            let _ = tokio::task::spawn_blocking(move || tick(&s, k.as_ref(), &p)).await;
+            tokio::select! {
+                _ = interval.tick() => {},
+                _ = &mut initial, if !initial_done => { initial_done = true; },
+            }
+            let (s, k, p, h) = (store.clone(), sink.clone(), persona.clone(), health.clone());
+            if let Err(e) =
+                tokio::task::spawn_blocking(move || tick_with_health(&s, k.as_ref(), &p, &h)).await
+            {
+                let mut h = health.lock().unwrap_or_else(|e| e.into_inner());
+                h.last_tick_at = Some(crate::timeutil::now_iso());
+                h.last_error = Some(format!("scheduler task failed: {e}"));
+            }
         }
     })
 }

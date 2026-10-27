@@ -5,6 +5,7 @@
 mod extract;
 pub mod guidance;
 pub mod handlers;
+pub mod library;
 pub mod memory;
 pub mod router;
 mod structured;
@@ -475,6 +476,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
                 "text",
                 "url",
                 "meta",
+                "replyTo",
             ]
             .contains(&name.as_str())
             {
@@ -583,6 +585,21 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
     if !valid_session(&session) {
         return Err(bad("invalid sessionId"));
     }
+    // Swipe to reply: the earlier timeline item this share answers.
+    let reply_to = field("replyTo", "").trim().to_owned();
+    if !reply_to.is_empty() && !crate::chat::reply::valid_id(&reply_to) {
+        return Err(bad("invalid replyTo"));
+    }
+    // An id that names no stored item is ignored (the share is still taken).
+    let reply_to = (!reply_to.is_empty()).then_some(reply_to).filter(|id| {
+        match st.timeline.get(id) {
+            Ok(Some(_)) => true,
+            _ => {
+                tracing::debug!(reply_to = %id, "share replyTo names no timeline item; ignored");
+                false
+            }
+        }
+    });
     for (key, max) in [
         ("note", 4000),
         ("lang", 32),
@@ -718,6 +735,7 @@ async fn receive(State(st): State<AppState>, req: Request) -> Result<Response, E
             channel,
             role: "user".into(),
             text,
+            reply_to,
             attachments,
             meta: Some(Meta {
                 share_id: Some(id.clone()),
@@ -877,6 +895,7 @@ fn ensure_user(st: &AppState, job: &Job) -> anyhow::Result<()> {
             channel: item.channel.clone(),
             role: "user".into(),
             text: item.text.clone(),
+            reply_to: item.reply_to.clone(),
             attachments: item.attachments.clone().unwrap_or_default(),
             meta: item.meta.clone(),
             ..NewItem::default()
@@ -1064,6 +1083,80 @@ fn section(n: usize, part: &Part, x: &Extracted, budget: &mut usize) -> String {
     s
 }
 
+/// One local file through the per-file-type handling, outside a share job
+/// (Telegram photos and documents): the section for the turn message and the
+/// timeline attachment. Nothing is stored in the attachment memory.
+pub(crate) async fn read_local_file(
+    st: &AppState,
+    dir: &Path,
+    path: &Path,
+    name: &str,
+    mime: &str,
+) -> (String, Attachment) {
+    let (p, n, m) = (path.to_owned(), name.to_owned(), mime.to_owned());
+    let routed = tokio::task::spawn_blocking(move || router::route(&p, &n, &m))
+        .await
+        .unwrap_or("other");
+    let bytes = tokio::fs::metadata(path).await.map(|m| m.len()).ok();
+    let mut part = Part::new(Attachment {
+        kind: router::timeline_kind(routed).into(),
+        name: Some(sanitize(name)),
+        mime: (!mime.is_empty()).then(|| mime.to_owned()),
+        bytes,
+        ..Attachment::default()
+    });
+    part.path = Some(path.to_owned());
+    part.handler = Some(routed.into());
+    let seconds = if ["audio", "video"].contains(&part.attachment.kind.as_str()) {
+        1200
+    } else {
+        300
+    };
+    let x = match tokio::time::timeout(
+        Duration::from_secs(seconds),
+        extract::read(st, dir, &mut part, true, None, "", true),
+    )
+    .await
+    {
+        Ok(Ok(x)) => x,
+        Ok(Err(e)) => {
+            let mut x = Extracted::new("other");
+            x.warnings.push(e.to_string());
+            x
+        }
+        Err(_) => {
+            let mut x = Extracted::new("other");
+            x.warnings.push("reading it took too long".into());
+            x
+        }
+    };
+    let mut budget = TURN_TEXT_BUDGET;
+    (section(1, &part, &x, &mut budget), part.attachment)
+}
+
+/// The share pipeline's Whisper (`LUCINA_WHISPER_BIN`, `LUCINA_WHISPER_MODEL`) on a local file.
+pub(crate) async fn transcribe_local(st: &AppState, path: &Path) -> anyhow::Result<String> {
+    extract::transcribe(st, path, false)
+        .await
+        .map(|(text, _)| text)
+}
+
+/// The share turn message around the read content (see `process`).
+pub(crate) fn turn_message(note: &str, lang: &str, content: &str) -> String {
+    let note = note.trim();
+    let owner = if note.is_empty() {
+        format!(
+            "(no note: react as rule 2 says; the app's default line was \"{}\")",
+            default_note(lang)
+        )
+    } else {
+        format!("\"{note}\"")
+    };
+    format!(
+        "Owner's question or note: {owner}\nDevice language: {lang}\n\n<Shared content>{content}</Shared content>"
+    )
+}
+
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
     ensure_user(st, job)?;
     if let Some((id, text)) = existing_reply(st, &job.user_item.id) {
@@ -1108,6 +1201,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 extract_files,
                 on_device.as_deref(),
                 &lang,
+                true,
             ),
         )
         .await;
@@ -1269,6 +1363,11 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         if voice_only {
             message = voice_transcripts.remove(0);
         }
+        let owner_text = if voice_only {
+            message.clone()
+        } else {
+            job.note.clone()
+        };
         let out = crate::chat::share_turn(
             st.clone(),
             message,
@@ -1278,6 +1377,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 item: job.user_item.clone(),
                 voice_only,
                 reply_meta: voice_meta,
+                owner_text,
             },
         )
         .await

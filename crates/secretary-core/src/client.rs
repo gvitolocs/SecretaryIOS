@@ -97,6 +97,37 @@ impl Call {
         Self::new(Method::GET, &["health"])
     }
 
+    /// `GET /hermes`: the Hermes desk settings.
+    pub fn hermes() -> Self {
+        Self::new(Method::GET, &["hermes"])
+    }
+
+    /// `PUT /hermes`.
+    pub fn hermes_update(body: Value) -> Result<Self> {
+        Ok(Self::new(Method::PUT, &["hermes"]).with_body(body))
+    }
+
+    /// `GET /game/state`: Lucina's Pokémon run (map, party, badges, objective, notes).
+    pub fn game_state() -> Self {
+        Self::new(Method::GET, &["game", "state"])
+    }
+
+    /// `GET /game/screenshot`: the current screen as PNG (send with [`LucinaClient::bytes`]).
+    pub fn game_screenshot() -> Self {
+        Self::new(Method::GET, &["game", "screenshot"])
+    }
+
+    /// `POST /game/control`: start (`true`) or pause the run.
+    pub fn game_control(running: bool) -> Self {
+        let reason = if running {
+            "Started by the owner from the app"
+        } else {
+            "Paused by the owner from the app"
+        };
+        Self::new(Method::POST, &["game", "control"])
+            .with_body(serde_json::json!({"running": running, "reason": reason}))
+    }
+
     /// `POST /chat`.
     pub fn chat(req: &ChatRequest) -> Result<Self> {
         validate::text("message", &req.message, validate::MAX_MESSAGE_CHARS)?;
@@ -106,6 +137,9 @@ impl Call {
         validate::opt_id("clientMessageId", req.client_message_id.as_deref())?;
         if let Some(c) = req.channel.as_deref() {
             validate::chat_channel("channel", c)?;
+        }
+        if let Some(r) = req.reply_to.as_deref() {
+            validate::timeline_ref("replyTo", r)?;
         }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
@@ -349,6 +383,26 @@ impl Call {
         Ok(call)
     }
 
+    /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
+    /// The optional radius is in meters, 500..=15 000.
+    pub fn deals_map(radius_m: Option<u32>) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["grocery", "deals", "map"]);
+        if let Some(r) = radius_m {
+            if !(validate::DEALS_RADIUS_MIN..=validate::DEALS_RADIUS_MAX).contains(&r) {
+                return Err(Error::Invalid {
+                    field: "radiusM",
+                    message: format!(
+                        "must be an integer {}..={}",
+                        validate::DEALS_RADIUS_MIN,
+                        validate::DEALS_RADIUS_MAX
+                    ),
+                });
+            }
+            call.query.push(("radiusM", r.to_string()));
+        }
+        Ok(call)
+    }
+
     pub fn method(&self) -> &Method {
         &self.method
     }
@@ -561,6 +615,32 @@ impl LucinaClient {
         Ok(self.send(call, timeout).await?.1)
     }
 
+    /// Send `call` and return the raw body with its content type, for non-JSON answers (the game screenshot).
+    /// A non-2xx answer is decoded as Lucina's JSON error.
+    pub async fn bytes(&self, call: &Call) -> Result<(String, Vec<u8>)> {
+        let resp = self
+            .http
+            .request(call.method.clone(), self.url(call))
+            .bearer_auth(&self.token)
+            .timeout(self.timeouts.default)
+            .send()
+            .await
+            .map_err(Error::from_reqwest)?;
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let body = resp.bytes().await.map_err(Error::from_reqwest)?;
+        if !status.is_success() {
+            decode_response::<Value>(status.as_u16(), &body)?;
+            return Err(Error::Decode(format!("unexpected status {status}")));
+        }
+        Ok((content_type, body.to_vec()))
+    }
+
     async fn send<T: DeserializeOwned>(&self, call: &Call, timeout: Duration) -> Result<(u16, T)> {
         let mut req = self
             .http
@@ -758,6 +838,37 @@ mod tests {
             c.url(&Call::timeline(&q).unwrap()).as_str(),
             "http://h:1/prefix/api/secretary/timeline?before=tl_9&limit=50"
         );
+        assert_eq!(
+            c.url(&Call::deals_map(Some(2026)).unwrap()).as_str(),
+            "http://h:1/prefix/api/secretary/grocery/deals/map?radiusM=2026"
+        );
+        assert!(
+            !c.url(&Call::deals_map(None).unwrap())
+                .as_str()
+                .contains('?'),
+            "no query without a radius"
+        );
+    }
+
+    #[test]
+    fn deals_map_radius_is_500_to_15000() {
+        assert!(Call::deals_map(None).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MIN)).is_ok());
+        assert!(Call::deals_map(Some(validate::DEALS_RADIUS_MAX)).is_ok());
+        for bad in [
+            Some(validate::DEALS_RADIUS_MIN - 1),
+            Some(validate::DEALS_RADIUS_MAX + 1),
+            Some(0),
+            Some(u32::MAX),
+        ] {
+            match Call::deals_map(bad) {
+                Err(Error::Invalid { field, message }) => {
+                    assert_eq!(field, "radiusM");
+                    assert!(message.contains("500..=15000"), "{message}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -767,7 +878,8 @@ mod tests {
             message: " ".into(),
             session_id: None,
             client_message_id: None,
-            channel: None
+            channel: None,
+            reply_to: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -787,10 +899,28 @@ mod tests {
                 session_id: None,
                 client_message_id: None,
                 channel: Some(channel.into()),
+                reply_to: None,
             })
         };
         assert!(chat("ios").is_ok());
         assert!(chat("telegram").is_err());
+        let reply = |id: &str| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                session_id: None,
+                client_message_id: None,
+                channel: None,
+                reply_to: Some(id.into()),
+            })
+        };
+        assert_eq!(
+            reply("01K83ZK4Q6X1V9W2D3E4F5G6H7").unwrap().body().unwrap()["replyTo"],
+            "01K83ZK4Q6X1V9W2D3E4F5G6H7"
+        );
+        assert!(reply("tl_2-x").is_ok());
+        for bad in ["", "a/b", "a.b", &"x".repeat(65)] {
+            assert!(reply(bad).is_err(), "{bad}");
+        }
         let tq = |before: Option<&str>, limit: Option<&str>| TimelineQuery {
             before: before.map(str::to_owned),
             limit: limit.map(str::to_owned),
@@ -804,7 +934,8 @@ mod tests {
                 message: "hi".into(),
                 session_id: None,
                 client_message_id: None,
-                channel: None
+                channel: None,
+                reply_to: None,
             })
             .unwrap()
             .timeout_class(),

@@ -8,7 +8,9 @@
 //! are off; reminder writes are forwarded to the Node Lucina; Honcho is read
 //! only. See `README` in the crate docs of [`config`].
 
+pub mod agenda;
 pub mod api;
+pub mod bot_hospital;
 pub mod bridges;
 pub mod capabilities;
 pub mod chat;
@@ -16,6 +18,8 @@ pub mod config;
 pub mod context;
 pub mod deals;
 pub mod delegation;
+pub mod delivery_monitor;
+pub mod discord;
 pub mod fake;
 pub mod geocode;
 pub mod grocery_turn;
@@ -25,10 +29,13 @@ pub mod parity;
 pub mod places;
 pub mod planner;
 pub mod prompts;
+pub mod reminder_delivery;
 pub mod rich;
 pub mod secrets;
+pub mod selftest;
 pub mod share;
 pub mod surface;
+pub mod telegram;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
@@ -59,6 +66,8 @@ pub struct Inner {
     pub share: crate::share::ShareRuntime,
     pub cfg: Config,
     pub timeline: Arc<TimelineStore>,
+    /// Self-test and diagnostic turns (crate::selftest), never the owner's timeline.
+    pub selftest_timeline: Arc<TimelineStore>,
     pub reminders: Arc<ReminderStore>,
     pub writer: Arc<dyn ReminderWriter>,
     pub jobs: Arc<JobStore>,
@@ -95,6 +104,18 @@ pub struct Inner {
     pub briefings: tokio::sync::Mutex<HashMap<String, api::Briefing>>,
     pub streams: AtomicUsize,
     pub started: Instant,
+    pub scheduler_health: Arc<Mutex<lucina_store::scheduler::SchedulerHealth>>,
+    /// The Telegram poller (`/health` → `telegram`).
+    pub telegram_health: lucina_telegram::poller::SharedHealth,
+    /// Node's `recent-telegram-chat.json`, written only while the Telegram bot runs here.
+    pub telegram_recent: Arc<RecentChat>,
+    /// The Discord message session (`/health` → `discord`).
+    pub discord_health: lucina_discord::session::SharedHealth,
+    pub hospital_health: Arc<Mutex<bot_hospital::HospitalHealth>>,
+    /// Delivery-path alerts (`delivery_monitor`).
+    pub monitor: Arc<delivery_monitor::Monitor>,
+    /// Background loops checked by `/health`.
+    pub supervisor: Arc<delivery_monitor::Supervisor>,
 }
 
 #[derive(Clone)]
@@ -104,6 +125,18 @@ impl std::ops::Deref for AppState {
     type Target = Inner;
     fn deref(&self) -> &Inner {
         &self.0
+    }
+}
+
+impl Inner {
+    /// The timeline a turn of `session` writes: the owner's, or for a self-test its own
+    /// (crate::selftest).
+    pub fn timeline_for(&self, session: &str) -> Arc<TimelineStore> {
+        if selftest::is_session(session) {
+            self.selftest_timeline.clone()
+        } else {
+            self.timeline.clone()
+        }
     }
 }
 
@@ -130,6 +163,11 @@ impl AppState {
         let secret_store = secrets::open_store(&cfg);
         let timeline = Arc::new(TimelineStore::new(
             &cfg.timeline_path,
+            cfg.timeline_max_bytes,
+            cfg.timeline_enabled,
+        ));
+        let selftest_timeline = Arc::new(TimelineStore::new(
+            cfg.timeline_path.with_file_name(selftest::TIMELINE_FILE),
             cfg.timeline_max_bytes,
             cfg.timeline_enabled,
         ));
@@ -204,6 +242,24 @@ impl AppState {
                 std::env::var("LUCINA_MEMO_URL").unwrap_or_else(|_| "http://127.0.0.1:8795".into()),
             );
             env.memo_token_file = Some(token);
+        }
+        // Crash reports (lucina-diagnostics on this host): on when its service token is readable.
+        let diagnostics_token = std::env::var("LUCINA_DIAGNOSTICS_SERVICE_TOKEN_FILE")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME").ok().map(|h| {
+                    std::path::Path::new(&h).join(".config/lucina-diagnostics/service.token")
+                })
+            })
+            .filter(|p| p.is_file());
+        if let Some(token) = diagnostics_token {
+            env.diagnostics_url = Some(
+                std::env::var("LUCINA_DIAGNOSTICS_URL")
+                    .unwrap_or_else(|_| "http://127.0.0.1:8794".into()),
+            );
+            env.diagnostics_token_file = Some(token);
         }
         // Lucina's own Google Drive: only with a grant (`lucina google-auth drive`).
         if cfg.drive_enabled {
@@ -294,6 +350,7 @@ impl AppState {
             geocoder,
             share,
             timeline,
+            selftest_timeline,
             reminders,
             writer,
             jobs,
@@ -345,6 +402,25 @@ impl AppState {
             briefings: tokio::sync::Mutex::new(HashMap::new()),
             streams: AtomicUsize::new(0),
             started: Instant::now(),
+            monitor: Arc::new(delivery_monitor::Monitor::new(
+                cfg.delivery_alert_after,
+                cfg.data_dir.join("lucina-rs").join("delivery-monitor.json"),
+            )),
+            supervisor: Arc::default(),
+            hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
+                enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
+                ..Default::default()
+            })),
+            scheduler_health: Arc::new(Mutex::new(lucina_store::scheduler::SchedulerHealth {
+                enabled: cfg.scheduler && cfg.reminders_writer == WriterKind::Local,
+                ..Default::default()
+            })),
+            telegram_health: Default::default(),
+            telegram_recent: Arc::new(RecentChat::new(Some(cfg.telegram.recent_path.clone()))),
+            discord_health: Arc::new(Mutex::new(lucina_discord::session::SessionHealth {
+                state: "off".into(),
+                ..Default::default()
+            })),
             cfg,
         };
         Ok(Self(Arc::new(inner)))
@@ -357,6 +433,62 @@ impl AppState {
             .expect("with_deals before the state is shared")
             .deals = engine;
         self
+    }
+
+    /// `LUCINA_TELEGRAM_ENABLED=true` and a Lucina bot token.
+    pub fn telegram_active(&self) -> bool {
+        self.cfg.telegram.enabled && self.cfg.telegram_token.is_some()
+    }
+
+    /// `LUCINA_DISCORD_ENABLED=true` and a Lucina Discord bot token.
+    pub fn discord_active(&self) -> bool {
+        self.cfg.discord.enabled && self.cfg.discord_token.is_some()
+    }
+
+    /// The Discord message session (`LUCINA_DISCORD_ENABLED=true`); `None`
+    /// when off. It closes the session and releases its lease when
+    /// `shutdown` turns true: await the handle before exiting.
+    pub fn spawn_discord(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.cfg.discord.enabled {
+            return None;
+        }
+        let Some(token) = self.cfg.discord_token.clone() else {
+            tracing::warn!("LUCINA_DISCORD_ENABLED=true but no Lucina Discord token (DISCORD_BOT_TOKEN_LUCINA or LUCINA_DISCORD_TOKEN_FILE): Discord stays off");
+            return None;
+        };
+        match discord::spawn(self, token, shutdown) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "discord message session not started");
+                None
+            }
+        }
+    }
+
+    /// The Telegram bot's poller (`LUCINA_TELEGRAM_ENABLED=true`); `None`
+    /// when off. It releases its lease when `shutdown` turns true: await
+    /// the handle before exiting.
+    pub fn spawn_telegram(
+        &self,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.cfg.telegram.enabled {
+            return None;
+        }
+        let Some(token) = self.cfg.telegram_token.clone() else {
+            tracing::warn!("LUCINA_TELEGRAM_ENABLED=true but no Lucina bot token (TELEGRAM_BOT_TOKEN_LUCINA or LUCINA_TELEGRAM_TOKEN_FILE): Telegram stays off");
+            return None;
+        };
+        match telegram::spawn(self, lucina_telegram::BotApi::new(token), shutdown) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::error!(error = %e, "telegram poller not started");
+                None
+            }
+        }
     }
 
     /// Background tasks: the grocery deal watch when `GROCERY_OFFER_WATCH_ENABLED=true`,
@@ -377,27 +509,61 @@ impl AppState {
                 });
             }
         }
-        if self.cfg.telegram_requested || self.cfg.discord_requested {
-            tracing::warn!("LUCINA_TELEGRAM_ENABLED/LUCINA_DISCORD_ENABLED: channels are not part of this build; they stay off");
-        }
         // The grocery deal watch has its own switch (GROCERY_OFFER_WATCH_ENABLED).
-        deals::spawn_watch(self);
+        if let Some(h) = deals::spawn_watch(self) {
+            self.supervisor.watch("deal watch", h);
+        }
+        if let Some(h) = bot_hospital::spawn(
+            self,
+            Arc::new(bot_hospital::Hospital {
+                cfg: self.cfg.hospital.clone(),
+                http: reqwest::Client::new(),
+                health: self.hospital_health.clone(),
+            }),
+        ) {
+            self.supervisor.watch("bot hospital", h);
+        }
+        self.supervisor
+            .watch("delivery monitor", delivery_monitor::spawn(self));
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {
                 tracing::warn!("LUCINA_SCHEDULER=true ignored: reminders.json is owned by the Node Lucina (LUCINA_REMINDERS_WRITER=node)");
                 return;
             }
-            let sink = Arc::new(lucina_store::scheduler::TimelineSink {
+            let timeline = lucina_store::scheduler::TimelineSink {
                 timeline: self.timeline.clone(),
                 owner_chat_id: self.cfg.owner_chat_id.clone().unwrap_or_default(),
                 owner_peer_id: self.cfg.owner_peer_id.clone(),
-            });
-            lucina_store::scheduler::spawn(
+            };
+            let sink: Arc<dyn lucina_store::scheduler::ReminderSink> =
+                if let Some(token) = &self.cfg.telegram_token {
+                    Arc::new(reminder_delivery::TelegramReminderSink {
+                        bot: lucina_telegram::BotApi::new(token.clone()),
+                        runtime: tokio::runtime::Handle::current(),
+                        recent: self.recent.clone(),
+                        // With the bot here, deliveries join the chat's turns (Node's buffer).
+                        telegram_recent: self
+                            .telegram_active()
+                            .then(|| (self.telegram_recent.clone(), self.telegram_health.clone())),
+                        timeline,
+                        secretary: self.secretary.clone(),
+                        app_notify: self.cfg.app_notify,
+                    })
+                } else {
+                    tracing::warn!(
+                    "reminder scheduler has no Lucina Telegram token; using timeline-only delivery"
+                );
+                    Arc::new(timeline)
+                };
+            let handle = lucina_store::scheduler::spawn(
                 self.reminders.clone(),
                 sink,
                 self.cfg.persona.clone(),
                 self.cfg.scheduler_poll,
+                self.cfg.scheduler_initial_delay,
+                self.scheduler_health.clone(),
             );
+            self.supervisor.watch("reminder scheduler", handle);
         }
     }
 }

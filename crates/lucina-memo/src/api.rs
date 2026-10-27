@@ -137,6 +137,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/memos/{id}/pdf", get(pdf))
         .route("/v1/memos/{id}/transcript", get(transcript))
         .route("/v1/memos/{id}/device-transcript", put(device_transcript))
+        .route("/v1/memos/{id}/events", get(event_candidates))
+        .route("/v1/memos/{id}/event", put(choose_event))
         .route("/v1/memos/{id}/resummarize", post(resummarize))
         .route("/v1/memos/{id}/reprocess", post(reprocess))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth));
@@ -171,6 +173,10 @@ fn id_ok(id: &str) -> Result<(), ApiError> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CreateBody {
+    #[serde(default)]
+    ended_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    location: Option<crate::model::GeoFix>,
     client_id: String,
     #[serde(default)]
     title: Option<String>,
@@ -196,7 +202,25 @@ async fn create(
     if b.recorded_at > Utc::now() + CDuration::days(1) {
         return Err(ApiError::bad("recordedAt is in the future"));
     }
+    if b.ended_at
+        .is_some_and(|end| end < b.recorded_at || end > b.recorded_at + CDuration::hours(24))
+    {
+        return Err(ApiError::bad(
+            "endedAt must be within 24 hours after recordedAt",
+        ));
+    }
+    if b.location.as_ref().is_some_and(|p| {
+        !p.lat.is_finite()
+            || !p.lon.is_finite()
+            || !(-90.0..=90.0).contains(&p.lat)
+            || !(-180.0..=180.0).contains(&p.lon)
+            || p.accuracy_m.is_some_and(|a| !a.is_finite() || a < 0.0)
+    }) {
+        return Err(ApiError::bad("invalid location coordinates or accuracy"));
+    }
     let (m, created) = app.store.create(NewMemo {
+        ended_at: b.ended_at,
+        location: b.location,
         client_id: b.client_id,
         title: b.title,
         recorded_at: b.recorded_at,
@@ -705,4 +729,87 @@ mod tests {
         assert_eq!(parse_range("bytes=4-2", 10), None);
         assert_eq!(parse_range("items=0-1", 10), None);
     }
+}
+
+async fn event_candidates(State(app): State<Arc<App>>, Path(id): Path<String>) -> R {
+    id_ok(&id)?;
+    let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
+    let candidates = crate::events::candidates(&app, &m, 120)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "calendar_unreachable", &e))?;
+    Ok(Json(
+        json!({"current":m.event,"eventSource":m.event_source,"candidates":candidates}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChooseEvent {
+    event_id: Option<String>,
+}
+async fn choose_event(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    Json(b): Json<ChooseEvent>,
+) -> R {
+    id_ok(&id)?;
+    let m = app.store.get(&id).ok_or_else(ApiError::not_found)?;
+    let allowed = |m: &crate::model::Memo| {
+        matches!(
+            m.status,
+            Status::Done | Status::Failed | Status::Uploading | Status::Transcribing
+        ) || (m.status == Status::Queued && m.steps.summarized_at.is_none())
+    };
+    if !allowed(&m) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "busy",
+            "the memo summary is being processed",
+        ));
+    }
+    let event = if let Some(want) = b.event_id {
+        Some(
+            crate::events::candidates(&app, &m, 120)
+                .await
+                .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "calendar_unreachable", &e))?
+                .into_iter()
+                .find(|c| c.event.id == want)
+                .ok_or_else(ApiError::not_found)?
+                .event,
+        )
+    } else {
+        None
+    };
+    let fallback: Option<Summary> =
+        crate::store::read_json(&app.store.summary_path(&id)).map_err(StoreError::from)?;
+    let mut busy = false;
+    let m = app.store.update(&id, |m| {
+        if !allowed(m) {
+            busy = true;
+            return;
+        }
+        m.event = event;
+        m.event_source = Some("owner".into());
+        m.steps.linked_at = Some(Utc::now());
+        if m.event.is_none() && m.title_source == "event" {
+            m.title = fallback
+                .as_ref()
+                .map(|s| s.title.clone())
+                .unwrap_or_else(|| "Voice memo".into());
+            m.title_source = "lucina".into();
+        }
+        crate::events::apply_title(m, app.cfg.timezone);
+    })?;
+    if busy {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "busy",
+            "the memo summary is being processed",
+        ));
+    }
+    let m = if matches!(m.status, Status::Done | Status::Failed) {
+        worker::request_resummary(&app, &id, None)?
+    } else {
+        m
+    };
+    Ok(Json(json!({"memo":m})))
 }

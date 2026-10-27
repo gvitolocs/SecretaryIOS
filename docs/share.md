@@ -29,6 +29,7 @@ Form fields (all optional, but at least one `text`, `url` or `file` part is requ
 | `text` | yes | a text snippet |
 | `url` | yes | a link |
 | `file` | yes | a file part; `filename` and `Content-Type` from the client (`application/octet-stream` if unknown) |
+| `replyTo` | no | the timeline id of the earlier message this share replies to, `[A-Za-z0-9_-]{1,64}` (see "Replies") |
 
 Limits: 32 parts, 2 GB total. Clients convert HEIC/HEIF images to JPEG before upload.
 
@@ -163,6 +164,23 @@ obtained by Whisper after receipt:
 
 Retries with the same `shareId` return `duplicate: true`, with no extra timeline items
 or model turn, just as for other shares.
+
+## Replies
+
+A composer attachment or a voice note sent while replying to a message (swipe to reply) adds
+the form field `replyTo` = that message's timeline id, as `POST /v1/chat` does
+(docs/server-api.md, "Replies"):
+
+- The share's user item carries `"replyTo": "<id>"` (same key and position as on every item:
+  after `clientMessageId`, before `attachments`), so clients draw the quote above it.
+- The share turn (and a voice-only note's typed turn) gets the quoted message as a block before
+  the owner's message: `The owner is replying to this earlier message (from Lucina|the owner, <local
+  time>):` with its text, its attachments (kind, name, what was read from them: the attachment
+  memory's summary or text), and a voice note's transcript. Clipped to 4000 characters.
+- Replying to an earlier share works the same way from `/v1/chat`: the attachment memory is looked
+  up by the quoted item's id (or its `meta.shareId`).
+- A malformed `replyTo` is `400`; an id that names no stored item is ignored and the share is
+  processed as usual.
 
 ## Server implementation and configuration
 

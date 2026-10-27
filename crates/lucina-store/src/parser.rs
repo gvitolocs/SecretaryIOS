@@ -327,7 +327,7 @@ fn parse_duration_expression(value: &str) -> Option<Duration2> {
         last_unit = unit;
         segments += 1;
     }
-    if segments < 1 || total < 5_000.0 || total > 180.0 * UNIT_D {
+    if segments < 1 || !(5_000.0..=180.0 * UNIT_D).contains(&total) {
         return None;
     }
     Some(Duration2 {
@@ -479,7 +479,163 @@ fn split_date_and_body(text: &str) -> (String, String) {
     (raw, String::new())
 }
 
-/// The full parser: at-time, then relative, then "date — body".
+// ---- relative days ("domani mattina", "stasera alle 9", "tomorrow afternoon")
+//
+// Not in Node: there the planner had to supply `dueDate`, and when it did not the
+// reminder failed ("Ciao Lucina, ricordami di comprare il latte domani mattina",
+// 2026-10-27). A day word picks the day; an explicit time wins, otherwise the part of
+// the day picks the hour, otherwise the default hour.
+
+/// Hour for a part of the day (morning = the default hour).
+fn part_hour(part: &str, default_hour: u32) -> Option<u32> {
+    Some(match part {
+        "mattina" | "mattino" | "morning" | "stamattina" | "stamani" | "stamane" => default_hour,
+        "mezzogiorno" | "noon" | "midday" => 12,
+        "pomeriggio" | "afternoon" => 15,
+        "sera" | "evening" | "stasera" | "tonight" => 20,
+        "notte" | "night" | "stanotte" => 22,
+        _ => return None,
+    })
+}
+
+static GREETING: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"(?i)^(?:ciao|hey|hi|hello|ehi|ok|okay|buongiorno|buonasera)(?:\s+lucina)?\s*[,!.:;]?\s+")
+});
+static DAY_PHRASE: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"(?i)(?<![\p{L}])(?:",
+        r"(?<day>dopodomani|domani|oggi|the\s+day\s+after\s+tomorrow|tomorrow|today)",
+        r"(?:\s+(?:in\s+the\s+|di\s+|in\s+|al\s+|a\s+)?(?<part>mattina|mattino|pomeriggio|sera|notte|mezzogiorno|morning|afternoon|evening|night|noon|midday))?",
+        r"|(?<combo>stamattina|stamani|stamane|stasera|stanotte|tonight|this\s+(?:morning|afternoon|evening))",
+        r")(?:\s+(?:alle(?:\s+ore)?|ore|at|verso\s+le|around)\s+(?<h>\d{1,2})(?:[:.](?<m>\d{2}))?(?:\s*(?<ampm>am|pm))?)?(?![\p{L}])",
+    ))
+});
+static TIME_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)(?<![\p{L}])(?:alle(?:\s+ore)?|ore|at)\s+(?<h>\d{1,2})(?:[:.](?<m>\d{2}))?(?:\s*(?<ampm>am|pm))?(?![\p{L}\d])",
+    )
+});
+static REMIND_LEAD: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)^(?:please\s+|per\s+favore\s+)?(?:ricordami|ricordati|ricorda(?:mi)?|avvisami|promemoria|remind\s+me|set\s+a\s+reminder|reminder)(?:\s*[,:]\s*|\s+)(?:(?:di|che|to|of|for|per)\s+)?",
+    )
+});
+
+/// "domani mattina …", "… stasera alle 21", "remind me tomorrow afternoon to …".
+pub fn parse_day_phrase(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError> {
+    let raw = normalize_ws(text);
+    let raw = replace_first(&GREETING, &raw);
+    let raw = raw
+        .trim_end_matches(['.', '!', '?', ';', ','])
+        .trim()
+        .to_owned();
+    let Some(c) = DAY_PHRASE.captures(&raw).ok().flatten() else {
+        return Err("unparsed_day");
+    };
+    let whole = c.get(0).expect("match");
+    let lower = |n: &str| c.name(n).map(|m| normalize_ws(&m.as_str().to_lowercase()));
+    let (offset, part) = match (lower("day"), lower("combo")) {
+        (Some(d), _) => {
+            let off = match d.as_str() {
+                "oggi" | "today" => 0,
+                "domani" | "tomorrow" => 1,
+                _ => 2,
+            };
+            (off, lower("part"))
+        }
+        (None, Some(combo)) => (0, Some(combo.trim_start_matches("this ").to_owned())),
+        (None, None) => return Err("unparsed_day"),
+    };
+    // A time may also come before the day words ("alle 8 domani").
+    let mut body = format!("{} {}", &raw[..whole.start()], &raw[whole.end()..]);
+    let mut time = c.name("h").map(|h| {
+        (
+            h.as_str().to_owned(),
+            c.name("m").map(|m| m.as_str().to_owned()),
+            c.name("ampm").map(|a| a.as_str().to_lowercase()),
+        )
+    });
+    if time.is_none() {
+        let found = TIME_BEFORE.captures(&body).ok().flatten().map(|t| {
+            let m = t.get(0).expect("match");
+            (
+                (m.start(), m.end()),
+                (
+                    t.name("h")
+                        .map(|x| x.as_str().to_owned())
+                        .unwrap_or_default(),
+                    t.name("m").map(|x| x.as_str().to_owned()),
+                    t.name("ampm").map(|a| a.as_str().to_lowercase()),
+                ),
+            )
+        });
+        if let Some(((start, end), t)) = found {
+            time = Some(t);
+            body = format!("{} {}", &body[..start], &body[end..]);
+        }
+    }
+    let timed = time.is_some();
+    let (hour, minute) = match time {
+        Some((h, m, ampm)) => {
+            let mut hour: u32 = h.parse().map_err(|_| "invalid_time")?;
+            let minute: u32 = match m {
+                Some(m) => m.parse().map_err(|_| "invalid_time")?,
+                None => 0,
+            };
+            let pm = ampm.as_deref() == Some("pm")
+                || (ampm.is_none()
+                    && matches!(
+                        part.as_deref(),
+                        Some(
+                            "pomeriggio" | "afternoon" | "sera" | "evening" | "stasera" | "tonight"
+                        )
+                    ));
+            if pm && (1..12).contains(&hour) {
+                hour += 12;
+            }
+            if ampm.as_deref() == Some("am") && hour == 12 {
+                hour = 0;
+            }
+            (hour, minute)
+        }
+        None => match part.as_deref() {
+            Some(p) => (part_hour(p, o.default_hour).ok_or("unparsed_day")?, 0),
+            None => (o.default_hour, o.default_minute),
+        },
+    };
+    if hour > 23 || minute > 59 {
+        return Err("invalid_time");
+    }
+    let body = normalize_ws(&body);
+    // A bare day word ("domani forse") is not enough: it needs a part of the day,
+    // a time, or a reminder lead ("ricordami", "remind me").
+    let led = REMIND_LEAD.is_match(&body).unwrap_or(false);
+    if part.is_none() && !timed && !led {
+        return Err("unparsed_day");
+    }
+    let body = replace_first(&REMIND_LEAD, &body);
+    let body = replace_first(&BODY_LEAD, &body);
+    let body = body
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, ',' | '-' | '—' | ':' | '.'))
+        .to_owned();
+    if body.is_empty() {
+        return Err("missing_body");
+    }
+    let parts = add_days(today_parts(o.tz, o.now), offset);
+    let due =
+        zoned_to_utc(o.tz, parts.0, parts.1, parts.2, hour, minute, 0).ok_or("invalid_date")?;
+    if due <= o.now {
+        return Err("due_in_past");
+    }
+    Ok(Parsed {
+        text: body,
+        due_at: due,
+        local_date: ymd(parts.0, parts.1, parts.2),
+        relative: false,
+    })
+}
+
+/// The full parser: at-time, then relative, then relative days, then "date — body".
 pub fn parse_reminder_message(text: &str, o: &ParseOptions) -> Result<Parsed, ParseError> {
     let raw = normalize_ws(text);
     if raw.is_empty() {
@@ -490,6 +646,11 @@ pub fn parse_reminder_message(text: &str, o: &ParseOptions) -> Result<Parsed, Pa
     }
     if let Ok(p) = parse_relative(&raw, o) {
         return Ok(p);
+    }
+    match parse_day_phrase(&raw, o) {
+        Ok(p) => return Ok(p),
+        Err("due_in_past") => return Err("due_in_past"),
+        Err(_) => {}
     }
     let (date_part, body) = match REMIND_PREFIX_DATE.captures(&raw).ok().flatten() {
         Some(c) => split_date_and_body(c.get(1).map(|m| m.as_str().trim()).unwrap_or("")),
@@ -592,5 +753,65 @@ mod tests {
             parse_reminder_message("blah - blah", &o),
             Err("unparsed_date")
         );
+    }
+
+    #[test]
+    fn relative_days() {
+        // Tuesday 2026-10-27 08:45 UTC (09:45 in Rome), the iPhone case.
+        let o = ParseOptions {
+            now: Utc.with_ymd_and_hms(2026, 10, 27, 8, 45, 0).unwrap(),
+            ..opts()
+        };
+        let p = parse_reminder_message(
+            "Ciao Lucina, ricordami di comprare il latte domani mattina.",
+            &o,
+        )
+        .unwrap();
+        assert_eq!(p.text, "comprare il latte");
+        assert_eq!(p.due_at_iso(), "2026-10-28T08:00:00.000Z");
+        assert_eq!(p.local_date, "2026-10-28");
+        let p = parse_reminder_message("domani pomeriggio chiamare il dentista", &o).unwrap();
+        assert_eq!(p.text, "chiamare il dentista");
+        assert_eq!(p.due_at_iso(), "2026-10-28T14:00:00.000Z");
+        let p =
+            parse_reminder_message("ricordami stasera di portare fuori la spazzatura", &o).unwrap();
+        assert_eq!(p.text, "portare fuori la spazzatura");
+        assert_eq!(p.due_at_iso(), "2026-10-27T19:00:00.000Z");
+        let p = parse_reminder_message("stasera alle 9 di chiamare la mamma", &o).unwrap();
+        assert_eq!(p.text, "chiamare la mamma");
+        assert_eq!(p.due_at_iso(), "2026-10-27T20:00:00.000Z");
+        let p = parse_reminder_message("ricordami domani alle 18:30 di fare la spesa", &o).unwrap();
+        assert_eq!(p.text, "fare la spesa");
+        assert_eq!(p.due_at_iso(), "2026-10-28T17:30:00.000Z");
+        let p = parse_reminder_message("alle 8 domani di portare il pane", &o).unwrap();
+        assert_eq!(p.text, "portare il pane");
+        assert_eq!(p.due_at_iso(), "2026-10-28T07:00:00.000Z");
+        let p = parse_reminder_message("ricordami dopodomani di pagare la bolletta", &o).unwrap();
+        assert_eq!(p.text, "pagare la bolletta");
+        assert_eq!(p.due_at_iso(), "2026-10-29T08:00:00.000Z");
+        let p = parse_reminder_message("remind me tomorrow afternoon to call Bob", &o).unwrap();
+        assert_eq!(p.text, "call Bob");
+        assert_eq!(p.due_at_iso(), "2026-10-28T14:00:00.000Z");
+        let p = parse_reminder_message("Remind me to stretch tonight", &o).unwrap();
+        assert_eq!(p.text, "stretch");
+        assert_eq!(p.due_at_iso(), "2026-10-27T19:00:00.000Z");
+        let p = parse_reminder_message("remind me tomorrow at 7am to run", &o).unwrap();
+        assert_eq!(p.text, "run");
+        assert_eq!(p.due_at_iso(), "2026-10-28T06:00:00.000Z");
+        // A past time today is an error, never silently moved.
+        assert_eq!(
+            parse_reminder_message("oggi alle 8 di fare colazione", &o),
+            Err("due_in_past")
+        );
+        // A word that only contains a day word is not a day phrase.
+        assert_eq!(
+            parse_day_phrase("comprare il soggiorno", &o),
+            Err("unparsed_day")
+        );
+        assert_eq!(parse_reminder_message("domani", &o), Err("missing_body"));
+        assert_eq!(parse_day_phrase("domani forse", &o), Err("unparsed_day"));
+        // The older forms still win: a relative duration.
+        let p = parse_reminder_message("tra mezz'ora di girare la pasta", &o).unwrap();
+        assert_eq!(p.due_at, o.now + Duration::minutes(30));
     }
 }

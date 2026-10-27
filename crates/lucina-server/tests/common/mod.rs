@@ -49,8 +49,8 @@ pub async fn harness_with(
     cfg.reminders_writer = WriterKind::Local;
     cfg.memory_mode = MemoryMode::Off;
     cfg.planner = PlannerMode::Json;
-    cfg.recovery_companion_path = dir.path().join("none.md");
-    cfg.operator_brief_path = dir.path().join("none.md");
+    cfg.recovery_companion_path = Some(dir.path().join("none.md"));
+    cfg.operator_brief_path = Some(dir.path().join("none.md"));
     cfg.timeline_ping = Duration::from_millis(300);
     cfg.deepseek = DeepSeekConfig {
         base_url: fake.base_url.clone(),

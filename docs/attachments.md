@@ -126,6 +126,17 @@ Handler kinds are in backticks; `share/guidance.rs` holds the exact guidance tex
 ### Anything else: `other`
 - She reports the type, size and name, and what it probably is.
 
+## Drive documents
+
+Files in your Drive folders (lucina-media, e.g. `Lezioni`) are read the same way when you ask about them in
+the chat ("cosa dice l'ultima lezione di Digital Forensics sul file carving?"). The `media` tool searches the
+Drive (`scope=drive`, newest first by modified) and its `read` action runs the file through the same router
+and handlers, with the same guidance per type (`share/library.rs`). Differences: no long-document summary
+(the chat turn has no time for it); instead a long text shows the passages that match your question, up to
+about 12 000 characters. What she read is stored in `attachments.db` as `drive-<item id>` and reused while the
+file is unchanged. Without the handlers (or when they take too long) she uses the library's own extracted
+text. The reply gets an "Open in Drive" button.
+
 ## Limits
 
 - One share: at most 32 parts and 2 GB.

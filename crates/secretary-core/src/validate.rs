@@ -70,6 +70,12 @@ pub fn session_id(field: &'static str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// A timeline item id a chat message replies to (`replyTo`): the same
+/// alphabet and length as [`session_id`], `[A-Za-z0-9_-]{1,64}`.
+pub fn timeline_ref(field: &'static str, s: &str) -> Result<()> {
+    session_id(field, s)
+}
+
 /// Optional id: absent is fine, present must pass [`id`].
 pub fn opt_id(field: &'static str, s: Option<&str>) -> Result<()> {
     s.map_or(Ok(()), |s| id(field, s))
@@ -115,6 +121,11 @@ pub fn flag(field: &'static str, s: &str) -> Result<&'static str> {
 
 /// Max page size of `GET /timeline`.
 pub const MAX_TIMELINE_LIMIT: u32 = 200;
+
+/// Radius range of `GET /grocery/deals/map?radiusM=` (meters),
+/// also enforced by the server route.
+pub const DEALS_RADIUS_MIN: u32 = 500;
+pub const DEALS_RADIUS_MAX: u32 = 15_000;
 
 /// Client surfaces a chat message may come from.
 pub const CHAT_CHANNELS: &[&str] = &["web", "ios"];

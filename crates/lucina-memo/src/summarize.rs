@@ -9,7 +9,7 @@ use chrono_tz::Tz;
 use lucina_llm::{ChatModel, ChatRequest, LlmError, Message};
 use serde::Deserialize;
 
-use crate::model::{clock, Item, Memo, Summary, Transcript};
+use crate::model::{clock, EventKind, Item, Memo, Summary, Transcript};
 
 pub const CHUNK_CHARS: usize = 60_000;
 
@@ -41,6 +41,12 @@ const PART_SYSTEM: &str = r#"You are Lucina, Giuseppe's personal assistant. This
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Raw {
+    #[serde(default)]
+    template: Option<String>,
+    #[serde(default)]
+    definitions: Vec<RawItem>,
+    #[serde(default)]
+    questions: Vec<RawItem>,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -182,6 +188,9 @@ pub fn parse(
         .take(5)
         .collect();
     Ok(Summary {
+        template: raw.template.filter(|s| s == "lecture" || s == "meeting"),
+        definitions: items(raw.definitions, t.duration_sec, false),
+        questions: items(raw.questions, t.duration_sec, false),
         title: if title.is_empty() {
             "Voice memo".into()
         } else {
@@ -210,6 +219,72 @@ fn header(m: &Memo, t: &Transcript, tz: Tz) -> String {
     )
 }
 
+/// `lecture` or `meeting` when the memo is linked to such an event.
+pub fn template(m: &Memo) -> Option<&'static str> {
+    match m.event.as_ref()?.kind {
+        EventKind::Lecture => Some("lecture"),
+        EventKind::Meeting => Some("meeting"),
+        EventKind::Other => None,
+    }
+}
+
+/// What the summary prompt adds for a memo linked to a calendar event: the event, and for a
+/// lecture or a meeting the template's fields; `previous` = earlier memos of the same course.
+pub fn event_brief(m: &Memo, tz: Tz, previous: &[String]) -> String {
+    let Some(e) = &m.event else {
+        return String::new();
+    };
+    let ztz = m
+        .timezone
+        .as_deref()
+        .and_then(|z| z.parse::<Tz>().ok())
+        .unwrap_or(tz);
+    let at = |ms: i64| {
+        DateTime::from_timestamp_millis(ms)
+            .map(|d| {
+                d.with_timezone(&ztz)
+                    .format("%a %-d %b %Y %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_default()
+    };
+    let mut o = format!(
+        "\n\nHe recorded it during this calendar event (context only: never take content from it that is not in the transcript):\n- {} ({} – {})",
+        e.title,
+        at(e.start_ms),
+        at(e.end_ms)
+    );
+    if let Some(place) = e.location.as_deref().filter(|p| !p.trim().is_empty()) {
+        o.push_str(&format!("\n- place: {place}"));
+    }
+    if !e.attendees.is_empty() {
+        o.push_str(&format!("\n- attendees: {}", e.attendees.join(", ")));
+    }
+    if let Some(cal) = &e.calendar {
+        o.push_str(&format!("\n- calendar: {cal}"));
+    }
+    match e.kind {
+        EventKind::Lecture => {
+            o.push_str("\n\nIt is a lecture: write lecture notes. \"overview\": structured notes of the lecture (the topics in order, 4 to 10 sentences). \"keyPoints\": the key concepts. \"definitions\": terms defined or explained, \"text\" = \"term: explanation\". \"questions\": 3 to 6 questions to review the lecture with. \"actionItems\": homework, readings, deadlines. Add \"definitions\":[{\"text\":\"...\",\"at\":12}] and \"questions\":[{\"text\":\"...\"}] to the JSON.");
+            if !previous.is_empty() {
+                o.push_str("\nEarlier lectures of this course (connect concepts to them where the transcript does, e.g. \"as in the lecture of 20 Oct\"):\n");
+                o.push_str(
+                    &previous
+                        .iter()
+                        .map(|p| format!("- {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+        }
+        EventKind::Meeting => {
+            o.push_str("\n\nIt is a meeting: write the minutes. \"overview\": the minutes (what was discussed, in order). \"decisions\": what was agreed. \"actionItems\": every task with \"owner\" (an attendee's name, or \"me\" for Giuseppe) and \"due\" when said.");
+        }
+        EventKind::Other => {}
+    }
+    o
+}
+
 /// Asks the model for the summary. `instructions` = the owner's wishes for a re-summary.
 pub async fn summarize(
     llm: &dyn ChatModel,
@@ -218,6 +293,7 @@ pub async fn summarize(
     t: &Transcript,
     tz: Tz,
     instructions: Option<&str>,
+    previous: &[String],
 ) -> Result<Summary, SummaryError> {
     let lines = timed_lines(t);
     let joined = lines.join("\n");
@@ -259,6 +335,7 @@ pub async fn summarize(
         format!("The memo is long, so here are your notes on each part instead of the full transcript.\n\n{}", notes.join("\n\n"))
     };
     let mut user = format!("{}\n{body}", header(m, t, tz));
+    user.push_str(&event_brief(m, tz, previous));
     if let Some(extra) = instructions.filter(|s| !s.trim().is_empty()) {
         user.push_str(&format!(
             "\n\nGiuseppe asked for this version: {}",
@@ -270,7 +347,9 @@ pub async fn summarize(
         let req = ChatRequest {
             messages: vec![Message::system(SYSTEM), Message::user(user.clone())],
             temperature: Some(0.3),
-            max_tokens: Some(4000),
+            // An hour-long lecture's notes, definitions and questions overran 4000 tokens: the
+            // JSON came back cut off (2026-10-27).
+            max_tokens: Some(8000),
             purpose: "memo_summary",
             json_object: true,
             ..Default::default()
@@ -282,7 +361,11 @@ pub async fn summarize(
             &r.model
         };
         match parse(r.message.text(), t, label, instructions) {
-            Ok(s) => return Ok(s),
+            Ok(mut s) => {
+                // The template follows the linked event, not what the model echoes back.
+                s.template = template(m).map(str::to_owned);
+                return Ok(s);
+            }
             Err(e) => {
                 tracing::warn!(attempt, error = %e, "memo summary was not valid JSON");
                 last_err = Some(e);
@@ -336,5 +419,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.key_points[0].at, None);
+    }
+
+    fn linked(kind: EventKind) -> Memo {
+        let mut m = crate::obsidian::tests::memo();
+        m.timezone = Some("Europe/Copenhagen".into());
+        m.event = Some(crate::model::EventLink {
+            id: "google:lec_1".into(),
+            source: "google".into(),
+            calendar: Some("DTU skema".into()),
+            title: "Algorithms – Lecture 5".into(),
+            start: "2026-10-27T08:00:00Z".into(),
+            end: "2026-10-27T10:00:00Z".into(),
+            start_ms: 1_793_088_000_000,
+            end_ms: 1_793_095_200_000,
+            location: Some("Building 101".into()),
+            attendees: vec!["Prof. Hansen".into()],
+            recurring: true,
+            series: "lec".into(),
+            kind,
+        });
+        m
+    }
+
+    #[test]
+    fn lecture_and_meeting_briefs() {
+        let tz = chrono_tz::Europe::Rome;
+        let lecture = linked(EventKind::Lecture);
+        let b = event_brief(
+            &lecture,
+            tz,
+            &["Algorithms · 20 Oct 2026 (20 Oct): sorting".into()],
+        );
+        assert!(
+            b.contains("Algorithms – Lecture 5 (Tue 27 Oct 2026 09:00 – Tue 27 Oct 2026 11:00)"),
+            "{b}"
+        );
+        assert!(b.contains("place: Building 101") && b.contains("attendees: Prof. Hansen"));
+        assert!(
+            b.contains("lecture notes")
+                && b.contains("\"definitions\"")
+                && b.contains("- Algorithms · 20 Oct 2026")
+        );
+        assert_eq!(template(&lecture), Some("lecture"));
+        let meeting = linked(EventKind::Meeting);
+        let b = event_brief(&meeting, tz, &[]);
+        assert!(b.contains("minutes") && !b.contains("Earlier lectures"));
+        assert_eq!(template(&meeting), Some("meeting"));
+        assert_eq!(template(&linked(EventKind::Other)), None);
+        assert_eq!(event_brief(&crate::obsidian::tests::memo(), tz, &[]), "");
+    }
+
+    #[test]
+    fn parses_lecture_fields() {
+        let reply = r#"{"title":"Algoritmi di ordinamento","overview":"Appunti.","keyPoints":[{"text":"Quicksort"}],"definitions":[{"text":"Pivot: l'elemento di confronto","at":"1:05"}],"questions":[{"text":"Perché il caso peggiore è quadratico?"}],"tags":["algoritmi"]}"#;
+        let s = parse(reply, &transcript(), "deepseek", None).unwrap();
+        assert_eq!(s.definitions.len(), 1);
+        assert_eq!(s.definitions[0].at, Some(65.0));
+        assert_eq!(s.questions.len(), 1);
+        // Old summaries without the new fields still load.
+        let old: Summary = serde_json::from_str(r#"{"title":"t","language":"it","overview":"o","model":"m","createdAt":"2026-10-26T00:00:00Z"}"#).unwrap();
+        assert!(old.definitions.is_empty() && old.template.is_none());
     }
 }

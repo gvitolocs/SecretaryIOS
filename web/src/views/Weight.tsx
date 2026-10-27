@@ -1,3 +1,4 @@
+import { A } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import { parseWeightOnServer, type BodyEntry, type BodyStatLabel, type BodyView } from "../api/body";
 import { toApiError } from "../api/client";
@@ -174,7 +175,8 @@ function EntryRow(props: { entry: BodyEntry; unit: WeightUnit; label: string | u
   );
 }
 
-export default function WeightView() {
+/** `compact`: the Training page's summary (log, stats, chart); the entries and settings stay on /weight. */
+export default function WeightView(props: { compact?: boolean } = {}) {
   const stored = readString("local", WEIGHT_UNIT_KEY);
   const storedUnit: WeightUnit = stored === "kg" || stored === "lb" ? stored : "kg";
   let unitChosen = stored === "kg" || stored === "lb";
@@ -441,6 +443,12 @@ export default function WeightView() {
                   />
                 </section>
 
+                <Show when={props.compact}>
+                  <A href="/weight" class="weight-all-link">
+                    {t("weight.allEntries")}
+                  </A>
+                </Show>
+                <Show when={!props.compact}>
                 <section class="weight-history">
                   <h2 class="section-title">{t("weight.history")}</h2>
                   <Show
@@ -503,6 +511,7 @@ export default function WeightView() {
                     </button>
                   </form>
                 </details>
+                </Show>
               </>
             )}
           </Show>

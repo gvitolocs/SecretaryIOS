@@ -3,8 +3,9 @@
 //! returns Lucina's `data` unwrapped.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{delete, get, patch};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use secretary_core::models::{AgendaQuery, ChatRequest, CreateReminder, ReminderQuery};
 use secretary_core::Call;
@@ -73,6 +74,13 @@ async fn chat(
     forward(&st, Call::chat(&req)?).await
 }
 
+async fn hermes(State(st): State<AppState>) -> ApiResult {
+    forward(&st, Call::hermes()).await
+}
+async fn hermes_update(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    forward(&st, Call::hermes_update(body)?).await
+}
+
 async fn job(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
     forward(&st, Call::job(&id)?).await
 }
@@ -82,6 +90,39 @@ async fn reminders(
     QueryArgs(q): QueryArgs<ReminderQuery>,
 ) -> ApiResult {
     forward(&st, Call::reminders(&q)?).await
+}
+
+/// Lucina's Pokémon run: state (map, party, badges, objective, notes).
+async fn game_state(State(st): State<AppState>) -> ApiResult {
+    forward(&st, Call::game_state()).await
+}
+
+/// The live game screen as PNG, relayed as is.
+async fn game_screenshot(State(st): State<AppState>) -> Result<Response, ApiError> {
+    let (content_type, body) = st.lucina()?.bytes(&Call::game_screenshot()).await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store".to_owned()),
+        ],
+        body,
+    )
+        .into_response())
+}
+
+/// Start (`{"running": true}`) or pause the run. Device login only: the owner's devices.
+async fn game_control(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    let running = body
+        .get("running")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "running: must be true or false",
+            )
+        })?;
+    forward(&st, Call::game_control(running)).await
 }
 
 async fn create_reminder(
@@ -115,6 +156,44 @@ async fn shopping(State(st): State<AppState>) -> ApiResult {
     forward(&st, Call::shopping()).await
 }
 
+/// `GET /v1/grocery/deals/map`: Lucina's deals map around home, plus the
+/// server's client-side Google Maps keys so the app can draw the map itself.
+async fn deals_map(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<DealsMapQuery>,
+) -> ApiResult {
+    let radius = match q.radius_m.as_deref() {
+        None => None,
+        Some(raw) => Some(secretary_core::validate::bounded_int(
+            "radiusM",
+            raw,
+            secretary_core::validate::DEALS_RADIUS_MIN,
+            secretary_core::validate::DEALS_RADIUS_MAX,
+        )?),
+    };
+    let (status, Json(mut data)) = forward(&st, Call::deals_map(radius)?).await?;
+    if let Some(obj) = data.as_object_mut() {
+        // The keys are client-side, referrer/bundle-id restricted in Google
+        // Cloud, so serving them to an authenticated device is intended.
+        obj.insert(
+            "maps".into(),
+            json!({
+                "webKey": st.maps.web,
+                "iosKey": st.maps.ios,
+                "mapId": st.maps.map_id,
+            }),
+        );
+    }
+    Ok((status, Json(data)))
+}
+
+/// Query of `GET /v1/grocery/deals/map` (optional `radiusM` in meters).
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct DealsMapQuery {
+    radius_m: Option<String>,
+}
+
 async fn shopping_add(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
     forward(&st, Call::shopping_add(body)?).await
 }
@@ -136,10 +215,15 @@ pub fn public() -> Router<AppState> {
 pub fn protected() -> Router<AppState> {
     Router::new()
         .route("/v1/chat", axum::routing::post(chat))
+        .route("/v1/hermes", get(hermes).put(hermes_update))
         .route("/v1/jobs/{id}", get(job))
         .route("/v1/reminders", get(reminders).post(create_reminder))
         .route("/v1/reminders/{id}", delete(cancel_reminder))
         .route("/v1/agenda", get(agenda))
         .route("/v1/shopping", get(shopping).post(shopping_add))
         .route("/v1/shopping/{id}", patch(shopping_update))
+        .route("/v1/grocery/deals/map", get(deals_map))
+        .route("/v1/game/state", get(game_state))
+        .route("/v1/game/screenshot", get(game_screenshot))
+        .route("/v1/game/control", post(game_control))
 }

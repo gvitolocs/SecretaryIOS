@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="17" y="5" width="8" height="5" rx="1.5" fill="#c3ccd6"/>
+  <rect x="11" y="9" width="20" height="47" rx="4" fill="#5a3520"/>
+  <path d="M11 13c0-2.2 1.8-4 4-4h12c2.2 0 4 1.8 4 4v13H11Z" fill="#e9a91c"/>
+  <path d="M21 14v8M17 18h8" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M31 13v39c0 2.2-1.8 4-4 4h-4c2.2 0 3.5-1.8 3.5-4V9.5c2.5.3 4.5 1.5 4.5 3.5Z" fill="#3d2b2b" opacity=".2"/>
+  <path d="M15 30v20" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".3"/>
+  <path d="M15 14v8" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".6"/>
+  <rect x="39" y="9" width="8" height="5" rx="1.5" fill="#c3ccd6"/>
+  <rect x="33" y="13" width="20" height="47" rx="4" fill="#5a3520"/>
+  <path d="M33 17c0-2.2 1.8-4 4-4h12c2.2 0 4 1.8 4 4v13H33Z" fill="#e9a91c"/>
+  <path d="M43 18v8M39 22h8" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M53 17v39c0 2.2-1.8 4-4 4h-4c2.2 0 3.5-1.8 3.5-4V13.5c2.5.3 4.5 1.5 4.5 3.5Z" fill="#3d2b2b" opacity=".2"/>
+  <path d="M37 34v20" stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".3"/>
+</svg>

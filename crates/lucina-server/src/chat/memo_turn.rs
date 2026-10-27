@@ -21,7 +21,7 @@ use crate::api::PLATFORM_LABEL;
 use crate::prompts::Prompts;
 
 const GUIDE: &str = "Giuseppe records voice memos in the Secretary app; each has a transcript with times and your summary, \
-reachable with the memos tool. For a question about what he said, search: turn relative days into from/to as YYYY-MM-DD in his \
+reachable with the memos tool. Memos may be linked to calendar events. For last Tuesday's Algorithms lecture, search query Algorithms with from/to = that Tuesday in the owner's time zone. For a question about what he said, search: turn relative days into from/to as YYYY-MM-DD in his \
 time zone (today, yesterday = today minus one day, last week = the last 7 days with days=7) and pass the topic words as query; \
 if nothing matches, search the same days without query and read the summaries. Answer from what he actually said, briefly, \
 in his language, quoting the time in the recording (e.g. \"at 1:05\") and the memo's title. Use read for the full transcript, \
@@ -86,7 +86,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str) -> Option<Finish> {
         max_rounds: 5,
         ..AgentConfig::default()
     };
-    let timeline = st.timeline.clone();
+    let timeline = st.timeline_for(&t.session);
     let channel = t.channel.clone();
     let on_tool = move |r: &ToolRecord| {
         timeline.record(NewItem {

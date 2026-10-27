@@ -1,7 +1,7 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LinksOverview } from "../api/links";
+import type { LinkAction, LinksOverview } from "../api/links";
 import { setLocale } from "../i18n";
 import { nav } from "../lib/navigate";
 import { stubFetch, type Call } from "../test/fetch";
@@ -111,6 +111,13 @@ function server(over: Partial<LinksOverview> = {}) {
     if (path === "/v1/links/ics") return { status: 201, body: { id: "ics_2", label: "x", host: "h", eventCount: 3, feedName: null } };
     if (path === "/v1/links/custom") return { status: 201, body: {} };
     if (path === "/v1/calendar/sync") return { body: { google: { ok: true }, ics: [] } };
+    if (path === "/v1/links/todoist/token") {
+      const token = (c.body as { token: string }).token;
+      return token === "good-token-0123456789abcdef"
+        ? { body: { connected: true, account: "owner@example.com" } }
+        : { status: 422, body: { error: { code: "todoist_token_rejected", message: "Todoist did not accept that token" } } };
+    }
+    if (path === "/v1/links/todoist/connect") return { body: { authorizeUrl: "https://app.todoist.com/oauth/authorize?client_id=x" } };
     return { body: { ok: true } };
   });
 }
@@ -211,5 +218,44 @@ describe("Links", () => {
     expect(await screen.findByText("Da ricollegare")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ricollega" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Calendari" })).toBeInTheDocument();
+  });
+
+  it("connects Todoist with a pasted API token (never shown again) or OAuth", async () => {
+    const todoist = {
+      id: "tasks",
+      cards: [
+        {
+          id: "todoist",
+          kind: "todoist",
+          name: "Todoist",
+          status: "disconnected",
+          oauth: true,
+          scopes: ["data:read_write"],
+          actions: ["connect", "token"] as LinkAction[],
+        },
+      ],
+    };
+    const calls = server({ groups: [todoist] });
+    show();
+    expect(await screen.findByRole("heading", { name: "Tasks" })).toBeInTheDocument();
+    expect(screen.getByText(/Connect with Todoist, or paste the API token/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Paste API token" }));
+    const input = await screen.findByLabelText("Todoist API token");
+    expect(input).toHaveAttribute("type", "password");
+    const form = screen.getByRole("form", { name: "Paste API token" });
+    fireEvent.input(input, { target: { value: "bad-token-0123456789abcdef" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText(/didn't accept that token/)).toBeInTheDocument();
+    fireEvent.input(input, { target: { value: "good-token-0123456789abcdef" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText("Todoist is connected (owner@example.com). Importing your tasks…")).toBeInTheDocument();
+    const posts = calls.filter((c) => c.url === "/v1/links/todoist/token");
+    expect(posts.at(-1)?.body).toEqual({ token: "good-token-0123456789abcdef" });
+    expect(posts.at(-1)?.headers["x-secretary-csrf"]).toBe("1");
+
+    const assign = vi.spyOn(nav, "assign").mockImplementation(() => {});
+    const card = screen.getByText("Todoist").closest("li") as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://app.todoist.com/oauth/authorize?client_id=x"));
   });
 });

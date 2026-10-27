@@ -398,6 +398,15 @@ pub async fn ingest_device_events(st: &AppState, device: &str, events: &[Value])
                     .filter(|x| !x.is_empty())
             };
             Some(Item {
+                attendees: e
+                    .get("attendees")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .take(30)
+                    .map(str::to_owned)
+                    .collect(),
                 uid: id.chars().take(200).collect(),
                 title,
                 start: Some(start),

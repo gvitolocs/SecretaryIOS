@@ -75,6 +75,12 @@ struct ParityArgs {
 enum Cmd {
     /// Serve /health and /api/secretary/*.
     Serve,
+    /// Bot Hospital: run the daily Poko-news audit once (`--dry-run`: only read
+    /// and validate the proof; no incident, message or repair).
+    BotHospital {
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// A scripted fake DeepSeek for parity runs.
     FakeDeepseek {
         #[arg(long, default_value = "127.0.0.1:8799")]
@@ -627,6 +633,8 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             state.spawn_background();
             // One server per address (127.0.0.1 and the Tailscale IP), one shutdown.
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            let telegram = state.spawn_telegram(stop_rx.clone());
+            let discord = state.spawn_discord(stop_rx.clone());
             let mut servers = tokio::task::JoinSet::new();
             for bind in binds {
                 let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -648,6 +656,24 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 }
             }
             let _ = stop_tx.send(true);
+            // The Telegram poller stops and releases its lease before the process exits.
+            if let Some(t) = telegram {
+                if tokio::time::timeout(std::time::Duration::from_secs(30), t)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("telegram poller did not stop in 30 s");
+                }
+            }
+            // The Discord session closes and releases its lease the same way.
+            if let Some(d) = discord {
+                if tokio::time::timeout(std::time::Duration::from_secs(10), d)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("discord message session did not stop in 10 s");
+                }
+            }
             while servers.join_next().await.is_some() {}
         }
         Cmd::FakeDeepseek {
@@ -863,6 +889,48 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             }
             println!("{}", replay::summary(&report, show_text));
             println!("report (with texts): {}", out.display());
+        }
+        Cmd::BotHospital { dry_run } => {
+            use lucina_server::bot_hospital as bh;
+            let cfg = Config::from_env()?;
+            let hospital = bh::Hospital {
+                cfg: cfg.hospital.clone(),
+                http: reqwest::Client::new(),
+                health: Default::default(),
+            };
+            if dry_run {
+                let state = hospital.fetch_state().await;
+                let proof = bh::latest_proof(&state.body["state"]);
+                let v = bh::validate(
+                    proof.as_ref(),
+                    chrono::Utc::now(),
+                    cfg.hospital.window_hours,
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "stateHttpStatus": state.status, "ok": v.ok, "missing": v.missing,
+                        "warnings": v.warnings,
+                        "proof": proof.map(|p| serde_json::json!({"title": p["title"], "postedAt": p["postedAt"], "postedTargets": p["postedTargets"]})),
+                    }))?
+                );
+            } else {
+                let state = AppState::build(cfg.clone(), None)?;
+                let live = bh::Live {
+                    st: state,
+                    alert_chat_id: cfg.hospital.alert_chat_id.clone(),
+                };
+                match hospital.audit(&live, chrono::Utc::now()).await {
+                    bh::AuditOutcome::Healthy => println!("healthy"),
+                    bh::AuditOutcome::Duplicate(k) => println!("duplicate incident {k}"),
+                    bh::AuditOutcome::Incident(b) => println!(
+                        "incident {} ({}): {}",
+                        b.0.id,
+                        b.0.kind,
+                        bh::final_message(&b.0, &b.1)
+                    ),
+                }
+            }
         }
         Cmd::CapabilityBlock => {
             println!("{}", Config::from_env()?.caps.block());

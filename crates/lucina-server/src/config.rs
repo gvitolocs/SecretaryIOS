@@ -108,6 +108,8 @@ pub struct Config {
     pub node_token: Option<String>,
     pub scheduler: bool,
     pub scheduler_poll: Duration,
+    pub scheduler_initial_delay: Duration,
+    pub telegram_token: Option<String>,
     // owner
     pub owner_chat_id: Option<String>,
     pub owner_peer_id: String,
@@ -128,8 +130,10 @@ pub struct Config {
     pub turn_deadline: Duration,
     pub oracle_monitor_enabled: bool,
     pub persona_path: Option<PathBuf>,
-    pub recovery_companion_path: PathBuf,
-    pub operator_brief_path: PathBuf,
+    /// `LUCINA_RECOVERY_COMPANION_PATH`; unset: the copy built into the binary.
+    pub recovery_companion_path: Option<PathBuf>,
+    /// `LUCINA_OPERATOR_BRIEF_PATH`; unset: the copy built into the binary.
+    pub operator_brief_path: Option<PathBuf>,
     // tools
     pub default_location: Location,
     pub endpoints: Endpoints,
@@ -138,9 +142,16 @@ pub struct Config {
     pub device_retention_days: i64,
     pub device_command_ttl_ms: i64,
     pub device_reachable_minutes: i64,
-    // channels (not implemented in this build; always off)
+    // channels: Telegram (`LUCINA_TELEGRAM_ENABLED`, see `telegram`), Discord
+    // (`LUCINA_DISCORD_ENABLED`, see `discord`)
     pub telegram_requested: bool,
+    /// The Telegram bot (`crate::telegram`).
+    pub telegram: crate::telegram::TelegramConfig,
     pub discord_requested: bool,
+    /// The Discord message session (`crate::discord`).
+    pub discord: crate::discord::DiscordConfig,
+    /// `DISCORD_BOT_TOKEN_LUCINA`, else `LUCINA_DISCORD_TOKEN_FILE` (never logged).
+    pub discord_token: Option<String>,
     // discord presence (watcher: `lucina presence-watch`)
     pub owner_discord_user_id: Option<String>,
     pub presence_dir: PathBuf,
@@ -171,6 +182,10 @@ pub struct Config {
     /// OTP requests in chat (`LUCINA_OTP_OWNER_TOKEN_FILE`, unset by default:
     /// "the OTP bridge is unavailable"), see [`crate::otp`].
     pub otp: crate::otp::OtpConfig,
+    /// Bot Hospital daily Poko-news audit (`BOT_HOSPITAL_*`), see [`crate::bot_hospital`].
+    pub hospital: crate::bot_hospital::HospitalConfig,
+    /// `LUCINA_DELIVERY_ALERT_AFTER_MIN` (default 5): a delivery path down this long alerts the owner.
+    pub delivery_alert_after: Duration,
 }
 
 impl std::fmt::Debug for Config {
@@ -200,6 +215,8 @@ impl std::fmt::Debug for Config {
             .field("otp_owner_token_file", &self.otp.owner_token_file)
             .field("drive", &self.drive_enabled)
             .field("mcp_trusted", &self.mcp_trusted)
+            .field("telegram", &self.telegram.enabled)
+            .field("discord", &self.discord.enabled)
             .field("maps_geocode", &self.maps_geocode.is_some())
             .finish_non_exhaustive()
     }
@@ -294,7 +311,6 @@ impl Config {
                 .and_then(|m| MemoryMode::parse(&m))
                 .unwrap_or(MemoryMode::ReadOnly),
         };
-        let lucina_docs = PathBuf::from("/home/nez/Projects/Lucina/docs");
         let mut default_location = Location::default();
         if let Some(n) = get("LUCINA_DEFAULT_LOCATION_NAME") {
             default_location.name = n;
@@ -351,6 +367,7 @@ impl Config {
             secretary_url.clone(),
             secretary_service_token_file.clone(),
         );
+        let hospital = crate::bot_hospital::HospitalConfig::from_lookup(&get, &data_dir);
         Ok(Self {
             share: crate::share::ShareConfig::from_lookup(&get),
             bind,
@@ -412,6 +429,21 @@ impl Config {
             node_token: get("LUCINA_NODE_TOKEN_FILE").and_then(|p| read_secret_file(&p)),
             scheduler: flag("LUCINA_SCHEDULER", false),
             scheduler_poll: Duration::from_millis(num("LUCINA_REMINDER_POLL_INTERVAL_MS", 60_000)),
+            scheduler_initial_delay: Duration::from_millis(num(
+                "LUCINA_REMINDER_INITIAL_DELAY_MS",
+                15_000,
+            )),
+            telegram_token: get("TELEGRAM_BOT_TOKEN_LUCINA")
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    let path = get("LUCINA_TELEGRAM_TOKEN_FILE").or_else(|| {
+                        get("HOME").map(|h| {
+                            format!("{h}/.config/lucina-rs/telegram-bot-token-lucina.token")
+                        })
+                    })?;
+                    read_secret_file(&path)
+                }),
             owner_chat_id: get("LUCINA_OPERATOR_CHAT_ID")
                 .or_else(|| get("LUCINA_GMAIL_LEARN_CHAT_ID"))
                 .or_else(|| get("TELEGRAM_ALLOWED_CHAT_IDS").and_then(|v| first_csv(&v))),
@@ -433,12 +465,8 @@ impl Config {
             turn_deadline: Duration::from_millis(num("LUCINA_TURN_DEADLINE_MS", 90_000).max(1000)),
             oracle_monitor_enabled,
             persona_path: get("LUCINA_PERSONA_PATH").map(PathBuf::from),
-            recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| lucina_docs.join("lucina-recovery-companion.md")),
-            operator_brief_path: get("LUCINA_OPERATOR_BRIEF_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| lucina_docs.join("lucina-operator-brief.md")),
+            recovery_companion_path: get("LUCINA_RECOVERY_COMPANION_PATH").map(PathBuf::from),
+            operator_brief_path: get("LUCINA_OPERATOR_BRIEF_PATH").map(PathBuf::from),
             default_location,
             endpoints,
             nominatim_email: get("LUCINA_NOMINATIM_EMAIL"),
@@ -465,6 +493,10 @@ impl Config {
             delegate_enabled: flag("LUCINA_DELEGATE", false),
             delegate_config: get("LUCINA_DELEGATE_CONFIG").map(PathBuf::from),
             otp: crate::otp::OtpConfig::from_lookup(&get),
+            hospital,
+            delivery_alert_after: Duration::from_secs(
+                num("LUCINA_DELIVERY_ALERT_AFTER_MIN", 5).max(1) * 60,
+            ),
             drive_enabled: flag("LUCINA_DRIVE", false),
             google_client_file: PathBuf::from(
                 get("LUCINA_GOOGLE_CLIENT_FILE")
@@ -478,6 +510,9 @@ impl Config {
                         "google-drive-token.json",
                     )
                 }),
+            telegram: crate::telegram::TelegramConfig::from_lookup(&get, &data_dir),
+            discord: crate::discord::DiscordConfig::from_lookup(&get, &data_dir),
+            discord_token: crate::discord::token_from_lookup(&get),
             data_dir,
         })
     }
@@ -517,6 +552,29 @@ mod tests {
         })
         .unwrap();
         assert_eq!(own.jobs_path, PathBuf::from("/elsewhere/jobs.json"));
+    }
+
+    #[test]
+    fn telegram_token_precedence_and_redacted_debug() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("token");
+        std::fs::write(&path, "  test-file-secret\n").unwrap();
+        let cfg = Config::from_lookup(|k| match k {
+            "LUCINA_TELEGRAM_TOKEN_FILE" => Some(path.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.telegram_token.as_deref(), Some("test-file-secret"));
+        assert!(!format!("{cfg:?}").contains("test-file-secret"));
+        let cfg = Config::from_lookup(|k| match k {
+            "LUCINA_TELEGRAM_TOKEN_FILE" => Some(path.to_string_lossy().into_owned()),
+            "TELEGRAM_BOT_TOKEN_LUCINA" => Some(" test-env-secret ".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(cfg.telegram_token.as_deref(), Some("test-env-secret"));
+        assert!(!format!("{cfg:?}").contains("test-env-secret"));
+        assert_eq!(cfg.scheduler_initial_delay, Duration::from_secs(15));
     }
 
     #[test]

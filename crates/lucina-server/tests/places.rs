@@ -77,12 +77,14 @@ async fn a_calendar_answer_gets_a_place_for_the_event_with_a_location() {
     assert!(p["when"].as_str().unwrap().contains("T16:00:00"));
     assert_eq!(p["lat"], 56.1611);
     assert_eq!(p["lng"], 10.2006);
+    // The plain fallback is the compact agenda: one line per event, no 📍 list.
     let reply = d["reply"].as_str().unwrap();
     assert!(
-        reply.contains("📍 Hack Night: Rust meets AI — Folkehuset Møllestien"),
+        reply.contains(" Hack Night: Rust meets AI — Folkehuset Møllestien")
+            && !reply.contains("📍"),
         "{reply}"
     );
-    // The short calendar answer was split without a composer call.
+    // The agenda needs no composer call.
     assert!(h
         .fake
         .requests()
