@@ -19,6 +19,8 @@ type Client = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStre
 const SB: SandboxId = SandboxId::Workspace;
 
 /// A gateway that says `login`, sends one video frame, and reports what it received.
+// tungstenite's handshake callback returns its own (large) `ErrorResponse`.
+#[allow(clippy::result_large_err)]
 fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
