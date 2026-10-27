@@ -494,6 +494,40 @@ describe("full screen as a remote desktop (focus mode in Secretary Code)", () =>
     await waitFor(() => expect(posted.some((m) => (m as { type: string }).type === "lucina:pass")).toBe(true));
   });
 
+  it("Esc leaves focus mode while watching, from the page or from inside the viewer", async () => {
+    fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    watchFrame(frame);
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(setFocus).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(page()).toBe("no"));
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    expect(page()).toBe("yes");
+    fromFrame(frame, { type: "lucina:escape" });
+    expect(setFocus).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(page()).toBe("no"));
+  });
+
+  it("Esc while driving goes to the desktop and keeps focus mode", async () => {
+    fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    const posted = watchFrame(frame);
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    fireEvent.pointerDown(await waitFor(() => document.querySelector(".computer-catch") as HTMLElement), { clientX: 1, clientY: 1 });
+    await screen.findByText("You're driving");
+    setFocus.mockClear();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fromFrame(frame, { type: "lucina:escape" });
+    expect(posted).toContainEqual({ type: "lucina:keys", keys: ["escape"] });
+    expect(setFocus).not.toHaveBeenCalledWith(false);
+    expect(page()).toBe("yes");
+  });
+
   it("leaving focus mode gives back a desktop taken in focus mode", async () => {
     const calls = fakeLucina(state());
     renderComputer();

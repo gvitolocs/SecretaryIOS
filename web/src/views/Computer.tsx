@@ -50,6 +50,7 @@ import "../styles/computer.css";
 //   the stream takes over (a small confirm first if Lucina or an agent is mid-task) and is then
 //   replayed into the desktop; the pill shows who drives, Take over / Give back, Keyboard, the key
 //   row and Exit. With a hardware keyboard the stream gets keyboard focus as soon as it is driven.
+//   Esc leaves full screen only while watching; driving, it is the desktop's (exit with the pill).
 
 /** The click or key that took control from full screen, replayed into the desktop once it works. */
 type Pass = { click?: { x: number; y: number; button: "left" | "right" }; text?: string; keys?: string[] };
@@ -606,6 +607,10 @@ export default function ComputerView() {
             setConfirming(null);
           } else if (tools()) {
             setTools(false);
+          } else if (mine() && mode() === "live") {
+            // Driving: Esc is the desktop's (focus was on the pill). Leaving is the pill's ✕.
+            post({ type: "lucina:keys", keys: ["escape"] });
+            focusStream();
           } else {
             exitFull();
           }
@@ -668,6 +673,11 @@ export default function ComputerView() {
       }
       // The viewer's own fullscreen icon: the same as the page's button.
       if (data.type === "lucina:fullscreen") toggleFull();
+      // Esc pressed in the frame while only watching (driving, Esc stays the desktop's).
+      if (data.type === "lucina:escape" && full() && !mine()) {
+        if (confirming()) setConfirming(null);
+        else exitFull();
+      }
     };
     const onFullscreen = () => {
       if (document.fullscreenElement) setFull(true);
