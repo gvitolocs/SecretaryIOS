@@ -1,6 +1,6 @@
 import { createEffect, createSignal, on, onCleanup, onMount, Show, For } from "solid-js";
 import { toApiError } from "../api/client";
-import type { ControlState, Sandbox } from "../api/computer";
+import { releaseOnExit, type ControlState, type Sandbox } from "../api/computer";
 import { t } from "../i18n";
 import { DeskSocket, type DeskMode, type DeskPhase } from "../lib/deskClient";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
@@ -604,6 +604,12 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       closeKeyboard();
       if (takenInFocus && driving()) giveBack();
     });
+    // Leaving the page while driving: the closing socket gives the desktop back, but not a lease the
+    // owner already held from elsewhere, so say it outright (keepalive survives the navigation).
+    const exitPage = () => {
+      if (driving()) releaseOnExit(props.sandbox);
+    };
+    window.addEventListener("pagehide", exitPage);
     document.addEventListener("fullscreenchange", onFullscreen);
     document.addEventListener("visibilitychange", onVisible);
     document.addEventListener("paste", onPaste);
@@ -616,6 +622,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       window.clearTimeout(idleTimer);
       window.clearTimeout(peekTimer);
       unFocus();
+      window.removeEventListener("pagehide", exitPage);
+      exitPage();
       document.removeEventListener("fullscreenchange", onFullscreen);
       document.removeEventListener("visibilitychange", onVisible);
       document.removeEventListener("paste", onPaste);

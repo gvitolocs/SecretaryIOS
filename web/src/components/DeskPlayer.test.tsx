@@ -265,6 +265,23 @@ describe("DeskPlayer", () => {
     }
   });
 
+  it("leaving while driving gives the desktop back outright", async () => {
+    const fetches: { url: string; body: string }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: { body: string }) => {
+      fetches.push({ url, body: init.body });
+      return new Response(null, { status: 204 });
+    });
+    const { unmount } = render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+    await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+    await live(FakeWS.all[0]!);
+    fireEvent.keyDown(screen.getByRole("img"), { key: "x" });
+    await waitFor(() => expect(FakeWS.all).toHaveLength(2));
+    FakeWS.all[1]!.open();
+    FakeWS.all[1]!.frame();
+    unmount();
+    expect(fetches).toEqual([{ url: "/v1/computer/control", body: JSON.stringify({ sandbox: "workspace", action: "release" }) }]);
+  });
+
   it("when the lease ends elsewhere (4001) it goes back to watching", async () => {
     render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
     await waitFor(() => expect(FakeWS.all).toHaveLength(1));
