@@ -28,6 +28,7 @@ pub mod notify;
 pub mod owner;
 pub mod owner_secrets;
 pub mod proactive;
+pub mod qr_login;
 pub mod ratelimit;
 pub mod routes;
 pub mod secrets;
@@ -98,6 +99,10 @@ pub struct Inner {
     pub sessions: SessionAuth,
     pub limiter: RateLimiter,
     pub login_limiter: RateLimiter,
+    /// QR sign-in requests waiting for a phone (`/v1/session/qr*`).
+    pub qr_logins: qr_login::QrLogins,
+    /// QR image and poll requests per client IP.
+    pub qr_limiter: RateLimiter,
     /// `POST /v1/device/events` (instead of `limiter`).
     pub device_limiter: RateLimiter,
     /// Recently forwarded device event ids (dedup).
@@ -168,6 +173,8 @@ impl AppState {
             sessions: SessionAuth::new(SessionStore::new(&cfg.data_dir)),
             limiter: RateLimiter::new(cfg.rate_limit_per_minute),
             login_limiter: RateLimiter::new(cfg.login_rate_per_minute),
+            qr_logins: qr_login::QrLogins::new(cfg.qr_login_ttl, &cfg.public_url),
+            qr_limiter: RateLimiter::new(qr_login::POLLS_PER_MINUTE),
             device_limiter: RateLimiter::new(cfg.device_events_per_minute),
             event_ids: device::SeenIds::new(device::SEEN_IDS),
             health: HealthCache::new(cfg.health_ttl, cfg.health_timeout),
@@ -258,6 +265,7 @@ pub fn app(state: AppState) -> Router {
     let mut protected = routes::protected()
         .merge(engines::routes())
         .merge(auth::account_routes())
+        .merge(qr_login::routes())
         .merge(assets::routes())
         .merge(tts::routes())
         .merge(calls::routes())
@@ -297,6 +305,7 @@ pub fn app(state: AppState) -> Router {
         .merge(calendar)
         .merge(device_events)
         .merge(auth::session_routes())
+        .merge(qr_login::public_routes())
         .merge(protected)
         .merge(computer::view_routes())
         .merge(insights::routes(state.clone()))

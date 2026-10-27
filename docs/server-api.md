@@ -112,10 +112,11 @@ Request, either:
 `200`:
 
 ```json
-{ "authenticated": true, "deviceName": "web" }
+{ "authenticated": true, "deviceId": "dev_…", "deviceName": "web" }
 ```
 
-(`deviceName` is `"web"` for a password login, else the token's device
+(`deviceId` is the authenticated device id, or null when unauthenticated.
+`deviceName` is `"web"` for a password login, else the token's device
 name.) Password logins hang off one server-side device named `web`;
 revoking it (`token revoke`) ends every password-login browser session.
 
@@ -180,15 +181,15 @@ no_owner_account`.
 ### `GET /v1/session`
 
 Never 401. With a valid cookie or Bearer token:
-`{"authenticated": true, "deviceName": "…"}`; otherwise
-`{"authenticated": false, "deviceName": null}`.
+`{"authenticated": true, "deviceId": "dev_…", "deviceName": "…"}`; otherwise
+`{"authenticated": false, "deviceId": null, "deviceName": null}`.
 
 ### `DELETE /v1/session`
 
 Logs out: deletes the session and clears the cookie
 (`Set-Cookie: sec_session=; …; Max-Age=0`). With a cookie it needs
 `X-Secretary-CSRF: 1` (else `403 csrf`). `200`
-`{"authenticated": false, "deviceName": null}`.
+`{"authenticated": false, "deviceId": null, "deviceName": null}`.
 
 ## Health
 
@@ -223,6 +224,7 @@ answered with an error).
 | `sessionId` | Optional, `[A-Za-z0-9_-]{1,64}`. Lucina uses Honcho session `secretary_<sessionId>`. |
 | `clientMessageId` | Optional, 1–128 characters of `[A-Za-z0-9_.:-]` (a UUID works). A retry with the same `sessionId` + `clientMessageId` within 10 minutes returns the first answer with `"duplicate": true`. |
 | `channel` | Optional, `web` or `ios`: which client the message came from (it labels the message in the [timeline](#timeline)). |
+| `device`, `deviceName` | Optional device stamps. The server always overwrites these from the authenticated identity; client values are ignored. |
 | `replyTo` | Optional, `[A-Za-z0-9_-]{1,64}`: the timeline id of the earlier message this one replies to (swipe to reply, see [Replies](#replies)). Empty = absent. |
 
 The channel comes from the `X-Secretary-Client: web|ios` request header,
@@ -305,7 +307,8 @@ Treat unknown `action` values as `reply`.
 
 The unified conversation: every message Lucina sees or sends, on every
 channel (Telegram, Discord, the web app, the iOS app, Alexa), as one list.
-Both routes need auth (Bearer or the session cookie); they are `GET`, so
+All timeline routes use the same device authentication and rate limits
+(Bearer or the session cookie); they are `GET`, so
 cookie callers need no CSRF header.
 
 Timeline item:
@@ -340,21 +343,72 @@ Timeline item:
 
 Other fields may appear and are passed through unchanged.
 
-### `GET /v1/timeline?before=<id>&limit=50`
+### `GET /v1/timeline`
 
-Newest first. `200`:
+History pages are newest first. `200`:
 
 ```json
-{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…" }
+{ "items": [ { "id": "tl_0193…", "…": "…" } ], "nextBefore": "tl_0150…", "cursor": "tl_0194…", "hasMore": false }
 ```
 
 | Query | Rules |
 |---|---|
 | `before` | Optional item id (`[A-Za-z0-9_.:-]{1,128}`): only older items. Pass the previous page's `nextBefore`. |
+| `after` | Optional item id (same validation as `before`): incremental arrivals after this cursor. Cannot be combined with `before`. |
+| `scope` | Optional; only `mine`. Cannot be combined with `conversation`. |
+| `conversation` | Optional conversation key matching `^[a-z]+(:[A-Za-z0-9_-]{1,64})?$`; `selftest` is also accepted. |
 | `limit` | Optional integer 1–200; Lucina's default is 50. |
 
 `nextBefore` is `null` at the start of history. Anything else is `400
-bad_request` before Lucina is called. Timeout 15 s.
+bad_request` before Lucina is called. `.` and `..` are invalid ids.
+Timeout 15 s.
+
+`cursor` is a string or null: an arrival-order item id to pass as the next
+`after`, including when the items' timestamps are older (for example imported
+history). `hasMore` is a boolean; on an `after` request, `true` means call
+again with `after=cursor` until caught up. Cache the returned cursor for the
+next incremental fetch. Older Lucina versions may omit these two fields.
+If Lucina no longer retains the cursor, the server returns HTTP `410` with
+`{"error":{"code":"cursor_expired","message":"…"}}`; refresh the timeline
+and establish a new cursor.
+
+For `scope=mine`, the server adds `device=<authenticated deviceId>` and
+`channel=<X-Secretary-Client>` to Lucina's query. The channel uses the same
+header trimming and `web|ios` validation as chat, defaulting to `web` when
+absent. Client-sent timeline `device` and `channel` parameters are ignored;
+only authenticated identity and headers determine these filters.
+
+Conversation keys are assigned in this order:
+
+1. `meta.via == "mcp"`: `agent:<caller>`. Lowercase the caller, drop
+   characters outside `[a-z0-9_-]`, and use `mcp` if empty.
+2. Channel `web|ios` with `meta.device`: `device:<device>`.
+3. Channel `web|ios` otherwise: `legacy:<channel>`.
+4. Channel `telegram|discord|alexa`: the channel itself.
+5. Everything else: `lucina`.
+
+“Mine” for device D on channel C includes `device:D`, `legacy:C`, and
+`lucina`. Use `conversation=<key>` to fetch one conversation in All chats.
+
+### `GET /v1/timeline/conversations`
+
+Forwards Lucina's `GET /api/secretary/timeline/conversations` and returns
+its `data` directly. Same authentication and rate limits as the timeline;
+timeout 15 s. `200`:
+
+```json
+{
+  "items": [{
+    "key": "device:dev_123", "kind": "device", "title": "My iPhone",
+    "channel": "ios", "device": "dev_123", "deviceName": "My iPhone",
+    "count": 12, "lastId": "tl_0193…", "lastTs": 1761048003000,
+    "lastRole": "lucina", "lastText": "Ciao!"
+  }]
+}
+```
+
+`device`, `deviceName`, and `caller` are optional; agent conversations can
+include `caller`. Unknown fields on conversations and the response are kept.
 
 ### `GET /v1/timeline/stream`
 

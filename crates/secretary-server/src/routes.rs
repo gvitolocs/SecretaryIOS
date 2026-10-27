@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use secretary_core::models::{AgendaQuery, ChatRequest, CreateReminder, ReminderQuery};
 use secretary_core::Call;
 use serde_json::{json, Value};
@@ -38,7 +38,7 @@ pub const CLIENT_HEADER: &str = "x-secretary-client";
 
 /// The chat `channel`: the `X-Secretary-Client` header, else the body's
 /// `channel`, else `web`. Explicit values must be `web` or `ios`.
-fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<String, ApiError> {
+pub(crate) fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<String, ApiError> {
     let channel = match headers.get(CLIENT_HEADER) {
         Some(v) => v.to_str().map(str::trim).map_err(|_| {
             ApiError::new(
@@ -68,9 +68,12 @@ fn chat_channel(headers: &HeaderMap, body: Option<&str>) -> Result<String, ApiEr
 async fn chat(
     State(st): State<AppState>,
     headers: HeaderMap,
+    Extension(ident): Extension<crate::auth::Identity>,
     JsonBody(mut req): JsonBody<ChatRequest>,
 ) -> ApiResult {
     req.channel = Some(chat_channel(&headers, req.channel.as_deref())?);
+    req.device = Some(ident.device_id);
+    req.device_name = Some(ident.device_name);
     forward(&st, Call::chat(&req)?).await
 }
 

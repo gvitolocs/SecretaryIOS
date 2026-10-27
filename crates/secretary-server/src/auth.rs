@@ -8,7 +8,8 @@
 //!   that header without a CORS preflight, and the server sends no CORS
 //!   headers. Bearer requests are exempt.
 //! - `/v1/session` (login/status/logout) and `/v1/auth/device` are public;
-//!   logins are rate limited per client IP. Login is a device token
+//!   logins are rate limited per client IP. QR sign-in (a signed-in phone
+//!   approves a new browser) is in [`crate::qr_login`]. Login is a device token
 //!   (`{token}`) or the single owner account (`{email, password}`, see
 //!   [`crate::owner`]; password logins also lock out after repeated failures).
 
@@ -297,7 +298,7 @@ async fn check_password(st: &AppState, email: String, password: String) -> Resul
     }
 }
 
-fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
+pub(crate) fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -306,26 +307,48 @@ fn login_ip_check(st: &AppState, req: &Request) -> Result<(), ApiError> {
     st.login_limiter.check(&ip).map_err(ApiError::rate_limited)
 }
 
-async fn new_session(st: &AppState, ident: Identity) -> Result<Response, ApiError> {
+/// Start a browser session for `ident`; returns its `Set-Cookie` value.
+pub(crate) async fn session_cookie(st: &AppState, ident: &Identity) -> Result<String, ApiError> {
     let store = st.sessions.store().clone();
     let did = ident.device_id.clone();
     let sid = tokio::task::spawn_blocking(move || store.create(&did))
         .await
         .map_err(|_| ApiError::internal("session store failed"))?
         .map_err(|e| registry_error(&e))?;
+    Ok(set_cookie(&sid))
+}
+
+async fn new_session(st: &AppState, ident: Identity) -> Result<Response, ApiError> {
+    let cookie = session_cookie(st, &ident).await?;
     let mut resp = session_json(Some(&ident)).into_response();
     resp.extensions_mut().insert(DeviceId(ident.device_id));
-    Ok(with_cookie(resp, &set_cookie(&sid)))
+    Ok(with_cookie(resp, &cookie))
+}
+
+/// The owner's browser device (`web_login`, created on first use): the
+/// device behind password and QR sign-ins.
+pub(crate) async fn web_login_identity(st: &AppState) -> Result<Identity, ApiError> {
+    let devices = st.devices.store().clone();
+    let dev = tokio::task::spawn_blocking(move || devices.ensure_web_login())
+        .await
+        .map_err(|_| ApiError::internal("device store failed"))?
+        .map_err(|e| registry_error(&e))?;
+    Ok(Identity {
+        device_id: dev.id,
+        device_name: dev.name,
+        via: Via::Cookie,
+    })
 }
 
 fn session_json(ident: Option<&Identity>) -> Json<serde_json::Value> {
     Json(json!({
         "authenticated": ident.is_some(),
+        "deviceId": ident.map(|i| i.device_id.clone()),
         "deviceName": ident.map(|i| i.device_name.clone()),
     }))
 }
 
-fn with_cookie(mut resp: Response, cookie: &str) -> Response {
+pub(crate) fn with_cookie(mut resp: Response, cookie: &str) -> Response {
     if let Ok(v) = HeaderValue::from_str(cookie) {
         resp.headers_mut().append(header::SET_COOKIE, v);
     }
@@ -349,16 +372,7 @@ async fn login(State(st): State<AppState>, req: Request) -> Result<Response, Api
             ..
         } => {
             check_password(&st, email, password).await?;
-            let devices = st.devices.store().clone();
-            let dev = tokio::task::spawn_blocking(move || devices.ensure_web_login())
-                .await
-                .map_err(|_| ApiError::internal("device store failed"))?
-                .map_err(|e| registry_error(&e))?;
-            let ident = Identity {
-                device_id: dev.id,
-                device_name: dev.name,
-                via: Via::Cookie,
-            };
+            let ident = web_login_identity(&st).await?;
             return new_session(&st, ident).await;
         }
         _ => {
@@ -491,7 +505,7 @@ pub fn account_routes() -> Router<AppState> {
     Router::new().route("/v1/session/password", post(change_password))
 }
 
-/// `GET /v1/session`: `{authenticated, deviceName}`; never 401.
+/// `GET /v1/session`: `{authenticated, deviceId, deviceName}`; never 401.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let ident = identify(&st, &headers)?.ok();
     Ok(session_json(ident.as_ref()).into_response())

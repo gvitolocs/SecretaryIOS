@@ -11,6 +11,7 @@
 //! | `SECRETARY_UPSTREAM_SERVICES` | — | enables `/v1/upstream/*` (service-family base) |
 //! | `SECRETARY_UPSTREAM_CATALOG` | — | local catalog JSON for `/v1/upstream/catalog_local` |
 //! | `SECRETARY_WEB_DIR` | — | static web app served at `/` (SPA fallback) |
+//! | `SECRETARY_PUBLIC_URL` | `https://getsecretary.tech` | this server's public origin (links in QR sign-in codes) |
 //! | `SECRETARY_TRUST_PROXY` | `0` | `1`: take the client IP from `X-Forwarded-For` (Caddy in front) |
 //! | `SECRETARY_PRIVATE_ASSETS_DIR` | `/var/lib/secretary/private-assets` | files for `GET /v1/assets/{name}` (authenticated only) |
 //! | `SECRETARY_TTS_URL` | `http://100.107.164.33:8880` | Kokoro (OpenAI-compatible) for `POST /v1/tts` |
@@ -52,6 +53,7 @@ pub const DEFAULT_LUCINA_URL: &str = "http://127.0.0.1:18788";
 pub const DEFAULT_DATA_DIR: &str = "/var/lib/secretary";
 pub const DEFAULT_PRIVATE_ASSETS_DIR: &str = "/var/lib/secretary/private-assets";
 pub const DEFAULT_CATALOG_DIR: &str = "/var/lib/secretary/catalog";
+pub const DEFAULT_PUBLIC_URL: &str = "https://getsecretary.tech";
 pub const BODY_LIMIT: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -110,6 +112,10 @@ pub struct Config {
     pub device_events_per_minute: u32,
     /// `POST /v1/session` attempts per client IP per minute.
     pub login_rate_per_minute: u32,
+    /// The public origin, no trailing slash (QR sign-in links).
+    pub public_url: String,
+    /// How long a QR sign-in request waits for a phone (tests shorten it).
+    pub qr_login_ttl: Duration,
     pub health_timeout: Duration,
     pub health_ttl: Duration,
     pub notify: crate::notify::NotifyConfig,
@@ -173,6 +179,8 @@ impl Config {
             rate_limit_per_minute: 60,
             device_events_per_minute: 120,
             login_rate_per_minute: 5,
+            public_url: DEFAULT_PUBLIC_URL.into(),
+            qr_login_ttl: crate::qr_login::TTL,
             health_timeout: Duration::from_secs(3),
             health_ttl: Duration::from_secs(10),
             notify: crate::notify::NotifyConfig::default(),
@@ -204,6 +212,12 @@ impl Config {
             cfg.data_dir = PathBuf::from(d);
         }
         cfg.web_dir = get("SECRETARY_WEB_DIR").map(PathBuf::from);
+        if let Some(u) = get("SECRETARY_PUBLIC_URL") {
+            if !(u.starts_with("https://") || u.starts_with("http://")) {
+                bail!("SECRETARY_PUBLIC_URL={u}: expected an http(s) origin");
+            }
+            cfg.public_url = u.trim_end_matches('/').to_owned();
+        }
         if let Some(d) = get("SECRETARY_PRIVATE_ASSETS_DIR") {
             cfg.private_assets_dir = PathBuf::from(d);
         }

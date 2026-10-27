@@ -106,6 +106,15 @@ impl From<secretary_core::Error> for ApiError {
                 "bad_request",
                 format!("{field}: {message}"),
             ),
+            E::Api {
+                status: 410,
+                code,
+                message,
+            } if code == "cursor_expired" => Self::new(
+                StatusCode::GONE,
+                code,
+                message.unwrap_or_else(|| "timeline cursor expired".into()),
+            ),
             E::Api { status, code, .. }
                 if (status == 404 && code == "not_found")
                     || (status == 405 && code == "method_not_allowed") =>

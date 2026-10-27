@@ -74,7 +74,9 @@ impl H {
         if s != StatusCode::OK {
             return Err((s, v));
         }
-        assert_eq!(v, json!({"authenticated": true, "deviceName": "web"}));
+        let device_id = DeviceStore::new(&self.data)
+            .list().unwrap().into_iter().find(|d| d.web_login).unwrap().id;
+        assert_eq!(v, json!({"authenticated": true, "deviceId": device_id, "deviceName": "web"}));
         let cookie = h["set-cookie"].to_str().unwrap();
         Ok(cookie
             .split(';')
@@ -118,9 +120,11 @@ async fn password_login_sets_a_web_session_cookie() {
         .send()
         .await
         .unwrap();
+    let device_id = DeviceStore::new(&h.data)
+        .list().unwrap().into_iter().find(|d| d.web_login).unwrap().id;
     assert_eq!(
         r.json::<Value>().await.unwrap(),
-        json!({"authenticated": true, "deviceName": "web"})
+        json!({"authenticated": true, "deviceId": device_id, "deviceName": "web"})
     );
     // a second login reuses the one "web" device
     let _ = h.login(PASSWORD).await.unwrap();

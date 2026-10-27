@@ -38,6 +38,7 @@ const FilmsView = lazy(() => import("./views/Films"));
 const DriveView = lazy(() => import("./views/Drive"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
 const ViewerView = lazy(() => import("./views/Viewer"));
+const ApproveView = lazy(() => import("./views/Approve"));
 
 // The service worker (Web Push, static asset cache). It never caches /v1.
 void registerServiceWorker();
@@ -85,6 +86,7 @@ render(
       <Route path="/drive/*rest" component={DriveView} />
       <Route path="/server-health" component={ServerHealthView} />
       <Route path="/viewer" component={ViewerView} />
+      <Route path="/approve" component={ApproveView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),
