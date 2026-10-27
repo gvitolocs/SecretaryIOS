@@ -9,7 +9,8 @@ actor ChatDatabase {
 
         var stateKey: String {
             switch self {
-            case .mine: return "mine"
+            // v2: the first builds synced "mine" without the ios client header (the server then scoped it as web).
+            case .mine: return "mine.v2"
             case let .conversation(key): return "conversation:" + key
             }
         }

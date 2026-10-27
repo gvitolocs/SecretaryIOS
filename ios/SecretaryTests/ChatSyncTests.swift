@@ -74,7 +74,7 @@ final class ChatDatabaseTests: XCTestCase {
         device.meta = TimelineMeta()
         device.meta?.device = "D"
         let originals = [item("01"), item("02", channel: .telegram), item("03", channel: .other), device]
-        try await db.write(originals, state: ["mine": "cursor", "conversation:telegram": "telegram-cursor"])
+        try await db.write(originals, state: ["mine.v2": "cursor", "conversation:telegram": "telegram-cursor"])
         let mine = try await db.read(.mine("D"))
         XCTAssertEqual(mine, [originals[0], originals[2], device])
         let unknown = try await db.read(.mine(nil))
@@ -83,9 +83,9 @@ final class ChatDatabaseTests: XCTestCase {
         XCTAssertEqual(telegram.map(\.id), ["02"])
         let older = try await db.read(.mine("D"), before: "04", limit: 1)
         XCTAssertEqual(older.map(\.id), ["03"])
-        let cursor = try await db.value("mine")
+        let cursor = try await db.value("mine.v2")
         XCTAssertEqual(cursor, "cursor")
-        try await db.write([item("05")], state: ["mine": "new"], reset: .mine("D"))
+        try await db.write([item("05")], state: ["mine.v2": "new"], reset: .mine("D"))
         let reset = try await db.read(.mine("D"))
         XCTAssertEqual(reset.map(\.id), ["05"])
         let unaffected = try await db.read(.conversation("telegram"))
@@ -94,7 +94,7 @@ final class ChatDatabaseTests: XCTestCase {
         XCTAssertEqual(otherCursor, "telegram-cursor")
         try await db.clear()
         let empty = try await db.read(.mine("D"))
-        let clearedCursor = try await db.value("mine")
+        let clearedCursor = try await db.value("mine.v2")
         XCTAssertTrue(empty.isEmpty)
         XCTAssertNil(clearedCursor)
     }
@@ -169,6 +169,8 @@ final class ChatCursorSyncTests: XCTestCase {
         StubURLProtocol.handler = { request in
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             XCTAssertEqual(query.first { $0.name == "scope" }?.value, "mine")
+            // The server scopes "mine" by this header: without it the iPhone would get the web's history.
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Secretary-Client"), "ios")
             XCTAssertEqual(query.first { $0.name == "limit" }?.value, "200")
             let after = query.first { $0.name == "after" }?.value
             XCTAssertTrue(after == "c0" || after == "c1")

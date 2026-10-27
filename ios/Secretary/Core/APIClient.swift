@@ -105,8 +105,9 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Typed helpers
 
-    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = defaultTimeout) async throws -> T {
-        let response = try await send("GET", path, query: query, body: nil, timeout: timeout)
+    func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], timeout: TimeInterval = defaultTimeout,
+                           headers: [String: String] = [:]) async throws -> T {
+        let response = try await send("GET", path, query: query, body: nil, timeout: timeout, headers: headers)
         return try decode(T.self, from: response)
     }
 

@@ -221,7 +221,9 @@ struct SecretaryAPI: Sendable {
         if let after { query.append(URLQueryItem(name: "after", value: after)) }
         if let scope { query.append(URLQueryItem(name: "scope", value: scope)) }
         if let conversation { query.append(URLQueryItem(name: "conversation", value: conversation)) }
-        return try await client.get("/v1/timeline", query: query)
+        // `scope=mine` is this iPhone's part of the timeline: the server reads the client channel from this header
+        // (without it, it assumes web and returns the web's older messages instead of the iPhone's).
+        return try await client.get("/v1/timeline", query: query, headers: ["X-Secretary-Client": "ios"])
     }
 
     func conversations() async throws -> [ChatConversation] {
