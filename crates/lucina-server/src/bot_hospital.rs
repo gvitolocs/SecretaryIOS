@@ -821,12 +821,28 @@ pub fn spawn(st: &AppState, hospital: Arc<Hospital>) -> Option<tokio::task::Join
         initial_delay_ms = hospital.cfg.initial_delay.as_millis() as u64,
         "Bot Hospital daily news audit started"
     );
+    let state = hospital.cfg.store_path.with_file_name("last-audit.json");
     Some(tokio::spawn(async move {
-        tokio::time::sleep(hospital.cfg.initial_delay).await;
-        let mut every = tokio::time::interval(hospital.cfg.interval.max(Duration::from_secs(60)));
+        let interval = hospital.cfg.interval.max(Duration::from_secs(60));
+        // A restart does not audit again before the day is over (Node audited 5 min
+        // after every start, so every deploy could alert the owner once more).
+        let first = first_delay(
+            read_last_audit(&state),
+            Utc::now(),
+            interval,
+            hospital.cfg.initial_delay,
+        );
+        tracing::info!(
+            first_in_s = first.as_secs(),
+            "bot hospital: next audit scheduled"
+        );
+        tokio::time::sleep(first).await;
+        let mut every = tokio::time::interval(interval);
         loop {
             every.tick().await;
-            let out = hospital.audit(&live, Utc::now()).await;
+            let now = Utc::now();
+            write_last_audit(&state, now);
+            let out = hospital.audit(&live, now).await;
             match &out {
                 AuditOutcome::Healthy => {
                     tracing::info!("bot hospital daily news audit completed ok")
@@ -840,6 +856,33 @@ pub fn spawn(st: &AppState, hospital: Arc<Hospital>) -> Option<tokio::task::Join
             }
         }
     }))
+}
+
+fn read_last_audit(path: &Path) -> Option<DateTime<Utc>> {
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    js_date(&v["lastAuditAt"])
+}
+
+fn write_last_audit(path: &Path, at: DateTime<Utc>) {
+    let body = json!({"lastAuditAt": now_iso(at)}).to_string();
+    if let Err(e) = lucina_store::atomic::write_atomic(path, body.as_bytes()) {
+        tracing::warn!(error = %e, "bot hospital: last audit time not saved");
+    }
+}
+
+/// Wait for the next audit: one interval after the last one, but at least the
+/// start-up delay; no saved audit means the start-up delay.
+pub fn first_delay(
+    last: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    interval: Duration,
+    initial: Duration,
+) -> Duration {
+    let due = last
+        .and_then(|l| chrono::Duration::from_std(interval).ok().map(|i| l + i))
+        .map(|d| (d - now).to_std().unwrap_or_default())
+        .unwrap_or_default();
+    due.max(initial)
 }
 
 pub fn health_value(h: &Mutex<HospitalHealth>) -> Value {
@@ -1037,6 +1080,20 @@ mod tests {
             .map(String::as_str)
             .collect();
         assert!(keys.contains(&"nextAction") && keys.contains(&"dedupeKey"));
+    }
+
+    #[test]
+    fn restarts_do_not_audit_again_within_the_day() {
+        let day = Duration::from_secs(86_400);
+        let five = Duration::from_secs(300);
+        assert_eq!(first_delay(None, now(), day, five), five);
+        let two_h_ago = now() - chrono::Duration::hours(2);
+        assert_eq!(
+            first_delay(Some(two_h_ago), now(), day, five),
+            Duration::from_secs(22 * 3600)
+        );
+        let long_ago = now() - chrono::Duration::days(3);
+        assert_eq!(first_delay(Some(long_ago), now(), day, five), five);
     }
 
     #[test]

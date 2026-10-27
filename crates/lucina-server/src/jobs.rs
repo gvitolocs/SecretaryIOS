@@ -75,7 +75,7 @@ impl DshConfig {
             owner_id: get("DSH_REMOTE_OWNER_ID").unwrap_or_else(|| "flareon".into()),
             workspace: get("DSH_REMOTE_WORKSPACE")
                 .or_else(|| get("HERMES_HARNESS_WORKSPACE"))
-                .unwrap_or_else(|| "/home/nez/Projects/Lucina".into()),
+                .unwrap_or_else(|| "/home/nez/Projects/Lucina/SecretaryIOS".into()),
             timeout: Duration::from_millis(num("DSH_REMOTE_TIMEOUT_MS", 900_000)),
             wait_seconds: num("DSH_REMOTE_WAIT_SECONDS", 0),
             poll: Duration::from_millis(num("DSH_REMOTE_POLL_MS", 5000).max(500)),

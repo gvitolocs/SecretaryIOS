@@ -37,7 +37,7 @@ impl Default for PreviewConfig {
             enabled: true,
             node: PathBuf::from("node"),
             script: PathBuf::from(
-                "/home/nez/Projects/SecretaryIOS/tools/meshy-preview/render-turntable.mjs",
+                "/home/nez/Projects/Lucina/SecretaryIOS/tools/meshy-preview/render-turntable.mjs",
             ),
             env: Vec::new(),
             seconds: 5.0,

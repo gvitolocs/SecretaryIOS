@@ -2,7 +2,7 @@
 //! catalog item id, section and icon (`src/grocery/shopping-catalog.js`).
 //!
 //! Lookup order: `LUCINA_SHOPPING_CATALOG_PATH`, `data/shopping-catalog.v1.json`,
-//! `/home/nez/Projects/SecretaryIOS/assets/catalog/catalog.v1.json`; re-read
+//! `/home/nez/Projects/Lucina/SecretaryIOS/assets/catalog/catalog.v1.json`; re-read
 //! when the file's mtime changes (checked at most every 30 s). Aliases may be
 //! an array or, as in catalog v1, an object of per-language arrays.
 
@@ -317,7 +317,7 @@ impl Catalog {
         let mut v: Vec<PathBuf> = explicit.into_iter().collect();
         v.push(data_dir.join("shopping-catalog.v1.json"));
         v.push(PathBuf::from(
-            "/home/nez/Projects/SecretaryIOS/assets/catalog/catalog.v1.json",
+            "/home/nez/Projects/Lucina/SecretaryIOS/assets/catalog/catalog.v1.json",
         ));
         v
     }
