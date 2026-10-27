@@ -104,6 +104,9 @@ pub enum Error {
     /// Empty, or over [`MAX_PROMPT_CHARS`].
     #[error("Computer-use request is empty or too long.")]
     BadRequest,
+    /// The workspace permits Chromium only.
+    #[error("Lucina's computer uses Chromium only: use the browser_* tools (start_session first) or launch Chromium.")]
+    BrowserPolicy,
     /// Cancelled by the caller (the gateway was stopped).
     #[error("Computer-use request cancelled.")]
     Cancelled,
@@ -149,7 +152,7 @@ impl Error {
             Self::NotEnabled => "not_enabled",
             Self::RecoveryRequired => "recovery_required",
             Self::Busy => "busy",
-            Self::BadRequest => "bad_request",
+            Self::BadRequest | Self::BrowserPolicy => "bad_request",
             Self::Cancelled => "cancelled",
             Self::Deadline => "deadline_exceeded",
             Self::OutputLimit => "output_limit",

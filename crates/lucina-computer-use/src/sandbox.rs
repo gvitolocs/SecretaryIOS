@@ -19,8 +19,7 @@ use tokio::time::timeout;
 use crate::Error;
 
 /// The workspace desktop's MCP proxy.
-pub const WORKSPACE_SANDBOX_SHELL: &str =
-    "/home/nez/Projects/Lucina/lucina-cua/scripts/cua-mcp.sh";
+pub const WORKSPACE_SANDBOX_SHELL: &str = "/home/nez/Projects/Lucina/lucina-cua/scripts/cua-mcp.sh";
 /// The Android container's MCP proxy.
 pub const ANDROID_SANDBOX_SHELL: &str =
     "/home/nez/Projects/Lucina/lucina-cua/scripts/android-cua-mcp.sh";
@@ -109,6 +108,112 @@ pub fn image_of(result: &Value) -> Option<(String, String)> {
         })
 }
 
+/// Split shell commands into words and command segments, respecting quotes and
+/// escapes so a plain mention (including quoted separators) stays ordinary data.
+fn shell_segments(command: &str) -> Vec<Vec<String>> {
+    let mut segments = Vec::new();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for c in command.chars() {
+        if escaped {
+            word.push(c);
+            escaped = false;
+        } else if c == '\\' && quote != Some('\'') {
+            escaped = true;
+        } else if Some(c) == quote {
+            quote = None;
+        } else if quote.is_some() {
+            word.push(c);
+        } else if c == '\'' || c == '"' {
+            quote = Some(c);
+        } else if c.is_whitespace() || matches!(c, ';' | '&' | '|') {
+            if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            if matches!(c, ';' | '&' | '|' | '\n') && !words.is_empty() {
+                segments.push(std::mem::take(&mut words));
+            }
+        } else {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    if !words.is_empty() {
+        segments.push(words);
+    }
+    segments
+}
+
+fn firefox_program(word: &str) -> bool {
+    matches!(word.rsplit('/').next(), Some("firefox" | "firefox-esr"))
+}
+
+fn firefox_package(word: &str) -> bool {
+    // Debian version/architecture suffixes, snap channels and Flatpak IDs.
+    word.to_ascii_lowercase()
+        .split(['/', ':', '=', '.'])
+        .any(|p| p == "firefox" || p == "firefox-esr")
+}
+
+fn forbidden_browser_command(command: &str) -> bool {
+    shell_segments(command).iter().any(|words| {
+        let mut i = 0;
+        // Common launcher wrappers, their options, and environment assignments.
+        while let Some(word) = words.get(i) {
+            let name = word.rsplit('/').next().unwrap_or(word);
+            if matches!(name, "env" | "nohup" | "setsid" | "exec" | "sudo") {
+                i += 1;
+                while words.get(i).is_some_and(|s| s.starts_with('-')) {
+                    let option = words[i].as_str();
+                    i += 1;
+                    if matches!(
+                        option,
+                        "-u" | "-g"
+                            | "-h"
+                            | "-p"
+                            | "-C"
+                            | "--user"
+                            | "--group"
+                            | "--unset"
+                            | "--chdir"
+                    ) {
+                        i += 1;
+                    }
+                }
+            } else if word.split_once('=').is_some_and(|(name, _)| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        let Some(program) = words.get(i) else {
+            return false;
+        };
+        if firefox_program(program) {
+            return true;
+        }
+        let name = program.rsplit('/').next().unwrap_or(program);
+        matches!(name, "apt" | "apt-get" | "snap" | "flatpak")
+            && words[i + 1..].iter().any(|w| w == "install")
+            && words[i + 1..].iter().any(|w| firefox_package(w))
+    })
+}
+
+fn names_firefox(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.to_ascii_lowercase().contains("firefox"),
+        Value::Array(items) => items.iter().any(names_firefox),
+        Value::Object(items) => items.values().any(names_firefox),
+        _ => false,
+    }
+}
+
 /// One sandbox, reached through its stdio MCP proxy.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
@@ -193,16 +298,38 @@ impl Sandbox {
         if tool.trim().is_empty() {
             return Err(Error::Sandbox("tool must not be empty".into()));
         }
-        self.call(
-            "call_tool",
-            json!({"tool": tool, "arguments": arguments}),
-        )
-        .await
+        self.call("call_tool", json!({"tool": tool, "arguments": arguments}))
+            .await
+    }
+
+    /// Enforce at the lowest shared entry point, including raw `call` users.
+    fn check_browser_policy(&self, tool: &str, args: &Value) -> Result<(), Error> {
+        if self.space != WORKSPACE_SPACE {
+            return Ok(());
+        }
+        let denied = (tool == "space_bash"
+            && args
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(forbidden_browser_command))
+            || (tool.eq_ignore_ascii_case("launch_app") && names_firefox(args))
+            || (tool == "call_tool"
+                && args
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.eq_ignore_ascii_case("launch_app"))
+                && args.get("arguments").is_some_and(names_firefox));
+        if denied {
+            Err(Error::BrowserPolicy)
+        } else {
+            Ok(())
+        }
     }
 
     /// One MCP `tools/call` over a fresh stdio session; the proxy is
     /// stateless, so the session ends with the call.
     pub async fn call(&self, tool: &str, mut args: Value) -> Result<Value, Error> {
+        self.check_browser_policy(tool, &args)?;
         if !self.script.exists() {
             return Err(Error::Sandbox(format!(
                 "{} is missing",
@@ -296,6 +423,98 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn workspace_refuses_firefox_before_contacting_proxy() {
+        let sb = Sandbox::workspace().with_script("/nonexistent/cua-mcp.sh");
+        for command in [
+            "firefox https://example.com &",
+            "firefox-esr",
+            "/usr/bin/firefox",
+            "/usr/lib/firefox/firefox",
+            "true; firefox",
+            "true && firefox",
+            "false || firefox",
+            "echo hello | firefox",
+            "true & firefox",
+            "true\nfirefox",
+            "env DISPLAY=:1 nohup setsid exec sudo -u cua firefox",
+            "DISPLAY=:1 /usr/bin/firefox",
+            "'firefox'",
+            "fire\\fox",
+            "sudo apt-get install -y firefox",
+            "apt install firefox-esr:amd64",
+            "snap install firefox",
+            "flatpak install flathub org.mozilla.firefox",
+        ] {
+            let e = sb.bash(command, None).await.unwrap_err();
+            assert_eq!(e, Error::BrowserPolicy, "{command}");
+            assert_eq!(e.code(), "bad_request");
+            assert_eq!(e.to_string(), "Lucina's computer uses Chromium only: use the browser_* tools (start_session first) or launch Chromium.");
+            assert_eq!(
+                sb.call("space_bash", json!({"command":command}))
+                    .await
+                    .unwrap_err(),
+                e
+            );
+        }
+        for args in [
+            json!({"app":"Firefox"}),
+            json!({"command":["/usr/bin/FIREFOX-ESR"]}),
+        ] {
+            assert_eq!(
+                sb.call_tool("launch_app", args.clone()).await.unwrap_err(),
+                Error::BrowserPolicy
+            );
+            assert_eq!(
+                sb.call("launch_app", args).await.unwrap_err(),
+                Error::BrowserPolicy
+            );
+        }
+    }
+
+    #[test]
+    fn chromium_mentions_and_android_are_allowed() {
+        let sb = Sandbox::workspace();
+        for command in [
+            "chromium https://example.com &",
+            "echo firefox",
+            "echo 'hello; firefox'",
+            "printf '%s' firefox",
+            "apt-get purge -y firefox",
+            "apt install chromium",
+            "snap list firefox",
+            "which firefox",
+        ] {
+            assert!(!forbidden_browser_command(command), "{command}");
+            assert!(sb
+                .check_browser_policy("space_bash", &json!({"command":command}))
+                .is_ok());
+        }
+        for tool in ["start_session", "browser_navigate", "click"] {
+            assert!(sb
+                .check_browser_policy(
+                    "call_tool",
+                    &json!({"tool":tool,"arguments":{"url":"https://example.com"}})
+                )
+                .is_ok());
+        }
+        assert!(sb
+            .check_browser_policy(
+                "call_tool",
+                &json!({"tool":"launch_app","arguments":{"app":"chromium"}})
+            )
+            .is_ok());
+        for (tool, args) in [
+            ("space_bash", json!({"command":"firefox"})),
+            (
+                "call_tool",
+                json!({"tool":"launch_app","arguments":{"app":"firefox"}}),
+            ),
+        ] {
+            assert!(Sandbox::android().check_browser_policy(tool, &args).is_ok());
+        }
+    }
 
     #[test]
     fn host_paths_are_refused_before_the_call() {

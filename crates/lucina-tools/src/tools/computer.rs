@@ -3,6 +3,8 @@
 //! `lucina-android`. Registered by the server when
 //! `LUCINA_COMPUTER_USE_ENABLED=true` (crate `lucina_computer_use`).
 //!
+//! Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (call `start_session` first, then `browser_navigate`, etc.) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox.
+//!
 //! `task` hands a whole job to her computer-use engine (Hermes + Cua, capped at
 //! 200 s) and returns its receipts; the other actions call the sandbox directly.
 //! Nothing here touches the host: the sandboxes have no host mounts and guest
@@ -37,7 +39,7 @@ enum Which {
 
 #[derive(Deserialize, JsonSchema)]
 struct Args {
-    /// `task`: describe a whole job in words; your computer-use engine does it on your Linux desktop and reports what it did (best for browsing, downloads, multi-step work). `bash`: one shell command in the sandbox. `screenshot`: what is on the screen now (windows and their state). `tools`: list the desktop's driver tools. `tool`: call one driver tool (click, type_text, press_key, launch_app, get_accessibility_tree; browser_* tools need start_session first).
+    /// `task`: describe a whole job in words; your computer-use engine does it on your Linux desktop and reports what it did (best for browsing, downloads, multi-step work). `bash`: one shell command in the sandbox. `screenshot`: what is on the screen now (windows and their state). `tools`: list the desktop's driver tools. `tool`: call one driver tool (click, type_text, press_key, launch_app, get_accessibility_tree; browser_* tools need start_session first). Chromium only; never install or launch Firefox.
     action: Action,
     /// For `task`: the job, e.g. "open example.com and tell me the page title".
     task: Option<String>,
@@ -74,7 +76,7 @@ impl Tool for ComputerTool {
     }
 
     fn description(&self) -> &'static str {
-        "Your own isolated computers on nezopt: a Linux desktop (lucina-workspace, with Chromium, Firefox, a terminal and files) and an Android sandbox (lucina-android). Use it yourself whenever a request needs a real browser or desktop: visiting a website, downloading and inspecting a file, filling a web page, checking how something looks. Prefer action `task` for multi-step work; use `bash`, `screenshot` and `tool` for quick direct steps. Nothing here can reach Giuseppe's own machines or files."
+        "Your own isolated computers on nezopt: a Linux desktop (lucina-workspace, with Chromium, a terminal and files) and an Android sandbox (lucina-android). Use it yourself whenever a request needs a real browser or desktop: visiting a website, downloading and inspecting a file, filling a web page, checking how something looks. Prefer action `task` for multi-step work; use `bash`, `screenshot` and `tool` for quick direct steps. Nothing here can reach Giuseppe's own machines or files. Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (call `start_session` first, then `browser_navigate`, etc.) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox."
     }
 
     fn parameters(&self) -> Value {
