@@ -15,9 +15,16 @@ function state(over: Partial<ControlState> = {}): ControlState {
 }
 
 /** A fake Lucina: who drives changes with take/release, views carry the mode. */
-function fakeLucina(initial: ControlState) {
+const LAN = "https://lan.getsecretary.tech:9443";
+
+/** `lan`: the server offers the home-network door; `up`: whether it answers the probe. */
+function fakeLucina(initial: ControlState, lan?: { up: boolean }) {
   let s = initial;
   const calls = stubFetch((c: Call) => {
+    if (c.url === `${LAN}/v1/computer/lan-probe`) {
+      if (!lan?.up) throw new TypeError("Failed to fetch");
+      return { status: 204 };
+    }
     if (c.url.startsWith("/v1/computer/control") && c.method === "GET") {
       return { body: { state: s, recent: [], viewer: { assets: "0123456789abcdef" } } };
     }
@@ -43,6 +50,7 @@ function fakeLucina(initial: ControlState) {
           sandbox: "workspace",
           mode,
           ttlSecs: 600,
+          lan: lan ? { url: LAN } : null,
         },
       };
     }
@@ -157,6 +165,33 @@ describe("Lucina's computer", () => {
     expect(keyboard.getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(keyboard);
     expect(posted).toContainEqual({ type: "lucina:keyboard", open: false });
+  });
+
+  it("at home, loads the viewer straight from the home-network door when it answers", async () => {
+    const calls = fakeLucina(state(), { up: true });
+    renderComputer();
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    expect(frame.getAttribute("src")).toBe(`${LAN}/v1/computer/view/${VIEW_ID}/viewer/#ticket=t-watch&clipboard=off&audio=off&mode=watch`);
+    expect(await screen.findByText("Local network")).toBeInTheDocument();
+    const probe = calls.find((c) => c.url === `${LAN}/v1/computer/lan-probe`);
+    expect(probe?.credentials).toBe("omit");
+  });
+
+  it("falls back to the server silently when the door does not answer", async () => {
+    fakeLucina(state(), { up: false });
+    renderComputer();
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    expect(frame.getAttribute("src")?.startsWith(`/v1/computer/view/${VIEW_ID}/viewer/`)).toBe(true);
+    expect(await screen.findByText("Remote")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says Remote when no door is offered (away from home)", async () => {
+    const calls = fakeLucina(state());
+    renderComputer();
+    await screen.findByTitle("Lucina's screen");
+    expect(await screen.findByText("Remote")).toBeInTheDocument();
+    expect(calls.some((c) => c.url.includes("lan-probe"))).toBe(false);
   });
 
   it("sends the key buttons through the running viewer in Live mode, not as input batches", async () => {
