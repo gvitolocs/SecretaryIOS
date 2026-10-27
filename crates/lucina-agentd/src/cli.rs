@@ -29,6 +29,8 @@ pub struct Cli {
     pub command: Command,
 }
 
+// Parsed once per process; boxing `RunArgs` would only make the matches noisier.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Create and start an agent with a task
@@ -55,6 +57,48 @@ pub enum Command {
     Inspect { id: String },
     /// List providers
     Providers,
+    /// Manage permission requests
+    #[command(subcommand)]
+    Permit(PermitCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PermitCommand {
+    /// List all pending permissions
+    Ls {
+        /// Also list external requests (the Infisical broker's) (Lucina only)
+        #[arg(long)]
+        external: bool,
+    },
+    /// Allow a permission request (an `ext_` id answers an external request)
+    Allow {
+        /// Agent ID (or prefix), or an external request id
+        agent: String,
+        /// Permission request ID (optional if --all)
+        req_id: Option<String>,
+        /// Allow all pending permissions for this agent
+        #[arg(long)]
+        all: bool,
+        /// Modified input parameters (JSON)
+        #[arg(long)]
+        input: Option<String>,
+    },
+    /// Deny a permission request (an `ext_` id answers an external request)
+    Deny {
+        /// Agent ID (or prefix), or an external request id
+        agent: String,
+        /// Permission request ID (optional if --all)
+        req_id: Option<String>,
+        /// Deny all pending permissions for this agent
+        #[arg(long)]
+        all: bool,
+        /// Denial reason message
+        #[arg(long)]
+        message: Option<String>,
+        /// Stop agent after denial
+        #[arg(long)]
+        interrupt: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -91,6 +135,21 @@ pub struct RunArgs {
     /// overrides --provider/--model
     #[arg(long)]
     pub chain: Option<String>,
+    /// Proof command for the finished-run gate (default: `verify` in .lucina/agents.toml)
+    #[arg(long)]
+    pub verify: Option<String>,
+    /// Run the proof through verify-gate (one at a time, memory-capped)
+    #[arg(long)]
+    pub heavy: bool,
+    /// Send the gate's refusals back to the agent, up to N times
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub auto_fix: u32,
+    /// Wait for the finished-run gate too, and print its result
+    #[arg(long)]
+    pub gate: bool,
+    /// Preapprove an exact MCP tool (repeatable): SERVER/TOOL
+    #[arg(long = "preapprove", value_name = "SERVER/TOOL")]
+    pub preapprove: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -145,6 +204,9 @@ pub struct WaitArgs {
     /// Maximum wait time (e.g. 30, 30s, 5m)
     #[arg(long)]
     pub timeout: Option<String>,
+    /// Also wait for the finished-run gate (Lucina only)
+    #[arg(long)]
+    pub gate: bool,
 }
 
 #[derive(Args, Debug)]
@@ -257,6 +319,15 @@ fn ls_item(snap: &Value) -> Value {
 
 /// Paseo `toInspectData`.
 fn inspect_data(snap: &Value) -> Value {
+    let mut data = inspect_paseo(snap);
+    // Lucina only, and only once a run was gated (Paseo's key set stays the same).
+    if !snap["gate"].is_null() {
+        data["Gate"] = snap["gate"].clone();
+    }
+    data
+}
+
+fn inspect_paseo(snap: &Value) -> Value {
     let usage = &snap["lastUsage"];
     let caps = &snap["capabilities"];
     let num = |v: &Value| if v.is_number() { v.clone() } else { json!(0) };
@@ -396,8 +467,92 @@ async fn resolve(client: &Client, id: &str) -> Result<Value, CmdError> {
     resolve_as(client, id, NotFound::Matching).await
 }
 
-async fn wait_for(client: &Client, id: &str, timeout_ms: u64) -> Result<Value, CmdError> {
-    Ok(client.post(&format!("/agents/{id}/wait?timeoutMs={timeout_ms}"), &json!({})).await?)
+async fn wait_for(client: &Client, id: &str, timeout_ms: u64, gate: bool) -> Result<Value, CmdError> {
+    Ok(client.post(&format!("/agents/{id}/wait?timeoutMs={timeout_ms}&gate={gate}"), &json!({})).await?)
+}
+
+/// Paseo `permitLsSchema` items.
+fn permit_item(agent: &Value, p: &Value) -> Value {
+    let agent_id = agent["id"].as_str().unwrap_or_default();
+    json!({
+        "id": p["id"],
+        "agentId": agent_id,
+        "agentShortId": agent_id.chars().take(7).collect::<String>(),
+        "name": p["name"],
+        "description": p["description"].as_str().unwrap_or("-"),
+    })
+}
+
+/// Paseo `toPermissionResponseItem`.
+fn permit_result(agent_id: &str, p: &Value, result: &str) -> Value {
+    json!({
+        "requestId": p["id"],
+        "agentId": agent_id,
+        "agentShortId": agent_id.chars().take(7).collect::<String>(),
+        "name": p["name"],
+        "result": result,
+    })
+}
+
+fn permit_output(items: Vec<Value>) -> Output {
+    let rows: Vec<Vec<String>> = items
+        .iter()
+        .map(|i| {
+            vec![
+                s(&i["requestId"]).chars().take(8).collect(),
+                s(&i["agentShortId"]),
+                s(&i["name"]),
+                s(&i["result"]),
+            ]
+        })
+        .collect();
+    Output { text: table(&["REQUEST ID", "AGENT", "TOOL", "RESULT"], &rows), json: Some(Value::Array(items)) }
+}
+
+/// `lagent permit allow|deny` (Paseo `createAllowCommand` / `createDenyCommand`).
+async fn permit_answer(client: &Client, agent: &str, req_id: Option<&str>, all: bool, response: Value, deny: bool) -> Result<Output, CmdError> {
+    let result = if deny { "denied" } else { "allowed" };
+    if agent.starts_with("ext_") {
+        let body = json!({"behavior": response["behavior"], "message": response["message"]});
+        let v = client.post(&format!("/permissions/{agent}"), &body).await?;
+        let item = json!({"requestId": v["id"], "agentId": v["source"], "agentShortId": v["source"], "name": v["title"], "result": result});
+        return Ok(permit_output(vec![item]));
+    }
+    if deny && !all && req_id.is_none() {
+        return Err(CmdError::new("MISSING_ARGUMENT", "Request ID is required unless --all is specified")
+            .details("Usage: lagent permit deny <agent> <req_id> or lagent permit deny <agent> --all"));
+    }
+    let snap = resolve_as(client, agent, NotFound::Plain).await?;
+    let agent_id = snap["id"].as_str().unwrap_or_default().to_string();
+    let pending = snap["pendingPermissions"].as_array().cloned().unwrap_or_default();
+    if pending.is_empty() {
+        return Err(CmdError::new("NO_PENDING_PERMISSIONS", format!("No pending permissions for agent {}", &agent_id[..agent_id.len().min(7)])));
+    }
+    let chosen: Vec<Value> = match req_id.filter(|_| !all) {
+        None => pending.clone(),
+        Some(r) => match pending.iter().find(|p| p["id"].as_str().is_some_and(|id| id == r || id.starts_with(r))) {
+            Some(p) => vec![p.clone()],
+            None => {
+                let ids: Vec<String> = pending.iter().map(|p| s(&p["id"]).chars().take(8).collect()).collect();
+                return Err(CmdError::new("PERMISSION_NOT_FOUND", format!("Permission request not found: {r}")).details(&format!("Available requests: {}", ids.join(", "))));
+            }
+        },
+    };
+    let mut items = Vec::new();
+    for p in &chosen {
+        let rid = s(&p["id"]);
+        match client.post(&format!("/agents/{agent_id}/permissions/{rid}"), &response).await {
+            Ok(_) => items.push(permit_result(&agent_id, p, result)),
+            Err(ClientError::Api { code, message, .. }) if code == "PERMISSION_FORBIDDEN" || code == "PERMISSION_EXPIRED" || code == "PERMISSION_ALREADY_ANSWERED" => {
+                return Err(CmdError::new(&code, message));
+            }
+            Err(e) => {
+                return Err(CmdError::new("PERMISSION_RESPONSE_UNCONFIRMED", format!("Permission response unconfirmed for request {rid}: {e}"))
+                    .details("Use \"lagent permit ls\" to check whether the request is still pending"));
+            }
+        }
+    }
+    Ok(permit_output(items))
 }
 
 /// Agents selected by an id, `--all` or `--cwd` (Paseo stop/delete).
@@ -445,7 +600,21 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 "thinkingOptionId": a.thinking,
                 "idempotencyKey": a.idempotency_key,
                 "chain": a.chain,
+                "verify": a.verify,
+                "verifyHeavy": a.heavy,
+                "autoFix": a.auto_fix,
             });
+            let mut body = body;
+            if !a.preapprove.is_empty() {
+                let mut grants = Vec::new();
+                for g in &a.preapprove {
+                    match g.split_once('/') {
+                        Some((server, tool)) if !server.is_empty() && !tool.is_empty() => grants.push(json!({"kind": "mcp", "server": server, "tool": tool})),
+                        _ => return Err(CmdError::new("INVALID_PREAPPROVE", format!("Invalid --preapprove value: {g} (expected SERVER/TOOL)"))),
+                    }
+                }
+                body["toolPolicy"] = json!({"preapproved": grants});
+            }
             let created = client.post("/agents", &body).await.map_err(|e| match e {
                 ClientError::Api { code, message, .. } if code != "AGENT_NOT_FOUND" => CmdError {
                     code: "AGENT_CREATE_FAILED".into(),
@@ -456,7 +625,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             })?;
             let id = created["id"].as_str().unwrap_or_default().to_string();
             let (agent, status) = if wait {
-                let state = wait_for(&client, &id, timeout_ms).await?;
+                let state = wait_for(&client, &id, timeout_ms, a.gate).await?;
                 let status = match state["status"].as_str().unwrap_or("idle") {
                     "idle" => "completed".to_string(),
                     other => other.to_string(),
@@ -466,13 +635,18 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 let st = if created["status"] == "running" { "running" } else { "created" };
                 (created, st.to_string())
             };
-            let result = json!({
+            let mut result = json!({
                 "agentId": agent["id"],
                 "status": status,
                 "provider": agent["provider"],
                 "cwd": agent["cwd"],
                 "title": agent["title"],
             });
+            if a.gate && wait {
+                result["gate"] = agent["gate"].clone();
+                result["verdict"] = agent["gate"]["verdict"].clone();
+                return Ok(single(result, &["agentId", "status", "provider", "cwd", "title", "verdict"]));
+            }
             Ok(single(result, &["agentId", "status", "provider", "cwd", "title"]))
         }
         Command::Ls(a) => {
@@ -554,7 +728,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             let result = if a.no_wait {
                 json!({"agentId": a.id, "status": "sent", "message": "Message sent, not waiting for completion"})
             } else {
-                let state = wait_for(&client, &id, 600_000).await?;
+                let state = wait_for(&client, &id, 600_000, false).await?;
                 match state["status"].as_str() {
                     Some("timeout") => json!({"agentId": id, "status": "timeout", "message": "Timed out waiting for agent to finish"}),
                     Some("permission") => json!({"agentId": id, "status": "permission", "message": "Agent is waiting for permission"}),
@@ -592,7 +766,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 }
                 None => (0, None),
             };
-            let state = wait_for(&client, &id, timeout_ms).await?;
+            let state = wait_for(&client, &id, timeout_ms, a.gate).await?;
             let recent = projected_items(&client, &id).await.ok().map(|items| transcript(&items, Some(5)));
             let with_recent = |msg: String| match recent.as_deref().filter(|t| !t.trim().is_empty()) {
                 Some(t) => format!("{msg}\nLast 5 activity items:\n{t}"),
@@ -677,6 +851,46 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 .map(|p| vec![s(&p["id"]), s(&p["label"]), s(&p["defaultModeId"])])
                 .collect();
             Ok(Output { text: table(&["PROVIDER", "LABEL", "DEFAULT MODE"], &rows), json: Some(Value::Array(list)) })
+        }
+        Command::Permit(PermitCommand::Ls { external }) => {
+            let v = client.get("/agents?archived=true").await.map_err(|e| CmdError::new("LIST_PERMISSIONS_FAILED", format!("Failed to list permissions: {e}")))?;
+            let mut items = Vec::new();
+            for agent in v["agents"].as_array().cloned().unwrap_or_default() {
+                for p in agent["pendingPermissions"].as_array().cloned().unwrap_or_default() {
+                    items.push(permit_item(&agent, &p));
+                }
+            }
+            if *external {
+                let ext = client.get("/permissions").await?;
+                for p in ext["permissions"].as_array().cloned().unwrap_or_default().into_iter().filter(|p| p["kind"] == "external") {
+                    items.push(json!({"id": p["id"], "agentId": p["source"], "agentShortId": p["source"], "name": p["title"], "description": p["description"].as_str().unwrap_or("-")}));
+                }
+            }
+            let rows: Vec<Vec<String>> = items
+                .iter()
+                .map(|i| vec![s(&i["agentShortId"]), s(&i["id"]).chars().take(8).collect(), s(&i["name"]), s(&i["description"])])
+                .collect();
+            Ok(Output { text: table(&["AGENT", "REQ_ID", "TOOL", "DESCRIPTION"], &rows), json: Some(Value::Array(items)) })
+        }
+        Command::Permit(PermitCommand::Allow { agent, req_id, all, input }) => {
+            let mut response = json!({"behavior": "allow"});
+            if let Some(raw) = input {
+                let parsed: Value = serde_json::from_str(raw).map_err(|e| {
+                    CmdError::new("INVALID_JSON", format!("Invalid JSON for --input: {e}")).details("Provide valid JSON, e.g., --input '{\"key\": \"value\"}'")
+                })?;
+                response["updatedInput"] = parsed;
+            }
+            permit_answer(&client, agent, req_id.as_deref(), *all, response, false).await
+        }
+        Command::Permit(PermitCommand::Deny { agent, req_id, all, message, interrupt }) => {
+            let mut response = json!({"behavior": "deny"});
+            if let Some(m) = message {
+                response["message"] = json!(m);
+            }
+            if *interrupt {
+                response["interrupt"] = json!(true);
+            }
+            permit_answer(&client, agent, req_id.as_deref(), *all, response, true).await
         }
     }
 }

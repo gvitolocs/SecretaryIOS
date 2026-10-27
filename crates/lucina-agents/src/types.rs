@@ -82,6 +82,25 @@ pub struct GateResult {
     pub finished_at: Option<String>,
 }
 
+/// What a run asks of the gate (`POST /agents`: `verify`, `verifyHeavy`, `autoFix`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateRequest {
+    /// The proof command; overrides `verify` in the workspace's `.lucina/agents.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+    /// Run the proof through `verify-gate` (one at a time, memory-capped).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub heavy: bool,
+    /// Follow-up rounds after a refusal (0 = none).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub auto_fix: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GateVerdict {
@@ -189,6 +208,8 @@ pub struct AgentRecord {
     pub epoch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<GateResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_request: Option<GateRequest>,
 }
 
 impl AgentRecord {

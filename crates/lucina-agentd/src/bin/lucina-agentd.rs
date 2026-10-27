@@ -10,8 +10,10 @@ use clap::Parser;
 use lucina_agentd::api::router;
 use lucina_agentd::config::{default_socket, default_state_dir, dev_enabled};
 use lucina_agentd::lane::LaneConfig;
-use lucina_agentd::manager::Manager;
+use lucina_agentd::manager::{GateConfig, Manager, Options};
 use lucina_agentd::mock::{MockProvider, MockSlowProvider};
+use lucina_agentd::notify::Notifier;
+use lucina_agentd::peer::Peer;
 use lucina_agentd::process::Registry;
 use lucina_agentd::provider::Provider;
 use lucina_agentd::providers;
@@ -65,7 +67,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         providers.push(Arc::new(MockProvider));
         providers.push(Arc::new(MockSlowProvider));
     }
-    let manager = Manager::open(Store::open(&state_dir)?, providers, lanes)?;
+    let notifier = Notifier::from_env();
+    if notifier.is_none() {
+        tracing::info!("notifications off: set {} and {}", lucina_agentd::notify::URL_ENV, lucina_agentd::notify::TOKEN_ENV);
+    }
+    let permission_ttl = std::env::var("LUCINA_AGENTD_PERMISSION_TTL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(3600);
+    let options = Options {
+        registry: Some(registry.clone()),
+        notifier,
+        permission_ttl: Duration::from_secs(permission_ttl),
+        gate: GateConfig::from_env(),
+    };
+    let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
 
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
@@ -85,7 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut rx = stop_tx.subscribe();
         let app = app.clone();
         servers.push(tokio::spawn(async move {
-            axum::serve(unix, app).with_graceful_shutdown(async move { let _ = rx.recv().await; }).await
+            axum::serve(unix, app.into_make_service_with_connect_info::<Peer>())
+                .with_graceful_shutdown(async move { let _ = rx.recv().await; })
+                .await
         }));
     }
     if let Some(addr) = args.listen {
@@ -95,7 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tcp = TcpListener::bind(addr).await?;
         let mut rx = stop_tx.subscribe();
         servers.push(tokio::spawn(async move {
-            axum::serve(tcp, app).with_graceful_shutdown(async move { let _ = rx.recv().await; }).await
+            axum::serve(tcp, app.into_make_service_with_connect_info::<Peer>())
+                .with_graceful_shutdown(async move { let _ = rx.recv().await; })
+                .await
         }));
     }
 

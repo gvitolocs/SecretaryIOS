@@ -23,9 +23,33 @@ use serde_json::{Map, Value};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::lane::{LaneConfig, Lane, Outcome};
+use crate::notify::Notifier;
 use crate::now_iso;
+use crate::process::Registry;
 use crate::provider::{Provider, ProviderInfo, Session, SessionConfig};
 use crate::store::{Store, StoreError};
+
+mod gate;
+mod permissions;
+
+pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
+pub use permissions::{ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+
+/// Daemon-wide settings beyond the store, providers and lanes.
+pub struct Options {
+    /// Provider processes, to recognise callers that agents started.
+    pub registry: Option<Registry>,
+    pub notifier: Option<Notifier>,
+    /// How long an agent's permission request waits for the owner.
+    pub permission_ttl: Duration,
+    pub gate: GateConfig,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { registry: None, notifier: None, permission_ttl: Duration::from_secs(3600), gate: GateConfig::default() }
+    }
+}
 
 /// Label that links a child agent to its parent (Paseo `paseo.parent-agent-id`).
 pub const PARENT_LABEL: &str = "lucina.parent-agent-id";
@@ -46,6 +70,16 @@ pub enum ManagerError {
     Invalid(String),
     #[error("store: {0}")]
     Store(#[from] StoreError),
+    #[error("{0}")]
+    Forbidden(String),
+    #[error("{0}")]
+    PermissionNotFound(String),
+    #[error("{0}")]
+    AlreadyAnswered(String),
+    #[error("{0}")]
+    Expired(String),
+    #[error("{0}")]
+    Unconfirmed(String),
 }
 
 impl ManagerError {
@@ -58,6 +92,11 @@ impl ManagerError {
             ManagerError::Provider(_) => "PROVIDER_ERROR",
             ManagerError::Invalid(_) => "INVALID_REQUEST",
             ManagerError::Store(_) => "STORE_ERROR",
+            ManagerError::Forbidden(_) => "PERMISSION_FORBIDDEN",
+            ManagerError::PermissionNotFound(_) => "PERMISSION_NOT_FOUND",
+            ManagerError::AlreadyAnswered(_) => "PERMISSION_ALREADY_ANSWERED",
+            ManagerError::Expired(_) => "PERMISSION_EXPIRED",
+            ManagerError::Unconfirmed(_) => "PERMISSION_RESPONSE_UNCONFIRMED",
         }
     }
 }
@@ -79,6 +118,10 @@ pub enum BusEvent {
     },
     AgentDeleted {
         agent_id: String,
+    },
+    /// Lucina only: a permission request (agent or external) was raised or changed.
+    Permission {
+        permission: Box<PermissionView>,
     },
 }
 
@@ -110,6 +153,17 @@ pub struct CreateRequest {
     /// fall-through instead of one fixed provider.
     #[serde(default)]
     pub chain: Option<String>,
+    /// Paseo `toolPolicy` (`{preapproved: [{kind: "mcp", server, tool}]}`).
+    #[serde(default)]
+    pub tool_policy: Option<Value>,
+    /// The finished-run gate's proof command (else `.lucina/agents.toml`).
+    #[serde(default)]
+    pub verify: Option<String>,
+    #[serde(default)]
+    pub verify_heavy: bool,
+    /// Follow-up rounds after the gate refuses the run.
+    #[serde(default)]
+    pub auto_fix: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -154,6 +208,15 @@ struct Agent {
     /// A lane chain is still deciding (between attempts the agent may briefly be
     /// in error): `wait` keeps waiting.
     chain_active: bool,
+    /// Where the current (not yet gated) run started.
+    turn_base: Option<gate::Base>,
+    /// `wait --gate` waits: a finished run is being checked, or its auto-fix
+    /// follow-up is running.
+    gate_pending: bool,
+    /// The gate task is running (one per agent).
+    gate_running: bool,
+    /// A turn completed while the gate task ran: check again.
+    gate_again: bool,
 }
 
 impl Agent {
@@ -169,6 +232,8 @@ struct Inner {
     agents: Mutex<HashMap<String, Agent>>,
     bus: broadcast::Sender<BusEvent>,
     generation: watch::Sender<u64>,
+    book: Mutex<HashMap<String, permissions::Entry>>,
+    options: Options,
 }
 
 #[derive(Clone)]
@@ -198,12 +263,25 @@ impl Manager {
     /// Open the store and bring every stored agent back as `closed` (Paseo's
     /// loader; lifecycle `RestartRepair`).
     pub fn open(store: Store, providers: Vec<Arc<dyn Provider>>, lanes: LaneConfig) -> Result<Self, ManagerError> {
+        Self::open_with(store, providers, lanes, Options::default())
+    }
+
+    pub fn open_with(store: Store, providers: Vec<Arc<dyn Provider>>, lanes: LaneConfig, options: Options) -> Result<Self, ManagerError> {
         let providers: HashMap<String, Arc<dyn Provider>> =
             providers.into_iter().map(|p| (p.info().id, p)).collect();
         let (bus, _) = broadcast::channel(4096);
         let (generation, _) = watch::channel(0);
         let manager = Manager {
-            inner: Arc::new(Inner { store, providers, lanes, agents: Mutex::new(HashMap::new()), bus, generation }),
+            inner: Arc::new(Inner {
+                store,
+                providers,
+                lanes,
+                agents: Mutex::new(HashMap::new()),
+                bus,
+                generation,
+                book: Mutex::new(HashMap::new()),
+                options,
+            }),
         };
         for mut record in manager.inner.store.load_all()? {
             let k = AgentState {
@@ -244,6 +322,10 @@ impl Manager {
                 pending: Vec::new(),
                 active_turn: None,
                 rows,
+                turn_base: None,
+                gate_pending: false,
+                gate_running: false,
+                gate_again: false,
             };
             manager.lock().insert(agent.record.id.clone(), agent);
         }
@@ -471,6 +553,7 @@ impl Manager {
                 }
                 Effect::AutoDenyPending(message) => {
                     for request in std::mem::take(&mut agent.pending) {
+                        self.withdraw_agent_request(&agent.record.id, &request.id, &PermissionResponse::auto_deny(message));
                         self.forward(
                             agent,
                             StreamEvent::PermissionResolved {
@@ -486,7 +569,11 @@ impl Manager {
                     if matches!(effect, Effect::SetAttention(_)) {
                         agent.record.attention_timestamp = Some(timestamp.clone());
                     }
-                    self.forward(agent, attention_event(agent, *reason, timestamp));
+                    let event = attention_event(agent, *reason, timestamp);
+                    if let StreamEvent::AttentionRequired { should_notify: true, notification: Some(n), .. } = &event {
+                        self.push_attention(agent, *reason, &n.body);
+                    }
+                    self.forward(agent, event);
                 }
                 Effect::RecordInterrupted => {}
                 Effect::Interrupt | Effect::CloseRuntime | Effect::CascadeArchiveChildren | Effect::RemoveRecord => {}
@@ -522,6 +609,9 @@ impl Manager {
                 }
                 let r = self.transition(agent, Event::TurnCompleted, None).map(|_| ());
                 agent.active_turn = None;
+                if r.is_ok() && agent.turn_base.is_some() && !agent.record.internal {
+                    self.gate_turn_completed(agent);
+                }
                 r
             }
             StreamEvent::TurnFailed { error, code, diagnostic, .. } => {
@@ -529,25 +619,38 @@ impl Manager {
                 let r = self.transition(agent, Event::TurnFailed, Some(&message)).map(|_| ());
                 agent.record.last_error = Some(error);
                 agent.active_turn = None;
+                Self::gate_turn_ended(agent);
                 r
             }
             StreamEvent::TurnCanceled { .. } => {
                 let r = self.transition(agent, Event::TurnCanceled, None).map(|_| ());
                 agent.active_turn = None;
+                Self::gate_turn_ended(agent);
                 r
             }
             StreamEvent::PermissionRequested { request, provider } => {
-                let r = self.transition(agent, Event::PermissionRequested, None).map(|_| ());
-                if r.is_ok() {
+                if self.register_agent_request(agent, &request) {
+                    // Preapproved by the tool policy: allowed at once, never pending.
+                    self.auto_allow(agent, &request.id);
+                    Ok(())
+                } else {
+                    // Pending first, so the attention notification can preview it.
                     agent.pending.push((*request).clone());
-                    self.forward(agent, StreamEvent::PermissionRequested { provider, request });
+                    let r = self.transition(agent, Event::PermissionRequested, None).map(|_| ());
+                    if r.is_ok() {
+                        self.forward(agent, StreamEvent::PermissionRequested { provider, request });
+                    } else {
+                        agent.pending.pop();
+                        self.withdraw_agent_request(agent_id, &request.id, &PermissionResponse::auto_deny("Not accepted in this state"));
+                    }
+                    r
                 }
-                r
             }
             StreamEvent::PermissionResolved { request_id, resolution, provider } => {
                 match agent.pending.iter().position(|p| p.id == request_id) {
                     Some(i) => {
                         agent.pending.remove(i);
+                        self.withdraw_agent_request(agent_id, &request_id, &resolution);
                         let r = self.transition(agent, Event::PermissionResolved, None).map(|_| ());
                         self.forward(agent, StreamEvent::PermissionResolved { provider, request_id, resolution });
                         r
@@ -649,6 +752,7 @@ impl Manager {
                 model,
                 thinking_option_id: req.thinking_option_id.clone(),
                 feature_values: (!req.feature_values.is_empty()).then(|| req.feature_values.clone()),
+                tool_policy: req.tool_policy.clone(),
                 ..AgentConfig::default()
             },
             runtime_info: None,
@@ -663,6 +767,11 @@ impl Manager {
             idempotency_key: req.idempotency_key.clone(),
             epoch: uuid::Uuid::new_v4().to_string(),
             gate: None,
+            gate_request: (req.verify.is_some() || req.auto_fix > 0).then(|| GateRequest {
+                verify: req.verify.clone().filter(|v| !v.trim().is_empty()),
+                heavy: req.verify_heavy,
+                auto_fix: req.auto_fix.min(5),
+            }),
         };
         self.inner.store.save(&record)?;
         let id = record.id.clone();
@@ -681,6 +790,10 @@ impl Manager {
                 modes: info.modes.clone(),
                 echoes_user_message: info.echoes_user_message,
                 chain_active: false,
+                turn_base: None,
+                gate_pending: false,
+                gate_running: false,
+                gate_again: false,
             };
             self.persist(&mut agent);
             self.publish_state(&agent);
@@ -768,6 +881,7 @@ impl Manager {
     /// own `turn_started` is then a no-op.
     async fn start_turn(&self, id: &str, prompt: &str) -> Result<(), ManagerError> {
         let session = self.ensure_loaded(id).await?;
+        self.note_base(id).await;
         {
             let mut agents = self.lock();
             let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
@@ -952,15 +1066,17 @@ impl Manager {
     }
 
     /// Paseo `waitForFinish`: until the agent stops running, needs permission,
-    /// or `timeout` passes (`None` = no limit).
-    pub async fn wait(&self, id: &str, timeout: Option<Duration>) -> Result<WaitResult, ManagerError> {
+    /// or `timeout` passes (`None` = no limit). With `gate`, also until the
+    /// finished-run gate has checked the run (and any auto-fix rounds are done).
+    pub async fn wait(&self, id: &str, timeout: Option<Duration>, gate: bool) -> Result<WaitResult, ManagerError> {
         let mut rx = self.inner.generation.subscribe();
         let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
         loop {
             {
                 let agents = self.lock();
                 let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-                let status = if a.chain_active && a.pending.is_empty() {
+                let gating = gate && a.pending.is_empty() && a.gate_pending;
+                let status = if gating || (a.chain_active && a.pending.is_empty()) {
                     None
                 } else if !a.pending.is_empty() {
                     Some("permission")
@@ -1153,6 +1269,14 @@ fn attention_event(agent: &Agent, reason: AttentionReason, timestamp: String) ->
         AttentionReason::Permission => "Agent needs permission",
         AttentionReason::Error => "Agent needs attention",
     };
+    let assistant = match reason {
+        AttentionReason::Finished => {
+            let items: Vec<TimelineItem> = agent.rows.iter().map(|r| r.item.clone()).collect();
+            lucina_agents::notification::latest_assistant_message(&items)
+        }
+        _ => None,
+    };
+    let body = lucina_agents::notification::body(reason, assistant.as_deref(), agent.pending.last());
     StreamEvent::AttentionRequired {
         provider: agent.record.provider.clone(),
         reason,
@@ -1160,7 +1284,7 @@ fn attention_event(agent: &Agent, reason: AttentionReason, timestamp: String) ->
         should_notify: reason != AttentionReason::Error,
         notification: Some(lucina_agents::events::AttentionNotification {
             title: title.to_string(),
-            body: agent.record.title.clone().unwrap_or_default(),
+            body,
             data: lucina_agents::events::AttentionNotificationData {
                 server_id: "lucina-agentd".into(),
                 workspace_id: agent.record.workspace_id.clone(),

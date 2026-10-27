@@ -1,7 +1,9 @@
 //! Claude through the Claude Code CLI in stream-json mode: one long-lived
 //! `claude -p --input-format stream-json --output-format stream-json --verbose
-//! --include-partial-messages --permission-prompts host` per session (Paseo uses
-//! the Agent SDK, which drives the same CLI protocol).
+//! --include-partial-messages --permission-prompts host --permission-prompt-tool stdio`
+//! per session (Paseo uses the Agent SDK, which drives the same CLI protocol and
+//! passes the same `--permission-prompt-tool stdio` when the host answers prompts;
+//! without it the CLI denies every prompt itself as "non-interactive").
 //!
 //! - A turn is one user message on stdin; it ends with a `result` message.
 //! - Text and thinking stream as `stream_event` deltas. The complete `assistant`
@@ -72,7 +74,8 @@ impl ClaudeProvider {
         let effort = config.thinking_option_id.clone().or_else(|| self.default_effort.clone());
         let mut args: Vec<String> = [
             "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--permission-prompts", "host", "--permission-mode", cli,
+            "--include-partial-messages", "--permission-prompts", "host", "--permission-prompt-tool", "stdio",
+            "--permission-mode", cli,
         ]
         .iter()
         .map(|s| s.to_string())

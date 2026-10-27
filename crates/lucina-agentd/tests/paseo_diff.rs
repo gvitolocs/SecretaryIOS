@@ -216,6 +216,57 @@ fn scenario_archive_delete(p: &Paseo, l: &Daemon) {
     }
 }
 
+/// The error of a failing `--json` command: exit code, error code and message (ids
+/// replaced), not the details (they name the CLI).
+fn error_of(r: &Run, id: &str) -> Value {
+    let e: Value = serde_json::from_str(&r.stderr).unwrap_or(Value::Null);
+    json!({"exit": r.code, "code": e["error"]["code"], "message": e["error"]["message"].as_str().unwrap_or("").replace(id, "<id>")})
+}
+
+fn scenario_permit(p: &Paseo, l: &Daemon) {
+    let args = ["run", "--provider", "mock/e2e-fast-stream", "--cwd", "/tmp", "emit synthetic plan approval"];
+    let (pr, lr) = (p.json(&args), l.json(&args));
+    let norm_ls = |v: &Value, id: &str| {
+        json!(v.as_array().cloned().unwrap_or_default().iter().filter(|x| x["agentId"] == id).map(|x| json!({
+            "keys": keys(x), "name": x["name"], "description": x["description"],
+            "short": x["agentShortId"] == id[..7], "plan": x["id"].as_str().unwrap_or("").starts_with("mock-plan-"),
+        })).collect::<Vec<_>>())
+    };
+    same("permit ls", &norm_ls(&p.json(&["permit", "ls"]), &id(&pr)), &norm_ls(&l.json(&["permit", "ls"]), &id(&lr)));
+    let (pe, le) = (p.cmd(&["permit", "deny", &id(&pr), "--json"]), l.lagent(&["permit", "deny", &id(&lr), "--json"]));
+    same("deny without a request id", &error_of(&pe, &id(&pr)), &error_of(&le, &id(&lr)));
+    let (pe, le) = (p.cmd(&["permit", "allow", &id(&pr), "nope", "--json"]), l.lagent(&["permit", "allow", &id(&lr), "nope", "--json"]));
+    same("allow an unknown request", &error_of(&pe, &id(&pr)), &error_of(&le, &id(&lr)));
+    let norm_answer = |v: &Value, id: &str| {
+        json!(v.as_array().cloned().unwrap_or_default().iter().map(|x| json!({
+            "keys": keys(x), "name": x["name"], "result": x["result"], "agent": x["agentId"] == id, "short": x["agentShortId"] == id[..7],
+        })).collect::<Vec<_>>())
+    };
+    let (pa, la) = (p.json(&["permit", "allow", &id(&pr)]), l.json(&["permit", "allow", &id(&lr)]));
+    same("permit allow", &norm_answer(&pa, &id(&pr)), &norm_answer(&la, &id(&lr)));
+    let (pw, lw) = (p.json(&["wait", &id(&pr)]), l.json(&["wait", &id(&lr)]));
+    same("wait after allow", &pw["status"], &lw["status"]);
+    let (pi, li) = (p.json(&["inspect", &id(&pr)]), l.json(&["inspect", &id(&lr)]));
+    same("inspect after allow", &pick(&pi, &["Status", "PendingPermissions"]), &pick(&li, &["Status", "PendingPermissions"]));
+    let short = |s: &str| s[..7].to_string();
+    let (pe, le) = (p.cmd(&["permit", "allow", &id(&pr), "--json"]), l.lagent(&["permit", "allow", &id(&lr), "--json"]));
+    same("allow with nothing pending", &error_of(&pe, &short(&id(&pr))), &error_of(&le, &short(&id(&lr))));
+
+    let args = ["run", "--provider", "mock/e2e-fast-stream", "--cwd", "/tmp", "emit synthetic questions"];
+    let (pq, lq) = (p.json(&args), l.json(&args));
+    let req = |v: &Value| v["PendingPermissions"][0]["id"].as_str().unwrap_or("").to_string();
+    let (preq, lreq) = (req(&p.json(&["inspect", &id(&pq)])), req(&l.json(&["inspect", &id(&lq)])));
+    let (pd, ld) = (
+        p.json(&["permit", "deny", &id(&pq), &preq[..14], "--message", "not now"]),
+        l.json(&["permit", "deny", &id(&lq), &lreq[..14], "--message", "not now"]),
+    );
+    same("permit deny", &norm_answer(&pd, &id(&pq)), &norm_answer(&ld, &id(&lq)));
+    let (pw, lw) = (p.json(&["wait", &id(&pq)]), l.json(&["wait", &id(&lq)]));
+    same("wait after deny", &pw["status"], &lw["status"]);
+    same("question logs", &json!(p.cmd(&["logs", &id(&pq)]).stdout), &json!(l.lagent(&["logs", &id(&lq)]).stdout));
+    same("permit ls empty", &norm_ls(&p.json(&["permit", "ls"]), &id(&pq)), &norm_ls(&l.json(&["permit", "ls"]), &id(&lq)));
+}
+
 #[test]
 fn paseo_parity() {
     if std::env::var("PASEO_DIFF").as_deref() != Ok("1") {
@@ -225,12 +276,13 @@ fn paseo_parity() {
     let paseo = Paseo::start();
     let lucina = Daemon::start();
     type Scenario = fn(&Paseo, &Daemon);
-    let scenarios: [(&str, Scenario); 5] = [
+    let scenarios: [(&str, Scenario); 6] = [
         ("a run/logs/inspect/ls", scenario_run_logs_inspect),
         ("b turn failure", scenario_turn_failure),
         ("c plan approval + stop", scenario_plan_approval_stop),
         ("d send --interrupt + wait", scenario_send_wait),
         ("e archive/ls/delete/not found", scenario_archive_delete),
+        ("f permit ls/allow/deny + errors", scenario_permit),
     ];
     for (name, scenario) in scenarios {
         let start = Instant::now();

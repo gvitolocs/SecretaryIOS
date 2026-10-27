@@ -74,6 +74,19 @@ impl Registry {
         let _ = std::fs::remove_file(self.dir.join(format!("{pid}.json")));
     }
 
+    /// The pids of the provider processes alive now (a record whose pid was reused
+    /// by another process doesn't count).
+    pub fn live_pids(&self) -> std::collections::HashSet<u32> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Default::default() };
+        entries
+            .flatten()
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter_map(|s| serde_json::from_str::<Record>(&s).ok())
+            .filter(|r| start_ticks(r.pid) == Some(r.start_ticks))
+            .map(|r| r.pid)
+            .collect()
+    }
+
     /// Kill the process groups a previous daemon left running. A record whose pid
     /// now belongs to another process (different start time) is only removed.
     /// Returns the pids that were killed.

@@ -7,6 +7,10 @@
 //! triggers ("emit synthetic turn failure", "emit synthetic plan approval",
 //! "emit synthetic questions", ...). `mock-slow` can't start sessions.
 //!
+//! Lucina-only triggers, for agentd's own tests (Paseo's mock has none of them):
+//! "lucina mock write <path>=<text>" writes a file in the session's cwd and settles,
+//! and "lucina mock mcp permission <server>/<tool>" asks for an MCP tool.
+//!
 //! Not ported yet (parity row P10): the stress and large-payload triggers, the
 //! steering-replay shapes, prompt rejections and rewind.
 
@@ -280,6 +284,21 @@ fn turn_failure(prompt: &str) -> bool {
     has_phrase(prompt, &["emit synthetic turn failure", "emit a synthetic turn failure"])
 }
 
+/// "lucina mock write <path>=<text>" (Lucina only): the rest of the line.
+fn write_file(prompt: &str) -> Option<(String, String)> {
+    let rest = prompt.split("lucina mock write ").nth(1)?.lines().next()?;
+    let (path, text) = rest.split_once('=')?;
+    let path = path.trim();
+    (!path.is_empty() && !path.contains("..") && !path.starts_with('/')).then(|| (path.to_string(), text.to_string()))
+}
+
+/// "lucina mock mcp permission <server>/<tool>" (Lucina only).
+fn mcp_permission(prompt: &str) -> Option<(String, String)> {
+    let rest = prompt.split("lucina mock mcp permission ").nth(1)?.split_whitespace().next()?;
+    let (server, tool) = rest.split_once('/')?;
+    (!server.is_empty() && !tool.is_empty()).then(|| (server.to_string(), tool.to_string()))
+}
+
 fn plan_approval(prompt: &str) -> bool {
     has_phrase(prompt, &["emit synthetic plan approval", "emit a synthetic plan approval"])
 }
@@ -541,6 +560,7 @@ struct Turn {
 }
 
 struct Inner {
+    cwd: String,
     model: String,
     mode: String,
     turn: Option<Turn>,
@@ -580,6 +600,7 @@ impl MockSession {
             id,
             events,
             inner: Arc::new(Mutex::new(Inner {
+                cwd: config.cwd.clone(),
                 model: config.model.unwrap_or_else(|| DEFAULT_MODEL.into()),
                 mode: config.mode_id.unwrap_or_else(|| DEFAULT_MODE.into()),
                 turn: None,
@@ -601,6 +622,10 @@ enum Script {
     PlanApproval,
     Questions(Value),
     Cycle(Profile),
+    /// Lucina only.
+    WriteFile(String, String),
+    /// Lucina only.
+    McpPermission(String, String),
 }
 
 /// The handle a turn task uses: emits only while its turn is still the active one.
@@ -790,6 +815,40 @@ async fn run_script(ctx: TurnCtx, script: Script) {
             ctx.emit(StreamEvent::PermissionRequested { provider: MOCK_ID.into(), request: Box::new(request) });
         }
         Script::Cycle(profile) => run_cycles(ctx, profile).await,
+        Script::WriteFile(path, text) => {
+            if !ctx.active() {
+                return;
+            }
+            ctx.started();
+            let full = std::path::Path::new(&ctx.lock().cwd).join(&path);
+            let reply = match full.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&full, &text)) {
+                Ok(()) => format!("Wrote {path}"),
+                Err(e) => format!("Could not write {path}: {e}"),
+            };
+            ctx.assistant(reply);
+            ctx.end(|c| c.emit(StreamEvent::TurnCompleted { provider: MOCK_ID.into(), turn_id: Some(c.turn_id.clone()), usage: None }));
+        }
+        Script::McpPermission(server, tool) => {
+            if !ctx.active() {
+                return;
+            }
+            ctx.started();
+            let request = PermissionRequest {
+                id: format!("mock-mcp-{}", ctx.turn_id),
+                provider: MOCK_ID.into(),
+                name: format!("mcp__{server}__{tool}"),
+                kind: PermissionKind::Tool,
+                title: Some(format!("{server}: {tool}")),
+                description: None,
+                input: Some(json_map(json!({"query": "x"}))),
+                detail: None,
+                suggestions: None,
+                actions: None,
+                metadata: None,
+            };
+            ctx.lock().pending.push(request.clone());
+            ctx.emit(StreamEvent::PermissionRequested { provider: MOCK_ID.into(), request: Box::new(request) });
+        }
     }
 }
 
@@ -881,6 +940,10 @@ impl Session for MockSession {
                 Script::Settled(answer.to_string())
             } else if let Some(md) = settled_image_markdown(prompt) {
                 Script::Settled(md)
+            } else if let Some((path, text)) = write_file(prompt) {
+                Script::WriteFile(path, text)
+            } else if let Some((server, tool)) = mcp_permission(prompt) {
+                Script::McpPermission(server, tool)
             } else if plan_approval(prompt) {
                 Script::PlanApproval
             } else if let Some(q) = questions(prompt) {
