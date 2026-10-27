@@ -41,7 +41,7 @@ enum Which {
 
 #[derive(Deserialize, JsonSchema)]
 struct Args {
-    /// `task`: describe a whole job in words; your computer-use engine does it on your Linux desktop and reports what it did (best for browsing, downloads, multi-step work). `bash`: one shell command in the sandbox. `screenshot`: what is on the screen now (windows and their state). `tools`: list the desktop's driver tools. `tool`: call one driver tool (click, type_text, press_key, launch_app, get_accessibility_tree; browser_* tools need start_session first). Chromium only; never install or launch Firefox.
+    /// `task`: describe a whole job in words; your computer-use engine does it on your Linux desktop and reports what it did (best for browsing, downloads, multi-step work). `bash`: one shell command in the sandbox. `screenshot`: what is on the screen now (windows and their state). `tools`: list the desktop's driver tools. `tool`: call one driver tool (click, type_text, press_key, launch_app, get_accessibility_tree; browser_* tools: start_session, browser_prepare with allow_launch and the isolated_named profile lucina, get_browser_state on that window for target_id and tab_id, then browser_navigate etc.). Chromium only; never install or launch Firefox.
     action: Action,
     /// For `task`: the job, e.g. "open example.com and tell me the page title".
     task: Option<String>,
@@ -78,7 +78,7 @@ impl Tool for ComputerTool {
     }
 
     fn description(&self) -> &'static str {
-        "Your own isolated computers on nezopt: a Linux desktop (lucina-workspace, with Chromium, a terminal and files) and an Android sandbox (lucina-android). Use it yourself whenever a request needs a real browser or desktop: visiting a website, downloading and inspecting a file, filling a web page, checking how something looks. Prefer action `task` for multi-step work; use `bash`, `screenshot` and `tool` for quick direct steps. Nothing here can reach Giuseppe's own machines or files. The desktop is a sandbox container on nezopt, not nezopt's host and not Giuseppe's Mac. Its only browser is Chromium: for web pages prefer action `tool` with the driver's browser_* tools (start_session first, then browser_navigate), or click/type_text/press_key. Never install or launch Firefox."
+        "Your own isolated computers on nezopt: a Linux desktop (lucina-workspace, with Chromium, a terminal and files) and an Android sandbox (lucina-android). Use it yourself whenever a request needs a real browser or desktop: visiting a website, downloading and inspecting a file, filling a web page, checking how something looks. Prefer action `task` for multi-step work; use `bash`, `screenshot` and `tool` for quick direct steps. Nothing here can reach Giuseppe's own machines or files. The desktop is a sandbox container on nezopt, not nezopt's host and not Giuseppe's Mac. Its only browser is Chromium: for web pages prefer action `tool` with the driver's browser_* tools (start_session {session}, browser_prepare {session, allow_launch: true, profile: {mode: isolated_named, name: lucina}} to open Chromium, get_browser_state {session, pid, window_id} on that window for its target_id and tab_id, then browser_navigate and the other browser_* tools with session, target_id and tab_id), or click/type_text/press_key. Never install or launch Firefox."
     }
 
     fn parameters(&self) -> Value {
