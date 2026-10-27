@@ -63,6 +63,8 @@ struct LucinaMap: View {
 
     /// Selected route as latitude/longitude pairs; fitted together with the pins.
     var polyline: [[Double]] = []
+    /// The in-app navigation: the camera follows the owner and their heading instead of the fit.
+    var followsUser = false
 
     @State private var position: MapCameraPosition
     @State private var fitKey: FitKey
@@ -73,7 +75,7 @@ struct LucinaMap: View {
 
     init(pins: [MapPin], selectedId: Binding<String?>? = nil, showsUserLocation: Bool = false, focus: MapFocus? = nil,
          interactive: Bool = true, polyline: [[Double]] = [], alsoFit: CLLocationCoordinate2D? = nil,
-         onCameraChange: ((CLLocationCoordinate2D) -> Void)? = nil) {
+         followsUser: Bool = false, onCameraChange: ((CLLocationCoordinate2D) -> Void)? = nil) {
         self.pins = pins
         self.polyline = polyline
         self.selectedId = selectedId
@@ -82,7 +84,9 @@ struct LucinaMap: View {
         self.interactive = interactive
         self.alsoFit = alsoFit
         self.onCameraChange = onCameraChange
-        _position = State(initialValue: Self.fit(pins, also: alsoFit, polyline: polyline))
+        self.followsUser = followsUser
+        let fit = Self.fit(pins, also: alsoFit, polyline: polyline)
+        _position = State(initialValue: followsUser ? .userLocation(followsHeading: true, fallback: fit) : fit)
         _fitKey = State(initialValue: FitKey(pins: pins, also: alsoFit, polyline: polyline))
     }
 
@@ -141,7 +145,13 @@ struct LucinaMap: View {
         .onChange(of: FitKey(pins: pins, also: alsoFit, polyline: polyline)) { _, key in
             guard key != fitKey else { return }
             fitKey = key
+            // A new route while navigating keeps the camera on the owner.
+            guard !followsUser else { return }
             withAnimation(.easeInOut(duration: 0.35)) { position = Self.fit(pins, also: alsoFit, polyline: polyline) }
+        }
+        .onChange(of: followsUser) { _, follow in
+            let fit = Self.fit(pins, also: alsoFit, polyline: polyline)
+            withAnimation(.easeInOut(duration: 0.35)) { position = follow ? .userLocation(followsHeading: true, fallback: fit) : fit }
         }
         .onChange(of: focus) { _, focus in
             guard let focus, let pin = pins.first(where: { $0.id == focus.id }) else { return }

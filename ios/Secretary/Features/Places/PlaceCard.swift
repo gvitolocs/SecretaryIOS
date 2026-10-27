@@ -3,14 +3,14 @@ import SwiftUI
 
 /// A place in the chat (a `place` block, a proactive message's `meta.place`, a shared location or
 /// maps link): a still map, the title, address, time and distance. Tapping it opens the full map.
-/// A place MKLocalSearch can't find says so and offers to search in Maps (only on tap).
+/// A place the map can't find says so (Apple Maps only from its secondary menu).
 struct PlaceCard: View {
     @Environment(AppModel.self) private var app
-    @Environment(\.openURL) private var openURL
     let place: Place
     @State private var resolved: PlaceResolver.Resolved?
     @State private var notFound = false
     @State private var showMap = false
+    @State private var countdownPinned = false
 
     var body: some View {
         Group {
@@ -23,7 +23,19 @@ struct PlaceCard: View {
             }
         }
         .accessibilityIdentifier("placeCard")
-        .task(id: place) { await resolve() }
+        // Long-press an event: pin it to the countdown widget.
+        .contextMenu {
+            if let event = place.countdownEvent {
+                CountdownPinButton(event: event, pinned: countdownPinned) {
+                    countdownPinned.toggle()
+                    Countdown.setPinned(event, countdownPinned)
+                }
+            }
+        }
+        .task(id: place) {
+            countdownPinned = place.countdownEvent.map { Countdown.isPinned($0.id) } ?? false
+            await resolve()
+        }
         .sheet(isPresented: $showMap) {
             if let resolved {
                 NavigationStack {
@@ -75,21 +87,8 @@ struct PlaceCard: View {
             }
             .multilineTextAlignment(.leading)
             if notFound {
-                Label("Not found on the map", systemImage: "mappin.slash")
-                    .font(LucinaTokens.Fonts.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-                Button {
-                    if let url = PlaceDirections.searchURL(place.searchQuery) { openURL(url) }
-                } label: {
-                    Label("Search in Maps", systemImage: "magnifyingglass")
-                        .font(LucinaTokens.Fonts.subheadline.weight(.semibold))
-                        .foregroundStyle(Theme.onAccent)
-                        .padding(.horizontal, 14)
-                        .frame(height: 34)
-                        .background(Theme.accentFill, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("placeSearchInMaps")
+                PlaceNotFound(place: place)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))

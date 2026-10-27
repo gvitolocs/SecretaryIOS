@@ -6,8 +6,8 @@ import WidgetKit
 /// `-SecretaryWidgetGallery <page>`: the widgets' own views (Extensions/SecretaryWidgets), drawn
 /// in the app at their Home Screen and Lock Screen sizes from the cached sections, so a device
 /// screenshot shows them without placing them by hand. Run `-SecretaryWidgetSelfTest YES` first
-/// to fill the cache. Pages: 0 Ask + appointment, 1 shopping, 2 weight + training, 3 tasks,
-/// 4 Pokémon, 5 films + memo, 6 Lock Screen, 7 Lock Screen while locked (privacy redaction).
+/// to fill the cache. Pages: 0 Ask + appointment, 1 shopping, 2 weight + training,
+/// 3 tasks + countdown, 4 Pokémon, 5 films + memo, 6 Lock Screen, 7 Lock Screen while locked (privacy redaction).
 struct WidgetGallery: View {
     let page: Int
 
@@ -64,6 +64,11 @@ struct WidgetGallery: View {
                                                       entry: SectionEntry(date: now, section: WidgetStore.read(ShoppingSection.self), state: .ok)) }
             }
             home(Self.large) { TasksWidgetView(familyOverride: .systemLarge, entry: tasks) }
+            HStack(spacing: 22) {
+                home(Self.small) { CountdownWidgetView(familyOverride: .systemSmall, entry: Self.countdown(now)) }
+                home(Self.small) { CountdownWidgetView(familyOverride: .systemSmall, entry: CountdownWidget.Entry(date: now, events: [])) }
+            }
+            home(Self.medium) { CountdownWidgetView(familyOverride: .systemMedium, entry: Self.countdown(now)) }
         case 4:
             let screen = WidgetStore.imageURL("pokemon-screen.png").flatMap { UIImage(contentsOfFile: $0.path) }
             let pokemon = PokemonWidget.Entry(date: now, section: WidgetStore.read(PokemonSection.self), state: .ok, screen: screen)
@@ -98,6 +103,7 @@ struct WidgetGallery: View {
         let tasks = SectionEntry(date: now, section: WidgetStore.read(TasksSection.self), state: .ok)
         let pokemon = PokemonWidget.Entry(date: now, section: WidgetStore.read(PokemonSection.self), state: .ok)
         let films = FilmsWidget.Entry(date: now, section: WidgetStore.read(FilmsSection.self), state: .ok)
+        let countdown = Self.countdown(now)
         Group {
             lock(Self.inline) { AppointmentWidgetView(familyOverride: .accessoryInline, entry: next) }
             lock(Self.inline) { WeightWidgetView(familyOverride: .accessoryInline, entry: weight) }
@@ -128,8 +134,22 @@ struct WidgetGallery: View {
                 lock(Self.rectangular) { PokemonWidgetView(familyOverride: .accessoryRectangular, entry: pokemon) }
                 lock(Self.rectangular) { FilmsWidgetView(familyOverride: .accessoryRectangular, entry: films) }
             }
+            lock(Self.inline) { CountdownWidgetView(familyOverride: .accessoryInline, entry: countdown) }
+            lock(Self.rectangular) { CountdownWidgetView(familyOverride: .accessoryRectangular, entry: countdown) }
         }
         .redacted(reason: redacted ? .privacy : [])
+    }
+
+    /// The pinned events, else three samples (today, tomorrow, in 15 days).
+    private static func countdown(_ now: Date) -> CountdownWidget.Entry {
+        let pinned = Countdown.visible(Countdown.pinned, fresher: Countdown.upcoming, now: now)
+        guard pinned.isEmpty else { return CountdownWidget.Entry(date: now, events: pinned) }
+        let day = { (offset: Int) in Calendar.current.date(byAdding: .day, value: offset, to: now) ?? now }
+        return CountdownWidget.Entry(date: now, events: [
+            CountdownEvent(id: "a", title: String(localized: "Network exam"), start: day(15), allDay: true),
+            CountdownEvent(id: "b", title: "Dentist", start: day(1).addingTimeInterval(3600)),
+            CountdownEvent(id: "c", title: "Hack Night", start: now.addingTimeInterval(7200)),
+        ].sorted { $0.start < $1.start })
     }
 
     private static func posters(_ section: FilmsSection?) -> [String: UIImage] {

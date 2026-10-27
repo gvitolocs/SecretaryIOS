@@ -17,7 +17,7 @@ trap 'rm -f /tmp/iphone16e.lock/owner; rmdir /tmp/iphone16e.lock 2>/dev/null' EX
 xcrun devicectl device install app --device "$dev" "$app" > "$out/install.log" 2>&1 || { echo "install failed: $out/install.log"; exit 1; }
 i=0
 # name:launch arguments (after `--`, so devicectl passes them to the app instead of parsing them)
-for shot in "chat:-SecretaryInitialTab chat" "shopping:-SecretaryInitialTab shopping" \
+for shot in "chat:-SecretaryInitialTab chat" "lucina:-SecretaryInitialTab lucina" "shopping:-SecretaryInitialTab shopping" \
             "training:-SecretaryInitialTab fitness" "training-lower:-SecretaryInitialTab fitness -SecretaryScrollTo training" \
             "plugins:-SecretaryInitialTab plugins" "settings:-SecretaryInitialTab settings" \
             "notes:-SecretaryInitialTab notes" "tasks:-SecretaryInitialTab tasks"; do

@@ -6,8 +6,10 @@ in Lucina; the app sends requests and renders the views it gets back.
 
 - iOS 17+, bundle id `tech.getsecretary.app`. No Swift packages: the maps (the deals map, places
   in the chat) are MapKit (`Shared/LucinaMap.swift`, `Features/Places/`), with no keys.
-- Tabs: **Chat** (Lucina, with job cards), **Shopping**, **Gym** (the LucinaGym
-  screens), **Weight**, **Settings**.
+- Tabs (2026-10-26): **Chat** (the conversation with Lucina, job cards; no avatar),
+  **Lucina** (her 3D stage, AR, wardrobe and voice; loaded only when the tab first opens),
+  **Shopping**, **Training** (the LucinaGym screens and the weight), **Plugins** (notes, tasks,
+  memos, media, gallery, Pokémon, …). **Settings** is a sheet from the gear in every tab.
 - Auth: email + password (`POST /v1/auth/device`) or a `sec_…` device key. The
   token lives in the Keychain (`afterFirstUnlockThisDeviceOnly`) and is sent as
   `Authorization: Bearer`.
@@ -21,7 +23,8 @@ in Lucina; the app sends requests and renders the views it gets back.
 project.yml                 xcodegen spec (targets Secretary, SecretaryTests, SecretaryUITests)
 Secretary/App/              AppModel (session, token, banner), RootView, tabs
 Secretary/Core/             APIClient, APIError, Keychain, ServerConfig, engine protocol, wire types
-Secretary/Features/Chat/    ChatStore (persisted, job polling), ChatView = stage + transcript + composer
+Secretary/Features/Chat/    ChatStore (persisted, job polling), ChatView = transcript + composer
+Secretary/Features/Lucina/  the Lucina tab: LucinaStage (web view, lazy), studio, AR, wardrobe
 Secretary/Features/Shopping/ loose item normalisation, optimistic toggles
 Secretary/Features/Gym/     GymTransport (HTTP now, FFI later), GymStore, ported LucinaGym screens
 Secretary/Features/Weight/  BodyClient.swift (all body wire knowledge), WeightStore, WeightView
@@ -69,6 +72,22 @@ xcrun devicectl device process launch --device <devicectl id> tech.getsecretary.
 With a free (personal) team the provisioning profile expires after 7 days;
 rebuild and reinstall then. TestFlight needs a paid Apple Developer team.
 
+## Launch and tab timing
+
+`App/PerfLog.swift` times the launch (process start → first Chat frame) and every tab switch
+(tap → that tab's first frame) in every build:
+
+- Instruments → **Points of Interest** (`tech.getsecretary.app`): the `Launch` interval, one
+  `Setup` interval per store AppModel builds, a `Tab` interval per switch, and the Lucina
+  stage's `LucinaStageLoad` / `LucinaStageReady` events.
+- Console.app (pick the iPhone; filter `subsystem:tech.getsecretary.app category:Perf`): one
+  `perf …` line per measurement.
+- `-SecretaryPerfSelfTest`: after launch the app opens every tab (some twice), checks that no
+  switch rebuilt the root or re-ran the app setup, and appends the summary to
+  `Documents/perf-selftest.txt`. `scripts/perf-selftest.sh <Secretary.app> <out dir> [runs]`
+  installs a build, runs it cold `runs` times and copies the file back. Target: first chat frame
+  under 1 s on the iPhone 16e (the summary marks it PASS/FAIL).
+
 ## The mock
 
 `scripts/run-mock.sh start|stop|restart` copies `web/mock/server.mjs` (from
@@ -86,7 +105,6 @@ route (CSRF-exempt, as on the real server), `POST /v1/auth/device` and
   one refers to ids the other never made. Two-way sync needs engine-side id assignment from the client
   (or an id map) first.
 - A body-weight `FFIBodyTransport` the same way (`secretary_body_*` is already in the library).
-- `LucinaStage` (the animated avatar with voice) in the slot above the chat transcript.
 - TestFlight, which needs the owner's paid Apple developer team.
 
 ## Notifications (docs/notifications.md)

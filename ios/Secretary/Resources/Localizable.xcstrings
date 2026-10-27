@@ -419,16 +419,16 @@
     },
     "Event" : {
       "localizations" : {
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Evento"
-          }
-        },
         "da" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Begivenhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Evento"
           }
         }
       }
@@ -12779,6 +12779,22 @@
         }
       }
     },
+    "Lucina's 3D stage is off." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lucinas 3D-scene er slået fra."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La scena 3D di Lucina è disattivata."
+          }
+        }
+      }
+    },
     "Training lives" : {
       "localizations" : {
         "da" : {
@@ -15600,22 +15616,6 @@
         }
       }
     },
-    "Event" : {
-      "localizations" : {
-        "da" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Begivenhed"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Evento"
-          }
-        }
-      }
-    },
     "Not linked to an event" : {
       "localizations" : {
         "da" : {
@@ -15820,6 +15820,438 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Qui"
+          }
+        }
+      }
+    },
+    "Navigate" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naviga"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naviger"
+          }
+        }
+      }
+    },
+    "Open in Apple Maps" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri in Apple Maps"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn i Apple Maps"
+          }
+        }
+      }
+    },
+    "You have arrived" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sei a destinazione"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Du er fremme"
+          }
+        }
+      }
+    },
+    "Arrive at %@" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Arrivo alle %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ankomst kl. %@"
+          }
+        }
+      }
+    },
+    "%@ to go" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mancano %@"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ tilbage"
+          }
+        }
+      }
+    },
+    "Finding your position…" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cerco la tua posizione…"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Finder din position…"
+          }
+        }
+      }
+    },
+    "Allow location access to navigate." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Consenti l'accesso alla posizione per navigare."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Giv adgang til din placering for at navigere."
+          }
+        }
+      }
+    },
+    "End" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fine"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afslut"
+          }
+        }
+      }
+    },
+    "Not found on the map" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Non trovato sulla mappa"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ikke fundet på kortet"
+          }
+        }
+      }
+    },
+    "Navigate to the next appointment" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naviga al prossimo impegno"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naviger til næste aftale"
+          }
+        }
+      }
+    },
+    "Opens Secretary's map with directions to your next appointment." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apre la mappa di Secretary con le indicazioni per il prossimo impegno."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbner Secretarys kort med rutevejledning til din næste aftale."
+          }
+        }
+      }
+    },
+    "No upcoming appointment with a place." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun prossimo impegno con un luogo."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen kommende aftale med et sted."
+          }
+        }
+      }
+    },
+    "Directions to %@." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indicazioni per %@."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rutevejledning til %@."
+          }
+        }
+      }
+    },
+    "%lld days" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld giorni"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld dage"
+          }
+        }
+      }
+    },
+    "Countdown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nedtælling"
+          }
+        }
+      }
+    },
+    "Network exam" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Esame di Reti"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Netværkseksamen"
+          }
+        }
+      }
+    },
+    "The days left until the events you pin: an exam, a trip, a birthday." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I giorni che mancano agli eventi che fissi: un esame, un viaggio, un compleanno."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dagene til de begivenheder, du fastgør: en eksamen, en rejse, en fødselsdag."
+          }
+        }
+      }
+    },
+    "%@ No countdowns" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Nessun conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Ingen nedtællinger"
+          }
+        }
+      }
+    },
+    "Pin an event in Secretary." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissa un evento in Secretary."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør en begivenhed i Secretary."
+          }
+        }
+      }
+    },
+    "Pin an event in Secretary to count down to it." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissa un evento in Secretary per il conto alla rovescia."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør en begivenhed i Secretary for at tælle ned til den."
+          }
+        }
+      }
+    },
+    "Pin an event to see the days left to it on the Countdown widget." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fissa un evento per vedere quanti giorni mancano nel widget Conto alla rovescia."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgør en begivenhed for at se dagene til den i widgetten Nedtælling."
+          }
+        }
+      }
+    },
+    "Unpin from countdown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Togli dal conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern fra nedtælling"
+          }
+        }
+      }
+    },
+    "Pin to countdown" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aggiungi al conto alla rovescia"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Føj til nedtælling"
+          }
+        }
+      }
+    },
+    "No events in the coming year." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessun evento nel prossimo anno."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ingen begivenheder i det kommende år."
+          }
+        }
+      }
+    },
+    "Pinned events" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eventi fissati"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fastgjorte begivenheder"
+          }
+        }
+      }
+    },
+    "Events" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eventi"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Begivenheder"
+          }
+        }
+      }
+    },
+    "Choose the events to count down to. Without a choice, the widget shows the events you pinned in Secretary." : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scegli gli eventi per il conto alla rovescia. Senza una scelta, il widget mostra gli eventi fissati in Secretary."
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vælg de begivenheder, der skal tælles ned til. Uden et valg viser widgetten de begivenheder, du har fastgjort i Secretary."
           }
         }
       }

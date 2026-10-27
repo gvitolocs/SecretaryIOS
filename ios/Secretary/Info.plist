@@ -51,10 +51,6 @@
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>comgooglemaps</string>
-	</array>
 	<key>NSAlarmKitUsageDescription</key>
 	<string>Lucina sets alarms and timers for you when you ask.</string>
 	<key>NSAppTransportSecurity</key>

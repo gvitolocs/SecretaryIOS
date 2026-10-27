@@ -306,7 +306,6 @@ private struct DealsBadge: View {
 private struct DealsStoreSheet: View {
     let store: DealsMap.Store
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
 
     var body: some View {
         NavigationStack {
@@ -342,10 +341,19 @@ private struct DealsStoreSheet: View {
                     }
                 }
                 Section("Directions") {
-                    Button { openDirections() } label: {
-                        Label("Get directions", systemImage: "arrow.triangle.turn.up.right.diamond")
+                    // Lucina's map, already navigating; Apple Maps only from the long-press menu.
+                    NavigationLink {
+                        if let coordinate = store.place.coordinate {
+                            PlaceMapView(place: store.place, coordinate: coordinate, address: store.street, startsNavigating: true)
+                        }
+                    } label: {
+                        Label("Navigate", systemImage: "location.north.line.fill")
                     }
                     .accessibilityIdentifier("dealsDirections")
+                    .contextMenu {
+                        OpenInAppleMapsButton(url: ExternalMaps.appleMapsURL(to: CLLocationCoordinate2D(latitude: store.lat, longitude: store.lng),
+                                                                             name: store.place.title))
+                    }
                 }
             }
             .lucinaList()
@@ -354,13 +362,6 @@ private struct DealsStoreSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-        }
-    }
-
-    private func openDirections() {
-        let google = UIApplication.shared.canOpenURL(DealsDirections.googleMapsProbe)
-        if let url = DealsDirections.url(lat: store.lat, lng: store.lng, googleMapsInstalled: google) {
-            openURL(url)
         }
     }
 }

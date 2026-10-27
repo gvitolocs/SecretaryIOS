@@ -74,7 +74,7 @@ struct ShoppingWidgetView: View {
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
                 Label(String(localized: "\(items.count) to buy"), systemImage: "cart.fill").font(.headline).widgetAccentable()
-                Text(items.prefix(4).map(\.name).joined(separator: ", ")).font(.caption).lineLimit(2).privacySensitive()
+                Text(items.prefix(4).map { "\($0.emoji) \($0.name)" }.joined(separator: ", ")).font(.caption).lineLimit(2).privacySensitive()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .widgetURL(WidgetRoute.url("shopping"))
@@ -134,11 +134,15 @@ struct ShoppingWidgetView: View {
         }
     }
 
+    /// One item: its catalogue emoji and name; a tap ticks it off (the circle says so).
     private func row(_ item: ShoppingSection.Item, compact: Bool) -> some View {
         Button(intent: CheckShoppingItemIntent(listId: entry.section?.listId ?? "default", itemId: item.id)) {
-            HStack(spacing: LucinaTokens.Space.sm) {
-                Image(systemName: "circle").font(compact ? .footnote : .callout).foregroundStyle(LucinaTokens.Colors.accent).widgetAccentable()
-                if let icon = item.icon, !compact { Text(icon).font(.footnote) }
+            HStack(spacing: compact ? LucinaTokens.Space.xs : LucinaTokens.Space.sm) {
+                Image(systemName: "circle").font(compact ? .caption2 : .footnote).foregroundStyle(LucinaTokens.Colors.accent).widgetAccentable()
+                Text(verbatim: item.emoji)
+                    .font(.system(size: compact ? LucinaTokens.FontSize.footnote : LucinaTokens.FontSize.callout))
+                    .frame(width: compact ? 18 : 22)
+                    .accessibilityHidden(true)
                 Text(item.name).font(compact ? LucinaTokens.Fonts.footnote : LucinaTokens.Fonts.callout)
                     .foregroundStyle(LucinaTokens.Colors.text).lineLimit(1)
                 if !item.spec.isEmpty {

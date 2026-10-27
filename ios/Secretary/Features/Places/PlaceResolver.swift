@@ -126,6 +126,8 @@ final class PlaceLocation {
 
     @ObservationIgnored private let manager = CLLocationManager()
     @ObservationIgnored private let delegate = Delegate()
+    /// Screens navigating now (`startUpdating`): the location follows the owner while above 0.
+    @ObservationIgnored private var followers = 0
 
     init() {
         status = manager.authorizationStatus
@@ -135,6 +137,7 @@ final class PlaceLocation {
             guard let self else { return }
             self.status = status
             if self.isAuthorized { self.refresh() }
+            if self.isAuthorized && self.followers > 0 { self.startFollowing() }
         }
         delegate.onLocation = { [weak self] location in self?.current = location }
         if isAuthorized { current = manager.location }
@@ -152,6 +155,26 @@ final class PlaceLocation {
         guard isAuthorized else { return }
         if current == nil { current = manager.location }
         manager.requestLocation()
+    }
+
+    /// Continuous, precise fixes for the in-app navigation, until the matching `stopUpdating`.
+    func startUpdating() {
+        followers += 1
+        if isAuthorized { startFollowing() }
+    }
+
+    func stopUpdating() {
+        followers = max(0, followers - 1)
+        guard followers == 0 else { return }
+        manager.stopUpdatingLocation()
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.distanceFilter = kCLDistanceFilterNone
+    }
+
+    private func startFollowing() {
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = 5
+        manager.startUpdatingLocation()
     }
 
     private final class Delegate: NSObject, CLLocationManagerDelegate {
@@ -268,32 +291,5 @@ struct PlaceETA: Equatable, Identifiable, Sendable {
     /// "9 min · 31 min · 14 min" with the modes spelled out (the self-test and VoiceOver).
     static func text(_ etas: [PlaceETA]) -> String {
         etas.map { "\($0.mode.title) \(PlaceFormat.duration($0.seconds))" }.joined(separator: " · ")
-    }
-}
-
-/// The Directions menu: Apple Maps (MapKit) or Google Maps (the app when installed, else the web).
-@MainActor
-enum PlaceDirections {
-    static func appleMaps(to coordinate: CLLocationCoordinate2D, name: String) {
-        let item = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
-        item.name = name
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDefault])
-    }
-
-    static func googleMapsURL(to coordinate: CLLocationCoordinate2D) -> URL? {
-        let destination = "\(coordinate.latitude),\(coordinate.longitude)"
-        if UIApplication.shared.canOpenURL(DealsDirections.googleMapsProbe) {
-            return URL(string: "comgooglemaps://?daddr=\(destination)")
-        }
-        return URL(string: "https://www.google.com/maps/dir/?api=1&destination=\(destination)")
-    }
-
-    /// Apple Maps searching for the text (a place MKLocalSearch did not find).
-    static func searchURL(_ query: String) -> URL? {
-        var components = URLComponents()
-        components.scheme = "maps"
-        components.host = ""
-        components.queryItems = [URLQueryItem(name: "q", value: query)]
-        return components.url
     }
 }

@@ -19,6 +19,8 @@ final class GalleryStore {
     @ObservationIgnored let api: () -> GalleryAPI
 
     @ObservationIgnored private var showingCachedListing = false
+    /// A page from the server arrived: the saved listing (read in the background at launch) is not shown.
+    @ObservationIgnored private var hasServerPage = false
 
     private struct Listing: Codable, Sendable {
         let items: [GalleryItem]
@@ -40,12 +42,19 @@ final class GalleryStore {
             items = fixed
             return
         }
-        if let data = try? Data(contentsOf: listingURL),
-           let saved = try? JSONDecoder().decode(Listing.self, from: data) {
-            items = saved.items
-            cursor = saved.nextCursor
-            total = saved.total
-            showingCachedListing = true
+        // The saved listing can be thousands of items: decoded off the main thread, not at launch.
+        let url = listingURL
+        Task { [weak self] in
+            let saved = await Task.detached(priority: .utility) { () -> Listing? in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? JSONDecoder().decode(Listing.self, from: data)
+            }.value
+            guard let self, let saved, !self.hasServerPage, self.items.isEmpty, self.filter == GalleryAPI.Filter(scope: self.scope) else { return }
+            self.items = saved.items
+            self.cursor = saved.nextCursor
+            self.total = saved.total
+            self.showingCachedListing = true
+            if self.error != nil { self.error = String(localized: "Offline — showing saved photos") }
         }
     }
 
@@ -63,6 +72,7 @@ final class GalleryStore {
             total = page.total
             error = nil
             showingCachedListing = false
+            hasServerPage = true
             if requestedFilter == GalleryAPI.Filter(scope: scope) {
                 let saved = Listing(items: page.items, nextCursor: page.nextCursor, total: page.total)
                 let url = listingURL

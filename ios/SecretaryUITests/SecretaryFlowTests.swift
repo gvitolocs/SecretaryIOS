@@ -233,22 +233,20 @@ final class SecretaryFlowTests: XCTestCase {
 
     // MARK: - Lucina stage
 
-    func testLucinaBubbleExpandsMutedByDefault() {
+    func testLucinaTabLoadsHerOnlyWhenOpenedMutedByDefault() {
         let app = launch()
         signIn(app)
-        let bubble = app.descendants(matching: .any)["lucinaBubble"]
-        XCTAssertTrue(bubble.waitForExistence(timeout: 10), "Lucina floats over the tabs")
-        sleep(4) // let WebGL draw for the screenshot
-        attach(app, "Lucina bubble")
-        bubble.tap()
+        XCTAssertFalse(app.descendants(matching: .any)["lucinaStage"].exists, "no avatar in the Chat tab")
+        app.tabBars.buttons["Lucina"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["lucinaStage"].waitForExistence(timeout: 10), "the stage loads with her tab")
         let mute = app.buttons["lucinaMute"]
-        XCTAssertTrue(mute.waitForExistence(timeout: 5), "expanded stage")
+        XCTAssertTrue(mute.waitForExistence(timeout: 5))
         XCTAssertEqual(mute.value as? String, "Muted", "no sound until the owner turns it on")
         XCTAssertTrue(app.buttons["lucinaMic"].exists)
-        sleep(3)
-        attach(app, "Lucina full body")
-        app.buttons["lucinaClose"].tap()
-        XCTAssertTrue(bubble.waitForExistence(timeout: 5))
+        sleep(4) // let WebGL draw for the screenshot
+        attach(app, "Lucina tab")
+        app.tabBars.buttons["Chat"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chat"].isSelected)
     }
 
     // MARK: - Device bridge

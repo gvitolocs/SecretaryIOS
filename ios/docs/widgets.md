@@ -11,15 +11,26 @@ All of these live in the `SecretaryWidgets` extension (`Extensions/SecretaryWidg
 | --- | --- | --- | --- |
 | Ask Lucina | small, medium: her last reply + an "Ask Lucina…" field | circular, rectangular, inline | the chat with the keyboard up (`chat/compose`) |
 | Next appointment | small, medium (+ the one after) | circular, rectangular, inline | the in-app place map (`map/place?title=&address=&when=&end=&eventId=`) |
-| Shopping list | small, medium (+ deals), large (+ deals) | circular, rectangular, inline | **tick items off in place**; "+" opens the add field; deals open the deals map |
+| Shopping list | small, medium (+ deals), large (+ deals): each item with its catalogue emoji | circular, rectangular, inline | **tick items off in place**; "+" opens the add field; deals open the deals map |
 | Today (tasks + reminders) | small, medium, large | circular, rectangular, inline | **complete in place** (Todoist task, or dismisses Lucina's reminder) |
 | Weight | small, medium (30-day trend) | circular, rectangular, inline | "+" opens the quick weight sheet |
 | Training | small, medium (this week's sessions) | circular gauge, rectangular, inline | Start / Resume a workout |
 | Voice memo | small | circular, inline | opens the recorder recording |
 | Lucina plays Pokémon | small, medium, large (live screen) | rectangular, inline | the Pokémon plugin |
 | Continue watching | small, medium (3 films) | rectangular | plays the film where it stopped |
+| Countdown | small (the soonest pinned event, big), medium (up to 3, one per line) | rectangular, inline | the Countdown plugin (`countdowns`) |
 
 The shopping widget is configurable (long-press → Edit widget → List).
+
+**Countdown**: "15 days — Network exam" with the date below; "Today" and "Tomorrow" by name; an event drops off
+once past (an all-day one after its day, a timed one when it ends). The events are the ones chosen in the widget
+(long-press → Edit widget → Events, from the coming year's calendar), else the ones pinned in the app: the pin on an
+event's map screen, a long-press on an event card or a calendar row (Settings › Links), or the Countdown plugin.
+Pins (`CountdownPinsSection`) are written by the app only; the coming year's events (`CountdownUpcomingSection`,
+`GET /v1/calendar/events?days=365`, kept 6 h) give the widget's list and a moved event's new time. No server change.
+
+**Shopping emoji**: the row's own emoji, else its catalogue item's (`GET /v1/shopping/catalog`, the same icons as the
+Shopping tab; kept a day and revalidated with its ETag), else its section's, else a built-in category emoji, else 🛒.
 
 **Controls** (iOS 18: Control Center, Lock Screen, Action button): Ask Lucina, Add to shopping, Record memo, Log weight.
 Each runs `OpenSecretaryIntent`, which opens the app at the route.

@@ -8,6 +8,7 @@ struct SecretaryWidgets: WidgetBundle {
     var body: some Widget {
         AskLucinaWidget()
         AppointmentWidget()
+        CountdownWidget()
         ShoppingWidget()
         TasksWidget()
         WeightWidget()

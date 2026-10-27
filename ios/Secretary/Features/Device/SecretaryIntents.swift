@@ -111,6 +111,30 @@ struct NextAppointmentIntent: AppIntent {
     }
 }
 
+/// "Navigate to my next appointment": Lucina's own map, already navigating (never another maps
+/// app). A Shortcuts action; the App Shortcuts list is full (10).
+struct NavigateToAppointmentIntent: AppIntent {
+    static let title: LocalizedStringResource = "Navigate to the next appointment"
+    static let description = IntentDescription("Opens Secretary's map with directions to your next appointment.")
+    static let openAppWhenRun = true
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let app = AppModel.shared
+        guard app.client.accessKey?.isEmpty == false else { throw IntentFailure.message(String(localized: "Open Secretary and sign in first.")) }
+        let section = try await WidgetFetcher(client: app.client, mediaClient: app.mediaClient).appointment()
+        WidgetStore.write(section)
+        guard let event = section.next, let location = event.location else {
+            let text = String(localized: "No upcoming appointment with a place.")
+            return .result(dialog: IntentDialog(stringLiteral: text))
+        }
+        let place = Place(title: event.title, address: location, when: event.start, end: event.end, eventId: event.id, kind: .event)
+        // Through the widget router: a launch before sign-in keeps it pending.
+        app.openWidgetRoute(String(PlaceLinks.route(place, navigate: true).dropFirst()))
+        return .result(dialog: IntentDialog(stringLiteral: String(localized: "Directions to \(event.title).")))
+    }
+}
+
 /// "What's on my shopping list?"
 struct ShoppingListIntent: AppIntent {
     static let title: LocalizedStringResource = "Shopping list"
