@@ -2,7 +2,8 @@ import { createEffect, createSignal, on, onCleanup, onMount, Show, For } from "s
 import { toApiError } from "../api/client";
 import { releaseOnExit, type ControlState, type Sandbox } from "../api/computer";
 import { t } from "../i18n";
-import { DeskSocket, type DeskMode, type DeskPhase } from "../lib/deskClient";
+import { decodableCodecs, DeskSocket, type DeskMode, type DeskPhase } from "../lib/deskClient";
+import { createDeskPipe, type DeskPipe } from "../lib/deskPipe";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { createTouchMouse } from "../lib/touch";
 import {
@@ -139,8 +140,13 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   let idleTimer: number | undefined;
   let frameTimes: number[] = [];
   let firstDrawAt: number | undefined;
+  /** The decoded picture's size (the canvas may belong to the worker, whose size this side cannot read). */
+  let natural = { width: 1280, height: 800 };
+  /** The player's video worker (lib/deskPipe.ts), or null: then the page decodes and draws. */
+  let pipeReady: Promise<DeskPipe | null> = Promise.resolve(null);
   let pinchBase: { scale: number; dx: number; dy: number } | null = null;
   let disposed = false;
+  let codecRetried = false;
   const step = createWheel();
 
   // ------------------------------------------------------------------ sockets
@@ -160,6 +166,15 @@ export default function DeskPlayer(props: DeskPlayerProps) {
         if (s !== cur) return;
         draw(frame);
       },
+      drawn: (width, height) => {
+        if (s === next) promote(s);
+        if (s !== cur) return;
+        natural = { width, height };
+        const now = performance.now();
+        frameTimes.push(now);
+        // For measuring against Cua's viewer: navigation start → first picture.
+        firstDrawAt ??= now;
+      },
       cursor: (x, y) => {
         if (s === cur) setCursor({ x, y });
       },
@@ -170,12 +185,23 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       closed: (code, reason, wasOpen) => onClosed(s, code, reason, wasOpen),
       unsupported: (codec: DeskCodec) => {
         console.warn("[lucinadesk] cannot decode", codec);
-        props.onFallback("unsupported");
+        // The ticket went with a remembered or guessed codec list: once, ask again with the probed one.
+        if (codecRetried) {
+          props.onFallback("unsupported");
+          return;
+        }
+        codecRetried = true;
+        void decodableCodecs().then((ok) => {
+          if (disposed) return;
+          if (!ok.length || ok.includes(codec)) props.onFallback("unsupported");
+          else retry();
+        });
       },
-    });
+    }, pipeReady);
     if (cur) next = s;
     else {
       cur = s;
+      s.makeCurrent();
       setDriving(mode === "control");
     }
     s.start().catch((e) => onTicketError(s, e));
@@ -186,6 +212,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     const old = cur;
     cur = s;
     next = null;
+    s.makeCurrent();
     old?.close();
     setDriving(s.mode === "control");
     setSwitching(null);
@@ -299,10 +326,6 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     }
     ctx ??= canvas.getContext("2d", { alpha: false, desynchronized: true });
     ctx?.drawImage(frame, 0, 0);
-    const now = performance.now();
-    frameTimes.push(now);
-    // For measuring against Cua's viewer: navigation start → first picture.
-    firstDrawAt ??= now;
   };
 
   // ------------------------------------------------------------------ control
@@ -362,10 +385,10 @@ export default function DeskPlayer(props: DeskPlayerProps) {
 
   const shown = () => {
     const box = canvas!.getBoundingClientRect();
-    return fitRect(box, { width: canvas!.width || 1280, height: canvas!.height || 800 });
+    return fitRect(box, natural);
   };
   const hostAt = (e: { clientX: number; clientY: number }) => {
-    const d = display() ?? { x: 0, y: 0, width: canvas?.width || 1280, height: canvas?.height || 800 };
+    const d = display() ?? { x: 0, y: 0, ...natural };
     return toHost(e, shown(), d);
   };
   const BUTTONS: Record<number, MouseButton> = { 0: "left", 1: "middle", 2: "right" };
@@ -562,6 +585,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   // ------------------------------------------------------------------ lifecycle
 
   onMount(() => {
+    // The video goes to a worker where the browser allows it; the first ticket is asked for meanwhile.
+    if (canvas) pipeReady = createDeskPipe(canvas).catch(() => null);
     open("watch");
     const tick = window.setInterval(() => {
       const now = performance.now();
@@ -569,7 +594,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       const st = cur?.stats;
       const s = { codec: st?.codec ?? "", fps: frameTimes.length, rtt: st?.rttMs ?? 0, firstFrameMs: st?.firstFrameMs ?? stats().firstFrameMs };
       setStats(s);
-      (window as unknown as { __lucinadesk?: unknown }).__lucinadesk = { ...s, firstDrawAt, mode: cur?.mode, via: st?.via, frames: st?.frames, bytes: st?.bytes };
+      (window as unknown as { __lucinadesk?: unknown }).__lucinadesk = { ...s, firstDrawAt, mode: cur?.mode, via: st?.via, frames: st?.frames, bytes: st?.bytes, marks: st?.marks };
     }, 500);
     const onFullscreen = () => {
       if (!document.fullscreenElement && !inShell) setFocus(false);
@@ -617,6 +642,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     window.visualViewport?.addEventListener("scroll", fitViewport);
     onCleanup(() => {
       disposed = true;
+      void pipeReady.then((p) => p?.dispose());
       window.clearInterval(tick);
       window.clearTimeout(retryTimer);
       window.clearTimeout(idleTimer);
@@ -669,7 +695,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
     if (!c || !d || d.cursorEmbedded || !canvas || (driving() && !touch)) return null;
     const box = canvas.getBoundingClientRect();
     const host = screenEl!.getBoundingClientRect();
-    const s = fitRect(box, { width: canvas.width, height: canvas.height });
+    const s = fitRect(box, natural);
     return {
       left: s.left - host.left + ((c.x - d.x) * s.width) / d.width,
       top: s.top - host.top + ((c.y - d.y) * s.height) / d.height,

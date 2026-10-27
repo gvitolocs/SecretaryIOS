@@ -1,21 +1,25 @@
-// One LucinaDesk socket: a ticket, a WebSocket speaking `lucinadesk.v1`, and a WebCodecs decoder
-// whose frames the caller draws. The page keeps one of these per mode: a takeover opens a control
-// socket and closes the watch one once the control socket has shown a frame (the contract has no
-// in-place switch), so the picture never goes black.
+// One LucinaDesk socket: a ticket, a WebSocket speaking `lucinadesk.v1`, and a WebCodecs decoder.
+// The page keeps one of these per mode: a takeover opens a control socket and closes the watch one
+// once the control socket has shown a frame (the contract has no in-place switch), so the picture
+// never goes black.
+//
+// With a pipe (lib/deskPipe.ts) the socket and the decoder run in the player's worker, which draws on
+// the canvas itself; this side keeps the ticket, the text messages and the input. Without one (no
+// OffscreenCanvas, tests) it is all here, and `sink.draw` gets the frames.
 
 import { deskApi, type DeskTicket } from "../api/desk";
 import type { Sandbox } from "../api/computer";
+import type { DeskPipe } from "./deskPipe";
+import { DeskVideo } from "./deskVideo";
 import {
   CODEC_PREFERENCE,
   DESK_PROTOCOL,
   WEBCODECS,
   parseServer,
-  parseVideo,
   type ClientMessage,
   type DeskCodec,
   type DeskDisplay,
   type ServerMessage,
-  type WireFrame,
 } from "./deskWire";
 
 export type DeskMode = "watch" | "control";
@@ -25,8 +29,10 @@ export type DeskPhase = "ticket" | "connecting" | "relay" | "secured" | "live" |
 export interface DeskSink {
   phase(p: DeskPhase): void;
   login(display: DeskDisplay, info: { hostname: string; platform: string; version: string }): void;
-  /** A decoded frame: draw it, then the socket closes it. */
+  /** A decoded frame to draw (no pipe); the socket closes it afterwards. */
   draw(frame: VideoFrame): void;
+  /** A frame is on the canvas (either way): its size, for mapping the pointer. */
+  drawn(width: number, height: number): void;
   cursor?(x: number, y: number): void;
   refused?(what: string, why: string): void;
   /** The socket is gone. `code` per CONTRACT §6 (1006 also for a refused ticket). */
@@ -41,8 +47,11 @@ export function deskCapable(): boolean {
 }
 
 let decodable: Promise<DeskCodec[]> | null = null;
+const CODECS_KEY = "desk.codecs";
+/** A first visit's guess, before the probe has answered: what every browser we target decodes. */
+const DEFAULT_CODECS: DeskCodec[] = ["vp9", "av1", "h264"];
 
-/** The codecs WebCodecs can decode here, best first (probed once). */
+/** The codecs WebCodecs can decode here, best first (probed once per page; remembered per device). */
 export function decodableCodecs(): Promise<DeskCodec[]> {
   if (!decodable) {
     decodable = (async () => {
@@ -56,10 +65,34 @@ export function decodableCodecs(): Promise<DeskCodec[]> {
           // not this one
         }
       }
+      try {
+        localStorage.setItem(CODECS_KEY, ok.join(","));
+      } catch {
+        // private mode: probed again next time
+      }
       return ok;
     })();
   }
   return decodable;
+}
+
+/**
+ * The codecs to ask for now, without waiting: Chrome's first `isConfigSupported` takes about half a
+ * second (it starts the media stack), which would come before the first picture. This device's last
+ * probe, else a guess; the probe runs meanwhile, and a wrong guess gets one retry (`DeskPlayer`).
+ */
+export function knownCodecs(): DeskCodec[] {
+  void decodableCodecs();
+  try {
+    const saved = localStorage.getItem(CODECS_KEY);
+    if (saved) {
+      const list = saved.split(",").filter((c): c is DeskCodec => (CODEC_PREFERENCE as string[]).includes(c));
+      if (list.length) return list;
+    }
+  } catch {
+    // no storage
+  }
+  return DEFAULT_CODECS;
 }
 
 export interface DeskStats {
@@ -70,6 +103,8 @@ export interface DeskStats {
   codec: DeskCodec | null;
   rttMs: number | null;
   via: "lan" | "p1" | null;
+  /** Milestones since `start()`, ms: for finding where the first picture's time goes. */
+  marks: { ticket?: number; pipe?: number; open?: number; login?: number; frame?: number };
 }
 
 const LAN_TIMEOUT_MS = 1000;
@@ -100,17 +135,20 @@ function wsBase(): string {
 
 export class DeskSocket {
   readonly mode: DeskMode;
-  readonly stats: DeskStats = { firstFrameMs: null, frames: 0, bytes: 0, codec: null, rttMs: null, via: null };
+  readonly stats: DeskStats = { firstFrameMs: null, frames: 0, bytes: 0, codec: null, rttMs: null, via: null, marks: {} };
+  /** No pipe: the socket and decoder here. */
   private ws: WebSocket | null = null;
-  private decoder: VideoDecoder | null = null;
-  private decoderCodec: DeskCodec | null = null;
-  private waitingKey = true;
-  /** Timestamps (µs) of frames flagged "last": ack when they come out of the decoder. */
-  private ackAt = new Set<number>();
+  private video: DeskVideo | null = null;
+  /** With a pipe: this socket's id in the worker. */
+  private pipe: DeskPipe | null = null;
+  private pipeId = 0;
+  private current = false;
+  private isOpen = false;
   private t0 = 0;
   private pinger: number | undefined;
   private opened = false;
   private done = false;
+  private closedReason = "";
   private pendingMove: ClientMessage | null = null;
   private moveRaf = 0;
 
@@ -118,6 +156,7 @@ export class DeskSocket {
     private readonly sandbox: Sandbox,
     mode: DeskMode,
     private readonly sink: DeskSink,
+    private readonly pipeReady: Promise<DeskPipe | null> = Promise.resolve(null),
   ) {
     this.mode = mode;
   }
@@ -126,8 +165,10 @@ export class DeskSocket {
   async start(): Promise<void> {
     this.t0 = performance.now();
     this.sink.phase("ticket");
-    const codecs = await decodableCodecs();
-    let ticket = await deskApi.ticket(this.sandbox, this.mode, codecs);
+    const codecs = knownCodecs();
+    const mark = (k: keyof DeskStats["marks"]) => <T,>(v: T) => ((this.stats.marks[k] ??= Math.round(performance.now() - this.t0)), v);
+    let [ticket, pipe] = await Promise.all([deskApi.ticket(this.sandbox, this.mode, codecs).then(mark("ticket")), this.pipeReady.then(mark("pipe"))]);
+    this.pipe = pipe;
     if (this.done) return;
     if (ticket.lan?.url && !lanBroken()) {
       const lan = ticket.lan.url.replace(/^http/, "ws");
@@ -145,76 +186,132 @@ export class DeskSocket {
     await this.connect(wsBase(), ticket, 0);
   }
 
+  /** This socket's frames are the ones on the canvas (the player promoted it). */
+  makeCurrent(): void {
+    this.current = true;
+    if (this.pipe && this.pipeId) this.pipe.setCurrent(this.pipeId);
+  }
+
   /** Resolves true once open (false if it failed first, or did not open within `timeoutMs`). */
   private connect(base: string, ticket: DeskTicket, timeoutMs: number): Promise<boolean> {
     this.sink.phase("connecting");
+    const url = base + ticket.wsPath;
+    const protocols = [DESK_PROTOCOL, `ticket.${ticket.ticket}`];
     return new Promise((resolve) => {
-      let ws: WebSocket;
-      try {
-        ws = new WebSocket(base + ticket.wsPath, [DESK_PROTOCOL, `ticket.${ticket.ticket}`]);
-      } catch {
-        resolve(false);
-        return;
-      }
-      ws.binaryType = "arraybuffer";
       let settled = false;
+      let drop = () => undefined as void;
       const timer = timeoutMs
         ? window.setTimeout(() => {
             if (settled) return;
             settled = true;
-            ws.onclose = null;
-            ws.close();
+            drop();
             resolve(false);
           }, timeoutMs)
         : undefined;
-      ws.onopen = () => {
+      const opened = () => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
-        this.ws = ws;
+        this.stats.marks.open ??= Math.round(performance.now() - this.t0);
+        this.isOpen = true;
         this.opened = true;
         if (this.done) {
-          ws.close(1000);
+          this.shut();
           resolve(true);
           return;
         }
         this.pinger = window.setInterval(() => this.send({ type: "ping", t: performance.now() }), PING_MS);
         resolve(true);
       };
-      ws.onmessage = (m) => this.onMessage(m.data);
-      ws.onclose = (e) => {
+      const closed = (code: number, reason: string) => {
         window.clearTimeout(timer);
+        this.isOpen = false;
         if (!settled) {
           settled = true;
-          // Not opened: on the LAN try the caller falls back; on p1 report it.
-          if (timeoutMs) {
-            resolve(false);
-            return;
-          }
           resolve(false);
+          // Not opened on the home door: the caller falls back to p1, nothing to report.
+          if (timeoutMs) return;
         }
-        this.finish(e.code, e.reason);
+        this.finish(code, reason);
       };
+
+      if (this.pipe) {
+        const pipe = this.pipe;
+        const id = pipe.open(url, protocols, {
+          open: opened,
+          text: (data) => this.onText(data),
+          frame: (f) => this.onFrame(f.width, f.height, f.codec, f.bytes),
+          closed,
+          unsupported: (codec) => this.sink.unsupported(codec),
+        });
+        this.pipeId = id;
+        if (this.current) pipe.setCurrent(id);
+        drop = () => pipe.close(id);
+        return;
+      }
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(url, protocols);
+      } catch {
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(false);
+        if (!timeoutMs) this.finish(1006, "");
+        return;
+      }
+      ws.binaryType = "arraybuffer";
+      this.ws = ws;
+      const video = new DeskVideo({
+        send: (m) => this.send(m),
+        output: (frame) => {
+          if (this.done) return;
+          this.sink.draw(frame);
+          this.onFrame(frame.displayWidth, frame.displayHeight, video.codec, video.bytes);
+        },
+        unsupported: (codec) => this.sink.unsupported(codec),
+      });
+      this.video = video;
+      drop = () => {
+        ws.onclose = null;
+        ws.close();
+        video.close();
+      };
+      ws.onopen = opened;
+      ws.onmessage = (m) => {
+        if (m.data instanceof ArrayBuffer) video.push(m.data);
+        else if (typeof m.data === "string") {
+          // Logged in: ask for a key frame at once rather than after the first delta frames.
+          if (m.data.includes('"type":"login"')) video.refresh(true);
+          this.onText(m.data);
+        }
+      };
+      ws.onclose = (e) => closed(e.code, e.reason);
     });
   }
 
-  private onMessage(data: unknown) {
-    if (data instanceof ArrayBuffer) {
-      const f = parseVideo(data);
-      if (f) this.onVideo(f);
-      return;
+  private onFrame(width: number, height: number, codec: DeskCodec | null, bytes: number) {
+    if (this.done) return;
+    this.stats.frames++;
+    this.stats.codec = codec;
+    this.stats.bytes = bytes;
+    this.sink.drawn(width, height);
+    if (this.stats.firstFrameMs === null) {
+      this.stats.firstFrameMs = Math.round(performance.now() - this.t0);
+      this.stats.marks.frame = this.stats.firstFrameMs;
+      this.sink.phase("live");
     }
-    if (typeof data !== "string") return;
-    const m = parseServer(data);
-    if (m) this.onText(m);
   }
 
-  private onText(m: ServerMessage) {
+  private onText(data: string) {
+    const m: ServerMessage | null = parseServer(data);
+    if (!m) return;
     switch (m.type) {
       case "status":
         if (m.phase === "relay" || m.phase === "secured") this.sink.phase(m.phase);
         break;
       case "login": {
+        this.stats.marks.login ??= Math.round(performance.now() - this.t0);
         const d = m.displays[m.currentDisplay] ?? m.displays[0]!;
         this.sink.login(d, { hostname: m.hostname, platform: m.platform, version: m.version });
         break;
@@ -236,88 +333,14 @@ export class DeskSocket {
     }
   }
 
-  private closedReason = "";
-
-  private onVideo(f: WireFrame) {
-    this.stats.bytes += f.data.byteLength;
-    if (f.codec !== this.decoderCodec) {
-      if (!this.makeDecoder(f.codec)) return;
-      this.waitingKey = true;
-    }
-    if (this.waitingKey && !f.key) {
-      // Nothing to show until a key frame; keep the host going and ask for one.
-      if (f.last) this.send({ type: "ack" });
-      this.send({ type: "refresh" });
-      return;
-    }
-    this.waitingKey = false;
-    const timestamp = f.pts * 1000;
-    if (f.last) this.ackAt.add(timestamp);
-    try {
-      this.decoder!.decode(new EncodedVideoChunk({ type: f.key ? "key" : "delta", timestamp, data: f.data }));
-    } catch {
-      this.recover();
-    }
-  }
-
-  private makeDecoder(codec: DeskCodec): boolean {
-    try {
-      this.decoder?.close();
-    } catch {
-      // already closed
-    }
-    this.decoder = new VideoDecoder({
-      output: (frame) => {
-        if (this.done) {
-          frame.close();
-          return;
-        }
-        try {
-          this.sink.draw(frame);
-        } finally {
-          frame.close();
-        }
-        this.stats.frames++;
-        if (this.stats.firstFrameMs === null) {
-          this.stats.firstFrameMs = Math.round(performance.now() - this.t0);
-          this.sink.phase("live");
-        }
-        if (this.ackAt.delete(frame.timestamp)) this.send({ type: "ack" });
-      },
-      error: (e) => {
-        if (e?.name === "NotSupportedError") {
-          this.sink.unsupported(codec);
-          return;
-        }
-        this.recover();
-      },
-    });
-    try {
-      this.decoder.configure({ codec: WEBCODECS[codec], optimizeForLatency: true, hardwareAcceleration: "no-preference" });
-    } catch {
-      this.sink.unsupported(codec);
-      return false;
-    }
-    this.decoderCodec = codec;
-    this.stats.codec = codec;
-    return true;
-  }
-
-  /** A decoder error: start over at the next key frame, and let the host go on. */
-  private recover() {
-    this.decoderCodec = null;
-    this.waitingKey = true;
-    if (this.ackAt.size) this.send({ type: "ack" });
-    this.ackAt.clear();
-    this.send({ type: "refresh" });
-  }
-
   get open(): boolean {
-    return !!this.ws && this.ws.readyState === WebSocket.OPEN;
+    return this.isOpen && !this.done;
   }
 
   send(m: ClientMessage): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
+    if (!this.isOpen) return;
+    if (this.pipe) this.pipe.send(this.pipeId, m);
+    else if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m));
   }
 
   /** Pointer moves, at most one per animation frame (the last one wins). */
@@ -343,8 +366,14 @@ export class DeskSocket {
   close(): void {
     if (this.done) return;
     this.done = true;
-    const ws = this.ws;
+    this.shut();
+  }
+
+  /** Close the transport without reporting it (we closed it). */
+  private shut() {
     this.cleanup();
+    if (this.pipe && this.pipeId) this.pipe.close(this.pipeId);
+    const ws = this.ws;
     if (ws) {
       ws.onclose = null;
       ws.onmessage = null;
@@ -354,17 +383,13 @@ export class DeskSocket {
         // gone
       }
     }
+    this.isOpen = false;
   }
 
   private cleanup() {
     window.clearInterval(this.pinger);
     if (this.moveRaf) cancelAnimationFrame(this.moveRaf);
-    try {
-      if (this.decoder && this.decoder.state !== "closed") this.decoder.close();
-    } catch {
-      // gone
-    }
-    this.decoder = null;
+    this.video?.close();
   }
 
   private finish(code: number, reason: string) {

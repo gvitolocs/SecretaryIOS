@@ -51,6 +51,7 @@ class FakeWS {
 // WebCodecs: decoding is immediate and yields a 1280x800 frame with the chunk's timestamp.
 class FakeDecoder {
   state = "unconfigured";
+  decodeQueueSize = 0;
   constructor(private readonly init: { output: (f: unknown) => void; error: (e: unknown) => void }) {}
   configure() {
     this.state = "configured";
@@ -112,7 +113,8 @@ afterEach(() => {
 });
 
 describe("DeskPlayer", () => {
-  it("watches: a watch ticket with the decodable codecs, the subprotocols, and acks after decoding", async () => {
+  it("watches: a watch ticket with this device's codecs, the subprotocols, and acks after decoding", async () => {
+    localStorage.setItem("desk.codecs", "vp9,h264");
     render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
     await waitFor(() => expect(FakeWS.all).toHaveLength(1));
     expect(ticket).toHaveBeenCalledWith("workspace", "watch", ["vp9", "h264"]);
@@ -124,6 +126,12 @@ describe("DeskPlayer", () => {
     // A delta before any key frame would be skipped; this key frame flagged last is decoded and acked.
     expect(ws.sent).toContainEqual({ type: "ack" });
     expect(screen.getByRole("toolbar").textContent).toContain("Watching");
+  });
+
+  it("does not wait for the codec probe: a first visit asks with the usual codecs", async () => {
+    render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+    await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+    expect(ticket).toHaveBeenCalledWith("workspace", "watch", ["vp9", "av1", "h264"]);
   });
 
   it("skips frames until a key frame, asking for one but keeping the host going", async () => {
@@ -147,7 +155,7 @@ describe("DeskPlayer", () => {
     // Watching: nothing reached the watch socket but acks.
     expect(watch.sent.filter((m) => (m as { type: string }).type === "mouse")).toEqual([]);
     await waitFor(() => expect(FakeWS.all).toHaveLength(2));
-    expect(ticket).toHaveBeenLastCalledWith("workspace", "control", ["vp9", "h264"]);
+    expect(ticket).toHaveBeenLastCalledWith("workspace", "control", expect.arrayContaining(["vp9"]));
     const control = FakeWS.all[1]!;
     control.open();
     control.text(LOGIN);
