@@ -1,0 +1,17 @@
+/* Inside Secretary Code (lib/desktopShell: embedded()), the shell's rail names and switches the pages: plugin
+   pages drop their "‹ Plugins" link and their big title, which stays for screen readers. */
+html[data-shell="desktop"] .content a[href="/plugins"]:is(.media-back, .computer-back, .pokemon-back, .sh-back) {
+  display: none;
+}
+html[data-shell="desktop"]
+  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -159,7 +159,7 @@ export default function ChatsView() {
 
   return (
     <section class="chats-page">
-      <h1>{selected()?.title ?? t("chats.title")}</h1>
+      <h1 id="chats-title">{selected()?.title ?? t("chats.title")}</h1>
       <Show when={error()}>
         <p role="alert">
           {t("chat.loadFailed")}{" "}

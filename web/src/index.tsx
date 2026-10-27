@@ -39,6 +39,7 @@ const DriveView = lazy(() => import("./views/Drive"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
 const NotificationsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.NotificationsView })));
 const AccountView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.AccountView })));
+const SecretsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.SecretsView })));
 const ViewerView = lazy(() => import("./views/Viewer"));
 const ApproveView = lazy(() => import("./views/Approve"));
 
@@ -89,6 +90,7 @@ render(
       <Route path="/server-health" component={ServerHealthView} />
       <Route path="/notifications" component={NotificationsView} />
       <Route path="/account" component={AccountView} />
+      <Route path="/secrets" component={SecretsView} />
       <Route path="/viewer" component={ViewerView} />
       <Route path="/approve" component={ApproveView} />
       <Route path="*" component={() => <Navigate href="/" />} />
