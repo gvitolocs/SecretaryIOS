@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router";
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createSignal, For, lazy, on, onCleanup, onMount, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import {
   computerApi,
@@ -13,12 +13,17 @@ import {
   type Sandbox,
   type View,
 } from "../api/computer";
+import type { DeskFallback } from "../components/DeskPlayer";
 import { BackIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { readString, writeString } from "../lib/storage";
+import { deskCapable } from "../lib/deskClient";
 import { createTouchMouse } from "../lib/touch";
 import "../styles/computer.css";
+
+// LucinaDesk (the RustDesk-protocol view of the desktop) in its own chunk: only the owner's live view loads it.
+const LucinaDesk = lazy(() => import("../components/DeskPlayer"));
 
 // Lucina's computer (Plugins → Lucina's computer): her Linux desktop and Android sandbox, live.
 //
@@ -188,6 +193,15 @@ export default function ComputerView() {
   const [text, setText] = createSignal("");
   const [clip, setClip] = createSignal("");
   const [full, setFull] = createSignal(false);
+  const [classic, setClassic] = createSignal(readString("local", "computer.classic") === "yes");
+  /** LucinaDesk failed on this page (no endpoint, not the owner, a codec, no picture): Cua until reload. */
+  const [deskBroken, setDeskBroken] = createSignal(false);
+  /**
+   * The desktop's Live view is LucinaDesk (components/DeskPlayer.tsx), not Cua's viewer. It drives
+   * itself (first click or key takes over, its own pill, its own focus mode), so this page's full
+   * screen, takeover bar, key bar and input card step aside while it shows.
+   */
+  const desk = () => sandbox() === "workspace" && mode() === "live" && !classic() && !deskBroken() && deskCapable();
   /** The pill's key row and clipboard popover. */
   const [tools, setTools] = createSignal(false);
   /** A takeover waiting for "yes" in full screen (Lucina or an agent is mid-task). */
@@ -239,7 +253,7 @@ export default function ComputerView() {
    * opaque-origin iframe (same top-level site), so the iframe does not fetch it again.
    */
   const preloadViewer = (version?: string) => {
-    if (!version || mode() !== "live" || preload) return;
+    if (!version || mode() !== "live" || desk() || preload) return;
     if (typeof document === "undefined") return;
     const link = document.createElement("link");
     link.rel = "preload";
@@ -261,7 +275,7 @@ export default function ComputerView() {
   /** Mint a view for the current sandbox and mode; renew it a couple of minutes before it expires. */
   const openView = async (kind: "watch" | "control") => {
     window.clearTimeout(renewTimer);
-    if (mode() !== "live") {
+    if (mode() !== "live" || desk()) {
       setView(null);
       return;
     }
@@ -685,6 +699,8 @@ export default function ComputerView() {
     };
     // Secretary Code's focus mode, including when the shell leaves it by itself.
     const unfocus = onFocusModeChange((on) => {
+      // LucinaDesk's focus mode is its own.
+      if (desk()) return;
       if (on) setFull(true);
       else if (full()) leftFull();
     });
@@ -711,6 +727,31 @@ export default function ComputerView() {
       exit();
     });
   });
+
+  const deskFallback = (why: DeskFallback) => {
+    if (why === "manual") {
+      writeString("local", "computer.classic", "yes");
+      setClassic(true);
+    } else {
+      setDeskBroken(true);
+    }
+  };
+
+  const useDesk = () => {
+    writeString("local", "computer.classic", "no");
+    setClassic(false);
+  };
+
+  // LucinaDesk ↔ Cua's viewer: the Cua view is minted only when it is the one showing.
+  createEffect(
+    on(desk, (on, was) => {
+      if (was === undefined || on === was) return;
+      if (full()) exitFull();
+      preload?.remove();
+      preload = undefined;
+      void openView(viewMode());
+    }),
+  );
 
   // Switching computer or view mode: give the old one back, then watch the new one.
   createEffect(
@@ -777,17 +818,19 @@ export default function ComputerView() {
             )}
           </Show>
         </div>
-        <Show
-          when={mine()}
-          fallback={
-            <button type="button" class="btn btn--primary" disabled={busy() || !state()} onClick={() => void takeOver()}>
-              {t("computer.takeOver")}
+        <Show when={!desk()}>
+          <Show
+            when={mine()}
+            fallback={
+              <button type="button" class="btn btn--primary" disabled={busy() || !state()} onClick={() => void takeOver()}>
+                {t("computer.takeOver")}
+              </button>
+            }
+          >
+            <button type="button" class="btn" disabled={busy()} onClick={() => void giveBack()}>
+              {t("computer.giveBack")}
             </button>
-          }
-        >
-          <button type="button" class="btn" disabled={busy()} onClick={() => void giveBack()}>
-            {t("computer.giveBack")}
-          </button>
+          </Show>
         </Show>
       </div>
 
@@ -798,101 +841,112 @@ export default function ComputerView() {
         <p class="computer-error" role="alert">{error()}</p>
       </Show>
 
-      <div
-        class="computer-screen"
-        classList={{ "computer-screen--full": full() }}
-        data-sandbox={sandbox()}
-        ref={screen}
-      >
-        <Show
-          when={mode() === "live"}
-          fallback={
-            <img
-              ref={img}
-              src={computerApi.screenshotUrl(sandbox(), tick())}
-              alt={t("computer.screen")}
-              width="1280"
-              height="800"
-              data-clickable={mine() ? "yes" : "no"}
-              style={{
-                transform: zoom().scale === 1 ? undefined : `translate(${zoom().dx}px, ${zoom().dy}px) scale(${zoom().scale})`,
-              }}
-              onClick={(e) => onShotClick(e, "left")}
-              onContextMenu={(e) => onShotClick(e, "right")}
-              onWheel={onShotWheel}
-              onPointerDown={onShotDown}
-              onPointerMove={onShotMove}
-              onPointerUp={onShotUp}
-              onPointerCancel={onShotCancel}
-            />
-          }
+      <Show when={desk()}>
+        <LucinaDesk sandbox={sandbox()} state={state()} onFallback={deskFallback} onChanged={() => void loadState()} />
+      </Show>
+
+      <Show when={!desk()}>
+        <div
+          class="computer-screen"
+          classList={{ "computer-screen--full": full() }}
+          data-sandbox={sandbox()}
+          ref={screen}
         >
-          <Show when={view()} fallback={<p class="computer-loading">{t("computer.loading")}</p>}>
-            {(v) => (
-              <iframe
-                ref={frame}
-                title={t("computer.viewer")}
-                src={v().viewUrl}
-                sandbox="allow-scripts allow-pointer-lock"
-                allow="fullscreen; clipboard-read; clipboard-write; autoplay"
-                referrerpolicy="no-referrer"
+          <Show
+            when={mode() === "live"}
+            fallback={
+              <img
+                ref={img}
+                src={computerApi.screenshotUrl(sandbox(), tick())}
+                alt={t("computer.screen")}
+                width="1280"
+                height="800"
+                data-clickable={mine() ? "yes" : "no"}
+                style={{
+                  transform: zoom().scale === 1 ? undefined : `translate(${zoom().dx}px, ${zoom().dy}px) scale(${zoom().scale})`,
+                }}
+                onClick={(e) => onShotClick(e, "left")}
+                onContextMenu={(e) => onShotClick(e, "right")}
+                onWheel={onShotWheel}
+                onPointerDown={onShotDown}
+                onPointerMove={onShotMove}
+                onPointerUp={onShotUp}
+                onPointerCancel={onShotCancel}
+              />
+            }
+          >
+            <Show when={view()} fallback={<p class="computer-loading">{t("computer.loading")}</p>}>
+              {(v) => (
+                <iframe
+                  ref={frame}
+                  title={t("computer.viewer")}
+                  src={v().viewUrl}
+                  sandbox="allow-scripts allow-pointer-lock"
+                  allow="fullscreen; clipboard-read; clipboard-write; autoplay"
+                  referrerpolicy="no-referrer"
+                />
+              )}
+            </Show>
+          </Show>
+          {/* Full screen, watching: the first click on the stream takes over (then reaches the desktop). */}
+          <Show when={full() && mode() === "live" && view() && !mine()}>
+            <div
+              class="computer-catch"
+              data-busy={busy() ? "yes" : "no"}
+              aria-label={t("computer.clickToDrive")}
+              title={t("computer.clickToDrive")}
+              onPointerDown={onCatchPointer}
+              onContextMenu={(e) => e.preventDefault()}
+            />
+          </Show>
+          <Show when={confirming()}>
+            {(c) => (
+              <div class="computer-confirm" role="alertdialog" aria-label={t("computer.takeOver")}>
+                <p>{c().message}</p>
+                <div class="computer-confirm-actions">
+                  <button type="button" class="btn" onClick={() => setConfirming(null)}>
+                    {t("computer.cancel")}
+                  </button>
+                  <button type="button" class="btn btn--primary" onClick={() => void takeOver(c().pass, true)}>
+                    {t("computer.takeOver")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </Show>
+          <Show when={mark()}>
+            {(m) => (
+              <span
+                class="computer-mark"
+                data-button={m().button}
+                style={{ left: `${m().x}px`, top: `${m().y}px` }}
+                aria-hidden="true"
               />
             )}
           </Show>
-        </Show>
-        {/* Full screen, watching: the first click on the stream takes over (then reaches the desktop). */}
-        <Show when={full() && mode() === "live" && view() && !mine()}>
-          <div
-            class="computer-catch"
-            data-busy={busy() ? "yes" : "no"}
-            aria-label={t("computer.clickToDrive")}
-            title={t("computer.clickToDrive")}
-            onPointerDown={onCatchPointer}
-            onContextMenu={(e) => e.preventDefault()}
-          />
-        </Show>
-        <Show when={confirming()}>
-          {(c) => (
-            <div class="computer-confirm" role="alertdialog" aria-label={t("computer.takeOver")}>
-              <p>{c().message}</p>
-              <div class="computer-confirm-actions">
-                <button type="button" class="btn" onClick={() => setConfirming(null)}>
-                  {t("computer.cancel")}
-                </button>
-                <button type="button" class="btn btn--primary" onClick={() => void takeOver(c().pass, true)}>
-                  {t("computer.takeOver")}
-                </button>
-              </div>
-            </div>
-          )}
-        </Show>
-        <Show when={mark()}>
-          {(m) => (
-            <span
-              class="computer-mark"
-              data-button={m().button}
-              style={{ left: `${m().x}px`, top: `${m().y}px` }}
-              aria-hidden="true"
-            />
-          )}
-        </Show>
-      </div>
+        </div>
 
-      <div class="computer-bar computer-actions">
-        <button type="button" class="btn" onClick={() => toggleFull()} aria-pressed={full()}>
-          {full() ? t("computer.exitFull") : t("computer.fullScreen")}
-        </button>
-        <Show when={mine()}>
-          <button type="button" class="btn" aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
-            {t("computer.keyboard")}
+        <div class="computer-bar computer-actions">
+          <button type="button" class="btn" onClick={() => toggleFull()} aria-pressed={full()}>
+            {full() ? t("computer.exitFull") : t("computer.fullScreen")}
           </button>
-        </Show>
-        <Show when={zoom().scale > 1.05}>
-          <button type="button" class="btn" onClick={() => resetZoom()}>
-            {t("computer.resetZoom")}
-          </button>
-        </Show>
-      </div>
+          <Show when={mine()}>
+            <button type="button" class="btn" aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
+              {t("computer.keyboard")}
+            </button>
+          </Show>
+          <Show when={zoom().scale > 1.05}>
+            <button type="button" class="btn" onClick={() => resetZoom()}>
+              {t("computer.resetZoom")}
+            </button>
+          </Show>
+          <Show when={classic() && sandbox() === "workspace" && mode() === "live" && deskCapable()}>
+            <button type="button" class="btn" onClick={() => useDesk()}>
+              {t("desk.useDesk")}
+            </button>
+          </Show>
+        </div>
+      </Show>
 
       {/* Full screen's only chrome: who drives, the toggle, keyboard, keys & clipboard, exit. */}
       <Show when={full()}>
@@ -949,7 +1003,7 @@ export default function ComputerView() {
         </div>
       </Show>
 
-      <Show when={mine()}>
+      <Show when={mine() && !desk()}>
         <div class="computer-card computer-input">
           <form
             class="computer-type"
