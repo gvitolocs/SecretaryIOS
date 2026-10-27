@@ -34,6 +34,7 @@ pub mod oauth;
 pub mod otp;
 pub mod ownership;
 pub mod player;
+pub mod retirement;
 pub mod share;
 pub mod shopping;
 pub mod timeline;
@@ -262,6 +263,7 @@ impl Case {
 /// Every case of every protocol.
 pub fn all_cases(deep: bool) -> Vec<Case> {
     let mut v = Vec::new();
+    v.extend(retirement::cases(deep));
     v.extend(deals::cases(deep));
     v.extend(timeline::cases(deep));
     v.extend(ownership::cases(deep));

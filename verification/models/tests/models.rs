@@ -166,3 +166,8 @@ fn player() {
 fn share() {
     run("share");
 }
+
+#[test]
+fn retirement() {
+    run("retirement");
+}
