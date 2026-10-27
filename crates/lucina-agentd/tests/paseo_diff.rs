@@ -14,6 +14,9 @@
 //! | `OutputTokens` | counts emitted tokens, timing-dependent | same; only the field set is compared |
 //! | timeline after restart | rebuilt from provider history, new epoch | stored, same epoch (`daemon.rs`) |
 //! | error details | `Use "paseo ls" ...` | `Use "lagent ls" ...` |
+//! | worktree path | `<paseo home>/worktrees/<hash>/<slug>` | `~/Projects/.worktrees/<Repo>/<branch>` (`wt add`); only the last part is compared |
+//! | archived worktree's branch | kept | deleted when merged (`git branch -d`, the owner's rule) |
+//! | workspace ids, project ids, file mtimes | random, times | not compared; `ls` entries are compared sorted (Paseo lists in directory order) |
 
 mod common;
 
@@ -267,6 +270,161 @@ fn scenario_permit(p: &Paseo, l: &Daemon) {
     same("permit ls empty", &norm_ls(&p.json(&["permit", "ls"]), &id(&pq)), &norm_ls(&l.json(&["permit", "ls"]), &id(&lq)));
 }
 
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let ok = Command::new("git").arg("-C").arg(dir).args(args).output().map(|o| o.status.success()).unwrap_or(false);
+    assert!(ok, "git {args:?}");
+}
+
+/// Paseo's answer through its own client (`tests/paseo_oracle.mjs`).
+fn oracle(op: &str, cwd: &str, arg: Option<&str>) -> Value {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/paseo_oracle.mjs");
+    let mut cmd = Command::new("node");
+    cmd.args([script, "127.0.0.1:6777", op, cwd]);
+    if let Some(a) = arg {
+        cmd.arg(a);
+    }
+    let r = run(&mut cmd);
+    serde_json::from_str(r.stdout.trim()).unwrap_or_else(|e| panic!("oracle {op}: {e}: {} {}", r.stdout, r.stderr))
+}
+
+/// A local HTTP GET on the lucina socket.
+fn lucina_get(l: &Daemon, path: &str) -> Value {
+    use std::io::{Read, Write};
+    let mut s = std::os::unix::net::UnixStream::connect(l.socket()).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+    let mut raw = String::new();
+    s.read_to_string(&mut raw).unwrap();
+    let (head, rest) = raw.split_once("\r\n\r\n").unwrap();
+    let body = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+        rest.split_once("\r\n").map(|(_, r)| r.rsplit_once("\r\n0\r\n").map(|(b, _)| b).unwrap_or(r)).unwrap_or("")
+    } else {
+        rest
+    };
+    serde_json::from_str(body.trim()).unwrap_or(Value::Null)
+}
+
+/// One repo per side (same content, `<root>/<side>/repo`), so neither daemon sees the
+/// other's branches; paths are compared with the side's root replaced by `<root>`.
+fn scenario_workspaces(p: &Paseo, l: &Daemon) {
+    let root = tempfile::Builder::new().prefix("ldiff-ws.").tempdir_in("/tmp").unwrap();
+    let mk = |side: &str| {
+        let r = root.path().join(side).join("repo");
+        std::fs::create_dir_all(r.join("d")).unwrap();
+        git(&r, &["init", "-q", "-b", "main"]);
+        std::fs::write(r.join("f.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(r.join("old.txt"), "keep\n").unwrap();
+        std::fs::write(r.join("d/y.txt"), "x\n").unwrap();
+        git(&r, &["add", "."]);
+        git(&r, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+        git(&r, &["branch", "existing"]);
+        r
+    };
+    let (prr, lrr) = (mk("paseo"), mk("lucina"));
+    let (rp, rl) = (prr.display().to_string(), lrr.display().to_string());
+    let norm = |v: &Value, side: &str| -> Value {
+        let text = v.to_string().replace(&root.path().join(side).display().to_string(), "<root>");
+        serde_json::from_str(&text).unwrap()
+    };
+    let both = |pa: Vec<&str>, la: Vec<&str>| (p.json(&pa), l.json(&la));
+
+    let (pp, lp) = both(vec!["project", "create", &rp], vec!["project", "create", &rl]);
+    same("project create", &norm(&pick(&pp, &["name", "kind", "path"]), "paseo"), &norm(&pick(&lp, &["name", "kind", "path"]), "lucina"));
+    let (pl, ll) = both(vec!["workspace", "create", "--isolation", "local", "--path", &rp], vec!["workspace", "create", "--isolation", "local", "--path", &rl]);
+    let row = |v: &Value, side: &str| norm(&pick(v, &["project", "name", "isolation", "cwd", "background"]), side);
+    same("workspace create local", &row(&pl, "paseo"), &row(&ll, "lucina"));
+    let wt = |r: &str| vec!["workspace".to_string(), "create".into(), "--isolation".into(), "worktree".into(), "--path".into(), r.to_string(), "--new-branch".into(), "feat/y".into(), "--base".into(), "main".into()];
+    let (pwa, lwa) = (wt(&rp), wt(&rl));
+    let (pw, lw) = both(pwa.iter().map(String::as_str).collect(), lwa.iter().map(String::as_str).collect());
+    same("workspace create worktree", &pick(&pw, &["project", "name", "isolation", "background"]), &pick(&lw, &["project", "name", "isolation", "background"]));
+    for (what, v) in [("paseo", &pw), ("lucina", &lw)] {
+        assert!(v["cwd"].as_str().unwrap_or("").ends_with("/feat-y"), "{what} worktree path: {v}");
+    }
+    let cb = |r: &str| vec!["workspace".to_string(), "create".into(), "--isolation".into(), "worktree".into(), "--path".into(), r.to_string(), "--mode".into(), "checkout-branch".into(), "--branch".into(), "existing".into()];
+    let (pca, lca) = (cb(&rp), cb(&rl));
+    let (pc, lc) = both(pca.iter().map(String::as_str).collect(), lca.iter().map(String::as_str).collect());
+    same("checkout-branch", &pick(&pc, &["name", "isolation"]), &pick(&lc, &["name", "isolation"]));
+    let listing = |v: Value| {
+        let mut rows: Vec<Value> = v.as_array().cloned().unwrap_or_default().iter().map(|w| pick(w, &["project", "name", "isolation", "background"])).collect();
+        rows.sort_by_key(|x| x.to_string());
+        json!(rows)
+    };
+    same("workspace ls", &listing(p.json(&["workspace", "ls"])), &listing(l.json(&["workspace", "ls"])));
+
+    let (pid, lid) = (pw["workspaceId"].as_str().unwrap().to_string(), lw["workspaceId"].as_str().unwrap().to_string());
+    same("rename", &p.json(&["workspace", "rename", &pid, "My title"])["title"], &l.json(&["workspace", "rename", &lid, "My title"])["title"]);
+    same("rename --reset", &p.json(&["workspace", "rename", &pid, "--reset"])["title"], &l.json(&["workspace", "rename", &lid, "--reset"])["title"]);
+    let errors = |r: &str| -> Vec<(&'static str, Vec<String>)> {
+        let v = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        vec![
+            ("rename unknown", v(&["workspace", "rename", "nope", "x"])),
+            ("archive unknown", v(&["workspace", "archive", "nope"])),
+            ("unknown branch", v(&["workspace", "create", "--isolation", "worktree", "--path", r, "--mode", "checkout-branch", "--branch", "nope"])),
+            ("checkout-branch without --branch", v(&["workspace", "create", "--isolation", "worktree", "--path", r, "--mode", "checkout-branch"])),
+            ("local with worktree options", v(&["workspace", "create", "--isolation", "local", "--path", r, "--base", "main"])),
+            ("worktree outside git", v(&["workspace", "create", "--isolation", "worktree", "--path", "/tmp"])),
+        ]
+    };
+    for ((what, pa), (_, la)) in errors(&rp).into_iter().zip(errors(&rl)) {
+        let mut pa: Vec<&str> = pa.iter().map(String::as_str).collect();
+        let mut la: Vec<&str> = la.iter().map(String::as_str).collect();
+        pa.push("--json");
+        la.push("--json");
+        same(what, &error_of(&p.cmd(&pa), "nope"), &error_of(&l.lagent(&la), "nope"));
+    }
+
+    // A bare run makes a local workspace for its cwd (stderr), then runs there.
+    let (pr, lr) = (
+        p.cmd(&["run", "--provider", "mock/e2e-fast-stream", "--cwd", &rp, "hello", "--json"]),
+        l.lagent(&["run", "--provider", "mock/e2e-fast-stream", "--cwd", &rl, "hello", "--json"]),
+    );
+    let head = |s: &str| s.lines().next().map(|x| x.split_once(" - ").map(|(_, label)| label.to_string()).unwrap_or_default()).unwrap_or_default();
+    same("bare run stderr label", &json!(head(&pr.stderr)), &json!(head(&lr.stderr)));
+    let (pv, lv): (Value, Value) = (serde_json::from_str(&pr.stdout).unwrap(), serde_json::from_str(&lr.stdout).unwrap());
+    same("bare run", &norm(&pick(&pv, &["status", "provider", "cwd", "title"]), "paseo"), &norm(&pick(&lv, &["status", "provider", "cwd", "title"]), "lucina"));
+
+    // Diffs, status and the file explorer, against Paseo's own client.
+    for r in [&prr, &lrr] {
+        git(r, &["checkout", "-q", "-b", "work"]);
+        std::fs::write(r.join("f.txt"), "a\nB\nc\nd\n").unwrap();
+        git(r, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "two"]);
+        std::fs::write(r.join("f.txt"), "a\nB\nc\nd\ne\n").unwrap();
+        std::fs::write(r.join("n.txt"), "new\n").unwrap();
+        git(r, &["rm", "-q", "old.txt"]);
+        std::fs::write(r.join("bin.dat"), [0u8, 1]).unwrap();
+    }
+    let local_id = ll["workspaceId"].as_str().unwrap();
+    for mode in ["uncommitted", "base", "all"] {
+        let pd = oracle(&format!("diff-{mode}"), &rp, None);
+        let ld = lucina_get(l, &format!("/workspaces/{local_id}/diff?mode={mode}"));
+        same(&format!("diff {mode}"), &pd["files"], &ld["files"]);
+    }
+    let keys = ["isGit", "currentBranch", "isDirty", "baseRef", "aheadBehind", "hasRemote", "remoteUrl", "upstreamRef", "aheadOfOrigin", "mainRepoRoot", "repoRoot"];
+    same("checkout status", &norm(&pick(&oracle("status", &rp, None), &keys), "paseo"), &norm(&pick(&lucina_get(l, &format!("/workspaces/{local_id}/status")), &keys), "lucina"));
+    let entries = |v: &Value| {
+        let mut e: Vec<Value> = v["entries"].as_array().cloned().unwrap_or_default().iter().map(|x| pick(x, &["name", "path", "kind", "size"])).collect();
+        e.sort_by_key(|x| x["name"].to_string());
+        json!(e)
+    };
+    same("files .", &entries(&oracle("ls", &rp, Some("."))), &entries(&lucina_get(l, &format!("/workspaces/{local_id}/files?path=."))));
+    same("files d", &entries(&oracle("ls", &rp, Some("d"))), &entries(&lucina_get(l, &format!("/workspaces/{local_id}/files?path=d"))));
+    let pf = oracle("read", &rp, Some("f.txt"));
+    let lf = lucina_get(l, &format!("/workspaces/{local_id}/file?path=f.txt"));
+    same("read f.txt", &json!({"path": pf["path"], "kind": pf["kind"], "size": pf["size"], "text": pf["text"]}), &json!({"path": lf["path"], "kind": lf["kind"], "size": lf["size"], "text": lf["content"]}));
+    same("read bin.dat kind", &oracle("read", &rp, Some("bin.dat"))["kind"], &lucina_get(l, &format!("/workspaces/{local_id}/file?path=bin.dat"))["kind"]);
+    same("read outside", &oracle("read", &rp, Some("../etc/passwd"))["error"], &lucina_get(l, &format!("/workspaces/{local_id}/file?path=../etc/passwd"))["error"]["message"]);
+
+    // Archive: the clean worktree goes on both sides.
+    let (pa, la) = (p.json(&["workspace", "archive", &pid]), l.json(&["workspace", "archive", &lid]));
+    same("archive", &json!({"status": pa["status"], "keys": keys_of(&pa)}), &json!({"status": la["status"], "keys": keys_of(&la)}));
+    for (what, v) in [("paseo", &pw), ("lucina", &lw)] {
+        assert!(!std::path::Path::new(v["cwd"].as_str().unwrap()).exists(), "{what} removed the clean worktree");
+    }
+}
+
+fn keys_of(v: &Value) -> Value {
+    keys(v)
+}
+
 #[test]
 fn paseo_parity() {
     if std::env::var("PASEO_DIFF").as_deref() != Ok("1") {
@@ -274,15 +432,22 @@ fn paseo_parity() {
         return;
     }
     let paseo = Paseo::start();
-    let lucina = Daemon::start();
+    // Lucina's worktrees go to a temporary root, never ~/Projects/.worktrees.
+    let roots = tempfile::tempdir().expect("roots");
+    let lucina = Daemon::start_with_env(&[
+        ("WT_ROOT", roots.path().join("wt").display().to_string()),
+        ("WT_PROJECTS", roots.path().join("proj").display().to_string()),
+        ("LUCINA_AGENTD_METADATA_PROVIDER", "off".to_string()),
+    ]);
     type Scenario = fn(&Paseo, &Daemon);
-    let scenarios: [(&str, Scenario); 6] = [
+    let scenarios: [(&str, Scenario); 7] = [
         ("a run/logs/inspect/ls", scenario_run_logs_inspect),
         ("b turn failure", scenario_turn_failure),
         ("c plan approval + stop", scenario_plan_approval_stop),
         ("d send --interrupt + wait", scenario_send_wait),
         ("e archive/ls/delete/not found", scenario_archive_delete),
         ("f permit ls/allow/deny + errors", scenario_permit),
+        ("g projects/workspaces/worktrees, diffs, files, archive", scenario_workspaces),
     ];
     for (name, scenario) in scenarios {
         let start = Instant::now();

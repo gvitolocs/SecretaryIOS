@@ -1,13 +1,15 @@
 //! Durable state: `agents.db` (SQLite) holds each agent record as JSON with its
 //! idempotency key; `timelines/<agentId>.jsonl` holds the timeline rows, one per
 //! line, append-only. Paseo keeps timelines in memory only; these survive a
-//! restart with the same epoch.
+//! restart with the same epoch. Projects and workspaces are JSON records in the same
+//! database (Paseo: `projects/projects.json`, `projects/workspaces.json`).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use lucina_agents::workspace::{ProjectRecord, WorkspaceRecord};
 use lucina_agents::{AgentRecord, TimelineRow};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -43,7 +45,9 @@ impl Store {
                  idempotency_key TEXT UNIQUE,
                  created_at TEXT NOT NULL,
                  record TEXT NOT NULL
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, record TEXT NOT NULL);",
         )?;
         Ok(Store { db: Mutex::new(db), timelines })
     }
@@ -126,5 +130,47 @@ impl Store {
             }
         }
         Ok(rows)
+    }
+}
+
+impl Store {
+    fn put(&self, table: &str, id: &str, json: String) -> Result<(), StoreError> {
+        self.db().execute(
+            &format!("INSERT INTO {table} (id, record) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET record = excluded.record"),
+            params![id, json],
+        )?;
+        Ok(())
+    }
+
+    fn all<T: serde::de::DeserializeOwned>(&self, table: &str) -> Result<Vec<T>, StoreError> {
+        let db = self.db();
+        let mut stmt = db.prepare(&format!("SELECT record FROM {table} ORDER BY id"))?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for json in rows {
+            out.push(serde_json::from_str(&json?)?);
+        }
+        Ok(out)
+    }
+
+    pub fn save_project(&self, p: &ProjectRecord) -> Result<(), StoreError> {
+        self.put("projects", &p.project_id, serde_json::to_string(p)?)
+    }
+
+    pub fn load_projects(&self) -> Result<Vec<ProjectRecord>, StoreError> {
+        self.all("projects")
+    }
+
+    pub fn delete_project(&self, id: &str) -> Result<(), StoreError> {
+        self.db().execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn save_workspace(&self, w: &WorkspaceRecord) -> Result<(), StoreError> {
+        self.put("workspaces", &w.workspace_id, serde_json::to_string(w)?)
+    }
+
+    pub fn load_workspaces(&self) -> Result<Vec<WorkspaceRecord>, StoreError> {
+        self.all("workspaces")
     }
 }

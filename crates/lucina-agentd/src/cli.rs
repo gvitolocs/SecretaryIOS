@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
+mod ws;
+
 #[derive(Parser, Debug)]
 #[command(name = "lagent", about = "Lucina Agents: control coding agents from the command line", version)]
 pub struct Cli {
@@ -60,6 +62,127 @@ pub enum Command {
     /// Manage permission requests
     #[command(subcommand)]
     Permit(PermitCommand),
+    /// Manage projects
+    #[command(subcommand)]
+    Project(ProjectCommand),
+    /// Manage workspaces
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
+    /// Clone a GitHub repo (owner/repo or URL) and register it as a workspace
+    Clone(CloneArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectCommand {
+    /// Register a project directory
+    Create { path: Option<String> },
+    /// List projects
+    Ls,
+    /// Set display name
+    Rename {
+        id: String,
+        name: Option<String>,
+        #[arg(long)]
+        reset: bool,
+    },
+    /// Delete a project and its workspaces
+    Delete { id: String },
+}
+
+#[derive(Args, Debug, Default)]
+pub struct WorktreeArgs {
+    /// Worktree mode: branch-off, checkout-branch, or checkout-pr (default: branch-off)
+    #[arg(long = "mode")]
+    pub mode: Option<String>,
+    /// Managed worktree path slug
+    #[arg(long)]
+    pub worktree_slug: Option<String>,
+    /// New branch name (--mode branch-off)
+    #[arg(long)]
+    pub new_branch: Option<String>,
+    /// Base ref (--mode branch-off)
+    #[arg(long)]
+    pub base: Option<String>,
+    /// Existing branch (--mode checkout-branch)
+    #[arg(long)]
+    pub branch: Option<String>,
+    /// Pull request number (--mode checkout-pr)
+    #[arg(long)]
+    pub pr_number: Option<String>,
+    /// Forge for --mode checkout-pr (github)
+    #[arg(long)]
+    pub forge: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum WorkspaceCommand {
+    /// Allow and run setup for a workspace
+    Setup { id: String },
+    /// Create a workspace
+    Create {
+        /// Workspace isolation: local or worktree
+        #[arg(long)]
+        isolation: String,
+        /// Local directory or source checkout (default: current)
+        #[arg(long)]
+        path: Option<String>,
+        /// Existing project id
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[command(flatten)]
+        worktree: WorktreeArgs,
+        /// Create a background workspace
+        #[arg(long)]
+        background: bool,
+    },
+    /// List active workspaces
+    Ls {
+        /// Include background workspaces
+        #[arg(long)]
+        background: bool,
+    },
+    /// Set a workspace's user-visible title
+    Rename {
+        id: String,
+        title: Option<String>,
+        /// Clear the title and revert to the branch or directory name
+        #[arg(long)]
+        reset: bool,
+    },
+    /// Archive a workspace and everything it owns
+    Archive { id: String },
+    /// Show a workspace's changes (Lucina only)
+    Diff {
+        id: String,
+        /// all (default), uncommitted or base
+        #[arg(long, default_value = "all")]
+        mode: String,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        ignore_whitespace: bool,
+    },
+    /// List a workspace's files (Lucina only)
+    Files { id: String, path: Option<String> },
+    /// Print a file of a workspace (Lucina only)
+    Cat { id: String, path: String },
+    /// Git status of a workspace (Lucina only)
+    Status { id: String },
+    /// Remove worktrees whose branch is merged (Lucina only; also runs every 10 minutes)
+    Sweep,
+}
+
+#[derive(Args, Debug)]
+pub struct CloneArgs {
+    pub repo: String,
+    /// Parent directory
+    #[arg(long)]
+    pub dir: String,
+    /// https or ssh
+    #[arg(long)]
+    pub protocol: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -150,6 +273,39 @@ pub struct RunArgs {
     /// Preapprove an exact MCP tool (repeatable): SERVER/TOOL
     #[arg(long = "preapprove", value_name = "SERVER/TOOL")]
     pub preapprove: Vec<String>,
+    /// Create a separate local or worktree workspace
+    #[arg(long)]
+    pub new_workspace: Option<String>,
+    /// Legacy workspace isolation alias (a worktree with this slug)
+    #[arg(long, hide = true)]
+    pub worktree: Option<String>,
+    /// Worktree mode: branch-off, checkout-branch, or checkout-pr
+    #[arg(long)]
+    pub worktree_mode: Option<String>,
+    /// Managed worktree path slug
+    #[arg(long)]
+    pub worktree_slug: Option<String>,
+    /// New branch name for branch-off mode
+    #[arg(long)]
+    pub new_branch: Option<String>,
+    /// Base ref for branch-off mode
+    #[arg(long)]
+    pub base: Option<String>,
+    /// Existing branch for checkout-branch mode
+    #[arg(long)]
+    pub branch: Option<String>,
+    /// Pull request number for checkout-pr mode
+    #[arg(long)]
+    pub pr_number: Option<String>,
+    /// Forge for checkout-pr mode
+    #[arg(long)]
+    pub forge: Option<String>,
+    /// Run in an existing workspace (default: $LUCINA_WORKSPACE_ID inside an agent)
+    #[arg(long)]
+    pub workspace: Option<String>,
+    /// Allow this run to edit a main checkout (the owner only; Lucina)
+    #[arg(long)]
+    pub allow_main_checkout: bool,
 }
 
 #[derive(Args, Debug)]
@@ -588,10 +744,16 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 Some(c) => c.clone(),
                 None => std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| ".".into()),
             };
+            if a.prompt.trim().is_empty() {
+                return Err(CmdError::new("MISSING_PROMPT", "A prompt is required").details("Usage: lagent run [options] <prompt>"));
+            }
+            let (workspace_id, cwd) = ws::for_run(&client, a, &cwd).await?;
             let body = json!({
                 "provider": a.provider,
                 "model": a.model,
                 "cwd": cwd,
+                "workspaceId": workspace_id,
+                "allowMainCheckout": a.allow_main_checkout,
                 "prompt": a.prompt,
                 "title": a.title,
                 "labels": kv(&a.label, "INVALID_LABEL")?,
@@ -892,6 +1054,9 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
             }
             permit_answer(&client, agent, req_id.as_deref(), *all, response, true).await
         }
+        Command::Project(cmd) => ws::project(&client, cmd).await,
+        Command::Workspace(cmd) => ws::workspace(&client, cmd).await,
+        Command::Clone(a) => ws::clone(&client, a).await,
     }
 }
 

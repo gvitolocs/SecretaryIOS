@@ -96,6 +96,10 @@ pub struct WorkspaceRecord {
     /// The ref a worktree was made from (e.g. `refs/heads/lucina-rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
+    /// The commit the worktree started at: a branch still there has no work to lose,
+    /// but the merge sweep only removes branches that moved past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_repo_root: Option<String>,
     /// agentd made this worktree (with `wt add`): it may remove it.

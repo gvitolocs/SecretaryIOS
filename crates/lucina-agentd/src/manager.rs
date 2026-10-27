@@ -31,9 +31,14 @@ use crate::store::{Store, StoreError};
 
 mod gate;
 mod permissions;
+mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use permissions::{ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+pub use workspaces::{metadata_provider, SWEEP_EVERY};
+
+use crate::workspaces::{Registry as Workspaces, WsError};
+use lucina_agents::workspace::WorkspaceRecord;
 
 /// Daemon-wide settings beyond the store, providers and lanes.
 pub struct Options {
@@ -43,11 +48,18 @@ pub struct Options {
     /// How long an agent's permission request waits for the owner.
     pub permission_ttl: Duration,
     pub gate: GateConfig,
+    pub workspaces: crate::workspaces::Config,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { registry: None, notifier: None, permission_ttl: Duration::from_secs(3600), gate: GateConfig::default() }
+        Options {
+            registry: None,
+            notifier: None,
+            permission_ttl: Duration::from_secs(3600),
+            gate: GateConfig::default(),
+            workspaces: crate::workspaces::Config::from_env(),
+        }
     }
 }
 
@@ -80,6 +92,11 @@ pub enum ManagerError {
     Expired(String),
     #[error("{0}")]
     Unconfirmed(String),
+    #[error("{0}")]
+    Workspace(#[from] WsError),
+    /// The worktree guard refused the agent's workspace.
+    #[error("{0}")]
+    Guard(String),
 }
 
 impl ManagerError {
@@ -97,6 +114,11 @@ impl ManagerError {
             ManagerError::AlreadyAnswered(_) => "PERMISSION_ALREADY_ANSWERED",
             ManagerError::Expired(_) => "PERMISSION_EXPIRED",
             ManagerError::Unconfirmed(_) => "PERMISSION_RESPONSE_UNCONFIRMED",
+            ManagerError::Workspace(WsError::NotFound(_)) => "WORKSPACE_NOT_FOUND",
+            ManagerError::Workspace(WsError::Invalid(_)) => "WORKSPACE_INVALID",
+            ManagerError::Workspace(WsError::Git(_)) => "WORKSPACE_GIT_FAILED",
+            ManagerError::Workspace(WsError::Store(_)) => "STORE_ERROR",
+            ManagerError::Guard(_) => "WORKSPACE_GUARD",
         }
     }
 }
@@ -122,6 +144,10 @@ pub enum BusEvent {
     /// Lucina only: a permission request (agent or external) was raised or changed.
     Permission {
         permission: Box<PermissionView>,
+    },
+    /// Lucina only: a workspace was created or changed (setup progress, title, archive).
+    Workspace {
+        workspace: Box<WorkspaceRecord>,
     },
 }
 
@@ -164,6 +190,16 @@ pub struct CreateRequest {
     /// Follow-up rounds after the gate refuses the run.
     #[serde(default)]
     pub auto_fix: u32,
+    /// Run in this workspace (its cwd when `cwd` is empty).
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// The owner allows this run in a main checkout or a stray worktree. Honoured only
+    /// from the owner (the API clears it for other callers).
+    #[serde(default)]
+    pub allow_main_checkout: bool,
+    /// Hidden helper agents (title and branch generation); never from the API.
+    #[serde(skip)]
+    pub internal: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -226,7 +262,7 @@ impl Agent {
 }
 
 struct Inner {
-    store: Store,
+    store: Arc<Store>,
     providers: HashMap<String, Arc<dyn Provider>>,
     lanes: LaneConfig,
     agents: Mutex<HashMap<String, Agent>>,
@@ -234,6 +270,7 @@ struct Inner {
     generation: watch::Sender<u64>,
     book: Mutex<HashMap<String, permissions::Entry>>,
     options: Options,
+    workspaces: Workspaces,
 }
 
 #[derive(Clone)]
@@ -271,8 +308,15 @@ impl Manager {
             providers.into_iter().map(|p| (p.info().id, p)).collect();
         let (bus, _) = broadcast::channel(4096);
         let (generation, _) = watch::channel(0);
+        let store = Arc::new(store);
+        let ws_bus = bus.clone();
+        let publish: crate::workspaces::Publish = Arc::new(move |w: &WorkspaceRecord| {
+            let _ = ws_bus.send(BusEvent::Workspace { workspace: Box::new(w.clone()) });
+        });
+        let workspaces = Workspaces::open(store.clone(), options.workspaces.clone(), publish)?;
         let manager = Manager {
             inner: Arc::new(Inner {
+                workspaces,
                 store,
                 providers,
                 lanes,
@@ -728,17 +772,35 @@ impl Manager {
             .get(&provider_id)
             .cloned()
             .ok_or_else(|| ManagerError::UnknownProvider(provider_id.clone()))?;
+        let workspace = match &req.workspace_id {
+            Some(wid) => Some(
+                self.inner
+                    .workspaces
+                    .get(wid)
+                    .filter(|w| w.archived_at.is_none())
+                    .ok_or_else(|| WsError::NotFound(format!("Workspace not found: {wid}")))?,
+            ),
+            None => None,
+        };
         if req.cwd.trim().is_empty() {
-            return Err(ManagerError::Invalid("cwd is required".into()));
+            match &workspace {
+                Some(w) => req.cwd = w.cwd.clone(),
+                None => return Err(ManagerError::Invalid("cwd is required".into())),
+            }
         }
         let info = provider.info();
+        if !req.internal {
+            let mode = req.mode_id.clone().or_else(|| info.default_mode_id.clone());
+            self.guard_start(&req.cwd, &provider_id, mode.as_deref(), req.allow_main_checkout).await?;
+        }
+        let workspace_id = workspace.map(|w| w.workspace_id).or_else(|| self.inner.workspaces.find_by_cwd(&req.cwd).map(|w| w.workspace_id));
         let (_, provisional) = resolve_titles(req.title.as_deref(), req.prompt.as_deref());
         let now = now_iso();
         let record = AgentRecord {
             id: uuid::Uuid::new_v4().to_string(),
             provider: provider_id,
             cwd: req.cwd.clone(),
-            workspace_id: None,
+            workspace_id,
             created_at: now.clone(),
             updated_at: now,
             last_activity_at: None,
@@ -762,7 +824,7 @@ impl Manager {
             requires_attention: false,
             attention_reason: None,
             attention_timestamp: None,
-            internal: false,
+            internal: req.internal,
             archived_at: None,
             idempotency_key: req.idempotency_key.clone(),
             epoch: uuid::Uuid::new_v4().to_string(),
@@ -775,7 +837,22 @@ impl Manager {
         };
         self.inner.store.save(&record)?;
         let id = record.id.clone();
-        let env: Vec<(String, String)> = req.env.clone().into_iter().collect();
+        let mut env: Vec<(String, String)> = req.env.clone().into_iter().collect();
+        // A nested `lagent run` inside the agent reuses its workspace (Paseo: PASEO_WORKSPACE_ID).
+        env.push(("LUCINA_AGENT_ID".into(), id.clone()));
+        if let Some(w) = &record.workspace_id {
+            env.push(("LUCINA_WORKSPACE_ID".into(), w.clone()));
+            // Worktrees of a Rust repo share one target dir (one `target/` per worktree
+            // filled nezopt's disk before).
+            if let Some(root) = self.inner.workspaces.get(w).and_then(|ws| ws.main_repo_root) {
+                let root = std::path::Path::new(&root);
+                if root.join("Cargo.toml").is_file() && !req.env.contains_key("CARGO_TARGET_DIR") {
+                    let name = root.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    env.push(("CARGO_TARGET_DIR".into(), format!("{home}/.cache/cargo-target/{name}")));
+                }
+            }
+        }
         let config = session_config(&record, env);
         {
             let mut agents = self.lock();
@@ -1184,6 +1261,10 @@ impl Manager {
         let baseline = Self::worktree_status(&cwd).await;
         for (i, (name, provider, lane)) in lanes.iter().enumerate() {
             if i > 0 {
+                if let Err(e) = self.guard_start(&cwd, provider, None, false).await {
+                    self.note(&id, Warning, format!("lane {name}: {e}; skipped"));
+                    continue;
+                }
                 if let Err(e) = self.switch_lane(&id, name, provider, lane).await {
                     self.note(&id, Warning, format!("lane {name}: cannot switch ({e}); the chain stops"));
                     break;

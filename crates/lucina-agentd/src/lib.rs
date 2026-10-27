@@ -10,6 +10,8 @@
 //! - [`client`] and [`cli`]: `lagent`, whose commands and `--json` output mirror
 //!   Paseo's CLI so the two can be compared directly.
 //!
+//! - [`workspaces`]: projects, workspaces and worktrees (through `wt`), `paseo.json`
+//!   setup, diffs, the file explorer and checkout operations.
 //! - [`peer`]: who is calling (owner, MCP, or a process an agent started), for
 //!   permission answers; [`notify`]: pushes through secretary-server.
 //! - [`providers`]: Claude (stream-json), Codex (app-server), the ACP agents
@@ -32,6 +34,7 @@ pub mod process;
 pub mod provider;
 pub mod providers;
 pub mod store;
+pub mod workspaces;
 
 /// RFC 3339 with milliseconds and `Z`, as JavaScript's `Date.toISOString()`.
 pub fn now_iso() -> String {

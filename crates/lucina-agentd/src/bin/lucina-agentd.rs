@@ -77,8 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notifier,
         permission_ttl: Duration::from_secs(permission_ttl),
         gate: GateConfig::from_env(),
+        workspaces: lucina_agentd::workspaces::Config::from_env(),
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
+    manager.spawn_sweeper();
 
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;

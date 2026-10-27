@@ -23,6 +23,8 @@
 //! | POST | `/permissions/{id}` | `{behavior, message}` | view |
 //! | GET | `/stream` | | SSE of bus events |
 //!
+//! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
+//!
 //! Answers and external requests check the caller ([`crate::peer`]): only the owner
 //! answers, never an MCP token or a process an agent started.
 
@@ -45,6 +47,9 @@ use lucina_agents::PermissionResponse;
 
 use crate::manager::{ActiveTurnBehavior, CreateRequest, ExternalRequest, Manager, ManagerError};
 use crate::peer::{origin, Peer};
+use crate::workspaces::WsError;
+
+mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
 
@@ -61,6 +66,11 @@ impl From<ManagerError> for ApiError {
             ManagerError::AlreadyAnswered(_) => StatusCode::CONFLICT,
             ManagerError::Expired(_) => StatusCode::GONE,
             ManagerError::Unconfirmed(_) => StatusCode::GATEWAY_TIMEOUT,
+            ManagerError::Workspace(WsError::NotFound(_)) => StatusCode::NOT_FOUND,
+            ManagerError::Workspace(WsError::Invalid(_)) => StatusCode::BAD_REQUEST,
+            ManagerError::Workspace(WsError::Git(_)) => StatusCode::BAD_GATEWAY,
+            ManagerError::Workspace(WsError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
+            ManagerError::Guard(_) => StatusCode::FORBIDDEN,
         };
         ApiError(status, e.code().to_string(), e.to_string())
     }
@@ -97,6 +107,7 @@ pub fn router(manager: Manager) -> Router {
         .route("/permissions", get(permissions).post(request_permission))
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
+        .merge(workspaces::routes())
         .with_state(manager)
 }
 
@@ -122,7 +133,11 @@ async fn items(State(m): State<Manager>, Query(q): Query<ListQuery>) -> ApiResul
     to_json(json!({"agents": m.list(q.archived)}))
 }
 
-async fn create(State(m): State<Manager>, Json(req): Json<CreateRequest>) -> ApiResult {
+async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(mut req): Json<CreateRequest>) -> ApiResult {
+    // Only the owner may run an agent in a main checkout (worktree guard).
+    if req.allow_main_checkout && !matches!(caller(&m, &peer, &headers), Origin::Local | Origin::OwnerDevice) {
+        req.allow_main_checkout = false;
+    }
     to_json(m.create(req).await?)
 }
 

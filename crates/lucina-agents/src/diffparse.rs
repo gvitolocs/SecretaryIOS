@@ -89,14 +89,16 @@ pub fn parse(diff: &str, max_lines: usize) -> Vec<DiffFile> {
                 continue;
             }
         }
-        if line.starts_with("@@ ") {
+        if let Some(after) = line.strip_prefix("@@ ") {
             if let Some((a, b, c, d)) = hunk_range(line) {
+                // Paseo keeps git's ranges but not the function context after the second @@.
+                let header = after.find(" @@").map(|i| &line[..i + 6]).unwrap_or(line);
                 f.hunks.push(DiffHunk {
                     old_start: a,
                     old_count: b,
                     new_start: c,
                     new_count: d,
-                    lines: vec![DiffLine { kind: "header".into(), content: line.to_string() }],
+                    lines: vec![DiffLine { kind: "header".into(), content: header.to_string() }],
                 });
             }
             continue;
@@ -142,7 +144,7 @@ mod tests {
         assert_eq!(paths, ["bin.dat", "f.txt", "n.txt", "new name.txt"]);
         let f = &files[1];
         assert_eq!((f.additions, f.deletions), (2, 1));
-        assert_eq!(f.hunks[0].lines[0].content, "@@ -1,3 +1,4 @@ fn x");
+        assert_eq!(f.hunks[0].lines[0].content, "@@ -1,3 +1,4 @@", "no function context (Paseo)");
         assert_eq!(f.hunks[0].lines.len(), 6);
         assert!(files[0].is_new && files[0].status == "binary" && files[0].hunks.is_empty());
         assert_eq!((files[2].hunks[0].old_start, files[2].hunks[0].old_count, files[2].hunks[0].new_count), (0, 0, 1));

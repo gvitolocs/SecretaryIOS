@@ -183,6 +183,41 @@ through the `permission_gate` kernel (Verus G1-G7):
 - The file explorer can list, read and download files. Uploads go through Lucina Drive, which already handles
   media and sizes.
 
+How phase 4 built it (`crates/lucina-agentd/src/workspaces/`, guard kernel `worktree_guard`, Verus W1-W7):
+
+- **Registry:** projects and workspaces are JSON records in agentd's SQLite.
+  - Each directory gets its own project, and a bare `lagent run` makes a local workspace for its cwd, as Paseo does.
+  - `lagent project …`, `lagent workspace …` and `lagent clone` keep Paseo's outputs and error codes.
+- **Worktrees:** created with `wt add <branch> [base]`. The directory is the branch with `/` turned into `-`, under
+  `$WT_ROOT/<Repo>/`.
+  - Branch names: `--new-branch`, else the slug, else `agent/<slug of the prompt>`, else an adjective-noun name.
+  - Codex in SecretaryIOS defaults to `codex/<…>` from `lucina-rs`.
+  - checkout-branch makes a copy (`main-1`) when the branch is checked out elsewhere.
+  - checkout-pr fetches `pull/<n>/head`. A fork's pull request is untrusted: its scripts wait for `workspace setup`,
+    which only the owner may run.
+- **Generated names:** a worktree made from a prompt gets a title and branch from an internal agent.
+  - It uses Paseo's naming prompt, with `LUCINA_AGENTD_METADATA_PROVIDER`, default `claude/claude-haiku-5-5`.
+  - The placeholder branch is renamed only while it is still checked out.
+- **Guard** (`worktree_guard`, checked before every agent start and every chain lane):
+  - an agent that can edit never runs in a main checkout under `~/Projects`, unless the owner passes
+    `--allow-main-checkout` (an MCP token or an agent can't);
+  - plan mode may run there;
+  - a worktree outside `~/Projects/.worktrees/<Repo>/` is refused;
+  - Codex in SecretaryIOS runs only in a worktree on `codex/` from `lucina-rs`, with no override.
+- **Removal:**
+  - Archive closes the workspace's agents, as Paseo does, and runs teardown.
+  - The worktree goes only if agentd made it and it is clean. Its branch goes only when merged (`git branch -d`).
+  - The merge sweep runs every 10 minutes, and on `lagent workspace sweep`. It removes worktrees merged into their
+    base, or whose pull request GitHub shows as merged at the local head.
+  - The sweep never removes a branch that never moved past its starting commit.
+- **Setup:** `paseo.json` `worktree.setup` runs in the background with Paseo's `PASEO_*` variables, plus `LUCINA_*`
+  aliases and a port per worktree. It stops at the first failure.
+- **Agents:** they get `LUCINA_AGENT_ID` and `LUCINA_WORKSPACE_ID`, so a nested `lagent run` reuses the workspace.
+  In a Rust repo they also get `CARGO_TARGET_DIR=~/.cache/cargo-target/<repo>`.
+- **Diffs, status and files** match Paseo's own client in the differential test.
+  - Commits can name their author, because nezopt has no global git identity.
+  - Push and pull requests are owner-only.
+
 ### Terminals, scripts and services
 
 - PTYs (`portable-pty`) live in agentd and survive client disconnects. They stream over WebSocket to xterm.js on the
