@@ -56,11 +56,7 @@ function open(id: number, url: string, protocols: string[]) {
   ws.onopen = () => post({ type: "open", id });
   ws.onmessage = (e) => {
     if (e.data instanceof ArrayBuffer) video.push(e.data);
-    else if (typeof e.data === "string") {
-      // Logged in: ask for a key frame at once rather than after the first delta frames.
-      if (e.data.includes('"type":"login"')) video.refresh(true);
-      post({ type: "text", id, data: e.data });
-    }
+    else if (typeof e.data === "string") post({ type: "text", id, data: e.data });
   };
   ws.onclose = (e) => {
     video.close();

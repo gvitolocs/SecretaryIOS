@@ -5,8 +5,11 @@ import { parseVideo, WEBCODECS, type ClientMessage, type DeskCodec } from "./des
 
 /** Frames waiting in the decoder before acks wait for it (see `ackAt`). */
 const DECODE_BACKLOG = 3;
-/** While waiting for a key frame, ask again at most this often (each ask makes the host encode one). */
-const REFRESH_EVERY_MS = 300;
+/**
+ * The gateway asks the host for a key frame when a socket joins; if none came after this long, ask
+ * once more. Each ask makes the host rebuild its encoder (and it throttles them), so never more.
+ */
+const REFRESH_AFTER_MS = 1000;
 
 export interface DeskVideoHost {
   send(m: ClientMessage): void;
@@ -22,7 +25,8 @@ export class DeskVideo {
   private decoder: VideoDecoder | null = null;
   private waitingKey = true;
   private closed = false;
-  private lastRefresh = -Infinity;
+  private waitSince = performance.now();
+  private askedWhileWaiting = false;
   /**
    * Timestamps (µs) of frames flagged "last" whose ack waits for the decoder. The host sends the next
    * batch only after an ack; acking once the frame is drawn would tie the stream to whatever thread
@@ -46,10 +50,16 @@ export class DeskVideo {
     if (this.waitingKey && !f.key) {
       // Nothing to show until a key frame; keep the host going and ask for one.
       if (f.last) this.host.send({ type: "ack" });
-      this.refresh();
+      if (!this.askedWhileWaiting && performance.now() - this.waitSince >= REFRESH_AFTER_MS) {
+        this.askedWhileWaiting = true;
+        this.host.send({ type: "refresh" });
+      }
       return;
     }
-    this.waitingKey = false;
+    if (this.waitingKey) {
+      this.waitingKey = false;
+      this.askedWhileWaiting = false;
+    }
     const timestamp = f.pts * 1000;
     if (f.last) {
       if ((this.decoder!.decodeQueueSize ?? DECODE_BACKLOG) < DECODE_BACKLOG) this.host.send({ type: "ack" });
@@ -102,14 +112,9 @@ export class DeskVideo {
     this.waitingKey = true;
     if (this.ackAt.size) this.host.send({ type: "ack" });
     this.ackAt.clear();
-    this.refresh(true);
-  }
-
-  /** Ask the host for a key frame (throttled unless `now`). The socket asks once right at login. */
-  refresh(now = false): void {
-    const t = performance.now();
-    if (!now && t - this.lastRefresh < REFRESH_EVERY_MS) return;
-    this.lastRefresh = t;
+    // The stream broke here, not at a join: the gateway will not ask for us.
+    this.waitSince = performance.now();
+    this.askedWhileWaiting = true;
     this.host.send({ type: "refresh" });
   }
 

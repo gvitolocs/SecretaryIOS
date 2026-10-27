@@ -280,11 +280,7 @@ export class DeskSocket {
       ws.onopen = opened;
       ws.onmessage = (m) => {
         if (m.data instanceof ArrayBuffer) video.push(m.data);
-        else if (typeof m.data === "string") {
-          // Logged in: ask for a key frame at once rather than after the first delta frames.
-          if (m.data.includes('"type":"login"')) video.refresh(true);
-          this.onText(m.data);
-        }
+        else if (typeof m.data === "string") this.onText(m.data);
       };
       ws.onclose = (e) => closed(e.code, e.reason);
     });

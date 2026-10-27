@@ -134,13 +134,19 @@ describe("DeskPlayer", () => {
     expect(ticket).toHaveBeenCalledWith("workspace", "watch", ["vp9", "av1", "h264"]);
   });
 
-  it("skips frames until a key frame, asking for one but keeping the host going", async () => {
+  it("skips frames until a key frame, keeping the host going; asks for one only after a second", async () => {
     render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
     await waitFor(() => expect(FakeWS.all).toHaveLength(1));
     const ws = FakeWS.all[0]!;
     ws.open();
     ws.frame(false, true, 5);
-    expect(ws.sent).toEqual([{ type: "ack" }, { type: "refresh" }]);
+    // The gateway asks the host for a key frame on join; we only ack.
+    expect(ws.sent).toEqual([{ type: "ack" }]);
+    const now = performance.now();
+    vi.spyOn(performance, "now").mockReturnValue(now + 1500);
+    ws.frame(false, true, 6);
+    ws.frame(false, true, 7);
+    expect(ws.sent).toEqual([{ type: "ack" }, { type: "ack" }, { type: "refresh" }, { type: "ack" }]);
   });
 
   it("the first click takes over, then is delivered on the control socket; the watch socket goes", async () => {
