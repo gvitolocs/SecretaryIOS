@@ -44,6 +44,7 @@ fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
                 ws.send(Message::text(r#"{"type":"clipboard","text":"host-secret"}"#))
                     .await
                     .unwrap();
+                ws.send(Message::binary(png(20))).await.unwrap();
                 ws.send(Message::binary(vec![1u8, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAA]))
                     .await
                     .unwrap();
@@ -51,6 +52,9 @@ fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
                     match m {
                         Message::Text(t) => {
                             let _ = tx.send(t.as_str().to_owned());
+                        }
+                        Message::Binary(b) => {
+                            let _ = tx.send(format!("<binary kind {} {} bytes>", b[0], b.len()));
                         }
                         Message::Close(_) => break,
                         _ => {}
@@ -61,6 +65,13 @@ fn fake_gateway(listener: UnixListener) -> mpsc::UnboundedReceiver<String> {
         }
     });
     rx
+}
+
+/// A clipboard image frame: `[2, 1, 0, 0]`, the PNG signature, then zeros up to `len` PNG bytes.
+fn png(len: usize) -> Vec<u8> {
+    let mut b = vec![2u8, 1, 0, 0, 0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    b.resize(4 + len.max(8), 0);
+    b
 }
 
 async fn mint(h: &common::H, mode: &str, bearer: bool) -> (u16, Value) {
@@ -200,7 +211,7 @@ async fn desk_tickets_lease_and_audit() {
     assert_eq!(connect(&h, &proto, true).await.err(), Some(410), "single use");
     assert_eq!(next_text(&mut ws).await, json!({"type": "hello", "v": 1, "mode": "watch", "sandbox": "workspace"}));
     assert_eq!(next_text(&mut ws).await["type"], "login");
-    assert_eq!(next_binary(&mut ws).await[..3], [1, 1, 3]);
+    assert_eq!(next_binary(&mut ws).await[..3], [1, 1, 3], "video; the host image before it never reached the watch socket");
     ws.send(Message::text(r#"{"type":"mouse","mask":9,"x":5,"y":5}"#)).await.unwrap();
     assert_eq!(
         next_text(&mut ws).await,
@@ -209,6 +220,9 @@ async fn desk_tickets_lease_and_audit() {
     );
     ws.send(Message::text(r#"{"type":"clipboard","text":"owner-text"}"#)).await.unwrap();
     assert_eq!(next_text(&mut ws).await, json!({"type": "refused", "what": "clipboard", "why": "watch"}));
+    ws.send(Message::binary(png(100))).await.unwrap();
+    ws.send(Message::binary(vec![7u8, 0, 0, 0])).await.unwrap();
+    assert_eq!(next_text(&mut ws).await, json!({"type": "refused", "what": "unknown", "why": "invalid"}), "the image was dropped silently (clipboard/watch already refused); other binary is refused");
     assert_eq!(gw.recv().await.unwrap(), "<open /v1/session?sandbox=workspace&codecs=av1,vp9>", "the browser's codecs reach the gateway");
     ws.send(Message::text(r#"{"type":"ack"}"#)).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), r#"{"type":"ack"}"#, "only the ack reached the gateway");
@@ -222,6 +236,7 @@ async fn desk_tickets_lease_and_audit() {
     assert_eq!(closed["via"], "p1");
     assert_eq!(closed["mouse"], 0);
     assert_eq!((closed["clipboardIn"].as_u64(), closed["clipboardOut"].as_u64()), (Some(0), Some(0)));
+    assert_eq!((closed["clipboardImageIn"].as_u64(), closed["clipboardImageOut"].as_u64()), (Some(0), Some(0)));
     assert!(closed["bytesOut"].as_u64().unwrap() > 13, "{closed}");
     assert!(closed["openMs"].is_u64());
     let open = recent_event("desk_open").unwrap();
@@ -241,6 +256,7 @@ async fn desk_tickets_lease_and_audit() {
         json!({"type": "clipboard", "text": "host-secret"}),
         "the host clipboard reaches a control socket"
     );
+    assert_eq!(next_binary(&mut ws).await, png(20), "and the host clipboard image");
     wait_until("the lease", || control().owner_driving(SB)).await;
     assert!(cancel.is_cancelled(), "Lucina's task was stopped");
     assert!(task.preempted());
@@ -258,6 +274,8 @@ async fn desk_tickets_lease_and_audit() {
     assert_eq!(gw.recv().await.unwrap(), mouse);
     assert_eq!(gw.recv().await.unwrap(), r#"{"type":"text","text":"ciao"}"#);
     assert_eq!(gw.recv().await.unwrap(), r#"{"type":"clipboard","text":"owner-text"}"#);
+    ws.send(Message::binary(png(10 * 1024 * 1024))).await.unwrap();
+    assert_eq!(gw.recv().await.unwrap(), format!("<binary kind 2 {} bytes>", 4 + 10 * 1024 * 1024), "a full 10 MiB image passes");
     ws.close(None).await.unwrap();
     assert_eq!(gw.recv().await.unwrap(), "<closed>");
     wait_until("the give-back", || !control().owner_driving(SB)).await;
@@ -271,6 +289,11 @@ async fn desk_tickets_lease_and_audit() {
     let closed = recent_event("desk_closed").unwrap();
     assert_eq!((closed["mouse"].as_u64(), closed["textChars"].as_u64()), (Some(1), Some(4)), "{closed}");
     assert_eq!((closed["clipboardIn"].as_u64(), closed["clipboardOut"].as_u64()), (Some(10), Some(11)), "bytes");
+    assert_eq!(
+        (closed["clipboardImageIn"].as_u64(), closed["clipboardImageOut"].as_u64()),
+        (Some(10 * 1024 * 1024), Some(20)),
+        "PNG bytes"
+    );
     let audit = control().recent(SB, 50).iter().map(Value::to_string).collect::<String>();
     assert!(!audit.contains("owner-text") && !audit.contains("host-secret") && !audit.contains("ciao"), "no text in the audit");
     let take = control()
