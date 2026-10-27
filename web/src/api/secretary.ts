@@ -2,6 +2,7 @@ import { request } from "./client";
 import type { TimelinePage } from "./timeline";
 
 export interface SessionInfo {
+  deviceId?: string;
   authenticated: boolean;
   deviceName?: string | null;
 }
@@ -64,18 +65,19 @@ export const api = {
 
   getHealth: () => request<HealthInfo>("GET", "/v1/health", { timeoutMs: 10_000 }),
 
-  sendChat: (body: { message: string; sessionId: string; clientMessageId: string }) =>
+  sendChat: (body: { message: string; sessionId: string; clientMessageId: string; replyTo?: string }) =>
     request<ChatResponse>("POST", "/v1/chat", {
       body,
       timeoutMs: CHAT_TIMEOUT_MS,
       headers: { "X-Secretary-Client": "web" },
     }),
   /** Newest first; `before` is the `nextBefore` cursor of the previous page. */
-  getTimeline: (before: string | null = null, limit = TIMELINE_PAGE) =>
+  getTimeline: (before: string | null = null, limit = TIMELINE_PAGE, filter: { scope?: string; conversation?: string; after?: string } = {}) =>
     request<TimelinePage>(
       "GET",
-      `/v1/timeline?${before !== null ? `before=${encodeURIComponent(before)}&` : ""}limit=${limit}`,
+      `/v1/timeline?${before !== null ? `before=${encodeURIComponent(before)}&` : ""}limit=${limit}${Object.entries(filter).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join("")}`,
     ),
+  getConversations: () => request<{ items: import("../lib/chatSync").Conversation[] }>("GET", "/v1/timeline/conversations"),
   getJob: (id: string) => request<JobInfo>("GET", `/v1/jobs/${encodeURIComponent(id)}`),
 
   listShopping: () => request<unknown>("GET", "/v1/shopping"),

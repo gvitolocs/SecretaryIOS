@@ -82,9 +82,7 @@ describe("Chat", () => {
     expect(body.clientMessageId).toMatch(/[0-9a-f-]{36}/);
     await waitFor(() => expect(box).not.toHaveAttribute("readonly"));
 
-    // Cached for a fast first paint.
-    const stored = JSON.parse(sessionStorage.getItem("secretary.timeline.v1") ?? "[]") as unknown[];
-    expect(stored).toHaveLength(2);
+    expect(sessionStorage.getItem("secretary.timeline.v1")).toBeNull();
   });
 
   it("Shift+Enter does not send", () => {
@@ -250,7 +248,7 @@ describe("Chat", () => {
     render(() => <ChatView />);
     fireEvent.click(await screen.findByRole("button", { name: "Load earlier messages" }));
     expect(await screen.findByText("The very first")).toBeInTheDocument();
-    expect(calls.some((c) => c.url === "/v1/timeline?before=8&limit=50")).toBe(true);
+    expect(calls.some((c) => c.url === "/v1/timeline?before=8&limit=50&scope=mine")).toBe(true);
     expect(await screen.findByText("Start of the conversation")).toBeInTheDocument();
   });
 
@@ -262,8 +260,8 @@ describe("Chat", () => {
     const es = MockEventSource.latest();
     es.open();
     expect(await screen.findByText("Live")).toBeInTheDocument();
-    es.emit("item", { id: "42", ts: new Date().toISOString(), channel: "telegram", role: "user", text: "Live from Telegram" });
-    expect(await screen.findByText("Live from Telegram")).toBeInTheDocument();
+    es.emit("item", { id: "42", ts: new Date().toISOString(), channel: "web", role: "user", text: "Live from this device" });
+    expect(await screen.findByText("Live from this device")).toBeInTheDocument();
     es.drop();
     expect(await screen.findByText("Reconnecting…")).toBeInTheDocument();
   });

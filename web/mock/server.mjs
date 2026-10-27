@@ -1354,6 +1354,7 @@ async function handleBodyCommand(req, res) {
 const TIMELINE_CHANNELS = ["telegram", "discord", "web", "ios", "alexa", "other"];
 const TIMELINE_MAX_LIMIT = 100;
 const SSE_PING_MS = 15_000;
+const MOCK_DEVICE = "mock-web";
 let timelineSeq = 1000;
 /** @type {object[]} oldest first; ids are increasing integers (as strings) */
 const timeline = [];
@@ -1380,6 +1381,21 @@ function addItem(fields, ts = Date.now()) {
 function seedTimeline() {
   const now = Date.now();
   const H = 3_600_000;
+  const variants = [
+    { channel: "web", meta: { device: MOCK_DEVICE, deviceName: "This browser" } },
+    { channel: "web", meta: { device: "other-web", deviceName: "Other browser" } },
+    { channel: "ios" },
+    { channel: "web", meta: { via: "mcp", caller: "chatgpt" } },
+    { channel: "web", meta: { via: "mcp", caller: "claude-code" } },
+    { channel: "telegram", meta: { chatTitle: "Family" } },
+  ];
+  const requested = process.env.MOCK_TIMELINE_ITEMS;
+  if (requested !== undefined) {
+    const n = Math.max(0, Number(requested) || 0);
+    for (let i = 0; i < n; i++) addItem({ ...variants[i % variants.length], role: i % 2 ? "lucina" : "user", text: `Seed message ${i + 1}` }, now - (n - i) * 60000);
+    return;
+  }
+  for (const [i, variant] of variants.entries()) addItem({ ...variant, role: "user", text: `Hello from conversation ${i + 1}` }, now - DAY_MS * 30 + i * 1000);
   const rows = [];
   const tg = { chatTitle: "Family" };
   const dc = { guildName: "Lucina HQ", channelName: "general" };
@@ -1421,15 +1437,38 @@ function seedTimeline() {
 }
 seedTimeline();
 
+function conversationKey(it) {
+  if (it.meta?.via === "mcp") return `agent:${(it.meta.caller ?? "").toLowerCase().replace(/[^a-z0-9_-]/g, "") || "mcp"}`;
+  if (["web", "ios"].includes(it.channel)) return it.meta?.device ? `device:${it.meta.device}` : `legacy:${it.channel}`;
+  return ["telegram", "discord", "alexa"].includes(it.channel) ? it.channel : "lucina";
+}
+function handleConversations(res) {
+  const groups = new Map();
+  for (const it of timeline) {
+    const key = conversationKey(it), previous = groups.get(key);
+    const kind = key.includes(":") ? key.split(":")[0] : key;
+    groups.set(key, { key, kind, title: it.meta?.deviceName ?? it.meta?.caller ?? it.meta?.chatTitle ?? key,
+      channel: it.channel, device: it.meta?.device, deviceName: it.meta?.deviceName, caller: it.meta?.caller,
+      count: (previous?.count ?? 0) + 1, lastId: it.id, lastTs: it.ts, lastRole: it.role, lastText: it.text });
+  }
+  send(res, 200, { items: [...groups.values()].sort((a, b) => Number(b.lastId) - Number(a.lastId)) });
+}
 function handleTimelinePage(res, url) {
-  const before = url.searchParams.get("before");
-  const limitRaw = Number(url.searchParams.get("limit") ?? 50);
-  const limit = Number.isInteger(limitRaw) && limitRaw >= 1 ? Math.min(limitRaw, TIMELINE_MAX_LIMIT) : 50;
-  if (before !== null && !/^\d+$/.test(before)) return fail(res, 400, "bad_request", "before must be an item id");
-  const older = before === null ? timeline : timeline.filter((it) => Number(it.id) < Number(before));
-  const items = older.slice(-limit).reverse();
-  const nextBefore = older.length > limit && items.length ? items[items.length - 1].id : null;
-  return send(res, 200, { items, nextBefore });
+  const before = url.searchParams.get("before"), after = url.searchParams.get("after");
+  const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 50, 200));
+  if (after && !timeline.some(it => it.id === after)) return fail(res, 410, "cursor_expired", "Unknown cursor");
+  const conversation = url.searchParams.get("conversation");
+  const filtered = timeline.filter(it => {
+    const key = conversationKey(it);
+    return (!conversation || key === conversation) && (url.searchParams.get("scope") !== "mine" || [`device:${MOCK_DEVICE}`, "legacy:web", "lucina"].includes(key));
+  });
+  const matching = filtered.filter(it => (!before || Number(it.id) < Number(before)) && (!after || Number(it.id) > Number(after)));
+  const batch = after ? matching.slice(0, limit) : matching.slice(-limit);
+  const items = [...batch].reverse();
+  const hasMore = matching.length > limit;
+  const cursor = after && hasMore ? batch.at(-1)?.id ?? after : timeline.at(-1)?.id ?? null;
+  const nextBefore = !after && hasMore ? items.at(-1)?.id ?? null : null;
+  return send(res, 200, { items, nextBefore, cursor, hasMore });
 }
 
 function handleTimelineStream(req, res) {
@@ -1644,7 +1683,7 @@ async function handleChat(req, res) {
   const channel = clientChannel(req);
   let userItemId = key ? userItems.get(key) : undefined;
   if (!userItemId) {
-    userItemId = addItem({ channel, role: "user", text: message, ...(clientMessageId ? { clientMessageId } : {}) }).id;
+    userItemId = addItem({ channel, role: "user", text: message, replyTo: body.replyTo, meta: { device: MOCK_DEVICE, deviceName: "This browser" }, ...(clientMessageId ? { clientMessageId } : {}) }).id;
     if (key) userItems.set(key, userItemId);
   }
 
@@ -1702,7 +1741,7 @@ async function handleChat(req, res) {
     text: reply.reply,
     replyTo: userItemId,
     ...(clientMessageId ? { clientMessageId } : {}),
-    ...(meta ? { meta } : {}),
+    meta: { ...meta, device: MOCK_DEVICE, deviceName: "This browser" },
   });
   reply = { ...reply, userItemId, lucinaItemId: lucinaItem.id };
   if (reply.reminder) {
@@ -1754,7 +1793,7 @@ async function handleLogin(req, res) {
   const sid = randomUUID();
   const ua = String(req.headers["user-agent"] ?? "");
   sessions.set(sid, { deviceName: /iPhone/.test(ua) ? "iPhone" : "Browser" });
-  send(res, 200, { authenticated: true, deviceName: sessions.get(sid).deviceName }, {
+  send(res, 200, { authenticated: true, deviceId: MOCK_DEVICE, deviceName: sessions.get(sid).deviceName }, {
     "Set-Cookie": `${COOKIE}=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`,
   });
 }
@@ -1789,6 +1828,7 @@ async function route(req, res) {
   const url = new URL(req.url ?? "/", "http://mock.local");
   const path = url.pathname.replace(/\/+$/, "") || "/";
   const method = req.method ?? "GET";
+  if (path.startsWith("/v1/")) await sleep(Math.max(0, Number(process.env.MOCK_LATENCY_MS) || 0));
 
   if (!path.startsWith("/v1/")) return fail(res, 404, "not_found", "Not found.");
   const writes = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
@@ -1818,7 +1858,7 @@ async function route(req, res) {
   if (path === "/v1/session") {
     if (method === "GET") {
       const s = currentSession(req);
-      return send(res, 200, { authenticated: !!s, deviceName: s?.deviceName ?? null });
+      return send(res, 200, { authenticated: !!s, deviceName: s?.deviceName ?? null, deviceId: s ? MOCK_DEVICE : null });
     }
     if (method === "POST") return handleLogin(req, res);
     if (method === "DELETE") {
@@ -1931,6 +1971,7 @@ async function route(req, res) {
     return handleAsset(res, rel);
   }
 
+  if (path === "/v1/timeline/conversations" && method === "GET") return handleConversations(res);
   if (path === "/v1/timeline" && method === "GET") return handleTimelinePage(res, url);
   if (path === "/v1/timeline/stream" && method === "GET") return handleTimelineStream(req, res);
 

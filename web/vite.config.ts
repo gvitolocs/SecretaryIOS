@@ -49,7 +49,7 @@ const proxy = {
 export default defineConfig({
   plugins: [solid(), mediapipeWasm()],
   // The Lucina stage package is linked from ../packages; use one copy of three.
-  resolve: { dedupe: ["three"] },
+  resolve: { dedupe: ["three"], alias: { "@secretary/lucina-stage": join(import.meta.dirname, "../packages/lucina-stage/src/index.ts") } },
   // The shopping illustrations live in ../assets/icons (shared with iOS); let Vite read them.
   server: { port: 5173, strictPort: true, proxy, fs: { allow: [".."] } },
   preview: { port: 4173, strictPort: true, proxy },
