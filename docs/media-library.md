@@ -105,6 +105,13 @@ kernel DK3).
     there). `GET items/{id}/pdf`: a PDF, or an Office file converted (503 without LibreOffice).
     `GET items/{id}/archive`: zip, tar, tar.gz and 7z listings (nothing is extracted). `GET items/{id}/original?download=1`:
     `Content-Disposition: attachment` with the real name.
+- Devices (2026-10-27: the owner wants one gallery per device, everything in the Lucina cloud):
+  `PUT devices/{id} {name, kind}` registers or renames a device (`kind`: iphone, ipad, android, mac, pc, backup,
+  camera, other; ids `[A-Za-z0-9._-]{1,64}`, e.g. `ios-<uuid>`, `mac-<uuid>`); an upload whose `meta.device` is unknown
+  adds it. `GET devices` lists every device with `photos`, `videos`, `latest_taken_at`. `GET items?device=<id>` is one
+  device's photos; the Gallery (`scope=gallery`) is everything that came from a device: `source` phone-… or `device`
+  set (`db::FROM_DEVICE`, the Drive kernel's DK2 `phone` input). The old nespc backups are the device
+  `nespc-backup`.
 - `GET devices/{device}/assets`, `GET summary`, `GET events` (SSE: `item.added|updated|trashed`).
 - Share links (2026-10-27, `share.rs`, `share_http.rs`):
   - owner: `POST albums/{id}/shares {expires_in_days?, allow_original?}` → `{token, url_path, …}`;
