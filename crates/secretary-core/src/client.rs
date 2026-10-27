@@ -236,6 +236,12 @@ impl Call {
         c
     }
 
+    /// `GET /computer/lan`: the home-network door to the live view, `{url, publicIp}`
+    /// (`url` null when it is not set up).
+    pub fn computer_lan() -> Self {
+        Self::new(Method::GET, &["computer", "lan"])
+    }
+
     /// `POST /computer/view`: a live-view ticket and its view id.
     pub fn computer_view(body: Value) -> Self {
         Self::new(Method::POST, &["computer", "view"]).with_body(body)

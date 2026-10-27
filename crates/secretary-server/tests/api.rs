@@ -937,8 +937,9 @@ async fn security_headers_on_every_response() {
     const STRICT: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'";
     // The web app (3D stage: WebAssembly decoder, blob textures/audio/workers).
     // `WEB` mirrors `WEB_CONTENT_SECURITY_POLICY`: the app's own policy only;
-    // the in-app maps load tiles, fonts and sprites from this origin.
-    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
+    // the in-app maps load tiles, fonts and sprites from this origin; the
+    // computer page may probe and frame Lucina's home-network door.
+    const WEB: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data: https://lan.getsecretary.tech:9443; frame-src 'self' https://lan.getsecretary.tech:9443; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
     let responses = [
         (
             STRICT,

@@ -3,6 +3,7 @@ import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "s
 import { toApiError } from "../api/client";
 import {
   computerApi,
+  probeLan,
   releaseOnExit,
   toScreen,
   viewerAsset,
@@ -158,6 +159,8 @@ export default function ComputerView() {
   const [full, setFull] = createSignal(false);
   const [keyboard, setKeyboard] = createSignal(false);
   const [zoom, setZoom] = createSignal({ scale: 1, dx: 0, dy: 0 });
+  const [via, setVia] = createSignal<"lan" | "remote" | null>(null);
+  let lanSeen: { url: string; ok: boolean; at: number } | null = null;
   const [mark, setMark] = createSignal<{ x: number; y: number; button: "left" | "right"; n: number } | null>(null);
   let renewTimer: number | undefined;
   let markTimer: number | undefined;
@@ -219,7 +222,10 @@ export default function ComputerView() {
     }
     try {
       const v = await computerApi.view(sandbox(), kind);
-      setView(v);
+      // At home, the same view straight from nezopt when the door answers; else through the server.
+      const lan = v.lan?.url && (await lanReachable(v.lan.url)) ? v.lan.url : null;
+      setVia(lan ? "lan" : "remote");
+      setView({ ...v, viewUrl: lan ? `${lan}${v.viewUrl}` : v.viewUrl });
       setKeyboard(false);
       setZoom({ scale: 1, dx: 0, dy: 0 });
       scheduleRenew(v.ttlSecs);
@@ -228,6 +234,14 @@ export default function ComputerView() {
       setView(null);
       setError(err.status === 503 || err.lucinaOffline ? t("computer.unavailable") : err.message);
     }
+  };
+
+  /** The probe's answer, remembered for a minute (a renewal or a sandbox switch does not ask again). */
+  const lanReachable = async (url: string) => {
+    if (lanSeen && lanSeen.url === url && Date.now() - lanSeen.at < 60_000) return lanSeen.ok;
+    const ok = await probeLan(url);
+    lanSeen = { url, ok, at: Date.now() };
+    return ok;
   };
 
   const scheduleRenew = (ttlSecs: number) => {
@@ -512,6 +526,8 @@ export default function ComputerView() {
     }, HEARTBEAT_MS);
     // The first frame, from the viewer itself (its own status dot).
     const onMessage = (e: MessageEvent) => {
+      // Only the viewer frame speaks this protocol (its origin is opaque, so check the window).
+      if (!frame || e.source !== frame.contentWindow) return;
       const data = e.data as { type?: string; state?: string } | null;
       if (!data || typeof data.type !== "string") return;
       if (data.type === "lucina:state" && data.state === "failed") {
@@ -597,6 +613,13 @@ export default function ComputerView() {
           <Show when={state()?.task}>{(task) => <span class="computer-muted">{t("computer.working", { what: task().what })}</span>}</Show>
           <Show when={!mine()}>
             <span class="computer-muted">{t("computer.watchOnly")}</span>
+          </Show>
+          <Show when={mode() === "live" && view() && via()}>
+            {(how) => (
+              <span class="computer-via" data-via={how()}>
+                {how() === "lan" ? t("computer.viaLan") : t("computer.viaRemote")}
+              </span>
+            )}
           </Show>
         </div>
         <Show
