@@ -1,5 +1,6 @@
 import type { RouteSectionProps } from "@solidjs/router";
 import { createMemo, Match, onMount, Switch } from "solid-js";
+import { chat, hydrateCachedChat } from "./state/chat";
 import { t } from "./i18n";
 import { checkSession, session } from "./state/session";
 import Login from "./views/Login";
@@ -7,7 +8,7 @@ import Shell from "./views/Shell";
 
 /** Router root: gates every route behind the session. */
 export default function App(props: RouteSectionProps) {
-  onMount(() => void checkSession());
+  onMount(() => { void hydrateCachedChat(); void checkSession(); });
   const status = createMemo(() => session().status);
   const errorMessage = createMemo(() => {
     const s = session();
@@ -16,7 +17,7 @@ export default function App(props: RouteSectionProps) {
 
   return (
     <Switch>
-      <Match when={status() === "loading"}>
+      <Match when={status() === "loading" && !chat.messages.length}>
         <div class="splash" role="status" aria-label={t("common.loading")}>
           <span class="brand-mark" aria-hidden="true">
             <img src="/icon-192.png" alt="" width="76" height="76" />
@@ -37,7 +38,7 @@ export default function App(props: RouteSectionProps) {
       <Match when={status() === "anon"}>
         <Login />
       </Match>
-      <Match when={status() === "authed"}>
+      <Match when={status() === "authed" || (status() === "loading" && chat.messages.length > 0)}>
         <Shell>{props.children}</Shell>
       </Match>
     </Switch>

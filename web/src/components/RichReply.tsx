@@ -223,12 +223,12 @@ function sendsMessage(a: RichAction): boolean {
   return false;
 }
 
-function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string }) {
+function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?: string; readOnly?: boolean }) {
   const navigate = useAppNavigate();
   const chosen = () => chosenAction(props.message) ?? props.inferred;
 
   function run(a: RichAction) {
-    if (chosen() || (sending() && sendsMessage(a))) return;
+    if (props.readOnly || chosen() || (sending() && sendsMessage(a))) return;
     switch (a.kind) {
       case "reply":
         if (a.payload.prefill) requestPrefill(a.payload.text);
@@ -258,7 +258,7 @@ function Actions(props: { message: ChatMessage; actions: RichAction[]; inferred?
               class="rich-action"
               classList={{ "rich-action--chosen": isChosen(), [`rich-action--${a.kind}`]: true }}
               data-answer={a.kind === "confirm" ? a.payload.answer : undefined}
-              disabled={!!chosen() || (sending() && sendsMessage(a))}
+              disabled={props.readOnly || !!chosen() || (sending() && sendsMessage(a))}
               aria-pressed={isChosen() ? "true" : undefined}
               aria-label={isChosen() ? t("chat.richChosen", { label: a.label }) : undefined}
               onClick={() => run(a)}
@@ -286,6 +286,7 @@ export function RichReply(props: {
   rich: RichMessage;
   onBubbleClick?: (e: MouseEvent) => void;
   inferredChoice?: string;
+  readOnly?: boolean;
 }) {
   const total = () => props.rich.bubbles.length;
   const animate = !!props.message.reveal && !prefersReducedMotion() && total() > 1;
@@ -338,7 +339,7 @@ export function RichReply(props: {
           </div>
         </Show>
         <Show when={props.rich.actions.length}>
-          <Actions message={props.message} actions={props.rich.actions} inferred={props.inferredChoice} />
+          <Actions readOnly={props.readOnly} message={props.message} actions={props.rich.actions} inferred={props.inferredChoice} />
         </Show>
       </Show>
     </div>

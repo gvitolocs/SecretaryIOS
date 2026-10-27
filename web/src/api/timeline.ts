@@ -33,6 +33,8 @@ export interface Attachment {
 }
 
 export interface ItemMeta {
+  device?: string;
+  deviceName?: string;
   via?: string;
   caller?: string;
   chatTitle?: string;
@@ -136,6 +138,8 @@ export interface TimelineItem {
 
 export interface TimelinePage {
   items: unknown;
+  cursor?: string | null;
+  hasMore?: boolean;
   nextBefore?: string | number | null;
 }
 
@@ -164,6 +168,8 @@ function parseMeta(v: unknown): ItemMeta | undefined {
   if (!v || typeof v !== "object") return undefined;
   const m = v as Record<string, unknown>;
   const out: ItemMeta = {};
+  if (typeof m.device === "string") out.device = m.device;
+  if (typeof m.deviceName === "string") out.deviceName = m.deviceName;
   if (typeof m.via === "string") out.via = m.via;
   if (typeof m.caller === "string") out.caller = m.caller;
   const chatTitle = str(m.chatTitle);

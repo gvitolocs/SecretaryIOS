@@ -39,6 +39,8 @@ import { Markdown } from "../components/Markdown";
 import { PlaceCard } from "../components/PlaceCard";
 import { RichReply } from "../components/RichReply";
 import Model3dViewer from "../components/Model3dViewer";
+import { markFirstMessage } from "../lib/chatPerf";
+import { firstMessageSource, replyTarget, setReplyTarget } from "../state/chat";
 import { t, type MessageKey } from "../i18n";
 import { safeHref } from "../lib/linkify";
 import type { PlaceInfo } from "../lib/mapKit";
@@ -188,12 +190,13 @@ export function FeedbackButtons(props: { outreachId: string; actions?: Proactive
 }
 
 /** A message Lucina sent on her own: priority, content buttons, feedback, why. */
-function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: PlaceInfo }) {
+function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: PlaceInfo; readOnly?: boolean }) {
   const navigate = useOptionalNavigate();
   const [showWhy, setShowWhy] = createSignal(false);
   const links = () => props.meta.actions.filter((a) => !a.feedback && a.route).slice(0, 2);
 
   function open(a: ProactiveAction, e: MouseEvent) {
+    if (props.readOnly) return;
     void sendOutreachFeedback(props.meta.outreachId, "opened").catch(() => undefined);
     if (navigate && a.route) {
       e.preventDefault();
@@ -230,7 +233,7 @@ function ProactiveCard(props: { text: string; meta: ProactiveMeta; place?: Place
           </For>
         </div>
       </Show>
-      <FeedbackButtons outreachId={props.meta.outreachId} actions={props.meta.actions} />
+      <Show when={!props.readOnly}><FeedbackButtons outreachId={props.meta.outreachId} actions={props.meta.actions} /></Show>
       <Show when={props.meta.why}>
         {(why) => (
           <div class="proactive-why">
@@ -379,7 +382,7 @@ export function SourceBadge(props: { message: ChatMessage }) {
 
 export { Attachments };
 
-function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string }) {
+export function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredChoice?: string; readOnly?: boolean }) {
   const [showTime, setShowTime] = createSignal(false);
   const isUser = () => props.message.role === "user";
   const isReminder = () => props.message.meta?.kind === "reminder";
@@ -422,9 +425,9 @@ function MessageItem(props: { message: ChatMessage; focused?: boolean; inferredC
       data-outreach={proactive()?.outreachId}
     >
       <span class="sr-only">{isReminder() ? t("chat.reminderSr") : isUser() ? t("chat.you") : t("chat.lucina")}</span>
-      <Show when={proactive()}>{(p) => <ProactiveCard text={props.message.text} meta={p()} place={props.message.meta?.place} />}</Show>
+      <Show when={proactive()}>{(p) => <ProactiveCard readOnly={props.readOnly} text={props.message.text} meta={p()} place={props.message.meta?.place} />}</Show>
       <Show when={rich()}>
-        {(r) => <RichReply message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
+        {(r) => <RichReply readOnly={props.readOnly} message={props.message} rich={r()} onBubbleClick={toggleTime} inferredChoice={props.inferredChoice} />}
       </Show>
       <Show when={rich() && props.message.attachments?.length ? props.message.attachments : null}>
         {(a) => (
@@ -524,6 +527,11 @@ function LiveIndicator() {
 }
 
 export default function ChatView() {
+  createEffect(() => {
+    if (chat.messages.length) queueMicrotask(() => {
+      if (document.querySelector(".msg")) markFirstMessage(firstMessageSource);
+    });
+  });
   const [draft, setDraft] = createSignal("");
   const [filter, setFilter] = createSignal<SourceFilter>("all");
   const [drafts, setDrafts] = createSignal<DraftAttachment[]>([]);
@@ -1009,6 +1017,7 @@ export default function ChatView() {
             </div>
           </Show>
         </div>
+        <Show when={replyTarget()}>{target => <div class="reply-target"><span>{t("chats.replying", { text: target().text })}</span><button type="button" onClick={() => setReplyTarget(null)} aria-label={t("chat.close")}>×</button></div>}</Show>
         <ShareComposer />
         <label class="sr-only" for="composer-input">
           {t("chat.composer")}

@@ -3,7 +3,7 @@ import { setUnauthorizedHandler, toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { t } from "../i18n";
 import { resetBody } from "./body";
-import { clearChat } from "./chat";
+import { clearChat, setChatDevice } from "./chat";
 import { resetGym } from "./gym";
 import { resetNotifications } from "./notifications";
 import { resetShopping } from "./shopping";
@@ -12,7 +12,7 @@ export type SessionState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "anon" }
-  | { status: "authed"; deviceName: string | null };
+  | { status: "authed"; deviceName: string | null; deviceId?: string };
 
 const [session, setSession] = createSignal<SessionState>({ status: "loading" });
 export { session };
@@ -29,13 +29,15 @@ export async function checkSession(): Promise<void> {
   try {
     const s = await api.getSession();
     if (s?.authenticated === true) {
-      setSession({ status: "authed", deviceName: typeof s.deviceName === "string" ? s.deviceName : null });
+      setChatDevice(s.deviceId);
+      setSession({ status: "authed", deviceId: s.deviceId, deviceName: typeof s.deviceName === "string" ? s.deviceName : null });
     } else {
+      forgetLocalData();
       setSession({ status: "anon" });
     }
   } catch (e) {
     const err = toApiError(e);
-    if (err.status === 401) setSession({ status: "anon" });
+    if (err.status === 401) { forgetLocalData(); setSession({ status: "anon" }); }
     else setSession({ status: "error", message: err.message });
   }
 }

@@ -2,6 +2,7 @@
 // others (English first, then `it` and `da` with the same keys) and list it here.
 
 import { share } from "./dict/share";
+import { chats } from "./dict/chats";
 import { chat } from "./dict/chat";
 import { common } from "./dict/common";
 import { films } from "./dict/films";
@@ -26,6 +27,6 @@ import { wardrobe } from "./dict/wardrobe";
 import { viewer } from "./dict/viewer";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { library, common, computer, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer };
+export const dictionaries = { chats, library, common, computer, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer };
 
 export type Dictionaries = typeof dictionaries;

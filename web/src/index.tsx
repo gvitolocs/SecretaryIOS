@@ -22,6 +22,7 @@ const ProgressView = lazy(() => import("./views/gym/Progress"));
 const ProgressDetailView = lazy(() => import("./views/gym/ProgressDetail"));
 const WeightView = lazy(() => import("./views/Weight"));
 const TrainingView = lazy(() => import("./views/Training"));
+const ChatsView = lazy(() => import("./views/Chats"));
 const PluginsView = lazy(() => import("./views/Plugins"));
 const LibraryView = lazy(() => import("./views/Library"));
 const NotesView = lazy(() => import("./views/Notes"));
@@ -67,6 +68,7 @@ render(
       </Route>
       <Route path="/weight" component={WeightView} />
       <Route path="/training" component={TrainingView} />
+      <Route path="/chats/:key?" component={ChatsView} />
       <Route path="/plugins" component={PluginsView} />
       <Route path="/pokemon" component={PokemonView} />
       <Route path="/computer" component={ComputerView} />
