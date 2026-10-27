@@ -22,6 +22,21 @@ import {
   SpeakerIcon,
 } from "../components/Icons";
 import { ShareComposer } from "../components/ShareComposer";
+import { secretsApi, type SecretProject } from "../api/secrets";
+import {
+  commandArgIndex,
+  detectSecrets,
+  isSecretCommand,
+  maskSecrets,
+  parseSecretCommand,
+  SECRET_COMMAND,
+  SECRET_USAGE,
+  suggestName,
+  targetCompletions,
+  valueHint,
+  type Detected,
+} from "../lib/secrets";
+import { openSecretSheet } from "../state/secretSheet";
 import { AttachmentTray } from "../components/AttachmentTray";
 import { Attachments } from "../components/ChatAttachments";
 import {
@@ -809,9 +824,69 @@ export default function ChatView() {
     );
   }
 
+  // "Add secret": `/secret …` opens the sheet instead of sending, and a
+  // token-shaped draft asks first (before the optimistic bubble and the cache).
+  const [guard, setGuard] = createSignal<{ text: string; spans: Detected[] } | null>(null);
+  const [hintProjects, setHintProjects] = createSignal<SecretProject[] | null>(null);
+  let hintLoading = false;
+  const commandPrefix = createMemo(() => {
+    const d = draft().trimStart().toLowerCase();
+    return d.startsWith("/") && !/\s/.test(d) && SECRET_COMMAND.startsWith(d) && d !== SECRET_COMMAND;
+  });
+  const commandArg = createMemo(() => commandArgIndex(draft()));
+  const targetHints = createMemo(() => {
+    if (commandArg() !== 3) return [];
+    const list = hintProjects();
+    if (!list) {
+      if (!hintLoading) {
+        hintLoading = true;
+        secretsApi.catalog().then(setHintProjects, () => setHintProjects([]));
+      }
+      return [];
+    }
+    const prefix = draft().trimStart().slice(7).trim().split(/\s+/)[2] ?? "";
+    return targetCompletions(prefix, list);
+  });
+
+  function completeTarget(hint: string) {
+    const words = draft().trimStart().slice(7).trim().split(/\s+/);
+    setDraft(`${SECRET_COMMAND} ${words[0] ?? ""} ${words[1] ?? ""} ${hint}`);
+    input?.focus();
+  }
+
+  function guardSave() {
+    const g = guard();
+    if (!g) return;
+    const first = g.spans[0]!;
+    const value = g.text.slice(first.start, first.end);
+    setDraft(maskSecrets(g.text, g.spans));
+    setGuard(null);
+    openSecretSheet({ value, name: suggestName(value) || undefined });
+  }
+
+  function guardMask() {
+    const g = guard();
+    if (!g) return;
+    setDraft(maskSecrets(g.text, g.spans));
+    setGuard(null);
+    void submit();
+  }
+
   async function submit() {
     if (!canSend()) return;
     const text = draft();
+    if (isSecretCommand(text) && !drafts().length && !attachLocation()) {
+      const c = parseSecretCommand(text);
+      setDraft("");
+      queueMicrotask(autosize);
+      openSecretSheet({ name: c.name, value: c.extra ? undefined : c.value, target: c.target });
+      return;
+    }
+    const spans = detectSecrets(text);
+    if (spans.length) {
+      setGuard({ text, spans });
+      return;
+    }
     const files = drafts();
     const sharedLocation = attachLocation();
     setDraft("");
@@ -966,6 +1041,49 @@ export default function ChatView() {
           void submit();
         }}
       >
+        <Show when={guard()}>
+          {(g) => (
+            <div class="secret-guard" role="alert">
+              <p>
+                <strong>🔐 {t("secrets.guardTitle", { hint: valueHint(g().text.slice(g().spans[0]!.start, g().spans[0]!.end)) })}</strong>
+                <span class="muted small"> {t("secrets.guardSub")}</span>
+              </p>
+              <div class="secret-guard-actions">
+                <button type="button" class="btn btn--small btn--primary" onClick={guardSave}>
+                  {t("secrets.guardSave")}
+                </button>
+                <button type="button" class="btn btn--small" onClick={guardMask}>
+                  {t("secrets.guardMask")}
+                </button>
+                <button type="button" class="btn btn--small" onClick={() => { setGuard(null); input?.focus(); }}>
+                  {t("secrets.guardEdit")}
+                </button>
+              </div>
+            </div>
+          )}
+        </Show>
+        <Show when={commandPrefix() || commandArg() > 0}>
+          <div class="command-hints" role="listbox" aria-label={t("secrets.attach")}>
+            <Show when={commandPrefix()}>
+              <button type="button" role="option" class="command-hint" onClick={() => { setDraft(`${SECRET_COMMAND} `); input?.focus(); }}>
+                <code>{SECRET_USAGE}</code> <span class="muted small">{t("secrets.commandHint")}</span>
+              </button>
+            </Show>
+            <Show when={commandArg() > 0 && commandArg() < 3}>
+              <span class="command-hint"><code>{SECRET_USAGE}</code> <span class="muted small">{t("secrets.commandHint")}</span></span>
+            </Show>
+            <Show when={commandArg() > 3}>
+              <span class="command-hint muted small">{t("secrets.commandExtra")}</span>
+            </Show>
+            <For each={targetHints()}>
+              {(h) => (
+                <button type="button" role="option" class="chip" onClick={() => completeTarget(h)}>
+                  {h}
+                </button>
+              )}
+            </For>
+          </div>
+        </Show>
         <Show when={drafts().length || attachLocation() || attachError()}>
           <div class="composer-tray">
             <AttachmentTray items={drafts()} onRemove={removeDraft} />
@@ -1014,6 +1132,9 @@ export default function ChatView() {
               <button type="button" role="menuitem" onClick={shareCurrentLocation}>
                 <span aria-hidden="true">📍</span> {t("share.attachLocation")}
               </button>
+              <button type="button" role="menuitem" onClick={() => { setAttachOpen(false); openSecretSheet(); }}>
+                <span aria-hidden="true">🔐</span> {t("secrets.attach")}
+              </button>
             </div>
           </Show>
         </div>
@@ -1031,6 +1152,7 @@ export default function ChatView() {
           value={draft()}
           onInput={(e) => {
             setDraft(e.currentTarget.value);
+            setGuard(null);
             autosize();
           }}
           onPaste={onPaste}

@@ -39,6 +39,7 @@ import {
 } from "../lib/chatShare";
 import { chatSessionId, uuid } from "../lib/ids";
 import { parseRich, speechText, stripMarkdown, type RichMessage } from "../lib/rich";
+import { isSecretCommand } from "../lib/secrets";
 import { readJSON, removeKey, writeJSON } from "../lib/storage";
 import { clearChatDB, getState, setState, isMine, putItems, readItems } from "../lib/chatdb";
 import { olderScope, syncScope } from "../lib/chatSync";
@@ -614,6 +615,9 @@ export function cleanMessage(text: string): string {
 /** Adds an optimistic user bubble and sends it. Returns false if nothing was sent. */
 export async function sendMessage(text: string): Promise<boolean> {
   const message = cleanMessage(text);
+  // `/secret NAME VALUE` opens the Add secret sheet (views/Chat.tsx); it is
+  // never a chat message, so it never gets a bubble, the cache or the server.
+  if (isSecretCommand(message)) return false;
   if (message.length > CHAT_MAX_CHARS) return false;
   if (!message || sending()) return false;
   const cmid = uuid();
