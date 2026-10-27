@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use futures_util::FutureExt;
 use lucina_intent::mcp::{self, McpTurn};
 use lucina_intent::{domains as dm, grocery as gi, notes as nt, outfit};
@@ -345,6 +345,20 @@ impl Finish {
 }
 
 /// Node `resolveReminderRequest`: the parser first, then the plan's dueDate.
+/// `"19:00"` → (19, 0).
+fn hh_mm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    if h.is_empty()
+        || h.len() > 2
+        || m.len() != 2
+        || !h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let (h, m) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
 fn resolve_reminder(message: &str, plan: &Value, o: &ParseOptions) -> Option<(String, String)> {
     let parsed = parse_reminder_message(message, o).ok();
     let mut text = plan["text"]
@@ -356,6 +370,29 @@ fn resolve_reminder(message: &str, plan: &Value, o: &ParseOptions) -> Option<(St
         .unwrap_or_default();
     let mut due = parsed.as_ref().map(|p| p.due_at_iso());
     let due_date = plan["dueDate"].as_str().unwrap_or("").trim();
+    // A part of the day ("stasera") only gives a default hour: when the message has no
+    // time of its own, the planner's HH:MM sets the hour on the parsed day.
+    if let (Some(p), Some((h, m))) = (&parsed, hh_mm(due_date)) {
+        if !message.bytes().any(|b| b.is_ascii_digit()) {
+            if let Some(d) = chrono::NaiveDate::parse_from_str(&p.local_date, "%Y-%m-%d")
+                .ok()
+                .and_then(|d| {
+                    lucina_store::timeutil::zoned_to_utc(
+                        o.tz,
+                        d.year(),
+                        d.month(),
+                        d.day(),
+                        h,
+                        m,
+                        0,
+                    )
+                })
+                .filter(|d| *d > o.now)
+            {
+                due = Some(iso_ms(d));
+            }
+        }
+    }
     if due.is_none() && !due_date.is_empty() {
         let hhmm = due_date.len() <= 5
             && due_date.split_once(':').is_some_and(|(h, m)| {
