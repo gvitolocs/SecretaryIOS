@@ -393,7 +393,12 @@ pub async fn assets(
     if !crate::api::bearer_ok(&st, req.headers()) {
         return ApiError::new(401, "unauthorized", "").into_response();
     }
-    if !serves_asset(&file) || version.len() != 16 || !version.bytes().all(|b| b.is_ascii_hexdigit()) {
+    asset(&version, &file).await
+}
+
+/// One versioned viewer file (the bearer, if any, was checked by the caller).
+pub async fn asset(version: &str, file: &str) -> Response {
+    if !serves_asset(file) || version.len() != 16 || !version.bytes().all(|b| b.is_ascii_hexdigit()) {
         return ApiError::new(404, "not_found", "").into_response();
     }
     let mut b = match bundle().await {
@@ -411,13 +416,13 @@ pub async fn assets(
             return ApiError::new(404, "not_found", "").into_response();
         }
     }
-    let Some(bytes) = b.get(&file) else {
+    let Some(bytes) = b.get(file) else {
         return ApiError::new(404, "not_found", "").into_response();
     };
     let mut resp = Response::new(Body::from(bytes.clone()));
     resp.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type(&file)),
+        HeaderValue::from_static(content_type(file)),
     );
     resp.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -430,6 +435,12 @@ pub async fn assets(
         HeaderValue::from_static("*"),
     );
     harden(resp.headers_mut());
+    // Public static files (CORS already says so): loadable by the classic script and
+    // stylesheet tags too when the view is framed from another site (the home-network door).
+    resp.headers_mut().insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("cross-origin"),
+    );
     resp
 }
 
@@ -442,7 +453,17 @@ pub async fn proxy(
     if !crate::api::bearer_ok(&st, req.headers()) {
         return ApiError::new(401, "unauthorized", "").into_response();
     }
-    let Some(view) = live(&view_id) else {
+    serve(&view_id, &rest, req, true).await
+}
+
+/// The view for a caller that holds only its capability URL (the home-network door,
+/// `lan.rs`): everything the viewer itself needs, never the owner's ticket re-issue.
+pub async fn serve_capability(view_id: &str, rest: &str, req: Request) -> Response {
+    serve(view_id, rest, req, false).await
+}
+
+async fn serve(view_id: &str, rest: &str, req: Request, owner: bool) -> Response {
+    let Some(view) = live(view_id) else {
         return ApiError::new(
             410,
             "view_ended",
@@ -451,7 +472,8 @@ pub async fn proxy(
         .into_response();
     };
     let upgrade = is_upgrade(req.headers());
-    let Some(target) = classify(req.method(), &rest, upgrade) else {
+    let target = classify(req.method(), rest, upgrade).filter(|t| owner || *t != Target::Ticket);
+    let Some(target) = target else {
         tracing::warn!(sandbox = view.sandbox.as_str(), method = %req.method(), path = %rest, "live view request refused");
         return ApiError::new(403, "not_allowed", "").into_response();
     };
@@ -459,7 +481,7 @@ pub async fn proxy(
         Target::Socket => socket(view, req).await,
         Target::Ticket => ticket(view, req).await,
         Target::Asset if rest == "viewer/index.html" || rest == "viewer/" => index_html(&view).await,
-        Target::Asset | Target::Rpc => forward(&view, &rest, req).await,
+        Target::Asset | Target::Rpc => forward(&view, rest, req).await,
     };
     harden(resp.headers_mut());
     resp

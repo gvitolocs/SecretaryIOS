@@ -30,10 +30,12 @@
 //!   Cookies and `Authorization` are never forwarded, and every response is
 //!   served under a CSP `sandbox`, so Cua's viewer runs in an opaque origin.
 
-use std::time::Duration;
+use std::net::SocketAddr;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{ConnectInfo, Path, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -198,9 +200,45 @@ async fn input(
     forward(&st, call.with_caller(&who)).await
 }
 
+/// Lucina's home-network door (`GET /computer/lan`): `(url, the house's public IP)`.
+#[derive(Clone, Debug, PartialEq)]
+struct LanDoor {
+    url: String,
+    public_ip: String,
+}
+
+/// When Lucina was last asked, and what she said.
+type LanCache = Mutex<Option<(Instant, Option<LanDoor>)>>;
+
+/// The door, asked of Lucina at most once a minute (`None`: not set up, or Lucina unreachable).
+async fn lan_door(st: &AppState) -> Option<LanDoor> {
+    static CACHE: OnceLock<LanCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    if let Some((at, door)) = cache.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return door;
+        }
+    }
+    let data: Value = st.lucina().ok()?.call(&Call::computer_lan()).await.ok()?;
+    let door = match (data.get("url").and_then(Value::as_str), data.get("publicIp").and_then(Value::as_str)) {
+        (Some(url), Some(ip)) if url.starts_with("https://") => Some(LanDoor { url: url.to_owned(), public_ip: ip.to_owned() }),
+        _ => None,
+    };
+    *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), door.clone()));
+    door
+}
+
+/// The door is offered to the owner's own app (never an MCP agent) only when the request
+/// comes from the house itself, i.e. from the public IP Lucina sees as her own.
+fn lan_offer(who: &str, client_ip: &str, door: Option<&LanDoor>) -> Option<Value> {
+    let door = door?;
+    (who == "app" && client_ip == door.public_ip).then(|| json!({"url": door.url}))
+}
+
 async fn view(
     State(st): State<AppState>,
     Extension(ident): Extension<Identity>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     JsonBody(body): JsonBody<Value>,
 ) -> ApiResult {
@@ -224,9 +262,12 @@ async fn view(
     // Cua's viewer reads these from the fragment; audio stays off (the Android
     // sandbox has no sound server, and the owner watches silently).
     let clipboard = if mode == "control" { "on" } else { "off" };
+    let client_ip = crate::auth::client_ip(&st, &headers, peer.map(|Extension(c)| c.0));
+    let lan = if who == "app" { lan_offer(&who, &client_ip, lan_door(&st).await.as_ref()) } else { None };
     Ok((
         status,
         Json(json!({
+            "lan": lan,
             "viewId": view_id,
             "viewUrl": format!(
                 "/v1/computer/view/{view_id}/viewer/#ticket={ticket}&clipboard={clipboard}&audio=off&mode={mode}"
@@ -581,6 +622,16 @@ mod tests {
         for bad in ["", "../x", "viewer/../../x", "a b", "a%2e", "x?y", &"a".repeat(129)] {
             assert!(!valid_rest(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_home_network_door_is_offered_to_the_owner_at_home_only() {
+        let door = LanDoor { url: "https://lan.getsecretary.tech:9443".into(), public_ip: "84.238.78.250".into() };
+        assert_eq!(lan_offer("app", "84.238.78.250", Some(&door)), Some(json!({"url": "https://lan.getsecretary.tech:9443"})));
+        assert_eq!(lan_offer("app", "203.0.113.9", Some(&door)), None, "away from home");
+        assert_eq!(lan_offer("mcp:claude", "84.238.78.250", Some(&door)), None, "agents never get it");
+        assert_eq!(lan_offer("app", "84.238.78.250", None), None, "no door set up");
+        assert_eq!(lan_offer("app", "unknown", Some(&door)), None);
     }
 
     #[test]

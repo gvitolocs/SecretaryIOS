@@ -1,0 +1,11 @@
+[Unit]
+Description=Lucina live view: refresh the home-network door (DNS record daily, certificate after 60 days)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1d
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

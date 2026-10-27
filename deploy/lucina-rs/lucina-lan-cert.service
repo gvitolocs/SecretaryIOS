@@ -1,0 +1,10 @@
+# Keeps lan.getsecretary.tech (the live view home-network door, lucina-server src/lan.rs)
+# pointing at nezopt LAN address and its certificate fresh. Source: tools/lan-cert.
+[Unit]
+Description=Lucina live view: home-network door DNS record and certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/lucina-lan-cert

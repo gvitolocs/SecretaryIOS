@@ -531,6 +531,15 @@ pub async fn computer(
                 "image": image_of(&r).map(|(mime, data)| json!({"mimeType": mime, "data": data})),
             })))
         }
+        (Some("lan"), None, _, 1) => {
+            // The home-network door (lan.rs): where it is and which public IP the house has,
+            // so secretary-server can offer it to the owner when they are at home.
+            only(Method::GET)?;
+            let Some(cfg) = crate::lan::config().filter(|_| crate::lan::ready()) else {
+                return Ok(ok(json!({"url": null})));
+            };
+            Ok(ok(json!({"url": cfg.url, "publicIp": crate::lan::public_ip().await})))
+        }
         (Some("screenshot"), None, _, 1) => {
             only(Method::GET)?;
             let sb = sandbox(sandbox_id(query_sandbox(uri))?);

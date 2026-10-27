@@ -37,6 +37,11 @@ export interface View {
   sandbox: Sandbox;
   mode: "watch" | "control";
   ttlSecs: number;
+  /**
+   * Lucina's home-network door, offered only to the owner and only from the house's own public IP:
+   * the same view straight from nezopt (`url` + `viewUrl`) instead of through the server.
+   */
+  lan?: { url: string } | null;
 }
 
 /** A view's ticket again: renewed, or the other mode on the same view id. */
@@ -87,6 +92,26 @@ export const computerApi = {
   /** The current screen (PNG), with a cache-buster. */
   screenshotUrl: (sandbox: Sandbox, tick: number) => `/v1/computer/screenshot?sandbox=${sandbox}&t=${tick}`,
 };
+
+/** How long the home-network probe may take before the view goes through the server. */
+export const LAN_PROBE_MS = 400;
+
+/**
+ * Whether the home-network door answers from here (the house's public IP is not proof: a phone on
+ * mobile data behind the same carrier NAT, or a router that refuses the private DNS answer).
+ */
+export async function probeLan(url: string, timeoutMs = LAN_PROBE_MS): Promise<boolean> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(`${url}/v1/computer/lan-probe`, { mode: "cors", credentials: "omit", cache: "no-store", signal: ctl.signal });
+    return r.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Where the viewer's immutable files live for a bundle version. */
 export function viewerAsset(version: string, file: string): string {
