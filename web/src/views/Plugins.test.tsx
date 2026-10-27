@@ -1,7 +1,7 @@
 import { Route, Router } from "@solidjs/router";
 import { render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import PluginsView from "./Plugins";
+import PluginsView, { PLUGINS } from "./Plugins";
 
 function renderPlugins() {
   render(() => (
@@ -16,9 +16,16 @@ describe("Plugins", () => {
 
   it("lists the plugin cards", () => {
     renderPlugins();
-    for (const name of ["Voice memos", "Media", "Notes", "Tasks", "Connections", "Pokémon", "Wardrobe"]) {
+    for (const name of ["Voice memos", "Media", "Notes", "Tasks", "Connections", "Pokémon", "Wardrobe", "Server health"]) {
       expect(screen.getByRole("button", { name: new RegExp(name) })).toBeInTheDocument();
     }
+  });
+
+  it("has a Server health card that opens /server-health", () => {
+    const server = PLUGINS.find((p) => p.id === "server");
+    expect(server?.href).toBe("/server-health");
+    renderPlugins();
+    expect(screen.getByRole("button", { name: /Server health/ })).toHaveAttribute("data-plugin", "server");
   });
 
   it("shows the Phone card only inside the Android app", () => {
