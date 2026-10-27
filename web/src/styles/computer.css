@@ -143,3 +143,14 @@ html.computer-fullscreen body {
 .computer-screen img[data-clickable="yes"] { touch-action: none; }
 .computer-actions { align-items: center; }
 .computer-actions .btn { min-height: 40px; }
+
+/* Where the live view comes from: nezopt on the home network, or through the server. */
+.computer-via {
+  justify-self: start;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.computer-via[data-via="lan"] { color: #9fe0b0; border-color: rgb(80 200 120 / 45%); }
