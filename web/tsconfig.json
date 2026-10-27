@@ -1,18 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": [
-      "ES2022",
-      "DOM",
-      "DOM.Iterable"
-    ],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
-    "types": [
-      "vite/client"
-    ],
+    "types": ["vite/client"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
@@ -23,23 +17,7 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "paths": {
-      "@secretary/lucina-stage": [
-        "../packages/lucina-stage/src/index.ts"
-      ],
-      "three": [
-        "./node_modules/@types/three/index.d.ts"
-      ],
-      "three/*": [
-        "./node_modules/@types/three/*"
-      ],
-      "three/addons/*": [
-        "./node_modules/@types/three/examples/jsm/*"
-      ]
-    }
+    "noEmit": true
   },
-  "include": [
-    "src"
-  ]
+  "include": ["src"]
 }
