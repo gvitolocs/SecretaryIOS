@@ -303,6 +303,12 @@ async fn a_restart_after_claiming_never_handles_an_update_twice() {
     .await;
     run.stop().await;
     assert_eq!(run.seen.lock().unwrap().as_slice(), [6]);
+    // NR4: each start polls once without an offset, so a batch cut off by a crash is
+    // re-delivered and logged as skipped instead of being confirmed unseen.
+    let polls = calls(&server, "getUpdates").await;
+    assert_eq!(polls[0]["offset"], json!(0));
+    assert!(polls.iter().filter(|p| p["offset"] == json!(0)).count() >= 2);
+    assert!(polls.iter().any(|p| p["offset"] == json!(7)));
     let deletes = calls(&server, "deleteWebhook").await;
     assert!(!deletes.is_empty());
     for d in deletes {

@@ -513,11 +513,26 @@ impl Poller {
             .iter()
             .map(String::as_str)
             .collect();
+        // The first poll after the lease is taken sends no offset (docs/verification.md
+        // NR4): Telegram then re-delivers every unconfirmed update, and the ones at or
+        // below the persisted claim (handled, or claimed and cut off by a restart) are
+        // skipped with a log line and a counter instead of vanishing silently.
+        if let Some(c) = *claimed {
+            tracing::info!(
+                claimed = c,
+                "telegram claim recovered; updates at or below it are not handled again"
+            );
+        }
+        let mut first_poll = true;
         loop {
             if *lost.borrow() {
                 return Stop::Lost;
             }
-            let offset = claim::next_offset(*claimed);
+            let offset = if first_poll {
+                0
+            } else {
+                claim::next_offset(*claimed)
+            };
             let result = tokio::select! {
                 biased;
                 r = shutdown.changed() => {
@@ -529,6 +544,7 @@ impl Poller {
             };
             let wait = match result {
                 Ok(updates) => {
+                    first_poll = false;
                     with_health(&self.health, |h| {
                         h.state = "polling".into();
                         h.last_poll_ok_at = Some(now_iso());
@@ -538,7 +554,7 @@ impl Poller {
                     if batch.skipped > 0 {
                         tracing::warn!(
                             skipped = batch.skipped,
-                            "telegram updates at or below the claim skipped (already claimed)"
+                            "telegram updates at or below the claim skipped (handled before, or claimed and cut off by a restart: not handled twice)"
                         );
                     }
                     if batch.malformed > 0 {

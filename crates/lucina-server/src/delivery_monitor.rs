@@ -69,7 +69,7 @@ pub fn step(
         return (PathState::default(), alert);
     }
     let since = prev.down_since.unwrap_or(now_ms).min(now_ms);
-    let due = now_ms - since >= after_ms && now_ms - started_ms >= after_ms;
+    let due = now_ms.saturating_sub(since) >= after_ms && now_ms.saturating_sub(started_ms) >= after_ms;
     if !prev.alerted && due {
         (
             PathState {
