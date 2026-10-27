@@ -22,11 +22,14 @@ use tokio_tungstenite::tungstenite::{self, Message};
 const LUCINA_TOKEN: &str = "lucina-server-secret";
 const TICKET: &str = "Zk3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa43";
 
+/// What Lucina's socket saw: `Authorization`, `Sec-WebSocket-Protocol`, `Cookie`.
+type SocketSeen = (Option<String>, Option<String>, Option<String>);
+
 #[derive(Default)]
 struct Mock {
     down: AtomicBool,
     minted: Mutex<Vec<(Option<String>, Value)>>,
-    sockets: Mutex<Vec<(Option<String>, Option<String>, Option<String>)>>,
+    sockets: Mutex<Vec<SocketSeen>>,
 }
 
 fn header(h: &HeaderMap, name: &str) -> Option<String> {
