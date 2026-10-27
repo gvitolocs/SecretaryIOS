@@ -321,6 +321,7 @@ async fn new_session(st: &AppState, ident: Identity) -> Result<Response, ApiErro
 fn session_json(ident: Option<&Identity>) -> Json<serde_json::Value> {
     Json(json!({
         "authenticated": ident.is_some(),
+        "deviceId": ident.map(|i| i.device_id.clone()),
         "deviceName": ident.map(|i| i.device_name.clone()),
     }))
 }
@@ -491,7 +492,7 @@ pub fn account_routes() -> Router<AppState> {
     Router::new().route("/v1/session/password", post(change_password))
 }
 
-/// `GET /v1/session`: `{authenticated, deviceName}`; never 401.
+/// `GET /v1/session`: `{authenticated, deviceId, deviceName}`; never 401.
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let ident = identify(&st, &headers)?.ok();
     Ok(session_json(ident.as_ref()).into_response())

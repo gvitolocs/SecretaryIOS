@@ -660,7 +660,7 @@ async fn session_login_cookie_flags_and_status() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         b,
-        json!({"authenticated": true, "deviceName": "test iPhone"})
+        json!({"authenticated": true, "deviceId": h.device_id, "deviceName": "test iPhone"})
     );
     let cookie = hd["set-cookie"].to_str().unwrap();
     assert!(cookie.starts_with("sec_session="));
@@ -687,12 +687,13 @@ async fn session_login_cookie_flags_and_status() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(
         b,
-        json!({"authenticated": true, "deviceName": "test iPhone"})
+        json!({"authenticated": true, "deviceId": h.device_id, "deviceName": "test iPhone"})
     );
     let (_, b, _) = h.send(h.http.get(h.url("/v1/session"))).await;
-    assert_eq!(b, json!({"authenticated": false, "deviceName": null}));
+    assert_eq!(b, json!({"authenticated": false, "deviceId": null, "deviceName": null}));
     let (_, b, _) = h.send(h.req(Method::GET, "/v1/session")).await;
     assert_eq!(b["authenticated"], true, "Bearer counts too");
+    assert_eq!(b["deviceId"], h.device_id);
 
     // bad tokens
     let (s, b, hd) = h

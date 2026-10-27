@@ -18,7 +18,8 @@ use crate::models::{
     Agenda, AgendaQuery, CancelledReminder, ChatReply, ChatRequest, CommandResult, CreateList,
     CreateReminder, CreatedReminder, DeviceEvents, DeviceState, Envelope, Health, Job, ListState,
     OpsBatch, OpsResult, ReminderList, ReminderQuery, ReminderScope, ShoppingItem, ShoppingList,
-    ShoppingListData, ShoppingListsData, ShoppingOp, TimelinePage, TimelineQuery, UpdateList,
+    ShoppingListData, ShoppingListsData, ShoppingOp, TimelineConversations, TimelinePage, TimelineQuery,
+    UpdateList,
 };
 use crate::validate;
 
@@ -447,9 +448,38 @@ impl Call {
         Ok(Self::new(Method::POST, &["device", "state"]).with_body(body))
     }
 
-    /// `GET /timeline?before=&limit=` (newest first, `{items, nextBefore}`).
+    /// Validated history or incremental timeline query.
     pub fn timeline(q: &TimelineQuery) -> Result<Self> {
+        if q.before.is_some() && q.after.is_some() {
+            return Err(Error::Invalid {
+                field: "after",
+                message: "cannot be combined with before".into(),
+            });
+        }
+        if q.scope.is_some() && q.conversation.is_some() {
+            return Err(Error::Invalid {
+                field: "scope",
+                message: "cannot be combined with conversation".into(),
+            });
+        }
         let mut call = Self::new(Method::GET, &["timeline"]);
+        if let Some(a) = q.after.as_deref() {
+            validate::id("after", a)?;
+            call.query.push(("after", a.to_owned()));
+        }
+        if let Some(c) = q.conversation.as_deref() {
+            validate::conversation(c)?;
+            call.query.push(("conversation", c.to_owned()));
+        }
+        if let Some(scope) = q.scope.as_deref() {
+            if scope != "mine" {
+                return Err(Error::Invalid {
+                    field: "scope",
+                    message: "must be mine".into(),
+                });
+            }
+            call.query.push(("scope", scope.to_owned()));
+        }
         if let Some(b) = q.before.as_deref() {
             validate::id("before", b)?;
             call.query.push(("before", b.to_owned()));
@@ -459,6 +489,22 @@ impl Call {
             call.query.push(("limit", n.to_string()));
         }
         Ok(call)
+    }
+
+    /// Add trusted identity filters for `scope=mine` only.
+    pub fn timeline_for_device(q: &TimelineQuery, device: &str, channel: &str) -> Result<Self> {
+        let mut call = Self::timeline(q)?;
+        if q.scope.as_deref() == Some("mine") {
+            validate::id("device", device)?;
+            validate::chat_channel("channel", channel)?;
+            call.query.push(("device", device.to_owned()));
+            call.query.push(("channel", channel.to_owned()));
+        }
+        Ok(call)
+    }
+
+    pub fn timeline_conversations() -> Self {
+        Self::new(Method::GET, &["timeline", "conversations"])
     }
 
     /// `GET /grocery/deals/map?radiusM=`: Lucina's deals map around home.
@@ -829,6 +875,10 @@ impl LucinaClient {
         self.call(&Call::timeline(q)?).await
     }
 
+    pub async fn timeline_conversations(&self) -> Result<TimelineConversations> {
+        self.call(&Call::timeline_conversations()).await
+    }
+
     /// Open `GET /timeline/stream` (Server-Sent Events) and return the live
     /// response once Lucina answered 2xx with `text/event-stream`; read it
     /// with `bytes_stream()`. `last_event_id` (an id) is sent as
@@ -934,6 +984,7 @@ mod tests {
         let q = TimelineQuery {
             before: Some("tl_9".into()),
             limit: Some("050".into()),
+            ..Default::default()
         };
         assert_eq!(
             c.url(&Call::timeline(&q).unwrap()).as_str(),
@@ -980,6 +1031,8 @@ mod tests {
             session_id: None,
             client_message_id: None,
             channel: None,
+            device: None,
+            device_name: None,
             reply_to: None,
         })
         .is_err());
@@ -1000,6 +1053,8 @@ mod tests {
                 session_id: None,
                 client_message_id: None,
                 channel: Some(channel.into()),
+                device: None,
+                device_name: None,
                 reply_to: None,
             })
         };
@@ -1011,6 +1066,8 @@ mod tests {
                 session_id: None,
                 client_message_id: None,
                 channel: None,
+                device: None,
+                device_name: None,
                 reply_to: Some(id.into()),
             })
         };
@@ -1025,6 +1082,7 @@ mod tests {
         let tq = |before: Option<&str>, limit: Option<&str>| TimelineQuery {
             before: before.map(str::to_owned),
             limit: limit.map(str::to_owned),
+            ..Default::default()
         };
         assert!(Call::timeline(&tq(Some("a/b"), None)).is_err());
         assert!(Call::timeline(&tq(None, Some("0"))).is_err());
@@ -1036,6 +1094,8 @@ mod tests {
                 session_id: None,
                 client_message_id: None,
                 channel: None,
+                device: None,
+                device_name: None,
                 reply_to: None,
             })
             .unwrap()
