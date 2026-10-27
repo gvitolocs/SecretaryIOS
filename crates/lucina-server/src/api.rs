@@ -315,6 +315,10 @@ pub fn router(state: AppState) -> Router {
             "/api/secretary/computer/view/{view_id}/{*rest}",
             any(crate::computer_view::proxy),
         )
+        .route(
+            "/api/secretary/computer/viewer-assets/{version}/{file}",
+            get(crate::computer_view::assets),
+        )
         .route("/api/secretary/{*rest}", any(secretary))
         .with_state(state)
 }

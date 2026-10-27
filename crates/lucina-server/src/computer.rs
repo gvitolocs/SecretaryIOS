@@ -264,8 +264,20 @@ fn start_job(who: String, task: String) -> Result<String, ApiError> {
 
 // ---------------------------------------------------------------- input
 
-/// One fallback input event → `(driver tool, arguments, summary kind)`.
+/// Driver tools that take `delivery_mode`. The owner's input is real, focused input:
+/// the driver's default (`background`) is refused by Chromium/Electron windows.
+const FOREGROUND_TOOLS: [&str; 4] = ["click", "scroll", "type_text", "press_key"];
+
+/// One fallback input event → `(driver tool, arguments)`, delivered in the foreground.
 pub(crate) fn input_event(e: &Value) -> Result<(&'static str, Value), ApiError> {
+    let (tool, mut args) = driver_input(e)?;
+    if FOREGROUND_TOOLS.contains(&tool) {
+        args["delivery_mode"] = json!("foreground");
+    }
+    Ok((tool, args))
+}
+
+fn driver_input(e: &Value) -> Result<(&'static str, Value), ApiError> {
     let kind = e.get("kind").and_then(Value::as_str).unwrap_or("");
     let coord = |k: &str| -> Result<i64, ApiError> {
         e.get(k)
@@ -299,6 +311,14 @@ pub(crate) fn input_event(e: &Value) -> Result<(&'static str, Value), ApiError> 
                 "click",
                 json!({"scope": "desktop", "x": coord("x")?, "y": coord("y")?, "button": button, "count": count}),
             ))
+        }
+        "down" | "up" => {
+            let button = e.get("button").and_then(Value::as_str).unwrap_or("left");
+            if !["left", "right", "middle"].contains(&button) {
+                return Err(ApiError::bad_request(format!("{kind}: button must be left, right or middle")));
+            }
+            let tool = if kind == "down" { "mouse_button_down" } else { "mouse_button_up" };
+            Ok((tool, json!({"scope": "desktop", "x": coord("x")?, "y": coord("y")?, "button": button})))
         }
         "scroll" => {
             let dir = e.get("direction").and_then(Value::as_str).unwrap_or("");
@@ -346,7 +366,7 @@ pub(crate) fn input_event(e: &Value) -> Result<(&'static str, Value), ApiError> 
         "clipboard_write" => Ok(("clipboard_write", json!({"text": text("text")?}))),
         "clipboard_read" => Ok(("clipboard_read", json!({}))),
         _ => Err(ApiError::bad_request(
-            "event kind must be click, scroll, move, type, key, clipboard_write or clipboard_read",
+            "event kind must be click, down, up, scroll, move, type, key, clipboard_write or clipboard_read",
         )),
     }
 }
@@ -534,9 +554,12 @@ pub async fn computer(
         (Some("control"), None, _, 1) => {
             if *method == Method::GET {
                 let id = sandbox_id(query_sandbox(uri))?;
+                // The viewer asset version rides along so the apps can preload
+                // `viewer.js` while the view is still being minted.
                 return Ok(ok(json!({
                     "state": control().state(id),
                     "recent": control().recent(id, 20),
+                    "viewer": {"assets": crate::computer_view::viewer_version().await},
                 })));
             }
             only(Method::POST)?;
@@ -618,7 +641,7 @@ pub async fn computer(
                 return Err(cu_error(lucina_computer_use::Error::NotDriving));
             }
             let epoch = control().epoch(id);
-            let ticket = viewer::mint(&ViewerConfig::from_env(), id, mode, VIEW_TTL)
+            let (ticket, left) = viewer::mint_cached(&ViewerConfig::from_env(), id, mode, VIEW_TTL)
                 .await
                 .map_err(cu_error)?;
             let view_id = crate::computer_view::open(id, mode, &dev, epoch, &ticket.machine);
@@ -633,7 +656,7 @@ pub async fn computer(
                 "mode": mode.as_str(),
                 "ticket": ticket.ticket,
                 "expiresAt": ticket.expires_at,
-                "ttlSecs": VIEW_TTL.as_secs(),
+                "ttlSecs": left.as_secs(),
                 "epoch": epoch,
             })))
         }
@@ -647,27 +670,22 @@ mod tests {
 
     #[test]
     fn input_events_map_to_driver_tools() {
+        let fg = "foreground";
         let (t, a) = input_event(&json!({"kind": "click", "x": 10, "y": 20})).unwrap();
         assert_eq!(t, "click");
-        assert_eq!(
-            a,
-            json!({"scope": "desktop", "x": 10, "y": 20, "button": "left", "count": 1})
-        );
-        let (t, a) =
-            input_event(&json!({"kind": "scroll", "x": 1, "y": 2, "direction": "down"})).unwrap();
-        assert_eq!((t, a["amount"].clone()), ("scroll", json!(3)));
-        let (t, a) =
-            input_event(&json!({"kind": "key", "key": "Return", "modifiers": ["ctrl"]})).unwrap();
-        assert_eq!(
-            (t, a),
-            ("press_key", json!({"key": "Return", "modifiers": ["ctrl"]}))
-        );
-        assert_eq!(
-            input_event(&json!({"kind": "type", "text": "hi"}))
-                .unwrap()
-                .0,
-            "type_text"
-        );
+        assert_eq!(a, json!({"scope": "desktop", "x": 10, "y": 20, "button": "left", "count": 1, "delivery_mode": fg}));
+        let (t, a) = input_event(&json!({"kind": "scroll", "x": 1, "y": 2, "direction": "down"})).unwrap();
+        assert_eq!((t, a["amount"].clone(), a["delivery_mode"].clone()), ("scroll", json!(3), json!(fg)));
+        let (t, a) = input_event(&json!({"kind": "key", "key": "Return", "modifiers": ["ctrl"]})).unwrap();
+        assert_eq!((t, a), ("press_key", json!({"key": "Return", "modifiers": ["ctrl"], "delivery_mode": fg})));
+        let (t, a) = input_event(&json!({"kind": "type", "text": "hi"})).unwrap();
+        assert_eq!((t, a), ("type_text", json!({"text": "hi", "delivery_mode": fg})));
+        // The tools without the parameter do not get it (the driver rejects unknown arguments).
+        assert!(input_event(&json!({"kind": "move", "x": 1, "y": 1})).unwrap().1.get("delivery_mode").is_none());
+        let (t, a) = input_event(&json!({"kind": "down", "x": 5, "y": 6})).unwrap();
+        assert_eq!((t, a), ("mouse_button_down", json!({"scope": "desktop", "x": 5, "y": 6, "button": "left"})));
+        let (t, a) = input_event(&json!({"kind": "up", "x": 7, "y": 8, "button": "left"})).unwrap();
+        assert_eq!((t, a), ("mouse_button_up", json!({"scope": "desktop", "x": 7, "y": 8, "button": "left"})));
         for bad in [
             json!({"kind": "click", "x": -1, "y": 0}),
             json!({"kind": "click", "x": 1}),
@@ -678,6 +696,8 @@ mod tests {
             json!({"kind": "type", "text": ""}),
             json!({"kind": "type", "text": "x".repeat(MAX_TYPE_CHARS + 1)}),
             json!({"kind": "bash", "command": "id"}),
+            json!({"kind": "down", "x": 1, "y": 1, "button": "x"}),
+            json!({"kind": "up", "x": -1, "y": 1}),
         ] {
             assert!(input_event(&bad).is_err(), "{bad}");
         }

@@ -12,9 +12,10 @@
 //!
 //! Tickets are secrets: never log one.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::process::Command;
@@ -208,6 +209,43 @@ pub async fn mint(cfg: &ViewerConfig, sb: SandboxId, mode: ViewMode, ttl: Durati
         return Err(Error::Viewer(format!("ticket refused: {first}")));
     }
     parse_ticket(&String::from_utf8_lossy(&out.stdout), machine)
+}
+
+/// How much of a ticket's life must be left for it to be handed out again.
+const REUSE_MARGIN: Duration = Duration::from_secs(120);
+
+type Cache = HashMap<(&'static str, &'static str), (Instant, ViewTicket)>;
+
+fn ticket_cache() -> &'static std::sync::Mutex<Cache> {
+    static C: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// A ticket minted not long ago, or a fresh one, with the time it has left:
+/// minting spawns the Cua CLI (~0.3 s) and one ticket authorizes every view of
+/// a sandbox and mode, so a second request within its life (a second tab, the
+/// take-over's switch) is free. A reused ticket has less than `ttl` left, so
+/// callers report the returned duration, not `ttl`, and renew before it ends.
+pub async fn mint_cached(
+    cfg: &ViewerConfig,
+    sb: SandboxId,
+    mode: ViewMode,
+    ttl: Duration,
+) -> Result<(ViewTicket, Duration), Error> {
+    let key = (sb.as_str(), mode.as_str());
+    let reuse = ttl.saturating_sub(REUSE_MARGIN);
+    {
+        let cache = ticket_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, ticket)) = cache.get(&key) {
+            if at.elapsed() < reuse {
+                return Ok((ticket.clone(), ttl.saturating_sub(at.elapsed())));
+            }
+        }
+    }
+    let ticket = mint(cfg, sb, mode, ttl).await?;
+    let mut cache = ticket_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(key, (Instant::now(), ticket.clone()));
+    Ok((ticket, ttl))
 }
 
 #[cfg(test)]

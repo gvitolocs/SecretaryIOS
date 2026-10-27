@@ -18,6 +18,31 @@
 //! 410 and its socket is closed within two seconds. Socket traffic from the
 //! owner's browser is input, logged as byte counts every five seconds. URLs
 //! carry the ticket (`/media?ticket=`), so query strings are never logged.
+//!
+//! ## Why connecting used to be slow, and what changed
+//!
+//! A view's `index.html` carries the ticket in its fragment, so it can never be
+//! cached — but the 258 KB `viewer.js` next to it was served from the same
+//! per-view URL, so every view (and every reload, take-over and ticket renewal)
+//! re-downloaded it through two proxies. Three things fixed that:
+//!
+//! - **Assets are versioned and immutable.** `GET …/viewer-assets/{version}/{file}`
+//!   serves the sandbox's viewer files from an in-memory bundle keyed by the
+//!   hash of their bytes, with `Cache-Control: public, max-age=31536000,
+//!   immutable`. `index.html` is rewritten to reference them relatively
+//!   (`../../../viewer-assets/<version>/…`), which lands on this crate's route
+//!   and, one proxy up, on secretary-server's own copy of it. The ticket is
+//!   still required for `index.html` and for the WebSocket, so nothing about a
+//!   view is reachable without one — only Cua's public static files are.
+//! - **Tickets are reused.** Minting one spawns the Cua CLI (~0.3 s); one
+//!   ticket serves every view of a sandbox and mode until shortly before it
+//!   expires (`viewer::mint_cached`).
+//! - **Take-over and renewal do not reload the viewer.** `POST …/view/{id}/ticket`
+//!   re-issues a ticket for the same view id (optionally switching watch↔control
+//!   when the lease allows it) and the page hands it to the running viewer with
+//!   `postMessage`. `viewer/lucina-shim.js`, injected into `index.html`, applies
+//!   it to `window.__cuaViewer` and re-attaches the media session when the mode
+//!   changed; see that file for why the session has to be rebuilt.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +54,8 @@ use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hyper_util::rt::TokioIo;
-use lucina_computer_use::{control, SandboxId, ViewMode};
+use lucina_computer_use::viewer::{ViewerConfig, ViewMode};
+use lucina_computer_use::{control, SandboxId};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -53,6 +79,26 @@ const ASSETS: [&str; 7] = [
     "viewer/audioWorklet.js",
     "viewer/captureWorklet.js",
 ];
+
+/// The sandbox's viewer files, fetched once and served by bundle version.
+const VIEWER_FILES: [&str; 4] = ["viewer.js", "index.css", "audioWorklet.js", "captureWorklet.js"];
+
+/// Every file `…/viewer-assets/{version}/{file}` may serve (plus our shim).
+const ASSET_FILES: [&str; 5] = [
+    "viewer.js",
+    "index.css",
+    "audioWorklet.js",
+    "captureWorklet.js",
+    "lucina-shim.js",
+];
+
+/// The first-party adapter injected into `index.html` (see that file).
+const SHIM: &str = include_str!("../viewer/lucina-shim.js");
+
+/// How `index.html` references the assets: up from `…/computer/view/<id>/viewer/`
+/// to `…/computer/`, so the same rewrite works under this crate's
+/// `/api/secretary/computer/` and under secretary-server's `/v1/computer/`.
+const ASSETS_UP: &str = "../../../viewer-assets";
 
 /// Request headers passed to the sandbox.
 const PASS_REQUEST: [&str; 9] = [
@@ -82,6 +128,8 @@ pub const VIEW_CSP: &str = "sandbox allow-scripts allow-pointer-lock; frame-ance
 
 #[derive(Debug, Clone)]
 struct View {
+    /// The capability in the URL; `reissue` finds the entry by it.
+    id: String,
     sandbox: SandboxId,
     mode: ViewMode,
     device: String,
@@ -118,6 +166,7 @@ pub fn open(sandbox: SandboxId, mode: ViewMode, device: &str, epoch: u64, machin
     map.insert(
         id.clone(),
         View {
+            id: id.clone(),
             sandbox,
             mode,
             device: device.to_owned(),
@@ -156,6 +205,8 @@ enum Target {
     Asset,
     Rpc,
     Socket,
+    /// `POST ticket`: re-issue this view's ticket (renew, or switch mode).
+    Ticket,
 }
 
 fn is_ident(s: &str) -> bool {
@@ -165,6 +216,9 @@ fn is_ident(s: &str) -> bool {
 fn classify(method: &Method, rest: &str, upgrade: bool) -> Option<Target> {
     if upgrade {
         return (method == Method::GET && rest == "media").then_some(Target::Socket);
+    }
+    if rest == "ticket" {
+        return (method == Method::POST).then_some(Target::Ticket);
     }
     if ASSETS.contains(&rest) {
         return (method == Method::GET || method == Method::HEAD).then_some(Target::Asset);
@@ -218,6 +272,167 @@ fn http() -> &'static reqwest::Client {
     })
 }
 
+/// Cua's viewer files, fetched once from a sandbox and served by content hash.
+#[derive(Debug)]
+struct Bundle {
+    /// 16 hex chars: the hash of every name and byte in `files`.
+    version: String,
+    files: HashMap<&'static str, Vec<u8>>,
+}
+
+impl Bundle {
+    fn get(&self, file: &str) -> Option<&Vec<u8>> {
+        self.files.get(file)
+    }
+}
+
+fn bundle_slot() -> &'static Mutex<Option<Arc<Bundle>>> {
+    static B: OnceLock<Mutex<Option<Arc<Bundle>>>> = OnceLock::new();
+    B.get_or_init(|| Mutex::new(None))
+}
+
+/// FNV-1a over the file names and bytes: cache-busting, not a security boundary.
+fn bundle_hash(files: &HashMap<&'static str, Vec<u8>>) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |b: u8| {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    };
+    for name in ASSET_FILES {
+        for b in name.as_bytes() {
+            eat(*b);
+        }
+        if let Some(bytes) = files.get(name) {
+            for b in bytes {
+                eat(*b);
+            }
+        }
+    }
+    format!("{h:016x}")
+}
+
+/// The cached bundle, or a fresh fetch from a sandbox's `viewer/`.
+async fn bundle() -> Result<Arc<Bundle>, ApiError> {
+    if let Some(b) = bundle_slot().lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(b);
+    }
+    let built = Arc::new(load_bundle().await?);
+    *bundle_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(built.clone());
+    Ok(built)
+}
+
+/// Forces the next `bundle()` to fetch again (the sandbox was upgraded).
+fn forget_bundle() {
+    *bundle_slot().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+async fn load_bundle() -> Result<Bundle, ApiError> {
+    let cfg = ViewerConfig::from_env();
+    let machine = lucina_computer_use::viewer::machine_url(&cfg, SandboxId::Workspace)
+        .or_else(|_| lucina_computer_use::viewer::machine_url(&cfg, SandboxId::Android))
+        .map_err(|e| {
+            tracing::warn!(error = %e, "live view: no sandbox to fetch the viewer assets from");
+            ApiError::new(503, "viewer_unavailable", "the sandbox viewer is not reachable")
+        })?;
+    let mut files: HashMap<&'static str, Vec<u8>> = HashMap::new();
+    for name in VIEWER_FILES {
+        let r = http()
+            .get(format!("{machine}/viewer/{name}"))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e.without_url(), name, "live view: viewer asset fetch failed");
+                ApiError::new(502, "sandbox_unreachable", "")
+            })?;
+        if !r.status().is_success() {
+            tracing::warn!(name, status = %r.status(), "live view: viewer asset missing");
+            return Err(ApiError::new(502, "sandbox_refused", "the sandbox has no viewer assets"));
+        }
+        let bytes = r.bytes().await.map_err(|e| {
+            tracing::warn!(error = %e.without_url(), name, "live view: viewer asset body failed");
+            ApiError::new(502, "sandbox_unreachable", "")
+        })?;
+        files.insert(name, bytes.to_vec());
+    }
+    // Ours, not Cua's: served from the same immutable path.
+    files.insert("lucina-shim.js", SHIM.as_bytes().to_vec());
+    let version = bundle_hash(&files);
+    tracing::info!(version = %version, "live view: viewer assets cached");
+    Ok(Bundle { version, files })
+}
+
+/// The cached bundle's version, or `""` when no sandbox answers. The apps
+/// preload `viewer-assets/<version>/viewer.js` with it while a view is minted.
+pub async fn viewer_version() -> String {
+    match bundle().await {
+        Ok(b) => b.version.clone(),
+        Err(_) => String::new(),
+    }
+}
+
+/// The only names the immutable asset route will ever serve.
+fn serves_asset(file: &str) -> bool {
+    ASSET_FILES.contains(&file)
+}
+
+fn content_type(file: &str) -> &'static str {
+    match file {
+        "index.css" => "text/css; charset=utf-8",
+        _ => "text/javascript; charset=utf-8",
+    }
+}
+
+/// `GET /api/secretary/computer/viewer-assets/{version}/{file}`: Cua's viewer
+/// files plus our shim, cacheable forever and reachable without a ticket (they
+/// are public static files; the view itself still needs one).
+pub async fn assets(
+    State(st): State<AppState>,
+    Path((version, file)): Path<(String, String)>,
+    req: Request,
+) -> Response {
+    if !crate::api::bearer_ok(&st, req.headers()) {
+        return ApiError::new(401, "unauthorized", "").into_response();
+    }
+    if !serves_asset(&file) || version.len() != 16 || !version.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return ApiError::new(404, "not_found", "").into_response();
+    }
+    let mut b = match bundle().await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    if b.version != version {
+        // A different sandbox build (or a restart after an upgrade): refetch once.
+        forget_bundle();
+        b = match bundle().await {
+            Ok(b) => b,
+            Err(e) => return e.into_response(),
+        };
+        if b.version != version {
+            return ApiError::new(404, "not_found", "").into_response();
+        }
+    }
+    let Some(bytes) = b.get(&file) else {
+        return ApiError::new(404, "not_found", "").into_response();
+    };
+    let mut resp = Response::new(Body::from(bytes.clone()));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type(&file)),
+    );
+    resp.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    // The viewer document is an opaque origin (CSP `sandbox`), and `viewer.js` is a module
+    // script, which is always fetched with CORS: without this the viewer never starts.
+    resp.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    harden(resp.headers_mut());
+    resp
+}
+
 /// `ANY /api/secretary/computer/view/{viewId}/{*rest}` (bearer-authorized by the caller).
 pub async fn proxy(
     State(st): State<AppState>,
@@ -242,10 +457,129 @@ pub async fn proxy(
     };
     let mut resp = match target {
         Target::Socket => socket(view, req).await,
+        Target::Ticket => ticket(view, req).await,
+        Target::Asset if rest == "viewer/index.html" || rest == "viewer/" => index_html(&view).await,
         Target::Asset | Target::Rpc => forward(&view, &rest, req).await,
     };
     harden(resp.headers_mut());
     resp
+}
+
+/// `index.html` with the ticket in its fragment (never cacheable), rewritten to
+/// load the viewer from the immutable asset path and to run our shim first.
+async fn index_html(view: &View) -> Response {
+    let b = match bundle().await {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let r = match http().get(format!("{}/viewer/index.html", view.machine)).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(sandbox = view.sandbox.as_str(), error = %e.without_url(), "live view: index.html failed");
+            return ApiError::new(502, "sandbox_unreachable", "").into_response();
+        }
+    };
+    if !r.status().is_success() {
+        return ApiError::new(502, "sandbox_refused", "").into_response();
+    }
+    let html = match r.text().await {
+        Ok(t) => t,
+        Err(_) => return ApiError::new(502, "sandbox_unreachable", "").into_response(),
+    };
+    let mut resp = Response::new(Body::from(rewrite_index(&html, &b.version)));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    resp
+}
+
+/// Points `index.html` at the versioned assets and loads the shim before
+/// `viewer.js`. `crossorigin` is dropped: the page is an opaque origin (CSP
+/// `sandbox`), so those requests would have to pass CORS.
+fn rewrite_index(html: &str, version: &str) -> String {
+    let mut out = html.replace("./viewer.js", &format!("{ASSETS_UP}/{version}/viewer.js"));
+    out = out.replace("./index.css", &format!("{ASSETS_UP}/{version}/index.css"));
+    out = out.replace(" crossorigin", "");
+    let shim = format!(
+        "<script src=\"{ASSETS_UP}/{version}/lucina-shim.js\"></script>\n    <meta name=\"lucina-view\" content=\"{version}\" />\n    "
+    );
+    if let Some(at) = out.find("<script") {
+        out.insert_str(at, &shim);
+    } else {
+        out.push_str(&shim);
+    }
+    out
+}
+
+/// `POST /api/secretary/computer/view/{viewId}/ticket` `{mode?}`: the same view,
+/// with a fresh ticket (and, if asked, the other mode). Taking control needs the
+/// owner's lease, exactly like a control view minted from scratch.
+async fn ticket(view: View, req: Request) -> Response {
+    let body = match axum::body::to_bytes(req.into_body(), 4096).await {
+        Ok(b) => b,
+        Err(_) => return ApiError::new(413, "too_large", "").into_response(),
+    };
+    let asked = match serde_json::from_slice::<serde_json::Value>(&body) {
+        Ok(v) => v,
+        Err(_) => serde_json::Value::Null,
+    };
+    let mode = match asked.get("mode").and_then(serde_json::Value::as_str) {
+        None => view.mode,
+        Some(m) => match ViewMode::parse(m) {
+            Some(m) => m,
+            None => return ApiError::bad_request("mode must be watch or control").into_response(),
+        },
+    };
+    if mode == ViewMode::Control && !control().owner_driving(view.sandbox) {
+        return ApiError::new(409, "not_driving", "take over before driving").into_response();
+    }
+    let epoch = control().epoch(view.sandbox);
+    let (minted, left) = match lucina_computer_use::viewer::mint_cached(
+        &ViewerConfig::from_env(),
+        view.sandbox,
+        mode,
+        lucina_computer_use::viewer::VIEW_TTL,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(sandbox = view.sandbox.as_str(), error = %e, "live view: ticket re-issue failed");
+            return ApiError::new(503, "viewer_unavailable", "the sandbox refused a viewer ticket")
+                .into_response();
+        }
+    };
+    let Some(updated) = reissue(&view, mode, epoch) else {
+        return ApiError::new(410, "view_ended", "this live view has ended; open a new one").into_response();
+    };
+    control().note(
+        view.sandbox,
+        "view_ticket",
+        json!({"device": view.device, "mode": mode.as_str(), "same_view": true}),
+    );
+    // The API's own envelope (`{ok, data}`): secretary-server forwards it like any other call.
+    let mut resp = crate::api::ok(json!({
+        "ticket": minted.ticket,
+        "mode": mode.as_str(),
+        "sandbox": view.sandbox.as_str(),
+        "ttlSecs": left.as_secs(),
+        "expiresAt": minted.expires_at,
+        "epoch": epoch,
+        "changed": updated.mode != view.mode,
+    }));
+    resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// Switches a registered view in place: same id, new mode, epoch and expiry.
+fn reissue(view: &View, mode: ViewMode, epoch: u64) -> Option<View> {
+    let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
+    let v = map.get_mut(&view.id)?;
+    v.mode = mode;
+    v.epoch = epoch;
+    v.expires = Instant::now() + lucina_computer_use::viewer::VIEW_TTL + Duration::from_secs(30);
+    Some(v.clone())
 }
 
 async fn forward(view: &View, rest: &str, req: Request) -> Response {
@@ -515,6 +849,8 @@ mod tests {
             Some(Target::Rpc)
         );
         assert_eq!(classify(&get, "media", true), Some(Target::Socket));
+        // The ticket re-issue is POST-only, and never a file or an RPC.
+        assert_eq!(classify(&post, "ticket", false), Some(Target::Ticket));
         for (m, p, up) in [
             (&post, "cua.env.v1.SystemService/CreateViewerTicket", false),
             (&post, "cua.env.v1.FilesService/Read", false),
@@ -527,9 +863,71 @@ mod tests {
             (&get, "files", true),
             (&post, "media", true),
             (&get, "", false),
+            (&get, "ticket", false),
+            (&get, "viewer-assets/00/viewer.js", false),
         ] {
             assert_eq!(classify(m, p, up), None, "{m} {p} {up}");
         }
+    }
+
+    #[test]
+    fn the_asset_route_serves_only_the_viewer_files() {
+        for name in ASSET_FILES {
+            assert!(crate::computer_view::serves_asset(name), "{name}");
+        }
+        for name in ["index.html", "lucina-shim.js.bak", "../secrets", "files", "viewer", ""] {
+            assert!(!crate::computer_view::serves_asset(name), "{name}");
+        }
+        assert!(SHIM.contains("lucina:keyboard"), "the shim is the one we wrote");
+        assert!(SHIM.contains("lucina:ticket"));
+    }
+
+    #[test]
+    fn index_html_points_at_the_versioned_assets_and_runs_the_shim_first() {
+        let html = rewrite_index(
+            r#"<html><head><script type="module" crossorigin src="./viewer.js"></script>
+    <link rel="stylesheet" crossorigin href="./index.css"></head><body></body></html>"#,
+            "0123456789abcdef",
+        );
+        assert!(!html.contains("./viewer.js"), "the per-view URL is gone: {html}");
+        assert!(!html.contains("./index.css"));
+        assert!(!html.contains("crossorigin"), "an opaque origin cannot do CORS");
+        assert!(html.contains("../../../viewer-assets/0123456789abcdef/viewer.js"));
+        assert!(html.contains("../../../viewer-assets/0123456789abcdef/index.css"));
+        let shim = html.find("lucina-shim.js").expect("the shim is injected");
+        let viewer = html.find("viewer-assets/0123456789abcdef/viewer.js").unwrap();
+        assert!(shim < viewer, "the shim has to run before viewer.js");
+        assert!(html.contains(r#"<meta name="lucina-view" content="0123456789abcdef" />"#));
+    }
+
+    #[test]
+    fn the_bundle_version_follows_the_bytes() {
+        let mut files: HashMap<&'static str, Vec<u8>> = HashMap::new();
+        for name in ASSET_FILES {
+            files.insert(name, name.as_bytes().to_vec());
+        }
+        let a = bundle_hash(&files);
+        assert_eq!(a.len(), 16);
+        assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(a, bundle_hash(&files), "the same bytes are the same version");
+        files.insert("viewer.js", b"other".to_vec());
+        assert_ne!(a, bundle_hash(&files), "new bytes bust the cache");
+    }
+
+    #[test]
+    fn a_ticket_reissue_keeps_the_view_id_and_switches_the_mode() {
+        let sb = SandboxId::Workspace;
+        control().take(sb, "test");
+        let epoch = control().epoch(sb);
+        let id = open(sb, ViewMode::Watch, "test", epoch, "http://127.0.0.1:1");
+        let before = live(&id).expect("a watch view is alive");
+        assert_eq!(before.mode, ViewMode::Watch);
+        let after = reissue(&before, ViewMode::Control, control().epoch(sb)).expect("reissued");
+        assert_eq!(after.id, id, "the same capability, no reload");
+        assert_eq!(after.mode, ViewMode::Control);
+        assert!(live(&id).is_some(), "control view under the owner's lease");
+        control().release(sb, "test");
+        assert!(live(&id).is_none(), "and it dies with the lease, as before");
     }
 
     #[test]
@@ -563,6 +961,7 @@ mod tests {
         let upstream = TcpStream::connect(addr).await.unwrap();
         let (mut ours, theirs) = tokio::io::duplex(64);
         let view = View {
+            id: "t".into(),
             sandbox: SandboxId::Workspace,
             mode: ViewMode::Watch,
             device: "t".into(),
