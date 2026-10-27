@@ -76,8 +76,9 @@ BFS for each counterexample, because Stateright reports the last violating path 
 | 12 | Share to Lucina (`POST /v1/share`: clients, voice notes, gateway, receive, recovery, processing, chat bubble) | `share.rs` (SH) | `share/Share.tla` | `share_kernels.rs` SK1, SK4; `share_reconcile.rs` SK2, SK3 | `lucina-server/src/share/{mod.rs,router.rs}`, `lucina-store/src/timeline.rs::normalize` (branch `lucina-rs`); voice notes: `share/{mod.rs,router.rs,extract.rs}`, `chat.rs` (`ShareTurn`, `tools_turn`), `timeline.rs::valid_waveform` (branch `voice-notes`, 438d748); p1 Caddy `@share` (forward_auth + `X-Share-Gateway`); iOS `ios/Extensions/ShareShared/*`, `Features/Share/ShareUploads.swift`, `Features/Chat/{ChatShares,Timeline}.swift` (`ios-app`); Android `android/secretary/src/Share{Activity,JobService}.kt`, `crates/lucina-android-calls/src/share.rs` (`lucina-rs`); web `web/src/state/chat.ts` |
 | 13 | Lucina OTP forwarding (phone SMS/notification → Rust core queue → HTTPS → p1 relay → Lucina `/otp` → owner) | `otp.rs` (OTP1–OTP10) | `otp/OtpForwarding.tla` | `otp_extract.rs` X1–X5; `otp_expiry.rs`; `otp_redact.rs`; `otp_owner.rs` | `lucina-android/src/{bridge,store,net}.rs`, `android/lucina-otp/src/*.kt`, `lucina-otp-relay/src/{store,http}.rs`, `lucina-server/src/otp.rs`, `lucina-phone-core/src/{otp,proto,reply}.rs` (branch `lucina-rs`, fixes merged at dd7ec9e); Node `Lucina/src/private-otp.js` + `tools/lucina-device` `otp-chat` |
 | 14 | Grocery deal watch (digest, alerts, Node → Rust cutover) | `deals.rs` (G0–G5) | `deals/DealWatch.tla` | `deals_kernel.rs` | `lucina-deals/src/{watch,schedule,notify,engine,sources,matcher,validity}.rs`, `lucina-server/src/deals.rs` (branch `lucina-rs`, pinned in `verification/verus/diff/deals-revision`); Node `Lucina/src/grocery/deals/watch.js` (`68b38dc~1`); `crates/secretary-server/src/notify/{mod,store,routes}.rs` |
-| 15 | Lucina Drive: the folder index (every file of the Drive folders indexed in place; scans racing unmounts, deletes and edits; dedupe of a phone copy against a Drive file; the gallery/films/drive split; path guards; the thermal pause) | `drive_index.rs` (DI) | `drive/DriveIndex.tla` | `drive_kernels.rs` DK1–DK5 | `crates/lucina-media/src/{drive,drive_kernel,drive_kernel_shared,extract,ingest,db,http}.rs` (branch `cloud/drive-all-files` from `media-instant`) |
-| 16 | Album share links (`/v1/media/a/{token}`: the only part of the library reachable from the internet without the upstream key) | – (a per-request check, no protocol between processes) | – | `album_share.rs` AS1 | `crates/lucina-media/src/{share,share_kernel_shared,share_http}.rs` |
+| 15 | Node retirement: Rust owns Telegram, Discord and reminders (no Node change) | `retirement.rs` (R1–R5) | `retirement/{Reminders,Delivery,Telegram,Updates,Discord}.tla` | `retirement_kernels.rs` | `lucina-telegram/src/{outcome,lease_decision,lease,lib}.rs`, `lucina-store/src/reminders.rs::process_due`, `lucina-server/src/reminder_delivery.rs` (branch `lucina-rs`; checked at 3c22447), `lucina-telegram/src/{claim,poller}.rs`, `lucina-server/src/delivery_monitor.rs::step` (f26eb90, NR4 fix 5c87ae0; Verus `delivery_monitor.rs`), `lucina-discord/src/lease.rs` (290b946), `deploy/lucina-rs/*`; Node `Lucina/src/gateway-lock.js`, `index.js` (68b38dc), telegraf 4.16.3 |
+| 16 | Lucina Drive: the folder index (every file of the Drive folders indexed in place; scans racing unmounts, deletes and edits; dedupe of a phone copy against a Drive file; the gallery/films/drive split; path guards; the thermal pause) | `drive_index.rs` (DI) | `drive/DriveIndex.tla` | `drive_kernels.rs` DK1–DK5 | `crates/lucina-media/src/{drive,drive_kernel,drive_kernel_shared,extract,ingest,db,http}.rs` (branch `cloud/drive-all-files` from `media-instant`) |
+| 17 | Album share links (`/v1/media/a/{token}`: the only part of the library reachable from the internet without the upstream key) | – (a per-request check, no protocol between processes) | – | `album_share.rs` AS1 | `crates/lucina-media/src/{share,share_kernel_shared,share_http}.rs` |
 
 Other Verus files in `verification/verus/` include `body_kernel.rs`, `gym_kernel.rs`, `gym_lifecycle.rs` and
 `sync_kernel.rs`. Branch `verus-proofs` adds `avatar_validation.rs`, `notes_kernel.rs`, `secrets_redactor.rs` and the
@@ -185,6 +186,7 @@ files named in the table. `verify.sh` runs every top-level `verification/verus/*
 | DI ablation: DK4 without the filesystem check | 10 296 | 22 | `unmount_never_trashes` **violated** (a stray file in the empty mountpoint) |
 | DI ablation: trash whatever the walk did not see | 15 768 | 22 | `unmount_never_trashes` **violated** (an unmount mid-scan) |
 | DI before DK3 (a phone copy of Drive bytes was dropped) | 9 090 | 22 | `phone_original_kept` **violated** |
+| R1–R5 (protocol 15, 21 cases) | 26 – 4 186 | ≤ 20 | see §15 |
 
 TLC, default cfgs: from 20 to 82 317 distinct states per cfg (`Timeline_fixed`: 82 317, `Cutover_fixed`: 13 605,
 `ShoppingOps_fixed`: 2 686, `PendingActions_fixed`: 2 457, `OAuth_fixed`: 2 214). `Timeline_fixed_deep.cfg`
@@ -962,7 +964,130 @@ dedup: without it the pending re-send repeats (G5, 7 actions).
 without `:` (above); `relatedKeys` grouping and `deal_keys` keep every member, so acknowledging a group covers all of
 its branches.
 
-### 15. Lucina Drive: the folder index
+### 15. Node retirement: Rust owns Telegram, Discord and reminders
+
+The Node Lucina (`lucina-nez`) is removed one capability at a time, with **no Node code change**: the phase-2
+"Node shim" of PORT_PLAN (P2a's fixed order) is dropped. Code checked: branch `lucina-rs` (merged from `node-retire`) at 3c22447
+(`lucina-telegram/src/{outcome,lease_decision,lease,lib}.rs`, `lucina-store/src/reminders.rs`,
+`lucina-server/src/reminder_delivery.rs`) and at f26eb90 (`lucina-telegram/src/{claim,poller}.rs`: the batch's
+claim is written before any handler, `should_handle(id, claimed) = id > claimed`, `claim = max`, every
+`getUpdates` sends `next_offset(claimed) = claimed + 1`; `lucina-server/src/delivery_monitor.rs`); Node
+`Lucina/src/gateway-lock.js` and `src/index.js` (68b38dc) with telegraf 4.16.3. The Discord message session's
+`discord-<appid>.flock` (`lucina-discord/src/lease.rs`, 290b946) landed after the model was written; R5 models its
+design, which the code follows (the flock alone decides). The handover was done by hand (see below). Every model has one Rust crash (the watchdog restart) at any step; files and Telegram's queue
+survive it, volatile work and flocks do not.
+
+Invariants:
+
+- **R1 reminders handover:** `single_reminders_writer` (Node enabled, Rust `writer=local` and up never at once),
+  `no_lost_reminder_record`, `no_double_delivery`, `no_silent_loss` (at the drained end every reminder is
+  delivered, `failed` or `cancelled`); witnesses `handed_over`, `disabled_visible` (a create while nobody owns
+  the file fails visibly), `rolled_back`. One reminder due at the start, one app/Telegram create or cancel.
+- **R2 delivery outcome:** `no_double_delivery` (Telegram accepts the message at most once), `no_silent_loss`
+  (eventually `sent`, or `failed` and visible); witnesses `delivered`, `uncertain_failed`. The network refuses,
+  answers an error envelope (429/5xx), replies `ok`, loses the body after 200 headers, times out after delivering,
+  or times out after losing the request. The outcome is computed by the mirrors of `classify` and
+  `BotApi::call` / `transport_error` / `reminder_delivery.rs` (`Network::outcome`); one transient fault, then a
+  healthy send.
+- **R3 Telegram single poller:** `single_poller` (at most one process inside a `getUpdates` window, counted before
+  Telegram's 409 ends one); witnesses `rust_polls`, `node_deferred`, `rust_takeover` (Rust acquires over its own
+  instance's live record after a crash), `rust_refused` (an unusable lock dir stops Rust), `node_polls_after_rust`.
+  Processes: Rust A, a stray Rust B (same `HERMES_GATEWAY_INSTANCE`), a Node container that may start at any time.
+  Ages count 30 s heartbeats; 3 means older than 90 s. The passing case assumes **A1** no process stalls more than
+  250 ms between reading the record and writing its own, **A2** a polling holder's heartbeat never lapses for 90 s,
+  **A3** Node is not started while the lock dir is unusable. Each assumption dropped is a `MUST FAIL` case (NR1).
+- **R4 update at most once:** `no_double_reply`, `no_silent_skip` (an update nobody handled that Telegram will
+  not deliver again is in the log); witnesses `all_handled`, `crash_skip_logged`, `node_then_rust`. Two queued
+  updates; Node (telegraf) polls first and is stopped, then Rust starts with an empty claim file.
+- **R5 Discord single gateway:** `single_discord_gateway` (Node's session plus both Rust processes); witnesses
+  `rust_connects`, `rolled_back`. This adds the second Rust process and its flock to protocol 2's P3.
+
+The order the passing cases check, which the cutover and rollback scripts must follow:
+
+1. **Reminders.** Restart Node with `LUCINA_REMINDERS_ENABLED=false` only while its tick and its reminder requests
+   are idle (else the batch it sent but did not commit is sent again by Rust). Then restart Rust with
+   `LUCINA_REMINDERS_WRITER=local`, `LUCINA_SCHEDULER=true`. Between the two nobody writes `reminders.json`; due
+   reminders wait as `pending`. Rollback: Rust back to `writer=node`, scheduler off, **only when its tick is idle
+   and no reminder is `sending`** (NR3), then Node re-enabled.
+2. **Telegram.** Stop Node's Telegram polling only while its handlers are idle (NR5). Rust's first `getUpdates`
+   after each lease acquisition sends no offset (NR4, fixed in 5c87ae0), and Rust never sets `drop_pending_updates`. Keep Node's Telegram token
+   out of its environment while Rust polls, so a stray `docker start` cannot poll at all (NR1); the record is a
+   second line of defence. Rollback: turn Rust's poller off in its config (the watchdog restarts a stopped
+   service), then give Node its token back; Node drops what was queued in between (NR6).
+3. **Discord.** Restart Node with an empty Discord token, wait until its gateway session is gone, then enable Rust;
+   each Rust process holds `discord-<appid>.flock` for its message session. Rollback: Rust's Discord off first.
+
+**Performed on 2026-10-27, in this order:** reminders at 08:24Z (Node's tick idle), Telegram at 12:40Z (Node idle,
+no unconfirmed updates), Bot Hospital at 12:41Z, Discord at 12:43Z; the Node container `lucina-nez` was removed at
+12:49Z, image included. Since the Node app can no longer be started, the rules behind NR1, NR5 and NR6 are moot:
+they keep their witnesses as the record of why the order mattered, and apply again only if a Node gateway comes
+back. The R1 rollback rule (NR3) and the update claim (NR4) still describe the Rust code. Bot Hospital's
+`last-audit.json` (2ab3ddc, one audit a day across restarts) needs no model.
+
+| Model action / kernel | Code |
+|---|---|
+| R1 `Operator` | the handover/rollback steps above (`deploy/lucina-rs/*` on `lucina-rs`; performed by hand on 2026-10-27): Node `LUCINA_REMINDERS_ENABLED`, Rust `LUCINA_REMINDERS_WRITER`, `LUCINA_SCHEDULER` (`lucina-server/src/{config,capabilities}.rs`) |
+| R1 `CreateApp`, `CancelApp`, `CreateTelegram`, `CancelTelegram` | Rust `ReminderStore::{create,cancel}` (mutex + flock) once local, forwarded to Node before; Node `createReminder` / cancel; "reminders disabled" when off |
+| R1 `Read(1)`, `Send(1)`, `Save(1)`; R2 `Claim`, `Save`, `Recover` | `reminders.rs::process_due`: mutex + `reminders.json.lock` flock for the whole tick, `fail_stale_claims` (`status_at_tick_start`), claim `sending` and write, send each, one write of the outcomes |
+| R1 `Read(0)`, `Send(0)`, `Save(0)` | Node `processDueReminders` (snapshot, send, commit; P2b) |
+| R2 `Send(Network)`; `classify`, `call_outcome`, `delivery_outcome`, `claimed_next` | `lucina-telegram/src/outcome.rs::classify`, `lib.rs::BotApi::{call,transport_error,send_text}`, `lucina-server/src/reminder_delivery.rs` |
+| R3 `Check`, `Write`, `ReadBack` (Rust) | `lease.rs::Lease::acquire_in`: `create_dir_all`, `try_lock_exclusive` on `telegram-<bot>.flock`, `read_record` + `lease_decision`, `write_record`, 250 ms, read back |
+| R3 `Heartbeat` (Rust) | `lease.rs` heartbeat task (30 s): a live record of another holder or a failed write sets `lost`; the poller stops (README contract) |
+| R3 `Check`, `Write`, `ReadBack`, `Heartbeat` (Node) | `gateway-lock.js::acquireGatewayLock` (degraded on any exception), its `setInterval` heartbeat (`onLost` stops the bot; a failed write only warns) |
+| R3 `Conflict` | Telegram's 409 "terminated by other getUpdates request" |
+| R3 `Crash`, `Restart` | watchdog restart: the kernel drops the flock, the record stays (`Held::drop` only runs on a clean stop) |
+| R4 `NodeReceive`, `NodeHandle`, `NodeSync`, `NodeStop` | telegraf `Polling` (offset = last + 1 on the next `getUpdates`, `syncUpdateOffset` on stop); `index.js::shutdown` |
+| R4 `Receive`, `Handle`, `Advance`, `RustStart`, `Restart`; `should_handle`, `claim`, `next_offset`, `poll_offset`, `plan_batch` | `lucina-telegram/src/claim.rs` (`ClaimFile::store`: temp file, fsync, rename) and `poller.rs::{plan_batch, Poller::poll}`: claim before dispatch, the first `getUpdates` after each lease acquisition with offset 0, later ones with `next_offset(claimed)`, skip + warning + `skippedReplayed` at or below the claim; the code is `start_from_claim = false` since 5c87ae0 (true before) |
+| R4 `Rollback` | `index.js::launchManagedTelegramPolling`: `deleteWebhook({ drop_pending_updates: true })` after the lock |
+| R5 `Operator`, `Connect` | Node Discord token emptied; `lucina-discord/src/lease.rs`: message session behind an exclusive non-blocking `discord-<appid>.flock` (290b946) |
+
+Kernels (`retirement_kernels.rs`, 32 verified): `classify` with Uncertain exactly for (Sent, no status, no API
+answer), equal to the design's "Sent and no status" on the transport's inputs (C1); Delivered only with
+`api_ok == Some(true)`, never for the transport's inputs, and with a 2xx status only under a consistent response
+(C2, NR2); `call_outcome` never NotDelivered when Telegram may have the message and never Uncertain after a
+complete answer (C3); `claimed_next` and `status_at_tick_start` (S1, S2); over any legal history a sent or failed
+reminder never changes again, so a delivered or uncertain send is never resent (S3); `lease_decision` defers
+exactly for a live record of another holder that is not our own previous run, acquires for no record, a stale or
+unparseable heartbeat, another boot, our holder or our previous run (L1); the same instance id never defers (L2:
+only the flock separates Rust A from B); Rust and Node defer to each other's live record (L3); claims are monotone
+and an update is handled at most once over any re-delivery and crash history (U1, U2); `next_offset(c) = c + 1`
+and `poll_offset` sends 0 on the first poll after a lease acquisition (U1, NR4) and `plan_batch` hands out only ids above the old claim, at most the new one, strictly increasing (U3).
+`delivery_monitor.rs` (10 verified) mirrors `delivery_monitor.rs::step`: an up check resets and sends Recovered only
+after an alerted outage (M1, M4); Down only once the outage and the process have lasted `after_ms` (the start-up
+grace, M2), at most once per outage (M3), and never missed once due (M5), for any i64 times. Before 5c87ae0
+`step` used plain subtraction, and a corrupt `downSince` near `i64::MIN` could wrap in release builds and keep that
+outage from being alerted; it now uses `saturating_sub`, mirrored by `sat_sub`.
+
+Default Stateright results (all 21 cases meet their expectations; the TLC twins have the same state counts):
+
+| Case | States | Depth | Result |
+|---|---:|---:|---|
+| R1 idle handover + drained Rust rollback | 1 229 | 19 | all hold |
+| R1 early local writer witness | 4 186 | 11 | all four **violated** |
+| R1 mid-tick Node restart witness | 2 610 | 20 | `no_double_delivery` **violated** |
+| R1 rollback without drain (NR3) | 1 648 | 19 | `no_silent_loss` **violated**; the others hold |
+| R2 three-way outcomes (classify + transport) | 46 | 9 | all hold |
+| R2 uncertain retried witness | 55 | 9 | `no_double_delivery` **violated** |
+| R2 not-delivered terminal ablation | 36 | 6 | all hold; `retryable_failed` reached (a retryable send is given up) |
+| R3 flock + record + read-back (A1–A3) | 1 250 | 12 | holds |
+| R3 stall inside the rendezvous (NR1a) | 2 390 | 8 | `single_poller` **violated** |
+| R3 heartbeat lapse while polling (NR1b) | 3 077 | 14 | `single_poller` **violated** |
+| R3 lock dir lost, Node starts degraded (NR1c) | 2 054 | 9 | `single_poller` **violated** |
+| R3 record only, no flock witness | 2 142 | 8 | `single_poller` **violated** |
+| R3 Rust starts degraded witness | 2 698 | 15 | `single_poller` **violated** |
+| R4 code: claim first, no-offset restart (5c87ae0) | 70 | 12 | all hold |
+| R4 witness: restart at claimed+1 (NR4, pre-5c87ae0) | 52 | 11 | `no_silent_skip` **violated** |
+| R4 offset-only witness | 66 | 13 | `no_double_reply` **violated** |
+| R4 Node stopped mid-handler (NR5) | 188 | 14 | `no_double_reply` **violated** |
+| R4 rollback drops pending updates (NR6) | 96 | 13 | `no_silent_skip` **violated** |
+| R5 ordered Discord + flock | 26 | 7 | holds |
+| R5 early Discord witness | 32 | 7 | `single_discord_gateway` **violated** |
+| R5 second Rust without flock witness | 28 | 7 | `single_discord_gateway` **violated** |
+
+TLC (`formal/retirement/`): `Reminders` 1 229, `Reminders_rollback_safety` 1 648 (NR3 keeps the safety invariants),
+`Delivery` 46 and `Delivery_fail_known` 36 (both with `<>Finished` under weak fairness), `Telegram` 1 250,
+`Updates` 70, `Discord` 26 distinct states, each under 2 s; 18 `*_witness.cfg` and 15 `*_bug.cfg` fail as required.
+### 16. Lucina Drive: the folder index
 
 The Drive (`docs/media-library.md`, "The Drive") indexes every regular file of the Drive folders
 (`LUCINA_MEDIA_FOLDERS` minus the film folders) in place. Every 30 minutes a scan walks a folder
@@ -1133,7 +1258,7 @@ Operator (Rust up as the store, writer=rust)  CreateViaTelegram(0) [Node RMW]  C
 CreateWrite(Node) CreateWrite(Rust)          -> reminder 0 is lost
 ```
 
-Fixed order, modeled and holding:
+Fixed order, modeled and holding (with a Node shim; superseded by protocol 15, which needs no Node change):
 
 1. Rust opens only `/api/internal/reminders`. Its secretary path still forwards to Node, and nothing calls the
    internal endpoint yet.
@@ -1142,6 +1267,9 @@ Fixed order, modeled and holding:
 
 Rollback: Rust stops writing first (scheduler off, forwarding, internal endpoint closed; Node's shim calls fail
 visibly for a few seconds), then Node takes the file and the scheduler back.
+
+The shim-free order (Node restarted with `LUCINA_REMINDERS_ENABLED=false` while idle, then Rust `writer=local`) is
+protocol 15, R1; its rollback must also resolve Rust's `sending` claims (NR3).
 
 ### P2b: a restart during a scheduler tick re-sends the batch (medium, today in Node, planned in Rust)
 
@@ -1156,12 +1284,15 @@ PORT_PLAN §5 phase 2 promises that a restart in the middle of a delivery does n
 implementation keeps that promise. Fix: claim before send (write `sending` atomically before `sendMessage`). A claim
 found after a restart becomes `failed` with `lastError: "interrupted; not resent"`, shown in the reminder list. That
 gives at-most-once delivery with a visible failure. Also restart Node only with an idle tick (drain on SIGTERM).
-`no_double_delivery` and `no_silent_loss` then both hold.
+`no_double_delivery` and `no_silent_loss` then both hold. The claim is in the Rust code (`process_due`, branch
+`lucina-rs`); protocol 15 checks it with the three-way delivery outcome (R2) and the shim-free handover (R1).
 
 ### P3/P4: handovers (no bug)
 
 The documented order holds. Two witnesses document the rules: starting Rust on Discord before Node lost its token,
-and running with `HERMES_GATEWAY_LOCK=false`, each give two consumers.
+and running with `HERMES_GATEWAY_LOCK=false`, each give two consumers. The model treats lock acquisition as one
+step; protocol 15 (R3, R5) splits Node's rendezvous, adds Rust's flock, a second Rust process, heartbeat expiry and
+an unusable lock dir, and finds NR1.
 
 ### S1: a lost ack followed by a 409 applies an op twice (medium)
 
@@ -1505,6 +1636,92 @@ digest. Proposed fixes (lucina-rs, `watch.rs`): F1 save the composed message and
 re-send it first after a restart; F2 acknowledge only the delivered best offers; F3 never raise a notified price. The
 model holds with all three (G1 + fixes, G2 + fixes).
 
+### NR1: a Node container started with its Telegram token can poll next to Rust (low-medium; design) **Moot since 2026-10-27** (Node removed)
+
+The cutover followed the order in §15 (Node idle, Node's token gone), and on 2026-10-27 the
+`lucina-nez` container and its image were removed, so no Node gateway can start. Kept as the record of the rule.
+
+Rust's own side holds: the flock separates Rust A from a stray Rust B (the record cannot, L2: both have the
+instance id `lucina-rs`, so each takes over the other's live record as "own previous run"), Rust reads its record
+back after 250 ms like Node, stops when a heartbeat finds another live holder or cannot write, and refuses to start
+on an unusable lock dir. Node's record-only rendezvous, unchanged, admits a second poller in three ways (R3, each
+assumption A1–A3 dropped):
+
+```
+NR1a  Check(Rust A) Check(Node) Write(Rust A) ReadBack(Rust A) Write(Node) ReadBack(Node)   (Node stalls > 250 ms)
+NR1b  Check(Rust A) ReadBack(Rust A) Tick Tick Tick Check(Node) ReadBack(Node)   (Rust's heartbeat lapses 90 s)
+NR1c  Check(Rust A) ReadBack(Rust A) BreakDir Check(Node)   (lock dir unusable: Node starts degraded)
+```
+
+Both then consume updates until Rust's next heartbeat sees Node's record (a, b) or fails to write (c) and stops,
+or Telegram's 409 ends one; a 409 cannot undo the overlap. Without a Node change the record is only a second line
+of defence: after the Telegram handover, run Node without its Telegram token, as for Discord, so a stray
+`docker start` cannot poll. Both runtimes must also use the same lock dir: on 2026-10-26 the Node container has
+`HERMES_GATEWAY_LOCK_DIR=/run/hermes-gateway-locks`, a bind mount of the host's
+`~/.local/state/hermes-gateway-locks`, which is Rust's default for `HOME=/home/nez`. A lucina-rs with another `HOME`
+or `HERMES_GATEWAY_LOCK_DIR` never sees Node's record.
+
+### NR2: `classify` lets the success bit win over the status (no impact; contract)
+
+`classify(Sent, Some(500), Some(true)) == Delivered` and `classify(Connect, None, Some(true)) == Delivered`, so the
+design's "Delivered only with `ok: true` and a 2xx status" is false for all inputs; it holds under a consistent
+response (C2). Uncertain also needs `api_ok == None`, not only "Sent and no status" (C1). Neither matters today:
+`BotApi::call` never passes `Some(true)` (a success envelope returns before `classify`, whatever the HTTP status,
+as Telegram's contract allows), and on the inputs it does pass, both rules equal the design's. A new caller of
+`classify` must keep those input shapes.
+
+### NR3: a rollback can leave a reminder `sending` forever (medium if followed; procedure)
+
+R1 with the rollback order as specified (Rust `writer=node` and scheduler off, then Node on), 7 actions:
+
+```
+Operator [Node disabled]  Operator [Rust local]  CreateTelegram [fails visibly]  Read(Rust) [reminder 0 claimed: sending]
+Operator [Rust restarted writer=node, the tick dies before the send]  Operator [Node enabled]  Settle
+```
+
+Node schedules only `pending` reminders and Rust's recovery (`fail_stale_claims`) runs only inside `process_due`, so
+the reminder is never sent and never `failed`. Fix in the rollback script: restart Rust only when its tick is idle
+and no reminder is `sending`, or, once Rust no longer writes and before Node is enabled, set every `sending` to
+`failed` with "interrupted; not resent" (the `status_at_tick_start` rule). The drained case holds, and the safety
+invariants hold even without it (`Reminders_rollback_safety.cfg`).
+
+### NR4: the first `getUpdates` at `claimed + 1` skipped a claimed update silently (medium; `poller.rs`, f26eb90). **Fixed (5c87ae0).**
+
+```
+NodeStop RustStart Receive [claim 1 written]  Crash [before the handler]  Restart [offset = 2]  Receive
+```
+
+The request with `offset = 2` confirms update 1, so Telegram never re-delivers it and the "skipped" log never runs.
+At most once still held. At f26eb90 `poll` sent `claim::next_offset(claimed)` on every request, the first one too,
+so a crash (watchdog kill, OOM) between `ClaimFile::store` and the end of the handlers lost the rest of that batch
+without a log line. Fixed in 5c87ae0 (branch `lucina-rs`): the first `getUpdates` after each lease
+acquisition sends offset 0, Telegram re-delivers what is unconfirmed, and `plan_batch` skips the claimed ids with a
+warning and the `skippedReplayed` counter (test `a_restart_after_claiming_never_handles_an_update_twice`). The R4
+code case now models this and holds; the old behaviour stays as the `MUST FAIL` witness
+(`Updates_start_from_claim_bug.cfg`).
+
+### NR5: stopping Node in the middle of a Telegram handler makes Rust reply again (low-medium; cutover) **Moot since 2026-10-27** (Node removed)
+
+```
+NodeReceive NodeHandle [Node replied]  NodeStop [offset not synced]  RustStart Receive Handle   -> two replies
+```
+
+telegraf confirms a batch only with its next `getUpdates` (or `syncUpdateOffset` when polling stops), and Node's
+`shutdown` exits when its HTTP server closes. A handled but unconfirmed update reaches Rust, whose claim file is
+empty. Fix: stop Node's Telegram only while it is long-polling with no handler running (its pending `getUpdates`
+has then confirmed everything it handled), the same idle rule as for its reminder tick. Rust cannot tell these
+updates apart without dropping new ones.
+
+### NR6: a rollback to Node drops the Telegram updates queued in between (low; rollback) **Moot since 2026-10-27** (Node removed)
+
+```
+NodeStop RustStart Rollback [Rust stops; Node takes the lock and calls deleteWebhook(drop_pending_updates: true)]
+```
+
+`index.js::launchManagedTelegramPolling` drops Telegram's queue whenever Node acquires the lock (every Node restart
+does this today). Messages sent between Rust's last `getUpdates` and Node's start are lost without a log. Without a
+Node change this cannot be closed; the rollback runbook should say so and run when the owner is not writing.
+
 ## Modeling assumptions
 
 - **Timeline.** A single `write()` of a whole line to an O_APPEND regular file is atomic (Linux; lines stay far
@@ -1538,5 +1755,8 @@ model holds with all three (G1 + fixes, G2 + fixes).
   Drive folder below it simply disappears when the disk does, and `root_ok` is false). A file read by path while its
   filesystem is gone is an error (Linux: `metadata` fails); a scan started on the empty mountpoint sees only what is
   there. blake3 collisions are ignored; the text index and the worker are not in the model (they only add rows).
+- **Node retirement.** One Rust crash per model; operator steps are atomic restarts. R3 has three Telegram ticks
+  of 30 s and one boot (the Verus lease kernel covers boot ids and exact times); R4 has two queued updates and no
+  new arrivals; the Discord presence watcher (a separate read-only session) is out of scope.
 - **Bounds.** The bounds are small (2–4 lines per writer, 2 jobs, 2 reminders, 3–5 requests). The Verus kernels
   cover the per-step invariants for all inputs.

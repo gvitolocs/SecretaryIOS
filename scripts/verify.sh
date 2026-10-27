@@ -119,6 +119,8 @@ if want models; then
 fi
 
 # ---- 2. TLC -----------------------------------------------------------------------
+# Every formal/**/*.cfg is found by the loop below, protocol 15 included
+# (formal/retirement/{Reminders,Delivery,Telegram,Updates,Discord}.tla and their cfgs).
 if want tlc; then
     echo "== TLC (formal/)"
     if [ ! -x "$JAVA" ] || [ ! -f "$TLA_JAR" ]; then
@@ -173,6 +175,7 @@ if want verus; then
     VERUS_DIR="${VERUS_DIR:-verification/verus}"
     echo "== Verus ($VERUS_DIR)"
     shopt -s nullglob
+    # Every top-level kernel, protocol 15 included (retirement_kernels.rs: outcome, status, lease, claims).
     vfiles=("$VERUS_DIR"/*.rs)
     shopt -u nullglob
     if [ ! -x "$VERUS_BIN" ]; then

@@ -1,6 +1,6 @@
 // The Drive's safety decisions, with their Verus contracts. `drive_kernel.rs` includes this file
 // with the contracts erased; `verification/verus/drive_kernels.rs` includes the SAME bodies and
-// verifies them (docs/verification.md, protocol 15).
+// verifies them (docs/verification.md, protocol 16).
 verified_kernel! {
     // DK1. One segment of a path inside a Drive folder: not empty, not `.` or `..`, at most 255
     // bytes, and without `/`, `\` or NUL (`bad_byte`). A path is safe when every segment is.

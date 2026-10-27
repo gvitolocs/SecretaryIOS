@@ -202,7 +202,9 @@ impl Config {
             prepare_bind_to: match var("LUCINA_MEDIA_PREPARE_BIND") {
                 Some(v) if v == "0" => None,
                 Some(v) => Some(v),
-                None => std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|c| own_service(&c)),
+                None => std::fs::read_to_string("/proc/self/cgroup")
+                    .ok()
+                    .and_then(|c| own_service(&c)),
             },
             prepare_max_temp_c: var("LUCINA_MEDIA_PREPARE_MAX_TEMP")
                 .map(|v| v.parse())
@@ -393,9 +395,13 @@ mod own_service_tests {
 
     #[test]
     fn finds_the_service_unit_and_nothing_else() {
-        let svc = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/lucina-media.service\n";
+        let svc =
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/lucina-media.service\n";
         assert_eq!(own_service(svc).as_deref(), Some("lucina-media.service"));
-        assert_eq!(own_service("0::/user.slice/user-1000.slice/session-3.scope\n"), None);
+        assert_eq!(
+            own_service("0::/user.slice/user-1000.slice/session-3.scope\n"),
+            None
+        );
         assert_eq!(own_service(""), None);
     }
 }

@@ -1,6 +1,6 @@
 // Album share links: what a public request may see. `share.rs` includes this file with the
 // contracts erased; `verification/verus/album_share.rs` includes the SAME body and verifies it
-// (docs/verification.md, inventory row 16).
+// (docs/verification.md, inventory row 17).
 verified_kernel! {
     // AS1. The access a request under `/v1/media/a/{token}` gets. `known`: the token names a share
     // row; `revoked`: its `revoked_at` is set; `has_expiry`/`expires_at`/`now`: Unix ms;

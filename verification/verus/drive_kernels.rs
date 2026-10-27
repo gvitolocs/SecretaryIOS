@@ -1,4 +1,4 @@
-// The Drive's safety kernels (crates/lucina-media/src/drive_kernel_shared.rs; protocol 15 in
+// The Drive's safety kernels (crates/lucina-media/src/drive_kernel_shared.rs; protocol 16 in
 // docs/verification.md). The bodies are the SAME source the server compiles: this file includes
 // them with their contracts, `drive_kernel.rs` includes them with the contracts erased.
 //
