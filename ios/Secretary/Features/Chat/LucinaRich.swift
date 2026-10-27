@@ -550,6 +550,7 @@ extension AppModel {
             if parts.count >= 3, parts[0] == "films", parts[1] == "play" { openFilmID = parts[2] }
         case "plugins": selectedTab = .plugins
         case "gallery": openGallery(path)
+        case "drive": openDrive(DriveLink.parse(path) ?? .root)
         default: selectedTab = .chat
         }
         if NotificationRoute.opensDealsMap(path) { showDealsMap = true }

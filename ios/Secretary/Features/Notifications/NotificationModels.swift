@@ -323,7 +323,7 @@ enum NotificationRoute {
         case "shopping": return .shopping
         case "gym", "weight": return .fitness
         case "lucina", "avatar", "wardrobe": return .lucina
-        case "plugins", "notes", "tasks", "memos", "media", "gallery": return .plugins
+        case "plugins", "notes", "tasks", "memos", "media", "films", "gallery", "drive": return .plugins
         default: return .chat
         }
     }

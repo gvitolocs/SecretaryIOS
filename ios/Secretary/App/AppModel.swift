@@ -62,6 +62,8 @@ final class AppModel {
     var showGallery = false
     /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
     var showDrive = false
+    /// `/drive/file/<id>` (a document Lucina found): the Drive opens its preview.
+    var openDriveFileID: String?
     /// Voice memos, a plugin.
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
@@ -104,6 +106,8 @@ final class AppModel {
     /// The photo library on the server (/v1/media), shown by the Gallery plugin.
     let gallery: GalleryStore
     let drive: GalleryStore
+    /// The Drive's folder levels, sort and roots (`/drive/folder/...` links set its stack).
+    let driveNav: DriveNavigator
     /// Automatic backup of this iPhone's photos and videos to the server.
     let backup: PhotoBackup
     /// Voice memos: recorder, upload queue, list (/v1/memos on lucina-memo).
@@ -187,6 +191,7 @@ final class AppModel {
         media = PerfLog.measure("media") { MediaPlayer(api: { MediaAPI(client: mediaAPI()) }) }
         gallery = PerfLog.measure("gallery") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery") }
         drive = PerfLog.measure("drive") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive") }
+        driveNav = DriveNavigator()
         backup = PerfLog.measure("backup") { PhotoBackup(api: { GalleryAPI(client: mediaAPI()) }) }
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
         self.memoClient = memoClient
@@ -407,6 +412,21 @@ final class AppModel {
                 ? String(localized: "Lucina took too long to answer. She may be busy; try again in a moment.")
                 : String(localized: "Lucina is offline right now. Your messages stay here, so you can retry once she's back.")
         }
+    }
+
+    /// The Drive plugin: its root, a folder (every level pushed, so back walks up) or a file's preview.
+    func openDrive(_ link: DriveLink = .root) {
+        selectedTab = .plugins
+        switch link {
+        case .root:
+            driveNav.stack = []
+        case let .folder(location):
+            driveNav.stack = DriveStack.chain(to: location)
+        case let .file(id):
+            driveNav.stack = []
+            openDriveFileID = id
+        }
+        showDrive = true
     }
 
     /// `/memos/<id>` (the "memo ready" notification): the memo's detail screen.
