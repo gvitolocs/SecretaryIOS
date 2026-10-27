@@ -370,12 +370,18 @@ pub async fn shutdown_signal() {
 }
 
 /// Serve `router` on `listener` with peer addresses available to handlers
-/// (the login rate limit needs them).
+/// (the login rate limit needs them). Accepted sockets get TCP_NODELAY: the
+/// computer live view's and LucinaDesk's WebSockets carry small messages (acks,
+/// input) that Nagle plus delayed ACKs would hold for ~40 ms each.
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
     router: Router,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    use axum::serve::ListenerExt as _;
+    let listener = listener.tap_io(|tcp| {
+        let _ = tcp.set_nodelay(true);
+    });
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
