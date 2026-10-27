@@ -384,17 +384,20 @@ Each phase gets its own `wt` worktree and branch from `lucina-rs` (or SecretaryC
 parity check before the next phase starts. Implementation goes to the Claude CLI lane (`lane run --category deep`).
 Every result is reviewed with `git diff`, diffgate, build and tests, and screenshots for UI.
 
+**Order (owner, 2026-10-27):** 0, 1, 2, 3, 4, then 7 and 9, then 5, 6 and 8, then 10 and 11. The numbers stay as
+they are, so the matrix rows keep their phase.
+
 | # | Phase | Done when |
 |---|---|---|
 | 0 | Design, parity matrix, Paseo upgraded to 0.13.2 | this document |
 | 1 | `lucina-agents` types and lifecycle kernel, agentd skeleton, storage, mock providers, `lagent` run/ls/logs/wait/stop/send/archive/delete/inspect, differential harness | mock scenarios match Paseo |
 | 2 | Providers claude, codex, opencode, cursor; then acp, pi, zcode; chains and quota fall-through; import; usage | one real run per provider |
-| 3 | Permissions, the finished-run gate, notifications | permission answered from the phone |
+| 3 | Permissions, the finished-run gate, notifications | a real permission answered with `lagent permit` (done); from the phone once 7 and 8 are in |
 | 4 | Workspaces, worktrees via `wt`, diffs, files, branch names, cleanup on merge, setup scripts | matrix rows green |
+| 7 | secretary-server `/v1/agents`, streams. The QR login is already live (the QR session, server-live), so it is reused, not rebuilt | the Mac app's agents mirror (SecretaryCode c1cd168) talks to it |
+| 9 | MCP tools (`agents` scope), Hermes token | Hermes runs an agent |
 | 5 | Terminals, scripts, ports, service proxy | |
 | 6 | Schedules, heartbeats, subagents, notify-on-finish, search | |
-| 7 | secretary-server `/v1/agents`, streams, QR login | |
 | 8 | UIs: web plugin, Secretary Code panel, iOS, Android | screenshots on each |
-| 9 | MCP tools, Hermes token | Hermes runs an agent |
 | 10 | Connected hosts, plugins and catalog | |
 | 11 | Soak: the owner uses it for real work; then Paseo is retired (unit off, `expected-active.txt`, `~/.paseo` checked for unpushed work and archived to the MyBook, `@getpaseo/cli` uninstalled, Codex rules changed) | owner sign-off |

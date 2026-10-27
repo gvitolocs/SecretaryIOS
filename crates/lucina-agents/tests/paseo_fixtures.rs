@@ -177,3 +177,41 @@ fn attention_notifications_match_paseo() {
     }
     assert!(failures.is_empty(), "{} of {} differ:\n{}", failures.len(), f.payloads.len() + f.latest.len(), failures.join("\n\n"));
 }
+
+#[derive(Deserialize)]
+struct SlugCase {
+    input: String,
+    slug: String,
+}
+
+#[derive(Deserialize)]
+struct ValidateCase {
+    input: String,
+    valid: bool,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SlugFixtures {
+    slugify: Vec<SlugCase>,
+    validate: Vec<ValidateCase>,
+}
+
+#[test]
+fn branch_slugs_match_paseo() {
+    use lucina_agents::branch_slug::{slugify, validate};
+    let f: SlugFixtures = serde_json::from_str(include_str!("fixtures/branch-slug.json")).expect("slug fixtures parse");
+    let mut failures = Vec::new();
+    for c in &f.slugify {
+        if slugify(&c.input) != c.slug {
+            failures.push(format!("slugify({:?}): paseo {:?}, lucina {:?}", c.input, c.slug, slugify(&c.input)));
+        }
+    }
+    for c in &f.validate {
+        let got = validate(&c.input);
+        if got.is_ok() != c.valid || got.err().map(str::to_string) != c.error {
+            failures.push(format!("validate({:?}): paseo {:?} {:?}, lucina {:?}", c.input, c.valid, c.error, validate(&c.input)));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

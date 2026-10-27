@@ -26,17 +26,23 @@
 //!   proven in `verification/verus/agent_lifecycle.rs`.
 //! - [`notification`]: attention notification titles and previews
 //!   (`protocol/agent-attention-notification.js`).
+//! - [`workspace`]: projects, workspaces, diffs and files (Paseo `ProjectRecord`,
+//!   `WorkspaceRecord`, `ParsedDiffFileSchema`); [`diffparse`] reads `git diff`;
+//!   [`branch_slug`]: `protocol/branch-slug.js`.
 //! - Lucina only: [`permission_gate`] (who may answer a permission request, and
 //!   until when) and [`run_gate`] (the finished-run gate's verdict), proven in
-//!   `verification/verus/permission_gate.rs` and `run_gate.rs`.
+//!   `verification/verus/permission_gate.rs` and `run_gate.rs`. [`worktree_guard`]: where agents may write
+//!   and when a worktree may be removed (`verification/verus/worktree_guard.rs`).
 //!
 //! String lengths and cuts follow JavaScript (UTF-16 code units, JS whitespace;
 //! see [`jsstr`]), so truncated texts match Paseo's byte for byte.
 
 #![forbid(unsafe_code)]
 
+pub mod branch_slug;
 pub mod bucket;
 pub mod curator;
+pub mod diffparse;
 pub mod display;
 pub mod events;
 pub mod jsstr;
@@ -49,6 +55,8 @@ pub mod run_gate;
 pub mod timeline;
 pub mod title;
 pub mod types;
+pub mod workspace;
+pub mod worktree_guard;
 
 pub use events::{StreamEvent, Usage};
 pub use permission::{PermissionRequest, PermissionResponse};

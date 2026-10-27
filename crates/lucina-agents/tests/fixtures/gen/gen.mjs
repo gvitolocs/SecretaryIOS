@@ -200,6 +200,12 @@ const latestTimelines = [
 ];
 const latestCases = latestTimelines.map((items) => ({ items, expected: attention.findLatestAssistantMessageFromTimeline(items) }));
 
+const slug = await load("protocol/dist/branch-slug.js");
+const slugInputs = ["Fix the login redirect bug", "  --Ünïcode__x  ", "", "---", "ALL CAPS 123", "İstanbul straße", "a".repeat(60), "word-".repeat(12), "abcdefghij-abcdefghij-abcdefghij-abcdefghij-abcdefghij-x", "x".repeat(24) + "-" + "y".repeat(40), "PR #2638: Playwright specs!", "feat/x", "emoji 😀 here"];
+const slugCases = slugInputs.map((input) => ({ input, slug: slug.slugify(input) }));
+const validateInputs = ["feat/x", "", "Feat", "a--b", "-a", "a-", "a b", "x".repeat(101), "x".repeat(100), "agent/fix-login-2", "a_b"];
+const validateCases = validateInputs.map((input) => ({ input, ...slug.validateBranchSlug(input) }));
+
 // A cut through a surrogate pair leaves a lone surrogate, which Node prints as U+FFFD
 // and serde_json refuses to parse; store it as U+FFFD.
 const wellFormed = (_key, v) => (typeof v === "string" ? v.toWellFormed() : v);
@@ -209,4 +215,5 @@ write("curator.json", curatorCases);
 write("titles.json", titleCases);
 write("buckets.json", bucketCases);
 write("attention.json", { payloads: attentionCases, latest: latestCases });
+write("branch-slug.json", { slugify: slugCases, validate: validateCases });
 console.log(`curator ${curatorCases.length}, titles ${titleCases.length}, buckets ${bucketCases.length}, attention ${attentionCases.length}+${latestCases.length}`);
