@@ -38,6 +38,8 @@ const en = {
   phone: "Phone",
   phoneDetail: "Calls, voice and transcripts",
   server: "Server health",
+  code: "Code",
+  codeDetail: "Coding sessions on this Mac",
   serverDetail: "Services, disks and alerts",
 };
 
@@ -79,6 +81,8 @@ export const plugins: FeatureDictionary<typeof en> = {
     phone: "Telefono",
     phoneDetail: "Chiamate, voce e trascrizioni",
     server: "Stato dei server",
+    code: "Codice",
+    codeDetail: "Sessioni di programmazione su questo Mac",
     serverDetail: "Servizi, dischi e avvisi",
   },
   da: {
@@ -117,6 +121,8 @@ export const plugins: FeatureDictionary<typeof en> = {
     phone: "Telefon",
     phoneDetail: "Opkald, stemme og transskriptioner",
     server: "Serverstatus",
+    code: "Kode",
+    codeDetail: "Kodesessioner på denne Mac",
     serverDetail: "Tjenester, diske og advarsler",
   },
 };

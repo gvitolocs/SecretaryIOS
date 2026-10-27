@@ -6,8 +6,11 @@ import { locale, t } from "../i18n";
 import { conversationKey, getState, readItems, setState, type Scope } from "../lib/chatdb";
 import { olderScope, syncScope, type Conversation } from "../lib/chatSync";
 import { chatDevice, fromItem, onTimelineConnected, onTimelineItem, setReplyTarget } from "../state/chat";
+import { ToolSteps } from "../components/ToolSteps";
+import { chatRows, isToolRun } from "../lib/toolSteps";
 import { MessageItem } from "./Chat";
 import "../styles/chats.css";
+import "../styles/tool-steps.css";
 
 // All chats (Plugins → All chats): every conversation Lucina has, across devices (this browser,
 // the iPhone, the Mac), MCP agents (ChatGPT, Claude, Grok Bot, Cursor, Codex) and bots
@@ -189,7 +192,9 @@ export default function ChatsView() {
                 </button>
               </Show>
               <fieldset disabled class="readonly-messages" aria-label={t("chat.conversation")}>
-                <For each={items()}>{(item) => <MessageItem readOnly message={fromItem(item)} />}</For>
+                <For each={chatRows(items().map(fromItem))}>
+                  {(row) => (isToolRun(row) ? <ToolSteps steps={row.steps} /> : <MessageItem readOnly message={row} />)}
+                </For>
               </fieldset>
             </div>
           </>

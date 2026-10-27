@@ -41,7 +41,10 @@ export interface ItemMeta {
   guildName?: string;
   channelName?: string;
   isDm?: boolean;
-  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive" | "share";
+  kind?: "reminder" | "avatar_outfit" | "note" | "notes" | "proactive" | "share" | "tool";
+  /** With kind "tool": the tool Lucina called for this step, and whether it succeeded. */
+  tool?: string;
+  ok?: boolean;
   /** With kind "avatar_outfit": what Lucina put on (neither: back to automatic). */
   outfit?: string;
   hair?: string;
@@ -186,6 +189,11 @@ function parseMeta(v: unknown): ItemMeta | undefined {
     if (typeof m.hair === "string" && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(m.hair)) out.hair = m.hair;
   }
   if (m.kind === "notes") out.kind = "notes";
+  if (m.kind === "tool") {
+    out.kind = "tool";
+    if (typeof m.tool === "string" && /^[A-Za-z][\w.-]{0,63}$/.test(m.tool)) out.tool = m.tool;
+    if (typeof m.ok === "boolean") out.ok = m.ok;
+  }
   const rich = parseRich(m);
   if (rich) out.rich = rich;
   if (m.kind === "proactive") {

@@ -143,6 +143,14 @@ export function BubbleIcon() {
   );
 }
 
+export function CodeIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8.5 7.5 4 12l4.5 4.5M15.5 7.5 20 12l-4.5 4.5M13.5 5l-3 14" />
+    </svg>
+  );
+}
+
 export function GamepadIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">

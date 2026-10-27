@@ -1,7 +1,8 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { BookIcon, CheckCircleIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon } from "../components/Icons";
+import { BookIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon } from "../components/Icons";
 import { t } from "../i18n";
+import { desktopShell } from "../lib/desktopShell";
 import { openWardrobe } from "../state/wardrobe";
 
 // The Plugins page (owner, 2026-10-24): every feature that is not Chat, Shopping or
@@ -26,7 +27,16 @@ export function inAndroidApp(): boolean {
 }
 
 export const PLUGINS: Plugin[] = [
-  { id: "chats", icon: ComputerIcon, title: () => t("chats.title"), detail: () => t("chats.detail"), href: "/chats" },
+  { id: "chats", icon: BubbleIcon, title: () => t("chats.title"), detail: () => t("chats.detail"), href: "/chats" },
+  {
+    id: "code",
+    icon: CodeIcon,
+    title: () => t("plugins.code"),
+    detail: () => t("plugins.codeDetail"),
+    // Secretary Code on the Mac shows its coding sessions over the web app (lib/desktopShell).
+    visible: () => !!desktopShell(),
+    run: () => desktopShell()?.showCode(),
+  },
   { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
   { id: "films", icon: FilmIcon, title: () => t("plugins.films"), detail: () => t("plugins.filmsDetail"), href: "/films" },

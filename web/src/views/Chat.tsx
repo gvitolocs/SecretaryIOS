@@ -38,6 +38,9 @@ import {
 } from "../lib/secrets";
 import { openSecretSheet } from "../state/secretSheet";
 import { AttachmentTray } from "../components/AttachmentTray";
+import { ToolSteps } from "../components/ToolSteps";
+import { chatRows, isToolRun, type ToolRun } from "../lib/toolSteps";
+import "../styles/tool-steps.css";
 import { Attachments } from "../components/ChatAttachments";
 import {
   filesFromClipboard,
@@ -584,6 +587,10 @@ export default function ChatView() {
     // Filter by the derived source while preserving the stored channel.
     return f === "all" ? chat.messages : chat.messages.filter((m) => matchesFilter(m, f));
   });
+  // A turn's tool calls fold into one line between the messages.
+  const toolRuns = new Map<string, ToolRun>();
+  const rows = createMemo(() => chatRows(visible(), toolRuns));
+  const position = createMemo(() => new Map(visible().map((m, i) => [m.key, i])));
   const filterLabel = () => {
     const key = SOURCE_FILTERS.find((f) => f.id === filter())?.label;
     return key ? t(key) : "";
@@ -1000,21 +1007,25 @@ export default function ChatView() {
         <Show when={chat.messages.length > 0 && visible().length === 0}>
           <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
         </Show>
-        <For each={visible()}>
-          {(m, i) => (
+        <For each={rows()}>
+          {(row) => (
             <>
-              <Show when={dayBreak(i())}>
+              <Show when={dayBreak(position().get(isToolRun(row) ? row.first : row.key) ?? -1)}>
                 {(label) => (
                   <div class="day-sep" role="separator" aria-label={label()}>
                     <span>{label()}</span>
                   </div>
                 )}
               </Show>
-              <MessageItem
-                message={m}
-                focused={!!focusOutreach() && focused()?.key === m.key}
-                inferredChoice={inferredChoices().get(m.key)}
-              />
+              {isToolRun(row) ? (
+                <ToolSteps steps={row.steps} />
+              ) : (
+                <MessageItem
+                  message={row}
+                  focused={!!focusOutreach() && focused()?.key === row.key}
+                  inferredChoice={inferredChoices().get(row.key)}
+                />
+              )}
             </>
           )}
         </For>
