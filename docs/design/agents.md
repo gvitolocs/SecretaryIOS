@@ -117,14 +117,55 @@ agent output (tests are a proxy; run the proof yourself; detect test tampering; 
 Result: `verified` (1 and 2 pass, 3 clean), `refused` (1 or 2 failed; refusals go back to the same session as a
 follow-up when the run asked for auto-fix), `suspicious`, or `unverified`.
 
+How agentd runs it (phase 3, `crates/lucina-agentd/src/manager/gate.rs`, verdict kernel `run_gate`, Verus V1-V5):
+
+- **Base:** when a turn starts in a git workspace, agentd records the commit it starts from. If the tree was already
+  dirty it uses `git stash create`, so earlier edits count as part of the base. The gate runs when a turn completes
+  and the workspace differs from that base: tracked edits, or new untracked files. A turn that changes nothing, or a
+  run outside git, gets no gate.
+- **Proof:** the run's own `verify`, from `lagent run --verify` or `POST /agents` `verify`. Otherwise the workspace's
+  `.lucina/agents.toml` `verify`, read **from the base commit**, so a run can't weaken its own proof. A run that edits
+  that file is `tampered`, and the verdict is `suspicious`. `heavy` (or `--heavy`) runs the proof through
+  `verify-gate`.
+- **Judge:** the Claude CLI with Claude Haiku 5.5, no tools and no MCP servers, in a temp dir. It reads the task, the
+  run's activity and the diff (up to 40,000 characters). `LUCINA_AGENTD_JUDGE` replaces it with any command that
+  prints `{"suspicious": bool, "reasons": []}`, or turns it `off`. It doesn't run once a check has failed, and a judge
+  that can't answer is `skipped` and never blocks a run.
+- **Auto-fix:** `--auto-fix N` (at most 5) sends the refusals back to the same session as a follow-up. The next gate
+  covers everything since the original base.
+- **Where it shows:** the result is on the agent as `gate`: verdict, each check, the details, the proof command, the
+  base, the round. A timeline note says the same. `lagent wait --gate` and `lagent run --gate` wait for it.
+
 ### Permissions
 
-A provider's permission request becomes a `PermissionRequest {id, agent, tool, summary, args, expires_at}`.
-secretary-server pushes it (`kind = agent.permission`, with Allow and Deny actions) to the owner's devices.
-It can be answered from the web app, Secretary Code, iOS, Android, or `lagent permit` on nezopt.
-It cannot be answered through MCP: an outside agent never approves for the owner (the same rule as Lucina's
-confirmation gate, C2). An answer counts once, and only before the request expires. An unanswered request is denied
-when it expires.
+A provider's permission request keeps Paseo's shape in the agent's `pendingPermissions`, and agentd also files it
+in its permission book with an expiry (`LUCINA_AGENTD_PERMISSION_TTL_SECS`, default 1 h). Every answer and expiry goes
+through the `permission_gate` kernel (Verus G1-G7):
+
+- **Who answers:** the owner only. That is `lagent permit` on nezopt, or one of the owner's devices through
+  secretary-server, which sets `X-Lucina-Origin: device:<id>`. It can be answered from the web app, Secretary Code,
+  iOS or Android.
+- **Who never answers:** an MCP token (`X-Lucina-Origin: mcp…`), a loopback TCP caller, and any process an agent
+  started. agentd reads the caller's pid from the socket and refuses it when a provider pid is among its ancestors,
+  or is its process group or session. This is best-effort while agents share the owner's uid; the agents uid closes
+  it (Security requirement 6). It is the same rule as Lucina's confirmation gate, C2.
+- **When:** an answer counts once, and only before the request expires. An unanswered request is denied when it
+  expires, with a timeline note.
+- **Tool policy:** an agent's `toolPolicy.preapproved` grants (exact `{kind: "mcp", server, tool}`) are allowed at
+  once and never shown as pending. A grant can only allow an agent request, never an external one.
+- **Pushes:** secretary-server pushes `agent` notifications (`data: {kind, agentId, reason, requestId, actions}`,
+  with Allow and Deny actions) to the owner's devices. While an app is in front it keeps them in the inbox instead
+  (Paseo's rule).
+
+**External requests** (the Infisical broker asking before it hands out a secret) use the same gate:
+
+- `POST /permissions {kind: "external", source, title, description, details, expiresInSec}` creates one (10 to
+  3600 s, default 300). An MCP or agent caller gets 403.
+- `GET /permissions/{id}?waitMs=` long-polls until it is answered or expires. The stream also carries `permission`
+  events.
+- `POST /permissions/{id} {behavior, message}` answers it, as does `lagent permit allow|deny ext_…`.
+- They are not stored: after a daemon restart the caller gets 404 and treats that as denied.
+- secretary-server exposes them in phase 7, with a broker service token that has the `permissions.request` scope.
 
 ### Workspaces and worktrees
 
