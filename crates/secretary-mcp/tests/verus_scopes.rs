@@ -20,6 +20,7 @@ mod kernel {
     pub const READ: u8 = 1;
     pub const CHAT: u8 = 2;
     pub const WRITE: u8 = 4;
+    pub const COMPUTER: u8 = 8;
 
     pub fn bit_exec(name: u8) -> u8 {
         if name == 1 {
@@ -28,6 +29,8 @@ mod kernel {
             CHAT
         } else if name == 3 {
             WRITE
+        } else if name == 4 {
+            COMPUTER
         } else {
             0
         }
@@ -42,7 +45,7 @@ mod kernel {
     }
 
     pub fn parse_list(names: &[u8]) -> Option<u8> {
-        if names.iter().any(|&n| !(1..=3).contains(&n)) {
+        if names.iter().any(|&n| !(1..=4).contains(&n)) {
             return None;
         }
         Some(parse_lenient(names))
@@ -71,6 +74,7 @@ const NAMES: &[(&str, u8)] = &[
     ("read", 1),
     ("chat", 2),
     ("write", 3),
+    ("computer", 4),
     ("admin", 0),
     ("openid", 0),
     ("offline_access", 0),
@@ -84,13 +88,14 @@ fn mask(s: &Scopes) -> u8 {
             Scope::Read => 1,
             Scope::Chat => 2,
             Scope::Write => 4,
+            Scope::Computer => 8,
         })
         .fold(0, |a, b| a | b)
 }
 
 fn from_mask(m: u8) -> Scopes {
     Scopes::of(
-        [(1, Scope::Read), (2, Scope::Chat), (4, Scope::Write)]
+        [(1, Scope::Read), (2, Scope::Chat), (4, Scope::Write), (8, Scope::Computer)]
             .into_iter()
             .filter(|(b, _)| m & b != 0)
             .map(|(_, s)| s),
@@ -145,8 +150,8 @@ fn scope_parsing_agrees_with_the_kernel() {
 
 #[test]
 fn scope_algebra_agrees_with_the_kernel() {
-    for a in 0..8u8 {
-        for b in 0..8u8 {
+    for a in 0..16u8 {
+        for b in 0..16u8 {
             let (sa, sb) = (from_mask(a), from_mask(b));
             assert_eq!(mask(&sa.intersect(&sb)), kernel::intersect(a, b));
             assert_eq!(sa.is_subset_of(&sb), kernel::is_subset_of(a, b), "{a} {b}");

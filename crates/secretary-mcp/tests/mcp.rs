@@ -236,7 +236,7 @@ async fn unauthenticated_requests_get_the_oauth_challenge() {
         www.contains("resource_metadata=\"https://getsecretary.tech/.well-known/oauth-protected-resource/mcp\""),
         "{www}"
     );
-    assert!(www.contains("scope=\"read chat write\""));
+    assert!(www.contains("scope=\"read chat write computer\""), "{www}");
     let (status, headers, _) = h
         .rpc_raw(Some("mcp_not_a_real_token"), "tools/list", json!({}))
         .await;
@@ -1093,4 +1093,54 @@ async fn library_tools_refs_scopes_and_backend_calls() {
     ] {
         assert!(h.call(&read, name, args).await.0);
     }
+}
+
+#[tokio::test]
+async fn computer_tools_need_the_computer_scope() {
+    let h = start().await;
+    let full = h.issue("grok", "read,chat,write");
+    let names = h.tool_names(&full).await;
+    assert!(
+        !names.iter().any(|n| n.starts_with("computer_") || n.starts_with("android_")),
+        "{names:?}"
+    );
+    let (err, text) = h.call(&full, "computer_bash", json!({"command": "id"})).await;
+    assert!(err && text.contains("`computer` scope"), "{text}");
+    assert!(h.mock.requests("/v1/computer/call").is_empty());
+
+    let owner = h.issue("claude", "read,computer");
+    let r = h.rpc(&owner, "tools/list", json!({})).await;
+    let tools: Vec<&Value> = r["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["name"].as_str().unwrap().contains("computer_") || t["name"].as_str().unwrap().starts_with("android_"))
+        .collect();
+    assert_eq!(tools.len(), 11);
+    for t in &tools {
+        assert_eq!(t["annotations"]["destructiveHint"], false, "{t}");
+    }
+
+    let r = h
+        .rpc(&owner, "tools/call", json!({"name": "computer_screenshot", "arguments": {}}))
+        .await;
+    assert_eq!(r["content"][0]["type"], "image");
+    assert_eq!(r["content"][0]["mimeType"], "image/png");
+    assert!(r["content"][1]["text"].as_str().unwrap().contains("window_id"));
+
+    let (err, text) = h.call(&owner, "computer_bash", json!({"command": "echo hi"})).await;
+    assert!(!err && text == "hi\n", "{text}");
+    let sent = h.mock.requests("/v1/computer/call");
+    assert_eq!(sent.last().unwrap().body["sandbox"], "workspace");
+    assert_eq!(sent.last().unwrap().headers["x-secretary-caller"], "mcp:claude");
+
+    let (err, text) = h.call(&owner, "android_bash", json!({"command": "id"})).await;
+    assert!(err && text.contains("driving"), "{text}");
+
+    let (err, text) = h
+        .call(&owner, "computer_task", json!({"task": "open example.com", "wait_seconds": 10}))
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("completed in 12 s") && text.ends_with("Example Domain."), "{text}");
+    assert_eq!(h.mock.requests("/v1/computer/task")[0].body["task"], "open example.com");
 }

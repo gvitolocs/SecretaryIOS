@@ -100,6 +100,23 @@ async fn handle(
     let mut st = m.state.lock().unwrap();
     let seg: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (method.as_str(), seg.as_slice()) {
+        // Lucina's computer (crate::computer): a job that finishes on the first poll.
+        ("POST", ["v1", "computer", "task"]) if device_ok(&headers) => (
+            StatusCode::ACCEPTED,
+            Json(json!({"jobId": "job0123abc", "status": "running", "elapsedMs": 0})),
+        )
+            .into_response(),
+        ("GET", ["v1", "computer", "task", "job0123abc"]) if device_ok(&headers) => Json(json!({
+            "jobId": "job0123abc", "status": "done", "elapsedMs": 12000,
+            "result": {"status": "completed", "reply": "The title is Example Domain.", "executedTools": ["terminal"]},
+        }))
+        .into_response(),
+        ("POST", ["v1", "computer", "call"]) if device_ok(&headers) => match body["op"].as_str() {
+            Some("screenshot") => Json(json!({"text": "Visible windows: pid=1 window_id=2", "image": {"mimeType": "image/png", "data": "iVBORw0KGgo="}})).into_response(),
+            Some("bash") if body["sandbox"] == "android" => err(StatusCode::CONFLICT, "owner_driving"),
+            Some("bash") => Json(json!({"text": "hi\n", "image": null})).into_response(),
+            _ => Json(json!({"text": "ok", "image": null})).into_response(),
+        },
         ("GET", ["v1", "health"]) => {
             Json(json!({"ok": true, "version": "0.1.0", "lucina": {"reachable": true, "latencyMs": 12, "apiVersion": 1}}))
                 .into_response()

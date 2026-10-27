@@ -12,22 +12,27 @@ use serde::{Deserialize, Serialize};
 ///   her own confirmation flow).
 /// - `write`: add to / tick off the shopping list, create / cancel reminders,
 ///   save and append to notes, generate extractive library briefs.
+/// - `computer`: drive Lucina's own sandboxed computers (her Linux desktop and
+///   Android sandbox): tasks, commands, clicks, screenshots. Owner tokens only:
+///   it is granted on the consent page or with `add-scope`, never implied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     Read,
     Chat,
     Write,
+    Computer,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 3] = [Scope::Read, Scope::Chat, Scope::Write];
+    pub const ALL: [Scope; 4] = [Scope::Read, Scope::Chat, Scope::Write, Scope::Computer];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::Read => "read",
             Scope::Chat => "chat",
             Scope::Write => "write",
+            Scope::Computer => "computer",
         }
     }
 
@@ -36,6 +41,7 @@ impl Scope {
             "read" => Some(Scope::Read),
             "chat" => Some(Scope::Chat),
             "write" => Some(Scope::Write),
+            "computer" => Some(Scope::Computer),
             _ => None,
         }
     }
@@ -46,6 +52,7 @@ impl Scope {
                 "Read your timeline, shopping list, reminders, calendar, tasks, notes, library and gym/body summaries"
             }
             Scope::Chat => "Talk to Lucina (she may act through her own confirmation flow)",
+            Scope::Computer => "Use Lucina's own sandboxed computers (her Linux desktop and Android sandbox): run tasks and commands, click and type, take screenshots",
             Scope::Write => "Add to / tick off the shopping list, create and cancel reminders, propose calendar events (you confirm them in the app), save notes, generate library briefs, add and complete tasks",
         }
     }

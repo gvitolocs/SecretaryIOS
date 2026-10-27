@@ -17,6 +17,7 @@
 pub mod auth;
 pub mod backend;
 pub mod cli;
+pub mod computer;
 pub mod config;
 pub mod diagnostics;
 pub mod format;
