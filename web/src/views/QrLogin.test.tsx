@@ -14,7 +14,7 @@ function server(opts: { poll?: () => Poll; expiresIn?: number } = {}) {
   const calls = stubFetch((c: Call) => {
     if (c.method === "POST" && c.url === "/v1/session/qr") {
       n += 1;
-      return { body: { code: `code${n}`, pollToken: `tok${n}`, approveUrl: `https://x/approve?c=code${n}`, expiresIn: opts.expiresIn ?? 120 } };
+      return { body: { code: `code${n}`, shortCode: `48291${n}`, pollToken: `tok${n}`, approveUrl: `https://x/approve?c=code${n}`, expiresIn: opts.expiresIn ?? 120 } };
     }
     if (c.url.startsWith("/v1/session/qr/poll")) {
       const status = opts.poll?.() ?? "pending";
@@ -69,6 +69,8 @@ describe("QR sign-in", () => {
     expect(await image()).toHaveAttribute("src", "/v1/session/qr/image?c=code1");
     expect(screen.getByText("Scan with your phone to sign in")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByText("Or type 482 911 there instead of scanning.")).toBeInTheDocument();
+    expect(screen.getByText(/Account → Scan QR code/)).toBeInTheDocument();
   });
 
   it("polls every 2 s and opens the app once the phone approves", async () => {
@@ -175,6 +177,10 @@ describe("QR sign-in", () => {
       render(() => <Login />);
       expect(screen.queryByText("Scan with your phone to sign in")).toBeNull();
       expect(s.calls).toHaveLength(0);
+      // The phone's browser is not signed in: point to the app's scanner.
+      expect(screen.getByRole("note")).toHaveTextContent("Approve from the Secretary app");
+      expect(screen.getByRole("note")).toHaveTextContent("Account → Scan QR code");
+      expect(screen.getByLabelText("Password")).toBeInTheDocument();
     } finally {
       window.history.replaceState(null, "", "/");
     }

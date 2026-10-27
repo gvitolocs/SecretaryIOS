@@ -574,3 +574,14 @@ export function RouteModeIcon(props: { mode: "transit" | "walk" | "bike" | "driv
   };
   return <svg class="icon" viewBox={props.mode === "bike" ? "-2 0 29 24" : "0 0 24 24"} aria-hidden="true"><path d={paths[props.mode]} /></svg>;
 }
+
+export function QrIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="6" height="6" rx="1" />
+      <rect x="14" y="4" width="6" height="6" rx="1" />
+      <rect x="4" y="14" width="6" height="6" rx="1" />
+      <path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2" />
+    </svg>
+  );
+}

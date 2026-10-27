@@ -21,6 +21,12 @@ describe("Plugins", () => {
     }
   });
 
+  it("has a Scan QR code card that opens /scan", () => {
+    expect(PLUGINS.find((p) => p.id === "scan")?.href).toBe("/scan");
+    renderPlugins();
+    expect(screen.getByRole("button", { name: /Scan QR code/ })).toHaveAttribute("data-plugin", "scan");
+  });
+
   it("has a Server health card that opens /server-health", () => {
     const server = PLUGINS.find((p) => p.id === "server");
     expect(server?.href).toBe("/server-health");

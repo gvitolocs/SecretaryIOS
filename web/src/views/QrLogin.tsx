@@ -1,4 +1,4 @@
-import { createSignal, Match, onCleanup, onMount, Switch } from "solid-js";
+import { createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { t } from "../i18n";
@@ -15,7 +15,7 @@ export const MAX_CODES = 5;
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "ready"; code: string; pollToken: string; expiresAt: number }
+  | { kind: "ready"; code: string; shortCode?: string; pollToken: string; expiresAt: number }
   | { kind: "approved" }
   | { kind: "denied" }
   | { kind: "paused" }
@@ -41,7 +41,7 @@ export default function QrLogin() {
     try {
       const r = await api.qrStart();
       if (disposed) return;
-      setPhase({ kind: "ready", code: r.code, pollToken: r.pollToken, expiresAt: Date.now() + r.expiresIn * 1000 });
+      setPhase({ kind: "ready", code: r.code, shortCode: r.shortCode, pollToken: r.pollToken, expiresAt: Date.now() + r.expiresIn * 1000 });
     } catch (e) {
       if (disposed) return;
       const err = toApiError(e);
@@ -147,6 +147,13 @@ export default function QrLogin() {
         {t("login.qrScan")}
       </h2>
       <p class="login-qr-hint">{t("login.qrHint")}</p>
+      <Show when={ready()?.shortCode}>
+        {(code) => (
+          <p class="login-qr-hint login-qr-short">
+            {t("login.qrTypeInstead", { code: `${code().slice(0, 3)} ${code().slice(3)}` })}
+          </p>
+        )}
+      </Show>
     </section>
   );
 }

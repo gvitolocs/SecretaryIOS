@@ -33,6 +33,7 @@ const ComputerView = lazy(() => import("./views/Computer"));
 const MediaView = lazy(() => import("./views/Media"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
 const ApproveView = lazy(() => import("./views/Approve"));
+const ScanQrView = lazy(() => import("./views/ScanQr"));
 
 // The service worker (Web Push, static asset cache). It never caches /v1.
 void registerServiceWorker();
@@ -76,6 +77,7 @@ render(
       <Route path="/media" component={MediaView} />
       <Route path="/server-health" component={ServerHealthView} />
       <Route path="/approve" component={ApproveView} />
+      <Route path="/scan" component={ScanQrView} />
       <Route path="*" component={() => <Navigate href="/" />} />
     </Router>
   ),

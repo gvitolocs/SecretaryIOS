@@ -9,6 +9,8 @@ export interface SessionInfo {
 /** `POST /v1/session/qr`: a QR sign-in request (signed-out browser). */
 export interface QrStart {
   code: string;
+  /** Six digits to type in a signed-in app instead of scanning (newer servers). */
+  shortCode?: string;
   pollToken: string;
   approveUrl: string;
   expiresIn: number;
