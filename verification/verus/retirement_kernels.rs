@@ -1,7 +1,7 @@
 // Protocol 15 (Node retirement) pure kernels: the Telegram delivery outcome, the reminder
 // status rule, the Telegram poller lease decision and the update claim. docs/verification.md §15.
 //
-// Production (branch node-retire: 3c22447; claim.rs and poller.rs from f26eb90). Every exec function below mirrors the code with the
+// Production (branch lucina-rs, merged from node-retire: 3c22447; claim.rs and poller.rs from f26eb90, 5c87ae0). Every exec function below mirrors the code with the
 // same rules in the same branch order:
 //   classify             <-> crates/lucina-telegram/src/outcome.rs `classify`
 //   transport inputs     <-> crates/lucina-telegram/src/lib.rs `BotApi::call` / `transport_error`
@@ -16,8 +16,8 @@
 //                            Lucina/src/gateway-lock.js `isRecordLive`, `isOwnPreviousRun` and the
 //                            check in `acquireGatewayLock`
 //   should_handle, claim, should_handle_opt, claim_opt, next_offset
-//                        <-> crates/lucina-telegram/src/claim.rs (branch node-retire, f26eb90)
-//   plan_batch           <-> crates/lucina-telegram/src/poller.rs `plan_batch`
+//                        <-> crates/lucina-telegram/src/claim.rs (branch lucina-rs, f26eb90)
+//   plan_batch, poll_offset <-> crates/lucina-telegram/src/poller.rs `plan_batch`, `Poller::poll` (5c87ae0)
 //
 // Abstractions: strings are u64 ids, 0 = the empty string (the code only compares them for
 // equality and emptiness); `heartbeat_at` is Option<i64> milliseconds (None = not RFC 3339);
@@ -45,7 +45,8 @@
 //   L3 Rust (instance lucina-rs) and Node (lucina-nez, another pid namespace) defer to each
 //      other's live record.
 //   U1 claims are monotone; a claimed id is never handled again; next_offset(c) = c + 1, so the
-//      request after a claim confirms exactly the claimed ids (NR4: also the first one after a start).
+//      request after a claim confirms exactly the claimed ids; poll_offset sends 0 on the first
+//      poll after a lease acquisition (NR4, fixed in 5c87ae0), so nothing claimed is confirmed unseen.
 //   U3 plan_batch hands out only ids above the old claim, each at most the new claim, strictly
 //      increasing, and counts every update of the batch once.
 //   U2 at most one handling of an update id over any history of re-deliveries and crashes in
@@ -470,7 +471,8 @@ pub fn claim_opt(update_id: u64, claimed: Option<u64>) -> (r: u64)
 
 /// claim.rs `next_offset`: `c.saturating_add(1)` as i64, `i64::MAX` when it does not fit.
 /// The request confirms exactly the ids up to the claim (for any claim below i64::MAX).
-/// NR4: poller.rs sends this offset on the first `getUpdates` after a start too.
+/// poller.rs sends it on every `getUpdates` except the first after a lease acquisition
+/// (`poll_offset`; NR4, fixed in 5c87ae0).
 pub fn next_offset(claimed: Option<u64>) -> (r: i64)
     ensures
         claimed is None ==> r == 0,
@@ -485,6 +487,18 @@ pub fn next_offset(claimed: Option<u64>) -> (r: i64)
             if n <= i64::MAX as u64 { n as i64 } else { i64::MAX }
         }
     }
+}
+
+/// poller.rs `Poller::poll` since 5c87ae0: the first poll after the lease is taken sends no
+/// offset, so Telegram re-delivers what is unconfirmed and `plan_batch` skips the claimed ids
+/// (logged); later polls confirm up to the claim.
+pub fn poll_offset(first_poll: bool, claimed: Option<u64>) -> (r: i64)
+    ensures
+        first_poll ==> r == 0,
+        !first_poll && claimed is Some && claimed->Some_0 < i64::MAX as u64 ==> r as int == claimed->Some_0 as int + 1,
+        !first_poll && claimed is None ==> r == 0,
+{
+    if first_poll { 0 } else { next_offset(claimed) }
 }
 
 /// poller.rs `plan_batch` over the batch's `update_id`s (None = an update without one): the
@@ -597,6 +611,10 @@ fn witnesses() {
     assert(!again);
     let o = next_offset(Some(k));
     assert(o == 8);
+    let p0 = poll_offset(true, Some(k));
+    assert(p0 == 0);
+    let p1 = poll_offset(false, Some(k));
+    assert(p1 == 8);
     let mut batch: Vec<Option<u64>> = Vec::new();
     batch.push(Some(5));
     batch.push(None);

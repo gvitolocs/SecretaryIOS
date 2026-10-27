@@ -2,15 +2,15 @@
 // Discord session, reminder scheduler, app notifications) has been down for `after_ms`, and
 // one more when it recovers. docs/verification.md §15.
 //
-// Production (branch node-retire, f26eb90):
+// Production (branch lucina-rs, f26eb90; saturating subtraction since 5c87ae0):
 //   step <-> crates/lucina-server/src/delivery_monitor.rs `step` (same rules, same order);
 //            `Monitor::check` calls it once a minute per path and persists the states, so a
 //            restart keeps `down_since` / `alerted` and only renews the start-up grace.
 //
 // Abstractions: `PathState::detail` is not modelled (step always returns it empty; `check`
-// fills it after). Times are epoch milliseconds, assumed non-negative (`requires`): with a
-// corrupt state file holding a `downSince` near i64::MIN, `now_ms - since` overflows (release
-// builds wrap, so `due` stays false and that outage is never alerted).
+// fills it after). Times are any i64: `now_ms.saturating_sub(..)` is mirrored by `sat_sub`
+// (before 5c87ae0 a corrupt `downSince` near i64::MIN could wrap in release builds and keep that
+// outage from ever being alerted; there is no precondition on the times now).
 //
 // Proven:
 //   M1 up: the state resets; Recovered exactly when the outage was alerted.
@@ -39,6 +39,19 @@ pub open spec fn clear() -> PathState {
     PathState { down_since: None, alerted: false }
 }
 
+pub open spec fn sat_spec(a: i64, b: i64) -> int {
+    let d = a as int - b as int;
+    if d > i64::MAX as int { i64::MAX as int } else if d < i64::MIN as int { i64::MIN as int } else { d }
+}
+
+/// `i64::saturating_sub`.
+pub fn sat_sub(a: i64, b: i64) -> (r: i64)
+    ensures r as int == sat_spec(a, b),
+{
+    let d: i128 = (a as i128) - (b as i128);
+    if d > i64::MAX as i128 { i64::MAX } else if d < i64::MIN as i128 { i64::MIN } else { d as i64 }
+}
+
 pub open spec fn since_spec(prev: PathState, now_ms: i64) -> i64 {
     match prev.down_since {
         None => now_ms,
@@ -53,7 +66,7 @@ pub open spec fn step_spec(prev: PathState, up: bool, now_ms: i64, started_ms: i
         (clear(), if prev.alerted { Some(Alert::Recovered) } else { None })
     } else {
         let since = since_spec(prev, now_ms);
-        let due = now_ms - since >= after_ms && now_ms - started_ms >= after_ms;
+        let due = sat_spec(now_ms, since) >= after_ms as int && sat_spec(now_ms, started_ms) >= after_ms as int;
         if !prev.alerted && due {
             (PathState { down_since: Some(since), alerted: true }, Some(Alert::Down))
         } else {
@@ -62,15 +75,8 @@ pub open spec fn step_spec(prev: PathState, up: bool, now_ms: i64, started_ms: i
     }
 }
 
-pub open spec fn times_ok(prev: PathState, now_ms: i64, started_ms: i64) -> bool {
-    &&& 0 <= now_ms
-    &&& 0 <= started_ms
-    &&& prev.down_since is Some ==> 0 <= prev.down_since->Some_0
-}
-
 /// delivery_monitor.rs `step`.
 pub fn step(prev: &PathState, up: bool, now_ms: i64, started_ms: i64, after_ms: i64) -> (r: (PathState, Option<Alert>))
-    requires times_ok(*prev, now_ms, started_ms),
     ensures
         r == step_spec(*prev, up, now_ms, started_ms, after_ms),
         // M1
@@ -78,7 +84,7 @@ pub fn step(prev: &PathState, up: bool, now_ms: i64, started_ms: i64, after_ms: 
         // M2
         !up ==> r.1 != Some(Alert::Recovered),
         r.1 == Some(Alert::Down) ==> !prev.alerted && r.0.alerted
-            && now_ms - r.0.down_since->Some_0 >= after_ms && now_ms - started_ms >= after_ms,
+            && sat_spec(now_ms, r.0.down_since->Some_0) >= after_ms as int && sat_spec(now_ms, started_ms) >= after_ms as int,
         !up ==> r.0.down_since is Some && r.0.down_since->Some_0 <= now_ms
             && (prev.down_since is Some ==> r.0.down_since->Some_0 <= prev.down_since->Some_0),
         !up && prev.alerted ==> r.0.alerted && r.1 is None,
@@ -91,7 +97,7 @@ pub fn step(prev: &PathState, up: bool, now_ms: i64, started_ms: i64, after_ms: 
         Some(s) => if s < now_ms { s } else { now_ms },
         None => now_ms,
     };
-    let due = now_ms - since >= after_ms && now_ms - started_ms >= after_ms;
+    let due = sat_sub(now_ms, since) >= after_ms && sat_sub(now_ms, started_ms) >= after_ms;
     if !prev.alerted && due {
         (PathState { down_since: Some(since), alerted: true }, Some(Alert::Down))
     } else {
@@ -152,12 +158,11 @@ proof fn recovered_once(s: PathState, now1: i64, now2: i64, started_ms: i64, aft
 /// M5: a down check late enough for an outage not yet alerted sends Down.
 proof fn no_missed_alert(s: PathState, now_ms: i64, started_ms: i64, after_ms: i64)
     requires
-        times_ok(s, now_ms, started_ms),
         !s.alerted,
         s.down_since is Some,
         s.down_since->Some_0 <= now_ms,
-        now_ms - s.down_since->Some_0 >= after_ms,
-        now_ms - started_ms >= after_ms,
+        sat_spec(now_ms, s.down_since->Some_0) >= after_ms as int,
+        sat_spec(now_ms, started_ms) >= after_ms as int,
     ensures step_spec(s, false, now_ms, started_ms, after_ms).1 == Some(Alert::Down),
 {}
 

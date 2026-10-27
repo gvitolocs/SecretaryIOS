@@ -1,15 +1,16 @@
 //! Protocol 15: Node retirement. Rust owns Telegram, Discord and reminders, one capability
 //! at a time, with no Node code change (docs/verification.md §15).
 //!
-//! Code (branch `node-retire`, 3c22447): `crates/lucina-store/src/reminders.rs::process_due`
+//! Code (branch `lucina-rs`, merged from `node-retire`; 3c22447): `crates/lucina-store/src/reminders.rs::process_due`
 //! (+ `fail_stale_claims`, `status_at_tick_start`), `crates/lucina-telegram/src/outcome.rs::classify`,
 //! `lib.rs::BotApi::{call, transport_error, send_text}`, `lucina-server/src/reminder_delivery.rs`,
 //! `crates/lucina-telegram/src/{lease,lease_decision}.rs`. Node: `Lucina/src/gateway-lock.js`,
 //! `src/index.js::launchManagedTelegramPolling` + `shutdown`, telegraf 4.16.3 `Polling`.
-//! Update poller: `claim.rs` + `poller.rs` (f26eb90): the batch's claim is written before any
-//! handler, `should_handle = id > claimed`, `claim = max`, and every `getUpdates` (also the
-//! first after a start) sends `next_offset(claimed) = claimed + 1`. Not written yet, modeled
-//! from the design: the Discord `discord-<appid>.flock` and the handover scripts.
+//! Update poller: `claim.rs` + `poller.rs` (f26eb90, NR4 fixed in 5c87ae0): the batch's claim is
+//! written before any handler, `should_handle = id > claimed`, `claim = max`; the first
+//! `getUpdates` after each lease acquisition sends no offset, later ones `claimed + 1`. Not written yet, modeled
+//! from the design: the Discord `discord-<appid>.flock` (it landed later in `lucina-discord/src/lease.rs`,
+//! 290b946, as designed) and the handover steps (performed by hand on 2026-10-27).
 //!
 //! Durable state (files, Telegram's queue) survives a watchdog crash; volatile work and flocks
 //! do not. Every model allows one Rust crash at any step. Completion checks use a drained
@@ -818,10 +819,10 @@ impl Model for Telegram {
 pub struct Updates {
     /// Rust persists the highest claimed update_id before handling (false: offset only).
     pub durable: bool,
-    /// The first getUpdates after a start sends `offset = claimed + 1` (NR4; the code:
-    /// poller.rs uses `claim::next_offset` on every request). False (proposed fix): the first
-    /// request sends no offset, so Telegram re-delivers unconfirmed updates and the
-    /// already-claimed ones are skipped with a log line (`skippedReplayed`).
+    /// Witness (the code before 5c87ae0, NR4): the first getUpdates after a start sends
+    /// `offset = claimed + 1`. False (the code since 5c87ae0): the first request after each
+    /// lease acquisition sends no offset, so Telegram re-delivers unconfirmed updates and the
+    /// already-claimed ones are skipped with a warning and `skippedReplayed`.
     pub start_from_claim: bool,
     /// Node is stopped only while its Telegram handlers are idle (long-polling).
     pub node_idle_stop: bool,
@@ -1316,11 +1317,11 @@ pub fn cases(_: bool) -> Vec<Case> {
             },
         ),
         u(
-            "R4 claim-before-handle + no-offset restart (fix)",
+            "R4 code: claim first, no-offset restart (5c87ae0)",
             fixed_up.clone(),
         ),
         u(
-            "R4 code: first getUpdates at claimed+1 (NR4)",
+            "R4 witness: restart at claimed+1 (NR4, pre-5c87ae0)",
             Updates {
                 start_from_claim: true,
                 ..fixed_up.clone()
