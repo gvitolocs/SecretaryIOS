@@ -279,12 +279,17 @@ struct SourceBadge: View {
     }
 }
 
-private struct MessageRow: View {
+struct MessageRow: View {
     @Environment(ChatStore.self) private var store
     let item: TimelineItem
     let job: ChatJob?
+    var readOnly = false
 
     var body: some View {
+        content.disabled(readOnly).allowsHitTesting(!readOnly)
+    }
+
+    @ViewBuilder private var content: some View {
         if item.meta?.isReminder == true {
             ReminderCard(item: item)
         } else if item.role == .lucina, let meta = item.meta, meta.isProactive {

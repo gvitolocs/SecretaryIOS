@@ -28,30 +28,40 @@ actor ChatDatabase {
     }
     let url: URL
     private let cap: Int
+    /// Opened on first use and kept for the actor's lifetime (the schema runs once).
+    private var handle: OpaquePointer?
 
     init(url: URL = ChatDatabase.defaultURL, cap: Int = 5000) {
         self.url = url
         self.cap = cap
     }
 
+    deinit {
+        if let handle { sqlite3_close(handle) }
+    }
+
     private func connection<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
+        if let handle { return try body(handle) }
+        let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
         let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-            attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
-        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], atPath: directory.path)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: protection)
         var pointer: OpaquePointer?
         guard sqlite3_open(url.path, &pointer) == SQLITE_OK, let db = pointer else {
             if let pointer { sqlite3_close(pointer) }
             throw Failure(message: "Cannot open chat database")
         }
-        defer { sqlite3_close(db) }
-        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], atPath: url.path)
-        sqlite3_busy_timeout(db, 3000)
-        try execute(db, "PRAGMA journal_mode=WAL")
-        try execute(db, "CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, conv TEXT NOT NULL, json BLOB NOT NULL)")
-        try execute(db, "CREATE INDEX IF NOT EXISTS items_conv_id ON items(conv,id)")
-        try execute(db, "CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT)")
-        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], atPath: url.path)
+        do {
+            try? FileManager.default.setAttributes(protection, ofItemAtPath: url.path)
+            sqlite3_busy_timeout(db, 3000)
+            try execute(db, "PRAGMA journal_mode=WAL")
+            try execute(db, "CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, conv TEXT NOT NULL, json BLOB NOT NULL)")
+            try execute(db, "CREATE INDEX IF NOT EXISTS items_conv_id ON items(conv,id)")
+            try execute(db, "CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY,value TEXT)")
+        } catch {
+            sqlite3_close(db)
+            throw error
+        }
+        handle = db
         return try body(db)
     }
 
@@ -133,6 +143,16 @@ actor ChatDatabase {
                 throw error
             }
         }
+    }
+
+    func cachedConversations() throws -> [ChatConversation] {
+        guard let text = try value("conversations") else { return [] }
+        return try JSONDecoder().decode([ChatConversation].self, from: Data(text.utf8))
+    }
+
+    func saveConversations(_ conversations: [ChatConversation]) throws {
+        let data = try JSONEncoder().encode(conversations)
+        try write([], state: ["conversations": String(decoding: data, as: UTF8.self)])
     }
 
     func clear() throws {

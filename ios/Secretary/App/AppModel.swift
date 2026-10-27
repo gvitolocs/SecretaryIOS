@@ -69,6 +69,7 @@ final class AppModel {
     var showPokemon = false
     /// Lucina's computer (her desktop and Android sandbox, live; takeover), a plugin.
     var showComputer = false
+    var showAllChats = false
     /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
     var showQuickWeight = false
     /// The Shopping tab's add field (Add to shopping control, widget "+").
