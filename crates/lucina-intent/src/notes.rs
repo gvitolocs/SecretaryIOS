@@ -33,6 +33,9 @@ const NAME_STOP: &[&str] = &[
     "tu", "noi", "lui", "lei", "mi", "ti", "ci", "mia", "mio", "tua", "tuo", "jeg", "du", "vi",
     "han", "hun", "de", "det", "som", "min", "mit", "din", "dit",
 ];
+/// Google-Keep-style vocabulary: labels, the archive, checklists and ticking items, colours.
+/// Such a request needs the `notes` tool's filters and `update`, not the plain list/read shortcut.
+const KEEP_WORDS: &str = r"labell?ed|labels?|archived?|archives?|archivi(?:a|ata|ate|o)|check(?:ed)?[\s-]+off|tick(?:ed)?[\s-]+off|cross(?:ed)?[\s-]+off|un-?check(?:ed)?|check-?lists?|etichett[ae]|spunt(?:a|are|ato|ati|ata|ate)|colou?rs?|colou?red|colore|colori|mærke(?:r|t|rne)?|arkiv(?:er|eret|et)?|afkryds(?:e|et)?|farve(?:r|t|n)?";
 const SAVE_VERBS: [(&str, &str); 3] = [
     (
         "it",
@@ -54,6 +57,7 @@ struct Patterns {
     read: Vec<(&'static str, Re)>,
     list: Vec<(&'static str, Re)>,
     noun: Re,
+    keep: Re,
     first_part: Re,
     later_part: Re,
     later_part_lead: Re,
@@ -88,6 +92,7 @@ fn p() -> &'static Patterns {
                 ("da", words(r"(?:vis|list)(?:\s+mig)?\s+(?:alle\s+)?(?:mine\s+)?noter|hvilke\s+noter\s+har\s+jeg|^\s*mine\s+noter\s*[?.!]*$")),
             ],
             noun: words(NOUN),
+            keep: words(KEEP_WORDS),
             first_part: words(r"parte\s+1\s+di\s+\d|prima\s+parte|part\s+1\s+of\s+\d|first\s+part|del\s+1\s+af\s+\d|første\s+del"),
             later_part: words(r"(?:second[ao]|terz[ao]|quart[ao]|ultima)\s+parte|parte\s+[2-9](?:\s+di\s+\d)?|(?:second|third|fourth|last|final)\s+part|part\s+[2-9](?:\s+of\s+\d)?|(?:anden|tredje|sidste)\s+del|del\s+[2-9](?:\s+af\s+\d)?"),
             later_part_lead: Re::new(r"^(?:\s*lucina[,:]?\s*)?[^\n.:]{0,40}?(?:second[ao]|terz[ao]|quart[ao]|ultima|parte\s+[2-9]|second|third|last|final|part\s+[2-9]|anden|tredje|sidste|del\s+[2-9])[^\n.:]{0,120}[.:]\s*", "iu"),
@@ -326,6 +331,11 @@ pub fn parse_notes_intent(text: &str, pending_part: bool) -> Option<NotesIntent>
             lang,
         });
     }
+    // Keep phrasing ("my notes with the GodLevel label", "check off milk", "archive that note")
+    // is the notes tool's job (filters, update): the plain read/list shortcut would answer wrongly.
+    if p.keep.test(head) {
+        return None;
+    }
     for (lang, re) in &p.read {
         let Some(m) = re.exec(head) else { continue };
         let name = pick_name(&m);
@@ -349,7 +359,7 @@ pub fn looks_like_store_note(text: &str) -> bool {
     let p = p();
     p.save_named.iter().any(|(_, r)| r.test(head))
         || p.save_unnamed.iter().any(|(_, r)| r.test(head))
-        || p.store_like.test(head)
+        || (p.store_like.test(head) && !p.keep.test(head))
 }
 
 // ---------------------------------------------------------------- replies
@@ -550,9 +560,10 @@ pub fn summary_for_memory(note: &Value, source: &str) -> String {
         format!(" Tags: {}.", tags.join(", "))
     };
     format!(
-        "Saved note \"{}\" (slug {}) from {source}, {} characters, visible in the Secretary app under Notes.{tags} Start: {head}",
+        "Saved note \"{}\" (slug {}) {} from {source}, {} characters, visible in the Secretary app under Notes.{tags} Start: {head}",
         note["title"].as_str().unwrap_or(""),
         note["slug"].as_str().unwrap_or(""),
+        cite(note["slug"].as_str().unwrap_or("")),
         content.chars().count()
     )
 }
@@ -590,6 +601,38 @@ pub fn mentioned_notes<'a>(prompt: &str, notes: &'a [Value]) -> Vec<&'a Value> {
     hits
 }
 
+/// How a note is cited in Lucina's context and memory: `[note:<slug>]`. The apps link it to the
+/// note (`/notes/<slug>`); the timeline item of a turn that saved, read or changed a note carries
+/// the same slug as `meta.kind = "note"`.
+pub fn cite(slug: &str) -> String {
+    format!("[note:{slug}]")
+}
+
+/// Keep facts of a note for a context header: "; colour blue; archived; checklist 1/3 done; reminder …".
+fn keep_facts(note: &Value) -> String {
+    let mut out = String::new();
+    if let Some(c) = note["color"]
+        .as_str()
+        .filter(|c| !c.is_empty() && *c != "default")
+    {
+        out.push_str(&format!("; colour {c}"));
+    }
+    if note["archived"] == true {
+        out.push_str("; archived");
+    }
+    if note["pinned"] == true {
+        out.push_str("; pinned");
+    }
+    if let Some(items) = note["items"].as_array() {
+        let done = items.iter().filter(|i| i["checked"] == true).count();
+        out.push_str(&format!("; checklist {done}/{} done", items.len()));
+    }
+    if let Some(at) = note["reminder"]["at"].as_str() {
+        out.push_str(&format!("; reminder {at}"));
+    }
+    out
+}
+
 /// `renderNoteContext`.
 pub fn render_note_context(note: &Value, max_chars: usize) -> String {
     let content = note["content"].as_str().unwrap_or("");
@@ -618,19 +661,22 @@ pub fn render_note_context(note: &Value, max_chars: usize) -> String {
         .take(10)
         .collect();
     format!(
-        "### Note \"{}\" (slug: {}; saved by {}; updated {updated}{tags})\n{body}",
+        "### Note \"{}\" (slug: {}; saved by {}; updated {updated}{tags}{}) {}\n{body}",
         note["title"].as_str().unwrap_or(""),
         note["slug"].as_str().unwrap_or(""),
         note["source"]
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or("owner"),
+        keep_facts(note),
+        cite(note["slug"].as_str().unwrap_or("")),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn saves_reads_lists() {
@@ -705,5 +751,62 @@ mod tests {
         assert_eq!(slugify("CRAFT-IT4SD — Meeting!"), "craft-it4sd-meeting");
         assert_eq!(slugify("Æble Grød"), "aeble-grod");
         assert_eq!(slugify("new"), "new-note");
+    }
+
+    #[test]
+    fn keep_phrasing_goes_to_the_notes_tool_not_the_plain_shortcuts() {
+        // The plain list/read shortcut would show every note, or the wrong one.
+        for t in [
+            "show me my notes with the GodLevel label",
+            "show me my notes in the archive",
+            "mostrami le note con etichetta GodLevel",
+            "mostrami le note archiviate",
+            "vis mine noter med mærket GodLevel",
+            "read the note shopping-list and check off milk",
+            "leggi la nota spesa e spunta il latte",
+            "what's in the note shopping-list checklist",
+        ] {
+            assert_eq!(parse_notes_intent(t, false), None, "{t}");
+        }
+        // Saves keep working, even when the text mentions a label.
+        assert!(matches!(
+            parse_notes_intent("salva questo come nota idee: etichetta lavoro", false),
+            Some(NotesIntent::Save { .. })
+        ));
+        // And the plain shortcuts are unchanged.
+        assert_eq!(
+            parse_notes_intent("show me my notes", false),
+            Some(NotesIntent::List { lang: "en" })
+        );
+        assert!(parse_notes_intent("what's in the note trip-plan", false).is_some());
+        // "archivia" is also a save verb in Italian: not for "archivia quella nota".
+        assert!(!looks_like_store_note("archivia quella nota"));
+        assert!(looks_like_store_note(
+            "memorizza il briefing nel contesto 'x'"
+        ));
+    }
+
+    #[test]
+    fn notes_are_cited_as_note_slug_in_context_and_memory() {
+        let note = json!({"title": "Shopping", "slug": "shopping", "source": "google-keep", "content": "- [ ] Milk\n- [x] Bread",
+            "tags": ["godlevel"], "updatedAt": "2026-10-27T10:00:00Z", "color": "blue", "archived": false, "pinned": true,
+            "items": [{"text": "Milk", "checked": false}, {"text": "Bread", "checked": true}],
+            "reminder": {"at": "2026-11-03T09:00:00+01:00"}});
+        let ctx = render_note_context(&note, 1000);
+        assert!(
+            ctx.starts_with("### Note \"Shopping\" (slug: shopping; saved by google-keep; updated 2026-10-27; tags: godlevel; colour blue; pinned; checklist 1/2 done; reminder 2026-11-03T09:00:00+01:00) [note:shopping]\n"),
+            "{ctx}"
+        );
+        assert!(ctx.ends_with("- [ ] Milk\n- [x] Bread"));
+        assert!(summary_for_memory(&note, "lucina")
+            .contains("(slug shopping) [note:shopping] from lucina"));
+        assert_eq!(cite("craftit-meeting"), "[note:craftit-meeting]");
+        // A plain note keeps a plain header (plus the citation).
+        let plain =
+            json!({"title": "T", "slug": "t", "content": "x", "updatedAt": "2026-10-27T10:00:00Z"});
+        assert_eq!(
+            render_note_context(&plain, 100),
+            "### Note \"T\" (slug: t; saved by owner; updated 2026-10-27) [note:t]\nx"
+        );
     }
 }

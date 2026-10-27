@@ -100,8 +100,11 @@ pub enum Effect {
     Shopping {
         list_id: String,
     },
+    /// Lucina saved, read-modified or updated a note; `slug` is set when it lives on
+    /// secretary-server (the chat item then links to it: `meta.kind = "note"`).
     Note {
         title: String,
+        slug: Option<String>,
     },
     /// Lucina changed her look: the outfit and/or hairstyle she put on
     /// (both `None` = back to automatic).

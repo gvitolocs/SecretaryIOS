@@ -45,7 +45,7 @@ impl Source for NotesSource {
             .notes(None)
             .await?
             .into_iter()
-            .filter(|n| n.pinned)
+            .filter(|n| n.pinned && !n.archived)
             .collect();
         if pinned.is_empty() {
             return Ok(Vec::new());

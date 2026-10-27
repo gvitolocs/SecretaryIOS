@@ -88,6 +88,9 @@ pub struct NoteSummary {
     pub tags: Vec<String>,
     #[serde(default)]
     pub pinned: bool,
+    /// Keep: in the archive (not a note to bring up unprompted).
+    #[serde(default)]
+    pub archived: bool,
     #[serde(default)]
     pub excerpt: String,
     #[serde(default)]
@@ -221,7 +224,7 @@ impl SecretaryApi for HttpSecretary {
     async fn notes(&self, query: Option<&str>) -> Result<Vec<NoteSummary>, ApiError> {
         let path = match query {
             Some(q) => format!("/v1/notes?limit=50&q={}", qs(q)),
-            None => "/v1/notes?limit=200".into(),
+            None => "/v1/notes?limit=200&archived=exclude".into(),
         };
         let v = self.get(&path).await?;
         serde_json::from_value(v.get("notes").cloned().unwrap_or(json!([])))

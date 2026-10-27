@@ -234,7 +234,9 @@ pub async fn notes_turn(
     };
     match intent {
         NotesIntent::List { .. } => {
-            let r = s.call(Method::GET, "/v1/notes?limit=30", None).await;
+            let r = s
+                .call(Method::GET, "/v1/notes?limit=30&archived=exclude", None)
+                .await;
             if !r.ok {
                 return out(
                     nt::reply_read_failed(lang, &r.code),

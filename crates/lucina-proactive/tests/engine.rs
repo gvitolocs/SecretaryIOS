@@ -905,6 +905,26 @@ async fn pinned_note_for_tomorrows_meeting_is_pulse_material() {
     assert_eq!(d.decision, Decision::Digest, "{}", d.reason);
 }
 
+#[tokio::test]
+async fn an_archived_pinned_keep_note_is_not_pulse_material() {
+    let w = world(config(false));
+    let now = at(NOON_ISH);
+    let mut archived = note("craftit-old", "CRAFT-IT4SD — old meeting notes", true);
+    archived.archived = true;
+    w.api.notes.lock().unwrap().push(archived);
+    w.api
+        .events
+        .lock()
+        .unwrap()
+        .push(event("google:t", "CRAFT-IT4SD", now + Duration::hours(24)));
+    let r = w.engine.tick(now, false).await.unwrap();
+    assert!(
+        r.decisions.iter().all(|d| d.kind != Kind::NoteForEvent),
+        "{:#?}",
+        r.decisions
+    );
+}
+
 /// Verus kernel `attention_engine.rs` E6: "Basta così" on the Daily Pulse mutes
 /// the Pulse for `stop_days` (before the fix the Pulse kept coming).
 #[tokio::test]

@@ -1969,9 +1969,10 @@ fn remember_note(st: &AppState, surface: &TurnSurface, session: &str, note: &Val
         return;
     }
     let user = format!(
-        "[Secretary note saved by {source}] {} ({})",
+        "[Secretary note saved by {source}] {} ({}) {}",
         note["title"].as_str().unwrap_or(""),
-        note["slug"].as_str().unwrap_or("")
+        note["slug"].as_str().unwrap_or(""),
+        nt::cite(note["slug"].as_str().unwrap_or(""))
     );
     let assistant = nt::summary_for_memory(note, source);
     let (mem, peer, sid, surface) = (
@@ -2288,6 +2289,21 @@ fn effects_to_finish(effects: &[Effect], reply: String) -> Finish {
         });
     } else if effects.iter().any(|e| matches!(e, Effect::RemindersListed)) {
         f.action = "list_reminders".into();
+    }
+    // A note she saved, read or changed with the notes tool: the item carries its slug, like the
+    // notes bridge's (`meta.kind = "note"`), so the apps can link it and refresh Notes.
+    if let Some(slug) = effects.iter().rev().find_map(|e| match e {
+        Effect::Note {
+            slug: Some(slug), ..
+        } => Some(slug.clone()),
+        _ => None,
+    }) {
+        if f.meta.is_none() {
+            f.meta = Some(Meta {
+                slug: Some(slug),
+                ..Meta::kind("note")
+            });
+        }
     }
     if let Some((outfit, hair)) = effects.iter().rev().find_map(|e| match e {
         Effect::AvatarOutfit { outfit, hair } => Some((outfit.clone(), hair.clone())),
@@ -2722,6 +2738,45 @@ mod tests {
             "Ok".into(),
         );
         assert_eq!(both.action, "grocery");
+        assert_eq!(both.meta.unwrap().kind.as_deref(), Some("shopping"));
+    }
+
+    #[test]
+    fn a_note_she_saved_or_changed_rides_on_the_reply_meta() {
+        let f = effects_to_finish(
+            &[Effect::Note {
+                title: "Shopping".into(),
+                slug: Some("shopping".into()),
+            }],
+            "Fatto.".into(),
+        );
+        assert_eq!(f.action, "reply");
+        assert_eq!(
+            serde_json::to_value(f.meta.unwrap()).unwrap(),
+            json!({"kind": "note", "slug": "shopping"})
+        );
+        // A local-file note has no slug on the server: no link.
+        let local = effects_to_finish(
+            &[Effect::Note {
+                title: "Offline".into(),
+                slug: None,
+            }],
+            "Fatto.".into(),
+        );
+        assert!(local.meta.is_none());
+        // Another meta (a shopping list) wins.
+        let both = effects_to_finish(
+            &[
+                Effect::Note {
+                    title: "Shopping".into(),
+                    slug: Some("shopping".into()),
+                },
+                Effect::Shopping {
+                    list_id: "l1".into(),
+                },
+            ],
+            "Ok".into(),
+        );
         assert_eq!(both.meta.unwrap().kind.as_deref(), Some("shopping"));
     }
 }
