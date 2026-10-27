@@ -178,7 +178,7 @@ pub fn series(e: &CalendarEvent) -> String {
 }
 
 impl CalendarEvent {
-    fn link(&self) -> EventLink {
+    pub fn link(&self) -> EventLink {
         EventLink {
             id: self.id.clone(),
             source: self.source.clone(),
@@ -214,7 +214,12 @@ pub struct Candidate {
 pub fn configured(app: &App) -> bool {
     app.cfg.calendar_url.is_some() && app.cfg.notify.service_token_file.is_some()
 }
-pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Vec<Candidate>, String> {
+/// secretary-server's events (Google, ICS, iPhone calendars) between `from` and `to`.
+pub async fn fetch(
+    app: &App,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<CalendarEvent>, String> {
     let base = app
         .cfg
         .calendar_url
@@ -239,16 +244,7 @@ pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Vec<Candida
     let reply: Reply = http
         .get(format!("{}/v1/calendar/events", base.trim_end_matches('/')))
         .bearer_auth(token.trim())
-        .query(&[
-            (
-                "from",
-                (m.recorded_at - chrono::Duration::minutes(minutes)).to_rfc3339(),
-            ),
-            (
-                "to",
-                (m.recording_end() + chrono::Duration::minutes(minutes)).to_rfc3339(),
-            ),
-        ])
+        .query(&[("from", from.to_rfc3339()), ("to", to.to_rfc3339())])
         .send()
         .await
         .map_err(|e| e.without_url().to_string())?
@@ -257,8 +253,18 @@ pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Vec<Candida
         .json()
         .await
         .map_err(|e| e.to_string())?;
+    Ok(reply.events)
+}
+
+pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Vec<Candidate>, String> {
+    let events = fetch(
+        app,
+        m.recorded_at - chrono::Duration::minutes(minutes),
+        m.recording_end() + chrono::Duration::minutes(minutes),
+    )
+    .await?;
     let mut out = Vec::new();
-    for e in reply.events {
+    for e in events {
         let loc_match = match (&m.location, &app.cfg.geocode_url, &e.location) {
             (Some(fix), Some(url), Some(location)) => geocode_match(url, location, fix).await,
             _ => false,

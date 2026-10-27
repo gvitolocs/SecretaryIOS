@@ -87,11 +87,43 @@ pub async fn send(
     url: &str,
     telegram: bool,
 ) -> Result<Vec<&'static str>, String> {
+    let (title, body) = message(m, s, url);
+    send_message(
+        cfg,
+        &Outgoing {
+            title: &title,
+            body: &body,
+            route: &format!("/memos/{}", m.id),
+            channel: "memo",
+            dedup_key: &format!("memo:{}:{}", m.id, m.revision),
+            data: json!({"memoId": m.id}),
+        },
+        telegram,
+    )
+    .await
+}
+
+/// One message to the owner: the app inbox (deduplicated by `dedup_key`) and, when
+/// `telegram`, Lucina's Telegram bot (no deduplication: callers mark first, kernel K6/MK8).
+pub struct Outgoing<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub route: &'a str,
+    pub channel: &'a str,
+    pub dedup_key: &'a str,
+    pub data: serde_json::Value,
+}
+
+pub async fn send_message(
+    cfg: &NotifyConfig,
+    o: &Outgoing<'_>,
+    telegram: bool,
+) -> Result<Vec<&'static str>, String> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
-    let (title, body) = message(m, s, url);
+    let body = o.body.to_owned();
     let mut sent = Vec::new();
     let mut errors = Vec::new();
     if let (Some(base), Some(tf)) = (&cfg.secretary_url, &cfg.service_token_file) {
@@ -103,12 +135,12 @@ pub async fn send(
                     .bearer_auth(token.trim())
                     .json(&json!({
                         "category": "lucina_message",
-                        "title": title,
+                        "title": o.title,
                         "body": clipped,
-                        "route": format!("/memos/{}", m.id),
-                        "channel": "memo",
-                        "dedupKey": format!("memo:{}:{}", m.id, m.revision),
-                        "data": {"memoId": m.id}
+                        "route": o.route,
+                        "channel": o.channel,
+                        "dedupKey": o.dedup_key,
+                        "data": o.data
                     }))
                     .send()
                     .await;
@@ -121,6 +153,8 @@ pub async fn send(
             Err(e) => errors.push(format!("service token: {e}")),
         }
     }
+    // Telegram messages are limited to 4096 characters.
+    let body: String = body.chars().take(4000).collect();
     if let (true, Some(token), Some(chat)) = (telegram, &cfg.telegram_token, &cfg.telegram_chat) {
         let r = http
             .post(format!("https://api.telegram.org/bot{token}/sendMessage"))

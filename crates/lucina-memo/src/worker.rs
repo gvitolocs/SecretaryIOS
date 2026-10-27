@@ -190,10 +190,34 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 m.engine = Some(t.engine.clone());
                 m.transcript_source = Some(source.into());
                 m.steps.transcribed_at = Some(Utc::now());
+                m.steps.diarized_at = None;
             })?;
             t
         }
     };
+
+    // 1a. Speaker labels (best effort, K11): once per transcript; a missing diarizer (models
+    //     not installed, MyBook locked) is retried on the next run, a failure is not.
+    let mut transcript = transcript;
+    let available = match app.diarizer() {
+        Ok(d) => d.is_some(),
+        Err(e) => {
+            tracing::debug!(%id, error = %e, "diarizer unavailable");
+            false
+        }
+    };
+    if kernel::diarize_memo(available, transcript.speakers, m.steps.diarized_at.is_some()) {
+        match crate::diarize::memo::label(app, &m, &transcript, &work).await {
+            Ok(Some(t)) => {
+                write_json(&store.transcript_path(id), &t)?;
+                tracing::info!(%id, "memo speakers labelled");
+                transcript = t;
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(%id, error = %e, "memo diarization failed; transcript kept"),
+        }
+        m = store.update(id, |m| m.steps.diarized_at = Some(Utc::now()))?;
+    }
 
     // 1b. Calendar linking is best effort and never delays transcription.
     if m.steps.linked_at.is_none()
@@ -479,6 +503,7 @@ async fn upgrade_one(app: &App) -> bool {
                 m.engine = Some(t.engine.clone());
                 m.language = Some(t.language.clone());
                 m.steps.transcribed_at = Some(Utc::now());
+                m.steps.diarized_at = None;
                 // New summary, PDF and note; the owner was already notified.
                 m.steps.summarized_at = None;
                 m.steps.rendered_at = None;
@@ -545,6 +570,7 @@ pub fn request_reprocess(
     let m = app.store.update(id, |m| {
         if from_transcript {
             m.steps.transcribed_at = None;
+            m.steps.diarized_at = None;
         }
         m.steps.summarized_at = None;
         m.steps.rendered_at = None;

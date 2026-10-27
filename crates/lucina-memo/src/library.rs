@@ -60,6 +60,29 @@ pub async fn register(app: &App, m: &Memo) {
     }
 }
 
+/// `PUT /internal/v1/external/{source}/{id}` (meeting tracks: source `meeting`). Best effort.
+pub async fn put_external(source: &str, id: &str, body: &serde_json::Value) -> bool {
+    let (Some(base), Some(http)) = (base(), client()) else {
+        return false;
+    };
+    match http
+        .put(format!("{base}/internal/v1/external/{source}/{id}"))
+        .json(body)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => true,
+        Ok(r) => {
+            tracing::info!(%id, status = r.status().as_u16(), "media library refused the item");
+            false
+        }
+        Err(e) => {
+            tracing::debug!(%id, error = %e.without_url(), "media library not reachable");
+            false
+        }
+    }
+}
+
 pub async fn unregister(id: &str) {
     let (Some(base), Some(http)) = (base(), client()) else {
         return;

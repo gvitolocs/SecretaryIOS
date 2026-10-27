@@ -17,6 +17,7 @@
 //!   [`overlap_ms`], [`eligible`] and [`better`].
 //! - [`may_auto_link`]: the worker never replaces the owner's event choice (K9).
 //! - [`title_from_event`]: the linked event names the memo unless the owner did (K10).
+//! - [`diarize_memo`]: speaker labels once per transcript, never over labelled lines (K11).
 use crate::model::Status;
 
 /// Where a transcript came from.
@@ -271,9 +272,24 @@ pub fn title_from_event(source: TitleSource) -> bool {
     !matches!(source, TitleSource::Owner)
 }
 
+/// K11: label the memo's speakers when a diarizer is available, the transcript has no labels
+/// yet and no attempt was made on this transcript (`diarized_at`, cleared whenever the
+/// transcript is replaced). Never relabels, never loops on a failing diarizer.
+pub fn diarize_memo(available: bool, labelled: bool, attempted: bool) -> bool {
+    available && !labelled && !attempted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diarize_once_per_transcript() {
+        assert!(diarize_memo(true, false, false));
+        assert!(!diarize_memo(false, false, false));
+        assert!(!diarize_memo(true, true, false));
+        assert!(!diarize_memo(true, false, true));
+    }
 
     #[test]
     fn whisper_never_downgraded() {

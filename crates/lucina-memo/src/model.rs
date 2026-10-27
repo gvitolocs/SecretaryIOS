@@ -39,6 +39,9 @@ impl Status {
 #[serde(rename_all = "camelCase", default)]
 pub struct Steps {
     pub linked_at: Option<DateTime<Utc>>,
+    /// Speaker labels written into the current transcript (best effort; cleared whenever the
+    /// transcript is replaced, kernel K11).
+    pub diarized_at: Option<DateTime<Utc>>,
     pub transcribed_at: Option<DateTime<Utc>>,
     pub summarized_at: Option<DateTime<Utc>>,
     pub rendered_at: Option<DateTime<Utc>>,
@@ -139,6 +142,17 @@ pub struct Segment {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speaker: Option<String>,
+    /// Word timings (Whisper `-ojf`), when the run asked for them (meetings).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<Word>,
+}
+
+/// One word of a [`Segment`], seconds from the start of the recording.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Word {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
