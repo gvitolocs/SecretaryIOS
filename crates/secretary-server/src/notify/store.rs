@@ -156,6 +156,15 @@ impl Inbox {
         })
     }
 
+    /// Drop every notification whose dedup key is `key`; returns how many.
+    pub fn remove_key(&self, key: &str) -> io::Result<usize> {
+        self.file.update(|items| {
+            let before = items.len();
+            items.retain(|n| n.dedup_key.as_deref() != Some(key));
+            before - items.len()
+        })
+    }
+
     /// Whether any notification carries one of `keys` (dedup key or `tl:<id>`).
     pub fn has_any_key(&self, keys: &[String]) -> bool {
         if keys.is_empty() {

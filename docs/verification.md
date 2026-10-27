@@ -528,11 +528,18 @@ on-device transcript; the `lucina-memo` worker runs step 0 (ADTS → .m4a), 1 tr
 `gpu-lease`, or the iPhone's transcript while the GPU is busy), 2 summary, 3 PDF, 4 Obsidian push, 5 notification,
 done, and the idle Whisper upgrade; it may crash at any point (systemd restarts it; it continues from the recorded
 steps). Another GPU job takes and releases the lease; `gpu-lease` drops a dead holder. The owner renames (any time)
-or reprocesses (once done).
+or reprocesses (once done). Calendar link (2026-10-26, cases "V calendar link", `Memos_events_*.cfg`): step 1b
+reads the calendar and then writes the link (two steps, so the owner can act in between); the owner picks the event
+(a meeting, then none) before the summary or once the memo is done or failed; a linked note lives in its event's
+folder and moves when the event changes; the worker may give up (`failed`, e.g. the old note's delete keeps failing).
 
 Invariants (Stateright name / TLA+ name):
 
-- `no_duplicate_notes` / `NoDuplicateNotes`: one note in the vault per memo, whatever the crashes and renames.
+- `no_duplicate_notes` / `NoDuplicateNotes`: every note of the memo in the vault is its current one or a copy
+  listed for deletion (`obsidian_old_notes`), whatever the crashes, renames and event changes; with the liveness
+  property below, the vault ends with exactly one note.
+- `owner_choice_kept` / `OwnerChoiceKept`: once the owner picked an event (or none), the memo keeps exactly that
+  choice; the worker's link never overwrites it (K9).
 - `telegram_at_most_once` / `TelegramAtMostOnce`: at most one Telegram message per revision.
 - `app_inbox_once_per_revision` / `AppInboxOncePerRevision`: the app inbox has one entry per revision (dedup key).
 - `whisper_never_downgraded` / `WhisperNeverDowngraded`: a Whisper transcript is never replaced by the iPhone's.
@@ -540,22 +547,29 @@ Invariants (Stateright name / TLA+ name):
 - `live_activity_matches_recorder` / `LiveActivityMatchesRecorder`: while the app runs, the Live Activity shows
   exactly the recorder's state (recording, paused, none).
 - `done_has_every_output` / `DoneHasEveryOutput`: `done` only with transcript, summary, PDF, note and notification.
-- `finished_with_one_note_pdf_notification` (eventually, Stateright): every recording ends done with one note, the
-  PDF, its notification, and the GPU lease released. Witnesses: `gpu_busy_then_free` / `Memos_fixed_witness.cfg`,
+- `finished_with_one_note_pdf_notification` (eventually, Stateright): every recording ends done with one note (in
+  its event's folder), the PDF, its notification, and the GPU lease released. Witness `note_moved_to_the_owner_s_event`. Witnesses: `gpu_busy_then_free` / `Memos_fixed_witness.cfg`,
   `device_transcript_replaced` / `Memos_fixed_upgrade_witness.cfg`.
 
 The upload protocol itself (chunks, offsets, cut-off bodies, crashes, duplicates) has its own exhaustive model in
 `crates/lucina-memo/tests/upload_model.rs` (prefix, one memo per recording, complete only when whole); here an
 upload is one step that may fail.
 
-Verus (`memo_kernel.rs`, 19 verified): K1 `transcript_choice` (never downgrades Whisper; Whisper wins whenever it
+Bugs found with the calendar link: B5 (Codex's first draft, never deployed) kept one old-note slot, so two event
+changes around a failed publish left a second note (`Memos_events_old_note_bug.cfg`, 23-step trace); a link
+written without re-checking the owner loses a choice made while the calendar was read (`Memos_events_recheck_bug.cfg`).
+Fixed: `obsidian::move_note` keeps every old path; the worker's update closure re-checks `may_auto_link`.
+
+Verus (`memo_kernel.rs`, 30 verified): K1 `transcript_choice` (never downgrades Whisper; Whisper wins whenever it
 ran; the iPhone transcript is used only, and then always, when the GPU is busy and no Whisper transcript exists),
 K2 `upgrade_replaces` (iff Whisper heard at least half as much; no overflow), K3 `route_on_device` (only with a
 model for the language and up to the threshold), K4 `status_allowed` (`uploading` left only for `queued` and never
 re-entered; `done`/`failed` entered only from a pipeline step; everything else can be re-queued), K5
 `ready_to_finish`, K6 `send_telegram` with `lemma_telegram_at_most_once` (any number of retries from any marker:
 at most one send), K7 `note_base` with `lemma_one_note` (a memo keeps its first note name over any sequence of
-titles). Mutations checked: the old step 1 fails K1; sending before recording the marker fails K6. Differential
+titles), K8 `overlap_ms`/`eligible`/`better`/`pick_event` (the exact clamped overlap, symmetric and never longer
+than either interval; the pick is eligible, no eligible event is better, it beats every earlier eligible one, None
+iff none is eligible; `lemma_better_order`: a strict order), K9 `may_auto_link`, K10 `title_from_event`. Mutations checked: the old step 1 fails K1; sending before recording the marker fails K6. Differential
 test: `crates/lucina-memo/tests/verus_kernel.rs` (production kernel vs the proved bodies, every small input);
 `Store::update` asserts `status_allowed` on every write.
 
@@ -575,6 +589,10 @@ test: `crates/lucina-memo/tests/verus_kernel.rs` (production kernel vs the prove
 | `OtherTakesGpu`, `OtherReleasesGpu`, `PruneDeadLease` | other `gpu-lease run` jobs; `gpu-lease` prunes dead pids on every access |
 | `OwnerRename`, `OwnerReprocess` | `PATCH /v1/memos/{id}`; `POST …/reprocess {fromTranscript}` |
 | `Upgrade` | `worker::upgrade_one` + `kernel::upgrade_replaces` |
+| `WorkerStep` 10 / `Linking` | step 1b: `events::candidates` (`/v1/calendar/events`), `kernel::pick_event`, then `store.update` re-checking `kernel::may_auto_link` |
+| `OwnerChoosesEvent` | `PUT /v1/memos/{id}/event` (`choose_event`), then `worker::request_resummary` |
+| `WorkerStep` 4 / `Pushed` (events) | `obsidian::event_folder`, `obsidian::move_note` before the push, `obsidian::delete_note` of every old path after it |
+| `WorkerGivesUp` | the last attempt fails: `status = failed` |
 
 ### 11. Media player resume positions
 

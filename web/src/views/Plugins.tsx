@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { BookIcon, CheckCircleIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon } from "../components/Icons";
+import { BookIcon, CheckCircleIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { openWardrobe } from "../state/wardrobe";
 
@@ -53,6 +53,7 @@ export const PLUGINS: Plugin[] = [
       window.location.href = "secretary://calls";
     },
   },
+  { id: "server", icon: PulseIcon, title: () => t("plugins.server"), detail: () => t("plugins.serverDetail"), href: "/server-health" },
   { id: "models", icon: GridIcon, title: () => t("plugins.models"), detail: () => t("plugins.modelsDetail"), href: "/models" },
 ];
 

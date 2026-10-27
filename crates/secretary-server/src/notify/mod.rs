@@ -184,7 +184,9 @@ impl Notifier {
         let _guard = self.admit_lock.lock().unwrap_or_else(|e| e.into_inner());
         let category = n.category.unwrap_or(Category::System);
         let keys = n.keys();
-        if keys.iter().any(|k| self.seen.contains(k)) || self.inbox.has_any_key(&keys) {
+        let replace = category.replaces_by_key() && n.dedup_key.is_some();
+        if !replace && (keys.iter().any(|k| self.seen.contains(k)) || self.inbox.has_any_key(&keys))
+        {
             return Ok(Admit::Skip(Outcome::Duplicate));
         }
         let remember = || {
@@ -220,6 +222,11 @@ impl Notifier {
             read_at: None,
             deferred: quiet && settings.digest,
         };
+        if replace {
+            if let Some(k) = &notification.dedup_key {
+                self.inbox.remove_key(k)?;
+            }
+        }
         self.inbox.add(notification.clone())?;
         remember();
         Ok(Admit::Stored(Box::new(notification), !quiet))
@@ -236,7 +243,7 @@ impl Notifier {
                     let targets = self.targets_for(&notification, now);
                     let count = targets.len();
                     if count > 0 {
-                        let opts = PushOpts::for_category(notification.category);
+                        let opts = PushOpts::for_notification(&notification);
                         tokio::spawn(push::deliver_all(self.clone(), targets, opts));
                     }
                     count
@@ -288,11 +295,7 @@ impl Notifier {
                     title,
                     body,
                     route: n.route.clone(),
-                    tag: Some(
-                        n.category
-                            .collapse_key()
-                            .map_or_else(|| n.id.clone(), str::to_owned),
-                    ),
+                    tag: Some(push::tag_for(n)),
                     ts: n.ts,
                     unread,
                     digest: false,
