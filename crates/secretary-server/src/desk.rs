@@ -2,7 +2,7 @@
 //! repo). Lucina (lucina-server `desk.rs`) owns the tickets, the takeover lease, the
 //! watch-mode input filter and the audit; this side authenticates the owner and splices.
 //!
-//! - `POST /v1/computer/desk` `{sandbox?, mode?}` (owner device: device token or web
+//! - `POST /v1/computer/desk` `{sandbox?, mode?, codecs?}` (owner device: device token or web
 //!   session) → `{ticket, protocol, wsPath, expiresInSecs, sandbox, mode, lan}`. The audit
 //!   `device` is the authenticated device's name, never a body value. `lan` is the
 //!   home-network door (`{url}`), offered like the live view's (`computer::lan_offer`): to
@@ -64,10 +64,18 @@ async fn mint(
         _ => return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "mode: must be watch or control")),
     };
     let who = caller(&headers);
+    // What the browser decodes, best first; Lucina keeps the known names and the gateway asks
+    // the host for them. Anything but a short list of short strings is dropped.
+    let codecs: Vec<&str> = body
+        .get("codecs")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).filter(|c| c.len() <= 8).take(8).collect())
+        .unwrap_or_default();
     let call = Call::computer_desk(json!({
         "sandbox": sandbox,
         "mode": mode,
         "device": device_label(&ident, &who),
+        "codecs": codecs,
     }))
     .with_caller(&who);
     let lucina = st.lucina().map_err(|_| unavailable("Lucina is not configured"))?;

@@ -132,7 +132,7 @@ async fn desk_tickets_for_owner_devices_only() {
     assert_eq!(h.mint(json!({"mode": "control"}), false).await.0, 401);
     assert!(h.mock.minted.lock().unwrap().is_empty(), "Lucina never asked without a device");
 
-    let (s, b) = h.mint(json!({"mode": "control", "device": "forged"}), true).await;
+    let (s, b) = h.mint(json!({"mode": "control", "device": "forged", "codecs": ["vp9", "h264", 3]}), true).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["ticket"], TICKET);
     assert_eq!(b["protocol"], "lucinadesk.v1");
@@ -145,6 +145,7 @@ async fn desk_tickets_for_owner_devices_only() {
     assert_eq!(auth.as_deref(), Some(&*format!("Bearer {LUCINA_TOKEN}")));
     assert_eq!(body["device"], "test iPhone", "the device is the authenticated one, not the body's");
     assert_eq!(body["mode"], "control");
+    assert_eq!(body["codecs"], json!(["vp9", "h264"]), "the browser's codecs go to Lucina");
 
     let r = h
         .http
