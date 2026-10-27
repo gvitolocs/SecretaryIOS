@@ -3,6 +3,7 @@ import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { openWardrobe } from "../state/wardrobe";
 import { HangerIcon, QrIcon } from "./Icons";
+import { KeepImport } from "./KeepImport";
 import { NotificationSettings } from "./NotificationSettings";
 import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
 import {
@@ -34,7 +35,7 @@ export const MIN_PASSWORD_LENGTH = 8;
 export function AccountDialog(props: {
   open: boolean;
   onClose: () => void;
-  section?: "notifications" | null;
+  section?: "notifications" | "import" | null;
   /** A sign-out button at the end (the /account route; the top bar has its own). */
   onSignOut?: () => void;
   signingOut?: boolean;
@@ -59,7 +60,9 @@ export function AccountDialog(props: {
         setError(null);
         setDone(false);
         queueMicrotask(() => {
-          if (props.section === "notifications") {
+          if (props.section === "import") {
+            document.getElementById("kp-import")?.scrollIntoView?.({ block: "start" });
+          } else if (props.section === "notifications") {
             const el = document.getElementById("notif-settings-title");
             el?.scrollIntoView?.({ block: "start" });
             (el?.parentElement?.querySelector("button, input") as HTMLElement | null)?.focus();
@@ -220,6 +223,7 @@ export function AccountDialog(props: {
             </a>
           </div>
           <NotificationSettings />
+          <KeepImport />
           <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>
             <h3 class="field-label">{t("shell.changePassword")}</h3>
             <label class="field-label" for="pw-current">

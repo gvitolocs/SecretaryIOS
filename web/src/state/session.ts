@@ -5,6 +5,7 @@ import { t } from "../i18n";
 import { resetBody } from "./body";
 import { clearChat, setChatDevice } from "./chat";
 import { resetGym } from "./gym";
+import { resetKeep } from "./keep";
 import { resetNotifications } from "./notifications";
 import { resetShopping } from "./shopping";
 import { desktopShell } from "../lib/desktopShell";
@@ -24,6 +25,7 @@ function forgetLocalData(): void {
   resetGym();
   resetBody();
   resetNotifications();
+  resetKeep();
 }
 
 export async function checkSession(): Promise<void> {
