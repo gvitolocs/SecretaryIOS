@@ -51,5 +51,8 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"
+# tests/desk.rs: a mock Lucina desk socket and a WebSocket client.
+axum = { version = "0.8", features = ["ws"] }
+tokio-tungstenite = "0.29"
 tempfile = "3"
 url = "2"

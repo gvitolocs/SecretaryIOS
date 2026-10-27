@@ -8,6 +8,9 @@
 //!   so cookie approvals need CSRF). `pollToken` stays with the requesting
 //!   page and is the only thing that can collect the session. Both are 128
 //!   random bits, base64url.
+//! - Each request also has a 6-digit `shortCode` (unique among the live
+//!   ones) to type into a signed-in app instead of scanning. `info` and
+//!   `approve` take either code; both still need an authenticated device.
 //! - In memory (one server instance), [`TTL`] long, one-time: the poll that
 //!   sees `approved` or `denied` removes the request. A restart drops them.
 //! - Creating a request costs one login attempt of the client IP
@@ -17,10 +20,10 @@
 //!
 //! | route | auth | |
 //! |---|---|---|
-//! | `POST /v1/session/qr` | public | `{code, pollToken, approveUrl, expiresIn}` |
+//! | `POST /v1/session/qr` | public | `{code, shortCode, pollToken, approveUrl, expiresIn}` |
 //! | `GET /v1/session/qr/image?c=` | public | the QR of `approveUrl`, SVG |
 //! | `GET /v1/session/qr/poll?t=` | public | `{status: pending\|approved\|denied\|expired}`; `approved` sets the cookie |
-//! | `GET /v1/session/qr/info?c=` | device | `{ip, userAgent, createdAt, expiresIn}` for the approve screen |
+//! | `GET /v1/session/qr/info?c=` (code or shortCode) | device | `{ip, userAgent, createdAt, expiresIn}` for the approve screen |
 //! | `POST /v1/session/qr/approve {code, approve}` | device | `{status: approved\|denied}` |
 
 use std::collections::HashMap;
@@ -63,6 +66,7 @@ enum Decision {
 
 struct Pending {
     poll_token: String,
+    short_code: String,
     ip: String,
     user_agent: String,
     created_at: String,
@@ -107,6 +111,25 @@ pub enum DecideError {
     AlreadyDecided,
 }
 
+/// A new request's codes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Created {
+    pub code: String,
+    pub short_code: String,
+    pub poll_token: String,
+}
+
+/// Six random digits.
+fn random_digits() -> io::Result<String> {
+    let mut b = [0u8; 4];
+    getrandom::fill(&mut b).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(format!("{:06}", u32::from_le_bytes(b) % 1_000_000))
+}
+
+fn is_short_code(c: &str) -> bool {
+    c.len() == 6 && c.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// The pending requests, by `code`.
 pub struct QrLogins {
     ttl: Duration,
@@ -140,18 +163,12 @@ impl QrLogins {
         now.saturating_duration_since(p.born) < self.ttl
     }
 
-    /// A new request: `Ok(Some((code, poll_token)))`, `Ok(None)` when
-    /// [`MAX_PENDING`] are already waiting.
-    pub fn create(&self, ip: &str, user_agent: &str) -> io::Result<Option<(String, String)>> {
+    /// A new request, or `Ok(None)` when [`MAX_PENDING`] are already waiting.
+    pub fn create(&self, ip: &str, user_agent: &str) -> io::Result<Option<Created>> {
         self.create_at(ip, user_agent, Instant::now())
     }
 
-    fn create_at(
-        &self,
-        ip: &str,
-        user_agent: &str,
-        now: Instant,
-    ) -> io::Result<Option<(String, String)>> {
+    fn create_at(&self, ip: &str, user_agent: &str, now: Instant) -> io::Result<Option<Created>> {
         let code = crate::devices::random_b64::<16>()?;
         let poll_token = crate::devices::random_b64::<16>()?;
         let mut map = self.lock();
@@ -159,11 +176,18 @@ impl QrLogins {
         if map.len() >= MAX_PENDING {
             return Ok(None);
         }
+        let short_code = loop {
+            let c = random_digits()?;
+            if !map.values().any(|p| p.short_code == c) {
+                break c;
+            }
+        };
         let user_agent: String = user_agent.chars().take(MAX_USER_AGENT).collect();
         map.insert(
             code.clone(),
             Pending {
                 poll_token: poll_token.clone(),
+                short_code: short_code.clone(),
                 ip: ip.to_owned(),
                 user_agent,
                 created_at: crate::devices::now_rfc3339(),
@@ -171,18 +195,34 @@ impl QrLogins {
                 decision: Decision::Pending,
             },
         );
-        Ok(Some((code, poll_token)))
+        Ok(Some(Created {
+            code,
+            short_code,
+            poll_token,
+        }))
     }
 
-    /// The requester of a live, undecided request.
+    /// The request's key for `c`, a code or a live short code.
+    fn key_for(&self, map: &HashMap<String, Pending>, c: &str, now: Instant) -> Option<String> {
+        if is_short_code(c) {
+            return map
+                .iter()
+                .find(|(_, p)| p.short_code == c && self.alive(p, now))
+                .map(|(k, _)| k.clone());
+        }
+        map.contains_key(c).then(|| c.to_owned())
+    }
+
+    /// The requester of a live, undecided request (by code or short code).
     pub fn info(&self, code: &str) -> Option<Info> {
         self.info_at(code, Instant::now())
     }
 
     fn info_at(&self, code: &str, now: Instant) -> Option<Info> {
         let map = self.lock();
+        let key = self.key_for(&map, code, now)?;
         let p = map
-            .get(code)
+            .get(&key)
             .filter(|p| p.decision == Decision::Pending && self.alive(p, now))?;
         Some(Info {
             ip: p.ip.clone(),
@@ -195,16 +235,17 @@ impl QrLogins {
         })
     }
 
-    /// Approve or deny a live request (once).
+    /// Approve or deny a live request (once), by code or short code.
     pub fn decide(&self, code: &str, approve: bool) -> Result<(), DecideError> {
         self.decide_at(code, approve, Instant::now())
     }
 
     fn decide_at(&self, code: &str, approve: bool, now: Instant) -> Result<(), DecideError> {
         let mut map = self.lock();
-        let alive = map.get(code).is_some_and(|p| self.alive(p, now));
+        let key = self.key_for(&map, code, now).ok_or(DecideError::NotFound)?;
+        let alive = map.get(&key).is_some_and(|p| self.alive(p, now));
         let p = map
-            .get_mut(code)
+            .get_mut(&key)
             .filter(|_| alive)
             .ok_or(DecideError::NotFound)?;
         if p.decision != Decision::Pending {
@@ -309,7 +350,12 @@ async fn create(State(st): State<AppState>, req: Request) -> Result<Response, Ap
         .qr_logins
         .create(&ip, &user_agent)
         .map_err(|_| ApiError::internal("random source failed"))?;
-    let Some((code, poll_token)) = created else {
+    let Some(Created {
+        code,
+        short_code,
+        poll_token,
+    }) = created
+    else {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "qr_busy",
@@ -319,6 +365,7 @@ async fn create(State(st): State<AppState>, req: Request) -> Result<Response, Ap
     Ok(Json(json!({
         "approveUrl": st.qr_logins.approve_url(&code),
         "code": code,
+        "shortCode": short_code,
         "pollToken": poll_token,
         "expiresIn": st.qr_logins.ttl().as_secs(),
     }))
@@ -329,7 +376,7 @@ async fn create(State(st): State<AppState>, req: Request) -> Result<Response, Ap
 async fn image(State(st): State<AppState>, req: Request) -> Result<Response, ApiError> {
     poll_ip_check(&st, &req)?;
     let CodeQuery { c } = query(&req)?;
-    if st.qr_logins.info(&c).is_none() {
+    if is_short_code(&c) || st.qr_logins.info(&c).is_none() {
         return Err(not_found());
     }
     let svg = render_svg(&st.qr_logins.approve_url(&c))?;
@@ -448,7 +495,7 @@ mod tests {
     #[test]
     fn codes_and_poll_tokens_are_distinct_128_bit_values() {
         let s = store();
-        let (code, token) = s.create("1.2.3.4", "ua").unwrap().unwrap();
+        let Created { code, poll_token: token, .. } = s.create("1.2.3.4", "ua").unwrap().unwrap();
         assert_ne!(code, token);
         // 16 bytes = 22 base64url characters, no padding.
         assert_eq!(code.len(), 22);
@@ -461,7 +508,7 @@ mod tests {
     #[test]
     fn approval_is_collected_once() {
         let s = store();
-        let (code, token) = s.create("1.2.3.4", "ua").unwrap().unwrap();
+        let Created { code, poll_token: token, .. } = s.create("1.2.3.4", "ua").unwrap().unwrap();
         assert_eq!(s.poll(&token), Poll::Pending);
         s.decide(&code, true).unwrap();
         assert_eq!(s.decide(&code, false), Err(DecideError::AlreadyDecided));
@@ -475,7 +522,7 @@ mod tests {
     fn requests_expire() {
         let s = store();
         let t0 = Instant::now();
-        let (code, token) = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        let Created { code, poll_token: token, .. } = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
         let info = s.info_at(&code, t0 + Duration::from_secs(20)).unwrap();
         assert_eq!(info.expires_in, 100);
         let late = t0 + TTL;
@@ -483,7 +530,7 @@ mod tests {
         assert_eq!(s.decide_at(&code, true, late), Err(DecideError::NotFound));
         assert_eq!(s.poll_at(&token, late), Poll::Expired);
         // An approval that is not collected in time expires too.
-        let (code, token) = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        let Created { code, poll_token: token, .. } = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
         s.decide_at(&code, true, t0).unwrap();
         assert_eq!(s.poll_at(&token, late), Poll::Expired);
     }
@@ -501,9 +548,43 @@ mod tests {
     }
 
     #[test]
+    fn short_codes_answer_like_codes() {
+        let s = store();
+        let t0 = Instant::now();
+        let c = s.create_at("1.2.3.4", "ua", t0).unwrap().unwrap();
+        assert!(is_short_code(&c.short_code), "{}", c.short_code);
+        assert_eq!(s.info_at(&c.short_code, t0).unwrap().ip, "1.2.3.4");
+        s.decide_at(&c.short_code, true, t0).unwrap();
+        assert_eq!(
+            s.decide_at(&c.code, true, t0),
+            Err(DecideError::AlreadyDecided)
+        );
+        assert_eq!(s.poll_at(&c.poll_token, t0), Poll::Approved);
+        // Gone with the request, and dead once it expires.
+        assert!(s.info_at(&c.short_code, t0).is_none());
+        let c = s.create_at("ip", "ua", t0).unwrap().unwrap();
+        assert!(s.info_at(&c.short_code, t0 + TTL).is_none());
+        assert_eq!(
+            s.decide_at(&c.short_code, true, t0 + TTL),
+            Err(DecideError::NotFound)
+        );
+    }
+
+    #[test]
+    fn live_short_codes_are_unique() {
+        let s = store();
+        let t0 = Instant::now();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..MAX_PENDING {
+            let c = s.create_at("ip", "ua", t0).unwrap().unwrap();
+            assert!(seen.insert(c.short_code));
+        }
+    }
+
+    #[test]
     fn long_user_agents_are_cut() {
         let s = store();
-        let (code, _) = s.create("ip", &"x".repeat(5000)).unwrap().unwrap();
+        let code = s.create("ip", &"x".repeat(5000)).unwrap().unwrap().code;
         assert_eq!(s.info(&code).unwrap().user_agent.len(), MAX_USER_AGENT);
     }
 

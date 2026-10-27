@@ -2,7 +2,7 @@ import { createEffect, createSignal, on, Show } from "solid-js";
 import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { openWardrobe } from "../state/wardrobe";
-import { HangerIcon } from "./Icons";
+import { HangerIcon, QrIcon } from "./Icons";
 import { NotificationSettings } from "./NotificationSettings";
 import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
 import {
@@ -203,6 +203,21 @@ export function AccountDialog(props: {
                 ›
               </span>
             </button>
+          </div>
+          <div class="settings-form">
+            {/* A plain link: the router handles it, and it needs no router in tests. */}
+            <a class="settings-link" href="/scan" onClick={() => props.onClose()}>
+              <span class="settings-link-icon" aria-hidden="true">
+                <QrIcon />
+              </span>
+              <span class="settings-link-text">
+                <span class="settings-link-title">{t("login.scanOpen")}</span>
+                <span class="muted small">{t("login.scanOpenHint")}</span>
+              </span>
+              <span class="settings-link-chevron" aria-hidden="true">
+                ›
+              </span>
+            </a>
           </div>
           <NotificationSettings />
           <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>

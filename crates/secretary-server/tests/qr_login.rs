@@ -49,6 +49,7 @@ async fn harness(tweak: impl FnOnce(&mut Config)) -> H {
 
 struct Started {
     code: String,
+    short_code: String,
     poll_token: String,
 }
 
@@ -90,8 +91,14 @@ impl H {
             format!("https://secretary.example/approve?c={code}")
         );
         assert_eq!(v["expiresIn"], 120);
+        let short_code = v["shortCode"].as_str().unwrap().to_owned();
+        assert!(
+            short_code.len() == 6 && short_code.bytes().all(|b| b.is_ascii_digit()),
+            "{short_code}"
+        );
         Started {
             code,
+            short_code,
             poll_token: v["pollToken"].as_str().unwrap().to_owned(),
         }
     }
@@ -346,4 +353,45 @@ async fn starting_a_request_counts_as_a_login_attempt() {
     assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{v}");
     // Polling has its own bucket.
     assert_eq!(h.poll("AAAAAAAAAAAAAAAAAAAAAA").await.0, "expired");
+}
+
+#[tokio::test]
+async fn the_short_code_can_be_typed_instead_of_scanned() {
+    let h = harness(|_| {}).await;
+    let req = h.start().await;
+    let phone = h.device_token();
+    let (s, info, _) = h
+        .send(
+            h.http
+                .get(h.url("/v1/session/qr/info"))
+                .bearer_auth(&phone)
+                .query(&[("c", &req.short_code)]),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{info}");
+    assert_eq!(info["userAgent"], BROWSER_UA);
+    // The image is only for the long code (the short one is not a secret link).
+    let (s, _, _) = h
+        .send(
+            h.http
+                .get(h.url("/v1/session/qr/image"))
+                .query(&[("c", &req.short_code)]),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // Unauthenticated short-code approvals fail like any other.
+    let (s, _, _) = h
+        .send(
+            h.http
+                .post(h.url("/v1/session/qr/approve"))
+                .header("x-secretary-csrf", "1")
+                .json(&json!({"code": req.short_code, "approve": true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, v) = h.approve_with_bearer(&phone, &req.short_code, true).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(h.poll(&req.poll_token).await.1.is_some());
+    let (s, _) = h.approve_with_bearer(&phone, &req.short_code, true).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

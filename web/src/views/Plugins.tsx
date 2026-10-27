@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { BookIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon } from "../components/Icons";
+import { BookIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
 import { openWardrobe } from "../state/wardrobe";
@@ -38,6 +38,8 @@ export const PLUGINS: Plugin[] = [
     run: () => desktopShell()?.showCode(),
   },
   { id: "desk", icon: CheckCircleIcon, title: () => "My desk", href: "/desk" },
+  // Approve a QR sign-in on another screen (views/ScanQr.tsx).
+  { id: "scan", icon: QrIcon, title: () => t("login.scanOpen"), detail: () => t("login.scanOpenHint"), href: "/scan" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
   { id: "films", icon: FilmIcon, title: () => t("plugins.films"), detail: () => t("plugins.filmsDetail"), href: "/films" },
   { id: "drive", icon: DriveIcon, title: () => t("plugins.drive"), detail: () => t("plugins.driveDetail"), href: "/drive" },

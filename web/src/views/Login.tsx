@@ -100,7 +100,13 @@ export default function Login() {
             Lucina · Secretary
           </p>
           <h1 class="login-title">Secretary</h1>
-          <p class="login-sub">{t("login.sub")}</p>
+          <Show when={!showQr} fallback={<p class="login-sub">{t("login.sub")}</p>}>
+            <div class="login-approve-note" role="note">
+              <p class="login-approve-title">{t("login.approveInApp")}</p>
+              <p>{t("login.approveInAppSub")}</p>
+            </div>
+            <p class="login-sub">{t("login.approveOrSignIn")}</p>
+          </Show>
           <label class="field-label" for="login-email">
             {t("login.email")}
           </label>

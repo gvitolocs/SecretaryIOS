@@ -247,6 +247,11 @@ impl Call {
         Self::new(Method::POST, &["computer", "view"]).with_body(body)
     }
 
+    /// `POST /computer/desk`: a single-use LucinaDesk ticket (`lucinadesk.v1`).
+    pub fn computer_desk(body: Value) -> Self {
+        Self::new(Method::POST, &["computer", "desk"]).with_body(body)
+    }
+
     /// `POST /computer/view/<id>/ticket`: the same view again — a renewal, or
     /// the watch↔control switch of a takeover — without a new view id.
     pub fn computer_view_ticket(view_id: &str, body: Value) -> Self {
