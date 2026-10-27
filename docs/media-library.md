@@ -117,6 +117,21 @@ kernel DK3).
     hidden) 404, an original without permission 403. Renditions are served with their metadata stripped
     (`strip_jpeg_metadata`); anything that cannot be stripped is not served. Headers: `noindex`, no referrer,
     a CSP with a per-page nonce, no framing.
+  - p1 (live since 2026-10-27, `/etc/caddy/Caddyfile`, just above `@media_play`; the repo's `deploy/Caddyfile.p1`
+    does not carry the media routes):
+    ```
+    @album_share_short path /a/*
+    handle @album_share_short {
+        rewrite * /v1/media{uri}
+        reverse_proxy 100.107.164.33:8830
+    }
+    @album_share path /v1/media/a/*
+    handle @album_share {
+        reverse_proxy 100.107.164.33:8830
+    }
+    ```
+    A link is `https://getsecretary.tech/a/<token>`. Checked from outside: the page, the items and a thumbnail
+    (no EXIF) answer 200, an original without permission 403, a revoked link 410, `/v1/media/items` still 401.
 - Internal: `PUT|DELETE /internal/v1/external/{source}/{id}` indexes a file in place (voice memos, the film folders), `POST /internal/v1/import {path, source, album}`.
 
 The upload protocol's decisions (chunk offsets, finish once, dedupe or version) are pure functions in `protocol.rs`.
