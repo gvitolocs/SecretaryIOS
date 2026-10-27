@@ -18,8 +18,11 @@ function state(over: Partial<ControlState> = {}): ControlState {
 /** A fake Lucina: who drives changes with take/release, views carry the mode. */
 const LAN = "https://lan.getsecretary.tech:9443";
 
-/** `lan`: the server offers the home-network door; `up`: whether it answers the probe. */
-function fakeLucina(initial: ControlState, lan?: { up: boolean }) {
+/**
+ * `lan`: the server offers the home-network door; `up`: whether it answers the probe. `desk`: the
+ * server mints LucinaDesk tickets (else /v1/computer/desk is a 404, as before it existed).
+ */
+function fakeLucina(initial: ControlState, lan?: { up: boolean }, desk = false) {
   let s = initial;
   const calls = stubFetch((c: Call) => {
     if (c.url === `${LAN}/v1/computer/lan-probe`) {
@@ -58,6 +61,10 @@ function fakeLucina(initial: ControlState, lan?: { up: boolean }) {
     if (c.url === `/v1/computer/view/${VIEW_ID}/ticket`) {
       const mode = (c.body as { mode: "watch" | "control" }).mode;
       return { body: { ticket: `t-${mode}-renewed`, mode, sandbox: "workspace", ttlSecs: 600, epoch: s.epoch, changed: true } };
+    }
+    if (c.url === "/v1/computer/desk" && desk) {
+      const mode = (c.body as { mode: string }).mode;
+      return { body: { ticket: "d".repeat(43), protocol: "lucinadesk.v1", wsPath: "/v1/computer/desk/ws", expiresInSecs: 30, sandbox: "workspace", mode, lan: null } };
     }
     if (c.url === "/v1/computer/input") return { body: { done: (c.body as { events: unknown[] }).events.length, outputs: [] } };
     return { status: 404, body: { error: { code: "not_found", message: "no" } } };
@@ -589,5 +596,57 @@ describe("page helpers", () => {
     expect(meaningful({ at: 1, event: "view_ticket" } as never)).toBe(false);
     expect(meaningful({ at: 1, event: "input", batch: { via: "live", bytes: 1210 } } as never)).toBe(false);
     expect(meaningful({ at: 1, event: "input", batch: { kinds: ["click"] } } as never)).toBe(true);
+  });
+});
+
+describe("ComputerView with LucinaDesk", () => {
+  const sockets: string[][] = [];
+  beforeEach(() => {
+    sockets.length = 0;
+    // A browser with WebCodecs: LucinaDesk is the Live view.
+    vi.stubGlobal("VideoDecoder", Object.assign(function () {}, { isConfigSupported: async () => ({ supported: true }) }));
+    vi.stubGlobal("EncodedVideoChunk", function () {});
+    vi.stubGlobal(
+      "WebSocket",
+      class {
+        static OPEN = 1;
+        readyState = 0;
+        constructor(_url: string, protocols: string[]) {
+          sockets.push(protocols);
+        }
+        close() {}
+        send() {}
+      },
+    );
+  });
+
+  it("shows LucinaDesk and mints no Cua view; the page's takeover bar steps aside", async () => {
+    const calls = fakeLucina(state(), undefined, true);
+    renderComputer();
+    expect(await screen.findByRole("img", { name: "Lucina's screen" })).toBeInTheDocument();
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0]![0]).toBe("lucinadesk.v1");
+    expect(calls.some((c) => c.url === "/v1/computer/desk")).toBe(true);
+    expect(calls.some((c) => c.url === "/v1/computer/view")).toBe(false);
+    expect(screen.queryByTitle("Lucina's screen")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();
+  });
+
+  it("falls back to the Cua viewer when the server has no desk endpoint", async () => {
+    const calls = fakeLucina(state());
+    renderComputer();
+    await waitFor(() => expect(calls.some((c) => c.url === "/v1/computer/view")).toBe(true));
+    await waitFor(() => expect(document.querySelector("iframe")).not.toBeNull());
+    expect(screen.queryByRole("img", { name: "Lucina's screen" })).toBeNull();
+  });
+
+  it("remembers the classic viewer, and offers LucinaDesk back", async () => {
+    localStorage.setItem("computer.classic", "yes");
+    const calls = fakeLucina(state(), undefined, true);
+    renderComputer();
+    await waitFor(() => expect(calls.some((c) => c.url === "/v1/computer/view")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Use LucinaDesk" }));
+    expect(await screen.findByRole("img", { name: "Lucina's screen" })).toBeInTheDocument();
+    expect(localStorage.getItem("computer.classic")).toBe("no");
   });
 });

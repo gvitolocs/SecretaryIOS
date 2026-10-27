@@ -3,7 +3,7 @@ import { toApiError } from "../api/client";
 import type { ControlState, Sandbox } from "../api/computer";
 import { t } from "../i18n";
 import { DeskSocket, type DeskMode, type DeskPhase } from "../lib/deskClient";
-import { desktopShell, embedded } from "../lib/desktopShell";
+import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { createTouchMouse } from "../lib/touch";
 import {
   createWheel,
@@ -39,7 +39,7 @@ import "../styles/lucinadesk.css";
 // tap = right click, pinch = local zoom (lib/touch.ts, shared with Simple mode).
 //
 // Focus: inside Secretary Code the stream fills the whole content area and the shell hides its rail
-// (`secretaryShell.setFocusMode`; the shell may leave focus itself, on Esc or a view change, and says so
+// (lib/focusMode; the shell may leave focus itself, on Esc or a view change, and says so
 // through `onFocusModeChange`); in a browser "Full screen" uses the Fullscreen API, and on iPhone,
 // which has none for elements, a fixed, safe-area aware stage.
 
@@ -86,7 +86,8 @@ function callerName(who: string): string {
 
 export default function DeskPlayer(props: DeskPlayerProps) {
   const touch = touchScreen();
-  const shell = desktopShell();
+  /** Inside Secretary Code, whose focus mode replaces full screen. */
+  const inShell = hasFocusMode();
   const [phase, setPhase] = createSignal<DeskPhase>("ticket");
   const [driving, setDriving] = createSignal(false);
   const [switching, setSwitching] = createSignal<null | "take" | "give">(null);
@@ -98,7 +99,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   // Inside Secretary Code the stream owns the content area from the start, if it is on screen: the
   // shell also (re)loads this page in the background, and focus there would hide its rail over another
   // view. A background mount asks when it becomes visible (`onVisible`).
-  const [focus, setFocus] = createSignal(embedded() && typeof document !== "undefined" && document.visibilityState === "visible");
+  const [focus, setFocus] = createSignal(inShell && typeof document !== "undefined" && document.visibilityState === "visible");
   /** Show the tucked-away pill for a moment (focus starts, who drives changes). */
   const [peek, setPeek] = createSignal(true);
   let peekTimer: number | undefined;
@@ -131,6 +132,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   let cur: DeskSocket | null = null;
   let next: DeskSocket | null = null;
   let replay: Replay | null = null;
+  /** The takeover happened in Secretary Code's focus mode: leaving focus gives the desktop back. */
+  let takenInFocus = false;
   let attempts = 0;
   let retryTimer: number | undefined;
   let idleTimer: number | undefined;
@@ -323,6 +326,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
 
   const takeOver = (trigger: Replay | null) => {
+    takenInFocus = inShell && focus();
     setConfirm(null);
     setNotice(null);
     setError(null);
@@ -516,7 +520,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   // ------------------------------------------------------------------ focus & full screen
 
   const enterFocus = () => {
-    if (shell?.setFocusMode) {
+    if (inShell) {
       setFocus(true);
       return;
     }
@@ -539,9 +543,9 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   let shellFocus = false;
   createEffect(
     on(focus, (f) => {
-      if (shell?.setFocusMode && f !== shellFocus) {
+      if (inShell && f !== shellFocus) {
         shellFocus = f;
-        shell.setFocusMode(f);
+        setFocusMode(f);
       }
       document.documentElement.classList.toggle("ldesk-focus", f);
     }),
@@ -568,7 +572,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       (window as unknown as { __lucinadesk?: unknown }).__lucinadesk = { ...s, firstDrawAt, mode: cur?.mode, via: st?.via, frames: st?.frames, bytes: st?.bytes };
     }, 500);
     const onFullscreen = () => {
-      if (!document.fullscreenElement && !shell?.setFocusMode) setFocus(false);
+      if (!document.fullscreenElement && !inShell) setFocus(false);
     };
     const onVisible = () => {
       window.clearTimeout(idleTimer);
@@ -584,7 +588,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       } else {
         // Secretary Code keeps this page warm while another view shows and leaves focus then:
         // coming back to Computer is a new visit, so the stream takes the whole area again.
-        if (shell?.setFocusMode) setFocus(true);
+        if (inShell) setFocus(true);
         if (!cur && !error()) {
           attempts = 0;
           open("watch");
@@ -592,10 +596,13 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       }
     };
     // The shell leaves focus by itself (Esc, its "Exit focus", another view): follow it, never fight it.
-    const unFocus = shell?.onFocusModeChange?.((on) => {
+    // Like the classic view there: a takeover made in focus mode ends with it (like closing the tab).
+    const unFocus = onFocusModeChange((on) => {
       shellFocus = on;
       setFocus(on);
-      if (!on) closeKeyboard();
+      if (on) return;
+      closeKeyboard();
+      if (takenInFocus && driving()) giveBack();
     });
     document.addEventListener("fullscreenchange", onFullscreen);
     document.addEventListener("visibilitychange", onVisible);
@@ -608,7 +615,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       window.clearTimeout(retryTimer);
       window.clearTimeout(idleTimer);
       window.clearTimeout(peekTimer);
-      unFocus?.();
+      unFocus();
       document.removeEventListener("fullscreenchange", onFullscreen);
       document.removeEventListener("visibilitychange", onVisible);
       document.removeEventListener("paste", onPaste);
@@ -619,7 +626,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       cur?.close();
       next?.close();
       cur = next = null;
-      if (shellFocus) shell?.setFocusMode?.(false);
+      if (shellFocus) setFocusMode(false);
       document.documentElement.classList.remove("ldesk-focus");
     });
   });
@@ -755,7 +762,7 @@ export default function DeskPlayer(props: DeskPlayerProps) {
           when={focus()}
           fallback={
             <button type="button" class="ldesk-pill-btn" onClick={enterFocus}>
-              {shell?.setFocusMode ? t("desk.focus") : t("desk.fullScreen")}
+              {inShell ? t("desk.focus") : t("desk.fullScreen")}
             </button>
           }
         >

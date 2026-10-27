@@ -83,6 +83,9 @@ const T = (mode: "watch" | "control") => ({
 const idle: ControlState = { sandbox: "workspace", driver: "none", epoch: 1, owner: null, task: null, lastAgent: null, leaseSecs: 45 };
 const busy: ControlState = { ...idle, driver: "lucina", task: { who: "lucina", what: "book a table", since: 0, stopping: false } };
 
+/** Pretend to run inside Secretary Code (lib/focusMode reads `window.secretaryShell`). */
+const shellIs = (s: object) => ((window as unknown as { secretaryShell?: unknown }).secretaryShell = s);
+
 const LOGIN = { type: "login", hostname: "ws", platform: "Linux", version: "1.4.9", currentDisplay: 0, displays: [{ x: 0, y: 0, width: 1280, height: 800 }] };
 
 async function live(ws: FakeWS) {
@@ -210,14 +213,14 @@ describe("DeskPlayer", () => {
   it("inside Secretary Code: focus by default, follows the shell leaving it, asks again on the next visit", async () => {
     const calls: boolean[] = [];
     let listener: ((on: boolean) => void) | null = null;
-    window.secretaryShell = {
+    shellIs({
       showCode() {},
-      setFocusMode: (on) => calls.push(on),
-      onFocusModeChange: (l) => {
+      setFocusMode: (on: boolean) => calls.push(on),
+      onFocusModeChange: (l: (on: boolean) => void) => {
         listener = l;
         return () => (listener = null);
       },
-    };
+    });
     try {
       const { container, unmount } = render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
       const stage = () => container.querySelector(".ldesk-stage")!;
@@ -242,7 +245,7 @@ describe("DeskPlayer", () => {
 
   it("a background mount in Secretary Code asks for focus only once it is on screen", async () => {
     const calls: boolean[] = [];
-    window.secretaryShell = { showCode() {}, setFocusMode: (on) => calls.push(on), onFocusModeChange: () => () => undefined };
+    shellIs({ showCode() {}, setFocusMode: (on: boolean) => calls.push(on), onFocusModeChange: () => () => undefined });
     let state: DocumentVisibilityState = "hidden";
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
     Object.defineProperty(document, "hidden", { configurable: true, get: () => state === "hidden" });
