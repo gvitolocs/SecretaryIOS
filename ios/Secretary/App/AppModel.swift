@@ -47,6 +47,8 @@ final class AppModel {
     var showNotes = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
+    /// Scan a QR sign-in code and approve it (Features/Login/QrSignIn.swift), a sheet from Plugins.
+    var showQrSignIn = false
     /// The Countdown plugin (pinned events for the countdown widget, `/countdowns`).
     var showCountdowns = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).

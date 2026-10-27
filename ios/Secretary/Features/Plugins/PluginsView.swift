@@ -32,6 +32,8 @@ struct Plugin: Identifiable {
                    detail: String(localized: "Conversations across devices and channels")) { app.showAllChats = true },
             Plugin(id: "computer", icon: "desktopcomputer", title: "Lucina's computer",
                    detail: String(localized: "Watch her desktop live, take over")) { app.showComputer = true },
+            Plugin(id: "qrSignIn", icon: "qrcode.viewfinder", title: "Scan QR code",
+                   detail: String(localized: "Sign in another device")) { app.showQrSignIn = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
             Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
@@ -69,6 +71,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
         .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }
         .navigationDestination(isPresented: $app.showComputer) { LucinaComputerView() }
+        .sheet(isPresented: $app.showQrSignIn) { QrSignInSheet() }
     }
 }
 

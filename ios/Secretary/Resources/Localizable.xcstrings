@@ -18019,6 +18019,342 @@
           }
         }
       }
+    },
+    "Sign in another device" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Log en anden enhed ind"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fai accedere un altro dispositivo"
+          }
+        }
+      }
+    },
+    "Scan QR code" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan QR-kode"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scansiona codice QR"
+          }
+        }
+      }
+    },
+    "Done. The other device is signed in." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Færdig. Den anden enhed er logget ind."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fatto. L'altro dispositivo ha effettuato l'accesso."
+          }
+        }
+      }
+    },
+    "Denied. The other device stays signed out." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afvist. Den anden enhed forbliver logget ud."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rifiutato. L'altro dispositivo resta disconnesso."
+          }
+        }
+      }
+    },
+    "This code expired or was already used. Show a new code on the other device and scan it again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Koden er udløbet eller allerede brugt. Vis en ny kode på den anden enhed, og scan den igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il codice è scaduto o è già stato usato. Mostra un nuovo codice sull'altro dispositivo e inquadralo di nuovo."
+          }
+        }
+      }
+    },
+    "That isn't a Secretary sign-in code." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det er ikke en Secretary-loginkode."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo non è un codice di accesso di Secretary."
+          }
+        }
+      }
+    },
+    "Point the camera at the QR code on the screen you want to sign in." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Peg kameraet mod QR-koden på den skærm, du vil logge ind på."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Inquadra il codice QR sullo schermo su cui vuoi accedere."
+          }
+        }
+      }
+    },
+    "Type the 6 digits shown under the QR code." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skriv de 6 cifre under QR-koden."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Digita le 6 cifre mostrate sotto il codice QR."
+          }
+        }
+      }
+    },
+    "Or type the 6-digit code" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eller skriv den 6-cifrede kode"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Oppure digita il codice di 6 cifre"
+          }
+        }
+      }
+    },
+    "A device is asking to sign in to your Secretary. Approve only if it's yours and in front of you." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En enhed beder om at logge ind på din Secretary. Godkend kun, hvis den er din og foran dig."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un dispositivo chiede di accedere al tuo Secretary. Approva solo se è tuo e ce l'hai davanti."
+          }
+        }
+      }
+    },
+    "IP address" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "IP-adresse"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Indirizzo IP"
+          }
+        }
+      }
+    },
+    "Asked" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Anmodet"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Richiesto"
+          }
+        }
+      }
+    },
+    "Unknown device" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukendt enhed"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dispositivo sconosciuto"
+          }
+        }
+      }
+    },
+    "Approving…" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkender…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Approvo…"
+          }
+        }
+      }
+    },
+    "Approve" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkend"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Approva"
+          }
+        }
+      }
+    },
+    "Deny" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afvis"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rifiuta"
+          }
+        }
+      }
+    },
+    "Sign in on another device?" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Log ind på en anden enhed?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accedere su un altro dispositivo?"
+          }
+        }
+      }
+    },
+    "Scan again" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan igen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scansiona di nuovo"
+          }
+        }
+      }
+    },
+    "Camera access is off for Secretary. Allow it in Settings, or type the code below." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kameraadgang er slået fra for Secretary. Tillad det i Indstillinger, eller skriv koden nedenfor."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "L'accesso alla fotocamera è disattivato per Secretary. Consentilo in Impostazioni, oppure digita il codice qui sotto."
+          }
+        }
+      }
+    },
+    "No camera here. Type the code shown under the QR code instead." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Intet kamera her. Skriv i stedet koden under QR-koden."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nessuna fotocamera disponibile. Digita invece il codice mostrato sotto il QR."
+          }
+        }
+      }
+    },
+    "%@ on %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ på %2$@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ su %2$@"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

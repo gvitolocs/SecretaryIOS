@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("share.lastResultMessage", store: UserDefaults(suiteName: ShareRequestBuilder.group)) private var lastShareResult = ""
     @State private var confirmSignOut = false
     @State private var showPassword = false
+    @State private var showQrSignIn = false
     @State private var developerTaps = 0
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
     @AppStorage(LucinaVoiceReplies.settingKey) private var voiceReplies = true
@@ -120,6 +121,8 @@ struct SettingsView: View {
 
             Section("This device") {
                 LabeledContent("Device name", value: app.deviceName ?? "—")
+                Button("Sign in another device", systemImage: "qrcode.viewfinder") { showQrSignIn = true }
+                    .accessibilityIdentifier("qrSignIn")
                 Button("Change password", systemImage: "key") { showPassword = true }
                 Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) { confirmSignOut = true }
                     .accessibilityIdentifier("signOut")
@@ -194,6 +197,7 @@ struct SettingsView: View {
             Text("The device token is deleted from this iPhone. The local chat history is cleared too.")
         }
         .sheet(isPresented: $showPassword) { ChangePasswordView() }
+        .sheet(isPresented: $showQrSignIn) { QrSignInSheet() }
     }
 
     private func runConnectionTest() async {

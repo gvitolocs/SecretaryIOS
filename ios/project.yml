@@ -73,7 +73,7 @@ targets:
         NSSpeechRecognitionUsageDescription: "Your words are turned into text so Lucina can answer them."
         # Face tracking (Lucina mirrors your face), AR (Lucina in your room) and the chat's camera; localized in
         # Secretary/Resources/InfoPlist.xcstrings.
-        NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, and you can take photos and videos to send her in the chat. Nothing leaves this iPhone unless you send it."
+        NSCameraUsageDescription: "Lucina mirrors your face or appears in your room when you turn it on, you can take photos and videos to send her in the chat, and you can scan a QR code to sign in another device. Nothing leaves this iPhone unless you send it."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # secretary://open/<route>: the widgets' and controls' links into the app (Shared/Widgets/WidgetRoutes.swift).
