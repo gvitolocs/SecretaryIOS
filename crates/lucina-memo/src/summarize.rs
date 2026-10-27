@@ -347,7 +347,9 @@ pub async fn summarize(
         let req = ChatRequest {
             messages: vec![Message::system(SYSTEM), Message::user(user.clone())],
             temperature: Some(0.3),
-            max_tokens: Some(4000),
+            // An hour-long lecture's notes, definitions and questions overran 4000 tokens: the
+            // JSON came back cut off (2026-10-27).
+            max_tokens: Some(8000),
             purpose: "memo_summary",
             json_object: true,
             ..Default::default()
