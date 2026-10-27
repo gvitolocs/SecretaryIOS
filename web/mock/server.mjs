@@ -49,6 +49,9 @@
 //   missing there fall back to lucina.glb (hairstyle parts are 404: she keeps her own hair).
 //   Chat "mettiti la divisa", "put on your gym clothes", "fatti la coda", "put your hair in a
 //   bun", "torna automatica" make Lucina change (an avatar_outfit timeline item, like the real one).
+// Maps (mock/maps.mjs): /v1/maps/config (tiles null unless MOCK_MAPS_TILES=<file.pmtiles>, then
+//   served with Range; MOCK_MAPS_ASSETS=<dir> serves fonts/ and sprites/), /v1/maps/geocode (a
+//   fixed table: "Folkehuset Møllestien", "Skejbygårdsvej 3"), and /v1/maps/routes (four modes).
 // Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
 //   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
 // Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
@@ -58,6 +61,7 @@
 // that the UI degrades gracefully.
 
 import http from "node:http";
+import { handleMaps } from "./maps.mjs";
 import { addNotification, handleNotifications } from "./notifications.mjs";
 import { INVENTARIO_BEFORE, INVENTARIO_QUESTION, richMeta, richReply } from "./rich.mjs";
 import { randomUUID } from "node:crypto";
@@ -1875,6 +1879,7 @@ async function route(req, res) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
   if (path.startsWith("/v1/media")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  if (handleMaps(req, res, url, path)) return;
   if (await (await import("./shopping-v2.mjs")).handleShoppingV2(req, res, { path, method, url, send, fail, readJson })) return;
   if (await handleNotifications(req, res, { path, method, url, send, fail, readJson })) return;
   if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);

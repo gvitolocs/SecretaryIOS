@@ -4,12 +4,14 @@ import { getMediaItem, playMedia, type MediaItem } from "../api/media";
 import type { Attachment } from "../api/timeline";
 import { t } from "../i18n";
 import { albumCellStyle, albumLayout, ALBUM_MAX } from "../lib/album";
-import { formatBytes, formatCoordinate, formatDuration, googleMapsUrl } from "../lib/attachments";
+import { formatBytes, formatCoordinate, formatDuration } from "../lib/attachments";
 import { chooseGridUrl, choosePreviewUrl, mediaOriginalUrl, supportsJxl } from "../lib/jxl";
 import { safeHref } from "../lib/linkify";
+import { hasPoint, placeFromMapsLink, type PlaceInfo } from "../lib/mapKit";
 import { linkHost } from "../lib/share";
 import { thumbHashToImage } from "../lib/thumbhash";
 import { trayIcon } from "./AttachmentTray";
+import { PlaceCard } from "./PlaceCard";
 import "../styles/share.css";
 
 const LABELS: Record<Attachment["kind"], "image" | "video" | "audio" | "pdf" | "document" | "file" | "link" | "text" | "contact" | "location" | "voice"> = {
@@ -291,30 +293,33 @@ function LinkCard(props: { item: Attachment }) {
   );
 }
 
+/** A shared location, or a shared Apple/Google Maps or `geo:` link, as a place. */
+export function attachmentPlace(item: Attachment): PlaceInfo | null {
+  if (item.kind === "location") {
+    const point = { lat: item.lat, lng: item.lon };
+    if (!hasPoint(point)) return null;
+    return { title: item.name || `${formatCoordinate(point.lat)}, ${formatCoordinate(point.lng)}`, ...point, kind: "place" };
+  }
+  if (item.kind === "link" && item.url) {
+    const place = placeFromMapsLink(item.url);
+    if (!place) return null;
+    // a link's own title (e.g. "Folkehuset") beats the bare coordinates
+    const title = item.name && !/^https?:|^geo:/i.test(item.name) && !place.address ? item.name : place.title;
+    return { ...place, title, kind: "place" };
+  }
+  return null;
+}
+
 function LocationCard(props: { item: Attachment }) {
-  const hasPoint = () => typeof props.item.lat === "number" && typeof props.item.lon === "number";
-  const maps = () => (hasPoint() ? googleMapsUrl(props.item.lat!, props.item.lon!) : null);
-  const title = () => props.item.name || (hasPoint() ? `${formatCoordinate(props.item.lat!)}, ${formatCoordinate(props.item.lon!)}` : t("share.location"));
-  const content = () => (
-    <>
-      <span class="location-pin" aria-hidden="true">{trayIcon("location")}</span>
-      <span class="location-body">
-        <span class="location-name">{title()}</span>
-        <Show when={hasPoint()}>
-          <small>{formatCoordinate(props.item.lat!)}, {formatCoordinate(props.item.lon!)}</small>
-        </Show>
-      </span>
-    </>
-  );
+  const title = () => props.item.name || t("share.location");
   return (
     <li class="attachment attachment--location">
-      <Show when={maps()} fallback={<div class="location-card">{content()}</div>}>
-        {(url) => (
-          <a class="location-card" href={url()} target="_blank" rel="noopener noreferrer" aria-label={t("share.openMap", { name: title() })}>
-            {content()}
-          </a>
-        )}
-      </Show>
+      <div class="location-card">
+        <span class="location-pin" aria-hidden="true">{trayIcon("location")}</span>
+        <span class="location-body">
+          <span class="location-name">{title()}</span>
+        </span>
+      </div>
     </li>
   );
 }
@@ -412,6 +417,14 @@ export function Attachments(props: { items: Attachment[] }) {
           <For each={others()}>{(item) => {
             if (item.kind === "video") return <VideoCard item={item} />;
             if (item.kind === "audio" || item.kind === "voice") return <AudioCard item={item} />;
+            const place = attachmentPlace(item);
+            if (place) {
+              return (
+                <li class="attachment attachment--place">
+                  <PlaceCard place={place} />
+                </li>
+              );
+            }
             if (item.kind === "link") return <LinkCard item={item} />;
             if (item.kind === "location") return <LocationCard item={item} />;
             return <FileCard item={item} />;
