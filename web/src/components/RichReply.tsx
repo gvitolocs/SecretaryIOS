@@ -12,6 +12,7 @@ import {
   type ChatMessage,
 } from "../state/chat";
 import { InlineMarkdown, Markdown } from "./Markdown";
+import { PlaceCard } from "./PlaceCard";
 
 // Lucina message format v1 in the web chat (docs/lucina-message-format.md):
 // bubbles one by one with a typing pause, then widgets, then buttons. All text
@@ -179,6 +180,9 @@ function Widget(props: { block: RichBlock }) {
             </Show>
           </figure>
         )}
+      </Match>
+      <Match when={props.block.type === "place" && props.block}>
+        {(b) => <PlaceCard place={b()} class="rw-place" />}
       </Match>
       <Match when={props.block.type === "link_preview" && props.block}>
         {(b) => (

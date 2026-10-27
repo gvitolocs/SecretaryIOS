@@ -227,13 +227,35 @@ describe("attachment bubbles", () => {
     expect(screen.getByRole("link", { name: "Download report.pdf" })).toHaveAttribute("href", "/v1/media/items/p1/original");
     expect(screen.getByText("2.0 KB", { exact: false })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Example page/ })).toHaveTextContent("example.com");
-    expect(screen.getByRole("link", { name: "Open 45.4642, 9.19 in Google Maps" })).toHaveAttribute(
+    // a shared location is a place card opening the in-app map (nothing external)
+    expect(screen.getByRole("link", { name: /45\.4642, 9\.19/ })).toHaveAttribute(
       "href",
-      "https://www.google.com/maps/search/?api=1&query=45.4642%2C9.19",
+      "/map/place?lat=45.4642&lng=9.19&title=45.4642%2C+9.19",
     );
     expect(screen.getByRole("button", { name: "Play" })).toBeInTheDocument();
     expect(screen.getByText("1:05")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Play video clip.mp4" })).toHaveTextContent("0:12");
+  });
+
+  it("renders shared Apple/Google Maps and geo: links as place cards", async () => {
+    stubFetch(() => ({ body: {} }));
+    render(() => (
+      <Attachments
+        items={[
+          { kind: "link", name: "Folkehuset", url: "https://maps.apple.com/?ll=56.1611,10.2006" },
+          { kind: "link", url: "https://www.google.com/maps/place/Skejbyg%C3%A5rdsvej+3/@56.19633,10.2011,17z" },
+          { kind: "link", url: "geo:56.1611,10.2006?q=56.1611,10.2006(Hack%20Night)" },
+          { kind: "link", name: "Not a map", url: "https://example.com/" },
+        ]}
+      />
+    ));
+    expect(screen.getByRole("link", { name: /Folkehuset/ })).toHaveAttribute("href", "/map/place?lat=56.1611&lng=10.2006&title=Folkehuset");
+    expect(screen.getByRole("link", { name: /Skejbygårdsvej 3/ }).getAttribute("href")).toBe(
+      "/map/place?lat=56.19633&lng=10.2011&title=Skejbyg%C3%A5rdsvej+3",
+    );
+    expect(screen.getByRole("link", { name: /Hack Night/ }).getAttribute("href")).toContain("/map/place?lat=56.1611");
+    expect(screen.getByRole("link", { name: /Not a map/ })).toHaveAttribute("href", "https://example.com/");
+    expect(document.querySelectorAll(".place-card")).toHaveLength(3);
   });
 
   it("plays a video inline from the tokenised play URL", async () => {

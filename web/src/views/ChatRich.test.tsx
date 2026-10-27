@@ -211,6 +211,21 @@ describe("Lucina message format v1 in the chat", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders a place block as a place card opening the in-app map", async () => {
+    stubFetch(() => ({ status: 404, body: {} }));
+    const rich = parseRich({
+      format: "v1",
+      bubbles: ["Domani sera:"],
+      blocks: [{ type: "place", title: "Hack Night", address: "Folkehuset Møllestien, Aarhus", lat: 56.1611, lng: 10.2006, kind: "event" }],
+    })!;
+    const message: ChatMessage = { key: "r:p", role: "lucina", text: "", createdAt: Date.now(), channel: "web", rich };
+    render(() => <RichReply message={message} rich={rich} />);
+    const card = screen.getByRole("link", { name: /Hack Night/ });
+    expect(card).toHaveClass("place-card");
+    expect(card).toHaveTextContent("Folkehuset Møllestien, Aarhus");
+    expect(card.getAttribute("href")).toMatch(/^\/map\/place\?lat=56\.1611&lng=10\.2006&title=Hack\+Night/);
+  });
+
   it("a route button navigates in the app", async () => {
     const rich = parseRich(INVENTARIO)!;
     const message: ChatMessage = { key: "s:9", itemId: "9", role: "lucina", text: "", createdAt: Date.now(), channel: "web", rich };

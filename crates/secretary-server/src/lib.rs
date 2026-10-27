@@ -79,20 +79,15 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; connect-src 'self
 /// Push), and `manifest-src 'self'` the web app manifest.
 ///
 /// Plus `base-uri 'none'`. Same directives as the standalone `/lucina/`
-/// page in `deploy/Caddyfile.p1`.
+/// page in `deploy/Caddyfile.p1`, with embedded font data also admitted (below).
 ///
-/// The deals map loads the Maps JavaScript API, which per Google's allowlist
-/// CSP guide (developers.google.com/maps/documentation/javascript/
-/// content-security-policy, "Allowlist CSP" example) additionally needs:
-/// - `script-src`: given the API is loaded by a script tag, the domains with
-///   `'unsafe-eval'` (and `https://*.ggpht.com` legacy fallback);
-/// - `img-src`: the hillshade tiles, place icons and marker art come from
-///   `googleapis.com`, `gstatic.com`, `google.com`, `googleusercontent.com`;
-/// - `frame-src *.google.com`: the in-map Knowledge/ Street View frames;
-/// - `connect-src`: tile and autocomplete calls to the same domains;
-/// - `font-src` / `style-src` `fonts.gstatic.com` / `fonts.googleapis.com`
-///   (keep `'self' 'unsafe-inline'` for the app's own styles).
-pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval' blob: https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com; img-src 'self' data: blob: https://*.googleapis.com https://*.gstatic.com *.google.com *.googleusercontent.com; connect-src 'self' blob: data: https://*.googleapis.com *.google.com https://*.gstatic.com; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-ancestors 'none'; frame-src *.google.com; base-uri 'none'";
+/// The in-app maps (MapLibre GL with self-hosted Protomaps tiles, fonts and
+/// sprites under `/v1/maps/*`) need nothing beyond that: tiles, glyphs and
+/// sprites are same-origin fetches, the MapLibre worker is a same-origin
+/// module (`worker-src 'self'`), and its canvas images are `data:`/`blob:`.
+/// No third-party origin is allowed; `font-src data:` admits fonts inlined
+/// into the app's own CSS.
+pub const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:; connect-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; manifest-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'none'";
 
 pub struct Inner {
     pub lucina: Option<LucinaClient>,
