@@ -627,6 +627,22 @@
     wake();
   }
 
+  /**
+   * Esc while only watching is the page's (it leaves full screen / focus mode); while driving it is
+   * the desktop's and stays here. Watching, the frame may still hold keyboard focus (a click on the
+   * toolbar), so the page would never see the key.
+   */
+  function forwardEscapeWhileWatching() {
+    document.addEventListener(
+      "keydown",
+      function (event) {
+        if (event.key !== "Escape" || mode === "control") return;
+        send({ type: "lucina:escape" });
+      },
+      true
+    );
+  }
+
   // ------------------------------------------------------------------ wiring
 
   window.addEventListener("message", function (event) {
@@ -677,5 +693,6 @@
   watchStatus();
   routeFullscreen();
   autoHideToolbar();
+  forwardEscapeWhileWatching();
   send({ type: "lucina:ready", coarse: COARSE, mode: mode });
 })();
