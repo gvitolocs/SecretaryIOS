@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { children, createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { t } from "../i18n";
 import { imageCore, type CoreView, type DragOut, type Gesture, type ImageCore, type Rect, type ViewRequest } from "../lib/imageCore";
@@ -25,6 +25,8 @@ export interface ViewerItem {
   kind?: "photo" | "video";
   /** The file itself, for sharing and saving a local file. */
   blob?: Blob;
+  /** Drawn turned clockwise by this many degrees (the Gallery's saved rotation); 0 by default. */
+  rotation?: 0 | 90 | 180 | 270;
 }
 
 export interface SaveResult {
@@ -49,6 +51,12 @@ export interface PhotoViewerProps {
   actions?: ViewerActions;
   /** The picture at `index` failed to load (e.g. HEIC in a browser without HEIC). */
   onImageError?: (index: number) => void;
+  /** A floating pill of extra buttons at the bottom (`.pv-btn`s); hidden with the other controls. */
+  toolbar?: JSX.Element;
+  /** A panel beside the picture (a bottom sheet on phones); the stage shrinks to make room for it. */
+  panel?: JSX.Element;
+  /** Called first for every key; return true to say the key is handled and the viewer must ignore it. */
+  onKeyDown?: (e: KeyboardEvent) => boolean | void;
 }
 
 /** Points between pages, as on the phone. */
@@ -120,14 +128,23 @@ export function PhotoViewer(props: PhotoViewerProps) {
   };
 
   const zoomed = () => (view()?.scale ?? 1) > 1.01;
+  const turnOf = (item: ViewerItem | undefined) => item?.rotation ?? 0;
+  /** A quarter turn (90 or 270): the picture lies on its side. */
+  const turned = () => turnOf(current()) % 180 !== 0;
 
   // A fresh, fitted view once the picture, the viewport and the core are all known.
   createEffect(() => {
     const n = natural();
     const s = size();
     if (!core() || !n || !s.w || !s.h || view()) return;
-    take(ask({ new: [n.w, n.h, s.w, s.h] }));
+    take(ask({ new: turned() ? [n.h, n.w, s.w, s.h] : [n.w, n.h, s.w, s.h] }));
   });
+
+  // Rotated a quarter turn: the picture's width and height swap, so fit it again.
+  createEffect(on(() => turnOf(current()), () => {
+    setView(null);
+    setRect(null);
+  }, { defer: true }));
 
   // Another item: start fitted.
   createEffect(on(() => props.index, () => {
@@ -380,6 +397,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
     panel?.focus();
     measure();
     const onKey = (e: KeyboardEvent) => {
+      if (props.onKeyDown?.(e) === true) return;
       if (e.key === "Escape") {
         e.preventDefault();
         props.onClose();
@@ -473,6 +491,9 @@ export function PhotoViewer(props: PhotoViewerProps) {
       if (i !== null && i !== props.index && !list.some((s) => s.index === i)) list.push({ index: i, slot: delta });
     }
     return list;
+  }, undefined, {
+    // The same pages again (an item's fields changed, not the pages): keep the pictures, don't reload them.
+    equals: (a, b) => a.length === b.length && a.every((s, i) => s.index === b[i]?.index && s.slot === b[i]?.slot),
   });
 
   const slotStyle = (slot: number) => {
@@ -482,18 +503,35 @@ export function PhotoViewer(props: PhotoViewerProps) {
     return { transform: `${base} translate3d(${d.offset_x}px, ${d.offset_y}px, 0) scale(${d.scale})` };
   };
 
-  const imageStyle = (isCurrent: boolean) => {
-    const r = rect();
-    if (!isCurrent || !r) return undefined;
-    return { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` };
+  const imageStyle = (item: ViewerItem | undefined, isCurrent: boolean) => {
+    const r = isCurrent ? rect() : null;
+    const turn = turnOf(item);
+    const s = size();
+    if (!turn) {
+      if (!r) return undefined;
+      return { left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px` };
+    }
+    // Rotated: the box the core placed is the turned picture's; draw the unturned image into its centre.
+    const box = r ?? { x: 0, y: 0, w: s.w, h: s.h };
+    const sideways = turn % 180 !== 0;
+    const w = sideways ? box.h : box.w;
+    const h = sideways ? box.w : box.h;
+    if (!r && sideways) {
+      // Not placed yet: fit the unturned picture to the stage's swapped sides.
+      return { left: `${s.w / 2 - s.h / 2}px`, top: `${s.h / 2 - s.w / 2}px`, width: `${s.h}px`, height: `${s.w}px`, transform: `rotate(${turn}deg)` };
+    }
+    return { left: `${box.x + box.w / 2 - w / 2}px`, top: `${box.y + box.h / 2 - h / 2}px`, width: `${w}px`, height: `${h}px`, transform: `rotate(${turn}deg)` };
   };
+
+  const toolbar = children(() => props.toolbar);
+  const sidePanel = children(() => props.panel);
 
   return (
     <Portal>
       <div
         ref={panel}
         class="pv"
-        classList={{ "pv--chrome": chrome(), "pv--animating": animating(), "pv--closing": closing(), "pv--zoomed": zoomed() }}
+        classList={{ "pv--chrome": chrome(), "pv--animating": animating(), "pv--closing": closing(), "pv--zoomed": zoomed(), "pv--panel": !!sidePanel() }}
         role="dialog"
         aria-modal="true"
         aria-label={label()}
@@ -526,7 +564,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
                           src={src()}
                           alt={item()?.name ?? ""}
                           draggable={false}
-                          style={imageStyle(isCurrent())}
+                          style={imageStyle(item(), isCurrent())}
                           onLoad={(e) => {
                             if (!isCurrent() || natural()) return;
                             const img = e.currentTarget;
@@ -565,6 +603,12 @@ export function PhotoViewer(props: PhotoViewerProps) {
             </Show>
           </span>
         </div>
+        <Show when={toolbar()}>
+          <div class="pv-toolbar" role="toolbar" aria-label={t("galleryInfo.toolbarLabel")}>{toolbar()}</div>
+        </Show>
+        <Show when={sidePanel()}>
+          <aside class="pv-panel">{sidePanel()}</aside>
+        </Show>
         <Show when={count() > 1}>
           <button type="button" class="pv-btn pv-prev" aria-label={t("viewer.previous")} disabled={neighbour(-1) === null} onClick={() => move(-1, true)}>‹</button>
           <button type="button" class="pv-btn pv-next" aria-label={t("viewer.next")} disabled={neighbour(1) === null} onClick={() => move(1, true)}>›</button>

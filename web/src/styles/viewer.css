@@ -143,10 +143,67 @@
 .pv-next { right: 16px; }
 
 .pv:not(.pv--chrome) .pv-top,
+.pv:not(.pv--chrome) .pv-toolbar,
 .pv:not(.pv--chrome) .pv-prev,
 .pv:not(.pv--chrome) .pv-next {
   opacity: 0;
   pointer-events: none;
+}
+
+/* A floating pill of extra buttons (PhotoViewer `toolbar`), centred under the picture. */
+.pv-toolbar {
+  position: absolute;
+  left: calc((100% - var(--pv-panel-w, 0px)) / 2);
+  bottom: calc(var(--pv-sheet-h, 0px) + max(14px, env(safe-area-inset-bottom)));
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100% - var(--pv-panel-w, 0px) - 16px);
+  padding: 4px;
+  border-radius: 28px;
+  background: rgb(28 28 30 / 72%);
+  transform: translateX(-50%);
+  transition: opacity 180ms ease-out;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pv-toolbar .pv-btn {
+  flex: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.pv-toolbar .pv-btn:hover:not(:disabled) { background: rgb(255 255 255 / 18%); }
+
+/* A panel beside the picture (PhotoViewer `panel`): the stage shrinks to leave room for it. */
+.pv--panel { --pv-panel-w: min(360px, 40vw); }
+
+.pv--panel .pv-stage {
+  right: var(--pv-panel-w);
+  bottom: var(--pv-sheet-h, 0px);
+}
+
+.pv--panel .pv-top { right: var(--pv-panel-w); }
+.pv--panel .pv-next { right: calc(var(--pv-panel-w) + 16px); }
+.pv--panel .pv-prev,
+.pv--panel .pv-next { top: calc((100% - var(--pv-sheet-h, 0px)) / 2); }
+
+.pv-panel {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: var(--pv-panel-w);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+  background: #1c1c1e;
+  color: #fff;
+  touch-action: pan-y;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* Touch screens swipe; the side arrows are for the mouse. */
@@ -158,6 +215,23 @@
 @media (max-width: 600px) {
   .pv-top { padding-inline: 8px; gap: 8px; }
   .pv-text { padding: 0 10px; }
+}
+
+/* On a phone the panel is a bottom sheet under the picture. */
+@media (max-width: 700px) {
+  .pv--panel {
+    --pv-panel-w: 0px;
+    --pv-sheet-h: min(56dvh, 460px);
+  }
+
+  .pv-panel {
+    inset: auto 0 0 0;
+    width: auto;
+    height: var(--pv-sheet-h);
+    border-left: 0;
+    border-top: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 16px 16px 0 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
