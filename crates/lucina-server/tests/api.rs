@@ -954,9 +954,11 @@ async fn shopping_routes() {
 #[tokio::test]
 async fn scheduler_health_reports_failures_without_failing_health() {
     let h = harness(chat_script("x"), |c| c.scheduler = true).await;
+    let tick_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     {
         let mut health = h.state.scheduler_health.lock().unwrap();
-        health.last_tick_at = Some("2026-10-26T12:00:00.000Z".into());
+        // A recent tick: a stalled scheduler (no tick for 10 polls) is a liveness failure.
+        health.last_tick_at = Some(tick_at.clone());
         health.last_error = Some("delivery uncertain; not resent: read timeout".into());
         health.delivered = 2;
         health.not_delivered = 3;
@@ -972,6 +974,6 @@ async fn scheduler_health_reports_failures_without_failing_health() {
     let body: Value = response.json().await.unwrap();
     assert_eq!(
         body["scheduler"],
-        json!({"enabled":true,"lastTickAt":"2026-10-26T12:00:00.000Z","lastError":"delivery uncertain; not resent: read timeout","delivered":2,"notDelivered":3,"uncertain":1})
+        json!({"enabled":true,"lastTickAt":tick_at,"lastError":"delivery uncertain; not resent: read timeout","delivered":2,"notDelivered":3,"uncertain":1})
     );
 }
