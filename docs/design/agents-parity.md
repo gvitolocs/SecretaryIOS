@@ -44,7 +44,7 @@ deterministic on both sides.
 | A16 | Agents | rewind (conversation/files/both), fork with chat-history context (100k chars) | `lagent rewind`, `lagent fork` | 6 | diff: mock supports all rewind modes | todo |
 | A17 | Agents | mode / model / thinking / feature changes, reload | `lagent agent set-*`, `reload` | 2 | diff | todo |
 | A18 | Agents | idempotent creation (`creations/*.json` + claim) | idempotency key on `POST /v1/agents` | 1 | test: double submit | built (daemon.rs idempotent_create) |
-| P1 | Providers | claude (Agent SDK) | Claude Code CLI stream-json | 2 | manual run + permission | built: stream-json + SDK control protocol; real run blocked by quota (resets 20:30 UTC) — quota path verified in the deep-chain run |
+| P1 | Providers | claude (Agent SDK) | Claude Code CLI stream-json | 2 | manual run + permission | green: real runs (reply; a Write in acceptEdits mode, then a follow-up in the same session; usage and cost reported; no leftover processes). The quota path was verified in the deep-chain run |
 | P2 | Providers | codex (`codex app-server`) | same protocol | 2 | manual run + permission | green: real runs (reply, shell tool, follow-up in the same thread); since then the workspace is out of credits |
 | P3 | Providers | opencode (`opencode serve`, HTTP+SSE) | same | 2 | manual run | green: real run over `opencode acp` (intentional difference: ACP instead of `opencode serve`) |
 | P4 | Providers | copilot (ACP), custom ACP providers (cursor, kimi, kiro, trae) | generic ACP adapter | 2 | manual: cursor via ACP or stream-json | built: Copilot and Cursor over ACP reach the agent; both accounts are out of quota (quota replies classified); Cursor forced to fast=false |
