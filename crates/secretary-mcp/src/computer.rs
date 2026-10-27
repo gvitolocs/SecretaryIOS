@@ -81,7 +81,7 @@ pub struct ToolsArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallArgs {
-    /// A driver tool from `computer_tools`, e.g. click, type_text, press_key, scroll, launch_app, get_window_state, browser_navigate (browser_* tools need start_session first). The workspace uses Chromium only; never install or launch Firefox. Android is separate.
+    /// A driver tool from `computer_tools`, e.g. click, type_text, press_key, scroll, launch_app, get_window_state, browser_navigate (browser_* tools need start_session, browser_prepare and get_browser_state first; see computer_call). The workspace uses Chromium only; never install or launch Firefox. Android is separate.
     pub tool: String,
     /// The tool's arguments. Most take the pid and window_id that a screenshot lists.
     #[serde(default)]
