@@ -48,6 +48,14 @@ fn text(v: &Value, key: &str) -> Option<String> {
 pub fn to_item(ev: &Value, calendar_tz: &str) -> Option<Item> {
     let uid = text(ev, "id")?;
     let mut item = Item {
+        attendees: ev
+            .get("attendees")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|a| text(a, "displayName").or_else(|| text(a, "email")))
+            .take(30)
+            .collect(),
         uid,
         cancelled: ev.get("status").and_then(Value::as_str) == Some("cancelled"),
         title: text(ev, "summary").unwrap_or_default(),
@@ -206,5 +214,25 @@ mod tests {
         );
         let d = Moment::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 22).unwrap());
         assert_eq!(instance_id("abc", &d, chrono_tz::UTC), "abc_20261022");
+    }
+
+    #[test]
+    fn attendees() {
+        let ev = json!({
+            "id": "m1", "status": "confirmed", "summary": "Sync",
+            "start": {"dateTime": "2026-10-27T09:00:00+01:00"}, "end": {"dateTime": "2026-10-27T10:00:00+01:00"},
+            "attendees": [{"displayName": "Anna Rossi", "email": "anna@x.it"}, {"email": "bo@y.dk"}, {}]
+        });
+        let item = to_item(&ev, "Europe/Copenhagen").unwrap();
+        assert_eq!(
+            item.attendees,
+            vec!["Anna Rossi".to_owned(), "bo@y.dk".to_owned()]
+        );
+        let none = to_item(
+            &json!({"id": "m2", "summary": "Gym", "start": {"date": "2026-10-27"}}),
+            "UTC",
+        )
+        .unwrap();
+        assert!(none.attendees.is_empty());
     }
 }

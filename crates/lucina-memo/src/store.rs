@@ -45,6 +45,8 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// What a device sends to start a memo.
 #[derive(Debug, Clone)]
 pub struct NewMemo {
+    pub ended_at: Option<DateTime<Utc>>,
+    pub location: Option<crate::model::GeoFix>,
     pub client_id: String,
     pub title: Option<String>,
     pub recorded_at: DateTime<Utc>,
@@ -76,9 +78,7 @@ pub fn audio_type(mime: &str) -> Option<(&'static str, &'static str)> {
         .trim()
         .to_ascii_lowercase();
     Some(match base.as_str() {
-        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/mp4a-latm" => {
-            ("audio/mp4", "m4a")
-        }
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/mp4a-latm" => ("audio/mp4", "m4a"),
         // ADTS AAC: the iPhone records it because a cut-off file still decodes (worker step 0 remuxes it to .m4a).
         "audio/aac" | "audio/x-aac" | "audio/aacp" => ("audio/aac", "aac"),
         "audio/webm" | "video/webm" => ("audio/webm", "webm"),
@@ -311,6 +311,11 @@ impl Store {
             transcript_source: None,
             upgrade_attempts: 0,
             notify_telegram_rev: None,
+            ended_at: n.ended_at,
+            location: n.location,
+            event: None,
+            event_source: None,
+            obsidian_old_notes: Vec::new(),
         };
         let dir = self.dir(&id);
         std::fs::create_dir_all(&dir)?;
@@ -500,6 +505,8 @@ mod tests {
 
     fn new_memo(client: &str, size: u64) -> NewMemo {
         NewMemo {
+            ended_at: None,
+            location: None,
             client_id: client.into(),
             title: Some("  Call  with\nAnna ".into()),
             recorded_at: Utc::now(),

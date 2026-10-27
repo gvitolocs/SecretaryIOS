@@ -82,6 +82,7 @@ impl Rng {
 
 fn event(i: usize, start_ms: i64, end_ms: i64, all_day: bool) -> Event {
     Event {
+        attendees: vec![],
         id: format!("t:{i}"),
         source: Source::Google,
         source_id: format!("{i}"),

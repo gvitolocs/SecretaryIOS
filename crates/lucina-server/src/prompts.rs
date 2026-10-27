@@ -289,6 +289,10 @@ impl Prompts {
         if !memory.is_empty() {
             parts.push(format!("Memory context:\n{memory}"));
         }
+        let reply = crate::planner::turn_reply();
+        if !reply.is_empty() {
+            parts.push(reply);
+        }
         parts.push(format!("Message:\n{message}"));
         parts.join("\n\n")
     }
@@ -515,6 +519,10 @@ impl Prompts {
         ];
         if !memory.is_empty() {
             parts.push(format!("Memory context:\n{memory}"));
+        }
+        let reply = crate::planner::turn_reply();
+        if !reply.is_empty() {
+            parts.push(reply);
         }
         parts.push(format!("Message:\n{message}"));
         parts.join("\n\n")

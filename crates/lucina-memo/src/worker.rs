@@ -151,7 +151,11 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 Err(e) if e.is_transient() => kernel::Gpu::Busy,
                 Err(_) => kernel::Gpu::Failed,
             };
-            let (t, source) = match (kernel::transcript_choice(existing, gpu, device.is_some()), result, device) {
+            let (t, source) = match (
+                kernel::transcript_choice(existing, gpu, device.is_some()),
+                result,
+                device,
+            ) {
                 (kernel::Choice::UseWhisper, Ok(t), _) => (t, "whisper"),
                 (kernel::Choice::UseDevice, Err(e), Some(d)) => {
                     tracing::info!(%id, reason = %e, "using the iPhone's transcript for now");
@@ -160,13 +164,19 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 (kernel::Choice::Wait, Err(e), _) => {
                     let _ = tokio::fs::remove_file(&wav).await;
                     let why = match e {
-                        transcribe::SttError::ModelMissing(_) => "waiting for the Whisper model (MyBook locked?)",
+                        transcribe::SttError::ModelMissing(_) => {
+                            "waiting for the Whisper model (MyBook locked?)"
+                        }
                         _ => "waiting for the GPU",
                     };
                     return Err(StepError::Later(Duration::from_secs(60), why.into()));
                 }
                 (_, Err(e), _) => return Err(e.into()),
-                (c, Ok(_), _) => return Err(StepError::Failed(format!("transcript choice {c:?} without a transcript"))),
+                (c, Ok(_), _) => {
+                    return Err(StepError::Failed(format!(
+                        "transcript choice {c:?} without a transcript"
+                    )))
+                }
             };
             write_json(&store.transcript_path(id), &t)?;
             let _ = tokio::fs::remove_file(&wav).await;
@@ -185,11 +195,53 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
         }
     };
 
+    // 1b. Calendar linking is best effort and never delays transcription.
+    if m.steps.linked_at.is_none()
+        && kernel::may_auto_link(kernel::LinkSource::parse(m.event_source.as_deref()))
+        && crate::events::configured(app)
+    {
+        match crate::events::candidates(app, &m, 30).await {
+            Ok(candidates) => {
+                let picked = kernel::pick_event(
+                    m.recorded_at.timestamp_millis(),
+                    m.recording_end().timestamp_millis(),
+                    &candidates.iter().map(|c| c.cand).collect::<Vec<_>>(),
+                );
+                m = store.update(id, |m| {
+                    if kernel::may_auto_link(kernel::LinkSource::parse(m.event_source.as_deref())) {
+                        m.event = picked.map(|i| candidates[i].event.clone());
+                        m.event_source = Some("auto".into());
+                        m.steps.linked_at = Some(Utc::now());
+                        crate::events::apply_title(m, tz);
+                    }
+                })?;
+            }
+            Err(e) => tracing::warn!(%id, error = %e, "calendar link deferred"),
+        }
+    }
+
     // 2. Summary.
     let summary: Summary = match read_json::<Summary>(&store.summary_path(id))? {
         Some(s) if m.steps.summarized_at.is_some() => s,
         _ => {
             m = set(app, id, Status::Summarizing)?;
+            let previous = crate::events::previous(app, &m)
+                .into_iter()
+                .take(3)
+                .filter_map(|p| {
+                    read_json::<Summary>(&store.summary_path(&p.id))
+                        .ok()
+                        .flatten()
+                        .map(|s| {
+                            format!(
+                                "{} ({}): {}",
+                                p.title,
+                                p.recorded_at.format("%-d %b"),
+                                s.overview
+                            )
+                        })
+                })
+                .collect::<Vec<_>>();
             let extra_path = store.dir(id).join("resummarize.json");
             let extra: Resummarize = read_json(&extra_path)?.unwrap_or_default();
             let s = summarize::summarize(
@@ -199,12 +251,13 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 &transcript,
                 tz,
                 extra.instructions.as_deref(),
+                &previous,
             )
             .await?;
             write_json(&store.summary_path(id), &s)?;
             let _ = std::fs::remove_file(&extra_path);
             m = store.update(id, |m| {
-                if m.title_source != "owner" {
+                if m.title_source != "owner" && m.title_source != "event" {
                     m.title = s.title.clone();
                     m.title_source = "lucina".into();
                 }
@@ -223,7 +276,7 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
     };
     // The owner's title wins in every output.
     let summary = Summary {
-        title: if m.title_source == "owner" {
+        title: if m.title_source == "owner" || m.title_source == "event" {
             m.title.clone()
         } else {
             summary.title
@@ -260,27 +313,38 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             let base = kernel::note_base(existing, || obsidian::base_name(&m, &summary, tz));
             // The path is recorded before the copy: a crash after rsync must not let a later
             // title (rename, new summary) create a second note for this memo.
-            let note_path = format!("{}/{base}.md", vault.folder);
+            let subfolder = obsidian::event_folder(&m);
+            let relative = if subfolder.is_empty() {
+                format!("{base}.md")
+            } else {
+                format!("{subfolder}/{base}.md")
+            };
+            let note_path = format!("{}/{relative}", vault.folder);
             if m.obsidian_note.as_deref() != Some(note_path.as_str()) {
-                m = store.update(id, |m| m.obsidian_note = Some(note_path.clone()))?;
+                m = store.update(id, |m| obsidian::move_note(m, &note_path))?;
             }
-            let note_md = obsidian::note(&m, &summary, &transcript, tz, &base, &url);
+            let mut note_md = obsidian::note(&m, &summary, &transcript, tz, &base, &url);
+            let previous = crate::events::previous(app, &m);
+            let links: Vec<_> = previous
+                .iter()
+                .filter_map(|p| p.obsidian_note.as_deref())
+                .filter_map(|p| p.rsplit('/').next())
+                .filter_map(|p| p.strip_suffix(".md"))
+                .map(|p| format!("- [[{p}]]"))
+                .collect();
+            if !links.is_empty() {
+                note_md.push_str(&format!("\n## Previous\n\n{}\n", links.join("\n")));
+            }
             let mut entries: Vec<(Memo, String)> = store
                 .list()
                 .into_iter()
                 .filter(|x| x.id != m.id)
                 .filter_map(|x| {
-                    let b = x
-                        .obsidian_note
-                        .as_deref()?
-                        .rsplit('/')
-                        .next()?
-                        .strip_suffix(".md")?
-                        .to_owned();
+                    let b = x.obsidian_note.as_deref()?.strip_suffix(".md")?.to_owned();
                     Some((x, b))
                 })
                 .collect();
-            entries.push((m.clone(), base.clone()));
+            entries.push((m.clone(), note_path.trim_end_matches(".md").to_owned()));
             entries.sort_by_key(|e| std::cmp::Reverse(e.0.recorded_at));
             let index_md = obsidian::index(&entries, tz);
             let bundle = obsidian::stage(
@@ -293,7 +357,35 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                 &index_md,
             )
             .await?;
+            if !subfolder.is_empty() {
+                tokio::fs::create_dir_all(bundle.stage.join(&subfolder)).await?;
+                tokio::fs::rename(
+                    bundle.stage.join(format!("{base}.md")),
+                    bundle.stage.join(&relative),
+                )
+                .await?;
+                if let Some(event) = &m.event {
+                    let series_entries: Vec<_> = entries
+                        .iter()
+                        .filter(|(p, _)| p.event.as_ref().is_some_and(|e| e.series == event.series))
+                        .cloned()
+                        .collect();
+                    let index_path = bundle.stage.join(&subfolder).join(format!(
+                        "{}.md",
+                        obsidian::safe_name(&crate::events::series_title(&event.title))
+                    ));
+                    write_atomic(&index_path, obsidian::index(&series_entries, tz).as_bytes())?;
+                }
+            }
             obsidian::push(vault, &bundle).await?;
+            // The note moved (its event changed): delete every earlier copy, then forget them.
+            if !m.obsidian_old_notes.is_empty() {
+                for old in &m.obsidian_old_notes {
+                    obsidian::delete_note(vault, old).await?;
+                }
+                let done = m.obsidian_old_notes.clone();
+                store.update(id, |m| m.obsidian_old_notes.retain(|o| !done.contains(o)))?;
+            }
             let _ = tokio::fs::remove_dir_all(&bundle.stage).await;
             m = store.update(id, |m| m.steps.published_at = Some(Utc::now()))?;
         }
@@ -318,7 +410,9 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
         app.cfg.vault.is_some(),
         m.steps.notified_at.is_some(),
     ) {
-        return Err(StepError::Failed("a step is missing; not marking done".into()));
+        return Err(StepError::Failed(
+            "a step is missing; not marking done".into(),
+        ));
     }
 
     let m = store.update(id, |m| {
