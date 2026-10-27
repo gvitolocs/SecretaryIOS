@@ -208,10 +208,8 @@ mod kernel {
             }
             Ev::RestartRepair => {
                 n.pending = 0;
+                n.status = Status::Closed;
                 let was_active = matches!(s.status, Status::Initializing | Status::Running);
-                if was_active {
-                    n.status = Status::Closed;
-                }
                 let mut o = quiet(n);
                 o.interrupted_note = was_active;
                 Ok(o)

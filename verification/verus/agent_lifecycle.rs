@@ -16,8 +16,9 @@
 // Proven (postconditions of `step`, for every state and event):
 //   L1 archived_terminal: an archived agent accepts only Unarchive, Delete and
 //      RestartRepair; every other event is Err(Archived). RestartRepair keeps it archived.
-//   L2 restart_never_running: after RestartRepair the status is neither Running nor
-//      Initializing, and no permission is pending.
+//   L2 restart_closes: after RestartRepair the agent is Closed (no provider runtime survives
+//      a daemon restart, as in Paseo's loader), so never Running or Initializing, and no
+//      permission is pending.
 //   L3 failure_denies_pending: an accepted TurnFailed or TurnCanceled denies every pending
 //      permission (deny_all, pending 0 after).
 //   L4 running_needs_turn: an accepted event that makes the status Running from another
@@ -173,8 +174,8 @@ pub fn step(s: State, ev: Ev) -> (res: Result<Out, Refusal>)
         ),
         s.archived && ev == Ev::RestartRepair && res is Ok ==> res->Ok_0.next.archived,
         // L2
-        ev == Ev::RestartRepair && res is Ok ==> res->Ok_0.next.status != Status::Running
-            && res->Ok_0.next.status != Status::Initializing && res->Ok_0.next.pending == 0,
+        ev == Ev::RestartRepair && res is Ok ==> res->Ok_0.next.status == Status::Closed
+            && res->Ok_0.next.pending == 0,
         // L3
         (ev == Ev::TurnFailed || ev == Ev::TurnCanceled) && res is Ok ==> res->Ok_0.deny_all
             && res->Ok_0.next.pending == 0,
@@ -319,13 +320,11 @@ pub fn step(s: State, ev: Ev) -> (res: Result<Out, Refusal>)
         },
         Ev::RestartRepair => {
             n.pending = 0;
+            n.status = Status::Closed;
             let was_active = is_status(s.status, Status::Initializing) || is_status(
                 s.status,
                 Status::Running,
             );
-            if was_active {
-                n.status = Status::Closed;
-            }
             let mut o = quiet(n);
             o.interrupted_note = was_active;
             Ok(o)

@@ -1,6 +1,7 @@
 //! The agent state machine (Paseo `server/agent/agent-manager.js`: the
 //! `onStream*` handlers, `checkAndSetAttention`, `archiveAgent`,
-//! `closeStaleAgentRecords`). lucina-agentd sends every state change through
+//! `closeStaleAgentRecords`, and the loader that brings every stored agent back
+//! as `closed`, with no provider runtime). lucina-agentd sends every state change through
 //! [`step`]; the daemon carries out the returned effects. The kernel is proven in
 //! `verification/verus/agent_lifecycle.rs` and tied to this code by
 //! `tests/verus_lifecycle.rs`.
@@ -22,7 +23,7 @@
 //! | any live | `Archive` | closed, archived | `Interrupt` if running, `AutoDenyPending("Archived")` if pending, `CloseRuntime`, `CascadeArchiveChildren` |
 //! | archived | `Unarchive` | closed | |
 //! | any not deleted | `Delete` | deleted | `Interrupt` if running, `RemoveRecord` |
-//! | any not deleted | `RestartRepair` | closed (initializing/running) or unchanged | `RecordInterrupted` for initializing/running; pending dropped |
+//! | any not deleted | `RestartRepair` | closed | `RecordInterrupted` for initializing/running; pending dropped |
 //!
 //! "Live" means neither archived nor deleted. "Attention X" is Paseo's
 //! edge-triggered unread signal: it is set (effect `SetAttention`) only when the
@@ -281,8 +282,8 @@ pub fn step(state: &AgentState, event: Event) -> Result<Transition, LifecycleErr
         }
         Event::RestartRepair => {
             next.pending_permissions = 0;
+            next.status = Closed;
             if matches!(state.status, Initializing | Running) {
-                next.status = Closed;
                 effects.push(Effect::RecordInterrupted);
             }
         }
@@ -373,8 +374,7 @@ mod tests {
     fn restart_repair() {
         for status in AgentStatus::ALL {
             let t = step(&AgentState { pending_permissions: 3, ..st(status) }, Event::RestartRepair).unwrap();
-            assert_ne!(t.next.status, Running);
-            assert_ne!(t.next.status, Initializing);
+            assert_eq!(t.next.status, Closed);
             assert_eq!(t.next.pending_permissions, 0);
             assert_eq!(t.effects.contains(&Effect::RecordInterrupted), matches!(status, Running | Initializing));
         }

@@ -7,6 +7,8 @@ and 213 outbound protocol messages, ~30 MCP tools). The inventory itself is in t
 **Status values:** `todo`, `wip`, `built` (Lucina has it, tests pass), `green` (the differential test or the manual check
 passes against Paseo), `n/a` (Paseo-only plumbing with no user-visible effect; the reason is given).
 
+**Run them:** `PASEO_DIFF=1 cargo test -p lucina-agentd --test paseo_diff -- --nocapture` (about 40 s).
+
 **Differential tests** live in `crates/lucina-agentd/tests/paseo_diff/` and run only with `PASEO_DIFF=1`. They never
 touch the production Paseo daemon. They start a second one in development mode, on its own home and port:
 `PASEO_NODE_ENV=development paseo daemon run --home ~/scratch/paseo-diff/home` with `listen` `127.0.0.1:6777`.
@@ -24,24 +26,24 @@ deterministic on both sides.
 
 | # | Area | Feature (Paseo 0.13.2) | Lucina | Phase | Check | Status |
 |---|---|---|---|---|---|---|
-| A1 | Agents | `run` (prompt, provider/model, mode, thinking, title, labels, env, images, `--no-wait`, wait timeout) | `lagent run`, `POST /v1/agents`, MCP `agent_run` | 1 | diff: mock e2e-fast-stream | todo |
-| A2 | Agents | `ls` (archived, background, cwd, since, statuses, limit), state buckets needs_input/failed/running/attention/done | `lagent ls`, `GET /v1/agents` | 1 | diff | todo |
-| A3 | Agents | `logs` / activity curator ("Showing N of M activities", `[Thought]`, tool summaries 400/200 chars) | `lagent logs` | 1 | diff: same text after normalization | todo |
-| A4 | Agents | `attach` (live stream) | `lagent attach`, `/v1/agents/stream` | 1 | diff: item order | todo |
-| A5 | Agents | `send` with steer / interrupt / out-of-band dispositions | `lagent send --steer|--interrupt` | 1 | diff | todo |
-| A6 | Agents | `stop` (interrupt, auto-deny pending permissions "Interrupted") | `lagent stop` | 1 | diff | todo |
-| A7 | Agents | `wait` (idle, timeout) | `lagent wait` | 1 | diff | todo |
-| A8 | Agents | `archive` / unarchive (cascade to children), `delete` | `lagent archive/unarchive/delete` | 1 | diff | todo |
-| A9 | Agents | `inspect` snapshot (capabilities, pending permissions, lastUsage, activeTurn) | `lagent inspect` | 1 | diff: field set | todo |
-| A10 | Agents | lifecycle initializing→idle⇄running→error/closed; restart repairs stale "running" | kernel `agent_lifecycle` (Verus) | 1 | Verus + diff: restart scenario | todo |
-| A11 | Agents | timeline item types (user_message, assistant_message, reasoning, tool_call + 11 detail variants, todo, error, notification, compaction, plugin), seq/epoch cursors | `lucina-agents` types; durable JSONL (Paseo keeps it in memory only) | 1 | diff: item kinds | todo |
+| A1 | Agents | `run` (prompt, provider/model, mode, thinking, title, labels, env, images, `--no-wait`, wait timeout) | `lagent run`, `POST /v1/agents`, MCP `agent_run` | 1 | diff: mock e2e-fast-stream | green (diff a, d) |
+| A2 | Agents | `ls` (archived, background, cwd, since, statuses, limit), state buckets needs_input/failed/running/attention/done | `lagent ls`, `GET /v1/agents` | 1 | diff | green (diff a, e) |
+| A3 | Agents | `logs` / activity curator ("Showing N of M activities", `[Thought]`, tool summaries 400/200 chars) | `lagent logs` | 1 | diff: same text after normalization | green (diff a-d; curator fixtures 72/72) |
+| A4 | Agents | `attach` (live stream) | `lagent attach`, `/v1/agents/stream` | 1 | diff: item order | built (lagent attach, no diff yet) |
+| A5 | Agents | `send` with steer / interrupt / out-of-band dispositions | `lagent send --steer|--interrupt` | 1 | diff | green for interrupt (diff d); steer built |
+| A6 | Agents | `stop` (interrupt, auto-deny pending permissions "Interrupted") | `lagent stop` | 1 | diff | green (diff c) |
+| A7 | Agents | `wait` (idle, timeout) | `lagent wait` | 1 | diff | green (diff d) |
+| A8 | Agents | `archive` / unarchive (cascade to children), `delete` | `lagent archive/unarchive/delete` | 1 | diff | green for archive/delete (diff e); unarchive built |
+| A9 | Agents | `inspect` snapshot (capabilities, pending permissions, lastUsage, activeTurn) | `lagent inspect` | 1 | diff: field set | green (diff a, c) |
+| A10 | Agents | lifecycle initializing→idle⇄running→error/closed; restart repairs stale "running" | kernel `agent_lifecycle` (Verus) | 1 | Verus + diff: restart scenario | green (Verus L1-L7; restart test in daemon.rs) |
+| A11 | Agents | timeline item types (user_message, assistant_message, reasoning, tool_call + 11 detail variants, todo, error, notification, compaction, plugin), seq/epoch cursors | `lucina-agents` types; durable JSONL (Paseo keeps it in memory only) | 1 | diff: item kinds | built (wire types round-trip; projection port) |
 | A12 | Agents | titles (60 chars, from first prompt line), generated title + branch from a cheap model | same, cheap model from chains.toml | 4 | diff: mock answers the title prompt | todo |
 | A13 | Agents | labels, `paseo.*` reserved labels, detach | `lucina.*` labels, `lagent detach` | 6 | diff | todo |
 | A14 | Agents | `import` provider sessions (list importable, hide imported) | `lagent import` | 2 | manual: one Claude + one Codex session | todo |
 | A15 | Agents | timeline search, prompt index | FTS5 search, `GET /v1/agents/search` | 6 | test | todo |
 | A16 | Agents | rewind (conversation/files/both), fork with chat-history context (100k chars) | `lagent rewind`, `lagent fork` | 6 | diff: mock supports all rewind modes | todo |
 | A17 | Agents | mode / model / thinking / feature changes, reload | `lagent agent set-*`, `reload` | 2 | diff | todo |
-| A18 | Agents | idempotent creation (`creations/*.json` + claim) | idempotency key on `POST /v1/agents` | 1 | test: double submit | todo |
+| A18 | Agents | idempotent creation (`creations/*.json` + claim) | idempotency key on `POST /v1/agents` | 1 | test: double submit | built (daemon.rs idempotent_create) |
 | P1 | Providers | claude (Agent SDK) | Claude Code CLI stream-json | 2 | manual run + permission | todo |
 | P2 | Providers | codex (`codex app-server`) | same protocol | 2 | manual run + permission | todo |
 | P3 | Providers | opencode (`opencode serve`, HTTP+SSE) | same | 2 | manual run | todo |
@@ -51,7 +53,7 @@ deterministic on both sides.
 | P7 | Providers | provider subagents (Claude Task, OpenCode children) with their own timelines | same | 6 | manual: a Claude Task run | todo |
 | P8 | Providers | `provider ls`, models, modes, profiles, inspect | `lagent provider …`, from chains.toml + adapters | 2 | diff: field set | todo |
 | P9 | Providers | (Lucina only) chain fall-through on quota | lane detectors | 2 | test with a fake quota lane | todo |
-| P10 | Providers | mock, mock-slow | `mock`, `mock-slow` | 1 | diff | todo |
+| P10 | Providers | mock, mock-slow | `mock`, `mock-slow` | 1 | diff | wip: mock triggers for failure, plan, questions, settled/streaming replies, pre-echo, delays; mock-slow built |
 | R1 | Permissions | request kinds tool/plan/question/mode/other, actions, updatedInput | same types | 3 | diff: "emit synthetic plan approval", "emit synthetic question" | todo |
 | R2 | Permissions | `permit ls/allow/deny` (non-zero exit after 15 s without confirmation) | `lagent permit` | 3 | diff | todo |
 | R3 | Permissions | answered from the phone and desktop | push actions + web/iOS/Android | 3/8 | manual: answer from the iPhone | todo |
@@ -97,5 +99,5 @@ deterministic on both sides.
 | K2 | Plugins | client API (panels, file panels, screens, settings, sidebar, command center, slash commands, header buttons, composer pills, attachment sources, themes, timeline transformers/renderers, translations) | web plugin host (sandboxed iframes) | 10 | screenshots | todo |
 | K3 | Hub | Hub enrollment, YAML triggers, executions | catalog + triggers in agentd | 10 | manual | todo |
 | Q1 | Search | command center (rank by match then recency) | web command palette | 8 | screenshots | todo |
-| Z1 | Ops | supervisor/worker, pid lock, rotated logs, managed-process reaping | systemd user unit, journald, reaping on start | 1 | test: kill -9, restart, no orphans | todo |
+| Z1 | Ops | supervisor/worker, pid lock, rotated logs, managed-process reaping | systemd user unit, journald, reaping on start | 1 | test: kill -9, restart, no orphans | wip: SIGTERM drain + exit 0 tested; process reaping comes with the real providers (phase 2) |
 | Z2 | Ops | (Lucina only) no leftover worktrees, capped background CPU | `wt` lifecycle, `systemd-run --scope` | 4/5 | test | todo |

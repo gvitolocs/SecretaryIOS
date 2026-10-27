@@ -103,6 +103,14 @@ pub enum StreamEvent {
         request_id: String,
         resolution: PermissionResponse,
     },
+    /// Provider-internal (Paseo's mock and adapters emit it; the manager merges it
+    /// into `lastUsage` and does not forward it to clients).
+    UsageUpdated {
+        provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        usage: Usage,
+    },
     AttentionRequired {
         provider: String,
         reason: AttentionReason,
