@@ -4,7 +4,7 @@
 //! speaks RustDesk and never holds the RustDesk password: `lucinadesk-gateway` (its own
 //! process, AGPL, that repo) does the rendezvous, the relay, the crypto and the login, and
 //! speaks the contract's JSON text frames and binary video frames on a Unix socket
-//! (`LUCINA_DESK_GATEWAY`, default `$XDG_RUNTIME_DIR/lucinadesk/gateway.sock`). This module
+//! (`LUCINA_DESK_GATEWAY`, default [`DEFAULT_GATEWAY`]). This module
 //! stands between the owner's socket and the gateway:
 //!
 //! - `POST /api/secretary/computer/desk` `{sandbox, mode, device}` (bearer; secretary-server
@@ -165,16 +165,14 @@ fn label(v: &Value) -> String {
 
 // ---------------------------------------------------------------- the gateway
 
+/// The gateway's Unix socket (0600, same user; `LUCINADESK_SOCKET` on its side).
+pub const DEFAULT_GATEWAY: &str = "/home/nez/Projects/Lucina/data/lucinadesk/gateway.sock";
+
 /// The gateway's Unix socket.
 pub fn gateway_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("LUCINA_DESK_GATEWAY").filter(|p| !p.is_empty()) {
-        return PathBuf::from(p);
-    }
-    let run = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        // SAFETY: getuid has no preconditions and cannot fail.
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
-    run.join("lucinadesk/gateway.sock")
+    std::env::var_os("LUCINA_DESK_GATEWAY")
+        .filter(|p| !p.is_empty())
+        .map_or_else(|| PathBuf::from(DEFAULT_GATEWAY), PathBuf::from)
 }
 
 type Gateway = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
@@ -400,7 +398,8 @@ impl Filter {
         }
         match self.rate_ok(now) {
             Err(()) => return Verdict::Violation,
-            Ok(false) => return self.refuse(what, "rate"),
+            // Over the rate: the contract has no own reason for it, the gateway says too_large.
+            Ok(false) => return self.refuse(what, "too_large"),
             Ok(true) => {}
         }
         if !valid_input(what, &v) {
@@ -778,7 +777,7 @@ mod tests {
         for _ in 0..MAX_INPUT_PER_SEC {
             assert_eq!(f.text(m, t0), Verdict::Forward);
         }
-        assert!(matches!(f.text(m, t0), Verdict::Drop(Some(r)) if r.contains("rate")));
+        assert!(matches!(f.text(m, t0), Verdict::Drop(Some(r)) if r.contains("too_large")));
         let mut verdict = Verdict::Forward;
         'outer: for s in 1..=FLOOD_SECS as u64 {
             let at = t0 + Duration::from_millis(s * 1000 + 1);
