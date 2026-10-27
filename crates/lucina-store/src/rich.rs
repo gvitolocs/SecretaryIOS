@@ -25,6 +25,9 @@ const MAX_BODY: usize = 600;
 const MAX_LABEL: usize = 40;
 const MAX_CELL: usize = 80;
 const MAX_PAYLOAD_TEXT: usize = 500;
+pub const MAX_PLACES: usize = 3;
+const MAX_ADDRESS: usize = 200;
+const MAX_EVENT_ID: usize = 200;
 
 /// A validated v1 message. `blocks` and `actions` are normalized JSON objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -415,8 +418,70 @@ pub fn normalize_block(raw: &Value) -> Option<Value> {
             Some(json!({"type": "link_preview", "url": url, "title": title}))
         }
         "model3d" => crate::model3d::normalize(raw),
+        "place" => normalize_place(raw),
         _ => None,
     }
+}
+
+/// A finite JSON number in `[-max, max]`.
+fn coordinate(v: &Value, max: f64) -> Option<f64> {
+    v.as_f64().filter(|x| x.is_finite() && x.abs() <= max)
+}
+
+/// An RFC 3339 timestamp, as given (trimmed).
+fn rfc3339(v: &Value) -> Option<String> {
+    let t = v.as_str()?.trim();
+    chrono::DateTime::parse_from_rfc3339(t)
+        .is_ok()
+        .then(|| t.to_owned())
+}
+
+/// A `place` block: a title plus an address or a valid coordinate pair (both
+/// or neither, finite, in range, not (0,0)); a bad pair is dropped, the block
+/// kept by its address.
+fn normalize_place(raw: &Value) -> Option<Value> {
+    let title = line(&raw["title"], MAX_TITLE);
+    let address = line(&raw["address"], MAX_ADDRESS);
+    let coords = match (
+        coordinate(&raw["lat"], 90.0),
+        coordinate(&raw["lng"], 180.0),
+    ) {
+        (Some(lat), Some(lng)) => {
+            let (lat, lng) = ((lat * 1e6).round() / 1e6, (lng * 1e6).round() / 1e6);
+            (lat != 0.0 || lng != 0.0).then_some((lat, lng))
+        }
+        _ => None,
+    };
+    if title.is_empty() || (address.is_empty() && coords.is_none()) {
+        return None;
+    }
+    let mut b = Map::new();
+    b.insert("type".into(), str_v("place"));
+    b.insert("title".into(), str_v(&title));
+    if !address.is_empty() {
+        b.insert("address".into(), str_v(&address));
+    }
+    if let Some((lat, lng)) = coords {
+        b.insert("lat".into(), json!(lat));
+        b.insert("lng".into(), json!(lng));
+    }
+    if let Some(when) = rfc3339(&raw["when"]) {
+        b.insert("when".into(), str_v(&when));
+    }
+    if let Some(end) = rfc3339(&raw["end"]) {
+        b.insert("end".into(), str_v(&end));
+    }
+    let event_id = line(&raw["eventId"], MAX_EVENT_ID + 1);
+    if !event_id.is_empty() && event_id.chars().count() <= MAX_EVENT_ID {
+        b.insert("eventId".into(), str_v(&event_id));
+    }
+    let kind = if raw["kind"] == "event" {
+        "event"
+    } else {
+        "place"
+    };
+    b.insert("kind".into(), str_v(kind));
+    Some(Value::Object(b))
 }
 
 // ---------------------------------------------------------------- actions
@@ -526,19 +591,23 @@ pub fn normalize(input: &Value) -> Result<(RichMessage, Vec<String>), Vec<String
         return Err(errors);
     }
     let mut dropped = Vec::new();
-    let mut blocks = Vec::new();
+    let mut blocks: Vec<Value> = Vec::new();
     for raw in m
         .get("blocks")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or(&[])
     {
+        let places = blocks.iter().filter(|b| b["type"] == "place").count();
         match normalize_block(raw) {
+            Some(b) if b["type"] == "place" && places >= MAX_PLACES => {
+                dropped.push("block \"place\" (over 3)".into())
+            }
+            Some(b) if blocks.len() >= MAX_BLOCKS => {
+                dropped.push(format!("block {} (over {MAX_BLOCKS})", b["type"]));
+            }
             Some(b) => blocks.push(b),
             None => dropped.push(format!("block {}", raw.get("type").unwrap_or(&Value::Null))),
-        }
-        if blocks.len() >= MAX_BLOCKS {
-            break;
         }
     }
     let mut actions: Vec<Value> = Vec::new();
@@ -818,7 +887,23 @@ pub fn block_to_text(block: &Value, lang: &str, list_limit: usize) -> Vec<String
         }
         "link_preview" => vec![format!("🔗 [{}]({})", s(block, "title"), s(block, "url"))],
         "model3d" => vec![crate::model3d::plain_text(block)],
+        "place" => vec![place_text(block)],
         _ => Vec::new(),
+    }
+}
+
+/// `📍 <title> — <address>` (Telegram, the plain fallback).
+pub fn place_text(block: &Value) -> String {
+    format!("📍 {}", place_speech(block))
+}
+
+/// `<title> — <address>`: what a voice reads of a place.
+pub fn place_speech(block: &Value) -> String {
+    let address = s(block, "address");
+    if address.is_empty() {
+        s(block, "title").to_owned()
+    } else {
+        format!("{} — {address}", s(block, "title"))
     }
 }
 
@@ -881,9 +966,16 @@ impl RichMessage {
         parts.join("\n\n")
     }
 
-    /// What her voice reads: the bubbles only, without markdown.
+    /// What her voice reads: bubbles and place titles/addresses, without markdown.
     pub fn speech_text(&self) -> String {
-        strip_inline_markdown(&self.bubbles.join(" "))
+        let mut parts = self.bubbles.clone();
+        parts.extend(
+            self.blocks
+                .iter()
+                .filter(|b| b["type"] == "place")
+                .map(place_speech),
+        );
+        strip_inline_markdown(&parts.join(" "))
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ")
@@ -1297,5 +1389,154 @@ mod tests {
         );
         let kinds: Vec<&str> = tasks.blocks.iter().map(|b| s(b, "type")).collect();
         assert_eq!(kinds, ["checklist", "steps"]);
+    }
+
+    fn place(raw: Value) -> Option<Value> {
+        normalize_block(&raw)
+    }
+
+    #[test]
+    fn a_place_with_coordinates_and_times() {
+        let b = place(json!({
+            "type": "place", "title": " Hack Night: Rust meets AI ", "address": "Folkehuset Møllestien,\nAarhus",
+            "lat": 56.161_123_456, "lng": 10.200_6, "when": "2026-10-27T17:00:00.000Z",
+            "end": "2026-10-27T20:00:00+01:00", "eventId": "iphone:abc", "kind": "event", "extra": 1
+        }))
+        .unwrap();
+        assert_eq!(
+            b,
+            json!({
+                "type": "place", "title": "Hack Night: Rust meets AI", "address": "Folkehuset Møllestien, Aarhus",
+                "lat": 56.161123, "lng": 10.2006, "when": "2026-10-27T17:00:00.000Z",
+                "end": "2026-10-27T20:00:00+01:00", "eventId": "iphone:abc", "kind": "event"
+            })
+        );
+    }
+
+    #[test]
+    fn a_place_by_address_only_or_coordinates_only() {
+        let b = place(json!({"type": "place", "title": "Salling", "address": "Søndergade 27", "kind": "shop"})).unwrap();
+        assert_eq!(
+            b,
+            json!({"type": "place", "title": "Salling", "address": "Søndergade 27", "kind": "place"})
+        );
+        let b = place(json!({"type": "place", "title": "Home", "lat": 56.19633, "lng": 10.2011}))
+            .unwrap();
+        assert_eq!(b["lat"], 56.19633);
+        assert!(b.get("address").is_none());
+    }
+
+    #[test]
+    fn a_place_needs_a_title_and_somewhere() {
+        assert!(place(
+            json!({"type": "place", "address": "Søndergade 27", "lat": 56.1, "lng": 10.2})
+        )
+        .is_none());
+        assert!(
+            place(json!({"type": "place", "title": "  ", "address": "Søndergade 27"})).is_none()
+        );
+        assert!(place(json!({"type": "place", "title": "Somewhere"})).is_none());
+        assert!(
+            place(json!({"type": "place", "title": "Null Island", "lat": 0.0, "lng": 0.0}))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bad_coordinates_are_dropped_and_the_address_kept() {
+        for (lat, lng) in [
+            (json!(56.1), Value::Null),
+            (json!("NaN"), json!("NaN")),
+            (json!("56.1"), json!("10.2")),
+            (json!(91.0), json!(10.0)),
+            (json!(56.0), json!(-180.5)),
+            (json!(0), json!(0)),
+            (json!(0.000_000_1), json!(-0.000_000_1)),
+            (Value::Null, json!(10.2)),
+        ] {
+            let b = place(json!({"type": "place", "title": "Dentist", "address": "Via Roma 1", "lat": lat, "lng": lng}))
+                .unwrap();
+            assert!(b.get("lat").is_none() && b.get("lng").is_none(), "{b}");
+            assert_eq!(b["address"], "Via Roma 1");
+        }
+        assert!(place(json!({"type": "place", "title": "Dentist", "lat": 56.1})).is_none());
+    }
+
+    #[test]
+    fn place_coordinate_boundaries_are_valid() {
+        for (lat, lng) in [(90.0, 180.0), (-90.0, -180.0), (0.0, 10.0), (56.0, 0.0)] {
+            let b = place(json!({"type": "place", "title": "Boundary", "lat": lat, "lng": lng}))
+                .unwrap();
+            assert_eq!(b["lat"], lat);
+            assert_eq!(b["lng"], lng);
+        }
+    }
+
+    #[test]
+    fn excess_places_are_reported_even_after_the_eight_block_limit() {
+        let mut blocks = vec![json!({"type": "quote", "text": "x"}); 5];
+        blocks.extend(vec![
+            json!({"type": "place", "title": "t", "address": "a"});
+            4
+        ]);
+        let (m, dropped) = normalize(&json!({"bubbles": ["Ecco"], "blocks": blocks})).unwrap();
+        assert_eq!(m.blocks.len(), MAX_BLOCKS);
+        assert_eq!(dropped, [r#"block "place" (over 3)"#]);
+    }
+
+    #[test]
+    fn place_times_and_ids_must_be_valid() {
+        let b = place(json!({
+            "type": "place", "title": "Padel", "address": "Club", "when": "tomorrow at 9",
+            "end": "2026-10-24", "eventId": "x".repeat(201)
+        }))
+        .unwrap();
+        assert!(b.get("when").is_none() && b.get("end").is_none() && b.get("eventId").is_none());
+        let invalid = place(json!({
+            "type": "place", "title": "Padel", "address": "Club",
+            "when": "2026-10-27T17:00:00Z\u{0000}extra", "end": 123
+        }))
+        .unwrap();
+        assert!(invalid.get("when").is_none() && invalid.get("end").is_none());
+        let long =
+            place(json!({"type": "place", "title": "t".repeat(300), "address": "a".repeat(300)}))
+                .unwrap();
+        assert_eq!(long["title"].as_str().unwrap().chars().count(), MAX_TITLE);
+        assert_eq!(
+            long["address"].as_str().unwrap().chars().count(),
+            MAX_ADDRESS
+        );
+    }
+
+    #[test]
+    fn at_most_three_places_and_their_plain_text() {
+        let places: Vec<Value> = (1..=4)
+            .map(|i| json!({"type": "place", "title": format!("Place {i}"), "address": format!("Street {i}")}))
+            .collect();
+        let mut blocks = vec![json!({"type": "quote", "text": "x"})];
+        blocks.extend(places);
+        blocks.push(json!({"type": "place", "title": "Only coords", "lat": 56.2, "lng": 10.2}));
+        let (m, dropped) = normalize(&json!({"bubbles": ["Ecco"], "blocks": blocks})).unwrap();
+        let titles: Vec<&str> = m
+            .blocks
+            .iter()
+            .filter(|b| b["type"] == "place")
+            .map(|b| s(b, "title"))
+            .collect();
+        assert_eq!(titles, ["Place 1", "Place 2", "Place 3"]);
+        assert_eq!(dropped.len(), 2, "{dropped:?}");
+        assert!(dropped.iter().all(|d| d.contains("place")));
+        let text = m.plain_text(false);
+        assert!(
+            text.contains("📍 Place 1 — Street 1\n\n📍 Place 2 — Street 2"),
+            "{text}"
+        );
+        let coords_only = place(json!({"type": "place", "title": "Home", "lat": 56.2, "lng": 10.2, "when": "2026-10-27T17:00:00Z"})).unwrap();
+        assert_eq!(block_to_text(&coords_only, "it", 5), ["📍 Home"]);
+        assert_eq!(place_speech(&m.blocks[1]), "Place 1 — Street 1");
+        assert_eq!(
+            m.speech_text(),
+            "Ecco Place 1 — Street 1 Place 2 — Street 2 Place 3 — Street 3"
+        );
     }
 }

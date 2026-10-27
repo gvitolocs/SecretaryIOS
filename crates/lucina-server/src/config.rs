@@ -50,6 +50,9 @@ pub struct Config {
     pub mcp_trusted: bool,
     /// `LUCINA_RICH_COMPOSE_TIMEOUT_MS` (25000): one JSON-mode compose call.
     pub rich_compose_timeout: Duration,
+    /// `LUCINA_MAPS_GEOCODE_URL` (+ `LUCINA_MAPS_UPSTREAM_KEY_FILE`): fill the
+    /// coordinates of place blocks from the map server; unset = off.
+    pub maps_geocode: Option<crate::geocode::GeocodeConfig>,
     /// `LUCINA_NOTES`, `LUCINA_CALENDAR`, `LUCINA_AVATAR_OUTFIT`,
     /// `LUCINA_APP_NOTIFY` (all default false, as in Node).
     pub notes_enabled: bool,
@@ -208,6 +211,7 @@ impl std::fmt::Debug for Config {
             .field("drive", &self.drive_enabled)
             .field("mcp_trusted", &self.mcp_trusted)
             .field("telegram", &self.telegram.enabled)
+            .field("maps_geocode", &self.maps_geocode.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -370,6 +374,7 @@ impl Config {
             rich_compose_timeout: Duration::from_millis(
                 num("LUCINA_RICH_COMPOSE_TIMEOUT_MS", 25_000).max(1000),
             ),
+            maps_geocode: crate::geocode::GeocodeConfig::from_lookup(&get),
             notes_enabled: flag("LUCINA_NOTES", false),
             calendar_enabled: flag("LUCINA_CALENDAR", false),
             tasks_enabled: flag("LUCINA_TASKS", false),

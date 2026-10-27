@@ -137,6 +137,8 @@ pub struct Outcome {
     pub read_note: Option<Value>,
     /// Notes: a saved note for Honcho.
     pub memory_note: Option<Value>,
+    /// Calendar: the events the answer was made from (place blocks).
+    pub events: Vec<Value>,
 }
 
 fn meta_note(slug: &str) -> lucina_store::timeline::Meta {
@@ -363,6 +365,7 @@ pub async fn notes_turn(
                 meta: Some(meta_note(&saved_slug)),
                 memory_note: Some(r.data),
                 read_note: None,
+                events: Vec::new(),
             }
         }
         NotesIntent::Part { content, more, .. } => {
@@ -402,6 +405,7 @@ pub async fn notes_turn(
                 meta: Some(meta_note(&slug)),
                 memory_note: Some(r.data),
                 read_note: None,
+                events: Vec::new(),
             }
         }
     }
@@ -497,11 +501,20 @@ pub async fn calendar_turn(
                         .await;
                     let title = created.event["title"].as_str().unwrap_or("");
                     if r.ok {
-                        return Some(Ok(out(
-                            cal::created_text(&created, tz),
-                            "calendar_create",
-                            format!("[calendar event created: {title}]"),
-                        )));
+                        return Some(Ok(Outcome {
+                            events: r
+                                .data
+                                .get("event")
+                                .filter(|e| e.is_object())
+                                .cloned()
+                                .into_iter()
+                                .collect(),
+                            ..out(
+                                cal::created_text(&created, tz),
+                                "calendar_create",
+                                format!("[calendar event created: {title}]"),
+                            )
+                        }));
                     }
                     let reply = if r.code == "google_reconnect_needed"
                         || r.code == "google_not_connected"
@@ -565,11 +578,11 @@ pub async fn calendar_turn(
     if r.data["sources"]["google"]["status"] == "reconnect" {
         reply.push_str(cal::text(q.lang, "reconnect_note"));
     }
-    Some(Ok(out(
-        reply,
-        "calendar",
-        format!("[calendar {}..{}: {} events]", q.from, q.to, evs.len()),
-    )))
+    let action_result = format!("[calendar {}..{}: {} events]", q.from, q.to, evs.len());
+    Some(Ok(Outcome {
+        events: evs,
+        ..out(reply, "calendar", action_result)
+    }))
 }
 
 /// `buildCalendarContext`: the events a calendar question asks about.
