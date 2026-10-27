@@ -14,10 +14,11 @@
 //!   otherwise libx264 with a two-thread decode and encode.
 //! - libx264 and tone-mapping wait for the night window (`prepare_window_*`).
 //!   VAAPI and remux jobs may start any hour.
-//! - Nothing starts at or above `prepare_max_temp_c` (k10temp Tctl) or
-//!   `prepare_max_load`. A running job is stopped after three over-limit samples
-//!   (`max_temp_c + 5` or max load), its output removed, and it goes back in the
-//!   queue as paused, not failed.
+//! - Nothing starts at or above `prepare_max_temp_c` (k10temp Tctl, the owner's
+//!   90 °C) or `prepare_max_load`. A running job is stopped after three samples in
+//!   a row at or above that temperature (load does not stop it), its output
+//!   removed, and it goes back in the queue as paused, not failed.
+//! - The scope is bound to lucina-media's unit (`BindsTo=`), so a restart stops it.
 use crate::{
     gate::{self, Gate},
     hls, kernel, probe, App, MediaSource, Video,

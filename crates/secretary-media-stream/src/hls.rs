@@ -151,11 +151,14 @@ pub struct BackgroundConfig {
     pub vaapi_device: Option<PathBuf>,
     /// The GPU VRAM semaphore VAAPI jobs run under.
     pub gpu_lease: Option<PathBuf>,
+    /// The service the scope is bound to (`BindsTo=`): the scope lives outside the
+    /// service's cgroup, so without this a restart would leave its ffmpeg running.
+    pub bind_to: Option<String>,
 }
 
 impl Default for BackgroundConfig {
     fn default() -> Self {
-        Self { scope: false, cpu_quota: 100, vaapi_device: None, gpu_lease: None }
+        Self { scope: false, cpu_quota: 100, vaapi_device: None, gpu_lease: None, bind_to: None }
     }
 }
 
@@ -166,6 +169,7 @@ impl From<&crate::StreamConfig> for BackgroundConfig {
             cpu_quota: cfg.background_cpu_quota,
             vaapi_device: cfg.vaapi_device.clone(),
             gpu_lease: cfg.gpu_lease.clone(),
+            bind_to: cfg.background_bind_to.clone(),
         }
     }
 }
@@ -309,9 +313,11 @@ pub fn command_line(
             "--quiet".into(),
             "-p".into(),
             format!("CPUQuota={}%", background.cpu_quota),
-            "--".into(),
-            program.display().to_string(),
         ];
+        if let Some(unit) = &background.bind_to {
+            a.extend(["-p".into(), format!("BindsTo={unit}"), "-p".into(), format!("After={unit}")]);
+        }
+        a.extend(["--".into(), program.display().to_string()]);
         a.extend(program_args);
         program = PathBuf::from("systemd-run");
         program_args = a;
@@ -688,7 +694,21 @@ mod tests {
             cpu_quota: 100,
             vaapi_device: vaapi.map(PathBuf::from),
             gpu_lease: vaapi.map(|_| PathBuf::from("/usr/bin/gpu-lease")),
+            bind_to: None,
         }
+    }
+
+    #[test]
+    fn a_bound_scope_stops_with_its_service() {
+        let p = parse_variant("copy-copy").unwrap();
+        let background = BackgroundConfig { bind_to: Some("lucina-media.service".into()), ..bg(true, None) };
+        let args = ffmpeg_args(Path::new("/m/a.mkv"), &p, Path::new("/c/x"), Priority::Background, SEGMENT_SECONDS, &background, false);
+        let (program, command) = command_line(Path::new("ffmpeg"), args, Priority::Background, &background, false);
+        assert_eq!(program, Path::new("systemd-run"));
+        assert_eq!(
+            command[..11],
+            ["--user", "--scope", "--quiet", "-p", "CPUQuota=100%", "-p", "BindsTo=lucina-media.service", "-p", "After=lucina-media.service", "--", "nice"]
+        );
     }
 
     #[test]

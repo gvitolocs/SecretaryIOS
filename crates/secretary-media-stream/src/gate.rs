@@ -76,19 +76,19 @@ impl Gate {
         })
     }
 
-    /// Whether a running background job is over the stop limit (five degrees
-    /// above the start limit, so a short spike does not stop it).
+    /// Whether a running background job is over the stop limit: the owner's
+    /// temperature limit (90 °C), the same as the start limit; three samples in a
+    /// row stop it (`Watchdog`), so a short spike does not. Load only gates the
+    /// start: builds are not capped and push the load past 20 for minutes, and a
+    /// one-core VAAPI job is not what heats the box.
     pub fn over(&self, reading: Reading) -> bool {
-        reading.temp_c.is_some_and(|t| t >= self.max_temp_c.saturating_add(5) as f32)
-            || reading.load.is_some_and(|l| l >= self.max_load as f32)
+        reading.temp_c.is_some_and(|t| t >= self.max_temp_c as f32)
     }
 
     /// The reason logged when the watchdog stops a job.
     pub fn stop_reason(&self, reading: Reading) -> String {
-        if let Some(t) = reading.temp_c.filter(|t| *t >= self.max_temp_c.saturating_add(5) as f32) {
-            format!("Tctl {t:.0} °C >= {} °C", self.max_temp_c.saturating_add(5))
-        } else if let Some(l) = reading.load.filter(|l| *l >= self.max_load as f32) {
-            format!("load {l:.1} >= {}", self.max_load)
+        if let Some(t) = reading.temp_c.filter(|t| *t >= self.max_temp_c as f32) {
+            format!("Tctl {t:.0} °C >= {} °C", self.max_temp_c)
         } else {
             "over the limit".into()
         }
@@ -254,13 +254,14 @@ mod tests {
     }
 
     #[test]
-    fn stop_uses_the_higher_temperature_and_the_same_load() {
-        let gate = Gate::new(1, 7, 80, 16);
-        assert!(!gate.over(reading(2, Some(84.9), Some(15.9))));
-        assert!(gate.over(reading(2, Some(85.0), Some(1.0))));
-        assert!(gate.over(reading(2, Some(50.0), Some(16.0))));
+    fn stop_is_the_owners_temperature_limit_only() {
+        let gate = Gate::new(1, 7, 90, 16);
+        assert!(!gate.over(reading(2, Some(89.9), Some(30.0))), "load alone never stops a running job");
+        assert!(gate.over(reading(2, Some(90.0), Some(1.0))));
         assert!(!gate.over(reading(2, None, None)));
-        assert!(gate.stop_reason(reading(2, Some(87.0), None)).contains("85"));
+        assert!(gate.stop_reason(reading(2, Some(91.0), None)).contains("90"));
+        // The start gate still holds back a new job on load.
+        assert!(gate.block_reason_at(reading(2, Some(50.0), Some(16.0)), false).is_some());
     }
 
     #[test]

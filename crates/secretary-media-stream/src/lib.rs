@@ -116,6 +116,8 @@ pub struct StreamConfig {
     pub vaapi_device: Option<PathBuf>,
     /// The GPU VRAM semaphore VAAPI jobs run under (None: no lease).
     pub gpu_lease: Option<PathBuf>,
+    /// The systemd unit the background scope is bound to, so it stops with the service.
+    pub background_bind_to: Option<String>,
     /// First local hour background CPU jobs may start (`[start, end)`, wraps past midnight).
     pub prepare_window_start: u32,
     /// The hour the background CPU window ends (excluded).
@@ -143,9 +145,10 @@ impl StreamConfig {
             background_cpu_quota: 100,
             vaapi_device: None,
             gpu_lease: None,
+            background_bind_to: None,
             prepare_window_start: 1,
             prepare_window_end: 7,
-            prepare_max_temp_c: 80,
+            prepare_max_temp_c: 90,
             prepare_max_load: 16,
             ocr: Some(ocr::OcrConfig {
                 tesseract: "tesseract".into(),
