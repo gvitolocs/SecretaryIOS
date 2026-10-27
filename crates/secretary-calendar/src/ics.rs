@@ -243,6 +243,24 @@ pub fn parse(text: &str, default_tz: &str) -> Feed {
         let tzid = p.param("TZID");
         let vtype = p.param("VALUE");
         match p.name.as_str() {
+            "ATTENDEE" if item.attendees.len() < 30 => {
+                let name = p
+                    .param("CN")
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        if p.value
+                            .get(..7)
+                            .is_some_and(|s| s.eq_ignore_ascii_case("mailto:"))
+                        {
+                            &p.value[7..]
+                        } else {
+                            &p.value
+                        }
+                    });
+                if !name.trim().is_empty() {
+                    item.attendees.push(unescape(name.trim()));
+                }
+            }
             "UID" => item.uid = p.value.trim().to_owned(),
             "SUMMARY" => item.title = unescape(&p.value),
             "LOCATION" => item.location = Some(unescape(&p.value)).filter(|s| !s.is_empty()),
@@ -326,6 +344,20 @@ mod tests {
         );
         assert!(
             matches!(&f.items[0].start, Some(Moment::Local { tz, .. }) if tz == "Europe/Copenhagen")
+        );
+    }
+
+    #[test]
+    fn attendees() {
+        let feed = parse(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a1\r\nSUMMARY:Algorithms\r\nDTSTART:20261027T080000Z\r\n\
+             DTEND:20261027T100000Z\r\nATTENDEE;CN=\"Doe, John\":mailto:j@x.dk\r\nATTENDEE:mailto:k@y.dk\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n",
+            "UTC",
+        );
+        assert_eq!(
+            feed.items[0].attendees,
+            vec!["Doe, John".to_owned(), "k@y.dk".to_owned()]
         );
     }
 }
