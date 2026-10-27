@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, type JSX } from "solid-js";
-import { BookIcon, CheckCircleIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon } from "../components/Icons";
+import { BookIcon, CheckCircleIcon, ComputerIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PhoneIcon, PulseIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { openWardrobe } from "../state/wardrobe";
 
@@ -39,6 +39,7 @@ export const PLUGINS: Plugin[] = [
     detail: () => t("plugins.pokemonDetail"),
     href: "/pokemon",
   },
+  { id: "computer", icon: ComputerIcon, title: () => t("computer.title"), detail: () => t("computer.detail"), href: "/computer" },
   { id: "wardrobe", icon: HangerIcon, title: () => t("plugins.wardrobe"), detail: () => t("plugins.wardrobeDetail"), run: () => openWardrobe() },
   {
     id: "phone",

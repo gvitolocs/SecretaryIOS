@@ -16,7 +16,7 @@ describe("Plugins", () => {
 
   it("lists the plugin cards", () => {
     renderPlugins();
-    for (const name of ["Voice memos", "Media", "Notes", "Tasks", "Connections", "Pokémon", "Wardrobe", "Server health"]) {
+    for (const name of ["Voice memos", "Media", "Notes", "Tasks", "Connections", "Pokémon", "Lucina.s computer", "Wardrobe", "Server health"]) {
       expect(screen.getByRole("button", { name: new RegExp(name) })).toBeInTheDocument();
     }
   });
