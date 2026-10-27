@@ -306,6 +306,7 @@ function SheetBody(props: { input: SecretSheetInput }) {
                               <button
                                 type="button"
                                 class="segmented-btn"
+                                classList={{ "segmented-btn--active": env() === e.slug }}
                                 aria-pressed={env() === e.slug ? "true" : "false"}
                                 onClick={() => {
                                   setEnv(e.slug);

@@ -266,18 +266,26 @@ pub fn receipt_text(r: &Value) -> String {
     )
 }
 
-fn lucina_item(timeline: &TimelineStore, text: &str, kind: &str, meta: Option<Meta>) {
+/// Write a Lucina item; its id (for the chat response, so clients dedupe it).
+fn lucina_item(
+    timeline: &TimelineStore,
+    text: &str,
+    kind: &str,
+    meta: Option<Meta>,
+) -> Option<String> {
     let mut m = Meta::kind(kind);
     if let Some(extra) = meta {
         m = m.merge(extra);
     }
-    timeline.record(NewItem {
-        channel: "web".into(),
-        role: "lucina".into(),
-        text: text.to_owned(),
-        meta: Some(m),
-        ..NewItem::default()
-    });
+    timeline
+        .record(NewItem {
+            channel: "web".into(),
+            role: "lucina".into(),
+            text: text.to_owned(),
+            meta: Some(m),
+            ..NewItem::default()
+        })
+        .map(|i| i.id)
 }
 
 fn rich_meta(bubbles: Vec<String>, actions: Vec<Value>) -> Option<Meta> {
@@ -328,7 +336,7 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
             st.held_secrets.drop_id(id);
         }
         let text = receipt_text(&result);
-        lucina_item(&st.timeline, &format!("✅ {text}"), "secret_receipt", None);
+        let _ = lucina_item(&st.timeline, &format!("✅ {text}"), "secret_receipt", None);
         tracing::info!(name = %name, action = result["action"].as_str().unwrap_or(""), "owner secret saved");
         let mut out = result;
         out["receipt"] = json!(text);
@@ -349,7 +357,7 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
             p["name"].as_str().unwrap_or("?"),
             envs.join(", ")
         );
-        lucina_item(&st.timeline, &text, "secret_project", None);
+        let _ = lucina_item(&st.timeline, &text, "secret_project", None);
         let mut out = result.clone();
         out["receipt"] = json!(text);
         return Ok(out);
@@ -388,7 +396,84 @@ pub fn parse_secret_command(text: &str) -> SecretCommand {
     }
 }
 
-fn save_action(held: &str, name: Option<&str>, target: Option<&str>) -> Value {
+/// The language of Lucina's secret cards: the owner's (Italian by default).
+pub fn lang_of(text: &str) -> &'static str {
+    crate::rich::guess_language(text, text)
+}
+
+/// Lucina's fixed texts for the secret cards, per language.
+struct Texts {
+    save: &'static str,
+    add: &'static str,
+    no: &'static str,
+    save_n: &'static str,
+    create: &'static str,
+    not_now: &'static str,
+    it_word: &'static str,
+    held: &'static str,
+    usage: &'static str,
+    offer: &'static str,
+    chars: &'static str,
+    project: &'static str,
+    chat_app: &'static str,
+}
+
+fn texts(lang: &str) -> Texts {
+    match lang {
+        "en" => Texts {
+            save: "Save as secret",
+            add: "Add secret",
+            no: "No",
+            save_n: "Save secret {n}",
+            create: "Create project",
+            not_now: "Not now",
+            it_word: "it",
+            held: "🔐 I didn't read or store that. Tap \"Save as secret\" to pick where `{name}` goes (I keep the value for 10 minutes, in memory only).",
+            usage: "🔐 Use /secret NAME VALUE [project/env/path or alias], or open \"Add secret\" in the app.",
+            offer: "🔐 Your message had something that looks like a secret ({what}). I hid it from my memory and from the model. Save it as a secret?",
+            chars: "characters",
+            project: "Create the Infisical project \"{name}\"? Tap to confirm in the app. It gets no access for agents or services until you say so.",
+            chat_app: " The card is in the Secretary app. This chat app keeps your message: delete it there.",
+        },
+        "da" => Texts {
+            save: "Gem som hemmelighed",
+            add: "Tilføj hemmelighed",
+            no: "Nej",
+            save_n: "Gem hemmelighed {n}",
+            create: "Opret projekt",
+            not_now: "Ikke nu",
+            it_word: "den",
+            held: "🔐 Jeg har hverken læst eller gemt det. Tryk \"Gem som hemmelighed\" for at vælge, hvor `{name}` skal hen (jeg holder værdien i 10 minutter, kun i hukommelsen).",
+            usage: "🔐 Brug /secret NAVN VÆRDI [projekt/miljø/sti eller alias], eller åbn \"Tilføj hemmelighed\" i appen.",
+            offer: "🔐 Din besked indeholdt noget, der ligner en hemmelighed ({what}). Jeg har skjult det for min hukommelse og for modellen. Skal jeg gemme det som hemmelighed?",
+            chars: "tegn",
+            project: "Skal jeg oprette Infisical-projektet \"{name}\"? Bekræft i appen. Agenter og tjenester får ingen adgang, før du siger til.",
+            chat_app: " Kortet ligger i Secretary-appen. Denne chat-app gemmer din besked: slet den der.",
+        },
+        _ => Texts {
+            save: "Salva come segreto",
+            add: "Aggiungi segreto",
+            no: "No",
+            save_n: "Salva segreto {n}",
+            create: "Crea progetto",
+            not_now: "Non ora",
+            it_word: "il segreto",
+            held: "🔐 Non l'ho letto né salvato. Tocca \"Salva come segreto\" per scegliere dove va `{name}` (tengo il valore 10 minuti, solo in memoria).",
+            usage: "🔐 Usa /secret NOME VALORE [progetto/ambiente/percorso o alias], oppure apri \"Aggiungi segreto\" nell'app.",
+            offer: "🔐 Nel tuo messaggio c'era qualcosa che sembra un segreto ({what}). L'ho nascosto alla mia memoria e al modello. Lo salvo come segreto?",
+            chars: "caratteri",
+            project: "Creo il progetto Infisical \"{name}\"? Confermalo nell'app. Agenti e servizi non ci avranno accesso finché non lo dici tu.",
+            chat_app: " La scheda è nell'app Secretary. Quest'app di chat conserva il tuo messaggio: cancellalo lì.",
+        },
+    }
+}
+
+/// The note added to a `/secret` answer sent to a chat app (Telegram, Discord).
+pub fn chat_app_note(lang: &str) -> &'static str {
+    texts(lang).chat_app
+}
+
+fn save_action(label: &str, held: &str, name: Option<&str>, target: Option<&str>) -> Value {
     let mut payload = json!({"mode": "save", "held": held});
     if let Some(n) = name {
         payload["name"] = json!(n);
@@ -396,49 +481,52 @@ fn save_action(held: &str, name: Option<&str>, target: Option<&str>) -> Value {
     if let Some(t) = target {
         payload["target"] = json!(t);
     }
-    json!({"id": "save-secret", "label": "Save as secret", "emoji": "🔐", "kind": "secret", "payload": payload})
+    json!({"id": "save-secret", "label": label, "emoji": "🔐", "kind": "secret", "payload": payload})
 }
 
-/// The answer to a `/secret` message (before any sink). `timeline`: where
-/// the card goes (the owner's timeline, so the app shows it).
-pub fn answer_secret_command(st: &crate::AppState, text: &str, timeline: &TimelineStore) -> String {
+/// The answer to a `/secret` message (before any sink): the reply and the
+/// id of Lucina's card. `timeline`: where the card goes (the owner's
+/// timeline, so the app shows it).
+pub fn answer_secret_command(
+    st: &crate::AppState,
+    text: &str,
+    timeline: &TimelineStore,
+) -> (String, Option<String>) {
     let cmd = parse_secret_command(text);
+    let tx = texts(lang_of(text.trim_start().get(7..).unwrap_or("")));
     let name_ok = cmd.name.as_deref().is_some_and(|n| {
         n.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'))
     });
-    let reply = match &cmd.value {
+    let out = match &cmd.value {
         Some(v) => {
             let held = st.held_secrets.hold(v.expose_secret());
             let name = cmd.name.as_deref().filter(|_| name_ok);
-            let reply = format!(
-                "🔐 I didn't read or store that. Tap \"Save as secret\" to pick where `{}` goes (I keep the value for 10 minutes, in memory only).",
-                name.unwrap_or("it")
-            );
+            let reply = tx.held.replace("{name}", name.unwrap_or(tx.it_word));
             let meta = rich_meta(
                 vec![reply.clone()],
-                vec![save_action(&held, name, cmd.target.as_deref())],
+                vec![save_action(tx.save, &held, name, cmd.target.as_deref())],
             );
-            lucina_item(timeline, &reply, "secret_offer", meta);
-            reply
+            let id = lucina_item(timeline, &reply, "secret_offer", meta);
+            (reply, id)
         }
         None => {
-            let reply = "🔐 Use /secret NAME VALUE [project/env/path or alias], or open \"Add secret\" in the app.".to_owned();
+            let reply = tx.usage.to_owned();
             let meta = rich_meta(
                 vec![reply.clone()],
                 vec![
-                    json!({"id": "add-secret", "label": "Add secret", "emoji": "🔐", "kind": "secret", "payload": {"mode": "save"}}),
+                    json!({"id": "add-secret", "label": tx.add, "emoji": "🔐", "kind": "secret", "payload": {"mode": "save"}}),
                 ],
             );
-            lucina_item(timeline, &reply, "secret_offer", meta);
-            reply
+            let id = lucina_item(timeline, &reply, "secret_offer", meta);
+            (reply, id)
         }
     };
     tracing::info!(
         has_value = cmd.value.is_some(),
         "secret command answered before the planner"
     );
-    reply
+    out
 }
 
 /// Mask token shapes in a normal message. Returns the masked text and, when
@@ -452,40 +540,39 @@ pub fn mask_message(st: &crate::AppState, text: &str) -> (String, Vec<(String, S
     for d in spans.iter().take(3) {
         let v = &text[d.start..d.end];
         let prefix: String = v.chars().take(3).collect();
-        let hint = format!("{prefix}…, {} characters", v.chars().count());
+        let hint = format!("{prefix}…, {}", v.chars().count());
         held.push((st.held_secrets.hold(v), hint));
     }
     (lucina_secrets::redactor().redact(text).into_owned(), held)
 }
 
 /// After a turn whose message had tokens: Lucina's "Save as secret?" card.
-pub fn offer_held(timeline: &TimelineStore, held: &[(String, String)]) {
+pub fn offer_held(timeline: &TimelineStore, held: &[(String, String)], lang: &str) {
     if held.is_empty() {
         return;
     }
+    let tx = texts(lang);
     let what = held
         .iter()
-        .map(|(_, h)| h.as_str())
+        .map(|(_, h)| format!("{h} {}", tx.chars))
         .collect::<Vec<_>>()
         .join("; ");
-    let reply = format!(
-        "🔐 Your message had something that looks like a secret ({what}). I hid it from my memory and from the model. Save it as a secret?"
-    );
+    let reply = tx.offer.replace("{what}", &what);
     let mut actions: Vec<Value> = held
         .iter()
         .take(3)
         .enumerate()
         .map(|(i, (id, _))| {
-            let mut a = save_action(id, None, None);
+            let mut a = save_action(tx.save, id, None, None);
             a["id"] = json!(format!("save-secret-{}", i + 1));
             if held.len() > 1 {
-                a["label"] = json!(format!("Save secret {}", i + 1));
+                a["label"] = json!(tx.save_n.replace("{n}", &(i + 1).to_string()));
             }
             a
         })
         .collect();
-    actions.push(json!({"id": "dismiss-secret", "label": "No", "kind": "dismiss", "payload": {}}));
-    lucina_item(
+    actions.push(json!({"id": "dismiss-secret", "label": tx.no, "kind": "dismiss", "payload": {}}));
+    let _ = lucina_item(
         timeline,
         &reply,
         "secret_offer",
@@ -538,21 +625,24 @@ pub fn project_request(text: &str) -> Option<String> {
     ((1..=64).contains(&n) && !name.chars().any(char::is_control)).then_some(name)
 }
 
-/// The card for [`project_request`]. Returns the reply text.
-pub fn answer_project_request(timeline: &TimelineStore, name: &str) -> String {
-    let reply = format!(
-        "Create the Infisical project \"{name}\"? Tap to confirm in the app. It gets no access for agents or services until you say so."
-    );
+/// The card for [`project_request`]: the reply and the card's item id.
+pub fn answer_project_request(
+    timeline: &TimelineStore,
+    name: &str,
+    lang: &str,
+) -> (String, Option<String>) {
+    let tx = texts(lang);
+    let reply = tx.project.replace("{name}", name);
     let meta = rich_meta(
         vec![reply.clone()],
         vec![
-            json!({"id": "create-project", "label": "Create project", "emoji": "🗂️", "kind": "secret",
+            json!({"id": "create-project", "label": tx.create, "emoji": "🗂️", "kind": "secret",
                    "payload": {"mode": "project", "projectName": name}}),
-            json!({"id": "dismiss-project", "label": "Not now", "kind": "dismiss", "payload": {}}),
+            json!({"id": "dismiss-project", "label": tx.not_now, "kind": "dismiss", "payload": {}}),
         ],
     );
-    lucina_item(timeline, &reply, "secret_offer", meta);
-    reply
+    let id = lucina_item(timeline, &reply, "secret_offer", meta);
+    (reply, id)
 }
 
 #[cfg(test)]

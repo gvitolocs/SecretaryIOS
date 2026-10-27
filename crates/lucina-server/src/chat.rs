@@ -142,7 +142,7 @@ pub async fn handle_chat(
     // "Add secret": `/secret …` never reaches a sink; tokens in a normal
     // message are masked before the turn and offered for saving after it.
     if crate::owner_secrets::is_secret_command(&text) {
-        let reply =
+        let (reply, lucina_item_id) =
             crate::owner_secrets::answer_secret_command(&st, &text, &st.timeline_for(&session));
         return Ok(json!({
             "reply": reply,
@@ -152,7 +152,7 @@ pub async fn handle_chat(
             "clientMessageId": (!client_message_id.is_empty()).then_some(client_message_id),
             "job": null,
             "userItemId": null,
-            "lucinaItemId": null,
+            "lucinaItemId": lucina_item_id,
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text);
@@ -170,7 +170,11 @@ pub async fn handle_chat(
             reply_to: reply_to.clone(),
             ..Default::default()
         });
-        let reply = crate::owner_secrets::answer_project_request(&timeline, &name);
+        let (reply, lucina_item_id) = crate::owner_secrets::answer_project_request(
+            &timeline,
+            &name,
+            crate::owner_secrets::lang_of(&text),
+        );
         return Ok(json!({
             "reply": reply,
             "action": "secret_project_offer",
@@ -178,17 +182,18 @@ pub async fn handle_chat(
             "clientMessageId": (!client_message_id.is_empty()).then_some(client_message_id),
             "job": null,
             "userItemId": user.map(|u| u.id),
-            "lucinaItemId": null,
+            "lucinaItemId": lucina_item_id,
         }));
     }
     let offer_timeline = st.timeline_for(&session);
+    let offer_lang = crate::owner_secrets::lang_of(&text);
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
         let out = run_turn(
             st, text, session, None, channel, mcp_turn, surface, reply_to,
         )
         .await;
-        crate::owner_secrets::offer_held(&offer_timeline, &held);
+        crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
         return out;
     };
     let key = format!("{session}:{cmid_value}");
@@ -238,7 +243,7 @@ pub async fn handle_chat(
         Slot::Fresh(fut) => fut,
     };
     let out = shared.await;
-    crate::owner_secrets::offer_held(&offer_timeline, &held);
+    crate::owner_secrets::offer_held(&offer_timeline, &held, offer_lang);
     if out.is_err() {
         st.client_messages
             .lock()
@@ -331,14 +336,16 @@ pub async fn channel_turn(
     // "Add secret" (see handle_chat): the owner's `/secret …` is answered
     // here; tokens are masked before the turn, then offered in the app.
     if origin.owner && crate::owner_secrets::is_secret_command(&message) {
-        let mut reply = crate::owner_secrets::answer_secret_command(&st, &message, &st.timeline);
-        reply.push_str(
-            " The card is in the Secretary app. This chat app keeps your message: delete it there.",
-        );
+        let (mut reply, _) =
+            crate::owner_secrets::answer_secret_command(&st, &message, &st.timeline);
+        reply.push_str(crate::owner_secrets::chat_app_note(
+            crate::owner_secrets::lang_of(message.trim_start().get(7..).unwrap_or("")),
+        ));
         return Ok(
             json!({"reply": reply, "action": "secret_command", "sensitive": true, "job": null}),
         );
     }
+    let offer_lang = crate::owner_secrets::lang_of(&message);
     let (message, held) = if origin.owner {
         crate::owner_secrets::mask_message(&st, &message)
     } else {
@@ -363,7 +370,7 @@ pub async fn channel_turn(
         None,
     )
     .await;
-    crate::owner_secrets::offer_held(&st.timeline, &held);
+    crate::owner_secrets::offer_held(&st.timeline, &held, offer_lang);
     out
 }
 
