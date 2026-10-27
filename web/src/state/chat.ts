@@ -1,4 +1,12 @@
-// Device main chat: cached pages, scoped incremental sync and optimistic sends.
+// The Chat tab: this device's main conversation with Lucina.
+//
+// The server timeline is the source of truth; this device's part of it ("mine": its own
+// device conversation, items from before devices were recorded, and Lucina's own
+// messages) is kept in IndexedDB (lib/chatdb). The first paint comes from there, then
+// `GET /v1/timeline?scope=mine&after=<cursor>` fetches only what arrived since
+// (lib/chatSync). Live items (SSE) are all stored, and only "mine" are shown here; every
+// other conversation is in the All chats plugin (views/Chats). This tab's optimistic
+// sends are merged in and deduped by server item id.
 
 import { createSignal } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
@@ -114,8 +122,7 @@ export function isTerminalJob(status: string): boolean {
 }
 
 function hydrate(): ChatMessage[] {
-  readJSON("session", CACHE_KEY);
-  readJSON("session", LEGACY_KEY);
+  // The sessionStorage caches are gone (IndexedDB holds the chat); clean up old copies.
   removeKey("session", CACHE_KEY);
   removeKey("session", LEGACY_KEY);
   return [];

@@ -47,7 +47,7 @@ describe("All chats", () => {
    expect(calls[0]!.body).toMatchObject({ message: "Continuing", replyTo: "1" });
  });
  it("keeps agent actions read-only and explains where the conversation lives", async () => {
-   const agentItem = { ...item, meta: { via: "mcp", caller: "chatgpt", format: "v1", bubbles: [{ text: "Agent response" }], actions: [{ id: "yes", kind: "reply", label: "Send answer", payload: { text: "yes" } }] } };
+   const agentItem = { ...item, meta: { via: "mcp", caller: "chatgpt", format: "v1", bubbles: ["Agent response"], actions: [{ id: "yes", kind: "reply", label: "Send answer", payload: { text: "yes" } }] } };
    stubFetch(c => ({ body: c.url.includes("conversations") ? { items: [{ ...conversation, key: "agent:chatgpt", kind: "agent", title: "ChatGPT" }] } : { items: [agentItem], cursor: "1" } }));
    renderChats("/chats/agent%3Achatgpt");
    expect(await screen.findByText("This conversation lives in ChatGPT.")).toBeInTheDocument();
