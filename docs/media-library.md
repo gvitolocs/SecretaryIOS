@@ -32,10 +32,12 @@ time runs beside (but never ahead of) a viewer's job:
   decode/encode threads. `LUCINA_MEDIA_VAAPI=0|<device>` and `LUCINA_MEDIA_GPU_LEASE=<path>|0` override.
 - libx264 and tone-mapping jobs wait for the night window (`LUCINA_MEDIA_PREPARE_WINDOW`, default `1-7`,
   `[start, end)` local, wraps past midnight). VAAPI and remux jobs may start any hour.
-- No job starts at or above `LUCINA_MEDIA_PREPARE_MAX_TEMP` (k10temp Tctl, default 80 °C) or
+- No job starts at or above `LUCINA_MEDIA_PREPARE_MAX_TEMP` (k10temp Tctl, default 90 °C, the owner's limit) or
   `LUCINA_MEDIA_PREPARE_MAX_LOAD` (one-minute load, default 16); the worker re-checks every minute and logs a
-  pause once. A running job is sampled every 10 s and stopped after three over-limit samples (85 °C or the max
-  load), its output removed, and it returns to the queue as paused, not failed. A failed VAAPI job is retried
+  pause once. A running job is sampled every 10 s and stopped after three samples in a row at or above 90 °C
+  (load alone never stops it: builds are not capped), its output removed, and it returns to the queue as paused,
+  not failed. The scope is bound to lucina-media's unit (`BindsTo=`; `LUCINA_MEDIA_PREPARE_BIND`), so a
+  restart of the service stops its ffmpeg too. A failed VAAPI job is retried
   once on libx264 in the night window. Viewers pressing play are not throttled by any of this.
 
 ## The Drive (2026-10-26)
