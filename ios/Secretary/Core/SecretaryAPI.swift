@@ -7,8 +7,10 @@ import Foundation
 struct SessionInfo: Decodable, Equatable, Sendable {
     let authenticated: Bool
     let deviceName: String?
+    let deviceId: String?
 
-    init(authenticated: Bool, deviceName: String?) {
+    init(authenticated: Bool, deviceName: String?, deviceId: String? = nil) {
+        self.deviceId = deviceId
         self.authenticated = authenticated
         self.deviceName = deviceName
     }
@@ -16,10 +18,11 @@ struct SessionInfo: Decodable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         authenticated = (try? c.decode(Bool.self, forKey: .authenticated)) ?? false
+        deviceId = try? c.decodeIfPresent(String.self, forKey: .deviceId)
         deviceName = try? c.decodeIfPresent(String.self, forKey: .deviceName)
     }
 
-    private enum CodingKeys: String, CodingKey { case authenticated, deviceName }
+    private enum CodingKeys: String, CodingKey { case authenticated, deviceName, deviceId }
 }
 
 struct HealthInfo: Decodable, Equatable, Sendable {
@@ -212,10 +215,18 @@ struct SecretaryAPI: Sendable {
     }
 
     /// `GET /v1/timeline?before=&limit=`: newest first.
-    func timeline(before: String? = nil, limit: Int = 50) async throws -> TimelinePage {
+    func timeline(before: String? = nil, limit: Int = 50, after: String? = nil, scope: String? = nil, conversation: String? = nil) async throws -> TimelinePage {
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let before { query.append(URLQueryItem(name: "before", value: before)) }
+        if let after { query.append(URLQueryItem(name: "after", value: after)) }
+        if let scope { query.append(URLQueryItem(name: "scope", value: scope)) }
+        if let conversation { query.append(URLQueryItem(name: "conversation", value: conversation)) }
         return try await client.get("/v1/timeline", query: query)
+    }
+
+    func conversations() async throws -> [ChatConversation] {
+        let page: ConversationPage = try await client.get("/v1/timeline/conversations")
+        return page.items
     }
 
     /// `POST /v1/proactive/outreach/{id}/feedback`: "Utile" / "Non ora" / "Basta così" on a

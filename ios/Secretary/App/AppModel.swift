@@ -33,6 +33,7 @@ final class AppModel {
 
     private(set) var phase: Phase = .checking
     private(set) var deviceName: String?
+    private(set) var deviceId = UserDefaults.standard.string(forKey: ChatStore.deviceIdKey)
     /// The endpoint requests currently go to first (public or the tailnet name).
     private(set) var baseURL: URL
     /// Why the user is looking at the sign-in screen (expired token, ...).
@@ -324,6 +325,9 @@ final class AppModel {
             let session = try await api.session()
             if session.authenticated {
                 deviceName = session.deviceName
+                deviceId = session.deviceId
+                chat.setDeviceId(session.deviceId)
+                await chat.refresh()
             } else {
                 signOut(reason: "Your sign-in expired. Please sign in again.")
             }
@@ -366,10 +370,13 @@ final class AppModel {
             }
             try keychain.save(token)
             self.deviceName = session.deviceName ?? deviceName
+            self.deviceId = session.deviceId
+            chat.setDeviceId(session.deviceId)
             signedOutReason = nil
             phase = .signedIn
             device.syncCredentials()
             await health.refresh()
+            await chat.refresh()
         } catch {
             client.accessKey = previous
             throw error
@@ -385,6 +392,7 @@ final class AppModel {
         try? keychain.delete()
         client.accessKey = nil
         deviceName = nil
+        deviceId = nil
         lucina.stopEverything()
         lucina.releaseStage()
         device.bridge.reset()

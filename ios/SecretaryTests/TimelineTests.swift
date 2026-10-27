@@ -311,6 +311,9 @@ final class ChatStoreTimelineTests: XCTestCase {
 
     override func tearDown() {
         try? FileManager.default.removeItem(at: fileURL)
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: fileURL.deletingPathExtension().appendingPathExtension("sqlite").path + suffix)
+        }
     }
 
     private func makeStore() -> ChatStore {
@@ -320,8 +323,8 @@ final class ChatStoreTimelineTests: XCTestCase {
 
     private static let page = """
     {"items":[
-      {"id":"tl_3","ts":"2026-10-21T10:00:02Z","channel":"telegram","role":"lucina","text":"Fatto."},
-      {"id":"tl_2","ts":"2026-10-21T10:00:01Z","channel":"telegram","role":"user","text":"latte"}
+      {"id":"tl_3","ts":"2026-10-21T10:00:02Z","channel":"ios","role":"lucina","text":"Fatto."},
+      {"id":"tl_2","ts":"2026-10-21T10:00:01Z","channel":"ios","role":"user","text":"latte"}
     ],"nextBefore":"tl_2"}
     """
 
@@ -356,12 +359,15 @@ final class ChatStoreTimelineTests: XCTestCase {
         store.handle(SSEEvent(event: "ping", data: "{}", id: nil))
         XCTAssertEqual(store.items.map(\.id), ["tl_2", "tl_3", "tl_10", "tl_11"])
 
-        // A message from another channel appears live.
+        // Other channels are stored, without entering this phone's main chat.
         store.handle(SSEEvent(event: "item", data: #"{"id":"tl_12","ts":"2026-10-21T10:06:00Z","channel":"alexa","role":"user","text":"eggs"}"#, id: "tl_12"))
-        XCTAssertEqual(store.items.last?.channel, .alexa)
+        XCTAssertEqual(store.items.last?.channel, .ios)
 
         // The cache gives the same first paint to a new store.
-        XCTAssertEqual(makeStore().items.map(\.id), store.items.map(\.id))
+        await store.flushPersistence()
+        let restored = makeStore()
+        await restored.prepare()
+        XCTAssertEqual(restored.items.map(\.id), store.items.map(\.id))
     }
 
     func testStreamCanBeatTheChatResponse() async {
@@ -388,8 +394,8 @@ final class ChatStoreTimelineTests: XCTestCase {
             if request.url?.query?.contains("before=tl_2") == true {
                 return .init(body: """
                 {"items":[
-                  {"id":"tl_2","ts":"2026-10-21T10:00:01Z","channel":"telegram","role":"user","text":"latte"},
-                  {"id":"tl_1","ts":"2026-10-20T09:00:00Z","channel":"web","role":"user","text":"older"}
+                  {"id":"tl_2","ts":"2026-10-21T10:00:01Z","channel":"ios","role":"user","text":"latte"},
+                  {"id":"tl_1","ts":"2026-10-20T09:00:00Z","channel":"ios","role":"user","text":"older"}
                 ],"nextBefore":null}
                 """)
             }
@@ -418,8 +424,11 @@ final class ChatStoreTimelineTests: XCTestCase {
         XCTAssertEqual(store.items.map(\.localStatus), [.sent, .sent])
         XCTAssertEqual(store.items.last?.text, "Hi")
         // Kept on the phone across launches in this mode.
-        XCTAssertEqual(makeStore().items.count, 2)
-        XCTAssertEqual(makeStore().mode, .localOnly)
+        await store.flushPersistence()
+        let restored = makeStore()
+        await restored.prepare()
+        XCTAssertEqual(restored.items.count, 2)
+        XCTAssertEqual(restored.mode, .localOnly)
     }
 
     func testFailedSendCanBeRetriedWithTheSameClientMessageId() async throws {

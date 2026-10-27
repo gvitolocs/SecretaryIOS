@@ -89,6 +89,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers: [tech.getsecretary.app.refresh, tech.getsecretary.app.photobackup]
         SecretaryAPNsEnabled: false
     dependencies:
+      - sdk: libsqlite3.tbd
       # Built by scripts/build-ios-core.sh (gitignored): the Rust gym/body engines.
       - framework: Frameworks/SecretaryCore.xcframework
         embed: false

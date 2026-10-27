@@ -134,6 +134,8 @@ struct ProactiveAction: Codable, Equatable, Hashable, Sendable {
 }
 
 struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
+    var device: String?
+    var deviceName: String?
     var via: String?
     var caller: String?
     var chatTitle: String?
@@ -183,6 +185,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        device = c.lenientOptional(String.self, .device)
+        deviceName = c.lenientOptional(String.self, .deviceName)
         via = c.lenientOptional(String.self, .via)
         caller = c.lenientOptional(String.self, .caller)
         chatTitle = c.lenientOptional(String.self, .chatTitle)
@@ -206,7 +210,7 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
+        case device, deviceName, via, caller, chatTitle, guildName, channelName, isDm, kind, command, outfit, hair, slug
         case outreachId, priority, topic, why, actions, place, shareId, transcript, voiceReply
     }
 }
@@ -387,7 +391,12 @@ struct TimelinePage: Decodable, Equatable, Sendable {
     /// Cursor for the next older page; nil when there is none.
     let nextBefore: String?
 
-    init(items: [TimelineItem], nextBefore: String?) {
+    let cursor: String?
+    let hasMore: Bool
+
+    init(items: [TimelineItem], nextBefore: String?, cursor: String? = nil, hasMore: Bool = false) {
+        self.cursor = cursor
+        self.hasMore = hasMore
         self.items = items
         self.nextBefore = nextBefore
     }
@@ -397,9 +406,11 @@ struct TimelinePage: Decodable, Equatable, Sendable {
         // One odd item must not hide the page: undecodable ones are skipped.
         items = (try c.decodeIfPresent([Lossy<TimelineItem>].self, forKey: .items) ?? []).compactMap(\.value)
         nextBefore = c.lenientOptional(FlexibleID.self, .nextBefore)?.value
+        cursor = c.lenientOptional(String.self, .cursor)
+        hasMore = c.lenient(Bool.self, .hasMore, false)
     }
 
-    private enum CodingKeys: String, CodingKey { case items, nextBefore }
+    private enum CodingKeys: String, CodingKey { case items, nextBefore, cursor, hasMore }
 }
 
 enum TimelineMerge {

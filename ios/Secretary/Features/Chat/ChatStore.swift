@@ -14,12 +14,12 @@ struct ChatJob: Codable, Equatable, Sendable {
     var isTerminal: Bool { JobInfo.isTerminal(status) }
 }
 
-/// The one conversation with Lucina, across every channel.
+/// This phone’s conversation with Lucina.
 ///
 /// Source of truth: the server timeline (`GET /v1/timeline` pages, `/v1/timeline/stream`
 /// live). Messages written here are sent with `POST /v1/chat` (`X-Secretary-Client: ios`),
 /// shown optimistically and reconciled with the server's copies by `clientMessageId`,
-/// `userItemId` and `lucinaItemId`. The last 50 items are cached for a fast first paint.
+/// `userItemId` and `lucinaItemId`. SQLite supplies the first 50 items before sync.
 ///
 /// A server without the timeline (404) puts the store in local-only mode: the
 /// conversation is kept on the phone as before, and the timeline is tried again on the
@@ -84,6 +84,17 @@ final class ChatStore {
     nonisolated static let choicesKey = "secretary.chat.choices.v1"
 
     @ObservationIgnored private let api: () -> SecretaryAPI
+    let database: ChatDatabase
+    nonisolated static let deviceIdKey = "secretary.chat.deviceId"
+    private(set) var deviceId: String?
+    private(set) var messageSource = "cache"
+    @ObservationIgnored private var deviceHydrationTask: Task<Void, Never>?
+    @ObservationIgnored private var hydrationTask: Task<Void, Never>?
+    @ObservationIgnored private var persistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var syncing = false
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var persistedItems: [String: TimelineItem] = [:]
+    @ObservationIgnored private var sentClientIDs: Set<String> = []
     @ObservationIgnored private let fileURL: URL
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var pollers: [String: Task<Void, Never>] = [:]
@@ -97,22 +108,18 @@ final class ChatStore {
     @ObservationIgnored var onItems: (([TimelineItem]) -> Void)?
 
     init(api: @escaping () -> SecretaryAPI, fileURL: URL = ChatStore.defaultFileURL, defaults: UserDefaults = .standard,
-         pollInterval: Duration = ChatStore.pollInterval) {
+         pollInterval: Duration = ChatStore.pollInterval, database: ChatDatabase? = nil) {
+        self.database = database ?? ChatDatabase(url: fileURL == Self.defaultFileURL ? ChatDatabase.defaultURL : fileURL.deletingPathExtension().appendingPathExtension("sqlite"))
+        self.deviceId = defaults.string(forKey: Self.deviceIdKey)
         self.api = api
         self.fileURL = fileURL
         self.defaults = defaults
         self.pollInterval = pollInterval
         voiceReplies = LucinaVoiceReplies(defaults: defaults)
         readAloud = ChatReadAloud()
-        let cache = Self.load(from: fileURL)
-        items = cache.items
-        jobs = cache.jobs
-        lastEventId = cache.lastEventId
-        if cache.localOnly { mode = .localOnly }
         choices = (defaults.dictionary(forKey: Self.choicesKey) as? [String: String]) ?? [:]
         hiddenIds = Set(defaults.stringArray(forKey: Self.hiddenKey) ?? [])
         outgoing = ChatShareOutbox.loadAll()
-        reconcileOutbox()
         // One sound at a time across the chat's players.
         ChatAudio.shared.register(voiceReplies) { [weak voiceReplies] in voiceReplies?.stop() }
         ChatAudio.shared.register(readAloud) { [weak readAloud] in readAloud?.stop() }
@@ -120,6 +127,10 @@ final class ChatStore {
         readAloud.refusal = { [noteRecorder] in
             if let notice = ChatAudio.recordingNotice { return notice }
             return noteRecorder.isActive ? String(localized: "Finish the recording first.") : nil
+        }
+        hydrationTask = Task { [weak self] in
+            guard let self else { return }
+            await hydrate()
         }
     }
 
@@ -179,26 +190,107 @@ final class ChatStore {
 
     // MARK: - Timeline
 
-    /// Loads the newest page (first paint comes from the cache). A 404 switches to local-only mode.
-    func refresh() async {
+    /// Hydration is shared by launch and sync, so no timeline request can beat the local page.
+    func prepare() async {
+        await hydrationTask?.value
+        await deviceHydrationTask?.value
+    }
+
+    func flushPersistence() async { await persistenceTask?.value }
+
+    private var mineScope: ChatDatabase.Scope { .mine(deviceId) }
+
+    private func hydrate() async {
+        let epoch = generation
         do {
-            let page = try await api().timeline(limit: Self.pageSize)
-            onTransportSuccess?()
-            loadError = nil
-            if mode != .server {
-                // Coming from local-only or a cold start: the server copy replaces the cache,
-                // keeping only messages still waiting to be (re)sent.
-                items = items.filter { $0.isLocal && $0.localStatus != .sent }
-                mode = .server
+            // Migration runs off-main, including decoding the legacy cache once.
+            let url = fileURL
+            let cache = await Task.detached { Self.load(from: url) }.value
+            guard epoch == generation, !Task.isCancelled else { return }
+            if FileManager.default.fileExists(atPath: url.path) {
+                let metadata = Cache(items: [], jobs: cache.jobs, lastEventId: cache.lastEventId, localOnly: cache.localOnly)
+                let text = String(decoding: try JSONEncoder().encode(metadata), as: UTF8.self)
+                try await database.write(cache.items, state: ["chatMetadata": text])
+                try? FileManager.default.removeItem(at: url)
             }
-            apply(page.items)
-            PerfLog.chatSynced()
-            // Only the first load decides the cursor; later refreshes just fill gaps.
-            if nextBefore == nil || !hasOlder {
-                nextBefore = page.nextBefore
-                hasOlder = page.nextBefore != nil
+            let page = try await database.read(mineScope)
+            let metadata = try await database.value("chatMetadata")
+            let olderCursor = try await database.value("older:mine")
+            guard epoch == generation, !Task.isCancelled else { return }
+            if let metadata, let cache = try? JSONDecoder().decode(Cache.self, from: Data(metadata.utf8)) {
+                jobs = cache.jobs
+                lastEventId = cache.lastEventId
+                if cache.localOnly { mode = .localOnly }
             }
+            persistedItems = Dictionary(uniqueKeysWithValues: page.map { ($0.id, $0) })
+            let restored = page.map { original in
+                var item = original
+                if item.localStatus == .sending, item.meta?.isShare != true {
+                    item.localStatus = .error
+                    item.localError = String(localized: "Not sent: the app closed before Lucina answered.")
+                }
+                return item
+            }
+            items = TimelineMerge.merge(restored.filter { isMine($0, deviceId: deviceId, sentClientIDs: sentClientIDs) }, items).items
+            sentClientIDs.formUnion(items.compactMap(\.clientMessageId))
+            hasOlder = page.count == Self.pageSize || olderCursor?.isEmpty == false
+            nextBefore = (olderCursor?.isEmpty == false ? olderCursor : nil) ?? page.first(where: { !$0.isLocal })?.id
+            reconcileOutbox()
         } catch {
+            // Offline storage failure must not prevent a server sync.
+        }
+    }
+
+    func setDeviceId(_ id: String?) {
+        let changed = deviceId != id
+        deviceId = id
+        defaults.set(id, forKey: Self.deviceIdKey)
+        items = items.filter { isMine($0, deviceId: id, sentClientIDs: sentClientIDs) }
+        guard changed, id != nil else { return }
+        let epoch = generation
+        deviceHydrationTask = Task {
+            await hydrationTask?.value
+            guard epoch == generation else { return }
+            guard let cached = try? await database.read(.mine(id)), epoch == generation, deviceId == id else { return }
+            for item in cached { persistedItems[item.id] = item }
+            items = TimelineMerge.merge(cached, items).items
+        }
+    }
+
+    /// Incremental sync; all received items reach the bridge and disk, only mine reach Chat.
+    func refresh() async {
+        await prepare()
+        guard !syncing else { return }
+        syncing = true
+        let epoch = generation
+        defer { syncing = false }
+        do {
+            await flushPersistence()
+            let scope = mineScope
+            let cursor = try? await database.value(scope.stateKey)
+            try await ChatSync.run(api: api(), cursor: cursor) { page, reset in
+                guard epoch == self.generation else { throw CancellationError() }
+                await self.flushPersistence()
+                guard epoch == self.generation else { throw CancellationError() }
+                var state = page.cursor.map { [scope.stateKey: $0] } ?? [:]
+                if cursor == nil || reset { state["older:mine"] = page.nextBefore ?? "" }
+                try? await self.database.write(page.items, state: state, reset: reset ? scope : nil)
+                guard epoch == self.generation else { throw CancellationError() }
+                self.onTransportSuccess?()
+                self.loadError = nil
+                self.mode = .server
+                self.apply(page.items)
+                if page.items.isEmpty { self.persist() }
+                PerfLog.chatSynced()
+                if cursor == nil || reset {
+                    self.nextBefore = page.nextBefore
+                    self.hasOlder = page.nextBefore != nil
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard epoch == generation else { return }
             let apiError = APIError.wrap(error)
             if apiError.status == 404 {
                 mode = .localOnly
@@ -214,30 +306,45 @@ final class ChatStore {
 
     /// Infinite scroll upward.
     func loadOlder() async {
-        guard mode == .server, hasOlder, !isLoadingOlder, let cursor = nextBefore else { return }
+        await prepare()
+        guard hasOlder, !isLoadingOlder else { return }
         isLoadingOlder = true
+        let epoch = generation
         defer { isLoadingOlder = false }
         do {
-            let page = try await api().timeline(before: cursor, limit: Self.pageSize)
-            apply(page.items, persistAfter: false)
+            await flushPersistence()
+            let before = items.filter { !$0.isLocal }.map(\.id).min() ?? nextBefore
+            let cached = (try? await database.read(mineScope, before: before)) ?? []
+            guard epoch == generation else { return }
+            if !cached.isEmpty {
+                apply(cached)
+                nextBefore = cached.first?.id
+                return
+            }
+            guard mode == .server, let cursor = nextBefore ?? before else { return }
+            let page = try await api().timeline(before: cursor, limit: Self.pageSize, scope: "mine")
+            guard epoch == generation else { return }
+            try await database.write(page.items, state: ["older:mine": page.nextBefore ?? ""])
+            guard epoch == generation else { return }
+            apply(page.items)
             nextBefore = page.nextBefore
             hasOlder = page.nextBefore != nil
-        } catch {
-            onTransportError?(APIError.wrap(error))
-        }
+        } catch { onTransportError?(APIError.wrap(error)) }
     }
 
     /// Merges server items in (dedupe by id, reconcile optimistic bubbles).
     func apply(_ incoming: [TimelineItem], persistAfter: Bool = true) {
         guard !incoming.isEmpty else { return }
         onItems?(incoming)
-        let result = TimelineMerge.merge(items, incoming)
+        let visible = incoming.filter { isMine($0, deviceId: deviceId, sentClientIDs: sentClientIDs) }
+        if !visible.isEmpty, items.isEmpty { messageSource = "server" }
+        let result = TimelineMerge.merge(items, visible)
         items = result.items
         for (old, new) in result.replaced {
             if let job = jobs.removeValue(forKey: old), jobs[new] == nil { jobs[new] = job }
         }
-        if persistAfter { persist() }
-        voiceReplies.consider(incoming, items: items, foreground: isForeground, api: api)
+        if persistAfter { persist(additional: incoming, removing: Array(result.replaced.keys)) }
+        voiceReplies.consider(visible, items: items, foreground: isForeground, api: api)
     }
 
     // MARK: - Live stream
@@ -247,7 +354,7 @@ final class ChatStore {
         isForeground = active
         if active {
             Task {
-                if mode != .server { await refresh() }
+                await refresh()
                 if mode == .server { startStream() }
             }
             resumePolling()
@@ -351,6 +458,7 @@ final class ChatStore {
         guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return nil }
         LucinaDonations.donate()
         let clientId = UUID().uuidString
+        sentClientIDs.insert(clientId)
         items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
                                   clientMessageId: clientId, replyTo: replyTo, localStatus: .sending))
         persist()
@@ -511,6 +619,19 @@ final class ChatStore {
     // MARK: - Persistence
 
     func clear() {
+        generation += 1
+        hydrationTask?.cancel()
+        let priorHydration = hydrationTask
+        let priorPersistence = persistenceTask
+        persistenceTask = Task {
+            await priorHydration?.value
+            await priorPersistence?.value
+            try? await database.clear()
+        }
+        persistedItems = [:]
+        sentClientIDs = []
+        setDeviceId(nil)
+        messageSource = "cache"
         if noteRecorder.isActive { noteRecorder.discard() }
         voiceReplies.stop()
         readAloud.stop()
@@ -535,37 +656,30 @@ final class ChatStore {
         try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent().appendingPathComponent("chat.json"))
     }
 
-    struct Cache: Codable {
+    struct Cache: Codable, Sendable {
         var items: [TimelineItem]
         var jobs: [String: ChatJob]
         var lastEventId: String?
         var localOnly: Bool
     }
 
-    private func persist() {
-        do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // Server mode: the newest 50 server items plus anything still unsent.
-            // Local-only mode: the phone is the only copy, so keep more.
-            let keep: [TimelineItem]
-            if mode == .localOnly {
-                keep = Array(items.suffix(500))
-            } else {
-                let server = items.filter { !$0.isLocal }.suffix(Self.cacheSize)
-                let unsent = items.filter { $0.isLocal && $0.localStatus != .sent }
-                keep = TimelineMerge.sorted(Array(server) + unsent)
-            }
-            let ids = Set(keep.map(\.id))
-            let cache = Cache(items: keep, jobs: jobs.filter { ids.contains($0.key) }, lastEventId: lastEventId,
-                              localOnly: mode == .localOnly)
-            let data = try JSONEncoder().encode(cache)
-            try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        } catch {
-            // Losing the local cache is not fatal; the server keeps the conversation.
+    private func persist(additional: [TimelineItem] = [], removing: [String] = []) {
+        let snapshot = TimelineMerge.merge(items, additional).items
+        let ids = Set(snapshot.map(\.id))
+        let removed = Set(removing).union(persistedItems.keys.filter { $0.hasPrefix(TimelineItem.localPrefix) && !ids.contains($0) })
+        let changed = snapshot.filter { persistedItems[$0.id] != $0 }
+        for id in removed { persistedItems[id] = nil }
+        for item in changed { persistedItems[item.id] = item }
+        let metadata = Cache(items: [], jobs: jobs, lastEventId: lastEventId, localOnly: mode == .localOnly)
+        let previous = persistenceTask
+        persistenceTask = Task {
+            await previous?.value
+            let text = (try? JSONEncoder().encode(metadata)).map { String(decoding: $0, as: UTF8.self) }
+            try? await database.write(changed, state: text.map { ["chatMetadata": $0] } ?? [:], removeIDs: Array(removed))
         }
     }
 
-    static func load(from url: URL) -> Cache {
+    nonisolated static func load(from url: URL) -> Cache {
         guard let data = try? Data(contentsOf: url), var cache = try? JSONDecoder().decode(Cache.self, from: data) else {
             return Cache(items: [], jobs: [:], lastEventId: nil, localOnly: false)
         }
