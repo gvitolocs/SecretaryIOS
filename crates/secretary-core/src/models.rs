@@ -53,6 +53,10 @@ pub struct ChatRequest {
     /// secretary-server always sets it before forwarding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// Swipe to reply: the timeline id of the earlier message this one
+    /// answers (`[A-Za-z0-9_-]{1,64}`, see [`crate::validate::timeline_ref`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -875,6 +879,20 @@ mod tests {
         let a: ShoppingListData = serde_json::from_value(json!({"list": one})).unwrap();
         let b: ShoppingListData = serde_json::from_value(one.clone()).unwrap();
         assert_eq!(a.into_list(), b.into_list());
+    }
+
+    #[test]
+    fn chat_request_reply_to_roundtrip() {
+        let raw = json!({"message": "e questo?", "sessionId": "iphone", "clientMessageId": "c-9",
+                         "channel": "ios", "replyTo": "01K83ZK4Q6X1V9W2D3E4F5G6H7"});
+        let req: ChatRequest = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(req.reply_to.as_deref(), Some("01K83ZK4Q6X1V9W2D3E4F5G6H7"));
+        assert_eq!(serde_json::to_value(&req).unwrap(), raw);
+        // Absent: not serialized at all, so the forwarded body is unchanged.
+        let raw = json!({"message": "ciao"});
+        let req: ChatRequest = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(req.reply_to, None);
+        assert_eq!(serde_json::to_value(&req).unwrap(), raw);
     }
 
     #[test]

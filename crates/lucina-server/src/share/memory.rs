@@ -124,6 +124,27 @@ impl Memory {
             .optional()?)
     }
 
+    /// What was read from one timeline item's attachments: records written
+    /// for that item, or (`share_id`) for its share, in part order. Empty
+    /// when the database was never created (it is not created here).
+    pub fn for_item(&self, item_id: &str, share_id: Option<&str>) -> anyhow::Result<Vec<Record>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM attachments
+             WHERE item_id = ?1 OR (?2 IS NOT NULL AND share_id = ?2)
+             ORDER BY created_at, length(id), id LIMIT 32"
+        ))?;
+        let rows = stmt.query_map(params![item_id, share_id], row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Best matches for free text (any word), newest first among equals.
     /// `kind` and `since_ms` narrow the search.
     pub fn search(
@@ -381,6 +402,28 @@ mod tests {
             structured: json!({"total": "84,30"}),
             ..Record::default()
         }
+    }
+
+    #[test]
+    fn for_item_finds_a_share_by_item_or_share_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attachments.db");
+        let lazy = Memory::new(path.clone());
+        assert!(lazy.for_item("item-1", Some("s")).unwrap().is_empty());
+        assert!(!path.exists(), "a lookup never creates the database");
+        let m = Memory::open(&path).unwrap();
+        for (i, item) in [(10, Some("item-1")), (2, Some("item-1")), (3, None)] {
+            m.put(&Record {
+                item_id: item.map(str::to_owned),
+                share_id: if item.is_some() { "s1" } else { "s2" }.into(),
+                ..rec(&format!("s-{i}"), &format!("f{i}"), "image", "x", 5)
+            })
+            .unwrap();
+        }
+        let ids = |v: Vec<Record>| v.into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids(m.for_item("item-1", None).unwrap()), ["s-2", "s-10"]);
+        assert_eq!(ids(m.for_item("other", Some("s2")).unwrap()), ["s-3"]);
+        assert!(m.for_item("other", None).unwrap().is_empty());
     }
 
     #[test]

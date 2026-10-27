@@ -38,6 +38,7 @@ pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+pub mod reply;
 mod share_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
@@ -87,6 +88,14 @@ pub async fn handle_chat(
     if channel != "web" && channel != "ios" {
         return Err(ApiError::bad_request("channel must be web or ios"));
     }
+    // Swipe to reply: the earlier timeline item this message answers.
+    let reply_to = optional_string(&body, "replyTo", 64)?;
+    if !reply_to.is_empty() && !reply::valid_id(&reply_to) {
+        return Err(ApiError::bad_request(
+            "replyTo may only contain letters, digits, \"_\" and \"-\"",
+        ));
+    }
+    let reply_to = (!reply_to.is_empty()).then_some(reply_to);
     // Self-tests and diagnostics run in their own conversation, out of the owner's chat.
     let selftest = crate::selftest::requested(&body, &requested, &message);
     let session = if selftest {
@@ -128,7 +137,10 @@ pub async fn handle_chat(
     }
     let cmid = (!client_message_id.is_empty()).then_some(client_message_id);
     let Some(cmid_value) = cmid.clone() else {
-        return run_turn(st, text, session, None, channel, mcp_turn, surface).await;
+        return run_turn(
+            st, text, session, None, channel, mcp_turn, surface, reply_to,
+        )
+        .await;
     };
     let key = format!("{session}:{cmid_value}");
     enum Slot {
@@ -151,9 +163,18 @@ pub async fn handle_chat(
                         None => break,
                     };
                 }
-                let fut = run_turn(st.clone(), text, session, cmid, channel, mcp_turn, surface)
-                    .boxed()
-                    .shared();
+                let fut = run_turn(
+                    st.clone(),
+                    text,
+                    session,
+                    cmid,
+                    channel,
+                    mcp_turn,
+                    surface,
+                    reply_to,
+                )
+                .boxed()
+                .shared();
                 map.insert(key.clone(), (Instant::now(), fut.clone()));
                 Slot::Fresh(fut)
             }
@@ -296,6 +317,7 @@ impl Turn<'_> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_turn(
     st: AppState,
     message: String,
@@ -304,8 +326,12 @@ async fn run_turn(
     channel: String,
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
+    reply_to: Option<String>,
 ) -> Result<Value, ApiError> {
-    run_turn_inner(st, message, session, cmid, channel, mcp_turn, surface, None).await
+    run_turn_inner(
+        st, message, session, cmid, channel, mcp_turn, surface, None, reply_to,
+    )
+    .await
 }
 
 pub(crate) struct ShareTurn {
@@ -314,7 +340,8 @@ pub(crate) struct ShareTurn {
     pub reply_meta: Meta,
 }
 
-/// Share ingestion has already written the owner's timeline item.
+/// Share ingestion has already written the owner's timeline item (with its
+/// `replyTo`, which the turn quotes).
 pub(crate) async fn share_turn(
     st: AppState,
     message: String,
@@ -324,6 +351,7 @@ pub(crate) async fn share_turn(
 ) -> Result<Value, ApiError> {
     let surface =
         crate::surface::chat_surface(&st.cfg, Some(BearerVerified::checked()), &channel, None);
+    let reply_to = input.item.reply_to.clone();
     run_turn_inner(
         st,
         message,
@@ -333,6 +361,7 @@ pub(crate) async fn share_turn(
         None,
         surface,
         Some(input),
+        reply_to,
     )
     .await
 }
@@ -347,16 +376,28 @@ async fn run_turn_inner(
     mcp_turn: Option<McpTurn>,
     surface: TurnSurface,
     existing: Option<ShareTurn>,
+    reply_to: Option<String>,
 ) -> Result<Value, ApiError> {
     let normal_share = existing.as_ref().is_some_and(|s| !s.voice_only);
     let voice_only = existing.as_ref().is_some_and(|s| s.voice_only);
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
+    // Swipe to reply: the quoted message rides in every model call's user part.
+    let reply_block = match reply_to.as_deref() {
+        Some(id) => reply::block(&st, &surface, id).await,
+        None => String::new(),
+    };
+    // An id that names nothing readable is ignored, on the timeline too.
+    let reply_to = reply_to.filter(|_| !reply_block.is_empty());
     if st.cfg.planner == PlannerMode::Tools && !normal_share {
         let from_mcp = mcp_turn.is_some();
-        return tools_turn(
-            st, message, session, cmid, channel, surface, from_mcp, existing,
-        )
-        .await;
+        return crate::planner::TURN_REPLY
+            .scope(
+                reply_block,
+                tools_turn(
+                    st, message, session, cmid, channel, surface, from_mcp, existing, reply_to,
+                ),
+            )
+            .await;
     }
     // With rich replies the app turns structure into widgets and buttons.
     let base_system = if normal_share {
@@ -390,8 +431,9 @@ async fn run_turn_inner(
         caller: Some(m.caller.clone()),
         ..Meta::default()
     });
-    let timeline =
-        TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone()).with_meta(turn_meta);
+    let timeline = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
+        .with_meta(turn_meta)
+        .with_reply_to(reply_to);
     let timeline = if let Some(item) = existing {
         timeline.with_user_item(item.item)
     } else {
@@ -438,8 +480,12 @@ async fn run_turn_inner(
             } else {
                 game_system
             };
-            let finish = crate::planner::TURN_SYSTEM
-                .scope(game_system, json_turn(&t, &prepared, cmid.as_deref()))
+            let finish = crate::planner::TURN_REPLY
+                .scope(
+                    reply_block,
+                    crate::planner::TURN_SYSTEM
+                        .scope(game_system, json_turn(&t, &prepared, cmid.as_deref())),
+                )
                 .await;
             (finish, Some(prepared))
         }
@@ -1737,6 +1783,7 @@ async fn tools_turn(
     surface: TurnSurface,
     from_mcp: bool,
     existing: Option<ShareTurn>,
+    reply_to: Option<String>,
 ) -> Result<Value, ApiError> {
     // The tool set follows `origin` (trusted MCP turns get the owner's);
     // memory reads and writes follow `surface`.
@@ -1755,7 +1802,8 @@ async fn tools_turn(
     } else {
         ""
     };
-    let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone());
+    let turn = TimelineTurn::new(st.timeline_for(&session), &channel, cmid.clone())
+        .with_reply_to(reply_to);
     let turn = if let Some(s) = existing {
         turn.with_user_item(s.item)
     } else {

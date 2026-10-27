@@ -37,6 +37,7 @@ async fn secretary_core_client_decodes_every_route() {
                 session_id: Some("iphone".into()),
                 client_message_id: Some("m-1".into()),
                 channel: Some("ios".into()),
+                reply_to: None,
             })
             .unwrap(),
         )

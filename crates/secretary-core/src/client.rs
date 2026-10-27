@@ -138,6 +138,9 @@ impl Call {
         if let Some(c) = req.channel.as_deref() {
             validate::chat_channel("channel", c)?;
         }
+        if let Some(r) = req.reply_to.as_deref() {
+            validate::timeline_ref("replyTo", r)?;
+        }
         let body = serde_json::to_value(req).map_err(|e| Error::Decode(e.to_string()))?;
         let mut call = Self::new(Method::POST, &["chat"]).with_body(body);
         call.class = TimeoutClass::Chat;
@@ -875,7 +878,8 @@ mod tests {
             message: " ".into(),
             session_id: None,
             client_message_id: None,
-            channel: None
+            channel: None,
+            reply_to: None,
         })
         .is_err());
         assert!(Call::agenda(&AgendaQuery {
@@ -895,10 +899,28 @@ mod tests {
                 session_id: None,
                 client_message_id: None,
                 channel: Some(channel.into()),
+                reply_to: None,
             })
         };
         assert!(chat("ios").is_ok());
         assert!(chat("telegram").is_err());
+        let reply = |id: &str| {
+            Call::chat(&ChatRequest {
+                message: "hi".into(),
+                session_id: None,
+                client_message_id: None,
+                channel: None,
+                reply_to: Some(id.into()),
+            })
+        };
+        assert_eq!(
+            reply("01K83ZK4Q6X1V9W2D3E4F5G6H7").unwrap().body().unwrap()["replyTo"],
+            "01K83ZK4Q6X1V9W2D3E4F5G6H7"
+        );
+        assert!(reply("tl_2-x").is_ok());
+        for bad in ["", "a/b", "a.b", &"x".repeat(65)] {
+            assert!(reply(bad).is_err(), "{bad}");
+        }
         let tq = |before: Option<&str>, limit: Option<&str>| TimelineQuery {
             before: before.map(str::to_owned),
             limit: limit.map(str::to_owned),
@@ -912,7 +934,8 @@ mod tests {
                 message: "hi".into(),
                 session_id: None,
                 client_message_id: None,
-                channel: None
+                channel: None,
+                reply_to: None,
             })
             .unwrap()
             .timeout_class(),
