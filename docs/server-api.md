@@ -1237,7 +1237,9 @@ Settings:
 Lucina posts a notification:
 `{category, body (1–2000), title? (≤120), route?, dedupKey? (≤200), timelineId?, channel?, data? (≤4 KiB)}`
 (unknown fields → `400`). `201 {status: "created", notification, pushed, deferred}`,
-or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen),
+or `200 {status}` with `duplicate` (same `dedupKey` or `timelineId` seen;
+for `system` a repeated `dedupKey` instead replaces the older inbox entry and
+the shown notification, so "nezopt: x failed" is replaced by "nezopt: x recovered"),
 `disabled` (category off) or `present` (a Lucina message while the owner is in
 the app). Device tokens and cookies get `401`.
 
@@ -1246,6 +1248,47 @@ the app). Device tokens and cookies get `401`.
 `{settings, present}`: the settings object above plus whether the app is in
 front, so Lucina's proactive engine plans around quiet hours and Do Not
 Disturb. No subscriptions or device list.
+
+## Server health
+
+Each host's sentinel posts a full snapshot every run; the "Server health"
+plugin (`/server-health`) reads them. State in `system-health.json` (0600).
+Alerts are separate: the sentinel posts them to `POST /v1/notify` with
+`category: "system"`, `dedupKey: "<host>:<check id>"`, `route: "/server-health"`
+(the `system` category is off by default: the owner enables it in settings).
+
+### `POST /v1/system/health` (service token)
+
+Body ≤ 512 KB (`413 payload_too_large` above):
+
+```json
+{ "host": "nezopt", "at": "2026-10-27T10:30:00Z", "overall": "ok",
+  "metrics": { "disks": [{"mount": "/", "used_pct": 59.1, "free_gb": 736.0}],
+               "cpu_temp_c": 71.5, "load": [1.2, 1.4, 1.6], "mem_used_pct": 62.0, "swap_used_pct": 10.0 },
+  "checks": [{ "id": "unit:lucina-rs.service", "kind": "unit", "name": "lucina-rs", "group": "Lucina",
+               "state": "ok", "detail": "active", "since": "2026-10-27T09:00:00Z", "restarts_1h": 0 }] }
+```
+
+`overall`/`state`: `ok|warn|crit`; `kind`: `unit|timer|container|k3s|forward|log|disk|deadman`;
+`group`: `Lucina|Pokoin|CardRails|AI|Homelab|Other`; `at`, `since` RFC 3339; `cpu_temp_c` may be
+`null`; percentages 0–100; `host` 1–64 of `[A-Za-z0-9._-]`; check ids unique (≤ 2000 checks).
+Bad bodies → `400 bad_request` naming the field. `200 {ok: true, stored: true, events: n}`;
+a snapshot whose `at` is not newer than the stored one for that host (a retry) →
+`200 {ok: true, stored: false}`, nothing changes. At most 16 hosts (`409 too_many_hosts`).
+
+Every check present in both the previous and this snapshot whose `state` changed becomes an
+event (`at` = the snapshot's `at`); events are kept 30 days.
+
+### `GET /v1/system/health` (device or session)
+
+```json
+{ "hosts": [{"host": "nezopt", "received_at": "2026-10-27T10:30:02Z", "snapshot": {…as posted…}, "stale": false}],
+  "events": [{"at": "2026-10-27T10:05:00Z", "host": "nezopt", "check_id": "unit:lucina-rs.service",
+              "name": "lucina-rs", "from": "ok", "to": "crit", "detail": "restarted 12 times in 1 h"}] }
+```
+
+`stale`: nothing received for more than 15 minutes (the app shows the host as unreachable).
+`events`: newest first, last 30 days, at most 200.
 
 ## Proactive outreach
 

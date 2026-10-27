@@ -35,6 +35,8 @@ const en = {
   pokemonUnreachable: "Lucina's game is not reachable right now.",
   phone: "Phone",
   phoneDetail: "Calls, voice and transcripts",
+  server: "Server health",
+  serverDetail: "Services, disks and alerts",
 };
 
 export const plugins: FeatureDictionary<typeof en> = {
@@ -72,6 +74,8 @@ export const plugins: FeatureDictionary<typeof en> = {
     pokemonUnreachable: "Il gioco di Lucina non è raggiungibile in questo momento.",
     phone: "Telefono",
     phoneDetail: "Chiamate, voce e trascrizioni",
+    server: "Stato dei server",
+    serverDetail: "Servizi, dischi e avvisi",
   },
   da: {
     title: "Plugins",
@@ -106,5 +110,7 @@ export const plugins: FeatureDictionary<typeof en> = {
     pokemonUnreachable: "Lucinas spil kan ikke nås lige nu.",
     phone: "Telefon",
     phoneDetail: "Opkald, stemme og transskriptioner",
+    server: "Serverstatus",
+    serverDetail: "Tjenester, diske og advarsler",
   },
 };

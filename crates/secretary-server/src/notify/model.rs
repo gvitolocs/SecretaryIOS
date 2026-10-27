@@ -73,6 +73,14 @@ impl Category {
         )
     }
 
+    /// A `dedupKey` names a slot instead of a one-off: a newer notification
+    /// with the same key replaces the older one (inbox entry and the shown
+    /// notification) instead of being dropped as a duplicate. Host alerts
+    /// use this: "nezopt: x failed" then "nezopt: x recovered".
+    pub fn replaces_by_key(self) -> bool {
+        matches!(self, Category::System)
+    }
+
     /// Push "topic" / notification tag: a newer push of the same topic
     /// replaces an undelivered or still-shown older one, so a burst of
     /// Lucina messages ends up as one entry on the lock screen.

@@ -32,6 +32,7 @@ pub mod secrets;
 pub mod service;
 pub mod sessions;
 pub mod shopping;
+pub mod system_health;
 pub mod tasks;
 pub mod timeline;
 pub mod todoist;
@@ -133,6 +134,8 @@ pub struct Inner {
     pub proactive: Arc<proactive::FeedbackStore>,
     /// Tasks engine (`tasks.json`) and the Todoist client.
     pub tasks: Arc<tasks::TasksHub>,
+    /// Host health snapshots and their state changes (`system-health.json`).
+    pub system_health: Arc<system_health::HealthStore>,
 }
 
 #[derive(Clone)]
@@ -184,6 +187,7 @@ impl AppState {
             links: links::Hub::open(cfg)?,
             proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
+            system_health: system_health::store(&cfg.data_dir),
         })))
     }
 
@@ -258,7 +262,8 @@ pub fn app(state: AppState) -> Router {
         .merge(notify::routes::routes())
         .merge(proactive::routes())
         .merge(links::routes())
-        .merge(todoist::routes());
+        .merge(todoist::routes())
+        .merge(system_health::routes());
     if state.upstream.is_some() {
         protected = protected.merge(upstream::router());
     }
@@ -290,6 +295,7 @@ pub fn app(state: AppState) -> Router {
         .merge(avatar::routes(state.clone()))
         .merge(notify::routes::service_routes(state.clone()))
         .merge(proactive::service_routes(state.clone()))
+        .merge(system_health::service_routes(state.clone()))
         .merge(notes::routes(state.clone()))
         .merge(library::routes(state.clone()))
         .merge(models::routes(state.clone()))
