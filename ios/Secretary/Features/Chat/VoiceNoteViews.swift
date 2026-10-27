@@ -98,7 +98,6 @@ struct VoiceNoteBubble: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { expanded.toggle() } }
-                    .textSelection(.enabled)
                     .accessibilityLabel(Text("Transcript: \(transcript)"))
                     .accessibilityHint(Text(expanded ? "Double-tap to show less" : "Double-tap to show all"))
                     .accessibilityIdentifier("voiceNoteTranscript")

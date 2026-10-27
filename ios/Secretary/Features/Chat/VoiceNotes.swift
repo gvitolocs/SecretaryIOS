@@ -220,6 +220,7 @@ final class LucinaVoiceReplies: NSObject, AVAudioPlayerDelegate {
             error = String(localized: "Finish the recording first.")
             return
         }
+        ChatAudio.shared.stopAll(except: self)
         stop()
         let text = Self.speech(for: item)
         guard !text.isEmpty else { return }
@@ -231,10 +232,8 @@ final class LucinaVoiceReplies: NSObject, AVAudioPlayerDelegate {
                 guard loadingId == item.id else { return }
                 loadingId = nil
                 guard !MemoRecorder.isAnyActive else { return }
-                ChatAudio.shared.stop()
-                let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.playback, mode: .spokenAudio)
-                try session.setActive(true)
+                ChatAudio.shared.stopAll(except: self)
+                try ChatAudio.activate(spoken: true)
                 let player = try AVAudioPlayer(data: data)
                 player.delegate = self
                 self.player = player
@@ -257,7 +256,7 @@ final class LucinaVoiceReplies: NSObject, AVAudioPlayerDelegate {
     private func finish() {
         player = nil
         playingId = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        ChatAudio.deactivate()
     }
 
     private func markPlayed(_ id: String) {

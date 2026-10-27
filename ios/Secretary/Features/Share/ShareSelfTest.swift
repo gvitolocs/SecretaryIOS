@@ -10,12 +10,14 @@ import UIKit
 import UniformTypeIdentifiers
 
 /// Debug builds only: an on-device self-test of "Share to Lucina" (XCUITest can't drive the iPhone).
-/// `-SecretaryShareSelfTest all` (or a comma list of `photo,pdf,url,text,album,paste,intent,voice,voice-whisper`) feeds real
+/// `-SecretaryShareSelfTest all` (or a comma list of `photo,pdf,url,text,album,paste,intent,voice,voice-whisper,reply,readaloud,
+/// shareitems,selectshare`) feeds real
 /// items through the code the share extension, the chat composer and the Shortcuts intent run, and logs
 /// every step to `Documents/share-selftest.txt` (and os_log `tech.getsecretary.app` / `ShareSelfTest`).
 @MainActor
 enum ShareSelfTest {
-    static let allCases = ["photo", "pdf", "url", "text", "album", "paste", "intent", "voice", "voice-whisper"]
+    static let allCases = ["photo", "pdf", "url", "text", "album", "paste", "intent", "voice", "voice-whisper",
+                           "reply", "readaloud", "shareitems", "selectshare"]
     private static var runner: ShareSelfTestRunner?
 
     static func runIfRequested(app: AppModel, defaults: UserDefaults = .standard) {
@@ -164,6 +166,10 @@ final class ShareSelfTestRunner {
         case "intent": return try await caseIntent()
         case "voice": return try await caseVoice(whisper: false)
         case "voice-whisper": return try await caseVoice(whisper: true)
+        case "reply": return try await caseReply()
+        case "readaloud": return await caseReadAloud()
+        case "shareitems": return try await caseShareItems()
+        case "selectshare": return try await caseSelectShare()
         default: return Outcome(pass: false, reason: "unknown case")
         }
     }
@@ -628,6 +634,144 @@ final class ShareSelfTestRunner {
             guard let pending else { return }
             if let error { pending.resume(throwing: error) } else { pending.resume() }
         }
+    }
+
+    // MARK: - Cases: message actions (reply, read aloud, share items)
+
+    /// A text replying to Lucina's newest message through the swipe's path (`beginReply` → the composer's
+    /// `takeReply` → `ask(_:replyTo:)`). PASS: her answer arrives and the server's copy of the user item has
+    /// `replyTo` set to that message.
+    private func caseReply() async throws -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        guard let target = chat.items.last(where: { $0.role == .lucina && !$0.isLocal }) else {
+            return Outcome(pass: false, reason: "no Lucina message with a server id in the timeline")
+        }
+        log("reply: target \(target.id) \"\(ChatQuote.summary(target).prefix(120))\"")
+        guard chat.beginReply(target) else { return Outcome(pass: false, reason: "beginReply refused the target") }
+        log("reply: quote bar \(chat.replyingTo?.id ?? "nil") sender \(ChatQuote.sender(target))")
+        let text = "[selftest] rispondo a questo messaggio: di cosa parlava, in una frase?"
+        let reply = chat.takeReply()
+        var sent: ChatRequest?
+        chat.onChatRequest = { sent = $0 }
+        defer { chat.onChatRequest = nil }
+        let answer = await chat.ask(text, replyTo: reply?.id)
+        if let sent, let body = try? APIClient.encoder.encode(sent) {
+            log("reply: POST /v1/chat replyTo \(sent.replyTo ?? "nil") body \(String(decoding: body, as: UTF8.self))")
+        } else {
+            log("reply: no POST /v1/chat was made")
+        }
+        guard let answer, !answer.isEmpty else {
+            return Outcome(pass: false, reason: answer == nil ? "not sent" : "the send failed (no answer)")
+        }
+        let cleaned = ChatStore.clean(text)
+        guard let user = chat.items.last(where: { $0.role == .user && !$0.isLocal && $0.text == cleaned }) else {
+            return Outcome(pass: false, reason: "the user item has no server id", reply: answer)
+        }
+        let page = try await app.api.timeline(limit: 30)
+        let server = page.items.first { $0.id == user.id }
+        log("reply: server user item \(server?.id ?? "missing from the newest page") replyTo \(server?.replyTo ?? "nil")")
+        guard server?.replyTo == target.id else {
+            return Outcome(pass: false, reason: "the server's user item has replyTo \(server?.replyTo ?? "nil"), want \(target.id)", reply: answer)
+        }
+        return Outcome(pass: true, reason: "answer arrived, server user item replyTo \(target.id)", reply: answer)
+    }
+
+    /// The right swipe's action on Lucina's newest message, twice (a TTS fetch, then the cache), muted.
+    /// PASS: the first run played more than 1 s and the second came from the cache and played too.
+    private func caseReadAloud() async -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        guard let target = chat.items.last(where: { $0.role == .lucina && !$0.isLocal && chat.speechText(for: $0) != nil }) else {
+            return Outcome(pass: false, reason: "no Lucina message with words in the timeline")
+        }
+        let reader = chat.readAloud
+        reader.muted = true
+        defer {
+            reader.stop()
+            reader.muted = false
+        }
+        reader.cache.remove(target.id)
+        log("readaloud: target \(target.id) speech \"\(chat.speechText(for: target)?.prefix(120) ?? "")\" (muted: volume 0; "
+            + "cache file \(TTSCache.fileName(for: target.id)))")
+        var played: [Bool] = []
+        var hits: [Bool] = []
+        for run in 1...2 {
+            let outcome = await chat.toggleReadAloud(target)
+            let report = reader.lastReport
+            log("readaloud run \(run): outcome \(outcome) TTS HTTP \(report?.status.map(String.init) ?? "-") bytes \(report?.bytes ?? 0) "
+                + "cache hit \(report?.cacheHit == true ? "yes" : "no") session \(report?.session ?? "-")")
+            guard outcome == .started else { return Outcome(pass: false, reason: "run \(run): \(outcome)") }
+            try? await Task.sleep(for: .milliseconds(1400))
+            let time = reader.currentTime
+            log("readaloud run \(run): isPlaying \(reader.isPlaying) currentTime \(String(format: "%.2f", time)) s of "
+                + "\(String(format: "%.2f", reader.duration)) s, indicator on \(reader.playingId ?? "none")")
+            played.append(time > 1)
+            hits.append(report?.cacheHit == true)
+            reader.stop()
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        log("readaloud: session after stop \(ChatAudio.sessionDescription)")
+        guard played.allSatisfy({ $0 }) else { return Outcome(pass: false, reason: "audio did not play past 1 s (\(played))") }
+        guard hits == [false, true] else { return Outcome(pass: false, reason: "cache hits \(hits), want [false, true]") }
+        return Outcome(pass: true, reason: "played > 1 s twice; TTS then cache hit")
+    }
+
+    /// The share items of the newest message with a picture and a caption (the `album` case sends one), built
+    /// as the Share… action builds them, without presenting the sheet. PASS: an image item and a text item.
+    private func caseShareItems() async throws -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        let candidates = chat.items.filter { !chat.isHidden($0.id) && $0.attachments.contains(where: \.isImage) }
+        guard let target = candidates.last(where: { !$0.displayText.isEmpty }) ?? candidates.last else {
+            return Outcome(pass: false, reason: "no message with a picture in the timeline")
+        }
+        log("shareitems: message \(target.id) \(target.attachments.count) attachment(s) caption \"\(target.displayText.prefix(80))\"")
+        let items = try await logShareItems(ChatShareBuilder.parts(for: target, transcript: chat.voiceTranscript(of: target)), label: "shareitems")
+        let image = items.contains(where: \.isImage)
+        let text = items.contains(where: \.isText)
+        guard image, text else { return Outcome(pass: false, reason: "image item \(image), text item \(text)") }
+        return Outcome(pass: true, reason: "\(items.count) items: image and text present")
+    }
+
+    /// "Share conversation" for the last three visible messages: the transcript and their files.
+    private func caseSelectShare() async throws -> Outcome {
+        let chat = app.chat
+        await chat.refresh()
+        let chosen = Array(chat.items.filter { !$0.isLocal && !chat.isHidden($0.id) }.suffix(3))
+        guard chosen.count == 3 else { return Outcome(pass: false, reason: "\(chosen.count) message(s) in the timeline, need 3") }
+        let userName = ChatShareBuilder.ownerName(deviceName: app.deviceName)
+        log("selectshare: messages \(chosen.map(\.id).joined(separator: ", ")), owner name \"\(userName)\"")
+        let parts = ChatShareBuilder.conversationParts(chosen, userName: userName) { chat.voiceTranscript(of: $0) }
+        let items = try await logShareItems(parts, label: "selectshare")
+        guard case let .text(transcript)? = items.first?.payload else { return Outcome(pass: false, reason: "no transcript item first") }
+        log("selectshare: transcript \"\(transcript.prefix(600).replacingOccurrences(of: "\n", with: "⏎"))\"")
+        let headers = transcript.components(separatedBy: "\n").filter { $0.range(of: #" — \d"#, options: .regularExpression) != nil }.count
+        guard headers >= 3 else { return Outcome(pass: false, reason: "the transcript has \(headers) speaker lines, want 3") }
+        return Outcome(pass: true, reason: "transcript with \(headers) speaker lines + \(items.count - 1) more item(s)")
+    }
+
+    /// Resolves the parts like the share sheet (downloads included) and logs each item's type and size.
+    private func logShareItems(_ parts: [ChatSharePart], label: String) async throws -> [ChatShareItem] {
+        log("\(label): \(parts.count) part(s): " + parts.map { part in
+            switch part {
+            case .text: return "text"
+            case let .link(url): return "link \(url.host ?? url.absoluteString)"
+            case let .media(media): return "\(media.kind.rawValue) \(media.attachment.mediaId ?? "local")"
+            }
+        }.joined(separator: ", "))
+        let started = Date()
+        let items = try await ChatShareResolver.resolve(parts, store: app.chat, client: app.client)
+        log("\(label): resolved in \(String(format: "%.2f", Date().timeIntervalSince(started))) s")
+        for (index, item) in items.enumerated() {
+            var line = "\(label): item \(index) UTType \(item.type.identifier) bytes \(item.bytes)"
+            if let name = item.name { line += " name \"\(name)\"" }
+            if let file = item.fileURL, let provider = NSItemProvider(contentsOf: file) {
+                line += " provider types \(provider.registeredTypeIdentifiers)"
+            }
+            log(line)
+        }
+        return items
     }
 
     // MARK: - Case: Shortcuts intent

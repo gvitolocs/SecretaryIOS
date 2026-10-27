@@ -124,7 +124,7 @@ final class VoiceNoteController {
     // MARK: Actions
 
     private func begin(locked: Bool) {
-        guard let store, let recorder = recorder else { return }
+        guard store != nil, let recorder = recorder else { return }
         error = nil
         tip = nil
         switch AVAudioApplication.shared.recordPermission {
@@ -138,8 +138,8 @@ final class VoiceNoteController {
         default:
             break
         }
-        ChatAudio.shared.stop()
-        store.voiceReplies.stop()
+        // Nothing may play while recording (voice notes, Lucina's voice, a message read aloud).
+        ChatAudio.shared.stopAll()
         phase = .starting
         releasedWhileStarting = nil
         lockWhenStarted = locked
@@ -198,9 +198,12 @@ final class VoiceNoteController {
         }
         Haptics.light()
         let note = VoiceNote(url: finished.url, duration: finished.duration, levels: levels, recordedAt: finished.startedAt)
+        // A reply when the quote bar is up (swipe left before recording).
+        let reply = store.takeReply()
         Task {
-            if !(await store.sendVoiceNote(note)) {
+            if !(await store.sendVoiceNote(note, replyTo: reply?.id)) {
                 try? FileManager.default.removeItem(at: note.url)
+                if let reply { store.beginReply(reply) }
                 error = String(localized: "Couldn't send this. Try again.")
             }
         }

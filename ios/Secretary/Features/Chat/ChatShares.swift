@@ -117,6 +117,21 @@ struct OutgoingShare: Codable, Equatable, Sendable {
     var createdAt: Date
     var userItemId: String?
     var acceptedAt: Date?
+    /// The server id of the message this share answers (the quote bar): the `replyTo` form field.
+    var replyTo: String?
+
+    init(shareId: String, caption: String, files: [File], urls: [String] = [], location: ShareMeta.Location? = nil, createdAt: Date,
+         userItemId: String? = nil, acceptedAt: Date? = nil, replyTo: String? = nil) {
+        self.shareId = shareId
+        self.caption = caption
+        self.files = files
+        self.urls = urls
+        self.location = location
+        self.createdAt = createdAt
+        self.userItemId = userItemId
+        self.acceptedAt = acceptedAt
+        self.replyTo = replyTo
+    }
 
     var meta: ShareMeta {
         ShareMeta(files: files.enumerated().map { index, file in
@@ -149,7 +164,7 @@ struct OutgoingShare: Codable, Equatable, Sendable {
         var meta = TimelineMeta(kind: "share")
         meta.shareId = shareId
         return TimelineItem(id: TimelineItem.localPrefix + shareId, ts: ts, channel: .ios, role: .user, text: caption,
-                            clientMessageId: shareId, attachments: attachments, meta: meta, localStatus: .sending)
+                            clientMessageId: shareId, replyTo: replyTo, attachments: attachments, meta: meta, localStatus: .sending)
     }
 
     /// The file a bubble's attachment came from (by its position among the file attachments).
@@ -182,7 +197,7 @@ enum ShareReconcile {
             return out
         }
         out[index] = TimelineItem(id: userItemId, ts: local.ts, channel: local.channel, role: .user, text: local.text,
-                                  clientMessageId: local.clientMessageId, attachments: attachments, meta: local.meta)
+                                  clientMessageId: local.clientMessageId, replyTo: local.replyTo, attachments: attachments, meta: local.meta)
         return out
     }
 

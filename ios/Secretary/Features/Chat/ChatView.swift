@@ -10,6 +10,7 @@ struct ChatView<Stage: View>: View {
     @Environment(AppModel.self) private var app
     private let stage: Stage
     @State private var composer = ComposerModel()
+    @State private var actions = ChatActions()
     @State private var dropTargeted = false
 
     init(@ViewBuilder stage: () -> Stage) {
@@ -25,8 +26,14 @@ struct ChatView<Stage: View>: View {
             }
             stage
             ChatTranscript()
-            ChatComposer(model: composer)
+            if actions.selecting {
+                ChatSelectionBar()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                ChatComposer(model: composer)
+            }
         }
+        .animation(.easeOut(duration: 0.2), value: actions.selecting)
         .background(Theme.page)
         // Files dragged onto the chat (iPad, Mac, or another app in Split View) land in the tray.
         .onDrop(of: [UTType.item], isTargeted: $dropTargeted) { providers in
@@ -42,10 +49,19 @@ struct ChatView<Stage: View>: View {
                     .allowsHitTesting(false)
             }
         }
+        .overlay(alignment: .bottom) { ChatActionToast() }
+        .overlay { ChatPrepareHUD() }
+        #if DEBUG || SCREENSHOTS
+        .overlay { DemoMessageMenu() }
+        .task { await ChatDemo.apply(store: store, actions: actions) }
+        #endif
+        .animation(.easeOut(duration: 0.2), value: actions.toast)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) { ChatTitle() }
         }
+        // The transcript, the composer and the overlays all reach the actions.
+        .environment(actions)
     }
 }
 
@@ -64,6 +80,7 @@ struct ChatTitle: View {
 /// and the thinking indicator. Scrolling to the top loads older messages.
 struct ChatTranscript: View {
     @Environment(ChatStore.self) private var store
+    @Environment(ChatActions.self) private var actions
     /// The end of the list is on screen; new messages only scroll it when it is.
     @State private var atBottom = true
 
@@ -86,6 +103,7 @@ struct ChatTranscript: View {
                             DaySeparator(date: date)
                         case let .message(item):
                             MessageRow(item: item, job: store.jobs[item.id])
+                                .modifier(MessageActionsModifier(item: item))
                                 .id(item.id)
                         }
                     }
@@ -109,6 +127,10 @@ struct ChatTranscript: View {
             }
             .onChange(of: store.isSending) { _, sending in if sending { scrollToEnd(proxy) } }
             .onChange(of: store.items.last?.rich) { _, rich in if rich != nil, atBottom { scrollToEnd(proxy) } }
+            .onChange(of: actions.scrollRequest) { _, request in
+                guard let request else { return }
+                Task { await showOriginal(request.id, proxy) }
+            }
             .onAppear { scrollToEnd(proxy, animated: false) }
         }
     }
@@ -130,7 +152,7 @@ struct ChatTranscript: View {
         var out: [Row] = []
         var lastDay: Date?
         let calendar = Calendar.current
-        for item in store.items {
+        for item in store.items where !store.isHidden(item.id) {
             let day = calendar.startOfDay(for: item.ts)
             if day != lastDay {
                 out.append(.day(day))
@@ -168,6 +190,26 @@ struct ChatTranscript: View {
     }
 
     static let endId = "transcript-end"
+
+    /// A quote was tapped: scrolls to the original (loading older pages if needed) and flashes it.
+    private func showOriginal(_ id: String, _ proxy: ScrollViewProxy) async {
+        if store.isHidden(id) {
+            actions.show(String(localized: "That message is hidden."))
+            return
+        }
+        var pages = 0
+        while !store.items.contains(where: { $0.id == id }), store.hasOlder, pages < 5 {
+            await store.loadOlder()
+            pages += 1
+        }
+        guard store.items.contains(where: { $0.id == id }) else {
+            actions.show(String(localized: "The original message isn't loaded."))
+            return
+        }
+        await Task.yield()
+        withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) }
+        actions.flash(id)
+    }
 
     /// Lazy rows have estimated heights, so one `scrollTo` can land short of the end:
     /// scroll again once the new rows are laid out.
@@ -269,11 +311,15 @@ private struct MessageRow: View {
         return HStack {
             if isUser { Spacer(minLength: 48) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+                // The message this one answers. Lucina's replies all point at the message before them, so
+                // only the owner's replies show the quote.
+                if isUser, let replyTo = item.replyTo {
+                    ReplyQuoteView(replyTo: replyTo)
+                }
                 // With photos or videos the caption sits inside the media bubble (AttachmentMessage).
                 if !item.displayText.isEmpty && !item.attachments.contains(where: \.isVisual) {
                     // Her plain replies are markdown too (the Notes renderer): no literal "**".
                     Text(isUser ? LinkText.attributed(item.displayText) : ChatMarkdown.inline(item.displayText))
-                        .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .foregroundStyle(isUser ? Color.white : Color.primary)
@@ -352,7 +398,7 @@ private struct ReminderCard: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Reminder").font(.caption.weight(.semibold)).foregroundStyle(.orange)
-                Text(LinkText.attributed(item.displayText)).font(.subheadline).textSelection(.enabled)
+                Text(LinkText.attributed(item.displayText)).font(.subheadline)
                 SourceBadge(item: item)
             }
             Spacer(minLength: 0)
@@ -410,7 +456,7 @@ private struct ProactiveCard: View {
                     .background(tint.opacity(0.15), in: Capsule())
                     .accessibilityIdentifier("proactivePriority")
             }
-            Text(LinkText.attributed(item.displayText)).font(.subheadline).textSelection(.enabled)
+            Text(LinkText.attributed(item.displayText)).font(.subheadline)
             HStack(spacing: 6) {
                 ForEach(buttons, id: \.id) { b in
                     Button(b.label) { tap(b.id) }
@@ -465,7 +511,7 @@ private struct JobCard: View {
                 Spacer(minLength: 0)
             }
             if let result = job.result, !result.isEmpty, job.status == "done" {
-                Text(LinkText.attributed(result)).font(.subheadline).textSelection(.enabled)
+                Text(LinkText.attributed(result)).font(.subheadline)
             }
             if job.status == "error" {
                 Text(job.error == "interrupted" ? String(localized: "Lucina restarted while working on this.") : (job.error ?? String(localized: "The task failed.")))

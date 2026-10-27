@@ -65,6 +65,16 @@ final class ChatStore {
     let noteRecorder = MemoRecorder(directory: VoiceNoteFiles.directory, liveActivity: false)
     /// Lucina's spoken answers to voice notes (`meta.voiceReply`).
     let voiceReplies: LucinaVoiceReplies
+    /// "Read aloud" on a message (swipe right, the menu).
+    let readAloud: ChatReadAloud
+    /// The message the composer replies to (swipe left, the menu's Reply, VoiceOver): the quote bar above
+    /// the field. Its server id rides with the next send as `replyTo`.
+    private(set) var replyingTo: TimelineItem?
+    /// Messages hidden on this phone (the menu's Hide; Settings › Unhide all), by item id.
+    private(set) var hiddenIds: Set<String> = []
+    nonisolated static let hiddenKey = "secretary.chat.hidden.v1"
+    /// Every `POST /v1/chat` body just before it is sent (the self-test logs `replyTo`).
+    @ObservationIgnored var onChatRequest: ((ChatRequest) -> Void)?
 
     struct PrefillRequest: Equatable {
         let text: String
@@ -93,14 +103,19 @@ final class ChatStore {
         self.defaults = defaults
         self.pollInterval = pollInterval
         voiceReplies = LucinaVoiceReplies(defaults: defaults)
+        readAloud = ChatReadAloud()
         let cache = Self.load(from: fileURL)
         items = cache.items
         jobs = cache.jobs
         lastEventId = cache.lastEventId
         if cache.localOnly { mode = .localOnly }
         choices = (defaults.dictionary(forKey: Self.choicesKey) as? [String: String]) ?? [:]
+        hiddenIds = Set(defaults.stringArray(forKey: Self.hiddenKey) ?? [])
         outgoing = ChatShareOutbox.loadAll()
         reconcileOutbox()
+        // One sound at a time across the chat's players.
+        ChatAudio.shared.register(voiceReplies) { [weak voiceReplies] in voiceReplies?.stop() }
+        ChatAudio.shared.register(readAloud) { [weak readAloud] in readAloud?.stop() }
     }
 
     // MARK: - Rich replies
@@ -311,28 +326,29 @@ final class ChatStore {
     // MARK: - Sending
 
     /// Adds an optimistic bubble and sends it. Returns false when nothing was sent.
+    /// `replyTo`: the server id of the message this one answers (the quote bar).
     @discardableResult
-    func send(_ text: String) async -> Bool {
-        await post(text) != nil
+    func send(_ text: String, replyTo: String? = nil) async -> Bool {
+        await post(text, replyTo: replyTo) != nil
     }
 
     /// Sends like `send` and returns Lucina's reply text (nil when nothing was sent or it
     /// failed). Used by the voice stage to speak the answer.
-    func ask(_ text: String) async -> String? {
-        guard let outcome = await post(text) else { return nil }
+    func ask(_ text: String, replyTo: String? = nil) async -> String? {
+        guard let outcome = await post(text, replyTo: replyTo) else { return nil }
         return outcome
     }
 
     /// nil: not sent. Otherwise the reply text ("" when the send failed; the bubble shows why).
-    private func post(_ text: String) async -> String? {
+    private func post(_ text: String, replyTo: String?) async -> String? {
         let message = Self.clean(text)
         guard !message.isEmpty, message.count <= Self.maxCharacters, !isSending else { return nil }
         LucinaDonations.donate()
         let clientId = UUID().uuidString
         items.append(TimelineItem(id: TimelineItem.localPrefix + clientId, ts: Date(), channel: .ios, role: .user, text: message,
-                                  clientMessageId: clientId, localStatus: .sending))
+                                  clientMessageId: clientId, replyTo: replyTo, localStatus: .sending))
         persist()
-        return await deliver(clientId: clientId, text: message) ?? ""
+        return await deliver(clientId: clientId, text: message, replyTo: replyTo) ?? ""
     }
 
     /// Feedback on a message Lucina sent on her own; `true` when the server took it.
@@ -356,16 +372,18 @@ final class ChatStore {
         items[index].localStatus = .sending
         items[index].localError = nil
         persist()
-        await deliver(clientId: clientId, text: items[index].text)
+        await deliver(clientId: clientId, text: items[index].text, replyTo: items[index].replyTo)
     }
 
     @discardableResult
-    private func deliver(clientId: String, text: String) async -> String? {
+    private func deliver(clientId: String, text: String, replyTo: String? = nil) async -> String? {
         isSending = true
         defer { isSending = false }
         let localId = TimelineItem.localPrefix + clientId
         do {
-            let response = try await api().chat(ChatRequest(message: text, sessionId: sessionId, clientMessageId: clientId))
+            let request = ChatRequest(message: text, sessionId: sessionId, clientMessageId: clientId, replyTo: replyTo)
+            onChatRequest?(request)
+            let response = try await api().chat(request)
             onTransportSuccess?()
             guard let index = items.firstIndex(where: { $0.id == localId || $0.clientMessageId == clientId && $0.role == .user })
             else { return response.reply } // cleared (sign-out) or already replaced by the stream
@@ -373,7 +391,7 @@ final class ChatStore {
             let userId = response.userItemId ?? localId
             let replyId = response.lucinaItemId ?? (TimelineItem.localPrefix + "reply-" + clientId)
             var user = TimelineItem(id: userId, ts: sentAt, channel: .ios, role: .user, text: text, clientMessageId: clientId,
-                                    localStatus: response.userItemId == nil ? .sent : nil)
+                                    replyTo: replyTo, localStatus: response.userItemId == nil ? .sent : nil)
             if items[index].id == userId { user.localStatus = items[index].isLocal ? .sent : nil }
             let reply = TimelineItem(id: replyId, ts: max(Date(), sentAt.addingTimeInterval(0.001)), channel: .ios, role: .lucina,
                                      text: response.reply, clientMessageId: clientId, replyTo: userId,
@@ -489,6 +507,10 @@ final class ChatStore {
     func clear() {
         if noteRecorder.isActive { noteRecorder.discard() }
         voiceReplies.stop()
+        readAloud.stop()
+        replyingTo = nil
+        hiddenIds = []
+        defaults.removeObject(forKey: Self.hiddenKey)
         stopPolling()
         stopStream()
         stopSharePolling()
@@ -566,8 +588,10 @@ extension ChatStore: ShareUploadObserver {
 
     /// Sends the tray (files, links, the location) with the caption. Returns false when nothing was sent.
     @discardableResult
-    func sendShare(caption: String, attachments: [PendingAttachment], urls: [String] = [], location: ShareMeta.Location? = nil) -> Bool {
-        guard let share = stageShare(caption: caption, attachments: attachments, urls: urls, location: location) else { return false }
+    func sendShare(caption: String, attachments: [PendingAttachment], urls: [String] = [], location: ShareMeta.Location? = nil,
+                   replyTo: String? = nil) -> Bool {
+        guard let share = stageShare(caption: caption, attachments: attachments, urls: urls, location: location, replyTo: replyTo)
+        else { return false }
         upload(share, retry: false)
         return true
     }
@@ -578,7 +602,7 @@ extension ChatStore: ShareUploadObserver {
     /// (`transcribe: false` leaves it out so the server's Whisper runs). The bubble shows at once; the
     /// upload starts once the transcript is in. Returns false when nothing was sent.
     @discardableResult
-    func sendVoiceNote(_ note: VoiceNote, transcribe: Bool = true) async -> Bool {
+    func sendVoiceNote(_ note: VoiceNote, transcribe: Bool = true, replyTo: String? = nil) async -> Bool {
         let size = Int64((try? note.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
         guard size > 0 else { return false }
         let url = note.url
@@ -586,7 +610,7 @@ extension ChatStore: ShareUploadObserver {
         let attachment = PendingAttachment(url: note.url, name: VoiceNoteFiles.fileName(for: note.recordedAt), mime: "audio/aac", kind: .audio,
                                            size: size, durationMs: Int((note.duration * 1000).rounded()), voice: true,
                                            waveform: VoiceWaveform.base64(levels))
-        guard var share = stageShare(caption: "", attachments: [attachment]) else { return false }
+        guard var share = stageShare(caption: "", attachments: [attachment], replyTo: replyTo) else { return false }
         // The note now lives in the share's folder (until the server has it); nothing stays in ChatNotes.
         try? FileManager.default.removeItem(at: note.url)
         if transcribe, note.duration <= VoiceNote.transcribeLimit,
@@ -629,7 +653,7 @@ extension ChatStore: ShareUploadObserver {
 
     /// Writes the share's folder and record and shows the optimistic bubble; the caller starts the upload.
     private func stageShare(caption: String, attachments: [PendingAttachment], urls: [String] = [],
-                            location: ShareMeta.Location? = nil) -> OutgoingShare? {
+                            location: ShareMeta.Location? = nil, replyTo: String? = nil) -> OutgoingShare? {
         let text = Self.clean(caption)
         guard !attachments.isEmpty || !urls.isEmpty || location != nil, text.count <= Self.maxCharacters else { return nil }
         let shareId = UUID().uuidString
@@ -644,7 +668,8 @@ extension ChatStore: ShareUploadObserver {
         for (index, attachment) in attachments.enumerated() where attachment.kind.isVisual {
             if let thumbnail = attachment.thumbnail { ChatPreviews.store(thumbnail, shareId: shareId, index: index) }
         }
-        let share = OutgoingShare(shareId: shareId, caption: text, files: files, urls: urls, location: location, createdAt: Date())
+        let share = OutgoingShare(shareId: shareId, caption: text, files: files, urls: urls, location: location, createdAt: Date(),
+                                  replyTo: replyTo)
         try? ChatShareOutbox.save(share)
         outgoing[shareId] = share
         LucinaDonations.donate()
@@ -681,7 +706,7 @@ extension ChatStore: ShareUploadObserver {
                     return try ShareRequestBuilder.build(payload: share.payload(in: folder), intent: "ask", note: share.caption,
                                                          source: "ios-chat", credentials: credentials,
                                                          directory: ShareRequestBuilder.directory(), shareId: share.shareId,
-                                                         sessionId: sessionId, meta: share.meta, origin: "chat")
+                                                         sessionId: sessionId, meta: share.meta, origin: "chat", replyTo: share.replyTo)
                 }.value
                 if let directory = try? ShareRequestBuilder.directory() {
                     try? FileManager.default.removeItem(at: ShareResultFile.url(share.shareId, in: directory))
@@ -835,6 +860,83 @@ extension ChatStore: ShareUploadObserver {
                 return false
             }
             return true
+        }
+    }
+}
+
+// MARK: - Message actions (reply, hide, read aloud, send to Lucina)
+
+extension ChatStore {
+    /// Starts a reply to `item` (the quote bar). False for an optimistic bubble: the server doesn't know its id yet.
+    @discardableResult
+    func beginReply(_ item: TimelineItem) -> Bool {
+        guard !item.isLocal else { return false }
+        replyingTo = item
+        return true
+    }
+
+    func cancelReply() {
+        replyingTo = nil
+    }
+
+    /// The reply target for the send that is starting; the bar closes. Give it back with `beginReply` if
+    /// nothing was sent.
+    func takeReply() -> TimelineItem? {
+        defer { replyingTo = nil }
+        return replyingTo
+    }
+
+    func isHidden(_ itemId: String) -> Bool { hiddenIds.contains(itemId) }
+
+    /// Hides a message on this phone only (the server keeps it).
+    func hide(_ itemId: String) {
+        hiddenIds.insert(itemId)
+        if replyingTo?.id == itemId { replyingTo = nil }
+        if readAloud.isActive(itemId) { readAloud.stop() }
+        defaults.set(Array(hiddenIds), forKey: Self.hiddenKey)
+    }
+
+    func unhideAll() {
+        hiddenIds = []
+        defaults.removeObject(forKey: Self.hiddenKey)
+    }
+
+    /// The words of the message's voice note, if it has one.
+    func voiceTranscript(of item: TimelineItem) -> String? {
+        guard let entry = BubbleEntry.entries(item.attachments).first(where: { $0.attachment.isVoice }) else { return nil }
+        return voiceTranscript(for: item, attachment: entry.attachment, fileIndex: entry.fileIndex)
+    }
+
+    /// What "Read aloud" would say for the message (nil: nothing to read).
+    func speechText(for item: TimelineItem) -> String? {
+        ChatSpeech.text(for: item, transcript: voiceTranscript(of: item))
+    }
+
+    /// The right swipe's action: Lucina reads the message (or stops, when it is the one reading).
+    func toggleReadAloud(_ item: TimelineItem) async -> ChatReadAloud.Outcome {
+        await readAloud.toggle(itemId: item.id, text: speechText(for: item), lang: item.rich?.lang, api: api())
+    }
+
+    /// "Save to library" / "Save as note": the message's content goes to Lucina through the share pipeline
+    /// (`POST /v1/share`, background session) with that intent. True when the upload was queued.
+    func forward(intent: String, texts: [String], urls: [String], files: [ShareFile]) async -> Bool {
+        let client = api().client
+        guard let token = client.accessKey, !token.isEmpty, !(texts.isEmpty && urls.isEmpty && files.isEmpty) else { return false }
+        let base = client.baseURL
+        let endpoints = ([base] + client.endpoints.filter { $0 != base }).map(\.absoluteString)
+        let credentials = BridgeCredentials(token: token, endpoints: endpoints, sources: ["share"])
+        let sessionId = sessionId
+        let payload = SharePayload(texts: texts, urls: urls, files: files)
+        do {
+            let record = try await Task.detached(priority: .userInitiated) {
+                try ShareRequestBuilder.build(payload: payload, intent: intent, note: "", source: "ios-chat-action", credentials: credentials,
+                                              directory: ShareRequestBuilder.directory(), sessionId: sessionId)
+            }.value
+            try ShareUploads.shared.enqueue(record, credentials: credentials)
+            LucinaDonations.donate()
+            return true
+        } catch {
+            return false
         }
     }
 }

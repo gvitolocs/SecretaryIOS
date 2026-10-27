@@ -180,6 +180,11 @@ final class AppModel {
             return MemosAPI(client: memoClient)
         })
         if let tab = launch.initialTab { selectedTab = tab }
+        // "Read aloud" refuses while either recorder has the microphone (a memo, a chat voice note).
+        chat.readAloud.isRecording = { [memos, chat] in
+            memos.recorder.isActive || chat.noteRecorder.isActive || MemoRecorder.isAnyActive
+        }
+        ChatShareResolver.purgeScratch()
         #if DEBUG
         MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
         MemoRecordSelfTest.runIfRequested(store: memos, defaults: defaults)

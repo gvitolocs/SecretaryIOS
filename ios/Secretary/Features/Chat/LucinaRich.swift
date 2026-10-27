@@ -257,7 +257,6 @@ struct RichReplyView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(rich.bubbles.prefix(visible).enumerated()), id: \.offset) { _, bubble in
                 Text(ChatMarkdown.inline(bubble))
-                    .textSelection(.enabled)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .tint(Theme.accent)

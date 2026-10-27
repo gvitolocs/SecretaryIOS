@@ -65,6 +65,8 @@ struct ChatRequest: Encodable, Equatable, Sendable {
     let message: String
     let sessionId: String
     let clientMessageId: String
+    /// The timeline id of the message this one replies to (left out when nil).
+    var replyTo: String? = nil
 }
 
 struct JobRef: Codable, Equatable, Sendable {

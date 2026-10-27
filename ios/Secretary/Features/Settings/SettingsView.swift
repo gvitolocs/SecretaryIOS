@@ -35,6 +35,21 @@ struct SettingsView: View {
                 Text("Hold the mic in the chat to send Lucina a voice note. When she answers one, she reads the answer aloud while Secretary is open; tap the speaker under it to hear it again.")
             }
 
+            if !app.chat.hiddenIds.isEmpty {
+                Section {
+                    Button {
+                        app.chat.unhideAll()
+                    } label: {
+                        Label("Unhide all messages", systemImage: "eye")
+                    }
+                    .accessibilityIdentifier("unhideAllMessages")
+                } header: {
+                    Text("Chat")
+                } footer: {
+                    Text("\(app.chat.hiddenIds.count) messages are hidden on this iPhone. Lucina and your other devices still have them.")
+                }
+            }
+
             Section {
                 NavigationLink {
                     LinksView()

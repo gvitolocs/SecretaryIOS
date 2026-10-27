@@ -96,7 +96,6 @@ struct AttachmentMessage: View {
             }
             if !item.displayText.isEmpty {
                 Text(isUser ? LinkText.attributed(item.displayText) : ChatMarkdown.inline(item.displayText))
-                    .textSelection(.enabled)
                     .font(.body)
                     .foregroundStyle(isUser ? Theme.onAccent : Theme.text)
                     .tint(isUser ? Theme.onAccent : Theme.accent)
@@ -434,6 +433,8 @@ final class ChatAudio {
             return
         }
         notice = nil
+        // One sound at a time: Lucina's voice (a reply, a message read aloud) stops.
+        stopOthers()
         if key == currentKey, player.currentItem != nil {
             if isPlaying { player.pause() } else { activate(); player.play() }
             isPlaying.toggle()
@@ -469,14 +470,60 @@ final class ChatAudio {
     }
 
     private func activate() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        try? Self.activate(spoken: false)
+    }
+
+    private func deactivate() {
+        Self.deactivate()
+    }
+
+    // MARK: The chat's other players
+
+    private struct Registered {
+        weak var owner: AnyObject?
+        let stop: @MainActor () -> Void
+    }
+
+    @ObservationIgnored private var others: [Registered] = []
+
+    /// Lucina's voice replies and "Read aloud" register here, so whichever starts stops the rest.
+    func register(_ owner: AnyObject, stop: @escaping @MainActor () -> Void) {
+        others.removeAll { $0.owner == nil || $0.owner === owner }
+        others.append(Registered(owner: owner, stop: stop))
+    }
+
+    /// Stops everything that plays in the chat except `owner` (nil: everything, before a recording starts).
+    func stopAll(except owner: AnyObject? = nil) {
+        if owner !== self { stop() }
+        for other in others where other.owner != nil && other.owner !== owner { other.stop() }
+    }
+
+    private func stopOthers() {
+        for other in others where other.owner != nil { other.stop() }
+    }
+
+    // MARK: Audio session
+
+    // The one place the chat touches AVAudioSession, so a shared app-wide helper can take it over later.
+
+    /// Playback (`.spokenAudio` for Lucina's voice, `.default` for voice notes and audio files). No Now
+    /// Playing info is set: these are short clips inside the chat.
+    static func activate(spoken: Bool) throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: spoken ? .spokenAudio : .default)
+        try session.setActive(true)
     }
 
     /// Hands the session back (other apps' audio resumes; the recorder sets its own category when it starts).
-    private func deactivate() {
+    static func deactivate() {
         guard !MemoRecorder.isAnyActive else { return }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    /// "playback/spokenAudio": the self-test's log line.
+    static var sessionDescription: String {
+        let session = AVAudioSession.sharedInstance()
+        return "\(session.category.rawValue)/\(session.mode.rawValue)"
     }
 }
 

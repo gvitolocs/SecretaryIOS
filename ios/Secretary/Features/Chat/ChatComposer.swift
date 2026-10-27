@@ -137,6 +137,10 @@ struct ChatComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let reply = store.replyingTo {
+                ComposerReplyBar(item: reply) { store.cancelReply() }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if !model.attachments.isEmpty {
                 AttachmentTray(attachments: $model.attachments)
             }
@@ -184,6 +188,7 @@ struct ChatComposer: View {
             }
             .animation(.easeOut(duration: 0.15), value: voice.isRecording)
         }
+        .animation(.easeOut(duration: 0.2), value: store.replyingTo?.id)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
@@ -277,23 +282,30 @@ struct ChatComposer: View {
         return !cleaned.isEmpty && !store.isSending
     }
 
+    /// Sends the draft (and the tray), as a reply when the quote bar is up: `replyTo` rides with it and the
+    /// bar closes; it comes back if nothing was sent.
     private func send() {
         guard canSend else { return }
         let text = model.draft
+        let reply = store.takeReply()
         if !model.hasAttachments {
             model.draft = ""
             focused = true
             Task {
-                if !(await store.send(text)) { model.draft = text }
+                if !(await store.send(text, replyTo: reply?.id)) {
+                    model.draft = text
+                    if let reply { store.beginReply(reply) }
+                }
             }
             return
         }
         model.draft = ""
         Task {
             let taken = await model.takeAll()
-            if !store.sendShare(caption: text, attachments: taken.attachments, location: taken.location) {
+            if !store.sendShare(caption: text, attachments: taken.attachments, location: taken.location, replyTo: reply?.id) {
                 model.restore(taken.attachments, location: taken.location)
                 if model.draft.isEmpty { model.draft = text }
+                if let reply { store.beginReply(reply) }
                 model.error = String(localized: "Couldn't send this. Try again.")
             }
         }
