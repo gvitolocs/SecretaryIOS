@@ -15,6 +15,7 @@ import {
 } from "../api/computer";
 import { BackIcon } from "../components/Icons";
 import { t } from "../i18n";
+import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { readString, writeString } from "../lib/storage";
 import { createTouchMouse } from "../lib/touch";
 import "../styles/computer.css";
@@ -41,7 +42,17 @@ import "../styles/computer.css";
 // - Touch is a mouse: tap, long-press, drag, two-finger scroll/tap, pinch (see `lib/touch.ts` for
 //   Simple mode; the shim does the same inside the live viewer).
 // - "Full screen" uses the Fullscreen API where it exists and a fixed, scroll-locked, safe-area
-//   aware screen with a floating mini bar on iPhone, which does not implement it for elements.
+//   aware screen with a floating pill on iPhone, which does not implement it for elements. Inside
+//   Secretary Code it is the shell's focus mode (`lib/focusMode.ts`) with the same layout: the
+//   Fullscreen API there would put the whole Mac window into macOS full screen. The viewer's own
+//   fullscreen icon asks the page (`lucina:fullscreen`), so both ways end in the same place.
+// - Full screen behaves like a remote desktop app: while watching, the first click or key press on
+//   the stream takes over (a small confirm first if Lucina or an agent is mid-task) and is then
+//   replayed into the desktop; the pill shows who drives, Take over / Give back, Keyboard, the key
+//   row and Exit. With a hardware keyboard the stream gets keyboard focus as soon as it is driven.
+
+/** The click or key that took control from full screen, replayed into the desktop once it works. */
+type Pass = { click?: { x: number; y: number; button: "left" | "right" }; text?: string; keys?: string[] };
 
 const HEARTBEAT_MS = 15_000;
 const STATE_POLL_MS = 3_000;
@@ -61,6 +72,25 @@ const KEYS: { label: string; key: string; modifiers?: ("ctrl" | "shift" | "alt" 
   { label: "→", key: "Right", live: ["arrowright"] },
   { label: "Ctrl+L", key: "l", modifiers: ["ctrl"], live: ["control", "l"] },
 ];
+
+/** Audit events that are plumbing (sockets, tickets, live-socket byte counts), not something anyone did. */
+const QUIET_EVENTS = new Set(["view_open", "view_ticket", "view_socket_open", "view_socket_closed"]);
+
+/** Recent activity worth showing: who took, gave back, ran tasks or sent input batches. */
+export function meaningful(e: AuditEntry): boolean {
+  if (QUIET_EVENTS.has(e.event)) return false;
+  return !(e.event === "input" && e.batch?.via === "live");
+}
+
+/** A KeyboardEvent as the viewer's key: printable text, or the key name Cua uses (`enter`, `arrowleft`). */
+export function passKey(e: { key: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean }): { text?: string; keys?: string[] } | null {
+  if (["Shift", "Control", "Alt", "Meta", "CapsLock", "Dead", "Unidentified", "Process"].includes(e.key)) return null;
+  if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return { text: e.key };
+  const key = e.key === " " ? "space" : e.key.toLowerCase();
+  if (!/^[a-z0-9]{1,16}$/.test(key)) return null;
+  const mods = [e.ctrlKey ? "control" : null, e.altKey ? "alt" : null, e.metaKey ? "meta" : null].filter((m): m is string => !!m);
+  return { keys: [...mods, key] };
+}
 
 /** `mcp:claude` → "Claude", `app` → "App". */
 export function callerName(who: string): string {
@@ -157,6 +187,10 @@ export default function ComputerView() {
   const [text, setText] = createSignal("");
   const [clip, setClip] = createSignal("");
   const [full, setFull] = createSignal(false);
+  /** The pill's key row and clipboard popover. */
+  const [tools, setTools] = createSignal(false);
+  /** A takeover waiting for "yes" in full screen (Lucina or an agent is mid-task). */
+  const [confirming, setConfirming] = createSignal<{ message: string; pass?: Pass } | null>(null);
   const [keyboard, setKeyboard] = createSignal(false);
   const [zoom, setZoom] = createSignal({ scale: 1, dx: 0, dy: 0 });
   const [via, setVia] = createSignal<"lan" | "remote" | null>(null);
@@ -169,14 +203,24 @@ export default function ComputerView() {
   let screen: HTMLDivElement | undefined;
   let frame: HTMLIFrameElement | undefined;
   let touchLast = 0;
+  /** Bumped by every take/give-back/loss: a state poll started before one cannot undo it. */
+  let controlGen = 0;
+  /** Full screen ended while a takeover was still in flight: give back as soon as it lands. */
+  let giveBackWhenDone = false;
+  /** Control was taken from full screen (focus mode): leaving it gives control back. */
+  let takenInFull = false;
+  const coarse = () => typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches;
   let pinchBase: { scale: number; dx: number; dy: number } | null = null;
 
   /** The mode the current view is in: what the running viewer is showing. */
   const viewMode = () => (mine() ? "control" : "watch");
 
   const loadState = async () => {
+    const gen = controlGen;
     try {
       const r = await computerApi.control(sandbox());
+      // A take or give-back happened while this was in flight: its answer is stale.
+      if (gen !== controlGen) return;
       setState(r.state);
       setRecent(r.recent);
       setError(null);
@@ -271,40 +315,83 @@ export default function ComputerView() {
 
   /** The lease ended elsewhere (expired, released from another device). */
   const lost = () => {
+    controlGen += 1;
+    takenInFull = false;
     setMine(false);
     setKeyboard(false);
     setNotice(t("computer.takeoverEnded"));
     void refreshTicket("watch");
   };
 
-  const takeOver = async () => {
+  /** Whether taking over needs a "yes" first (Lucina or an agent is mid-task), and what it says. */
+  const confirmText = (): string | null => {
     const s = state();
     if (s?.driver === "lucina" && s.task) {
-      const msg = s.task.who === "lucina"
+      return s.task.who === "lucina"
         ? t("computer.confirmTakeOver", { what: s.task.what })
         : t("computer.confirmTakeOverAgent", { who: callerName(s.task.who) });
-      if (!window.confirm(msg)) return;
-    } else if (s?.driver === "agent" && !window.confirm(t("computer.confirmTakeOverAgent", { who: callerName(s.lastAgent?.who ?? "agent") }))) {
-      return;
     }
+    if (s?.driver === "agent") return t("computer.confirmTakeOverAgent", { who: callerName(s.lastAgent?.who ?? "agent") });
+    return null;
+  };
+
+  /**
+   * Take the desktop. In full screen a needed "yes" is a small overlay (no browser dialog over the
+   * stream), and `pass` is the click or key that asked for it, replayed once control works.
+   */
+  const takeOver = async (pass?: Pass, confirmed = false) => {
+    if (busy() || mine()) return;
+    const ask = confirmed ? null : confirmText();
+    if (ask) {
+      if (full()) {
+        setConfirming({ message: ask, pass });
+        return;
+      }
+      if (!window.confirm(ask)) return;
+    }
+    setConfirming(null);
     setBusy(true);
+    controlGen += 1;
     try {
       const r = await computerApi.take(sandbox());
       setState(r.state);
       setMine(true);
+      takenInFull = full() && hasFocusMode();
       setNotice(r.stoppedTask ? t("computer.stoppedTask", { what: r.stoppedTask }) : null);
       await refreshTicket("control");
+      if (pass) post({ type: "lucina:pass", ...pass });
+      focusStream();
+      controlGen += 1;
       await loadState();
     } catch (e) {
       setError(toApiError(e).message);
     } finally {
       setBusy(false);
     }
+    if (giveBackWhenDone) {
+      giveBackWhenDone = false;
+      if (mine()) await giveBack();
+    }
+  };
+
+  /** Keyboard focus to the stream, so a hardware keyboard types into the desktop at once. */
+  const focusStream = () => {
+    if (coarse() || mode() !== "live" || !frame) return;
+    try {
+      frame.focus();
+    } catch {
+      // The frame went away.
+    }
+    post({ type: "lucina:focus" });
   };
 
   const giveBack = async () => {
+    if (busy() || !mine()) return;
     setBusy(true);
     setKeyboard(false);
+    setTools(false);
+    controlGen += 1;
+    takenInFull = false;
     try {
       // Switch the running viewer to watching first: a control view dies with the lease, so after
       // the release there would be nothing left to re-issue and the viewer would have to reload.
@@ -313,6 +400,7 @@ export default function ComputerView() {
       setState(r.state);
       setMine(false);
       setNotice(null);
+      controlGen += 1;
       await loadState();
     } catch (e) {
       setError(toApiError(e).message);
@@ -446,28 +534,58 @@ export default function ComputerView() {
     post({ type: "lucina:keyboard", open: false });
   };
 
-  const exitFull = () => {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => undefined);
-      return;
-    }
-    setFull(false);
-  };
-
-  const toggleFull = () => {
-    if (document.fullscreenElement) {
-      exitFull();
+  /** Full screen on or off, the way this page's host does it (see the file header). */
+  const enterFull = () => {
+    if (full()) return;
+    if (hasFocusMode()) {
+      setFocusMode(true);
+      setFull(true);
       return;
     }
     const el = screen;
     if (el && typeof el.requestFullscreen === "function" && document.fullscreenEnabled) {
       el.requestFullscreen()
         .then(() => setFull(true))
-        .catch(() => setFull(!full()));
+        .catch(() => setFull(true));
       return;
     }
     // iPhone Safari cannot full-screen an element: a fixed, scroll-locked screen instead.
-    setFull(!full());
+    setFull(true);
+  };
+
+  const exitFull = () => {
+    if (hasFocusMode()) {
+      setFocusMode(false);
+      leftFull();
+      return;
+    }
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined);
+      return;
+    }
+    leftFull();
+  };
+
+  /** Full screen ended (our Exit, Esc, the shell leaving focus mode, the browser's own exit). */
+  const leftFull = () => {
+    setFull(false);
+    setTools(false);
+    setConfirming(null);
+    // Taken from focus mode in the Mac app: leaving it gives the desktop back, like closing the tab.
+    if (takenInFull && mine()) {
+      if (busy()) giveBackWhenDone = true;
+      else void giveBack();
+    }
+  };
+
+  const toggleFull = () => (full() ? exitFull() : enterFull());
+
+  /** The stream asked for control while watching in full screen: a click or a key. */
+  const onCatchPointer = (e: PointerEvent) => {
+    if (mine() || !frame) return;
+    e.preventDefault();
+    const box = frame.getBoundingClientRect();
+    void takeOver({ click: { x: e.clientX - box.left, y: e.clientY - box.top, button: e.button === 2 ? "right" : "left" } });
   };
 
   createEffect(
@@ -482,14 +600,29 @@ export default function ComputerView() {
     on(full, (on) => {
       if (typeof document === "undefined" || typeof window === "undefined") return;
       if (!on) return;
-      const escape = (e: KeyboardEvent) => {
+      const keys = (e: KeyboardEvent) => {
         if (e.key === "Escape") {
+          if (confirming()) {
+            setConfirming(null);
+          } else if (tools()) {
+            setTools(false);
+          } else {
+            exitFull();
+          }
           e.preventDefault();
-          exitFull();
+          return;
         }
+        // Watching: the first key press takes over and is typed into the desktop.
+        if (mine() || busy() || confirming() || mode() !== "live") return;
+        const target = e.target as HTMLElement | null;
+        if (target?.closest?.("input, textarea, select, button, .computer-pill")) return;
+        const pass = passKey(e);
+        if (!pass) return;
+        e.preventDefault();
+        void takeOver(pass);
       };
-      window.addEventListener("keydown", escape);
-      onCleanup(() => window.removeEventListener("keydown", escape));
+      window.addEventListener("keydown", keys);
+      onCleanup(() => window.removeEventListener("keydown", keys));
     }),
   );
 
@@ -533,8 +666,18 @@ export default function ComputerView() {
       if (data.type === "lucina:state" && data.state === "failed") {
         setError(t("computer.unavailable"));
       }
+      // The viewer's own fullscreen icon: the same as the page's button.
+      if (data.type === "lucina:fullscreen") toggleFull();
     };
-    const onFullscreen = () => setFull(!!document.fullscreenElement);
+    const onFullscreen = () => {
+      if (document.fullscreenElement) setFull(true);
+      else if (full() && !hasFocusMode()) leftFull();
+    };
+    // Secretary Code's focus mode, including when the shell leaves it by itself.
+    const unfocus = onFocusModeChange((on) => {
+      if (on) setFull(true);
+      else if (full()) leftFull();
+    });
     const exit = () => {
       if (mine()) releaseOnExit(sandbox());
     };
@@ -550,6 +693,8 @@ export default function ComputerView() {
       window.removeEventListener("message", onMessage);
       window.removeEventListener("pagehide", exit);
       document.removeEventListener("fullscreenchange", onFullscreen);
+      unfocus();
+      if (full() && hasFocusMode()) setFocusMode(false);
       document.documentElement.classList.remove("computer-fullscreen");
       preload?.remove();
       preload = undefined;
@@ -685,6 +830,32 @@ export default function ComputerView() {
             )}
           </Show>
         </Show>
+        {/* Full screen, watching: the first click on the stream takes over (then reaches the desktop). */}
+        <Show when={full() && mode() === "live" && view() && !mine()}>
+          <div
+            class="computer-catch"
+            data-busy={busy() ? "yes" : "no"}
+            aria-label={t("computer.clickToDrive")}
+            title={t("computer.clickToDrive")}
+            onPointerDown={onCatchPointer}
+            onContextMenu={(e) => e.preventDefault()}
+          />
+        </Show>
+        <Show when={confirming()}>
+          {(c) => (
+            <div class="computer-confirm" role="alertdialog" aria-label={t("computer.takeOver")}>
+              <p>{c().message}</p>
+              <div class="computer-confirm-actions">
+                <button type="button" class="btn" onClick={() => setConfirming(null)}>
+                  {t("computer.cancel")}
+                </button>
+                <button type="button" class="btn btn--primary" onClick={() => void takeOver(c().pass, true)}>
+                  {t("computer.takeOver")}
+                </button>
+              </div>
+            </div>
+          )}
+        </Show>
         <Show when={mark()}>
           {(m) => (
             <span
@@ -713,39 +884,58 @@ export default function ComputerView() {
         </Show>
       </div>
 
-      {/* The floating bar of the iPhone pseudo-full-screen: the page chrome is out of reach there. */}
+      {/* Full screen's only chrome: who drives, the toggle, keyboard, keys & clipboard, exit. */}
       <Show when={full()}>
-        <div class="computer-mini" role="toolbar" aria-label={t("computer.fullScreenBar")}>
-          <button type="button" class="computer-mini-btn" aria-label={t("computer.exitFull")} onClick={() => exitFull()}>
-            ✕
-          </button>
+        <div class="computer-pill" role="toolbar" aria-label={t("computer.fullScreenBar")} data-mine={mine() ? "yes" : "no"}>
+          <span class="computer-pill-state" role="status">
+            <span class="computer-dot" aria-hidden="true" />
+            {mine() ? t("computer.pillDriving") : t("computer.pillWatching")}
+          </span>
           <Show
             when={mine()}
             fallback={
-              <button type="button" class="computer-mini-btn" disabled={busy() || !state()} onClick={() => void takeOver()}>
+              <button type="button" class="computer-pill-btn computer-pill-btn--primary" disabled={busy() || !state()} onClick={() => void takeOver()}>
                 {t("computer.takeOver")}
               </button>
             }
           >
-            <button type="button" class="computer-mini-btn" aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
-              {t("computer.keyboard")}
-            </button>
-            <button type="button" class="computer-mini-btn" onClick={() => void giveBack()}>
+            <button type="button" class="computer-pill-btn" disabled={busy()} onClick={() => void giveBack()}>
               {t("computer.giveBack")}
             </button>
+            <button type="button" class="computer-pill-btn" aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
+              {t("computer.keyboard")}
+            </button>
+            <button type="button" class="computer-pill-btn" aria-pressed={tools()} aria-expanded={tools()} onClick={() => setTools(!tools())}>
+              {t("computer.keys")}
+            </button>
           </Show>
-          <For each={KEYS.slice(0, 8)}>
-            {(k) => (
-              <button
-                type="button"
-                class="computer-mini-btn"
-                aria-label={k.key}
-                onClick={() => pressKey(k)}
-              >
-                {k.label}
-              </button>
-            )}
-          </For>
+          <button type="button" class="computer-pill-btn" aria-label={t("computer.exitFull")} title={t("computer.exitFull")} onClick={() => exitFull()}>
+            ✕
+          </button>
+          <Show when={tools() && mine()}>
+            <div class="computer-pill-pop" role="group" aria-label={t("computer.keys")}>
+              <div class="computer-keys">
+                <For each={KEYS}>
+                  {(k) => (
+                    <button type="button" class="computer-key" aria-label={k.key} onClick={() => pressKey(k)}>
+                      {k.label}
+                    </button>
+                  )}
+                </For>
+              </div>
+              <div class="computer-clip">
+                <textarea class="text-input" rows="2" aria-label={t("computer.clipboardLabel")} value={clip()} placeholder={t("computer.clipboardPlaceholder")} onInput={(e) => setClip(e.currentTarget.value)} />
+                <div class="computer-clip-actions">
+                  <button type="button" class="btn" disabled={!clip()} onClick={() => void send([{ kind: "clipboard_write", text: clip() }])}>
+                    {t("computer.clipboardSend")}
+                  </button>
+                  <button type="button" class="btn" onClick={() => void readClipboard()}>
+                    {t("computer.clipboardRead")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Show>
         </div>
       </Show>
 
@@ -789,10 +979,10 @@ export default function ComputerView() {
         </div>
       </Show>
 
-      <Show when={recent().length > 0}>
+      <Show when={recent().some(meaningful)}>
         <h2>{t("computer.activity")}</h2>
         <ul class="computer-card computer-log">
-          <For each={recent().slice(0, 10)}>
+          <For each={recent().filter(meaningful).slice(0, 10)}>
             {(e) => (
               <li>
                 <span class="computer-muted">{clock(e.at)}</span> {auditLine(e)}

@@ -77,33 +77,40 @@ html.computer-fullscreen body {
 }
 .computer-screen--full::backdrop { background: #000; }
 
-.computer-mini {
+/* Full screen shows the stream and nothing else of the page but the pill. */
+.computer-page[data-full="yes"] > :not(.computer-screen):not(.computer-pill) { display: none !important; }
+.computer-screen--full { z-index: 1000; }
+
+/* The pill: who drives, the toggle, keyboard, keys & clipboard, exit. Faint until used. */
+.computer-pill {
   position: fixed;
   left: 50%;
-  bottom: calc(10px + env(safe-area-inset-bottom));
+  bottom: calc(12px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
-  z-index: 70;
+  z-index: 1010;
   display: flex;
   align-items: center;
   gap: 4px;
   max-width: calc(100vw - 16px);
-  padding: 4px;
-  overflow-x: auto;
+  padding: 4px 4px 4px 12px;
   background: rgba(22, 25, 30, 0.92);
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: 0 8px 28px rgb(0 0 0 / 45%);
   backdrop-filter: blur(12px);
-  opacity: 0.55;
+  font-size: 13px;
+  opacity: 0.6;
   transition: opacity 0.2s;
 }
-.computer-mini:hover,
-.computer-mini:focus-within { opacity: 1; }
-.computer-mini-btn {
+.computer-pill:hover,
+.computer-pill:focus-within,
+.computer-pill[data-mine="no"] { opacity: 1; }
+.computer-pill-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text); white-space: nowrap; margin-right: 4px; }
+.computer-pill[data-mine="yes"] .computer-dot { background: #ff9f1a; }
+.computer-pill-btn {
   flex: none;
-  min-width: 44px;
-  min-height: 36px;
-  padding: 0 10px;
+  min-height: 32px;
+  padding: 0 12px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -112,9 +119,45 @@ html.computer-fullscreen body {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.computer-mini-btn:hover { background: rgb(255 255 255 / 10%); }
-.computer-mini-btn[aria-pressed="true"] { background: rgb(79 140 255 / 22%); color: #cfe0ff; }
-.computer-mini-btn:disabled { opacity: 0.4; }
+.computer-pill-btn:hover { background: rgb(255 255 255 / 10%); }
+.computer-pill-btn--primary { background: rgb(79 140 255 / 30%); color: #e6eeff; }
+.computer-pill-btn[aria-pressed="true"] { background: rgb(79 140 255 / 22%); color: #cfe0ff; }
+.computer-pill-btn:disabled { opacity: 0.4; }
+.computer-pill-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 24px));
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(22, 25, 30, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+}
+
+/* Watching in full screen: the stream takes the first click (it takes over, then reaches the
+   desktop). The top strip stays the viewer's own toolbar. */
+.computer-catch { position: absolute; inset: 56px 0 0 0; z-index: 4; cursor: pointer; background: transparent; }
+.computer-catch[data-busy="yes"] { cursor: progress; }
+.computer-confirm {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  width: min(360px, calc(100% - 32px));
+  padding: 14px;
+  background: rgba(22, 25, 30, 0.97);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 50%);
+}
+.computer-confirm p { margin: 0 0 12px; }
+.computer-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Where the last click landed, so the owner can see the mouse working (the shim draws the same
    ring inside the live viewer). */

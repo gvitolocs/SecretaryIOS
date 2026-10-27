@@ -6,7 +6,8 @@ import { toScreen } from "../api/computer";
 import { setLocale } from "../i18n";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
-import ComputerView, { auditLine, callerName, contentRect, driverLabel, pointIn } from "./Computer";
+import { deferred } from "../test/fetch";
+import ComputerView, { auditLine, callerName, contentRect, driverLabel, meaningful, passKey, pointIn } from "./Computer";
 
 const VIEW_ID = "v".repeat(64);
 
@@ -208,7 +209,7 @@ describe("Lucina's computer", () => {
     expect(calls.some((c) => c.url === "/v1/computer/input")).toBe(false);
   });
 
-  it("full screen fixes the screen, locks the page and shows the mini bar", async () => {
+  it("full screen fixes the screen, locks the page and shows the pill", async () => {
     fakeLucina(state());
     renderComputer();
     await screen.findByText("Idle");
@@ -376,5 +377,217 @@ describe("helpers", () => {
       x: 640,
       y: 0,
     });
+  });
+});
+
+describe("full screen as a remote desktop (focus mode in Secretary Code)", () => {
+  let listener: ((on: boolean) => void) | null = null;
+  const setFocus = vi.fn();
+  beforeEach(() => {
+    setLocale("en");
+    localStorage.clear();
+    listener = null;
+    setFocus.mockReset();
+    window.secretaryShell = {
+      version: 1,
+      showCode: vi.fn(),
+      setFocusMode: setFocus,
+      onFocusModeChange: (l: (on: boolean) => void) => {
+        listener = l;
+        return () => (listener = null);
+      },
+    } as unknown as typeof window.secretaryShell;
+  });
+  afterEach(() => {
+    delete window.secretaryShell;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const page = () => document.querySelector(".computer-page")?.getAttribute("data-full");
+
+  /** A message from the viewer frame itself (the page checks the source window). */
+  function fromFrame(frame: HTMLIFrameElement, data: unknown) {
+    const ev = new MessageEvent("message", { data });
+    Object.defineProperty(ev, "source", { value: frame.contentWindow });
+    window.dispatchEvent(ev);
+  }
+
+  it("asks the shell for focus mode instead of the Fullscreen API, and follows it out", async () => {
+    fakeLucina(state());
+    const fs = vi.fn(() => Promise.resolve());
+    HTMLElement.prototype.requestFullscreen = fs as unknown as typeof HTMLElement.prototype.requestFullscreen;
+    renderComputer();
+    await screen.findByText("Idle");
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    expect(setFocus).toHaveBeenCalledWith(true);
+    expect(fs).not.toHaveBeenCalled();
+    expect(page()).toBe("yes");
+    expect(screen.getByRole("toolbar", { name: "Full screen controls" })).toBeInTheDocument();
+    // The shell leaves focus mode by itself (Esc, its Exit focus button): the page follows.
+    listener?.(false);
+    await waitFor(() => expect(page()).toBe("no"));
+    // And the shell entering it (e.g. after a refused requestFullscreen) turns the layout on.
+    listener?.(true);
+    await waitFor(() => expect(page()).toBe("yes"));
+  });
+
+  it("the viewer's own fullscreen icon does the same as the page's button", async () => {
+    fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    watchFrame(frame);
+    fromFrame(frame, { type: "lucina:fullscreen" });
+    expect(setFocus).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(page()).toBe("yes"));
+    fromFrame(frame, { type: "lucina:fullscreen" });
+    expect(setFocus).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(page()).toBe("no"));
+  });
+
+  it("the first click on the stream takes over and is replayed into the desktop", async () => {
+    const calls = fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    const frame = (await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement;
+    const posted = watchFrame(frame);
+    frame.getBoundingClientRect = () => ({ left: 10, top: 20, width: 800, height: 500, right: 810, bottom: 520, x: 10, y: 20, toJSON: () => ({}) }) as DOMRect;
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    const catcher = await waitFor(() => document.querySelector(".computer-catch") as HTMLElement);
+    fireEvent.pointerDown(catcher, { clientX: 110, clientY: 220, button: 0 });
+    await waitFor(() => expect(posted).toContainEqual({ type: "lucina:pass", click: { x: 100, y: 200, button: "left" } }));
+    expect(calls.some((c) => c.url === "/v1/computer/control" && (c.body as { action: string }).action === "take")).toBe(true);
+    // The control ticket reaches the viewer before the replayed click.
+    const ticketAt = posted.findIndex((m) => (m as { type: string }).type === "lucina:ticket");
+    const passAt = posted.findIndex((m) => (m as { type: string }).type === "lucina:pass");
+    expect(ticketAt).toBeGreaterThanOrEqual(0);
+    expect(ticketAt).toBeLessThan(passAt);
+    expect(await screen.findByText("You're driving")).toBeInTheDocument();
+    expect(document.querySelector(".computer-catch")).toBeNull();
+  });
+
+  it("a key press while watching in full screen takes over and types that key", async () => {
+    fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    const posted = watchFrame((await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement);
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    fireEvent.keyDown(window, { key: "a" });
+    await waitFor(() => expect(posted).toContainEqual({ type: "lucina:pass", text: "a" }));
+  });
+
+  it("asks in a small overlay, not a browser dialog, when Lucina is mid-task", async () => {
+    fakeLucina(state({ driver: "lucina", task: { who: "lucina", what: "open example.com", since: 1, stopping: false } }));
+    const confirm = vi.spyOn(window, "confirm");
+    renderComputer();
+    await screen.findByText("Lucina is driving");
+    const posted = watchFrame((await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement);
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    const catcher = await waitFor(() => document.querySelector(".computer-catch") as HTMLElement);
+    fireEvent.pointerDown(catcher, { clientX: 5, clientY: 5 });
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain("open example.com");
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole("button", { name: "Take over" }).find((b) => dialog.contains(b))!);
+    await waitFor(() => expect(posted.some((m) => (m as { type: string }).type === "lucina:pass")).toBe(true));
+  });
+
+  it("leaving focus mode gives back a desktop taken in focus mode", async () => {
+    const calls = fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    watchFrame((await screen.findByTitle("Lucina's screen")) as HTMLIFrameElement);
+    fireEvent.click(screen.getByRole("button", { name: "Full screen" }));
+    fireEvent.pointerDown(await waitFor(() => document.querySelector(".computer-catch") as HTMLElement), { clientX: 1, clientY: 1 });
+    await screen.findByText("You're driving");
+    listener?.(false);
+    await waitFor(() => expect(calls.some((c) => c.url === "/v1/computer/control" && (c.body as { action: string }).action === "release")).toBe(true));
+  });
+});
+
+describe("holding control", () => {
+  beforeEach(() => {
+    setLocale("en");
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps control for a minute with no input at all (heartbeats, polls, no release)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls = fakeLucina(state());
+    renderComputer();
+    await screen.findByText("Idle");
+    fireEvent.click(screen.getByRole("button", { name: "Take over" }));
+    await screen.findByText("You are driving");
+    await vi.advanceTimersByTimeAsync(60_000);
+    const actions = calls.filter((c) => c.url === "/v1/computer/control" && c.method === "POST").map((c) => (c.body as { action: string }).action);
+    expect(actions.filter((a) => a === "release")).toEqual([]);
+    expect(actions.filter((a) => a === "heartbeat").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText("You are driving")).toBeInTheDocument();
+    expect(calls.some((c) => c.url.endsWith("/ticket") && (c.body as { mode: string }).mode === "watch")).toBe(false);
+  });
+
+  it("a state poll that started before the takeover cannot undo it", async () => {
+    let s = state();
+    const slow = deferred<void>();
+    let held = false;
+    stubFetch(async (c: Call) => {
+      if (c.url.startsWith("/v1/computer/control") && c.method === "GET") {
+        const snapshot = s;
+        if (held) await slow.promise; // this poll answers late, with the state from before the take
+        return { body: { state: snapshot, recent: [] } };
+      }
+      if (c.url === "/v1/computer/control") {
+        const action = (c.body as { action: string }).action;
+        if (action === "take") s = state({ driver: "owner", epoch: 1, owner: { device: "web", since: 1, expiresInMs: 45000 } });
+        if (action === "release") s = state({ epoch: 2 });
+        return { body: { state: s, stoppedTask: null } };
+      }
+      if (c.url === "/v1/computer/view") {
+        const mode = (c.body as { mode: string }).mode;
+        return { body: { viewId: VIEW_ID, viewUrl: `/v1/computer/view/${VIEW_ID}/viewer/#ticket=t&mode=${mode}`, sandbox: "workspace", mode, ttlSecs: 600 } };
+      }
+      if (c.url === `/v1/computer/view/${VIEW_ID}/ticket`) {
+        const mode = (c.body as { mode: string }).mode;
+        return { body: { ticket: "t2", mode, sandbox: "workspace", ttlSecs: 600, epoch: 1, changed: true } };
+      }
+      return { status: 404, body: { error: { code: "not_found", message: "no" } } };
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderComputer();
+    await screen.findByText("Idle");
+    held = true;
+    await vi.advanceTimersByTimeAsync(3_100); // a poll starts and hangs
+    held = false;
+    fireEvent.click(screen.getByRole("button", { name: "Take over" }));
+    await screen.findByText("You are driving");
+    slow.resolve(); // the stale "nobody drives" answer arrives now
+    await vi.advanceTimersByTimeAsync(100);
+    expect(screen.getByText("You are driving")).toBeInTheDocument();
+    expect(screen.queryByText("Your takeover ended.")).toBeNull();
+  });
+});
+
+describe("page helpers", () => {
+  it("passes keys the way the viewer names them", () => {
+    expect(passKey({ key: "a" })).toEqual({ text: "a" });
+    expect(passKey({ key: "Enter" })).toEqual({ keys: ["enter"] });
+    expect(passKey({ key: "ArrowLeft" })).toEqual({ keys: ["arrowleft"] });
+    expect(passKey({ key: "l", ctrlKey: true })).toEqual({ keys: ["control", "l"] });
+    expect(passKey({ key: "Shift" })).toBeNull();
+  });
+
+  it("keeps sockets, tickets and live byte counts out of Recent activity", () => {
+    expect(meaningful({ at: 1, event: "take", device: "web" } as never)).toBe(true);
+    expect(meaningful({ at: 1, event: "view_socket_closed", why: "sandbox closed" } as never)).toBe(false);
+    expect(meaningful({ at: 1, event: "view_ticket" } as never)).toBe(false);
+    expect(meaningful({ at: 1, event: "input", batch: { via: "live", bytes: 1210 } } as never)).toBe(false);
+    expect(meaningful({ at: 1, event: "input", batch: { kinds: ["click"] } } as never)).toBe(true);
   });
 });
