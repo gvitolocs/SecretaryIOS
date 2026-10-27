@@ -45,6 +45,13 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceTokenAction,
     },
+    /// Print the public key of the "Add secret" grant key (made on first use)
+    /// for the broker's `[owner_grants] public_key`.
+    SecretGrantKey {
+        /// Overrides SECRETARY_DATA_DIR.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+    },
     /// Notes in $SECRETARY_DATA_DIR/notes (import seed files, list).
     Notes {
         /// Overrides SECRETARY_DATA_DIR.
@@ -328,6 +335,11 @@ pub fn main_with(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Notes { data_dir, action } => {
             run_notes(data_dir, action, &mut std::io::stdout().lock())
+        }
+        Command::SecretGrantKey { data_dir: d } => {
+            let key = crate::owner_secrets::GrantSigner::new(&data_dir(d)).public_key()?;
+            writeln!(std::io::stdout().lock(), "{key}")?;
+            Ok(())
         }
     }
 }

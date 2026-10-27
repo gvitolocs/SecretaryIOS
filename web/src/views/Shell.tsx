@@ -1,6 +1,7 @@
 import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { AccountDialog } from "../components/AccountDialog";
+import { SecretSheet } from "../components/SecretSheet";
 import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
@@ -213,6 +214,7 @@ export default function Shell(props: { children?: JSX.Element }) {
           <Wardrobe />
         </Suspense>
       </Show>
+      <SecretSheet />
       <AccountDialog
         open={accountOpen()}
         section={accountSection()}
