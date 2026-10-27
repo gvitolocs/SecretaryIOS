@@ -42,6 +42,16 @@
  * The page's key buttons (Esc, Tab, arrows…) arrive as `{type:"lucina:keys"}`
  * and go out on the live socket like any other key.
  *
+ * 4. Clipboard. Cua syncs it while driving: a paste (Cmd+V, mapped to Ctrl+V)
+ *    sets the desktop's clipboard before the key goes out, and the desktop's
+ *    clipboard is polled every second and written to this computer's. The
+ *    paste needs no permission, but this frame's opaque origin can never be
+ *    granted `clipboard-write`, so the viewer's `navigator.clipboard` writes
+ *    are relayed to the page (`lucina:clipboard`), which writes them from its
+ *    own origin and answers `lucina:clipboard-done`. The viewer starts its sync
+ *    only for a session that began in control, so a watch→control switch
+ *    starts it here (and a switch back stops it).
+ *
  * It also reports the stream state to the parent (`lucina:state`) so the app
  * can stop showing "Connecting…" on the first frame rather than on load.
  */
@@ -262,6 +272,7 @@
         viewer.attach(media);
         mode = nextMode;
         switching = false;
+        syncClipboard(viewer);
         flash("Switched to " + (nextMode === "control" ? "control" : "watching"));
       },
       function () {
@@ -643,6 +654,79 @@
     );
   }
 
+  // --------------------------------------------------------------- clipboard
+
+  var CLIP_TEXT_LIMIT = 256 * 1024; // lucina-server's cap; longer text is not synced
+  var CLIP_ANSWER_MS = 1200; // under the viewer's own 1.5 s, after which it offers a "Copy" chip
+  var clipSeq = 0;
+  var clipWaiting = {};
+
+  /** Cua's clipboard sync runs exactly while this view drives the desktop. */
+  function syncClipboard(viewer) {
+    if (!viewer) return;
+    try {
+      if (mode === "control") {
+        // A view minted for watching says `clipboard=off` in its fragment (the viewer's initial state).
+        if (viewer.state) viewer.state.clipboard = true;
+        if (!viewer.clipboard && typeof viewer.startClipboard === "function") viewer.startClipboard();
+        if (typeof viewer.updateButtons === "function") viewer.updateButtons();
+      } else if (viewer.clipboard) {
+        viewer.clipboard.stop();
+        viewer.clipboard = null;
+      }
+    } catch (e) {
+      /* a viewer without clipboard sync */
+    }
+  }
+
+  /** Where clipboard text may go: the page that frames us (CSP frame-ancestors pins which). */
+  function pageOrigin() {
+    var a = location.ancestorOrigins;
+    return a && a.length ? a[0] : null;
+  }
+
+  function writeViaPage(text) {
+    var origin = pageOrigin();
+    if (!origin || origin === "null") return Promise.reject(new DOMException("no page to write the clipboard", "NotAllowedError"));
+    if (text.length > CLIP_TEXT_LIMIT) return Promise.reject(new DOMException("clipboard text over 256 KiB", "DataError"));
+    return new Promise(function (resolve, reject) {
+      var id = ++clipSeq;
+      var timer = setTimeout(function () {
+        delete clipWaiting[id];
+        reject(new DOMException("clipboard write needs a gesture", "NotAllowedError"));
+      }, CLIP_ANSWER_MS);
+      clipWaiting[id] = function (ok) {
+        clearTimeout(timer);
+        delete clipWaiting[id];
+        if (ok) resolve();
+        else reject(new DOMException("clipboard write needs a gesture", "NotAllowedError"));
+      };
+      try {
+        parentWindow.postMessage({ type: "lucina:clipboard", id: id, text: text }, origin);
+      } catch (e) {
+        clipWaiting[id](false);
+      }
+    });
+  }
+
+  function relayClipboardWrites() {
+    var proto = window.Clipboard && window.Clipboard.prototype;
+    if (!proto || !pageOrigin()) return;
+    proto.writeText = function (text) {
+      return writeViaPage(String(text));
+    };
+    // The viewer uses write() only for an image (with its text alongside); images are not synced.
+    proto.write = function (items) {
+      var item = items && items[0];
+      if (!item || !item.types || item.types.indexOf("text/plain") < 0) {
+        return Promise.reject(new DOMException("only text is synced", "NotAllowedError"));
+      }
+      return item.getType("text/plain").then(function (blob) {
+        return blob.text();
+      }).then(writeViaPage);
+    };
+  }
+
   // ------------------------------------------------------------------ wiring
 
   window.addEventListener("message", function (event) {
@@ -676,6 +760,9 @@
       case "lucina:focus":
         whenDriving(focusStream);
         break;
+      case "lucina:clipboard-done":
+        if (typeof data.id === "number" && clipWaiting[data.id]) clipWaiting[data.id](data.ok === true);
+        break;
       case "lucina:ticket": {
         var nextMode = data.mode === "watch" || data.mode === "control" ? data.mode : mode;
         var changed = nextMode !== mode;
@@ -694,5 +781,6 @@
   routeFullscreen();
   autoHideToolbar();
   forwardEscapeWhileWatching();
+  relayClipboardWrites();
   send({ type: "lucina:ready", coarse: COARSE, mode: mode });
 })();
