@@ -603,10 +603,16 @@ fn main() -> anyhow::Result<()> {
     }
     match cmd {
         Cmd::PresenceWatch { data, token_file } => presence_watch(data, token_file),
-        cmd => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?
-            .block_on(run(cmd)),
+        cmd => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let out = rt.block_on(run(cmd));
+            // Do not wait on blocking work still running (a Whisper or vision subprocess,
+            // a scheduler tick): it would push a stop past systemd's timeout.
+            rt.shutdown_timeout(std::time::Duration::from_secs(1));
+            out
+        }
     }
 }
 
@@ -656,25 +662,34 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 }
             }
             let _ = stop_tx.send(true);
-            // The Telegram poller stops and releases its lease before the process exits.
-            if let Some(t) = telegram {
-                if tokio::time::timeout(std::time::Duration::from_secs(30), t)
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("telegram poller did not stop in 30 s");
+            // Everything fits in systemd's stop timeout (10 s, drop-in 90-stop.conf):
+            // a stop that ends in SIGKILL counts as a failure and pages the owner.
+            // The pollers release their leases first (both share 4 s), then the
+            // listeners drain for 3 s: open SSE timeline streams never end on their
+            // own, so whatever is still open after that is dropped.
+            let pollers = async {
+                if let Some(t) = telegram {
+                    let _ = t.await;
                 }
-            }
-            // The Discord session closes and releases its lease the same way.
-            if let Some(d) = discord {
-                if tokio::time::timeout(std::time::Duration::from_secs(10), d)
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("discord message session did not stop in 10 s");
+                if let Some(d) = discord {
+                    let _ = d.await;
                 }
+            };
+            if tokio::time::timeout(std::time::Duration::from_secs(4), pollers)
+                .await
+                .is_err()
+            {
+                tracing::warn!("Telegram/Discord did not stop in 4 s; exiting anyway (the kernel drops the lease flocks)");
             }
-            while servers.join_next().await.is_some() {}
+            let drain = async { while servers.join_next().await.is_some() {} };
+            if tokio::time::timeout(std::time::Duration::from_secs(3), drain)
+                .await
+                .is_err()
+            {
+                tracing::info!("open HTTP streams dropped after 3 s");
+                servers.abort_all();
+            }
+            tracing::info!("stopped");
         }
         Cmd::FakeDeepseek {
             bind,
