@@ -4,12 +4,16 @@
 //! streamed one at a time, the zips are never loaded whole) and parses the
 //! Keep JSON files into [`ParsedNote`]s; [`html`] turns `textContentHtml`
 //! into markdown basics; [`report`] is the [`ImportReport`] the CLI and the
-//! endpoint answer with. Nothing here touches the note store.
+//! endpoint answer with. [`apply`] maps the notes onto the note store
+//! (`NoteStore::import_note`); [`endpoint`] is the HTTP route.
 
+pub mod apply;
+pub mod endpoint;
 pub mod html;
 pub mod report;
 pub mod takeout;
 
+pub use apply::import_takeout;
 pub use report::{
     AttachmentCounts, FileCounts, ImportReport, LabelCounts, NoteCounts, ReportError, SampleNote,
 };

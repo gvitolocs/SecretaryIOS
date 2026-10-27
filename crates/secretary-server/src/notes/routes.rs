@@ -616,6 +616,16 @@ pub fn routes(state: AppState) -> Router<AppState> {
     let upload = Router::new()
         .route("/v1/notes/{key}/attachments", post(upload_attachment))
         .layer(DefaultBodyLimit::max(ATTACHMENT_BODY_LIMIT));
+    // The Google Keep import streams a zip of up to 2 GB to disk.
+    let import = Router::new()
+        .route(
+            "/v1/notes/import/google-keep",
+            post(crate::keep_import::endpoint::import_google_keep),
+        )
+        .layer(DefaultBodyLimit::max(
+            crate::keep_import::endpoint::MAX_ZIP_BYTES as usize,
+        ));
     json.merge(upload)
+        .merge(import)
         .route_layer(middleware::from_fn_with_state(state, device_or_service))
 }
