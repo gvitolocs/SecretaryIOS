@@ -26,6 +26,8 @@ pub mod import;
 pub mod ingest;
 pub mod meta;
 pub mod protocol;
+pub mod share;
+pub mod share_http;
 pub mod source;
 pub mod store;
 pub mod thumbs;

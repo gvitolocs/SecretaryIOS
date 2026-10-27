@@ -104,6 +104,17 @@ kernel DK3).
     `GET items/{id}/archive`: zip, tar, tar.gz and 7z listings (nothing is extracted). `GET items/{id}/original?download=1`:
     `Content-Disposition: attachment` with the real name.
 - `GET devices/{device}/assets`, `GET summary`, `GET events` (SSE: `item.added|updated|trashed`).
+- Share links (2026-10-27, `share.rs`, `share_http.rs`):
+  - owner: `POST albums/{id}/shares {expires_in_days?, allow_original?}` → `{token, url_path, …}`;
+    `GET albums/{id}/shares`, `GET shares` (with views and `live`); `DELETE shares/{token}` revokes (the row stays).
+  - public, no key (`upstream_guard` lets `/v1/media/a/` through; p1 maps `/a/*` to it): `GET a/{token}` (a
+    self-contained page: grid, lightbox, videos through the play-token `/file` route), `GET a/{token}/items`
+    (no place, camera, caption or file name), `GET a/{token}/i/{item}/{thumb|large|poster|original}`.
+  - every public request: a well-formed 22-character token, 120 requests a minute per link, then the verified
+    rule (`decide`, Verus AS1): unknown 404, revoked or expired 410, an item not in the album now (or trashed,
+    hidden) 404, an original without permission 403. Renditions are served with their metadata stripped
+    (`strip_jpeg_metadata`); anything that cannot be stripped is not served. Headers: `noindex`, no referrer,
+    a CSP with a per-page nonce, no framing.
 - Internal: `PUT|DELETE /internal/v1/external/{source}/{id}` indexes a file in place (voice memos, the film folders), `POST /internal/v1/import {path, source, album}`.
 
 The upload protocol's decisions (chunk offsets, finish once, dedupe or version) are pure functions in `protocol.rs`.

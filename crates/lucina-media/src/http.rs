@@ -57,7 +57,7 @@ fn not_found() -> ApiError {
     ApiError(StatusCode::NOT_FOUND, "not found".into())
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+pub type ApiResult<T> = Result<T, ApiError>;
 
 /// The public (tailnet) API. `extra` is the player's streaming router (play, `/s/…`, progress);
 /// it sits behind the same guard.
@@ -104,6 +104,8 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/devices/{device}/assets", get(device_assets))
         .route("/v1/media/events", get(events))
         .merge(uploads)
+        .merge(crate::share_http::owner_routes())
+        .merge(crate::share_http::public_routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -126,7 +128,8 @@ pub fn internal_router(lib: Library) -> Router {
 /// health check are exempt (the token is their auth).
 pub async fn upstream_guard(State(lib): State<Library>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
-    if path == "/healthz" || path.starts_with("/v1/media/s/") {
+    // Play tokens and album share links carry their own credential (`share_http::gate`).
+    if path == "/healthz" || path.starts_with("/v1/media/s/") || path.starts_with("/v1/media/a/") {
         return next.run(req).await;
     }
     if let Some(key) = lib.cfg.upstream_key.as_deref() {
@@ -449,7 +452,7 @@ async fn restore_item(
     Ok(Json(item_out(&lib, it, None)))
 }
 
-async fn serve_file(
+pub async fn serve_file(
     req_headers: HeaderMap,
     path: PathBuf,
     mime: &str,
