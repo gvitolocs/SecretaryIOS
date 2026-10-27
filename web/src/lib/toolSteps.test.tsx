@@ -6,7 +6,7 @@ import type { ChatMessage } from "../state/chat";
 import { stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
 import ChatView from "../views/Chat";
-import { chatRows, isToolRun, stepText, toolName, toolSummary } from "./toolSteps";
+import { chatRows, isToolRun, isToolStep, stepText, toolName, toolSummary } from "./toolSteps";
 
 const msg = (key: string, role: "user" | "lucina", text: string, meta?: ChatMessage["meta"]): ChatMessage => ({
   key,
@@ -45,6 +45,14 @@ describe("tool steps", () => {
     const c = chatRows([...messages, step("4", "drive")], cache);
     expect(c[1]).not.toBe(a[1]);
     expect(cache.size).toBe(1);
+  });
+
+  it("recognises steps cached without meta.kind by their text, and leaves ordinary replies alone", () => {
+    expect(isToolStep(msg("1", "lucina", '🔧 drive {"action":"list","page_size":50} → ok'))).toBe(true);
+    expect(isToolStep(msg("2", "lucina", '{"action":"list","folder_id":"1xtGR","page_size":50} → ok'))).toBe(true);
+    expect(isToolStep(msg("3", "lucina", "Done: I moved {three} files → Archive. All good."))).toBe(false);
+    expect(isToolStep(msg("4", "lucina", "Sure, here it is."))).toBe(false);
+    expect(isToolStep(msg("5", "user", "🔧 drive {} → ok"))).toBe(false);
   });
 
   it("names the tools in first-use order and counts failures", () => {

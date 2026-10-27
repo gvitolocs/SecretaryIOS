@@ -18,9 +18,15 @@ export function isToolRun(row: ChatRow): row is ToolRun {
   return (row as ToolRun).kind === "tools";
 }
 
-/** A tool step: Lucina's item with meta.kind "tool". */
+/** "🔧 drive {…} → ok", or "{…} → ok" without the wrench and tool name. */
+const STEP_TEXT = /^\s*(?:🔧|(?:[A-Za-z][\w.-]*\s+)?\{[\s\S]*\}\s*→\s*\S+\s*$)/u;
+
+/**
+ * A tool step: Lucina's item with meta.kind "tool". Items cached by web builds that dropped meta.kind (before
+ * 2026-10-27 19:16) are recognised by their text.
+ */
 export function isToolStep(m: ChatMessage): boolean {
-  return m.role === "lucina" && m.meta?.kind === "tool";
+  return m.role === "lucina" && (m.meta?.kind === "tool" || STEP_TEXT.test(m.text));
 }
 
 /**

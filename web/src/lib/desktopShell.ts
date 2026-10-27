@@ -5,7 +5,17 @@
 // In a browser or on the phone it is absent, and everything that uses it stays hidden.
 
 /** A view of the desktop rail. */
-export type ShellView = "lucina" | "code" | "computer" | "gallery" | "films" | "chats" | "secrets" | "health";
+export type ShellView =
+  | "lucina"
+  | "code"
+  | "computer"
+  | "gallery"
+  | "films"
+  | "chats"
+  | "secrets"
+  | "health"
+  | "shopping"
+  | "training";
 
 export interface SecretaryShell {
   version?: number;
