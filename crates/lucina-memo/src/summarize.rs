@@ -148,7 +148,7 @@ fn items(raw: Vec<RawItem>, duration: f64, keep_owner: bool) -> Vec<Item> {
 }
 
 /// Pulls the first `{...}` object out of a reply (models sometimes wrap it).
-fn json_object(s: &str) -> &str {
+pub fn json_object(s: &str) -> &str {
     let s = s.trim();
     let s = s
         .strip_prefix("```json")
@@ -390,6 +390,7 @@ mod tests {
                 end: 5.0,
                 text: "Ciao".into(),
                 speaker: None,
+                words: vec![],
             }],
             speakers: false,
             created_at: Utc::now(),

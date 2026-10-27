@@ -81,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
             );
             let app = app(cfg)?;
             tokio::spawn(worker::run(app.clone()));
+            tokio::spawn(lucina_memo::meetings::worker::run(app.clone()));
             let router = api::router(app.clone());
             let mut servers = Vec::new();
             for bind in &app.cfg.binds {

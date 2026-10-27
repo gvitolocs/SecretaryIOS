@@ -19,7 +19,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::model::{Segment, Transcript};
+use crate::model::{Segment, Transcript, Word};
 
 #[derive(Debug, Clone)]
 pub struct WhisperConfig {
@@ -115,6 +115,44 @@ impl SttError {
     /// Worth waiting for (GPU or model back later), not a failure of this memo.
     pub fn is_transient(&self) -> bool {
         matches!(self, SttError::GpuBusy(_) | SttError::ModelMissing(_))
+    }
+}
+
+/// Speech to text as the meeting pipeline sees it (tests use a fake).
+#[async_trait::async_trait]
+pub trait Stt: Send + Sync {
+    /// `input` → 16 kHz mono WAV at `wav`; the duration in seconds.
+    async fn decode(&self, input: &Path, wav: &Path) -> Result<f64, SttError>;
+    /// Whisper with word timings, waiting up to `gpu_wait` for a lease.
+    async fn transcribe_words(
+        &self,
+        wav: &Path,
+        work: &Path,
+        duration_sec: f64,
+        gpu_wait: Duration,
+    ) -> Result<Transcript, SttError>;
+    async fn gpu_free(&self) -> bool;
+}
+
+/// The real thing: ffmpeg and whisper.cpp under `gpu-lease`.
+pub struct Whisper(pub WhisperConfig);
+
+#[async_trait::async_trait]
+impl Stt for Whisper {
+    async fn decode(&self, input: &Path, wav: &Path) -> Result<f64, SttError> {
+        decode(&self.0, input, wav).await
+    }
+    async fn transcribe_words(
+        &self,
+        wav: &Path,
+        work: &Path,
+        duration_sec: f64,
+        gpu_wait: Duration,
+    ) -> Result<Transcript, SttError> {
+        transcribe_words(&self.0, wav, work, duration_sec, gpu_wait).await
+    }
+    async fn gpu_free(&self) -> bool {
+        gpu_free(&self.0).await
     }
 }
 
@@ -223,12 +261,35 @@ pub async fn transcribe(
     duration_sec: f64,
     gpu_wait: Duration,
 ) -> Result<Transcript, SttError> {
+    run(cfg, wav, work, duration_sec, gpu_wait, false).await
+}
+
+/// [`transcribe`] with word timings (`-ojf`): every segment carries its words (meetings, where
+/// a segment may span two speakers).
+pub async fn transcribe_words(
+    cfg: &WhisperConfig,
+    wav: &Path,
+    work: &Path,
+    duration_sec: f64,
+    gpu_wait: Duration,
+) -> Result<Transcript, SttError> {
+    run(cfg, wav, work, duration_sec, gpu_wait, true).await
+}
+
+async fn run(
+    cfg: &WhisperConfig,
+    wav: &Path,
+    work: &Path,
+    duration_sec: f64,
+    gpu_wait: Duration,
+    words: bool,
+) -> Result<Transcript, SttError> {
     if !cfg.model.is_file() {
         tracing::warn!(model = %cfg.model.display(), "Whisper model missing");
         return Err(SttError::ModelMissing(cfg.model.clone()));
     }
     let prefix = work.join("whisper");
-    let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait).await;
+    let gpu = run_whisper(cfg, wav, &prefix, &cfg.model, true, gpu_wait, words).await;
     let (out, engine) = match gpu {
         Ok(o) => (o, format!("whisper.cpp {} (GPU)", model_name(&cfg.model))),
         Err(RunError::NoLease) => {
@@ -236,7 +297,7 @@ pub async fn transcribe(
                 return Err(SttError::GpuBusy(gpu_wait));
             };
             tracing::info!("no GPU lease within {gpu_wait:?}; transcribing on the CPU");
-            let o = run_whisper(cfg, wav, &prefix, cpu, false, gpu_wait)
+            let o = run_whisper(cfg, wav, &prefix, cpu, false, gpu_wait, words)
                 .await
                 .map_err(|e| SttError::Whisper(e.to_string()))?;
             (o, format!("whisper.cpp {} (CPU)", model_name(cpu)))
@@ -269,6 +330,7 @@ async fn run_whisper(
     model: &Path,
     gpu: bool,
     gpu_wait: Duration,
+    words: bool,
 ) -> Result<String, RunError> {
     let json = prefix.with_extension("json");
     let _ = tokio::fs::remove_file(&json).await;
@@ -278,7 +340,14 @@ async fn run_whisper(
     }
     cmd.arg("-m").arg(model);
     cmd.arg("-l").arg(cfg.language.as_deref().unwrap_or("auto"));
-    cmd.args(["-t", &cfg.threads.to_string(), "-oj", "-mc", "0", "-sns"]);
+    cmd.args([
+        "-t",
+        &cfg.threads.to_string(),
+        if words { "-ojf" } else { "-oj" },
+        "-mc",
+        "0",
+        "-sns",
+    ]);
     if gpu {
         // RX 7900 XTX only (skip the Raphael iGPU), like ~/bin/whisper-gpu.
         cmd.env("GGML_VK_VISIBLE_DEVICES", "1")
@@ -339,6 +408,43 @@ struct WhisperSegment {
     /// `[SPEAKER_TURN]` when tinydiarize is on (not used with large-v3).
     #[serde(default)]
     speaker_turn_next: bool,
+    /// `-ojf` only: the segment's tokens with their offsets.
+    #[serde(default)]
+    tokens: Vec<WhisperToken>,
+}
+#[derive(Deserialize)]
+struct WhisperToken {
+    text: String,
+    offsets: Offsets,
+}
+
+/// Tokens → words: a token starting with a space starts a word; special tokens (`[_BEG_]`,
+/// `[_TT_150]`, `<|en|>`) are skipped.
+fn words_of(tokens: &[WhisperToken]) -> Vec<Word> {
+    let mut out: Vec<Word> = Vec::new();
+    for t in tokens {
+        let text = t.text.as_str();
+        if text.starts_with("[_") || text.starts_with("<|") || text.trim().is_empty() {
+            continue;
+        }
+        let (start, end) = (
+            t.offsets.from.max(0) as f64 / 1000.0,
+            t.offsets.to.max(0) as f64 / 1000.0,
+        );
+        match out.last_mut() {
+            Some(w) if !text.starts_with(' ') => {
+                w.text.push_str(text);
+                w.end = w.end.max(end);
+            }
+            _ => out.push(Word {
+                start,
+                end: end.max(start),
+                text: text.trim().to_owned(),
+            }),
+        }
+    }
+    out.retain(|w| !w.text.is_empty());
+    out
 }
 #[derive(Deserialize)]
 struct Offsets {
@@ -374,6 +480,7 @@ pub fn parse_output(json: &str, engine: String, duration_sec: f64) -> Result<Tra
             end: s.offsets.to.max(0) as f64 / 1000.0,
             text,
             speaker: None,
+            words: words_of(&s.tokens),
         });
     }
     Ok(Transcript {
@@ -441,6 +548,26 @@ mod tests {
             t.text(),
             "Domani chiamo Marco per il preventivo. Poi la palestra alle sette."
         );
+    }
+
+    #[test]
+    fn word_timings_from_full_json() {
+        let json = r#"{"result":{"language":"en"},"transcription":[
+          {"offsets":{"from":0,"to":2000},"text":" Hello there, Anna.","tokens":[
+            {"text":"[_BEG_]","offsets":{"from":0,"to":0}},
+            {"text":" Hello","offsets":{"from":0,"to":400}},
+            {"text":" there","offsets":{"from":400,"to":800}},
+            {"text":",","offsets":{"from":800,"to":820}},
+            {"text":" An","offsets":{"from":900,"to":1200}},
+            {"text":"na.","offsets":{"from":1200,"to":1500}},
+            {"text":"[_TT_100]","offsets":{"from":2000,"to":2000}}]}]}"#;
+        let t = parse_output(json, "test".into(), 2.0).unwrap();
+        let w = &t.segments[0].words;
+        assert_eq!(
+            w.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(),
+            ["Hello", "there,", "Anna."]
+        );
+        assert_eq!((w[2].start, w[2].end), (0.9, 1.5));
     }
 
     #[tokio::test]

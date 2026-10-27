@@ -32,13 +32,13 @@ use crate::model::{Status, Summary, Transcript};
 use crate::store::{read_json, valid_id, NewMemo, StoreError};
 use crate::{search, worker, App};
 
-pub struct ApiError(StatusCode, &'static str, String, Option<u64>);
+pub struct ApiError(pub(crate) StatusCode, pub(crate) &'static str, pub(crate) String, pub(crate) Option<u64>);
 
 impl ApiError {
-    fn new(s: StatusCode, code: &'static str, msg: impl Into<String>) -> Self {
+    pub(crate) fn new(s: StatusCode, code: &'static str, msg: impl Into<String>) -> Self {
         Self(s, code, msg.into(), None)
     }
-    fn bad(msg: impl Into<String>) -> Self {
+    pub(crate) fn bad(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "bad_request", msg)
     }
     fn not_found() -> Self {
@@ -85,13 +85,13 @@ impl IntoResponse for ApiError {
     }
 }
 
-type R<T = Json<Value>> = Result<T, ApiError>;
+pub(crate) type R<T = Json<Value>> = Result<T, ApiError>;
 
 fn ct_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
 }
 
-async fn auth(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
+pub(crate) async fn auth(State(app): State<Arc<App>>, req: Request, next: Next) -> Response {
     let h = req.headers();
     let header_str = |n: &str| h.get(n).and_then(|v| v.to_str().ok()).map(str::trim);
     if let (Some(want), Some(got)) = (app.gateway_token(), header_str("x-memo-gateway")) {
@@ -145,6 +145,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/health", get(health))
         .merge(api)
+        .merge(crate::meetings::api::routes(app.clone()))
         .with_state(app)
 }
 
@@ -159,6 +160,15 @@ async fn health(State(app): State<Arc<App>>) -> Json<Value> {
         "failed": count(Status::Failed),
         "obsidian": app.cfg.vault.is_some(),
         "cpuFallback": app.cfg.whisper.cpu_model.is_some(),
+        "meetings": app.meetings().map(|s| {
+            let all = s.list();
+            json!({
+                "count": all.len(),
+                "pipeline": all.iter().filter(|m| m.status.is_pipeline()).count(),
+                "failed": all.iter().filter(|m| m.status == crate::meetings::model::Status::Failed).count(),
+            })
+        }).unwrap_or(Value::Null),
+        "diarization": app.cfg.diarize.as_ref().map(|c| c.missing().is_none()),
     }))
 }
 
@@ -339,6 +349,7 @@ async fn device_transcript(
                 end: s.end,
                 text: text.to_owned(),
                 speaker: None,
+                words: vec![],
             });
         }
     }
@@ -628,7 +639,7 @@ pub fn parse_range(h: &str, len: u64) -> Option<(u64, u64)> {
     (start <= end && start < len).then_some((start, end))
 }
 
-async fn serve_file(
+pub(crate) async fn serve_file(
     path: &std::path::Path,
     mime: &str,
     headers: &HeaderMap,
