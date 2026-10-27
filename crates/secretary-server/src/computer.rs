@@ -71,7 +71,7 @@ const PASS_REQUEST: [&str; 9] = [
     "x-user-agent",
 ];
 
-fn caller(headers: &HeaderMap) -> String {
+pub(crate) fn caller(headers: &HeaderMap) -> String {
     headers
         .get(CALLER_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -87,7 +87,7 @@ fn caller(headers: &HeaderMap) -> String {
 }
 
 /// The device label Lucina logs: the device's own name, plus the MCP client.
-fn device_label(ident: &Identity, caller: &str) -> String {
+pub(crate) fn device_label(ident: &Identity, caller: &str) -> String {
     let name: String = ident.device_name.chars().filter(|c| !c.is_control()).take(40).collect();
     if caller == "app" {
         name
@@ -490,8 +490,8 @@ async fn read_head(s: &mut TcpStream) -> std::io::Result<(u16, Vec<(String, Stri
     }
 }
 
-/// Splices the viewer's WebSocket to Lucina's view proxy, byte for byte.
-async fn socket(addr: &str, auth: &str, path: &str, mut req: Request) -> Response {
+/// Splices an owner WebSocket (the live view's, LucinaDesk's) to Lucina, byte for byte.
+pub(crate) async fn socket(addr: &str, auth: &str, path: &str, mut req: Request) -> Response {
     let target = match req.uri().query() {
         Some(q) => format!("{path}?{q}"),
         None => path.to_owned(),

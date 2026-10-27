@@ -33,6 +33,8 @@ getsecretary.tech {
 			request>uri query {
 				delete ticket
 			}
+			# LucinaDesk: the socket's single-use ticket rides as a subprotocol.
+			request>headers>Sec-Websocket-Protocol delete
 			resp_headers>Set-Cookie delete
 		}
 	}
