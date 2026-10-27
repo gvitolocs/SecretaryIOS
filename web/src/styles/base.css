@@ -1628,6 +1628,7 @@ select.text-input option {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  background: var(--lu-chat-bg);
 }
 
 .messages {
