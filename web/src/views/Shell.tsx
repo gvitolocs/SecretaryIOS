@@ -8,6 +8,7 @@ import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
 import { listShares } from "../lib/share";
 import { t } from "../i18n";
+import { showWebChrome } from "../lib/desktopShell";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
@@ -126,63 +127,68 @@ export default function Shell(props: { children?: JSX.Element }) {
     }
   }
 
+  // Inside Secretary Code the desktop rail replaces the top bar and the tab bar.
+  const chrome = showWebChrome();
+
   return (
-    <div class="shell shell--character">
+    <div class="shell shell--character" classList={{ "shell--desktop": !chrome }}>
       <a class="skip-link" href="#main">
         {t("shell.skipToContent")}
       </a>
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">
-            <img src="/icon-192.png" alt="" width="32" height="32" />
-          </span>
-          <span class="brand-name">Secretary</span>
-        </div>
-        <NavLinks class="tabs-top" />
-        <div class="topbar-actions">
-          <StatusDot />
-          <Show when={stageHidden()}>
+      <Show when={chrome}>
+        <header class="topbar">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">
+              <img src="/icon-192.png" alt="" width="32" height="32" />
+            </span>
+            <span class="brand-name">Secretary</span>
+          </div>
+          <NavLinks class="tabs-top" />
+          <div class="topbar-actions">
+            <StatusDot />
+            <Show when={stageHidden()}>
+              <button
+                type="button"
+                class="icon-btn"
+                onClick={() => setStageHidden(false)}
+                aria-label={t("shell.lucinaShow")}
+                title={t("shell.lucinaShow")}
+              >
+                <AvatarIcon />
+              </button>
+            </Show>
+            <NotificationBell
+              onSettings={() => {
+                setAccountSection("notifications");
+                setAccountOpen(true);
+              }}
+            />
             <button
               type="button"
               class="icon-btn"
-              onClick={() => setStageHidden(false)}
-              aria-label={t("shell.lucinaShow")}
-              title={t("shell.lucinaShow")}
+              ref={accountButton}
+              onClick={() => {
+                setAccountSection(null);
+                setAccountOpen(true);
+              }}
+              aria-label={t("shell.account")}
+              title={t("shell.account")}
             >
-              <AvatarIcon />
+              <UserIcon />
             </button>
-          </Show>
-          <NotificationBell
-            onSettings={() => {
-              setAccountSection("notifications");
-              setAccountOpen(true);
-            }}
-          />
-          <button
-            type="button"
-            class="icon-btn"
-            ref={accountButton}
-            onClick={() => {
-              setAccountSection(null);
-              setAccountOpen(true);
-            }}
-            aria-label={t("shell.account")}
-            title={t("shell.account")}
-          >
-            <UserIcon />
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            onClick={() => void logout()}
-            disabled={loggingOut()}
-            aria-label={t("shell.logout")}
-            title={t("shell.logout")}
-          >
-            <LogoutIcon />
-          </button>
-        </div>
-      </header>
+            <button
+              type="button"
+              class="icon-btn"
+              onClick={() => void logout()}
+              disabled={loggingOut()}
+              aria-label={t("shell.logout")}
+              title={t("shell.logout")}
+            >
+              <LogoutIcon />
+            </button>
+          </div>
+        </header>
+      </Show>
       <Show when={lucinaNotice()}>
         {(msg) => (
           <div class="banner" role="status">
@@ -208,7 +214,9 @@ export default function Shell(props: { children?: JSX.Element }) {
         </main>
         <LucinaDock />
       </div>
-      <NavLinks class="tabbar" />
+      <Show when={chrome}>
+        <NavLinks class="tabbar" />
+      </Show>
       <Show when={wardrobeLoaded()}>
         <Suspense>
           <Wardrobe />
