@@ -3513,6 +3513,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "secretary-image-wasm"
+version = "0.1.0"
+dependencies = [
+ "secretary-image",
+ "serde_json",
+]
+
+[[package]]
 name = "secretary-mcp"
 version = "0.1.0"
 dependencies = [

@@ -10,7 +10,7 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
-use secretary_image::view::{DragAxis, Gesture, View};
+use secretary_image::view;
 use secretary_image::Decoder;
 
 thread_local! {
@@ -175,43 +175,8 @@ pub unsafe extern "C" fn secretary_image_buffer_free(ptr: *mut u8, len: usize) {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct ViewRequest {
-    /// The current view, or `new` for a fresh one.
-    view: Option<View>,
-    new: Option<[f32; 4]>,
-    gesture: Option<Gesture>,
-    /// A one-finger drag so far (`ended` on release), for the swipe down to close.
-    drag: Option<DragRequest>,
-    #[serde(default = "default_preview_px")]
-    preview_px: f32,
-    #[serde(default = "default_screen_scale")]
-    screen_scale: f32,
-}
-
-#[derive(serde::Deserialize)]
-struct DragRequest {
-    dx: f32,
-    dy: f32,
-    #[serde(default)]
-    predicted_dy: f32,
-    #[serde(default)]
-    ended: bool,
-}
-
-fn default_preview_px() -> f32 {
-    1440.0
-}
-fn default_screen_scale() -> f32 {
-    3.0
-}
-
-/// Zoom and pan, JSON in and out:
-/// `{"new":[image_w,image_h,viewport_w,viewport_h]}` or `{"view":{...},"gesture":{"op":"pinch",
-/// "factor":1.2,"x":..,"y":..}}` → `{"ok":true,"view":{...},"rect":{x,y,w,h},"wants_original":bool}`.
-/// With `"drag":{"dx","dy","predicted_dy","ended"}` the answer also has `"drag":{"axis":"undecided"|
-/// "pager"|"out"|"pan","out":{offset_x,offset_y,scale,backdrop}}`, plus `"end":"dismiss"|"info"|"back"`
-/// on a released drag-out.
+/// Zoom and pan, JSON in and out: the protocol of `secretary_image::view::handle_json` (the web
+/// app runs the same function through `secretary-image-wasm`).
 /// Free the answer with `secretary_string_free`.
 ///
 /// # Safety
@@ -222,34 +187,10 @@ pub unsafe extern "C" fn secretary_image_view(json: *const c_char) -> *mut c_cha
         if json.is_null() {
             return serde_json::json!({"ok": false, "error": "null request"});
         }
-        let req: ViewRequest = match CStr::from_ptr(json).to_str().map_err(|e| e.to_string()).and_then(|s| serde_json::from_str(s).map_err(|e| e.to_string())) {
-            Ok(r) => r,
-            Err(e) => return serde_json::json!({"ok": false, "error": e}),
-        };
-        let view = match (req.view, req.new) {
-            (Some(v), _) => v,
-            (None, Some([iw, ih, vw, vh])) => View::new(iw, ih, vw, vh),
-            (None, None) => return serde_json::json!({"ok": false, "error": "view or new is required"}),
-        };
-        let view = match req.gesture {
-            Some(g) => view.apply(g),
-            None => view,
-        };
-        let mut answer = serde_json::json!({
-            "ok": true,
-            "view": view,
-            "rect": view.rect(),
-            "wants_original": view.wants_original(req.preview_px, req.screen_scale),
-        });
-        if let Some(d) = req.drag {
-            let axis = view.drag_axis(d.dx, d.dy);
-            let mut drag = serde_json::json!({"axis": axis, "out": view.drag_out(d.dx, d.dy)});
-            if d.ended && axis == DragAxis::Out {
-                drag["end"] = serde_json::json!(view.drag_end(d.dy, d.predicted_dy));
-            }
-            answer["drag"] = drag;
+        match CStr::from_ptr(json).to_str() {
+            Ok(s) => view::handle_json(s),
+            Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
         }
-        answer
     }))
     .unwrap_or_else(|_| serde_json::json!({"ok": false, "error": "panic in the image core"}));
     super::output(answer.to_string())

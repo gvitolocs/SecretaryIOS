@@ -19,6 +19,7 @@ members = [
     "crates/secretary-tasks",
     "crates/secretary-player",
     "crates/secretary-player-wasm",
+    "crates/secretary-image-wasm",
     "verification/models",
     "crates/secretary-media-stream",
     "crates/lucina-media",
