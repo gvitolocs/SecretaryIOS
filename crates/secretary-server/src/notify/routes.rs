@@ -332,7 +332,7 @@ async fn notify(
     JsonBody(b): JsonBody<NotifyBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let category = Category::parse(&b.category).ok_or_else(|| {
-        bad("category: one of lucina_message, reminder, calendar, device_confirm, shopping, presence, system")
+        bad("category: one of lucina_message, reminder, calendar, device_confirm, agent, shopping, presence, system")
     })?;
     let body = b.body.trim();
     if body.is_empty() || body.chars().count() > 2000 {

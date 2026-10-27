@@ -229,7 +229,9 @@ impl Notifier {
         }
         self.inbox.add(notification.clone())?;
         remember();
-        Ok(Admit::Stored(Box::new(notification), !quiet))
+        // Agents (Paseo): while an app is in front the inbox shows it, no push.
+        let in_app = category == Category::Agent && self.present();
+        Ok(Admit::Stored(Box::new(notification), !quiet && !in_app))
     }
 
     /// Store and (unless quiet) push one notification.
@@ -282,6 +284,9 @@ impl Notifier {
                 let title = match &n.title {
                     Some(t) => t.clone(),
                     None if burst >= 2 => text::lucina_burst(burst, l),
+                    None if n.category == Category::Agent => {
+                        text::agent_title(n.data.as_ref().and_then(|d| d["reason"].as_str()), l).to_owned()
+                    }
                     None => text::title(n.category, l).to_owned(),
                 };
                 let body = if settings.previews {
@@ -640,6 +645,23 @@ mod tests {
             items[0].dedup_key.as_deref(),
             Some(format!("cal:E1:{in5}").as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn agent_notices_stay_in_the_inbox_while_an_app_is_in_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = notifier(dir.path());
+        n.set_presence("dev_1", true);
+        let mut a = NewNotification::new(Category::Agent, "Run npm test");
+        a.dedup_key = Some("perm:agent-1/req-1".into());
+        a.data = Some(json!({"kind": "agent", "reason": "permission", "agentId": "agent-1", "requestId": "req-1"}));
+        // Unlike a Lucina message it is kept (Paseo: in-app instead of a push).
+        assert!(matches!(n.publish(a.clone()).await.unwrap(), Outcome::Created { pushed: 0, .. }));
+        assert_eq!(n.publish(a).await.unwrap(), Outcome::Duplicate);
+        assert_eq!(text::agent_title(Some("permission"), "it"), "Un agente chiede il permesso");
+        assert_eq!(text::agent_title(None, "en"), "Agent finished");
+        n.settings.update(|s| s.categories.agent = false).unwrap();
+        assert_eq!(n.publish(NewNotification::new(Category::Agent, "done")).await.unwrap(), Outcome::Disabled);
     }
 
     #[tokio::test]
