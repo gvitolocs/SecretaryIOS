@@ -31,7 +31,14 @@ const QUALITY_LABELS: Record<StageQualitySetting, MessageKey> = {
 export const MIN_PASSWORD_LENGTH = 8;
 
 /** Account panel opened from the header: language, and the single user's password. */
-export function AccountDialog(props: { open: boolean; onClose: () => void; section?: "notifications" | null }) {
+export function AccountDialog(props: {
+  open: boolean;
+  onClose: () => void;
+  section?: "notifications" | null;
+  /** A sign-out button at the end (the /account route; the top bar has its own). */
+  onSignOut?: () => void;
+  signingOut?: boolean;
+}) {
   const [current, setCurrent] = createSignal("");
   const [next, setNext] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
@@ -262,6 +269,15 @@ export function AccountDialog(props: { open: boolean; onClose: () => void; secti
               {saving() ? t("common.saving") : t("shell.changePassword")}
             </button>
           </form>
+          <Show when={props.onSignOut}>
+            {(onSignOut) => (
+              <div class="settings-form">
+                <button type="button" class="btn" disabled={props.signingOut} onClick={() => onSignOut()()}>
+                  {t("shell.logout")}
+                </button>
+              </div>
+            )}
+          </Show>
         </div>
       </div>
     </Show>

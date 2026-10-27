@@ -16,6 +16,8 @@ export interface SecretaryShell {
   hideCode?(): void;
   /** Switch the desktop rail to a view. */
   show?(view: ShellView): void;
+  /** Make the Mac forget its device token (the web app signs out too). */
+  signOut?(): void | Promise<void>;
 }
 
 declare global {

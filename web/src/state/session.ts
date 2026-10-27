@@ -7,6 +7,7 @@ import { clearChat, setChatDevice } from "./chat";
 import { resetGym } from "./gym";
 import { resetNotifications } from "./notifications";
 import { resetShopping } from "./shopping";
+import { desktopShell } from "../lib/desktopShell";
 
 export type SessionState =
   | { status: "loading" }
@@ -54,6 +55,12 @@ export async function signIn(email: string, password: string): Promise<void> {
 }
 
 export async function signOut(): Promise<void> {
+  // Inside Secretary Code the Mac first forgets its device token, or its shell would sign straight back in.
+  try {
+    await desktopShell()?.signOut?.();
+  } catch {
+    // The web session still ends below.
+  }
   try {
     await api.logout();
   } catch {
