@@ -17,6 +17,11 @@
 //! - `GET|POST /v1/computer/control`      takeover state / `{sandbox, action: take|release|heartbeat}`
 //! - `POST /v1/computer/input`            `{sandbox, events}` (fallback view input)
 //! - `POST /v1/computer/view`             `{sandbox, mode}` → `{viewUrl, …}`
+//! - `POST /v1/computer/view/{id}/ticket` `{mode?}`: the same view, re-issued
+//!   (a renewal, or the watch↔control switch of a take-over) so the running
+//!   viewer takes the new ticket instead of the page reloading it
+//! - `GET  /v1/computer/viewer-assets/{version}/{file}`: Cua's viewer files and
+//!   our shim, immutable and ticket-free (the view itself keeps its ticket)
 //! - `ANY  /v1/computer/view/{viewId}/{*rest}` the live view itself, **without**
 //!   device auth: an iframe or WebView cannot send the bearer, and a WebSocket
 //!   cannot carry it. The view id (64 hex, minted for an owner device by
@@ -223,7 +228,9 @@ async fn view(
         status,
         Json(json!({
             "viewId": view_id,
-            "viewUrl": format!("/v1/computer/view/{view_id}/viewer/#ticket={ticket}&clipboard={clipboard}&audio=off"),
+            "viewUrl": format!(
+                "/v1/computer/view/{view_id}/viewer/#ticket={ticket}&clipboard={clipboard}&audio=off&mode={mode}"
+            ),
             "sandbox": sandbox,
             "mode": mode,
             "expiresAt": data.get("expiresAt"),
@@ -245,11 +252,95 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/computer/control", get(control_state).post(control))
         .route("/v1/computer/input", post(input))
         .route("/v1/computer/view", post(view))
+        .route("/v1/computer/view/{view_id}/ticket", post(view_ticket))
 }
 
 /// The live view (capability URL; see the module doc).
 pub fn view_routes() -> Router<AppState> {
-    Router::new().route("/v1/computer/view/{view_id}/{*rest}", any(view_proxy))
+    Router::new()
+        .route("/v1/computer/view/{view_id}/{*rest}", any(view_proxy))
+        .route("/v1/computer/viewer-assets/{version}/{file}", get(viewer_asset))
+}
+
+/// The files `viewer-assets` may serve: Cua's four and our shim.
+const VIEWER_ASSETS: [&str; 5] = [
+    "viewer.js",
+    "index.css",
+    "audioWorklet.js",
+    "captureWorklet.js",
+    "lucina-shim.js",
+];
+
+fn valid_version(v: &str) -> bool {
+    v.len() == 16 && v.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `GET /v1/computer/viewer-assets/{version}/{file}`: immutable viewer assets,
+/// reachable without a device token because the viewer document is an opaque
+/// origin (and because they are Cua's public static files, not a capability).
+async fn viewer_asset(
+    State(st): State<AppState>,
+    Path((version, file)): Path<(String, String)>,
+) -> Response {
+    if !valid_version(&version) || !VIEWER_ASSETS.contains(&file.as_str()) {
+        return ApiError::new(StatusCode::NOT_FOUND, "not_found", "").into_response();
+    }
+    let Some((addr, auth)) = st.lucina.as_ref().and_then(|l| l.passthrough()) else {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "lucina_not_configured", "").into_response();
+    };
+    let path = format!("/api/secretary/computer/viewer-assets/{version}/{file}");
+    let mut resp = match passthrough_client()
+        .get(format!("http://{addr}{path}"))
+        .header(header::AUTHORIZATION, auth)
+        .send()
+        .await
+    {
+        Ok(up) => {
+            let status = up.status();
+            let mut headers = HeaderMap::new();
+            for (k, v) in up.headers() {
+                if matches!(
+                    k.as_str(),
+                    "content-type" | "cache-control" | "content-length" | "access-control-allow-origin"
+                ) {
+                    headers.append(k.clone(), v.clone());
+                }
+            }
+            let mut resp = Response::new(Body::from_stream(up.bytes_stream()));
+            *resp.status_mut() = status;
+            *resp.headers_mut() = headers;
+            resp
+        }
+        Err(e) => {
+            tracing::warn!(error = %e.without_url(), "computer viewer assets: Lucina unreachable");
+            ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "").into_response()
+        }
+    };
+    let status = resp.status();
+    harden_asset(status, resp.headers_mut());
+    resp
+}
+
+/// `POST /v1/computer/view/{viewId}/ticket` `{mode?}`: the running view's ticket
+/// again, renewed or switched to the other mode. Owner devices only; the
+/// control switch still needs the lease Lucina holds for `POST /v1/computer/control`.
+async fn view_ticket(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    headers: HeaderMap,
+    Path(view_id): Path<String>,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
+    if !valid_view_id(&view_id) {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", ""));
+    }
+    let who = caller(&headers);
+    let mut m = object(body.clone()).unwrap_or_default();
+    m.insert("sandbox".into(), json!(sandbox_of(&body)?));
+    m.insert("device".into(), json!(device_label(&ident, &who)));
+    m.remove("view_id");
+    let call = Call::computer_view_ticket(&view_id, Value::Object(m));
+    forward(&st, call.with_caller(&who)).await
 }
 
 fn valid_view_id(id: &str) -> bool {
@@ -267,7 +358,20 @@ fn valid_rest(rest: &str) -> bool {
 
 fn harden(h: &mut HeaderMap) {
     h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(VIEW_CSP));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+}
+
+/// [`harden`], except that a successful versioned asset keeps Lucina's
+/// year-long `immutable` header: the one cacheable thing under the live view.
+fn harden_asset(status: StatusCode, h: &mut HeaderMap) {
+    let upstream = h.get(header::CACHE_CONTROL).cloned();
+    harden(h);
+    if status.is_success() {
+        if let Some(v) = upstream.filter(|v| v.to_str().is_ok_and(|s| s.contains("immutable"))) {
+            h.insert(header::CACHE_CONTROL, v);
+        }
+    }
 }
 
 fn passthrough_client() -> &'static reqwest::Client {
@@ -477,6 +581,34 @@ mod tests {
         for bad in ["", "../x", "viewer/../../x", "a b", "a%2e", "x?y", &"a".repeat(129)] {
             assert!(!valid_rest(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn only_versioned_viewer_assets_are_cacheable() {
+        assert!(valid_version("0123456789abcdef"));
+        for bad in ["", "0123456789abcde", "0123456789abcdefa", "0123456789abcdeg", "../../../../etc"] {
+            assert!(!valid_version(bad), "{bad}");
+        }
+        let year = HeaderValue::from_static("public, max-age=31536000, immutable");
+        // The view: no-store, whatever the sandbox said.
+        let mut h = HeaderMap::new();
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
+        harden(&mut h);
+        assert_eq!(h[header::CACHE_CONTROL], "no-store");
+        assert_eq!(h[header::CONTENT_SECURITY_POLICY], VIEW_CSP);
+        // An asset keeps the immutable header, an error never does.
+        let mut h = HeaderMap::new();
+        h.insert(header::CACHE_CONTROL, year.clone());
+        harden_asset(StatusCode::OK, &mut h);
+        assert_eq!(h[header::CACHE_CONTROL], year);
+        let mut h = HeaderMap::new();
+        h.insert(header::CACHE_CONTROL, year);
+        harden_asset(StatusCode::NOT_FOUND, &mut h);
+        assert_eq!(h[header::CACHE_CONTROL], "no-store");
+        let mut h = HeaderMap::new();
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
+        harden_asset(StatusCode::OK, &mut h);
+        assert_eq!(h[header::CACHE_CONTROL], "no-store");
     }
 
     #[test]
