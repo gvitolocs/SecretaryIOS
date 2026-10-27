@@ -206,7 +206,11 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             false
         }
     };
-    if kernel::diarize_memo(available, transcript.speakers, m.steps.diarized_at.is_some()) {
+    if kernel::diarize_memo(
+        available,
+        transcript.speakers,
+        m.steps.diarized_at.is_some(),
+    ) {
         match crate::diarize::memo::label(app, &m, &transcript, &work).await {
             Ok(Some(t)) => {
                 write_json(&store.transcript_path(id), &t)?;

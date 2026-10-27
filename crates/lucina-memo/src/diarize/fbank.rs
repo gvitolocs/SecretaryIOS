@@ -142,7 +142,9 @@ mod tests {
         assert_eq!(f.len(), 1 + (16_000 - 400) / 160);
         // The loudest bin is the one whose centre is near 1 kHz (mel ≈ 1000).
         let row = f[10];
-        let best = (0..MELS).max_by(|a, b| row[*a].total_cmp(&row[*b])).unwrap();
+        let best = (0..MELS)
+            .max_by(|a, b| row[*a].total_cmp(&row[*b]))
+            .unwrap();
         let (lo, hi) = (mel(20.0), mel(8000.0));
         let centre = lo + (best as f64 + 1.0) * (hi - lo) / 81.0;
         assert!((centre - mel(1000.0)).abs() < 40.0, "bin {best}");

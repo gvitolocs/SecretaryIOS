@@ -24,7 +24,10 @@
 //! - `fix_recovery`: a recording cut off by iOS killing the app is recovered and
 //!   queued on the next launch (crash-safe CAF file);
 //! - `prune_dead`: `gpu-lease` drops a dead holder (it does; switching it off
-//!   shows the lease property depends on it).
+//!   shows the lease property depends on it);
+//! - `fix_diarize_reset`: speaker labels (step 1a, kernel K11) are attempted once per
+//!   transcript, and a new transcript (Whisper upgrade, reprocess) clears the attempt, so a
+//!   finished memo's labels belong to its current transcript.
 
 use stateright::{Model, Property};
 
@@ -84,6 +87,10 @@ pub struct State {
     pub device_transcript_sent: bool,
     // server
     pub transcript: Option<Src>,
+    /// The transcript the speaker labels were made for; and whether step 1a ran on the
+    /// current transcript (`diarized_at`).
+    pub diarized: Option<Src>,
+    pub diar_attempted: bool,
     pub had_whisper: bool,
     pub saw_device_then_whisper: bool,
     pub summarized: bool,
@@ -141,6 +148,7 @@ pub struct Memos {
     pub fix_telegram_marker: bool,
     pub fix_recovery: bool,
     pub prune_dead: bool,
+    pub fix_diarize_reset: bool,
     /// The memo is short (the iPhone transcribes it).
     pub short: bool,
     pub kills: u8,
@@ -162,6 +170,8 @@ impl Memos {
         }
         Some(if s.transcript.is_none() {
             1
+        } else if !s.diar_attempted {
+            11
         } else if !s.summarized {
             2
         } else if !s.rendered {
@@ -196,6 +206,8 @@ impl Model for Memos {
             uploaded: false,
             device_transcript_sent: false,
             transcript: None,
+            diarized: None,
+            diar_attempted: false,
             had_whisper: false,
             saw_device_then_whisper: false,
             summarized: false,
@@ -343,6 +355,9 @@ impl Model for Memos {
                 // reprocess --transcript: step 1 again, new summary and notification.
                 n.owner_acts -= 1;
                 n.transcript = None;
+                if self.fix_diarize_reset {
+                    n.diar_attempted = false;
+                }
                 n.summarized = false;
                 n.rendered = false;
                 n.published = false;
@@ -354,6 +369,9 @@ impl Model for Memos {
             Action::Upgrade => {
                 // The idle worker: Whisper under the lease, then a quiet re-summary.
                 n.transcript = Some(Src::Whisper);
+                if self.fix_diarize_reset {
+                    n.diar_attempted = false;
+                }
                 n.had_whisper = true;
                 n.saw_device_then_whisper = true;
                 n.summarized = false;
@@ -369,6 +387,9 @@ impl Model for Memos {
                     n.step = Step::Idle;
                     n.lease = Lease::Free;
                     n.transcript = Some(Src::Whisper);
+                    if self.fix_diarize_reset {
+                        n.diar_attempted = false;
+                    }
                     n.had_whisper = true;
                 }
                 Step::Pushed => {
@@ -393,11 +414,19 @@ impl Model for Memos {
                                 n.gpu_was_busy = true;
                                 if s.device_transcript_sent && !previous_whisper {
                                     n.transcript = Some(Src::Device);
+                                    if self.fix_diarize_reset {
+                                        n.diar_attempted = false;
+                                    }
                                 } else {
                                     return None; // wait (the retry is the same state)
                                 }
                             }
                         }
+                    }
+                    11 => {
+                        // K11: label the current transcript (the step is recorded either way).
+                        n.diar_attempted = true;
+                        n.diarized = s.transcript;
                     }
                     2 => n.summarized = true,
                     3 => n.rendered = true,
@@ -458,6 +487,9 @@ impl Model for Memos {
                         && s.published
                         && s.notified)
             }),
+            Property::always("done_labels_follow_transcript", |_, s: &State| {
+                !s.done || s.diarized == s.transcript
+            }),
             Property::eventually("finished_with_one_note_pdf_notification", |_, s: &State| {
                 s.done
                     && s.vault.len() == 1
@@ -484,6 +516,7 @@ pub fn cases(deep: bool) -> Vec<Case> {
         fix_telegram_marker: fixed,
         fix_recovery: fixed,
         prune_dead: prune,
+        fix_diarize_reset: true,
         short: true,
         kills: 1,
         crashes: if deep { 2 } else { 1 },
@@ -500,6 +533,7 @@ pub fn cases(deep: bool) -> Vec<Case> {
             ("no_lost_audio", bugs),
             ("live_activity_matches_recorder", Holds),
             ("done_has_every_output", Holds),
+            ("done_labels_follow_transcript", Holds),
             ("finished_with_one_note_pdf_notification", live),
             ("gpu_busy_then_free", Reached),
             ("device_transcript_replaced", Reached),
@@ -529,6 +563,19 @@ pub fn cases(deep: bool) -> Vec<Case> {
                 ("no_duplicate_notes", Holds),
                 ("telegram_at_most_once", Holds),
                 ("finished_with_one_note_pdf_notification", Violated),
+            ],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V fixed, a new transcript keeps the old diarization attempt",
+            Memos {
+                fix_diarize_reset: false,
+                ..base(true, true)
+            },
+            None,
+            vec![
+                ("done_labels_follow_transcript", Violated),
+                ("whisper_never_downgraded", Holds),
             ],
         ),
     ]

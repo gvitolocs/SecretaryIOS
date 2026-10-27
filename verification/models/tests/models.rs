@@ -158,6 +158,11 @@ fn memos() {
 }
 
 #[test]
+fn meetings() {
+    run("meetings");
+}
+
+#[test]
 fn player() {
     run("player");
 }

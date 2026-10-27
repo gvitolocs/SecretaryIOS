@@ -13,15 +13,30 @@ use crate::obsidian::{self, VaultTarget};
 use crate::App;
 
 fn yaml(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " "))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    )
 }
 
 /// The note: frontmatter in the memo notes' style, the brief, then the transcript with one
 /// block id per line.
-pub fn note_md(m: &Meeting, b: &Brief, speakers: &[Speaker], utts: &[Utterance], tz: Tz, url: &str) -> String {
+pub fn note_md(
+    m: &Meeting,
+    b: &Brief,
+    speakers: &[Speaker],
+    utts: &[Utterance],
+    tz: Tz,
+    url: &str,
+) -> String {
     let mut o = String::from("---\n");
     o.push_str("type: meeting\n");
-    o.push_str(&format!("date: {}\n", m.started_at.with_timezone(&tz).format("%Y-%m-%dT%H:%M")));
+    o.push_str(&format!(
+        "date: {}\n",
+        m.started_at.with_timezone(&tz).format("%Y-%m-%dT%H:%M")
+    ));
     o.push_str(&format!("duration: {}\n", yaml(&clock(m.duration_sec))));
     o.push_str(&format!("title: {}\n", yaml(&m.title)));
     if let Some(app) = &m.source_app.name {
@@ -43,7 +58,14 @@ pub fn note_md(m: &Meeting, b: &Brief, speakers: &[Speaker], utts: &[Utterance],
     for s in speakers {
         o.push_str(&format!(
             "  - {}\n",
-            yaml(&format!("{}{}", s.display(), s.role.as_deref().map(|r| format!(" ({})", role_label(r))).unwrap_or_default()))
+            yaml(&format!(
+                "{}{}",
+                s.display(),
+                s.role
+                    .as_deref()
+                    .map(|r| format!(" ({})", role_label(r)))
+                    .unwrap_or_default()
+            ))
         ));
     }
     o.push_str(&format!("meeting_id: {}\n", m.id));
@@ -58,7 +80,12 @@ pub fn note_md(m: &Meeting, b: &Brief, speakers: &[Speaker], utts: &[Utterance],
     o.push_str(&body);
     o.push_str("\n## Transcript\n\n");
     for (i, u) in utts.iter().enumerate() {
-        o.push_str(&format!("**[{}] {}**: {} ^t{i:04}\n\n", clock(u.start), u.speaker_name, u.text));
+        o.push_str(&format!(
+            "**[{}] {}**: {} ^t{i:04}\n\n",
+            clock(u.start),
+            u.speaker_name,
+            u.text
+        ));
     }
     o
 }
@@ -111,18 +138,34 @@ pub(crate) async fn note(
     let stage = store.work(&m).join("obsidian");
     let _ = tokio::fs::remove_dir_all(&stage).await;
     tokio::fs::create_dir_all(&stage).await?;
-    tokio::fs::write(stage.join(format!("{base}.md")), note_md(&m, b, speakers, utts, tz, &url)).await?;
+    tokio::fs::write(
+        stage.join(format!("{base}.md")),
+        note_md(&m, b, speakers, utts, tz, &url),
+    )
+    .await?;
     let mut entries: Vec<(Meeting, String)> = store
         .list()
         .into_iter()
         .filter_map(|x| {
-            let b = x.obsidian_note.as_deref()?.rsplit('/').next()?.strip_suffix(".md")?.to_owned();
+            let b = x
+                .obsidian_note
+                .as_deref()?
+                .rsplit('/')
+                .next()?
+                .strip_suffix(".md")?
+                .to_owned();
             Some((x, b))
         })
         .collect();
     entries.sort_by_key(|e| std::cmp::Reverse(e.0.started_at));
     tokio::fs::write(stage.join("00 Lucina meetings.md"), index(&entries, tz)).await?;
-    obsidian::push(&target, &obsidian::Bundle { stage: stage.clone() }).await?;
+    obsidian::push(
+        &target,
+        &obsidian::Bundle {
+            stage: stage.clone(),
+        },
+    )
+    .await?;
     let _ = tokio::fs::remove_dir_all(&stage).await;
     Ok(store.update(&m.id, |x| x.steps.noted_at = Some(chrono::Utc::now()))?)
 }
@@ -138,7 +181,10 @@ pub async fn remember(
 ) -> Result<(), lucina_memory::MemoryError> {
     use lucina_memory::surface::OwnerIds;
     use lucina_memory::{TurnFacts, TurnSurface};
-    let surface = TurnSurface::classify(&TurnFacts::secretary("web", true, None), &OwnerIds::default());
+    let surface = TurnSurface::classify(
+        &TurnFacts::secretary("web", true, None),
+        &OwnerIds::default(),
+    );
     let peer = mem
         .client()
         .map(|c| c.config().owner_peer_id.clone())
@@ -146,14 +192,27 @@ pub async fn remember(
     let who: Vec<String> = speakers
         .iter()
         .filter(|s| s.id != "me")
-        .map(|s| format!("{}{}", s.display(), s.role.as_deref().map(|r| format!(" ({})", role_label(r))).unwrap_or_default()))
+        .map(|s| {
+            format!(
+                "{}{}",
+                s.display(),
+                s.role
+                    .as_deref()
+                    .map(|r| format!(" ({})", role_label(r)))
+                    .unwrap_or_default()
+            )
+        })
         .collect();
     let user = format!(
         "I recorded a meeting: \"{}\" on {} ({}), with {}.",
         m.title,
         m.started_at.with_timezone(&tz).format("%A %Y-%m-%d %H:%M"),
         clock(m.duration_sec),
-        if who.is_empty() { "nobody else".into() } else { who.join(", ") }
+        if who.is_empty() {
+            "nobody else".into()
+        } else {
+            who.join(", ")
+        }
     );
     let mut assistant = format!("Brief of \"{}\": {}", b.title, b.about);
     for d in &b.decisions {
@@ -163,12 +222,19 @@ pub async fn remember(
         assistant.push_str(&format!(
             "\nTo do: {}{}{}",
             i.text,
-            i.owner.as_deref().map(|o| format!(" ({o})")).unwrap_or_default(),
-            i.due.as_deref().map(|d| format!(", due {d}")).unwrap_or_default()
+            i.owner
+                .as_deref()
+                .map(|o| format!(" ({o})"))
+                .unwrap_or_default(),
+            i.due
+                .as_deref()
+                .map(|d| format!(", due {d}"))
+                .unwrap_or_default()
         ));
     }
     let assistant: String = assistant.chars().take(6000).collect();
-    mem.remember(&surface, &peer, "secretary_meetings", &user, &assistant).await
+    mem.remember(&surface, &peer, "secretary_meetings", &user, &assistant)
+        .await
 }
 
 /// Each track in the media library (album "Meetings"); best effort, idempotent per track.
@@ -208,21 +274,45 @@ pub fn message(m: &Meeting, b: &Brief, speakers: &[Speaker], url: &str) -> (Stri
     if !b.action_items.is_empty() {
         body.push_str("\n\nAction items:");
         for i in b.action_items.iter().take(8) {
-            let owner = i.owner.as_deref().map(|o| n.get(o).cloned().unwrap_or_else(|| o.to_owned()));
-            body.push_str(&format!("\n• {}{}", i.text, owner.map(|o| format!(" ({o})")).unwrap_or_default()));
+            let owner = i
+                .owner
+                .as_deref()
+                .map(|o| n.get(o).cloned().unwrap_or_else(|| o.to_owned()));
+            body.push_str(&format!(
+                "\n• {}{}",
+                i.text,
+                owner.map(|o| format!(" ({o})")).unwrap_or_default()
+            ));
         }
     }
-    let unnamed = speakers.iter().filter(|s| s.name.is_none() && s.id != "me").count();
+    let unnamed = speakers
+        .iter()
+        .filter(|s| s.name.is_none() && s.id != "me")
+        .count();
     if unnamed > 0 {
-        body.push_str(&format!("\n\n{unnamed} speaker(s) without a name: name them in the app."));
+        body.push_str(&format!(
+            "\n\n{unnamed} speaker(s) without a name: name them in the app."
+        ));
     }
     body.push_str(&format!("\n\nTranscript: {url}"));
-    (ready_title(m.language.as_deref().unwrap_or("en")).to_owned(), body)
+    (
+        ready_title(m.language.as_deref().unwrap_or("en")).to_owned(),
+        body,
+    )
 }
 
-pub async fn notify(app: &App, m: &Meeting, b: &Brief, url: &str, telegram: bool) -> Result<Vec<&'static str>, String> {
+pub async fn notify(
+    app: &App,
+    m: &Meeting,
+    b: &Brief,
+    url: &str,
+    telegram: bool,
+) -> Result<Vec<&'static str>, String> {
     let speakers: Vec<Speaker> = crate::store::read_json::<super::worker::Labelled>(
-        &app.meetings().map_err(|e| e.to_string())?.work(m).join("analysis.json"),
+        &app.meetings()
+            .map_err(|e| e.to_string())?
+            .work(m)
+            .join("analysis.json"),
     )
     .ok()
     .flatten()
@@ -244,7 +334,7 @@ pub async fn notify(app: &App, m: &Meeting, b: &Brief, url: &str, telegram: bool
     .await
 }
 
-/// Asks once about each unknown voice heard in enough recordings (MK6; marker first).
+/// Asks once about each unknown voice heard in enough recordings (MT6; marker first).
 pub async fn ask_unknown_voices(app: &App) {
     let after = app.cfg.diarize.as_ref().map_or(2, |c| c.ask_after);
     for u in app.voices.to_ask(after) {

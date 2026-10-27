@@ -138,6 +138,10 @@ mod proved {
     pub fn title_from_event(source: TitleSource) -> bool {
         !matches!(source, TitleSource::Owner)
     }
+
+    pub fn diarize_memo(available: bool, labelled: bool, attempted: bool) -> bool {
+        available && !labelled && !attempted
+    }
 }
 
 const STATUSES: [Status; 8] = [
@@ -330,5 +334,16 @@ fn calendar_link_matches() {
         TitleSource::Owner,
     ] {
         assert_eq!(kernel::title_from_event(s), proved::title_from_event(s));
+    }
+}
+
+#[test]
+fn diarize_memo_matches() {
+    for a in [false, true] {
+        for l in [false, true] {
+            for t in [false, true] {
+                assert_eq!(kernel::diarize_memo(a, l, t), proved::diarize_memo(a, l, t));
+            }
+        }
     }
 }

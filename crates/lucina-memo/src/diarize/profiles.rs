@@ -2,9 +2,9 @@
 //! the owner's from his microphone track, and the unknown voices heard so far.
 //!
 //! A diarized cluster is the profile whose closest stored embedding is the most similar,
-//! when that similarity reaches the threshold (kernel MK5 `best_match`); otherwise the
+//! when that similarity reaches the threshold (kernel MT5 `best_match`); otherwise the
 //! closest unknown voice above the threshold, otherwise a new unknown voice. An unknown voice
-//! heard in `ask_after` different recordings is asked about once (MK6 `should_ask`; the
+//! heard in `ask_after` different recordings is asked about once (MT6 `should_ask`; the
 //! `asked_at` marker is written before the notification).
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -98,7 +98,10 @@ pub fn permille(sim: f32) -> i32 {
 fn new_id(prefix: &str) -> String {
     let mut b = [0u8; 6];
     getrandom::fill(&mut b).expect("system randomness");
-    format!("{prefix}{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+    format!(
+        "{prefix}{}",
+        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    )
 }
 
 pub struct VoiceBook {
@@ -132,12 +135,17 @@ impl VoiceBook {
         Ok(out)
     }
 
-    /// The profile a voice belongs to, if any (MK5 over each profile's best similarity).
+    /// The profile a voice belongs to, if any (MT5 over each profile's best similarity).
     pub fn best_profile(book: &Book, voice: &[f32], threshold: f32) -> Option<(usize, f32)> {
         let sims: Vec<f32> = book
             .profiles
             .iter()
-            .map(|p| p.embeddings.iter().map(|e| cosine(voice, e)).fold(-1.0, f32::max))
+            .map(|p| {
+                p.embeddings
+                    .iter()
+                    .map(|e| cosine(voice, e))
+                    .fold(-1.0, f32::max)
+            })
             .collect();
         let scores: Vec<i32> = sims.iter().map(|s| permille(*s)).collect();
         kernel::best_match(&scores, permille(threshold)).map(|i| (i, sims[i]))
@@ -145,7 +153,12 @@ impl VoiceBook {
 
     /// Identifies a cluster heard in `sighting.source`, recording the sighting of an unknown
     /// voice (idempotent per source and speaker, so a pipeline retry adds nothing).
-    pub fn identify(&self, voice: &[f32], threshold: f32, sighting: Sighting) -> std::io::Result<Identity> {
+    pub fn identify(
+        &self,
+        voice: &[f32],
+        threshold: f32,
+        sighting: Sighting,
+    ) -> std::io::Result<Identity> {
         self.update(|b| {
             if let Some((i, sim)) = Self::best_profile(b, voice, threshold) {
                 let p = &b.profiles[i];
@@ -156,8 +169,13 @@ impl VoiceBook {
                     similarity: sim,
                 };
             }
-            let open: Vec<usize> = (0..b.unknown.len()).filter(|i| b.unknown[*i].named.is_none()).collect();
-            let sims: Vec<f32> = open.iter().map(|i| cosine(voice, &b.unknown[*i].centroid)).collect();
+            let open: Vec<usize> = (0..b.unknown.len())
+                .filter(|i| b.unknown[*i].named.is_none())
+                .collect();
+            let sims: Vec<f32> = open
+                .iter()
+                .map(|i| cosine(voice, &b.unknown[*i].centroid))
+                .collect();
             let scores: Vec<i32> = sims.iter().map(|s| permille(*s)).collect();
             let hit = kernel::best_match(&scores, permille(threshold));
             let (idx, sim) = match hit {
@@ -200,15 +218,18 @@ impl VoiceBook {
 
     /// Adds a voice sample to the named person's profile (created if new; names match
     /// case-insensitively). Returns the profile id.
-    pub fn add_to_profile(&self, name: &str, owner: bool, voice: &[f32]) -> std::io::Result<String> {
+    pub fn add_to_profile(
+        &self,
+        name: &str,
+        owner: bool,
+        voice: &[f32],
+    ) -> std::io::Result<String> {
         let name = name.trim().to_owned();
         self.update(|b| {
             let now = Utc::now();
-            let i = match b
-                .profiles
-                .iter()
-                .position(|p| (owner && p.owner) || (!owner && !p.owner && p.name.eq_ignore_ascii_case(&name)))
-            {
+            let i = match b.profiles.iter().position(|p| {
+                (owner && p.owner) || (!owner && !p.owner && p.name.eq_ignore_ascii_case(&name))
+            }) {
                 Some(i) => i,
                 None => {
                     b.profiles.push(Profile {
@@ -236,8 +257,18 @@ impl VoiceBook {
 
     /// The owner names an unknown voice: its centroid joins the person's profile, and the
     /// recordings it was heard in are returned (their speakers get the name).
-    pub fn name_unknown(&self, voice_id: &str, name: &str) -> std::io::Result<Option<(String, Vec<Sighting>)>> {
-        let Some(u) = self.lock().unknown.iter().find(|u| u.id == voice_id).cloned() else {
+    pub fn name_unknown(
+        &self,
+        voice_id: &str,
+        name: &str,
+    ) -> std::io::Result<Option<(String, Vec<Sighting>)>> {
+        let Some(u) = self
+            .lock()
+            .unknown
+            .iter()
+            .find(|u| u.id == voice_id)
+            .cloned()
+        else {
             return Ok(None);
         };
         let profile = self.add_to_profile(name, false, &u.centroid)?;
@@ -250,12 +281,19 @@ impl VoiceBook {
         Ok(Some((profile, u.sightings)))
     }
 
-    /// Unknown voices to ask about now (MK6), oldest first.
+    /// Unknown voices to ask about now (MT6), oldest first.
     pub fn to_ask(&self, ask_after: u32) -> Vec<Unknown> {
         self.lock()
             .unknown
             .iter()
-            .filter(|u| kernel::should_ask(u.recordings(), ask_after, u.asked_at.is_some(), u.named.is_some()))
+            .filter(|u| {
+                kernel::should_ask(
+                    u.recordings(),
+                    ask_after,
+                    u.asked_at.is_some(),
+                    u.named.is_some(),
+                )
+            })
             .cloned()
             .collect()
     }
@@ -275,7 +313,10 @@ impl VoiceBook {
     pub fn owner_voice(&self) -> Option<Vec<f32>> {
         let b = self.lock();
         let p = b.profiles.iter().find(|p| p.owner)?;
-        Some(mean_direction(&p.embeddings.iter().map(Vec::as_slice).collect::<Vec<_>>())).filter(|v| !v.is_empty())
+        Some(mean_direction(
+            &p.embeddings.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+        ))
+        .filter(|v| !v.is_empty())
     }
 }
 
@@ -301,8 +342,13 @@ mod tests {
         let bo = [0.0, 1.0, 0.0];
         book.add_to_profile("Anna", false, &anna).unwrap();
         // Anna, a bit off: known (cos ≈ 0.95 ≥ 0.6).
-        match book.identify(&[0.95, 0.3, 0.0], 0.6, sighting("mtg_1", "S1")).unwrap() {
-            Identity::Known { name, similarity, .. } => {
+        match book
+            .identify(&[0.95, 0.3, 0.0], 0.6, sighting("mtg_1", "S1"))
+            .unwrap()
+        {
+            Identity::Known {
+                name, similarity, ..
+            } => {
                 assert_eq!(name, "Anna");
                 assert!(similarity > 0.9);
             }
@@ -311,11 +357,23 @@ mod tests {
         // Bo is unknown; heard again in the same meeting (a retry) and in a second one.
         let first = book.identify(&bo, 0.6, sighting("mtg_1", "S2")).unwrap();
         let again = book.identify(&bo, 0.6, sighting("mtg_1", "S2")).unwrap();
-        assert_eq!(first, Identity::Unknown { voice: match &first { Identity::Unknown { voice, .. } => voice.clone(), _ => unreachable!() }, similarity: None });
-        let Identity::Unknown { voice, .. } = again else { panic!() };
+        assert_eq!(
+            first,
+            Identity::Unknown {
+                voice: match &first {
+                    Identity::Unknown { voice, .. } => voice.clone(),
+                    _ => unreachable!(),
+                },
+                similarity: None
+            }
+        );
+        let Identity::Unknown { voice, .. } = again else {
+            panic!()
+        };
         assert_eq!(book.snapshot().unknown[0].sightings.len(), 1);
         assert!(book.to_ask(2).is_empty());
-        book.identify(&[0.0, 0.98, 0.1], 0.6, sighting("mtg_2", "S1")).unwrap();
+        book.identify(&[0.0, 0.98, 0.1], 0.6, sighting("mtg_2", "S1"))
+            .unwrap();
         let ask = book.to_ask(2);
         assert_eq!(ask.len(), 1);
         assert_eq!(ask[0].id, voice);
@@ -328,11 +386,14 @@ mod tests {
         drop(book);
         let book = VoiceBook::open(&path).unwrap();
         match book.identify(&bo, 0.6, sighting("mtg_3", "S1")).unwrap() {
-            Identity::Known { profile, name, .. } => assert_eq!((profile, name.as_str()), (pid, "Bo")),
+            Identity::Known { profile, name, .. } => {
+                assert_eq!((profile, name.as_str()), (pid, "Bo"))
+            }
             other => panic!("{other:?}"),
         }
         assert!(book.owner_voice().is_none());
-        book.add_to_profile("Giuseppe", true, &[0.0, 0.0, 1.0]).unwrap();
+        book.add_to_profile("Giuseppe", true, &[0.0, 0.0, 1.0])
+            .unwrap();
         assert_eq!(book.owner_voice().unwrap(), vec![0.0, 0.0, 1.0]);
     }
 
@@ -342,8 +403,16 @@ mod tests {
         let book = VoiceBook::open(&dir.path().join("v.json")).unwrap();
         book.add_to_profile("Anna", false, &[1.0, 0.0]).unwrap();
         // cos(45°) ≈ 0.707: under 0.8, so not Anna.
-        let id = book.identify(&[1.0, 1.0], 0.8, sighting("mm_1", "S1")).unwrap();
-        assert!(matches!(id, Identity::Unknown { similarity: None, .. }));
+        let id = book
+            .identify(&[1.0, 1.0], 0.8, sighting("mm_1", "S1"))
+            .unwrap();
+        assert!(matches!(
+            id,
+            Identity::Unknown {
+                similarity: None,
+                ..
+            }
+        ));
         for _ in 0..20 {
             book.add_to_profile("anna", false, &[1.0, 0.0]).unwrap();
         }

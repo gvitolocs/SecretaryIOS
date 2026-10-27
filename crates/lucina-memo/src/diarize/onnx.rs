@@ -14,7 +14,9 @@ use ort::session::Session;
 use ort::value::Tensor;
 
 use super::fbank::{subtract_mean, Fbank, MELS};
-use super::{cluster, mean_direction, normalize, DiarizeConfig, DiarizeError, Diarization, Diarizer, Turn};
+use super::{
+    cluster, mean_direction, normalize, Diarization, DiarizeConfig, DiarizeError, Diarizer, Turn,
+};
 
 const MIN_EMBED_SAMPLES: usize = 8_000;
 const MIN_OFF_SEC: f64 = 0.5;
@@ -87,7 +89,10 @@ fn meta_usize(s: &Session, key: &str) -> Result<usize, DiarizeError> {
 }
 
 fn stem(p: &std::path::Path) -> String {
-    p.file_stem().and_then(|s| s.to_str()).unwrap_or("model").to_owned()
+    p.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model")
+        .to_owned()
 }
 
 impl OnnxDiarizer {
@@ -168,7 +173,9 @@ impl OnnxDiarizer {
                 let mut chunk = Vec::with_capacity(frames);
                 for f in 0..frames {
                     let row = &y[(b * frames + f) * 7..(b * frames + f + 1) * 7];
-                    let class = (0..7).max_by(|a, c| row[*a].total_cmp(&row[*c])).unwrap_or(0);
+                    let class = (0..7)
+                        .max_by(|a, c| row[*a].total_cmp(&row[*c]))
+                        .unwrap_or(0);
                     let mut act = [false; 3];
                     for &k in Self::speakers_of(class) {
                         act[k] = true;
@@ -216,7 +223,9 @@ impl Diarizer for OnnxDiarizer {
             .filter(|c| c.len() >= MIN_EMBED_SAMPLES)
             .map(|c| self.embed_one(c))
             .collect::<Result<_, _>>()?;
-        Ok(mean_direction(&pieces.iter().map(Vec::as_slice).collect::<Vec<_>>()))
+        Ok(mean_direction(
+            &pieces.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+        ))
     }
 
     fn diarize(&self, samples: &[f32]) -> Result<Diarization, DiarizeError> {
@@ -228,7 +237,8 @@ impl Diarizer for OnnxDiarizer {
                 ..Default::default()
             });
         };
-        let chunk_frame = |c: usize| (c as f64 * self.step as f64 / m.rf_shift as f64 + 0.5) as usize;
+        let chunk_frame =
+            |c: usize| (c as f64 * self.step as f64 / m.rf_shift as f64 + 0.5) as usize;
         let total_frames = (m.window + (labels.len() - 1) * self.step) / m.rf_shift + 1;
         // 2. speakers per frame.
         let mut sum = vec![0f64; total_frames + frames];
@@ -306,7 +316,10 @@ impl Diarizer for OnnxDiarizer {
         for f in 0..stop {
             let mut order: Vec<usize> = (0..k).filter(|g| votes[f][*g] > 0).collect();
             order.sort_by(|a, b| votes[f][*b].cmp(&votes[f][*a]).then(a.cmp(b)));
-            for g in order.into_iter().take(per_frame.get(f).copied().unwrap_or(0)) {
+            for g in order
+                .into_iter()
+                .take(per_frame.get(f).copied().unwrap_or(0))
+            {
                 active[g][f] = true;
             }
         }
@@ -331,11 +344,13 @@ impl Diarizer for OnnxDiarizer {
                     _ => runs.push((a, b)),
                 }
             }
-            turns.extend(
-                runs.into_iter()
-                    .filter(|(a, b)| b - a >= MIN_ON_SEC)
-                    .map(|(start, end)| Turn { start, end, speaker: g }),
-            );
+            turns.extend(runs.into_iter().filter(|(a, b)| b - a >= MIN_ON_SEC).map(
+                |(start, end)| Turn {
+                    start,
+                    end,
+                    speaker: g,
+                },
+            ));
         }
         turns.sort_by(|a, b| a.start.total_cmp(&b.start).then(a.speaker.cmp(&b.speaker)));
         Ok(finish(turns, &cl, &embs, self.label.clone()))
@@ -343,7 +358,12 @@ impl Diarizer for OnnxDiarizer {
 }
 
 /// Renumbers clusters by first turn, drops clusters without turns and computes centroids.
-pub fn finish(turns: Vec<Turn>, labels: &[usize], embs: &[Vec<f32>], engine: String) -> Diarization {
+pub fn finish(
+    turns: Vec<Turn>,
+    labels: &[usize],
+    embs: &[Vec<f32>],
+    engine: String,
+) -> Diarization {
     let mut order: Vec<usize> = Vec::new();
     for t in &turns {
         if !order.contains(&t.speaker) {
@@ -383,13 +403,28 @@ mod tests {
     #[test]
     fn finish_renumbers_by_first_turn() {
         let turns = vec![
-            Turn { start: 0.0, end: 1.0, speaker: 2 },
-            Turn { start: 1.0, end: 2.0, speaker: 0 },
-            Turn { start: 2.0, end: 3.0, speaker: 2 },
+            Turn {
+                start: 0.0,
+                end: 1.0,
+                speaker: 2,
+            },
+            Turn {
+                start: 1.0,
+                end: 2.0,
+                speaker: 0,
+            },
+            Turn {
+                start: 2.0,
+                end: 3.0,
+                speaker: 2,
+            },
         ];
         let embs = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![0.6, 0.8]];
         let d = finish(turns, &[0, 1, 2], &embs, "x".into());
-        assert_eq!(d.turns.iter().map(|t| t.speaker).collect::<Vec<_>>(), [0, 1, 0]);
+        assert_eq!(
+            d.turns.iter().map(|t| t.speaker).collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
         assert_eq!(d.centroids.len(), 2);
         assert!((d.centroids[0][0] - 0.6).abs() < 1e-6);
         assert_eq!(d.talk_time(), vec![2.0, 1.0]);
@@ -406,7 +441,9 @@ mod tests {
         let d = OnnxDiarizer::new(&cfg).expect("models load");
         let e = d.embed(&vec![0.01f32; 32_000]).expect("embedding");
         assert!(e.len() >= 128);
-        let silence = d.diarize(&vec![0f32; 16_000 * 12]).expect("diarize silence");
+        let silence = d
+            .diarize(&vec![0f32; 16_000 * 12])
+            .expect("diarize silence");
         assert!(silence.turns.is_empty());
     }
 }

@@ -57,21 +57,56 @@ struct ReplyUtterance {
 }
 
 const QUESTION_START: &[&str] = &[
-    "what", "why", "how", "when", "where", "who", "which", "can", "could", "do", "does", "is", "are", "should",
-    "perche", "come", "quando", "dove", "chi", "cosa", "hvad", "hvorfor", "hvordan", "hvornar", "hvem", "kan",
+    "what", "why", "how", "when", "where", "who", "which", "can", "could", "do", "does", "is",
+    "are", "should", "perche", "come", "quando", "dove", "chi", "cosa", "hvad", "hvorfor",
+    "hvordan", "hvornar", "hvem", "kan",
 ];
 const DECISION: &[&str] = &[
-    "we decided", "we agreed", "let's go with", "lets go with", "decision is", "we will go with", "agreed",
-    "abbiamo deciso", "deciso", "d accordo", "vi har besluttet", "besluttet", "aftalt",
+    "we decided",
+    "we agreed",
+    "let's go with",
+    "lets go with",
+    "decision is",
+    "we will go with",
+    "agreed",
+    "abbiamo deciso",
+    "deciso",
+    "d accordo",
+    "vi har besluttet",
+    "besluttet",
+    "aftalt",
 ];
 const ACTION: &[&str] = &[
-    "i will", "i ll", "you will", "will send", "please send", "can you send", "by friday", "by monday",
-    "deadline", "homework", "todo", "to do", "follow up", "faro", "mandami", "entro", "scadenza", "compito",
-    "jeg sender", "jeg vil", "inden", "afleveres", "lektie",
+    "i will",
+    "i ll",
+    "you will",
+    "will send",
+    "please send",
+    "can you send",
+    "by friday",
+    "by monday",
+    "deadline",
+    "homework",
+    "todo",
+    "to do",
+    "follow up",
+    "faro",
+    "mandami",
+    "entro",
+    "scadenza",
+    "compito",
+    "jeg sender",
+    "jeg vil",
+    "inden",
+    "afleveres",
+    "lektie",
 ];
 
 fn contains_phrase(text: &str, phrases: &[&str]) -> bool {
-    let t = format!(" {} ", fold(text).split_whitespace().collect::<Vec<_>>().join(" "));
+    let t = format!(
+        " {} ",
+        fold(text).split_whitespace().collect::<Vec<_>>().join(" ")
+    );
     phrases.iter().any(|p| t.contains(&format!(" {p} ")))
 }
 
@@ -83,8 +118,14 @@ pub fn fallback_kinds(utts: &[Utterance]) -> Vec<Kind> {
     let mut open_question: Option<&str> = None;
     for u in utts {
         let text = u.text.trim();
-        let first = fold(text).split_whitespace().next().unwrap_or_default().to_owned();
-        let kind = if text.ends_with('?') || (QUESTION_START.contains(&first.as_str()) && text.contains('?')) {
+        let first = fold(text)
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let kind = if text.ends_with('?')
+            || (QUESTION_START.contains(&first.as_str()) && text.contains('?'))
+        {
             Kind::Question
         } else if contains_phrase(text, DECISION) {
             Kind::Decision
@@ -125,7 +166,12 @@ pub fn fallback_roles(speakers: &[Speaker], kind: Option<EventKind>) -> HashMap<
         .collect()
 }
 
-pub fn fallback(utts: &[Utterance], speakers: &[Speaker], kind: Option<EventKind>, why: Option<String>) -> Analysis {
+pub fn fallback(
+    utts: &[Utterance],
+    speakers: &[Speaker],
+    kind: Option<EventKind>,
+    why: Option<String>,
+) -> Analysis {
     Analysis {
         roles: fallback_roles(speakers, kind),
         suggested: HashMap::new(),
@@ -136,7 +182,11 @@ pub fn fallback(utts: &[Utterance], speakers: &[Speaker], kind: Option<EventKind
 }
 
 /// A validated chunk: roles and suggested names by speaker id, kinds by utterance index.
-pub type Checked = (HashMap<String, String>, HashMap<String, String>, Vec<(usize, Kind)>);
+pub type Checked = (
+    HashMap<String, String>,
+    HashMap<String, String>,
+    Vec<(usize, Kind)>,
+);
 
 /// Checks one chunk's reply. `offset`: index of the chunk's first utterance; `allowed_names`:
 /// folded text of the transcript and the invitation (a suggested name must occur in it).
@@ -147,7 +197,8 @@ pub fn validate(
     speaker_ids: &[&str],
     allowed_names: &str,
 ) -> Result<Checked, String> {
-    let r: Reply = serde_json::from_str(crate::summarize::json_object(reply)).map_err(|e| format!("schema: {e}"))?;
+    let r: Reply = serde_json::from_str(crate::summarize::json_object(reply))
+        .map_err(|e| format!("schema: {e}"))?;
     let mut roles = HashMap::new();
     let mut names = HashMap::new();
     for s in r.speakers {
@@ -157,9 +208,14 @@ pub fn validate(
         if !ROLES.contains(&s.role.as_str()) {
             return Err(format!("unknown role {}", s.role));
         }
-        if let Some(n) = s.name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()) {
+        if let Some(n) = s
+            .name
+            .map(|n| n.trim().to_owned())
+            .filter(|n| !n.is_empty())
+        {
             let f = fold(&n).split_whitespace().collect::<Vec<_>>().join(" ");
-            if n.chars().count() > 60 || f.is_empty() || !allowed_names.contains(&format!(" {f} ")) {
+            if n.chars().count() > 60 || f.is_empty() || !allowed_names.contains(&format!(" {f} "))
+            {
                 return Err(format!("name {n:?} is not in the meeting"));
             }
             names.insert(s.id.clone(), n);
@@ -171,7 +227,10 @@ pub fn validate(
         if u.i < offset || u.i >= offset + len {
             return Err(format!("utterance {} out of range", u.i));
         }
-        kinds.push((u.i, Kind::parse(&u.kind).ok_or_else(|| format!("unknown kind {}", u.kind))?));
+        kinds.push((
+            u.i,
+            Kind::parse(&u.kind).ok_or_else(|| format!("unknown kind {}", u.kind))?,
+        ));
     }
     Ok((roles, names, kinds))
 }
@@ -208,7 +267,13 @@ pub fn event_context(m: &Meeting) -> String {
 }
 
 pub fn line(i: usize, u: &Utterance) -> String {
-    format!("#{i} [{}] {} ({}): {}", clock(u.start), u.speaker, u.speaker_name, u.text)
+    format!(
+        "#{i} [{}] {} ({}): {}",
+        clock(u.start),
+        u.speaker,
+        u.speaker_name,
+        u.text
+    )
 }
 
 /// Runs the pass. A model that cannot be reached is an error (the step is retried); a reply
@@ -226,7 +291,12 @@ pub async fn analyze(
     let ids: Vec<&str> = speakers.iter().map(|s| s.id.as_str()).collect();
     let mut allowed = String::from(" ");
     for u in utts {
-        allowed.push_str(&fold(&u.text).split_whitespace().collect::<Vec<_>>().join(" "));
+        allowed.push_str(
+            &fold(&u.text)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
         allowed.push(' ');
     }
     for a in m.event.iter().flat_map(|e| e.attendees.iter()) {
@@ -239,11 +309,19 @@ pub async fn analyze(
     let mut kinds = vec![Kind::Statement; utts.len()];
     for (c, chunk) in utts.chunks(CHUNK).enumerate() {
         let offset = c * CHUNK;
-        let lines: Vec<String> = chunk.iter().enumerate().map(|(k, u)| line(offset + k, u)).collect();
+        let lines: Vec<String> = chunk
+            .iter()
+            .enumerate()
+            .map(|(k, u)| line(offset + k, u))
+            .collect();
         let req = ChatRequest {
             messages: vec![
                 Message::system(SYSTEM),
-                Message::user(format!("{context}\nTranscript lines #{offset}–#{}:\n{}", offset + chunk.len() - 1, lines.join("\n"))),
+                Message::user(format!(
+                    "{context}\nTranscript lines #{offset}–#{}:\n{}",
+                    offset + chunk.len() - 1,
+                    lines.join("\n")
+                )),
             ],
             temperature: Some(0.0),
             max_tokens: Some(4000),
@@ -329,13 +407,25 @@ mod tests {
         ];
         assert_eq!(
             fallback_kinds(&utts),
-            [Kind::Statement, Kind::Question, Kind::Answer, Kind::Decision, Kind::ActionItem]
+            [
+                Kind::Statement,
+                Kind::Question,
+                Kind::Answer,
+                Kind::Decision,
+                Kind::ActionItem
+            ]
         );
         let speakers = [sp("me", 10.0), sp("S1", 300.0), sp("S2", 20.0)];
         let r = fallback_roles(&speakers, Some(EventKind::Lecture));
-        assert_eq!((r["S1"].as_str(), r["S2"].as_str(), r["me"].as_str()), ("lecturer", "student", "student"));
+        assert_eq!(
+            (r["S1"].as_str(), r["S2"].as_str(), r["me"].as_str()),
+            ("lecturer", "student", "student")
+        );
         let r = fallback_roles(&speakers, None);
-        assert_eq!((r["me"].as_str(), r["S1"].as_str()), ("owner", "participant"));
+        assert_eq!(
+            (r["me"].as_str(), r["S1"].as_str()),
+            ("owner", "participant")
+        );
     }
 
     #[test]

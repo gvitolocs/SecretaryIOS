@@ -22,6 +22,10 @@
 //   K6 send_telegram: Telegram is sent at most once per revision across retries.
 //   K7 note_base: a memo keeps its first note name over any sequence of later titles, so
 //      it has one note in the vault (lemma over all sequences).
+//   K11 diarize_memo: speaker labels are made only when a diarizer is available, the
+//      transcript has none and no attempt was made on this transcript; a labelled transcript
+//      is never relabelled and a failing diarizer is not retried on the same transcript
+//      (lemma: at most one attempt per transcript).
 //
 // Bug found while writing this (fixed in lucina-rs with the kernel): a reprocess with the
 // GPU busy replaced a Whisper transcript with the iPhone's (K1 failed on `existing`).
@@ -283,6 +287,60 @@ pub proof fn lemma_one_note_from_scratch(titles: Seq<u64>)
     lemma_one_note(titles[0], titles.subrange(1, titles.len() as int));
     let rest = names_after(Some(titles[0]), titles.subrange(1, titles.len() as int));
     assert(names_after(None, titles) =~= seq![titles[0]].add(rest));
+}
+
+// ---------------------------------------------------------------- K11
+
+pub open spec fn spec_diarize_memo(available: bool, labelled: bool, attempted: bool) -> bool {
+    available && !labelled && !attempted
+}
+
+pub fn diarize_memo(available: bool, labelled: bool, attempted: bool) -> (r: bool)
+    ensures
+        r == spec_diarize_memo(available, labelled, attempted),
+        labelled ==> !r,
+        attempted ==> !r,
+{
+    available && !labelled && !attempted
+}
+
+/// Attempts over runs on one transcript, with the diarizer's availability at each run; each
+/// attempt records `diarized_at` (attempted) whatever its outcome.
+pub open spec fn attempts(attempted: bool, labelled: bool, avail: Seq<bool>) -> nat
+    decreases avail.len(),
+{
+    if avail.len() == 0 {
+        0
+    } else if spec_diarize_memo(avail[0], labelled, attempted) {
+        1 + attempts(true, labelled, avail.subrange(1, avail.len() as int))
+    } else {
+        attempts(attempted, labelled, avail.subrange(1, avail.len() as int))
+    }
+}
+
+proof fn lemma_attempted_stops(labelled: bool, avail: Seq<bool>)
+    ensures
+        attempts(true, labelled, avail) == 0,
+    decreases avail.len(),
+{
+    if avail.len() > 0 {
+        lemma_attempted_stops(labelled, avail.subrange(1, avail.len() as int));
+    }
+}
+
+/// At most one diarization per transcript, however many runs, restarts and outages.
+pub proof fn lemma_diarize_once_per_transcript(attempted: bool, labelled: bool, avail: Seq<bool>)
+    ensures
+        attempts(attempted, labelled, avail) <= 1,
+    decreases avail.len(),
+{
+    if avail.len() > 0 {
+        if spec_diarize_memo(avail[0], labelled, attempted) {
+            lemma_attempted_stops(labelled, avail.subrange(1, avail.len() as int));
+        } else {
+            lemma_diarize_once_per_transcript(attempted, labelled, avail.subrange(1, avail.len() as int));
+        }
+    }
 }
 
 fn main() {

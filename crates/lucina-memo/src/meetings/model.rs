@@ -131,7 +131,7 @@ pub struct Meeting {
     /// Bumped when the outputs are redone (speaker named, reprocess).
     #[serde(default)]
     pub revision: u32,
-    /// MK8 markers: the revision whose Telegram message / memory entry was (about to be) sent.
+    /// MT8 markers: the revision whose Telegram message / memory entry was (about to be) sent.
     #[serde(default)]
     pub notify_telegram_rev: Option<u32>,
     #[serde(default)]
@@ -170,7 +170,13 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::Question, Kind::Answer, Kind::Statement, Kind::Decision, Kind::ActionItem];
+    pub const ALL: [Kind; 5] = [
+        Kind::Question,
+        Kind::Answer,
+        Kind::Statement,
+        Kind::Decision,
+        Kind::ActionItem,
+    ];
     pub fn parse(s: &str) -> Option<Kind> {
         Some(match s {
             "question" => Kind::Question,
@@ -286,7 +292,12 @@ impl Speaker {
     pub fn display(&self) -> String {
         self.name
             .clone()
-            .or_else(|| self.role.as_deref().filter(|r| *r != "participant").map(role_label))
+            .or_else(|| {
+                self.role
+                    .as_deref()
+                    .filter(|r| *r != "participant")
+                    .map(role_label)
+            })
             .unwrap_or_else(|| self.label.clone())
     }
 }

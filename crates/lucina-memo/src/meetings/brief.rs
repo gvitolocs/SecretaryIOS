@@ -71,11 +71,24 @@ fn clip(s: &str, n: usize) -> String {
 
 /// Validates the model's brief: the schema, speaker ids that exist, times inside the meeting,
 /// non-empty texts, bounded lengths.
-pub fn validate(reply: &str, speakers: &[Speaker], duration: f64, language: &str, model: &str) -> Result<Brief, String> {
-    let r: Raw = serde_json::from_str(crate::summarize::json_object(reply)).map_err(|e| format!("schema: {e}"))?;
-    let known = |id: &Option<String>| id.as_deref().is_none_or(|i| speakers.iter().any(|s| s.id == i));
+pub fn validate(
+    reply: &str,
+    speakers: &[Speaker],
+    duration: f64,
+    language: &str,
+    model: &str,
+) -> Result<Brief, String> {
+    let r: Raw = serde_json::from_str(crate::summarize::json_object(reply))
+        .map_err(|e| format!("schema: {e}"))?;
+    let known = |id: &Option<String>| {
+        id.as_deref()
+            .is_none_or(|i| speakers.iter().any(|s| s.id == i))
+    };
     let at_ok = |a: Option<f64>| a.is_none_or(|a| a.is_finite() && a >= 0.0 && a <= duration + 5.0);
-    let title = crate::store::clean_title(r.title.trim_matches(|c: char| c == '"' || c == '.' || c.is_whitespace()));
+    let title = crate::store::clean_title(
+        r.title
+            .trim_matches(|c: char| c == '"' || c == '.' || c.is_whitespace()),
+    );
     if title.is_empty() || r.about.trim().is_empty() {
         return Err("empty title or about".into());
     }
@@ -85,7 +98,11 @@ pub fn validate(reply: &str, speakers: &[Speaker], duration: f64, language: &str
         }
     }
     for q in &r.qa {
-        if q.question.trim().is_empty() || !known(&q.asked_by) || !known(&q.answered_by) || !at_ok(q.at) {
+        if q.question.trim().is_empty()
+            || !known(&q.asked_by)
+            || !known(&q.answered_by)
+            || !at_ok(q.at)
+        {
             return Err("a question with an unknown speaker, an empty text or a bad time".into());
         }
     }
@@ -109,7 +126,13 @@ pub fn validate(reply: &str, speakers: &[Speaker], duration: f64, language: &str
             .into_iter()
             .map(|p| SpeakerPoints {
                 speaker: p.speaker,
-                points: p.points.iter().map(|x| clip(x, 500)).filter(|x| !x.is_empty()).take(12).collect(),
+                points: p
+                    .points
+                    .iter()
+                    .map(|x| clip(x, 500))
+                    .filter(|x| !x.is_empty())
+                    .take(12)
+                    .collect(),
             })
             .filter(|p| !p.points.is_empty())
             .collect(),
@@ -127,11 +150,24 @@ pub fn validate(reply: &str, speakers: &[Speaker], duration: f64, language: &str
             .collect(),
         decisions: r.decisions.into_iter().take(40).map(item).collect(),
         action_items: r.action_items.into_iter().take(40).map(item).collect(),
-        follow_ups: r.follow_ups.iter().map(|f| clip(f, 500)).filter(|f| !f.is_empty()).take(20).collect(),
+        follow_ups: r
+            .follow_ups
+            .iter()
+            .map(|f| clip(f, 500))
+            .filter(|f| !f.is_empty())
+            .take(20)
+            .collect(),
         tags: r
             .tags
             .iter()
-            .map(|t| t.trim().trim_start_matches('#').to_lowercase().split_whitespace().collect::<Vec<_>>().join("-"))
+            .map(|t| {
+                t.trim()
+                    .trim_start_matches('#')
+                    .to_lowercase()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join("-")
+            })
             .filter(|t| !t.is_empty() && t.len() <= 40)
             .take(5)
             .collect(),
@@ -147,7 +183,11 @@ pub fn fallback(m: &Meeting, utts: &[Utterance], speakers: &[Speaker], language:
     for s in speakers {
         let points: Vec<String> = utts
             .iter()
-            .filter(|u| u.speaker == s.id && u.kind == Kind::Statement && u.text.split_whitespace().count() >= 8)
+            .filter(|u| {
+                u.speaker == s.id
+                    && u.kind == Kind::Statement
+                    && u.text.split_whitespace().count() >= 8
+            })
             .take(3)
             .map(|u| clip(&u.text, 300))
             .collect();
@@ -159,8 +199,15 @@ pub fn fallback(m: &Meeting, utts: &[Utterance], speakers: &[Speaker], language:
         }
     }
     let mut qa = Vec::new();
-    for (i, u) in utts.iter().enumerate().filter(|(_, u)| u.kind == Kind::Question) {
-        let answer = utts[i + 1..].iter().take(3).find(|a| a.speaker != u.speaker && a.kind == Kind::Answer);
+    for (i, u) in utts
+        .iter()
+        .enumerate()
+        .filter(|(_, u)| u.kind == Kind::Question)
+    {
+        let answer = utts[i + 1..]
+            .iter()
+            .take(3)
+            .find(|a| a.speaker != u.speaker && a.kind == Kind::Answer);
         qa.push(Qa {
             question: clip(&u.text, 500),
             asked_by: Some(u.speaker.clone()),
@@ -222,7 +269,11 @@ const PART_SYSTEM: &str = "You are Lucina. This is one part of a long diarized m
 pub fn lines(utts: &[Utterance]) -> Vec<String> {
     utts.iter()
         .map(|u| {
-            let kind = if u.kind == Kind::Statement { String::new() } else { format!(" <{}>", u.kind.as_str()) };
+            let kind = if u.kind == Kind::Statement {
+                String::new()
+            } else {
+                format!(" <{}>", u.kind.as_str())
+            };
             format!("[{}] {}{kind}: {}", clock(u.start), u.speaker, u.text)
         })
         .collect()
@@ -240,7 +291,10 @@ fn header(m: &Meeting, speakers: &[Speaker], language: &str, tz: Tz) -> String {
             "- {}: {}{} ({} of speech)\n",
             s.id,
             s.display(),
-            s.role.as_deref().map(|r| format!(", {}", role_label(r))).unwrap_or_default(),
+            s.role
+                .as_deref()
+                .map(|r| format!(", {}", role_label(r)))
+                .unwrap_or_default(),
             clock(s.talk_sec)
         ));
     }
@@ -280,20 +334,30 @@ pub async fn write(
         for (i, p) in parts.into_iter().enumerate() {
             let r = llm
                 .complete(ChatRequest {
-                    messages: vec![Message::system(PART_SYSTEM), Message::user(format!("{head}Part {} of {n}:\n{p}", i + 1))],
+                    messages: vec![
+                        Message::system(PART_SYSTEM),
+                        Message::user(format!("{head}Part {} of {n}:\n{p}", i + 1)),
+                    ],
                     temperature: Some(0.2),
                     max_tokens: Some(3000),
                     purpose: "meeting_brief_part",
                     ..Default::default()
                 })
                 .await?;
-            notes.push(format!("Notes on part {} of {n}:\n{}", i + 1, r.message.text()));
+            notes.push(format!(
+                "Notes on part {} of {n}:\n{}",
+                i + 1,
+                r.message.text()
+            ));
         }
         notes.join("\n\n")
     };
     let r = llm
         .complete(ChatRequest {
-            messages: vec![Message::system(SYSTEM), Message::user(format!("{head}\n{body}"))],
+            messages: vec![
+                Message::system(SYSTEM),
+                Message::user(format!("{head}\n{body}")),
+            ],
             temperature: Some(0.2),
             max_tokens: Some(8000),
             purpose: "meeting_brief",
@@ -301,7 +365,13 @@ pub async fn write(
             ..Default::default()
         })
         .await?;
-    Ok(validate(r.message.text(), speakers, m.duration_sec, language, model_label))
+    Ok(validate(
+        r.message.text(),
+        speakers,
+        m.duration_sec,
+        language,
+        model_label,
+    ))
 }
 
 /// A speaker id (or a free name) as shown.
@@ -310,15 +380,26 @@ fn who(id: &str, names: &HashMap<String, String>) -> String {
 }
 
 pub fn names(speakers: &[Speaker]) -> HashMap<String, String> {
-    speakers.iter().map(|s| (s.id.clone(), s.display())).collect()
+    speakers
+        .iter()
+        .map(|s| (s.id.clone(), s.display()))
+        .collect()
 }
 
 fn local(t: DateTime<Utc>, tz: Tz) -> String {
-    t.with_timezone(&tz).format("%a %-d %b %Y, %H:%M").to_string()
+    t.with_timezone(&tz)
+        .format("%a %-d %b %Y, %H:%M")
+        .to_string()
 }
 
 /// `brief.md`.
-pub fn markdown(m: &Meeting, b: &Brief, speakers: &[Speaker], tz: Tz, transcript_url: &str) -> String {
+pub fn markdown(
+    m: &Meeting,
+    b: &Brief,
+    speakers: &[Speaker],
+    tz: Tz,
+    transcript_url: &str,
+) -> String {
     let n = names(speakers);
     let mut o = format!("# {}\n\n", b.title);
     let mut meta = vec![local(m.started_at, tz), clock(m.duration_sec)];
@@ -328,12 +409,19 @@ pub fn markdown(m: &Meeting, b: &Brief, speakers: &[Speaker], tz: Tz, transcript
     if let Some(e) = &m.event {
         meta.push(format!("📅 {}", e.title));
     }
-    o.push_str(&format!("{}\n\n## What it was about\n\n{}\n\n## Who spoke\n\n", meta.join(" · "), b.about));
+    o.push_str(&format!(
+        "{}\n\n## What it was about\n\n{}\n\n## Who spoke\n\n",
+        meta.join(" · "),
+        b.about
+    ));
     for s in speakers {
         o.push_str(&format!(
             "- **{}**{} — {}{}\n",
             s.display(),
-            s.role.as_deref().map(|r| format!(" ({})", role_label(r))).unwrap_or_default(),
+            s.role
+                .as_deref()
+                .map(|r| format!(" ({})", role_label(r)))
+                .unwrap_or_default(),
             clock(s.talk_sec),
             if s.name.is_none() && s.id != "me" {
                 s.suggested_name
@@ -358,11 +446,19 @@ pub fn markdown(m: &Meeting, b: &Brief, speakers: &[Speaker], tz: Tz, transcript
         o.push_str("\n## Questions and answers\n\n");
         for q in &b.qa {
             let at = q.at.map(|a| format!(" [{}]", clock(a))).unwrap_or_default();
-            let by = q.asked_by.as_deref().map(|x| format!(" ({})", who(x, &n))).unwrap_or_default();
+            let by = q
+                .asked_by
+                .as_deref()
+                .map(|x| format!(" ({})", who(x, &n)))
+                .unwrap_or_default();
             o.push_str(&format!("- **Q**{by}{at}: {}\n", q.question));
             match &q.answer {
                 Some(a) => {
-                    let by = q.answered_by.as_deref().map(|x| format!(" ({})", who(x, &n))).unwrap_or_default();
+                    let by = q
+                        .answered_by
+                        .as_deref()
+                        .map(|x| format!(" ({})", who(x, &n)))
+                        .unwrap_or_default();
                     o.push_str(&format!("  **A**{by}: {a}\n"));
                 }
                 None => o.push_str("  *(no answer)*\n"),
@@ -372,7 +468,11 @@ pub fn markdown(m: &Meeting, b: &Brief, speakers: &[Speaker], tz: Tz, transcript
     if !b.decisions.is_empty() {
         o.push_str("\n## Decisions\n\n");
         for d in &b.decisions {
-            o.push_str(&format!("- {}{}\n", d.text, d.at.map(|a| format!(" [{}]", clock(a))).unwrap_or_default()));
+            o.push_str(&format!(
+                "- {}{}\n",
+                d.text,
+                d.at.map(|a| format!(" [{}]", clock(a))).unwrap_or_default()
+            ));
         }
     }
     if !b.action_items.is_empty() {
@@ -388,7 +488,11 @@ pub fn markdown(m: &Meeting, b: &Brief, speakers: &[Speaker], tz: Tz, transcript
             if let Some(a) = i.at {
                 meta.push(clock(a));
             }
-            let meta = if meta.is_empty() { String::new() } else { format!(" — {}", meta.join(", ")) };
+            let meta = if meta.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", meta.join(", "))
+            };
             o.push_str(&format!("- [ ] {}{meta}\n", i.text));
         }
     }
@@ -412,11 +516,29 @@ pub fn plain(utts: &[Utterance]) -> String {
 
 /// `transcript.md`.
 pub fn transcript_md(m: &Meeting, utts: &[Utterance], tz: Tz) -> String {
-    let mut o = format!("# {} — transcript\n\n{} · {}\n\n", m.title, local(m.started_at, tz), clock(m.duration_sec));
+    let mut o = format!(
+        "# {} — transcript\n\n{} · {}\n\n",
+        m.title,
+        local(m.started_at, tz),
+        clock(m.duration_sec)
+    );
     for u in utts {
-        let role = u.role.as_deref().map(|r| format!(" ({})", role_label(r))).unwrap_or_default();
-        let kind = if u.kind == Kind::Statement { String::new() } else { format!(" *{}*", u.kind.as_str().replace('_', " ")) };
-        o.push_str(&format!("**[{}] {}**{role}{kind}: {}\n\n", clock(u.start), u.speaker_name, u.text));
+        let role = u
+            .role
+            .as_deref()
+            .map(|r| format!(" ({})", role_label(r)))
+            .unwrap_or_default();
+        let kind = if u.kind == Kind::Statement {
+            String::new()
+        } else {
+            format!(" *{}*", u.kind.as_str().replace('_', " "))
+        };
+        o.push_str(&format!(
+            "**[{}] {}**{role}{kind}: {}\n\n",
+            clock(u.start),
+            u.speaker_name,
+            u.text
+        ));
     }
     o
 }
@@ -444,7 +566,10 @@ mod tests {
 
     #[test]
     fn validates_the_brief() {
-        let speakers = [sp("me", Some("Giuseppe"), "student"), sp("S1", None, "professor")];
+        let speakers = [
+            sp("me", Some("Giuseppe"), "student"),
+            sp("S1", None, "professor"),
+        ];
         let ok = r#"{"title":"Heaps lecture","about":"Binary heaps.","key_points":[{"speaker":"S1","points":["Heaps are trees."]}],
           "qa":[{"question":"Open book?","asked_by":"me","answer":"Yes.","answered_by":"S1","at":30}],
           "decisions":[],"action_items":[{"text":"Read chapter 6","owner":"me","due":"2026-11-02","at":50}],"follow_ups":["Ask about the project"],"tags":["Algorithms"]}"#;
@@ -476,7 +601,10 @@ mod tests {
 
     #[test]
     fn fallback_brief_pairs_questions_and_answers() {
-        let speakers = [sp("me", Some("Giuseppe"), "student"), sp("S1", None, "lecturer")];
+        let speakers = [
+            sp("me", Some("Giuseppe"), "student"),
+            sp("S1", None, "lecturer"),
+        ];
         let mk = |speaker: &str, kind, text: &str, start| Utterance {
             start,
             end: start + 1.0,
@@ -489,7 +617,12 @@ mod tests {
             words: vec![],
         };
         let utts = [
-            mk("S1", Kind::Statement, "Today we look at binary heaps and their array layout in detail.", 0.0),
+            mk(
+                "S1",
+                Kind::Statement,
+                "Today we look at binary heaps and their array layout in detail.",
+                0.0,
+            ),
             mk("me", Kind::Question, "Is the exam open book?", 10.0),
             mk("S1", Kind::Answer, "Yes, notes allowed.", 12.0),
             mk("S1", Kind::ActionItem, "Read chapter six for Monday.", 20.0),
