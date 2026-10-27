@@ -181,8 +181,55 @@
     }
   }
 
+  // ------------------------------------------------------------ while driving
+
+  // The page passes the click (or key) that took control through once control really works:
+  // the new session is attached *and* streaming, or an input queued before then is dropped.
+  var switching = false;
+  var queued = [];
+
+  function driving() {
+    var viewer = app();
+    var dot = document.querySelector(".cua-dot");
+    return mode === "control" && !switching && !!viewer && !!viewer.session && !!dot && dot.getAttribute("data-state") === "streaming";
+  }
+
+  function whenDriving(fn) {
+    if (driving()) {
+      fn();
+      return;
+    }
+    if (queued.length < 4) queued.push({ fn: fn, at: Date.now() });
+  }
+
+  function flushQueued() {
+    if (!driving()) return;
+    var run = queued.splice(0);
+    for (var i = 0; i < run.length; i += 1) {
+      if (Date.now() - run[i].at < 10000) {
+        try {
+          run[i].fn();
+        } catch (e) {
+          /* the session went away again */
+        }
+      }
+    }
+  }
+
+  /** Keyboard focus to the stream (hardware keyboards: the Mac); never on touch, where it is the keyboard button's. */
+  function focusStream() {
+    if (COARSE) return;
+    var viewer = app();
+    try {
+      if (viewer && viewer.input && typeof viewer.input.focus === "function") viewer.input.focus();
+    } catch (e) {
+      /* no input yet */
+    }
+  }
+
   /** Re-open the media session so a mode change takes effect (no reload). */
   function reattach(nextMode) {
+    switching = true;
     var viewer = app();
     if (!viewer || typeof viewer.openMedia !== "function" || typeof viewer.attach !== "function") {
       reloadWithTicket(nextMode);
@@ -214,6 +261,7 @@
       function (media) {
         viewer.attach(media);
         mode = nextMode;
+        switching = false;
         flash("Switched to " + (nextMode === "control" ? "control" : "watching"));
       },
       function () {
@@ -267,25 +315,28 @@
     return canvas;
   }
 
-  function pointOf(clientX, clientY) {
+  /** Send a pointer pair through the viewer's own input queue. */
+  /** Cua's own pointer coordinates: normalized to the desktop canvas as it is shown. */
+  function normalizedAt(clientX, clientY) {
     var c = surface();
     if (!c) return null;
     var r = c.getBoundingClientRect();
     if (!r.width || !r.height) return null;
-    return {
-      x: Math.round(((clientX - r.left) * c.width) / r.width),
-      y: Math.round(((clientY - r.top) * c.height) / r.height),
+    var clamp = function (v) {
+      return Math.min(1, Math.max(0, v));
     };
+    return { x_normalized: clamp((clientX - r.left) / r.width), y_normalized: clamp((clientY - r.top) / r.height) };
   }
 
-  /** Send a pointer pair through the viewer's own input queue. */
+  /** A click through the viewer's own input queue, exactly as Cua sends one. */
   function clickAt(clientX, clientY, button) {
     var viewer = app();
-    var p = pointOf(clientX, clientY);
+    var p = normalizedAt(clientX, clientY);
     if (!viewer || typeof viewer.sendInput !== "function" || !p) return;
     try {
-      viewer.sendInput({ kind: "pointer", phase: "down", button: button, x: p.x, y: p.y, modifiers: [] });
-      viewer.sendInput({ kind: "pointer", phase: "up", button: button, x: p.x, y: p.y, modifiers: [] });
+      viewer.sendInput({ kind: "pointer", phase: "move", button: null, x_normalized: p.x_normalized, y_normalized: p.y_normalized, modifiers: [] });
+      viewer.sendInput({ kind: "pointer", phase: "down", button: button, x_normalized: p.x_normalized, y_normalized: p.y_normalized, modifiers: [] });
+      viewer.sendInput({ kind: "pointer", phase: "up", button: button, x_normalized: p.x_normalized, y_normalized: p.y_normalized, modifiers: [] });
     } catch (e) {
       /* the session is between re-attaches */
     }
@@ -519,22 +570,61 @@
       report(dot.getAttribute("data-state") || "connecting");
       var observer = new MutationObserver(function () {
         report(dot.getAttribute("data-state") || "");
+        flushQueued();
       });
       observer.observe(dot, { attributes: true, attributeFilter: ["data-state"] });
     }, 100);
   }
 
-  // ------------------------------------------------------------ the iOS bits
+  // ------------------------------------------------------------ the viewer's own toolbar
 
-  /** The viewer's own fullscreen button cannot work where Fullscreen is missing. */
-  function hideDeadFullscreen() {
-    if (document.documentElement.requestFullscreen) return;
-    var hide = function () {
-      var buttons = document.querySelectorAll('[data-id="fullscreen"]');
-      for (var i = 0; i < buttons.length; i += 1) buttons[i].hidden = true;
+  /**
+   * Cua's fullscreen button asks the page instead: the page knows where it runs (the Fullscreen API
+   * in a browser, its own full-screen layout on iPhone, the Mac app's focus mode inside Secretary
+   * Code, where a frame's requestFullscreen would full-screen the whole window).
+   */
+  function routeFullscreen() {
+    document.addEventListener(
+      "click",
+      function (event) {
+        var target = event.target;
+        var button = target && target.closest ? target.closest('[data-id="fullscreen"]') : null;
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        send({ type: "lucina:fullscreen" });
+      },
+      true
+    );
+  }
+
+  /**
+   * The toolbar floats over the top of the desktop: it fades out two seconds after the pointer last
+   * moved (or the finger last touched) and comes back on the next move or touch; while hidden it lets
+   * clicks through to the desktop. It stays while hovered, while keyboard focus is on it (not the
+   * focus a click leaves on a button), while one of its menus is open and while the stream is
+   * connecting or failed.
+   */
+  var QUIET_MS = 2000;
+  function autoHideToolbar() {
+    var style = document.createElement("style");
+    style.textContent =
+      "html.lucina-quiet .cua-viewer:not([data-status=connecting]):not([data-status=failed]) " +
+      ".cua-toolbar:not(:hover):not(:has(:focus-visible)):not(:has(.cua-popover.open)){opacity:0!important;pointer-events:none}" +
+      ".cua-toolbar{transition:opacity .35s}";
+    (document.head || document.documentElement).appendChild(style);
+    var root = document.documentElement;
+    var timer = null;
+    var wake = function () {
+      root.classList.remove("lucina-quiet");
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(function () {
+        root.classList.add("lucina-quiet");
+      }, QUIET_MS);
     };
-    hide();
-    window.setInterval(hide, 1000);
+    document.addEventListener("pointermove", wake, { capture: true, passive: true });
+    document.addEventListener("pointerdown", wake, { capture: true, passive: true });
+    wake();
   }
 
   // ------------------------------------------------------------------ wiring
@@ -549,6 +639,26 @@
         break;
       case "lucina:keys":
         pressKeys(data.keys);
+        break;
+      case "lucina:pass": {
+        // The click or key that took control, replayed once control works.
+        var pass = data;
+        whenDriving(function () {
+          if (pass.click && typeof pass.click.x === "number" && typeof pass.click.y === "number") {
+            clickAt(pass.click.x, pass.click.y, pass.click.button === "right" ? "right" : "left");
+            mark(pass.click.x, pass.click.y, pass.click.button === "right");
+          }
+          if (typeof pass.text === "string" && pass.text.length > 0 && pass.text.length <= 8) {
+            var viewer = app();
+            if (viewer) viewer.sendInput({ kind: "text_commit", text: pass.text });
+          }
+          if (Array.isArray(pass.keys)) pressKeys(pass.keys);
+          focusStream();
+        });
+        break;
+      }
+      case "lucina:focus":
+        whenDriving(focusStream);
         break;
       case "lucina:ticket": {
         var nextMode = data.mode === "watch" || data.mode === "control" ? data.mode : mode;
@@ -565,6 +675,7 @@
   watchForKeys();
   wireTouch();
   watchStatus();
-  hideDeadFullscreen();
+  routeFullscreen();
+  autoHideToolbar();
   send({ type: "lucina:ready", coarse: COARSE, mode: mode });
 })();
