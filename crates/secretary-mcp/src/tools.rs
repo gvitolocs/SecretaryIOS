@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 use crate::backend::{seg, BackendError};
 use crate::format;
+use crate::keep::{self, ItemRef};
 use crate::scope::{Caller, Scope};
 use crate::App;
 
@@ -242,25 +243,143 @@ pub struct GymArgs {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct NoArgs {}
 
+/// One checklist item: plain text, or text with its state.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ItemArg {
+    Text(String),
+    Item {
+        text: String,
+        #[serde(default)]
+        checked: Option<bool>,
+    },
+}
+
+/// A checklist item of an existing note: its number as note_get shows it (from 1), or its exact text.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ItemRefArg {
+    Number(u32),
+    Text(String),
+}
+
 /// Arguments of `note_save`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct NoteSaveArgs {
     /// Title shown in the app, 1-200 characters, e.g. "CRAFT-IT4SD — meeting with Marianne & Jonas".
     pub title: String,
-    /// The note in Markdown (headings, lists, links). Up to 256 KB in total; for very long documents send the first part here and the rest with note_append.
-    pub content: String,
+    /// The note in Markdown (headings, lists, links). Up to 256 KB in total; for very long documents send the first part here and the rest with note_append. Optional when `items` is given.
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Make it a checklist (a Keep list note): strings, or {text, checked}. The note's content becomes the `- [ ]` lines.
+    #[serde(default)]
+    pub items: Option<Vec<ItemArg>>,
     /// Short name to find it again, e.g. "craftit-meeting": lower-case letters, digits and '-', up to 64. Default: made from the title. Lucina and note_get find the note by this name.
     #[serde(default)]
     pub slug: Option<String>,
-    /// Up to 16 tags, e.g. ["work", "aarhus"].
+    /// Up to 50 tags (the same thing as labels), e.g. ["work", "aarhus"].
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Keep labels by display name, e.g. ["GodLevel", "Fisica 2"] (created when new). Same field as `tags`.
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
+    /// Keep colour: default, red, orange, yellow, green, teal, blue, cerulean, purple, pink, brown or gray.
+    #[serde(default)]
+    pub color: Option<String>,
     /// Pin it to the top of the owner's notes (default false).
     #[serde(default)]
     pub pinned: Option<bool>,
-    /// When a note with this slug exists: true replaces its title, content (and tags/pin if given); false (default) refuses so nothing is overwritten by accident.
+    /// Put it in the archive (default false).
+    #[serde(default)]
+    pub archived: Option<bool>,
+    /// When a note with this slug exists: true replaces its title, content (and tags, items, colour, pin, archive if given); false (default) refuses so nothing is overwritten by accident.
     #[serde(default)]
     pub replace: Option<bool>,
+}
+
+/// Repeat of a note reminder.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatArg {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+    /// Not repeating.
+    None,
+}
+
+/// Convert a note between checklist and text.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ConvertArg {
+    /// Each non-empty line becomes an unchecked item.
+    List,
+    /// The items become plain lines (checked state is lost).
+    Text,
+}
+
+fn nullable<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// Arguments of `note_update`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteUpdateArgs {
+    /// The note's slug, e.g. "shopping" (or give `id`).
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// The note's id ("n_…"), instead of `slug`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// New title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Replace the whole content (for a checklist note the lines become the items; prefer the item operations below).
+    #[serde(default)]
+    pub content: Option<String>,
+    /// Keep colour: default, red, orange, yellow, green, teal, blue, cerulean, purple, pink, brown or gray.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Pin or unpin.
+    #[serde(default)]
+    pub pinned: Option<bool>,
+    /// Archive (true) or bring back from the archive (false).
+    #[serde(default)]
+    pub archived: Option<bool>,
+    /// Labels to add, by display name (created when new).
+    #[serde(default)]
+    pub add_labels: Option<Vec<String>>,
+    /// Labels to remove, by name.
+    #[serde(default)]
+    pub remove_labels: Option<Vec<String>>,
+    /// Set the note's reminder (RFC 3339 with offset, e.g. 2026-11-03T09:00:00+01:00; Lucina delivers it), or null to clear it.
+    #[serde(default, deserialize_with = "nullable")]
+    #[schemars(with = "Option<String>")]
+    pub reminder_at: Option<Option<String>>,
+    /// Repeat of the reminder: daily, weekly, monthly, yearly or none. Default: keep the current one.
+    #[serde(default)]
+    pub reminder_repeat: Option<RepeatArg>,
+    /// Check off these checklist items: numbers as note_get shows them, or exact item texts.
+    #[serde(default)]
+    pub check: Option<Vec<ItemRefArg>>,
+    /// Uncheck these checklist items (numbers or exact texts).
+    #[serde(default)]
+    pub uncheck: Option<Vec<ItemRefArg>>,
+    /// Add these items at the end of the checklist: strings, or {text, checked}.
+    #[serde(default)]
+    pub add_items: Option<Vec<ItemArg>>,
+    /// Remove these checklist items (numbers or exact texts).
+    #[serde(default)]
+    pub remove_items: Option<Vec<ItemRefArg>>,
+    /// Turn the note into a checklist ("list") or back into plain text ("text").
+    #[serde(default)]
+    pub convert: Option<ConvertArg>,
 }
 
 /// Arguments of `note_append`.
@@ -296,15 +415,48 @@ pub struct NoteGetArgs {
     pub max_chars: Option<usize>,
 }
 
+/// Which notes of the archive to include.
+#[derive(Debug, Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchivedArg {
+    Include,
+    Exclude,
+    Only,
+}
+
+/// What kind of notes.
+#[derive(Debug, Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKindArg {
+    List,
+    Text,
+    Image,
+    Audio,
+    Link,
+    Reminder,
+}
+
 /// Arguments of `notes_search`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct NotesSearchArgs {
-    /// Words to look for in titles, slugs, tags and content. Empty: list the latest notes.
+    /// Words to look for in titles, slugs, labels, content and checklist items. Empty: list the latest notes.
     #[serde(default)]
     pub q: Option<String>,
-    /// Only notes with this tag.
+    /// Only notes with this tag (same as `label`).
     #[serde(default)]
     pub tag: Option<String>,
+    /// Only notes with this label, e.g. "GodLevel" (see note_labels).
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Only notes of this Keep colour.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Only this kind: list (checklist), text, image, audio, link or reminder.
+    #[serde(default, rename = "type")]
+    pub kind: Option<NoteKindArg>,
+    /// Archived notes: include (default), exclude or only.
+    #[serde(default)]
+    pub archived: Option<ArchivedArg>,
     /// How many to return (1-50, default 20).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -414,13 +566,17 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("body_summary", "Body weight summary", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "The owner's body weight: current weight, 7-day average, weekly change, 30/90-day trend, goal distance, and the latest entries."),
         spec!("note_save", "Save note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteSaveArgs,
-            "Save a note, briefing or document for the owner: it appears in the Secretary app (Notes, with your name as the source) and Lucina can recall it by its slug, e.g. \"craftit-meeting\". Use this, not ask_lucina, for anything long or worth keeping. Markdown content, up to 256 KB per note; for a document too long for one call, save the first part here and send the rest in order with note_append. An existing slug is only overwritten with replace=true. Answers the slug to use later."),
+            "Save a note, briefing, document or checklist for the owner: it appears in the Secretary app (Notes, with your name as the source) and Lucina can recall it by its slug, e.g. \"craftit-meeting\". Use this, not ask_lucina, for anything long or worth keeping. Markdown content, up to 256 KB per note; for a document too long for one call, save the first part here and send the rest in order with note_append. Keep features: `items` makes it a checklist (strings or {text, checked}), `labels` (display names), `color` (default, red, orange, yellow, green, teal, blue, cerulean, purple, pink, brown, gray), `pinned`, `archived`. An existing slug is only overwritten with replace=true. Answers the slug to use later."),
         spec!("note_append", "Append to note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteAppendArgs,
-            "Add text at the end of an existing note (by slug or id): the next part of a long document, an update to a briefing, meeting minutes. With continuation=true the text is glued on exactly (for a chunk cut mid-sentence); otherwise it starts a new paragraph."),
+            "Add text at the end of an existing note (by slug or id): the next part of a long document, an update to a briefing, meeting minutes. With continuation=true the text is glued on exactly (for a chunk cut mid-sentence); otherwise it starts a new paragraph. On a checklist note each line becomes a new item (use note_update addItems for that)."),
+        spec!("note_update", "Update note", Scope::Write, ro = false, destructive = false, idempotent = false, NoteUpdateArgs,
+            "Change an existing note (by slug or id) without rewriting it: title, content, colour, pinned, archived, labels (addLabels / removeLabels by name), reminder (reminderAt as RFC 3339 with offset, or null to clear; reminderRepeat), and checklist edits: check / uncheck (item numbers exactly as note_get shows them, or the exact item text), addItems, removeItems, and convert (list or text). Only what you pass changes. Nothing is deleted: the note stays, and removed items or labels are only taken off it. Read the note with note_get first to see the item numbers."),
         spec!("note_get", "Read note", Scope::Read, ro = true, destructive = false, idempotent = true, NoteGetArgs,
-            "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, tags, who wrote it, when, and the Markdown content. Long notes come in pages: call again with the offset it gives you."),
+            "Read one of the owner's notes by slug (e.g. \"craftit-meeting\") or id: title, labels, colour, pinned/archived/trashed, who wrote it, when, the reminder, attachments (name, type, size), links and collaborators, and the Markdown content. A checklist note shows its items with numbers and checked state instead (use the numbers with note_update). Long notes come in pages: call again with the offset it gives you."),
         spec!("notes_search", "Search notes", Scope::Read, ro = true, destructive = false, idempotent = true, NotesSearchArgs,
-            "Find the owner's notes, briefings and documents by words (title, slug, tags, content) or tag; pinned first, newest first. Each hit shows its slug, title, source and an excerpt. Without `q` it lists the latest notes."),
+            "Find the owner's notes, briefings, documents and checklists by words (title, slug, labels, content, checklist items), label, colour or kind (list, text, image, audio, link, reminder); archived notes are included unless archived=exclude (or archived=only). Pinned first, newest first. Each hit shows its slug, title, source, labels, colour, checklist progress (3/7 done), reminder and an excerpt. Without `q` it lists the latest notes."),
+        spec!("note_labels", "Note labels", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
+            "The owner's note labels (Keep labels) by display name, with how many notes each has. Use a name with notes_search label=."),
         spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
             "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
         spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,
@@ -575,8 +731,8 @@ fn note_content(field: &str, s: &str) -> Result<String, ToolError> {
 
 fn note_tags(tags: Option<&[String]>) -> Result<Option<Vec<String>>, ToolError> {
     let Some(tags) = tags else { return Ok(None) };
-    if tags.len() > 16 {
-        return Err(bad("`tags`: at most 16"));
+    if tags.len() > 50 {
+        return Err(bad("`tags`: at most 50"));
     }
     Ok(Some(
         tags.iter()
@@ -584,6 +740,63 @@ fn note_tags(tags: Option<&[String]>) -> Result<Option<Vec<String>>, ToolError> 
             .filter(|t| !t.is_empty())
             .collect(),
     ))
+}
+
+/// Label display names, checked like the server will.
+fn label_names(field: &str, labels: &[String]) -> Result<Vec<String>, ToolError> {
+    if labels.len() > 50 {
+        return Err(bad(format!("`{field}`: at most 50")));
+    }
+    labels
+        .iter()
+        .map(|l| keep::label_name(l).map_err(|e| bad(format!("`{field}`: {e}"))))
+        .collect()
+}
+
+fn keep_color(c: &str) -> Result<String, ToolError> {
+    keep::color(c).map_err(bad)
+}
+
+/// Checklist items from the arguments: `{text, checked, indent: 0}`.
+fn items_json(field: &str, items: &[ItemArg]) -> Result<Vec<Value>, ToolError> {
+    if items.len() > 1000 {
+        return Err(bad(format!("`{field}`: at most 1000 items")));
+    }
+    items
+        .iter()
+        .map(|it| {
+            let (text, checked) = match it {
+                ItemArg::Text(t) => (t.as_str(), false),
+                ItemArg::Item { text, checked } => (text.as_str(), checked.unwrap_or(false)),
+            };
+            let text = check_text(&format!("{field} text"), text, 2000)?;
+            Ok(keep::new_item(&text, checked))
+        })
+        .collect()
+}
+
+fn item_refs(refs: Option<&[ItemRefArg]>) -> Vec<ItemRef> {
+    refs.unwrap_or_default()
+        .iter()
+        .map(|r| match r {
+            ItemRefArg::Number(n) => ItemRef::Number(*n as usize),
+            ItemRefArg::Text(t) => ItemRef::Text(t.clone()),
+        })
+        .collect()
+}
+
+/// The items of a note (a list note), when it is one.
+fn note_items(n: &Value) -> Option<Vec<Value>> {
+    n.get("items").and_then(Value::as_array).cloned()
+}
+
+/// Copies every field of `from` (an object) into `into`.
+fn merge_into(into: &mut Value, from: &Value) {
+    if let (Some(into), Some(from)) = (into.as_object_mut(), from.as_object()) {
+        for (k, v) in from {
+            into.insert(k.clone(), v.clone());
+        }
+    }
 }
 
 /// The prefix Lucina sees on MCP messages, naming the client.
@@ -1196,30 +1409,71 @@ impl Tools<'_> {
             chars,
             caller = %self.caller.name,
         );
+        let list = note_items(n)
+            .map(|items| format!(" (checklist, {})", format::progress(&items)))
+            .unwrap_or_default();
         format!(
-            "{verb} note \"{slug}\" ({title}), {chars} characters in total. The owner sees it in the Secretary app under Notes; Lucina and note_get find it by the slug \"{slug}\"."
+            "{verb} note \"{slug}\" ({title}){list}, {chars} characters in total. The owner sees it in the Secretary app under Notes; Lucina and note_get find it by the slug \"{slug}\"."
         )
     }
 
     pub async fn note_save(&self, args: &JsonObject) -> ToolResult {
         let a: NoteSaveArgs = parse(args)?;
         let title = check_text("title", &a.title, 200)?;
-        let content = note_content("content", &a.content)?;
+        let items = a
+            .items
+            .as_deref()
+            .map(|i| items_json("items", i))
+            .transpose()?;
+        let content = match (a.content.as_deref(), &items) {
+            (Some(c), Some(_)) if c.trim().is_empty() => None,
+            (Some(c), _) => Some(note_content("content", c)?),
+            (None, Some(_)) => None,
+            (None, None) => {
+                return Err(bad(
+                    "`content` must not be empty (or give `items` for a checklist)",
+                ))
+            }
+        };
         let tags = note_tags(a.tags.as_deref())?;
+        let labels = a
+            .labels
+            .as_deref()
+            .map(|l| label_names("labels", l))
+            .transpose()?;
+        let color = a.color.as_deref().map(keep_color).transpose()?;
         let slug = match a.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             Some(s) => Some(note_key(Some(s), None)?),
             None => None,
         };
-        let mut body = json!({"title": title, "content": content, "source": self.caller.name});
+        // The fields both a new note and a replacement carry.
+        let mut keep = json!({});
+        if let Some(t) = &tags {
+            keep["tags"] = json!(t);
+        }
+        if let Some(l) = &labels {
+            keep["labels"] = json!(l);
+        }
+        if let Some(c) = &color {
+            keep["color"] = json!(c);
+        }
+        if let Some(p) = a.pinned {
+            keep["pinned"] = json!(p);
+        }
+        if let Some(r) = a.archived {
+            keep["archived"] = json!(r);
+        }
+        if let Some(i) = &items {
+            keep["items"] = json!(i);
+        }
+        let mut body = json!({"title": title, "source": self.caller.name});
+        if let Some(c) = &content {
+            body["content"] = json!(c);
+        }
         if let Some(s) = &slug {
             body["slug"] = json!(s);
         }
-        if let Some(t) = &tags {
-            body["tags"] = json!(t);
-        }
-        if let Some(p) = a.pinned {
-            body["pinned"] = json!(p);
-        }
+        merge_into(&mut body, &keep);
         match self.app.backend.post("/v1/notes", &body).await {
             Ok(n) => Ok(self.note_saved("Saved", &n)),
             Err(e) if e.code == "slug_taken" => {
@@ -1237,16 +1491,14 @@ impl Tools<'_> {
                         .map(|t| format!(" (\"{t}\")"))
                         .unwrap_or_default();
                     return Err(bad(format!(
-                        "A note named \"{slug}\"{what} already exists. Call note_save again with replace=true to overwrite it, use note_append to add to it, or pick another slug."
+                        "A note named \"{slug}\"{what} already exists. Call note_save again with replace=true to overwrite it, use note_append (or note_update) to add to it, or pick another slug."
                     )));
                 }
-                let mut patch = json!({"title": body["title"], "content": body["content"], "source": self.caller.name});
-                if let Some(t) = tags {
-                    patch["tags"] = json!(t);
+                let mut patch = json!({"title": body["title"], "source": self.caller.name});
+                if let Some(c) = &content {
+                    patch["content"] = json!(c);
                 }
-                if let Some(p) = a.pinned {
-                    patch["pinned"] = json!(p);
-                }
+                merge_into(&mut patch, &keep);
                 let n = self
                     .app
                     .backend
@@ -1283,27 +1535,313 @@ impl Tools<'_> {
         }
     }
 
-    pub async fn note_get(&self, args: &JsonObject) -> ToolResult {
-        let a: NoteGetArgs = parse(args)?;
-        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
-        let max = a.max_chars.unwrap_or(40_000).clamp(1000, 100_000);
+    /// `GET /v1/notes/{key}`, with "no such note" as a message the model can act on.
+    async fn fetch_note(&self, key: &str) -> Result<Value, ToolError> {
         match self
             .app
             .backend
-            .get(&format!("/v1/notes/{}", seg(&key)), &[])
+            .get(&format!("/v1/notes/{}", seg(key)), &[])
             .await
         {
-            Ok(n) => Ok(format::note(
-                &n,
-                a.offset.unwrap_or(0),
-                max,
-                self.app.cfg.timezone,
-            )),
+            Ok(n) => Ok(n),
             Err(e) if e.code == "note_not_found" => Err(bad(format!(
                 "No note \"{key}\". notes_search finds notes by words or lists the latest ones."
             ))),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// A full note carries its labels as stored tags; add the display names
+    /// (`labels`) from the owner's label registry, when it can be read.
+    async fn with_label_names(&self, n: &mut Value) {
+        if n.get("labels").is_some_and(Value::is_array) {
+            return;
+        }
+        let tags: Vec<String> = n
+            .get("tags")
+            .and_then(Value::as_array)
+            .map(|t| {
+                t.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if tags.is_empty() {
+            return;
+        }
+        let Ok(reg) = self.app.backend.get("/v1/notes/labels", &[]).await else {
+            return;
+        };
+        let known = reg
+            .get("labels")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let names: Vec<String> = tags
+            .iter()
+            .map(|t| {
+                known
+                    .iter()
+                    .find(|l| l.get("tag").and_then(Value::as_str) == Some(t))
+                    .and_then(|l| l.get("name").and_then(Value::as_str))
+                    .unwrap_or(t)
+                    .to_owned()
+            })
+            .collect();
+        n["labels"] = json!(names);
+    }
+
+    pub async fn note_get(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteGetArgs = parse(args)?;
+        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
+        let max = a.max_chars.unwrap_or(40_000).clamp(1000, 100_000);
+        let mut n = self.fetch_note(&key).await?;
+        self.with_label_names(&mut n).await;
+        Ok(format::note(
+            &n,
+            a.offset.unwrap_or(0),
+            max,
+            self.app.cfg.timezone,
+        ))
+    }
+
+    /// PATCH a note, editing from the version we hold; on `409 conflict`
+    /// (somebody changed it since) fetch the new version and edit that, once.
+    async fn patch_note(
+        &self,
+        key: &str,
+        mut note: Value,
+        build: impl Fn(&Value) -> Result<Value, ToolError>,
+    ) -> Result<Value, ToolError> {
+        let path = format!("/v1/notes/{}", seg(key));
+        let mut retried = false;
+        loop {
+            let mut body = build(&note)?;
+            if let Some(u) = note.get("updatedAt") {
+                body["baseUpdatedAt"] = u.clone();
+            }
+            match self.app.backend.patch(&path, &body).await {
+                Ok(n) => return Ok(n),
+                Err(e) if e.code == "conflict" && !retried => {
+                    retried = true;
+                    note = self.fetch_note(key).await?;
+                }
+                Err(e) if e.code == "conflict" => {
+                    return Err(bad(
+                        "The note was changed by someone else while this edit was being made. Read it again with note_get and repeat the change.",
+                    ))
+                }
+                Err(e) if e.status == 502 && body.get("reminder").is_some() => {
+                    return Err(bad(
+                        "Lucina could not be reached to schedule the reminder, so the note is unchanged. Try again later.",
+                    ))
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    pub async fn note_update(&self, args: &JsonObject) -> ToolResult {
+        let a: NoteUpdateArgs = parse(args)?;
+        let key = note_key(a.slug.as_deref(), a.id.as_deref())?;
+        // Everything that can be checked without the note.
+        let mut fields = json!({});
+        let mut changes: Vec<String> = Vec::new();
+        if let Some(t) = &a.title {
+            fields["title"] = json!(check_text("title", t, 200)?);
+            changes.push("title".into());
+        }
+        if let Some(c) = &a.content {
+            fields["content"] = json!(note_content("content", c)?);
+            changes.push("content".into());
+        }
+        if let Some(c) = &a.color {
+            let c = keep_color(c)?;
+            changes.push(format!("colour {c}"));
+            fields["color"] = json!(c);
+        }
+        if let Some(p) = a.pinned {
+            fields["pinned"] = json!(p);
+            changes.push(if p { "pinned" } else { "unpinned" }.into());
+        }
+        if let Some(r) = a.archived {
+            fields["archived"] = json!(r);
+            changes.push(if r { "archived" } else { "unarchived" }.into());
+        }
+        let add_labels = label_names("addLabels", a.add_labels.as_deref().unwrap_or_default())?;
+        let remove_labels = label_names(
+            "removeLabels",
+            a.remove_labels.as_deref().unwrap_or_default(),
+        )?;
+        if !add_labels.is_empty() {
+            changes.push(format!("label +{}", add_labels.join(", +")));
+        }
+        if !remove_labels.is_empty() {
+            changes.push(format!("label -{}", remove_labels.join(", -")));
+        }
+        let add_items = items_json("addItems", a.add_items.as_deref().unwrap_or_default())?;
+        let (check, uncheck, remove) = (
+            item_refs(a.check.as_deref()),
+            item_refs(a.uncheck.as_deref()),
+            item_refs(a.remove_items.as_deref()),
+        );
+        let has_ops =
+            !(check.is_empty() && uncheck.is_empty() && remove.is_empty() && add_items.is_empty());
+        if has_ops && a.content.is_some() {
+            return Err(bad(
+                "Give either `content` or the checklist operations (check, uncheck, addItems, removeItems), not both.",
+            ));
+        }
+        if let Some(Some(at)) = &a.reminder_at {
+            if chrono::DateTime::parse_from_rfc3339(at).is_err() {
+                return Err(bad(
+                    "`reminderAt` must be RFC 3339 with a UTC offset, e.g. 2026-11-03T09:00:00+01:00 (or null to clear the reminder)",
+                ));
+            }
+        }
+        let reminder_change = a.reminder_at.is_some() || a.reminder_repeat.is_some();
+        if fields.as_object().is_some_and(|f| f.is_empty())
+            && !reminder_change
+            && !has_ops
+            && add_labels.is_empty()
+            && remove_labels.is_empty()
+            && a.convert.is_none()
+        {
+            return Err(bad(
+                "Nothing to change: pass at least one of title, content, color, pinned, archived, addLabels, removeLabels, reminderAt, check, uncheck, addItems, removeItems, convert.",
+            ));
+        }
+
+        let mut note = self.fetch_note(&key).await?;
+        // Convert first: the item operations then work on the converted note.
+        if let Some(c) = &a.convert {
+            let is_list = note.get("items").is_some_and(Value::is_array);
+            let want_list = matches!(c, ConvertArg::List);
+            if want_list != is_list {
+                let how = if want_list { "list" } else { "text" };
+                note = self
+                    .patch_note(&key, note, |_| Ok(json!({"convert": how})))
+                    .await?;
+                changes.insert(0, format!("converted to {how}"));
+            }
+        }
+        // The checklist edits, resolved once against the items as note_get showed them.
+        let plan = if has_ops {
+            let Some(items) = note_items(&note) else {
+                return Err(bad(
+                    "This is a text note, not a checklist. Pass convert=\"list\" to make it one, or use note_append to add text.",
+                ));
+            };
+            let plan =
+                keep::Plan::new(&items, &check, &uncheck, &remove, add_items).map_err(bad)?;
+            changes.push(plan.summary());
+            plan
+        } else {
+            keep::Plan::default()
+        };
+        let needs_patch = fields.as_object().is_some_and(|f| !f.is_empty())
+            || reminder_change
+            || !plan.is_empty()
+            || !add_labels.is_empty()
+            || !remove_labels.is_empty();
+        if needs_patch {
+            let reminder_text = match &a.reminder_at {
+                Some(Some(at)) => Some(format!(
+                    "reminder {}",
+                    format::local_time(Some(&json!(at)), self.app.cfg.timezone)
+                )),
+                Some(None) => Some("reminder cleared".to_owned()),
+                None if a.reminder_repeat.is_some() => Some("reminder repeat".to_owned()),
+                None => None,
+            };
+            note = self
+                .patch_note(&key, note, |cur| {
+                    let mut body = fields.clone();
+                    if !add_labels.is_empty() || !remove_labels.is_empty() {
+                        let tags: Vec<String> = cur
+                            .get("tags")
+                            .and_then(Value::as_array)
+                            .map(|t| {
+                                t.iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        body["labels"] =
+                            json!(keep::merge_labels(&tags, &add_labels, &remove_labels));
+                    }
+                    if !plan.is_empty() {
+                        let items = note_items(cur).ok_or_else(|| {
+                            bad("The note is no longer a checklist; read it again with note_get.")
+                        })?;
+                        body["items"] = json!(plan.apply(&items));
+                    }
+                    if reminder_change {
+                        body["reminder"] = self.reminder_value(&a, cur)?;
+                    }
+                    Ok(body)
+                })
+                .await?;
+            changes.extend(reminder_text);
+        }
+        let slug = note.get("slug").and_then(Value::as_str).unwrap_or("?");
+        let title = note.get("title").and_then(Value::as_str).unwrap_or("");
+        let id = note.get("id").and_then(Value::as_str).unwrap_or("");
+        tracing::info!(
+            target: "secretary_mcp::audit",
+            event = "note_update",
+            slug,
+            id,
+            changes = %changes.join("; "),
+            caller = %self.caller.name,
+        );
+        let mut out = format!("Updated note \"{slug}\" ({title}): {}.", changes.join(", "));
+        if let Some(items) = note_items(&note) {
+            out.push_str(&format!(
+                "\nChecklist, {}:\n{}",
+                format::progress(&items),
+                format::checklist(&items)
+            ));
+        }
+        Ok(out)
+    }
+
+    /// The `reminder` object to send: the new time (or the current one), and
+    /// the repeat asked for (or the current one).
+    fn reminder_value(&self, a: &NoteUpdateArgs, cur: &Value) -> Result<Value, ToolError> {
+        if let Some(None) = a.reminder_at {
+            return Ok(Value::Null);
+        }
+        let cur_r = cur.get("reminder").filter(|r| r.is_object());
+        let at = match &a.reminder_at {
+            Some(Some(at)) => at.clone(),
+            _ => cur_r
+                .and_then(|r| r.get("at").and_then(Value::as_str))
+                .map(str::to_owned)
+                .ok_or_else(|| bad("This note has no reminder yet: give `reminderAt`."))?,
+        };
+        let repeat = match &a.reminder_repeat {
+            Some(RepeatArg::None) => None,
+            Some(RepeatArg::Daily) => Some("daily".to_owned()),
+            Some(RepeatArg::Weekly) => Some("weekly".to_owned()),
+            Some(RepeatArg::Monthly) => Some("monthly".to_owned()),
+            Some(RepeatArg::Yearly) => Some("yearly".to_owned()),
+            None => cur_r
+                .and_then(|r| r.get("recurrence").and_then(Value::as_str))
+                .map(str::to_owned),
+        };
+        let mut r = json!({"at": at});
+        if let Some(rec) = repeat {
+            r["recurrence"] = json!(rec);
+        }
+        Ok(r)
+    }
+
+    pub async fn note_labels(&self) -> ToolResult {
+        let v = self.app.backend.get("/v1/notes/labels", &[]).await?;
+        Ok(format::note_labels(&v))
     }
 
     /// Library tools use typed arguments and the same authenticated backend as notes.
@@ -1413,16 +1951,53 @@ impl Tools<'_> {
         let a: NotesSearchArgs = parse(args)?;
         let limit = a.limit.unwrap_or(20).clamp(1, 50);
         let mut q = vec![("limit", limit.to_string())];
+        let mut what = String::new();
         let words = a.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
         if let Some(w) = words {
             q.push(("q", check_text("q", w, 200)?));
+            what.push_str(&format!(" matching {w:?}"));
         }
-        let tag = a.tag.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        if let Some(t) = tag {
-            q.push(("tag", check_text("tag", t.trim_start_matches('#'), 32)?));
+        let label = a
+            .label
+            .as_deref()
+            .or(a.tag.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if let Some(l) = label {
+            let l = check_text("label", l.trim_start_matches('#'), 50)?;
+            q.push(("tag", keep::label_tag(&l)));
+            what.push_str(&format!(" with label {l:?}"));
+        }
+        if let Some(c) = a.color.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let c = keep_color(c)?;
+            what.push_str(&format!(" in colour {c}"));
+            q.push(("color", c));
+        }
+        if let Some(k) = a.kind {
+            let k = match k {
+                NoteKindArg::List => "list",
+                NoteKindArg::Text => "text",
+                NoteKindArg::Image => "image",
+                NoteKindArg::Audio => "audio",
+                NoteKindArg::Link => "link",
+                NoteKindArg::Reminder => "reminder",
+            };
+            q.push(("type", k.to_owned()));
+            what.push_str(&format!(" of type {k}"));
+        }
+        match a.archived {
+            Some(ArchivedArg::Exclude) => {
+                q.push(("archived", "exclude".into()));
+                what.push_str(" (archive excluded)");
+            }
+            Some(ArchivedArg::Only) => {
+                q.push(("archived", "only".into()));
+                what.push_str(" (archived only)");
+            }
+            Some(ArchivedArg::Include) | None => {}
         }
         let v = self.app.backend.get("/v1/notes", &q).await?;
-        Ok(format::notes_list(&v, words, tag, self.app.cfg.timezone))
+        Ok(format::notes_list(&v, &what, self.app.cfg.timezone))
     }
 
     pub async fn status(&self) -> ToolResult {

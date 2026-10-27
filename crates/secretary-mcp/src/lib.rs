@@ -19,6 +19,7 @@ pub mod cli;
 pub mod computer;
 pub mod config;
 pub mod format;
+pub mod keep;
 pub mod login;
 pub mod mcp;
 pub mod oauth;

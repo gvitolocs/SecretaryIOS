@@ -35,6 +35,13 @@ pub struct MockState {
     pub legacy: Vec<Value>,
     pub revision: u64,
     pub notes: Vec<Value>,
+    /// The label registry (`{tag, name}`), as `GET /v1/notes/labels` keeps it.
+    pub labels: Vec<Value>,
+    /// Counter for item ids and `updatedAt` stamps.
+    pub seq: u64,
+    /// Simulated concurrent edits: the next n PATCHes that carry `baseUpdatedAt`
+    /// find the note changed by somebody else (409).
+    pub race: u32,
     /// Open tasks (task views as `/v1/tasks/state` returns them).
     pub tasks: Vec<Value>,
 }
@@ -71,6 +78,170 @@ fn err(status: StatusCode, code: &str) -> Response {
 
 fn device_ok(h: &HeaderMap) -> bool {
     h.get("authorization").and_then(|v| v.to_str().ok()) == Some(&format!("Bearer {DEVICE_TOKEN}"))
+}
+
+// -- notes (Keep) ------------------------------------------------------------------
+
+fn norm_tag(s: &str) -> String {
+    s.trim()
+        .trim_start_matches('#')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn stamp(seq: &mut u64) -> String {
+    *seq += 1;
+    format!("2026-10-22T11:30:00.{:03}Z", *seq)
+}
+
+fn derive(items: &[Value]) -> String {
+    items
+        .iter()
+        .map(|i| {
+            let pad = if i["indent"].as_u64() == Some(1) {
+                "  "
+            } else {
+                ""
+            };
+            let mark = if i["checked"] == true { "x" } else { " " };
+            format!("{pad}- [{mark}] {}", i["text"].as_str().unwrap_or(""))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_lines(content: &str, seq: &mut u64) -> Vec<Value> {
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let t = l.trim();
+            let (checked, text) = if let Some(r) = t.strip_prefix("- [x] ") {
+                (true, r)
+            } else if let Some(r) = t.strip_prefix("- [ ] ") {
+                (false, r)
+            } else {
+                (false, t)
+            };
+            *seq += 1;
+            json!({"id": format!("i_{:012x}", *seq), "text": text, "checked": checked, "indent": 0})
+        })
+        .collect()
+}
+
+/// What secretary-server does with the fields of a POST/PATCH body.
+fn apply_note_body(n: &mut Value, body: &Value, labels: &mut Vec<Value>, seq: &mut u64) {
+    for f in ["title", "content", "pinned", "color", "archived", "source"] {
+        if let Some(v) = body.get(f) {
+            n[f] = v.clone();
+        }
+    }
+    if let Some(r) = body.get("reminder") {
+        if r.is_null() {
+            n.as_object_mut().unwrap().remove("reminder");
+        } else {
+            n["reminder"] = json!({"at": r["at"], "recurrence": r.get("recurrence").cloned().unwrap_or(Value::Null), "lucinaId": "r_mock"});
+        }
+    }
+    for f in ["tags", "labels"] {
+        if let Some(arr) = body.get(f).and_then(Value::as_array) {
+            let mut tags = Vec::new();
+            for l in arr.iter().filter_map(Value::as_str) {
+                let tag = norm_tag(l);
+                if !labels.iter().any(|r| r["tag"] == tag.as_str()) {
+                    labels.push(json!({"tag": tag, "name": l.trim().trim_start_matches('#')}));
+                }
+                tags.push(json!(tag));
+            }
+            n["tags"] = json!(tags);
+        }
+    }
+    if let Some(items) = body.get("items").and_then(Value::as_array) {
+        let items: Vec<Value> = items
+            .iter()
+            .map(|i| {
+                let mut i = i.clone();
+                if i.get("id").is_none() {
+                    *seq += 1;
+                    i["id"] = json!(format!("i_{:012x}", *seq));
+                }
+                i["checked"] = json!(i["checked"] == true);
+                i["indent"] = json!(i["indent"].as_u64().unwrap_or(0));
+                i
+            })
+            .collect();
+        n["content"] = json!(derive(&items));
+        n["items"] = json!(items);
+    } else if body.get("content").is_some() && n.get("items").is_some() {
+        let items = parse_lines(body["content"].as_str().unwrap_or(""), seq);
+        n["content"] = json!(derive(&items));
+        n["items"] = json!(items);
+    }
+    match body.get("convert").and_then(Value::as_str) {
+        Some("list") if n.get("items").is_none() => {
+            let items = parse_lines(n["content"].as_str().unwrap_or(""), seq);
+            n["content"] = json!(derive(&items));
+            n["items"] = json!(items);
+        }
+        Some("text") if n.get("items").is_some() => {
+            let lines: Vec<String> = n["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["text"].as_str().unwrap_or("").to_owned())
+                .collect();
+            n["content"] = json!(lines.join("\n"));
+            n.as_object_mut().unwrap().remove("items");
+        }
+        _ => {}
+    }
+}
+
+fn label_name(labels: &[Value], tag: &str) -> String {
+    labels
+        .iter()
+        .find(|l| l["tag"] == tag)
+        .and_then(|l| l["name"].as_str())
+        .unwrap_or(tag)
+        .to_owned()
+}
+
+fn query_pairs(q: &str) -> Vec<(String, String)> {
+    q.split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_owned(), v.replace('+', " ").replace("%20", " ")))
+        .collect()
+}
+
+fn note_summary(n: &Value, labels: &[Value]) -> Value {
+    let mut s = n.clone();
+    let c = s["content"].as_str().unwrap_or("").to_owned();
+    let o = s.as_object_mut().unwrap();
+    o.remove("content");
+    o.remove("items");
+    s["size"] = json!(c.len());
+    s["excerpt"] = json!(c.chars().take(220).collect::<String>());
+    if let Some(items) = n.get("items").and_then(Value::as_array) {
+        s["isList"] = json!(true);
+        s["itemsTotal"] = json!(items.len());
+        s["itemsDone"] = json!(items.iter().filter(|i| i["checked"] == true).count());
+    }
+    if let Some(at) = n.get("reminder").and_then(|r| r.get("at")) {
+        s["reminderAt"] = at.clone();
+    }
+    let names: Vec<String> = n["tags"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(Value::as_str)
+                .map(|t| label_name(labels, t))
+                .collect()
+        })
+        .unwrap_or_default();
+    s["labels"] = json!(names);
+    s
 }
 
 fn library_highlight() -> Value {
@@ -283,30 +454,59 @@ async fn handle(
             "labels": {"e1": "80.5 kg"}}}))
         .into_response(),
         ("GET", ["v1", "notes"]) => {
-            let q = query.to_lowercase();
+            let st = &mut *st;
+            let pairs = query_pairs(&query.to_lowercase());
+            let get = |k: &str| pairs.iter().find(|(pk, _)| pk == k).map(|(_, v)| v.clone());
             let hits: Vec<Value> = st
                 .notes
                 .iter()
                 .filter(|n| {
-                    q.split('&').filter_map(|kv| kv.strip_prefix("q=")).all(|w| {
-                        let w = w.replace('+', " ").replace("%20", " ");
-                        n["title"].as_str().unwrap_or("").to_lowercase().contains(&w)
-                            || n["content"].as_str().unwrap_or("").to_lowercase().contains(&w)
-                            || n["slug"].as_str().unwrap_or("").contains(&w)
+                    pairs.iter().filter(|(k, _)| k == "q").all(|(_, w)| {
+                        n["title"].as_str().unwrap_or("").to_lowercase().contains(w.as_str())
+                            || n["content"].as_str().unwrap_or("").to_lowercase().contains(w.as_str())
+                            || n["slug"].as_str().unwrap_or("").contains(w.as_str())
                     })
                 })
-                .map(|n| {
-                    let mut s = n.clone();
-                    let c = s["content"].as_str().unwrap_or("").to_owned();
-                    s.as_object_mut().unwrap().remove("content");
-                    s["size"] = json!(c.len());
-                    s["excerpt"] = json!(c.chars().take(220).collect::<String>());
-                    s
+                .filter(|n| match get("tag") {
+                    Some(t) => n["tags"].as_array().is_some_and(|a| a.iter().any(|x| x == t.as_str())),
+                    None => true,
                 })
+                .filter(|n| get("color").is_none_or(|c| n["color"].as_str().unwrap_or("default") == c))
+                .filter(|n| match get("type").as_deref() {
+                    Some("list") => n.get("items").is_some(),
+                    Some("text") => n.get("items").is_none(),
+                    Some("reminder") => n.get("reminder").is_some(),
+                    _ => true,
+                })
+                .filter(|n| match get("archived").as_deref() {
+                    Some("exclude") => n["archived"] != true,
+                    Some("only") => n["archived"] == true,
+                    _ => true,
+                })
+                .map(|n| note_summary(n, &st.labels))
                 .collect();
             Json(json!({"notes": hits})).into_response()
         }
+        ("GET", ["v1", "notes", "labels"]) => {
+            let mut all: Vec<Value> = st.labels.clone();
+            for n in &st.notes {
+                for t in n["tags"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    if !all.iter().any(|l| l["tag"] == t) {
+                        all.push(json!({"tag": t, "name": t}));
+                    }
+                }
+            }
+            let labels: Vec<Value> = all
+                .iter()
+                .map(|l| {
+                    let count = st.notes.iter().filter(|n| n["tags"].as_array().is_some_and(|a| a.iter().any(|x| x == &l["tag"]))).count();
+                    json!({"tag": l["tag"], "name": l["name"], "count": count})
+                })
+                .collect();
+            Json(json!({"labels": labels})).into_response()
+        }
         ("POST", ["v1", "notes"]) => {
+            let st = &mut *st;
             let slug = body["slug"].as_str().map(str::to_owned).unwrap_or_else(|| {
                 body["title"].as_str().unwrap_or("note").to_lowercase().replace(' ', "-")
             });
@@ -314,11 +514,11 @@ async fn handle(
                 return err(StatusCode::CONFLICT, "slug_taken");
             }
             let n = st.notes.len();
-            let note = json!({"id": format!("n_{n:020}"), "slug": slug, "title": body["title"],
-                "content": body["content"], "tags": body.get("tags").cloned().unwrap_or(json!([])),
-                "source": body.get("source").cloned().unwrap_or(json!("owner")),
-                "pinned": body.get("pinned").cloned().unwrap_or(json!(false)),
-                "createdAt": "2026-10-22T11:30:00.000Z", "updatedAt": "2026-10-22T11:30:00.000Z"});
+            let at = stamp(&mut st.seq);
+            let mut note = json!({"id": format!("n_{n:020}"), "slug": slug, "title": "",
+                "content": "", "tags": [], "source": "owner", "pinned": false, "color": "default", "archived": false,
+                "createdAt": "2026-10-22T11:30:00.000Z", "updatedAt": at});
+            apply_note_body(&mut note, &body, &mut st.labels, &mut st.seq);
             st.notes.push(note.clone());
             (StatusCode::CREATED, Json(note)).into_response()
         }
@@ -326,17 +526,39 @@ async fn handle(
             Some(n) => Json(n.clone()).into_response(),
             None => err(StatusCode::NOT_FOUND, "note_not_found"),
         },
-        ("PATCH", ["v1", "notes", key]) => match st.notes.iter_mut().find(|n| n["slug"] == *key || n["id"] == *key) {
-            Some(n) => {
-                for f in ["title", "content", "tags", "pinned"] {
-                    if let Some(v) = body.get(f) {
-                        n[f] = v.clone();
-                    }
-                }
-                Json(n.clone()).into_response()
+        ("PATCH", ["v1", "notes", key]) => {
+            let st = &mut *st;
+            let race = st.race > 0 && body.get("baseUpdatedAt").is_some();
+            if race {
+                st.race -= 1;
             }
-            None => err(StatusCode::NOT_FOUND, "note_not_found"),
-        },
+            let at = stamp(&mut st.seq);
+            match st.notes.iter_mut().find(|n| n["slug"] == *key || n["id"] == *key) {
+                Some(n) => {
+                    if race {
+                        // Somebody else edited the note: a new item appears and updatedAt moves on.
+                        st.seq += 1;
+                        if let Some(items) = n.get_mut("items").and_then(Value::as_array_mut) {
+                            items.push(json!({"id": format!("i_{:012x}", st.seq), "text": "Added elsewhere", "checked": false, "indent": 0}));
+                        }
+                        n["updatedAt"] = json!(at);
+                        return err(StatusCode::CONFLICT, "conflict");
+                    }
+                    if let Some(base) = body.get("baseUpdatedAt") {
+                        if *base != n["updatedAt"] {
+                            return err(StatusCode::CONFLICT, "conflict");
+                        }
+                    }
+                    if body.get("reminder").is_some_and(|r| !r.is_null()) && n["slug"] == "no-lucina" {
+                        return err(StatusCode::BAD_GATEWAY, "lucina_unreachable");
+                    }
+                    apply_note_body(n, &body, &mut st.labels, &mut st.seq);
+                    n["updatedAt"] = json!(at);
+                    Json(n.clone()).into_response()
+                }
+                None => err(StatusCode::NOT_FOUND, "note_not_found"),
+            }
+        }
         ("POST", ["v1", "notes", key, "append"]) => match st.notes.iter_mut().find(|n| n["slug"] == *key || n["id"] == *key) {
             Some(n) => {
                 let sep = body["separator"].as_str().unwrap_or("");

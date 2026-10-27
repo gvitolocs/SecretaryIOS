@@ -34,6 +34,7 @@ Use the direct tools for quick reads (lucina_timeline, shopping_list, reminders_
 and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_cancel). \
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \
 instead of pasting it into ask_lucina; the owner sees notes in the Secretary app and Lucina recalls them by slug (note_get, notes_search). \
+Notes are Google-Keep style: labels, colours, pinned/archived, checklists (note_get shows item numbers; note_update checks items off, adds or removes them, and changes labels, colour, archive and reminder), and note_labels lists the labels. \
 The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
 Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium. Use the Lucina MCP tools: `computer_screenshot` to see it, `computer_call` with the driver's `browser_*` tools (`start_session` {session}, `browser_prepare` {session, allow_launch: true, profile: {mode: isolated_named, name: lucina}} to open Chromium, `get_browser_state` {session, pid, window_id} on that window for its target_id and tab_id, then `browser_navigate` and the other browser_* tools with session, target_id and tab_id) or click/type_text/press_key, `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. Never install or launch Firefox.\n\n\
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
@@ -186,8 +187,10 @@ impl LucinaMcp {
             "lucina_status" => t.status().await,
             "note_save" => t.note_save(args).await,
             "note_append" => t.note_append(args).await,
+            "note_update" => t.note_update(args).await,
             "note_get" => t.note_get(args).await,
             "notes_search" => t.notes_search(args).await,
+            "note_labels" => t.note_labels().await,
             name if name.starts_with("library_") => t.library(name, args).await,
             "tasks_list" => t.tasks_list(args).await,
             "task_add" => t.task_add(args).await,
