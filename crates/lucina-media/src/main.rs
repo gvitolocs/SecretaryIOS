@@ -217,6 +217,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             sc.background_cpu_quota = cfg.prepare_cpu_quota;
             sc.vaapi_device = cfg.vaapi_device.clone();
             sc.gpu_lease = cfg.gpu_lease.clone();
+            sc.background_bind_to = cfg.prepare_bind_to.clone();
             sc.prepare_window_start = cfg.prepare_window_start;
             sc.prepare_window_end = cfg.prepare_window_end;
             sc.prepare_max_temp_c = cfg.prepare_max_temp_c;

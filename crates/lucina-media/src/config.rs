@@ -47,6 +47,9 @@ pub struct Config {
     pub prepare_window_end: u32,
     /// Tctl and one-minute load at which preparation pauses.
     pub prepare_max_temp_c: u32,
+    /// The unit background scopes are bound to (`BindsTo=`), so a restart stops their ffmpeg:
+    /// `LUCINA_MEDIA_PREPARE_BIND`, else this process's own `.service` from /proc/self/cgroup.
+    pub prepare_bind_to: Option<String>,
     pub prepare_max_load: u32,
     /// Names the Drive leaves out (`LUCINA_MEDIA_DRIVE_IGNORE`, `;`-separated, `*` at either end).
     pub drive_ignore: Vec<String>,
@@ -196,6 +199,11 @@ impl Config {
             gpu_lease,
             prepare_window_start,
             prepare_window_end,
+            prepare_bind_to: match var("LUCINA_MEDIA_PREPARE_BIND") {
+                Some(v) if v == "0" => None,
+                Some(v) => Some(v),
+                None => std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|c| own_service(&c)),
+            },
             prepare_max_temp_c: var("LUCINA_MEDIA_PREPARE_MAX_TEMP")
                 .map(|v| v.parse())
                 .transpose()?
@@ -256,7 +264,8 @@ impl Config {
             gpu_lease: None,
             prepare_window_start: 1,
             prepare_window_end: 7,
-            prepare_max_temp_c: 80,
+            prepare_max_temp_c: 90,
+            prepare_bind_to: None,
             prepare_max_load: 16,
             drive_ignore: crate::drive_kernel::default_ignore(),
             drive_hidden: false,
@@ -367,5 +376,26 @@ mod tests {
         assert!(is_quiet_hour(13, 12, 14));
         assert!(!is_quiet_hour(14, 12, 14));
         assert!(!is_quiet_hour(5, 7, 7));
+    }
+}
+
+/// This process's systemd service from `/proc/self/cgroup` (`0::/…/app.slice/lucina-media.service`),
+/// or None outside a service (a shell, a test).
+fn own_service(cgroup: &str) -> Option<String> {
+    let path = cgroup.lines().find_map(|l| l.strip_prefix("0::"))?;
+    let last = path.trim().rsplit('/').next()?;
+    last.ends_with(".service").then(|| last.to_string())
+}
+
+#[cfg(test)]
+mod own_service_tests {
+    use super::own_service;
+
+    #[test]
+    fn finds_the_service_unit_and_nothing_else() {
+        let svc = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/lucina-media.service\n";
+        assert_eq!(own_service(svc).as_deref(), Some("lucina-media.service"));
+        assert_eq!(own_service("0::/user.slice/user-1000.slice/session-3.scope\n"), None);
+        assert_eq!(own_service(""), None);
     }
 }
