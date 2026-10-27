@@ -46,6 +46,32 @@ enum PerfLog {
     private(set) static var lucinaReadyMs: Double?
     private(set) static var lastAppeared: AppModel.Tab?
 
+    private(set) static var firstMessageMs: Double?
+    private(set) static var firstMessageSource: String?
+    private(set) static var firstMessageCount = 0
+    private(set) static var chatSyncedMs: Double?
+
+    static func firstMessage(source: String, count: Int = 1) {
+        guard firstMessageSource == nil else { return }
+        firstMessageSource = source
+        firstMessageCount = count
+        let now = Date()
+        firstMessageMs = processStart.map { ms(since: $0, to: now) }
+        let app = appInitAt.map { format(ms(since: $0, to: now)) } ?? "?"
+        let total = firstMessageMs.map(format) ?? "?"
+        signposter.emitEvent("FirstMessage", "\(source, privacy: .public)")
+        logger.notice("perf launch: first message \(total, privacy: .public) ms after process start (\(app, privacy: .public) ms after app init), \(source, privacy: .public), \(count) items")
+    }
+
+    static func chatSynced() {
+        guard chatSyncedMs == nil else { return }
+        let now = Date()
+        chatSyncedMs = ms(since: processStart ?? appInitAt ?? now, to: now)
+        let app = appInitAt.map { format(ms(since: $0, to: now)) } ?? "?"
+        signposter.emitEvent("ChatSynced")
+        logger.notice("perf launch: chat synced \(format(chatSyncedMs ?? 0), privacy: .public) ms after process start (\(app, privacy: .public) ms after app init)")
+    }
+
     private static var launchInterval: OSSignpostIntervalState?
     private static var launchDone = false
     private static var pending: (from: AppModel.Tab, to: AppModel.Tab, start: Date, state: OSSignpostIntervalState)?
@@ -157,6 +183,11 @@ enum PerfLog {
             lines.append("launch: no chat frame measured (signed out, or launched on another tab)")
         }
         if let appToChatFrameMs { lines.append("launch: app init → first chat frame \(format(appToChatFrameMs)) ms") }
+        if let firstMessageMs, let firstMessageSource {
+            lines.append("launch: first message \(format(firstMessageMs)) ms (\(firstMessageSource))")
+            lines.append("launch: first message items \(firstMessageCount)")
+        }
+        if let chatSyncedMs { lines.append("launch: chat synced \(format(chatSyncedMs)) ms") }
         let setupTotal = setup.reduce(0) { $0 + $1.ms }
         lines.append("setup: AppModel \(format(setupTotal)) ms in \(setup.count) steps")
         for step in setup.sorted(by: { $0.ms > $1.ms }) { lines.append("  setup \(step.name): \(format(step.ms)) ms") }

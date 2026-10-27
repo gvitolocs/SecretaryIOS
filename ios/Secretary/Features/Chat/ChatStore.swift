@@ -192,6 +192,7 @@ final class ChatStore {
                 mode = .server
             }
             apply(page.items)
+            PerfLog.chatSynced()
             // Only the first load decides the cursor; later refreshes just fill gaps.
             if nextBefore == nil || !hasOlder {
                 nextBefore = page.nextBefore

@@ -105,6 +105,13 @@ struct ChatTranscript: View {
                             MessageRow(item: item, job: store.jobs[item.id])
                                 .modifier(MessageActionsModifier(item: item))
                                 .id(item.id)
+                                .onAppear {
+                                    let source = store.mode == .server ? "server" : "cache"
+                                    let count = store.items.filter { !store.isHidden($0.id) }.count
+                                    DispatchQueue.main.async {
+                                        PerfLog.firstMessage(source: source, count: count)
+                                    }
+                                }
                         }
                     }
                     if store.isSending {
