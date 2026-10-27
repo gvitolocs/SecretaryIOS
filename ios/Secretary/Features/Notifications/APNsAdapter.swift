@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             let app = AppModel.shared
             Task { @MainActor in
                 app.selectedTab = await app.notifications.openFromSystem(userInfo: payload)
+                if let route, NotificationRoute.isSafe(route), Place.fromRoute(route) != nil { app.open(route: route) }
                 if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
                 if let route, let memo = NotificationRoute.memo(route) { app.openMemo(memo.isEmpty ? nil : memo) }
             }

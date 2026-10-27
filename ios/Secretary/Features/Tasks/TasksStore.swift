@@ -131,6 +131,7 @@ final class TasksStore {
         guard !flushing else { return }
         flushing = true
         defer { flushing = false }
+        let sent = !outbox.isEmpty
         while let head = outbox.first {
             do {
                 let raw = try JSONSerialization.jsonObject(with: head.command)
@@ -146,6 +147,7 @@ final class TasksStore {
             save()
         }
         await refresh()
+        if sent { WidgetStore.changed(.tasks) }
     }
 
     // MARK: - Actions

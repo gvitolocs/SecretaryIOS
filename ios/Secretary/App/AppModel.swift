@@ -10,18 +10,22 @@ import UIKit
 final class AppModel {
     /// One app model per process: views, App Intents and the Focus filter share it.
     static let shared = AppModel()
+    /// Whether `shared` exists yet: a Lock Screen recording launch runs without it.
+    private(set) static var isBuilt = false
 
     enum Phase: Equatable { case checking, signedOut, signedIn }
 
-    /// The owner's four tabs (2026-10-24): Chat, Shopping, Training + Weight, Plugins.
-    /// Settings opens as a sheet from the gear button; everything else is a plugin card.
+    /// The owner's five tabs (2026-10-26): Chat, Lucina (her 3D stage, loaded only once this
+    /// tab opens), Shopping, Training + Weight, Plugins. Settings opens as a sheet from the gear
+    /// button; everything else is a plugin card.
     enum Tab: String, Hashable, CaseIterable {
-        case chat, shopping, fitness, plugins
+        case chat, lucina, shopping, fitness, plugins
 
         /// A launch argument or route name (`gym` and `weight` are the training tab).
         init?(name: String) {
             switch name {
             case "gym", "weight", "fitness", "training": self = .fitness
+            case "avatar", "stage", "wardrobe": self = .lucina
             default: self.init(rawValue: name)
             }
         }
@@ -42,10 +46,18 @@ final class AppModel {
     var showNotes = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
+    /// The Countdown plugin (pinned events for the countdown widget, `/countdowns`).
+    var showCountdowns = false
     /// The grocery deals map, pushed on the Shopping tab (`/shopping/map`).
     var showDealsMap = false
+    /// A place opened by a widget, notification or rich route action.
+    var openPlace: Place?
+    /// The opened place's map starts navigating (`/map/place?…&navigate=1`, a Shortcut).
+    var openPlaceNavigates = false
     /// The media library and player, a plugin.
     var showMedia = false
+    /// `/films/play/<id>` (a film Lucina found): Films opens and plays it.
+    var openFilmID: String?
     /// The Gallery, a plugin.
     var showGallery = false
     /// The Drive (films, shared files, voice memos: what is not a phone backup), a plugin.
@@ -54,6 +66,12 @@ final class AppModel {
     var showMemos = false
     /// Lucina's Pokémon game (live screen, team, play/pause), a plugin.
     var showPokemon = false
+    /// The quick weight entry sheet on the Training tab (widget "+", Log weight control).
+    var showQuickWeight = false
+    /// The Shopping tab's add field (Add to shopping control, widget "+").
+    var showShoppingAdd = false
+    /// A widget link that arrived before sign-in finished; opened once the tabs show.
+    @ObservationIgnored var pendingWidgetRoute: String?
 
     @ObservationIgnored let client: APIClient
     /// /v1/media/* (Gallery, photo backup, player) lives in p1's Caddy, not in secretary-server, so it
@@ -99,6 +117,7 @@ final class AppModel {
     var api: SecretaryAPI { SecretaryAPI(client: client) }
 
     init(keychain: KeychainStore = .accessKey, defaults: UserDefaults = .standard) {
+        Self.isBuilt = true
         let launch = LaunchOptions(defaults: defaults)
         if launch.resetState {
             try? keychain.delete()
@@ -109,35 +128,40 @@ final class AppModel {
             defaults.removeObject(forKey: GymLocation.key)
             defaults.removeObject(forKey: ChatStore.sessionIdKey)
         }
-        let client = APIClient(endpoints: ServerConfig.resolvedEndpoints(defaults: defaults), accessKey: try? keychain.read(),
-                               defaults: defaults)
+        let client = PerfLog.measure("client") {
+            APIClient(endpoints: ServerConfig.resolvedEndpoints(defaults: defaults), accessKey: try? keychain.read(), defaults: defaults)
+        }
         self.client = client
         self.keychain = keychain
         baseURL = client.baseURL
-        chat = ChatStore(api: { SecretaryAPI(client: client) })
-        shopping = ShoppingStore(api: { SecretaryAPI(client: client) })
-        shoppingV2 = ShoppingV2Store(api: { ShoppingV2Client(client: client) })
+        // Only the chat's own cache (the newest 50 items) is read before the first frame; every other
+        // store reads its files off the main thread or when its screen first needs them.
+        let chat = PerfLog.measure("chat") { ChatStore(api: { SecretaryAPI(client: client) }) }
+        self.chat = chat
+        shopping = PerfLog.measure("shopping") { ShoppingStore(api: { SecretaryAPI(client: client) }) }
+        shoppingV2 = PerfLog.measure("shoppingV2") { ShoppingV2Store(api: { ShoppingV2Client(client: client) }, restoresInBackground: true) }
         let location = GymLocation(rawValue: defaults.string(forKey: GymLocation.key) ?? "") ?? .device
-        let engine = Result { try FFIGymEngine(fileURL: FFIGymEngine.defaultFileURL) }
-        let gymEngine = try? engine.get()
+        // The Rust engine opens gym.json on its own queue; the first gym request waits for it.
+        let gymEngine = PerfLog.measure("gymEngine") { FFIGymEngine(openingInBackground: FFIGymEngine.defaultFileURL) }
         deviceEngine = gymEngine
-        if location == .device, let gymEngine {
+        if location == .device {
             gym = GymStore(transport: FFIGymTransport(engine: gymEngine), clockInterval: .seconds(1))
             gymLocation = .device
-            gymEngineError = nil
         } else {
             gym = GymStore(transport: HTTPGymTransport(client: client))
             gymLocation = .server
-            if case let .failure(error) = engine { gymEngineError = error.localizedDescription } else { gymEngineError = nil }
         }
-        weight = WeightStore(client: { BodyClient(client: client) })
-        notes = NotesStore(api: { NotesAPI(client: client) })
-        tasks = TasksStore(api: { TasksAPI(client: client) })
+        gymEngineError = nil
+        weight = PerfLog.measure("weight") { WeightStore(client: { BodyClient(client: client) }) }
+        notes = PerfLog.measure("notes") { NotesStore(api: { NotesAPI(client: client) }) }
+        tasks = PerfLog.measure("tasks") { TasksStore(api: { TasksAPI(client: client) }) }
         health = HealthStore(api: { SecretaryAPI(client: client) })
-        lucina = LucinaStageController(client: client, chat: chat)
-        wardrobe = WardrobeStore(api: { AvatarAPI(client: client) })
-        device = DeviceHub(client: client, weight: weight)
-        notifications = NotificationCenterStore(api: { NotificationsClient(client: client) })
+        // Cheap: no web view, model or voice engine until the Lucina tab first opens.
+        lucina = PerfLog.measure("lucina") { LucinaStageController(client: client, chat: chat) }
+        wardrobe = PerfLog.measure("wardrobe") { WardrobeStore(api: { AvatarAPI(client: client) }) }
+        let weight = weight
+        device = PerfLog.measure("device") { DeviceHub(client: client, weight: weight) }
+        notifications = PerfLog.measure("notifications") { NotificationCenterStore(api: { NotificationsClient(client: client) }) }
         var mediaBase = client.primaryURL
         #if DEBUG || SCREENSHOTS
         let selftest = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
@@ -160,38 +184,47 @@ final class AppModel {
             mediaClient.accessKey = client.accessKey
             return mediaClient
         }
-        media = MediaPlayer(api: { MediaAPI(client: mediaAPI()) })
-        gallery = GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery")
-        drive = GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive")
-        backup = PhotoBackup(api: { GalleryAPI(client: mediaAPI()) })
+        media = PerfLog.measure("media") { MediaPlayer(api: { MediaAPI(client: mediaAPI()) }) }
+        gallery = PerfLog.measure("gallery") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "gallery") }
+        drive = PerfLog.measure("drive") { GalleryStore(api: { GalleryAPI(client: mediaAPI()) }, scope: "drive") }
+        backup = PerfLog.measure("backup") { PhotoBackup(api: { GalleryAPI(client: mediaAPI()) }) }
         let memoClient = APIClient(baseURL: client.primaryURL, accessKey: client.accessKey)
         self.memoClient = memoClient
-        memos = MemosStore(api: {
-            guard let key = client.accessKey, !key.isEmpty else { return nil }
-            memoClient.accessKey = key
-            return MemosAPI(client: memoClient)
-        })
+        memos = PerfLog.measure("memos") {
+            MemosStore(api: {
+                guard let key = client.accessKey, !key.isEmpty else { return nil }
+                memoClient.accessKey = key
+                return MemosAPI(client: memoClient)
+            })
+        }
+        // With a stored token the first frame is already the chat (from its cache): no spinner
+        // frame and no fade while start() confirms the token. Hosted unit tests stay off the tabs.
+        if client.accessKey?.isEmpty == false, !Self.isUnitTestHost { phase = .signedIn }
         if let tab = launch.initialTab { selectedTab = tab }
+        // `-lucinaDemo` (any build): the stage's scripted gestures run once the Lucina tab loads her.
+        if ProcessInfo.processInfo.arguments.contains("-lucinaDemo") { selectedTab = .lucina }
         #if DEBUG
         MemoSynthetic.runIfRequested(into: memos, defaults: defaults)
         MemoRecordSelfTest.runIfRequested(store: memos, defaults: defaults)
         #endif
-        // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
-        MemoRecorder.endStaleActivities()
-        // A recording iOS cut off last time is recovered and queued.
-        #if DEBUG
-        memos.queue.recoverOrphans(dryRun: defaults.bool(forKey: "SecretaryMemoRecoverDryRun"))
-        #else
-        memos.queue.recoverOrphans()
+        #if DEBUG || SCREENSHOTS
+        // `-SecretaryShareSelfTest all|photo,pdf,…`: waits for sign-in, then logs to Documents/share-selftest.txt.
+        ShareSelfTest.runIfRequested(app: self, defaults: defaults)
         #endif
-        let memoStore = memos
-        MemoRecordingCommands.handle = { command in
-            switch command {
-            case .pause: memoStore.recorder.pause()
-            case .resume: memoStore.recorder.resume()
-            case .stop: memoStore.finishRecording()
-            }
+        // The Live Activity's pause/resume/stop buttons (LiveActivityIntents run in this process).
+        MemoRecorder.endStaleActivities(keeping: MemoRecordingCenter.recorder)
+        // A recording iOS cut off last time is recovered and queued.
+        PerfLog.measure("memoRecovery") {
+            #if DEBUG
+            memos.queue.recoverOrphans(dryRun: defaults.bool(forKey: "SecretaryMemoRecoverDryRun"))
+            #else
+            memos.queue.recoverOrphans()
+            #endif
         }
+        // Widget and control taps (OpenSecretaryIntent runs in this process).
+        WidgetRouter.open = { route in AppModel.shared.openWidgetRoute(route) }
+        pendingWidgetRoute = WidgetRouter.pending
+        WidgetRouter.pending = nil
         if launch.openSettings { showSettings = true }
         if launch.openNotes {
             selectedTab = .plugins
@@ -224,7 +257,8 @@ final class AppModel {
         chat.onTransportSuccess = onSuccess
         // Attachments sent from the chat report their upload progress and outcome to its bubbles.
         ShareUploads.shared.observer = chat
-        AttachmentStore.purgePending()
+        // Leftover trays: a directory walk nobody waits for.
+        Task.detached(priority: .utility) { AttachmentStore.purgePending() }
         let device = device
         let wardrobe = wardrobe
         let notes = notes
@@ -253,21 +287,29 @@ final class AppModel {
         client.onEndpointChange = { [weak self] url in
             Task { @MainActor in self?.baseURL = url }
         }
+        // The on-device gym engine could not open gym.json: train on the server engine, as before.
+        Task { [weak self] in
+            guard let message = await gymEngine.openError() else { return }
+            self?.gymEngineFailed(message)
+        }
     }
+
+    /// Hosted unit tests load the app; it stays off the network and off the tabs.
+    nonisolated static var isUnitTestHost: Bool { ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil }
 
     // MARK: - Session
 
     /// On launch: with a stored token go straight in and confirm it in the background.
+    /// The first chat frame does not wait for any of it: the share retries and the photo backup
+    /// start from the tabs' foreground loop (MainTabs), a few seconds after launch.
     func start() async {
+        PerfLog.count("app.start")
         guard client.accessKey?.isEmpty == false else {
             phase = .signedOut
             return
         }
         phase = .signedIn
-        device.syncCredentials()
-        LucinaDonations.donate(daily: true)
-        Task { await ShareUploads.shared.retryPending() }
-        if backup.settings.enabled { Task { await backup.requestAccessAndRun() } }
+        Task { [weak self] in await self?.afterLaunch() }
         await health.refresh()
         do {
             let session = try await api.session()
@@ -280,6 +322,14 @@ final class AppModel {
             // Offline or server trouble: stay signed in; the stores show their own errors.
             handle(APIError.wrap(error))
         }
+    }
+
+    /// Launch housekeeping nobody looks at: after the first frames, off the critical path.
+    private func afterLaunch() async {
+        try? await Task.sleep(for: .seconds(1))
+        guard phase == .signedIn else { return }
+        device.syncCredentials()
+        LucinaDonations.donate(daily: true)
     }
 
     /// Email + password → device token (`POST /v1/auth/device`).
@@ -327,9 +377,11 @@ final class AppModel {
         client.accessKey = nil
         deviceName = nil
         lucina.stopEverything()
+        lucina.releaseStage()
         device.bridge.reset()
         BridgeCredentials.write(nil)
-        lucina.expanded = false
+        WidgetStore.removeAll()
+        WidgetStore.reload()
         chat.clear()
         shopping.reset()
         shoppingV2.reset()
@@ -380,6 +432,18 @@ final class AppModel {
         store.onTransportError = transportErrorHandler
         store.onFinished = gym.onFinished
         return store
+    }
+
+    /// gym.json would not open on its queue: the server engine takes over (the choice is not saved).
+    private func gymEngineFailed(_ message: String) {
+        gymEngineError = String(localized: "Couldn't open your gym data: \(message)")
+        deviceEngine = nil
+        guard gymLocation == .device else { return }
+        let store = makeGymStore(.server)
+        gym.reset()
+        gym = store
+        gymLocation = .server
+        Task { await store.refresh() }
     }
 
     func setGymLocation(_ location: GymLocation) {
@@ -487,7 +551,7 @@ struct LaunchOptions {
         openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
-        openMedia = defaults.string(forKey: "SecretaryInitialTab") == "media"
+        openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"

@@ -19,33 +19,64 @@ final class FFIGymEngine: @unchecked Sendable {
         }
     }
 
-    private let handle: OpaquePointer
+    /// Set once by `openFile` (on `queue`, or in the throwing init); read on `queue`.
+    private var handle: OpaquePointer?
+    private var openFailure: String?
     private let queue = DispatchQueue(label: "tech.getsecretary.gym-engine", qos: .userInitiated)
     let fileURL: URL
 
     init(fileURL: URL) throws {
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        self.fileURL = fileURL
+        openFile()
+        if let openFailure { throw EngineError.open(openFailure) }
+    }
+
+    /// App launch: gym.json is read and parsed on the engine's queue, not on the main thread.
+    /// Requests queue up behind the open; `openError()` says whether it worked.
+    init(openingInBackground fileURL: URL) {
+        self.fileURL = fileURL
+        queue.async { [self] in openFile() }
+    }
+
+    private func openFile() {
+        do {
+            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        } catch {
+            openFailure = error.localizedDescription
+            return
+        }
         guard let handle = fileURL.path.withCString({ secretary_gym_open($0) }) else {
             var message = "unknown error"
             if let raw = secretary_open_error() {
                 message = String(cString: raw)
                 secretary_string_free(raw)
             }
-            throw EngineError.open(message)
+            openFailure = message
+            return
         }
         self.handle = handle
-        self.fileURL = fileURL
+    }
+
+    /// Why the engine could not open its file, once the open has run (nil: it is open).
+    func openError() async -> String? {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in continuation.resume(returning: handle == nil ? (openFailure ?? "unknown error") : nil) }
+        }
     }
 
     deinit {
         // Requests hold a strong reference to the engine, so none is in flight here.
-        secretary_gym_close(handle)
+        if let handle { secretary_gym_close(handle) }
     }
 
     /// Sends one JSON request and returns the engine's JSON response.
     func request(_ json: Data) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
+                guard let handle else {
+                    continuation.resume(throwing: EngineError.open(openFailure ?? "unknown error"))
+                    return
+                }
                 let text = String(decoding: json, as: UTF8.self)
                 guard let raw = text.withCString({ secretary_gym_request(handle, $0) }) else {
                     continuation.resume(throwing: EngineError.emptyResponse)

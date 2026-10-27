@@ -116,12 +116,33 @@ final class ShoppingV2Store {
     @ObservationIgnored private(set) var search = CatalogSearch(catalog: .empty, lang: "it")
     @ObservationIgnored var onTransportError: ((APIError) -> Void)?
     @ObservationIgnored let now: () -> Date
+    /// The app reads and writes the snapshot (it carries the whole catalog) off the main thread;
+    /// tests use the synchronous path.
+    @ObservationIgnored private let backgroundIO: Bool
+    /// The launch read of the snapshot, until it is applied.
+    @ObservationIgnored private var restoring: Task<Void, Never>?
+    /// Something changed before the snapshot was read: written once it is applied.
+    @ObservationIgnored private var needsWrite = false
+    @ObservationIgnored private var writeTask: Task<Void, Never>?
+    @ObservationIgnored private var writeGeneration = 0
+    /// When the last full load finished: coming back to the tab does not refetch everything.
+    @ObservationIgnored private var lastLoad: Date?
 
-    init(api: @escaping () -> ShoppingV2Client, fileURL: URL = ShoppingV2Store.defaultFileURL, now: @escaping () -> Date = Date.init) {
+    init(api: @escaping () -> ShoppingV2Client, fileURL: URL = ShoppingV2Store.defaultFileURL, now: @escaping () -> Date = Date.init,
+         restoresInBackground: Bool = false) {
         self.api = api
         self.fileURL = fileURL
         self.now = now
-        restore()
+        backgroundIO = restoresInBackground
+        guard restoresInBackground else {
+            apply(Self.read(fileURL))
+            return
+        }
+        restoring = Task { [weak self] in
+            let restored = await Task.detached(priority: .userInitiated) { ShoppingV2Store.read(fileURL) }.value
+            guard !Task.isCancelled, let self else { return }
+            self.apply(restored)
+        }
     }
 
     nonisolated static var defaultFileURL: URL {
@@ -221,7 +242,19 @@ final class ShoppingV2Store {
 
     // MARK: - Loading
 
+    /// The tab appearing again: a full load only when the last one is a minute old; the outbox still goes out.
+    func loadIfStale(lang: String, maxAge: TimeInterval = 60) async {
+        if let lastLoad, now().timeIntervalSince(lastLoad) < maxAge, search.lang == lang, availability == .available {
+            PerfLog.count("shopping.load.skipped")
+            resume()
+            return
+        }
+        await load(lang: lang)
+    }
+
     func load(lang: String) async {
+        await restoring?.value
+        PerfLog.count("shopping.load")
         isLoading = server[currentListId] == nil
         defer { isLoading = false }
         await loadCatalog(lang: lang)
@@ -233,6 +266,7 @@ final class ShoppingV2Store {
             if !lists.contains(where: { $0.id == currentListId }) { currentListId = lists.first?.id ?? ShopList.defaultId }
             try await refreshState(currentListId)
             error = nil
+            lastLoad = now()
             persist()
             await flush()
         } catch {
@@ -249,16 +283,28 @@ final class ShoppingV2Store {
     func loadCatalog(lang: String) async {
         do {
             let result = try await api().catalog(lang: lang, etag: catalogLang == lang ? catalogETag : nil)
+            catalogETag = result.etag
             if let catalog = result.catalog {
                 self.catalog = catalog
                 catalogLang = lang
+            } else if search.lang == lang {
+                return // 304: the index already matches the catalog
             }
-            catalogETag = result.etag
-            search = CatalogSearch(catalog: catalog, lang: lang, custom: customObjects)
         } catch {
             // The cached catalog (if any) keeps working.
-            search = CatalogSearch(catalog: catalog, lang: lang, custom: customObjects)
+            guard search.lang != lang else { return }
         }
+        await rebuildSearch(lang: lang)
+    }
+
+    /// Folds every name and alias of the catalog: off the main thread.
+    private func rebuildSearch(lang: String) async {
+        let source = catalog
+        let custom = customObjects
+        let built = await Task.detached(priority: .userInitiated) { CatalogSearch(catalog: source, lang: lang, custom: custom) }.value
+        // A newer catalog or custom object arrived meanwhile: that one rebuilds the index.
+        guard source == catalog, custom == customObjects else { return }
+        search = built
     }
 
     private func refreshState(_ listId: String) async throws {
@@ -268,6 +314,7 @@ final class ShoppingV2Store {
     }
 
     func select(_ listId: String) async {
+        await restoring?.value
         currentListId = listId
         undo = nil
         do {
@@ -450,6 +497,7 @@ final class ShoppingV2Store {
 
     /// Sends the outbox, list by list, in order.
     func flush() async {
+        await restoring?.value
         guard !isSyncing, !outbox.isEmpty else { return }
         isSyncing = true
         defer { isSyncing = false }
@@ -459,6 +507,7 @@ final class ShoppingV2Store {
             guard await flush(listId) else { return }
         }
         syncProblem = nil
+        WidgetStore.changed(.shopping)
     }
 
     /// Returns false when the network is the problem (the rest waits for a retry).
@@ -546,7 +595,7 @@ final class ShoppingV2Store {
 
     // MARK: - Persistence
 
-    private struct Snapshot: Codable {
+    private struct Snapshot: Codable, Sendable {
         var currentListId: String
         var lists: [ShopList]
         var server: [String: ListState]
@@ -557,31 +606,74 @@ final class ShoppingV2Store {
         var customObjects: [CatalogItem]?
     }
 
+    private func snapshot() -> Snapshot {
+        Snapshot(currentListId: currentListId, lists: lists, server: server, outbox: outbox,
+                 catalog: catalog.items.isEmpty ? nil : catalog, catalogETag: catalogETag, catalogLang: catalogLang,
+                 customObjects: customObjects.isEmpty ? nil : customObjects)
+    }
+
     private func persist() {
-        let snapshot = Snapshot(currentListId: currentListId, lists: lists, server: server, outbox: outbox,
-                                catalog: catalog.items.isEmpty ? nil : catalog, catalogETag: catalogETag, catalogLang: catalogLang,
-                                customObjects: customObjects.isEmpty ? nil : customObjects)
+        guard restoring == nil else {
+            needsWrite = true
+            return
+        }
+        guard backgroundIO else { return Self.write(snapshot(), to: fileURL) }
+        // In order, off the main thread; a burst of taps writes only the newest state.
+        writeGeneration += 1
+        let generation = writeGeneration
+        let previous = writeTask
+        let url = fileURL
+        writeTask = Task { [weak self] in
+            await previous?.value
+            guard let self, self.writeGeneration == generation else { return }
+            let snapshot = self.snapshot()
+            await Task.detached(priority: .utility) { ShoppingV2Store.write(snapshot, to: url) }.value
+        }
+    }
+
+    nonisolated private static func write(_ snapshot: Snapshot, to url: URL) {
         do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(snapshot).write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(snapshot).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
             // The outbox only loses durability, never the state on screen.
         }
     }
 
-    private func restore() {
-        guard let data = try? Data(contentsOf: fileURL), let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
-        currentListId = snapshot.currentListId
-        lists = snapshot.lists
-        server = snapshot.server
-        outbox = snapshot.outbox
-        customObjects = snapshot.customObjects ?? []
-        if let catalog = snapshot.catalog {
-            self.catalog = catalog
-            catalogETag = snapshot.catalogETag
-            catalogLang = snapshot.catalogLang
-            search = CatalogSearch(catalog: catalog, lang: snapshot.catalogLang ?? catalog.lang, custom: customObjects)
+    private struct Restored: Sendable {
+        let snapshot: Snapshot
+        let search: CatalogSearch?
+    }
+
+    /// Decodes the snapshot and builds the catalog index (any thread).
+    nonisolated private static func read(_ url: URL) -> Restored? {
+        guard let data = try? Data(contentsOf: url), let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
+        let search = snapshot.catalog.map { CatalogSearch(catalog: $0, lang: snapshot.catalogLang ?? $0.lang, custom: snapshot.customObjects ?? []) }
+        return Restored(snapshot: snapshot, search: search)
+    }
+
+    private func apply(_ restored: Restored?) {
+        let changedBefore = needsWrite
+        // Ops queued before the file was read (a control or widget at launch) go after the saved ones.
+        let queued = outbox
+        if let restored {
+            let snapshot = restored.snapshot
+            currentListId = snapshot.currentListId
+            lists = snapshot.lists
+            server = snapshot.server
+            outbox = snapshot.outbox + queued
+            customObjects = snapshot.customObjects ?? []
+            if let catalog = snapshot.catalog, let search = restored.search {
+                self.catalog = catalog
+                catalogETag = snapshot.catalogETag
+                catalogLang = snapshot.catalogLang
+                self.search = search
+            }
         }
+        guard restoring != nil else { return }
+        restoring = nil
+        needsWrite = false
+        if changedBefore || !queued.isEmpty { persist() }
     }
 
     func reset() {
@@ -596,6 +688,21 @@ final class ShoppingV2Store {
         error = nil
         syncProblem = nil
         availability = .unknown
-        try? FileManager.default.removeItem(at: fileURL)
+        lastLoad = nil
+        restoring?.cancel()
+        restoring = nil
+        needsWrite = false
+        guard backgroundIO else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return
+        }
+        // After any write still in flight, so none of them brings the file back.
+        writeGeneration += 1
+        let previous = writeTask
+        let url = fileURL
+        writeTask = Task {
+            await previous?.value
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 }

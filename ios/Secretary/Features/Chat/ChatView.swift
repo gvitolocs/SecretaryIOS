@@ -2,9 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The Chat tab, built from parts so other surfaces can reuse them:
-/// `[stage] + ChatTranscript + ChatComposer`. A future `LucinaStage` (the animated
-/// avatar with voice) goes in the `stage` slot above the transcript; the transcript
-/// and composer only depend on `ChatStore`. Nothing here plays audio.
+/// `[stage] + ChatTranscript + ChatComposer`. The app passes no stage: Lucina's 3D avatar
+/// lives in her own tab (Features/Lucina/LucinaTab.swift), so the chat loads no web view or
+/// model. The transcript and composer only depend on `ChatStore`. Nothing here plays audio.
 struct ChatView<Stage: View>: View {
     @Environment(ChatStore.self) private var store
     @Environment(AppModel.self) private var app
@@ -402,6 +402,7 @@ private struct ProactiveCard: View {
                     .accessibilityIdentifier("proactivePriority")
             }
             Text(LinkText.attributed(item.displayText)).font(.subheadline).textSelection(.enabled)
+            if let place = meta.place { PlaceCard(place: place) }
             HStack(spacing: 6) {
                 ForEach(buttons, id: \.id) { b in
                     Button(b.label) { tap(b.id) }

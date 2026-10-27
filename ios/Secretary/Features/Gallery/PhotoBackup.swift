@@ -86,6 +86,9 @@ final class PhotoBackup {
         if reverse != localAssets { localAssets = reverse }
     }
     @ObservationIgnored private var running: Task<Void, Never>?
+    /// The ledger read at launch, until it has landed.
+    @ObservationIgnored private var ledgerLoad: Task<Void, Never>?
+    @ObservationIgnored private var ledgerWrite: Task<Void, Never>?
     @ObservationIgnored private let path = NWPathMonitor()
     @ObservationIgnored private var currentPath: NWPath?
     @ObservationIgnored private var observer: LibraryObserver?
@@ -104,14 +107,19 @@ final class PhotoBackup {
         self.api = api
         settings = (defaults.data(forKey: Self.settingsKey)).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) } ?? Settings()
         deviceId = Self.stableDeviceId()
-        if let data = try? Data(contentsOf: Self.ledgerURL),
-           let saved = try? JSONDecoder().decode(Ledger.self, from: data) {
-            ledger = saved.entries
-            lastBackup = saved.lastBackup
-        }
-        rebuildLocalAssets()
-        backedUp = ledger.values.filter { $0.itemId != nil }.count
         status = settings.enabled ? .idle : .off
+        // One entry per photo ever sent: decoded off the main thread, not at launch. A pass waits for it.
+        let url = Self.ledgerURL
+        ledgerLoad = Task { [weak self] in
+            let saved = await Task.detached(priority: .utility) { () -> Ledger? in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? JSONDecoder().decode(Ledger.self, from: data)
+            }.value
+            guard let self, let saved else { return }
+            self.ledger = saved.entries
+            self.lastBackup = saved.lastBackup
+            self.backedUp = self.ledger.values.filter { $0.itemId != nil }.count
+        }
         // A pass that waited for Wi-Fi (or for the first path update) starts again when the network allows it.
         path.pathUpdateHandler = { [weak self] p in
             Task { @MainActor in
@@ -134,11 +142,15 @@ final class PhotoBackup {
         if let data = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(data, forKey: Self.settingsKey) }
     }
 
+    /// After every asset: the whole ledger is encoded and written off the main thread, in order.
     private func saveLedger() {
-        let dir = Self.ledgerURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(Ledger(entries: ledger, lastBackup: lastBackup)) {
-            try? data.write(to: Self.ledgerURL, options: .atomic)
+        let snapshot = Ledger(entries: ledger, lastBackup: lastBackup)
+        let url = Self.ledgerURL
+        let previous = ledgerWrite
+        ledgerWrite = Task.detached(priority: .utility) {
+            await previous?.value
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let data = try? JSONEncoder().encode(snapshot) { try? data.write(to: url, options: .atomic) }
         }
     }
 
@@ -249,8 +261,14 @@ final class PhotoBackup {
     }
 
     private func run() async {
+        await ledgerLoad?.value
         status = .scanning
-        let work = scan()
+        // Photos is asked for every asset's resources: thousands of calls, off the main thread.
+        let known = ledger
+        let includeVideos = settings.includeVideos
+        let scanned = await Task.detached(priority: .utility) { PhotoBackup.scan(ledger: known, includeVideos: includeVideos) }.value
+        if !scanned.favoritesChanged.isEmpty { sendFavorites(scanned.favoritesChanged) }
+        let work = scanned.work
         log.info("PhotoBackup scan found \(work.count) to send, \(self.ledger.count) known")
         remaining = work.count
         if work.isEmpty {
@@ -302,12 +320,18 @@ final class PhotoBackup {
         saveLedger()
     }
 
-    /// What needs sending: new assets, edited ones, and Live Photo motion halves.
-    private func scan() -> [Work] {
+    /// PhotoKit objects are safe to read from any thread; the result only moves to the main actor.
+    private struct ScanResult: @unchecked Sendable {
+        var work: [Work] = []
+        var favoritesChanged: [(String, String, Bool)] = []
+    }
+
+    /// What needs sending: new assets, edited ones, and Live Photo motion halves (any thread).
+    nonisolated private static func scan(ledger: [String: Entry], includeVideos: Bool) -> ScanResult {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         options.includeHiddenAssets = false
-        let types: [PHAssetMediaType] = settings.includeVideos ? [.image, .video] : [.image]
+        let types: [PHAssetMediaType] = includeVideos ? [.image, .video] : [.image]
         options.predicate = NSPredicate(format: "mediaType IN %@", types.map(\.rawValue))
         let assets = PHAsset.fetchAssets(with: options)
         var work: [Work] = []
@@ -317,7 +341,7 @@ final class PhotoBackup {
             let key = asset.localIdentifier
             guard let main = Self.mainResource(asset, resources) else { return }
             let signature = "\(main.type.rawValue):\(main.originalFilename)"
-            let known = self.ledger[key]
+            let known = ledger[key]
             let edited = known?.modified != asset.modificationDate && known?.signature != signature
             if known?.itemId == nil || edited || known?.uploadId != nil {
                 let pair = resources.contains { $0.type == .pairedVideo || $0.type == .fullSizePairedVideo } ? key + "#motion" : nil
@@ -326,30 +350,32 @@ final class PhotoBackup {
                 favoritesChanged.append((key, item, asset.isFavorite))
             }
             if let paired = resources.first(where: { $0.type == .fullSizePairedVideo }) ?? resources.first(where: { $0.type == .pairedVideo }),
-               self.settings.includeVideos {
+               includeVideos {
                 let mkey = key + "#motion"
                 let msig = "\(paired.type.rawValue):\(paired.originalFilename)"
-                let mknown = self.ledger[mkey]
+                let mknown = ledger[mkey]
                 if mknown?.itemId == nil || mknown?.signature != msig || mknown?.uploadId != nil {
                     work.append(Work(key: mkey, asset: asset, resource: paired, motion: true, pairKey: key, signature: msig))
                 }
             }
         }
-        if !favoritesChanged.isEmpty {
-            let api = api()
-            Task {
-                for (key, item, fav) in favoritesChanged {
-                    if (try? await api.setFavorite(item, fav)) != nil {
-                        await MainActor.run { self.ledger[key]?.favorite = fav; self.saveLedger() }
-                    }
+        return ScanResult(work: work, favoritesChanged: favoritesChanged)
+    }
+
+    /// Favourites changed in Photos since they were sent: tell the server.
+    private func sendFavorites(_ changed: [(String, String, Bool)]) {
+        let api = api()
+        Task {
+            for (key, item, fav) in changed {
+                if (try? await api.setFavorite(item, fav)) != nil {
+                    await MainActor.run { self.ledger[key]?.favorite = fav; self.saveLedger() }
                 }
             }
         }
-        return work
     }
 
     /// The edited rendering when there is one, else the original.
-    private static func mainResource(_ asset: PHAsset, _ resources: [PHAssetResource]) -> PHAssetResource? {
+    nonisolated private static func mainResource(_ asset: PHAsset, _ resources: [PHAssetResource]) -> PHAssetResource? {
         let order: [PHAssetResourceType] = asset.mediaType == .video ? [.fullSizeVideo, .video] : [.fullSizePhoto, .photo]
         for t in order {
             if let r = resources.first(where: { $0.type == t }) { return r }

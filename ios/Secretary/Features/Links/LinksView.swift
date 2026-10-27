@@ -393,6 +393,13 @@ private struct UpcomingRows: View {
                         Spacer(minLength: 0)
                     }
                     .accessibilityElement(children: .combine)
+                    // Long-press: pin it to the countdown widget.
+                    .contextMenu {
+                        let item = CountdownEvent(id: event.id, title: event.title, start: event.startDate, allDay: event.allDay)
+                        CountdownPinButton(event: item, pinned: Countdown.isPinned(item.id)) {
+                            Countdown.setPinned(item, !Countdown.isPinned(item.id))
+                        }
+                    }
                 }
                 if events.count > 6 {
                     Text("+\(events.count - 6) more").font(.caption).foregroundStyle(.secondary)

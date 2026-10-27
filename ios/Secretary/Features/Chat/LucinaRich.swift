@@ -41,6 +41,8 @@ enum RichBlock: Codable, Equatable, Hashable, Sendable {
     case steps(title: String?, items: [String])
     case quote(text: String, cite: String?)
     case link(url: URL, title: String)
+    /// A place on the map (Features/Places/Place.swift): at most `Place.maxPerMessage` per message.
+    case place(Place)
 }
 
 struct RichMessage: Codable, Equatable, Hashable, Sendable {
@@ -53,7 +55,7 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
 
     // MARK: Validation
 
-    private static func text(_ v: JSONValue?, _ max: Int) -> String {
+    static func text(_ v: JSONValue?, _ max: Int) -> String {
         var s: String
         switch v {
         case let .string(x)?: s = x
@@ -66,7 +68,7 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
         return s.count > max ? String(s.prefix(max - 1)).trimmingCharacters(in: .whitespaces) + "…" : s
     }
 
-    private static func line(_ v: JSONValue?, _ max: Int) -> String {
+    static func line(_ v: JSONValue?, _ max: Int) -> String {
         text(v, max).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
     }
 
@@ -134,6 +136,8 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
             let raw = line(v["url"], 2000)
             guard let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return nil }
             return .link(url: url, title: title ?? url.host ?? raw)
+        case "place":
+            return Place.parse(v).map(RichBlock.place)
         default:
             return nil
         }
@@ -173,7 +177,12 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
         guard let v, v["format"]?.stringValue == "v1" else { return nil }
         let bubbles = array(v["bubbles"]).map { text($0, 900) }.filter { !$0.isEmpty }.prefix(maxBubbles)
         guard !bubbles.isEmpty else { return nil }
-        let blocks = array(v["blocks"]).compactMap(block).prefix(maxBlocks)
+        var places = 0
+        let blocks = array(v["blocks"]).compactMap(block).filter { b in
+            guard case .place = b else { return true }
+            places += 1
+            return places <= Place.maxPerMessage
+        }.prefix(maxBlocks)
         var actions: [RichAction] = []
         for raw in array(v["actions"]) {
             guard let a = action(raw, index: actions.count), !actions.contains(where: { $0.id == a.id }) else { continue }
@@ -320,6 +329,14 @@ struct RichBlockView: View {
     @State private var expanded = false
 
     var body: some View {
+        if case let .place(place) = block {
+            PlaceCard(place: place)
+        } else {
+            styled
+        }
+    }
+
+    private var styled: some View {
         content
             .font(.subheadline)
             .padding(12)
@@ -445,6 +462,8 @@ struct RichBlockView: View {
                     }
                 }
             }
+        case .place:
+            EmptyView()
         }
     }
 }
@@ -504,10 +523,15 @@ struct RichActionsView: View {
 extension AppModel {
     /// In-app navigation for a `route` button (web paths mapped to tabs).
     func open(route path: String) {
+        if let place = Place.fromRoute(path) {
+            showPlace(place, navigate: PlaceLinks.navigates(path))
+            return
+        }
         let first = path.split(separator: "/").first.map(String.init) ?? ""
         switch first {
         case "shopping": selectedTab = .shopping
         case "gym", "weight": selectedTab = .fitness
+        case "lucina", "avatar", "wardrobe": selectedTab = .lucina
         case "settings", "links": showSettings = true
         case "notes":
             selectedTab = .plugins
@@ -515,15 +539,26 @@ extension AppModel {
         case "tasks":
             selectedTab = .plugins
             showTasks = true
+        case "countdowns":
+            selectedTab = .plugins
+            showCountdowns = true
         case "memos": openMemo(nil)
-        case "media":
+        case "media", "films":
             selectedTab = .plugins
             showMedia = true
+            let parts = path.split(separator: "/").map { String($0).removingPercentEncoding ?? String($0) }
+            if parts.count >= 3, parts[0] == "films", parts[1] == "play" { openFilmID = parts[2] }
         case "plugins": selectedTab = .plugins
         case "gallery": openGallery(path)
         default: selectedTab = .chat
         }
         if NotificationRoute.opensDealsMap(path) { showDealsMap = true }
+    }
+
+    /// Lucina's own map for a place (never another maps app); `navigate` starts the navigation.
+    func showPlace(_ place: Place, navigate: Bool = false) {
+        openPlaceNavigates = navigate
+        openPlace = place
     }
 
     /// `/gallery`, `/gallery/album/<id>` (what Lucina found is in `sys-lucina`), `/gallery/search/<words>`.

@@ -1,6 +1,5 @@
 import SwiftUI
 import AVFoundation
-import MapKit
 import QuickLook
 
 /// One attachment of a message, with its position among the file parts (local previews are keyed by it).
@@ -129,9 +128,17 @@ struct AttachmentMessage: View {
         if entry.attachment.isAudio {
             AudioBubble(entry: entry, shareId: shareId, isUser: isUser)
         } else if kind == "link", let url = entry.attachment.url.flatMap(ShareItemReader.webURL) {
-            ChatLinkCard(entry: entry, url: url, isUser: isUser)
-        } else if kind == "location", let coordinate = entry.attachment.coordinate {
-            LocationCard(name: entry.attachment.name, lat: coordinate.lat, lon: coordinate.lon, isUser: isUser)
+            // An Apple Maps or Google Maps link with coordinates is a place on the map.
+            if let place = Place.fromMapsURL(url, name: entry.attachment.name) {
+                PlaceCard(place: place).frame(width: 280)
+            } else {
+                ChatLinkCard(entry: entry, url: url, isUser: isUser)
+            }
+        } else if kind == "location", let coordinate = entry.attachment.coordinate,
+                  let valid = Place.validCoordinate(coordinate.lat, coordinate.lon) {
+            let name = entry.attachment.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            PlaceCard(place: Place(title: name.isEmpty ? String(localized: "Location") : name, coordinate: valid))
+                .frame(width: 280)
         } else if kind == "text" {
             EmptyView()
         } else {
@@ -497,7 +504,7 @@ struct AudioBubble: View {
     }
 }
 
-// MARK: - Files, links, locations
+// MARK: - Files and links
 
 /// A document, archive, code file, contact or calendar: type icon, name, size and type; tap opens Quick Look.
 struct FileCard: View {
@@ -601,62 +608,5 @@ struct ChatLinkCard: View {
             .background(isUser ? Theme.accentFill : Theme.card, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
         }
         .accessibilityLabel(Text("Link, \(entry.attachment.name ?? url.host ?? url.absoluteString)"))
-    }
-}
-
-/// A shared location: a map snapshot (light or dark like the app) and its name; tap opens Maps.
-struct LocationCard: View {
-    @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.openURL) private var openURL
-    let name: String?
-    let lat: Double
-    let lon: Double
-    let isUser: Bool
-    @State private var snapshot: UIImage?
-
-    var body: some View {
-        Button(action: openMaps) {
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack {
-                    Theme.field
-                    if let snapshot { Image(uiImage: snapshot).resizable().scaledToFill() }
-                    Image(systemName: "mappin.circle.fill")
-                        .font(.system(size: 30))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.white, Theme.accentFill)
-                        .shadow(radius: 2)
-                }
-                .frame(width: 250, height: 130)
-                .clipped()
-                Label(name?.isEmpty == false ? name! : String(localized: "Location"), systemImage: "location.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .foregroundStyle(isUser ? Theme.onAccent : Theme.text)
-                    .padding(10)
-                    .frame(width: 250, alignment: .leading)
-            }
-            .background(isUser ? Theme.accentFill : Theme.card)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(Text("Location, \(name ?? "")"))
-        .accessibilityHint(Text("Opens Maps"))
-        .task(id: colorScheme) { await render() }
-    }
-
-    private func render() async {
-        let options = MKMapSnapshotter.Options()
-        options.region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: lat, longitude: lon),
-                                            latitudinalMeters: 800, longitudinalMeters: 800)
-        options.size = CGSize(width: 250, height: 130)
-        options.traitCollection = UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light)
-        snapshot = try? await MKMapSnapshotter(options: options).start().image
-    }
-
-    private func openMaps() {
-        var components = URLComponents(string: "https://maps.apple.com/")
-        components?.queryItems = [URLQueryItem(name: "ll", value: "\(lat),\(lon)"),
-                                  URLQueryItem(name: "q", value: name?.isEmpty == false ? name : "\(lat),\(lon)")]
-        if let url = components?.url { openURL(url) }
     }
 }

@@ -1,11 +1,12 @@
+import CoreLocation
 import Foundation
 import Observation
 
 // The grocery deals map (`GET /v1/grocery/deals/map`): nearby supermarkets with the owner's
 // list items on offer, food-waste clearances and flyer offers. secretary-server forwards
-// Lucina's `/api/secretary/grocery/deals/map` and adds `maps` (the Google Maps keys).
-// Everything is decoded leniently: unknown fields are ignored, a bad store or deal is
-// skipped, and a missing optional field is nil. No Google Maps code here (tests use it).
+// Lucina's `/api/secretary/grocery/deals/map`. Everything is decoded leniently: unknown fields
+// (such as the old `maps` keys) are ignored, a bad store or deal is skipped, and a missing
+// optional field is nil. No map code here (tests use it).
 
 /// The response of `GET /v1/grocery/deals/map`.
 struct DealsMap: Decodable, Equatable, Sendable {
@@ -32,28 +33,6 @@ struct DealsMap: Decodable, Equatable, Sendable {
         }
 
         private enum CodingKeys: String, CodingKey { case lat, lng, label }
-    }
-
-    /// The Google Maps keys (only from secretary-server). Any of them may be null.
-    struct MapsKeys: Decodable, Equatable, Sendable {
-        let webKey: String?
-        let iosKey: String?
-        let mapId: String?
-
-        init(webKey: String? = nil, iosKey: String? = nil, mapId: String? = nil) {
-            self.webKey = webKey
-            self.iosKey = iosKey
-            self.mapId = mapId
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            webKey = c.lenientString(.webKey)?.nilIfBlank
-            iosKey = c.lenientString(.iosKey)?.nilIfBlank
-            mapId = c.lenientString(.mapId)?.nilIfBlank
-        }
-
-        private enum CodingKeys: String, CodingKey { case webKey, iosKey, mapId }
     }
 
     struct Deal: Decodable, Equatable, Identifiable, Sendable {
@@ -228,17 +207,15 @@ struct DealsMap: Decodable, Equatable, Sendable {
     let radiusM: Double?
     /// Sources that failed this time (`food_waste`, `flyer`).
     let failures: [String]
-    let maps: MapsKeys?
     /// Sorted by distance (re-sorted here in case the server did not).
     let stores: [Store]
 
     init(generatedAt: String? = nil, home: Point? = nil, radiusM: Double? = nil, failures: [String] = [],
-         maps: MapsKeys? = nil, stores: [Store] = []) {
+         stores: [Store] = []) {
         self.generatedAt = generatedAt
         self.home = home
         self.radiusM = radiusM
         self.failures = failures
-        self.maps = maps
         self.stores = DealsMap.byDistance(stores)
     }
 
@@ -248,14 +225,10 @@ struct DealsMap: Decodable, Equatable, Sendable {
         home = try? c.decodeIfPresent(Point.self, forKey: .home)
         radiusM = c.lenientDouble(.radiusM)
         failures = c.lossyArray(FlexibleID.self, .failures).map(\.value)
-        maps = try? c.decodeIfPresent(MapsKeys.self, forKey: .maps)
         stores = DealsMap.byDistance(c.lossyArray(Store.self, .stores))
     }
 
-    private enum CodingKeys: String, CodingKey { case generatedAt, home, radiusM, failures, maps, stores }
-
-    /// The key for the iOS map, when there is one.
-    var iosKey: String? { maps?.iosKey }
+    private enum CodingKeys: String, CodingKey { case generatedAt, home, radiusM, failures, stores }
 
     static func byDistance(_ stores: [Store]) -> [Store] {
         stores.enumerated().sorted { a, b in
@@ -331,13 +304,11 @@ struct DealsMapFilter: Equatable, Sendable {
     }
 }
 
-/// The Directions button: Google Maps when it is installed, else Apple Maps.
-enum DealsDirections {
-    static let googleMapsProbe = URL(string: "comgooglemaps://")!
-
-    static func url(lat: Double, lng: Double, googleMapsInstalled: Bool) -> URL? {
-        let daddr = "\(lat),\(lng)"
-        return URL(string: googleMapsInstalled ? "comgooglemaps://?daddr=\(daddr)" : "maps://?daddr=\(daddr)")
+extension DealsMap.Store {
+    /// The store on the app's own map (its Navigate button guides there; no other maps app).
+    var place: Place {
+        Place(title: name.localizedCaseInsensitiveContains(chainName) ? name : "\(chainName) \(name)", address: street,
+              coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lng))
     }
 }
 

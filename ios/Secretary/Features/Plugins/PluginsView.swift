@@ -1,7 +1,7 @@
 import SwiftUI
 
-// The Plugins tab (owner, 2026-10-24): everything that is not Chat, Shopping or Training +
-// Weight is a plugin card here, instead of another tab. A new feature adds one entry to
+// The Plugins tab (owner, 2026-10-24): everything that is not Chat, Lucina, Shopping or
+// Training + Weight is a plugin card here, instead of another tab. A new feature adds one entry to
 // `Plugin.all` and, when it pushes a screen, a navigationDestination below.
 
 struct Plugin: Identifiable {
@@ -19,17 +19,20 @@ struct Plugin: Identifiable {
                    detail: app.backup.backedUp > 0 ? String(localized: "\(app.backup.backedUp) backed up") : nil,
                    isActive: app.backup.remaining > 0) { app.showGallery = true },
             Plugin(id: "drive", icon: "externaldrive", title: "Drive",
-                   detail: String(localized: "Films, files and shares")) { app.showDrive = true },
+                   detail: String(localized: "Archive, files and audio")) { app.showDrive = true },
             Plugin(id: "memos", icon: app.memos.recorder.isActive ? "waveform.circle.fill" : "waveform",
                    title: "Voice memos",
                    detail: app.memos.recorder.isActive ? String(localized: "Recording") : nil,
                    isActive: app.memos.recorder.isActive) { app.showMemos = true },
-            Plugin(id: "media", icon: "play.rectangle", title: "Media",
-                   detail: String(localized: "Films, music and audio")) { app.showMedia = true },
+            Plugin(id: "films", icon: "film", title: "Films",
+                   detail: app.media.current.map(\.title) ?? String(localized: "Film and Dansk film")) { app.showMedia = true },
             Plugin(id: "pokemon", icon: "gamecontroller", title: "Pokémon",
                    detail: String(localized: "Lucina's game")) { app.showPokemon = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
+            Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
+                   detail: Countdown.visible(Countdown.pinned, fresher: [], now: Date()).first
+                       .map { "\(Countdown.label($0, now: Date())) · \($0.title)" }) { app.showCountdowns = true },
             Plugin(id: "wardrobe", icon: "tshirt", title: "Wardrobe",
                    detail: String(localized: "Lucina's outfits")) { app.wardrobe.presented = true },
         ]
@@ -55,9 +58,10 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showGallery) { GalleryScreen() }
         .navigationDestination(isPresented: $app.showDrive) { DriveScreen().environment(app.drive) }
         .navigationDestination(isPresented: $app.showMemos) { MemosView().environment(app.memos) }
-        .navigationDestination(isPresented: $app.showMedia) { MediaLibraryView() }
+        .navigationDestination(isPresented: $app.showMedia) { FilmsView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
+        .navigationDestination(isPresented: $app.showCountdowns) { CountdownsView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
     }
 }

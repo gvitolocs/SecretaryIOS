@@ -59,6 +59,7 @@ enum Bring {
 struct ShoppingV2View: View {
     @Environment(ShoppingV2Store.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(AppModel.self) private var app
     @AppStorage(ShoppingLanguage.key) private var lang = ShoppingLanguage.preferred
     @AppStorage("secretary.shopping.openSections") private var openSectionsRaw = ""
     @State private var detail: ShopItem?
@@ -114,7 +115,15 @@ struct ShoppingV2View: View {
         .sheet(isPresented: $showSearch) {
             SearchSheet(onAdded: { tapCount += 1 })
         }
-        .task { await store.load(lang: lang) }
+        // The Add to shopping control and the widget's "+".
+        .onChange(of: app.showShoppingAdd, initial: true) { _, show in
+            guard show else { return }
+            app.showShoppingAdd = false
+            showSearch = true
+        }
+        // Every visit to the tab runs this: a full reload only when the last one is stale (pull to
+        // refresh and coming back to the foreground always reload).
+        .task { await store.loadIfStale(lang: lang) }
         .onChange(of: lang) { _, value in Task { await store.loadCatalog(lang: value) } }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { store.resume(); Task { await store.load(lang: lang) } }
