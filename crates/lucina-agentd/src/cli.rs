@@ -87,6 +87,10 @@ pub struct RunArgs {
     pub wait_timeout: Option<String>,
     #[arg(long)]
     pub idempotency_key: Option<String>,
+    /// Run through a lane category (deep, routine, bulk) with quota fall-through;
+    /// overrides --provider/--model
+    #[arg(long)]
+    pub chain: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -440,6 +444,7 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
                 "modeId": a.mode,
                 "thinkingOptionId": a.thinking,
                 "idempotencyKey": a.idempotency_key,
+                "chain": a.chain,
             });
             let created = client.post("/agents", &body).await.map_err(|e| match e {
                 ClientError::Api { code, message, .. } if code != "AGENT_NOT_FOUND" => CmdError {

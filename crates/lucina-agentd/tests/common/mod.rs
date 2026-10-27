@@ -64,8 +64,12 @@ impl Daemon {
     }
 
     pub fn start() -> Daemon {
+        Self::start_with_env(&[])
+    }
+
+    pub fn start_with_env(env: &[(&str, String)]) -> Daemon {
         let dir = tempfile::tempdir().expect("tempdir");
-        let guard = spawn_daemon(dir.path());
+        let guard = spawn_daemon_env(dir.path(), env);
         Daemon { dir, guard }
     }
 
@@ -90,9 +94,15 @@ impl Daemon {
 }
 
 pub fn spawn_daemon(dir: &Path) -> Guard {
+    spawn_daemon_env(dir, &[])
+}
+
+pub fn spawn_daemon_env(dir: &Path, env: &[(&str, String)]) -> Guard {
     let socket = dir.join("agentd.sock");
     let child = Command::new(AGENTD)
+        .envs(env.iter().map(|(k, v)| (k.to_string(), v.clone())))
         .args(["--state-dir", &dir.join("state").display().to_string(), "--socket", &socket.display().to_string()])
+        .arg("--no-real-providers")
         .env("LUCINA_AGENTD_DEV", "1")
         .env("RUST_LOG", "warn")
         .stdin(Stdio::null())

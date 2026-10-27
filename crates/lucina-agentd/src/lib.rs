@@ -10,8 +10,9 @@
 //! - [`client`] and [`cli`]: `lagent`, whose commands and `--json` output mirror
 //!   Paseo's CLI so the two can be compared directly.
 //!
-//! Phase 1 ships the mock providers only. The real ones (Claude, Codex, OpenCode,
-//! Cursor, ACP, Pi, ZCode) come in phase 2.
+//! - [`providers`]: Claude (stream-json), Codex (app-server), the ACP agents
+//!   (Cursor, OpenCode, Copilot, custom), Pi (rpc) and ZCode, launched through
+//!   [`process`] and [`jsonrpc`]; defaults come from the owner's [`lane`] config.
 
 #![forbid(unsafe_code)]
 
@@ -19,9 +20,13 @@ pub mod api;
 pub mod cli;
 pub mod client;
 pub mod config;
+pub mod jsonrpc;
+pub mod lane;
 pub mod manager;
 pub mod mock;
+pub mod process;
 pub mod provider;
+pub mod providers;
 pub mod store;
 
 /// RFC 3339 with milliseconds and `Z`, as JavaScript's `Date.toISOString()`.

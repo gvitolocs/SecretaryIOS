@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::{broadcast, mpsc, watch};
 
+use crate::lane::{LaneConfig, Lane, Outcome};
 use crate::now_iso;
 use crate::provider::{Provider, ProviderInfo, Session, SessionConfig};
 use crate::store::{Store, StoreError};
@@ -105,6 +106,10 @@ pub struct CreateRequest {
     pub feature_values: Map<String, Value>,
     #[serde(default)]
     pub idempotency_key: Option<String>,
+    /// Run through a lane category (`deep`, `routine`, `bulk`) with quota
+    /// fall-through instead of one fixed provider.
+    #[serde(default)]
+    pub chain: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -146,6 +151,9 @@ struct Agent {
     capabilities: Capabilities,
     modes: Vec<AgentMode>,
     echoes_user_message: bool,
+    /// A lane chain is still deciding (between attempts the agent may briefly be
+    /// in error): `wait` keeps waiting.
+    chain_active: bool,
 }
 
 impl Agent {
@@ -157,6 +165,7 @@ impl Agent {
 struct Inner {
     store: Store,
     providers: HashMap<String, Arc<dyn Provider>>,
+    lanes: LaneConfig,
     agents: Mutex<HashMap<String, Agent>>,
     bus: broadcast::Sender<BusEvent>,
     generation: watch::Sender<u64>,
@@ -188,13 +197,13 @@ fn session_config(record: &AgentRecord, env: Vec<(String, String)>) -> SessionCo
 impl Manager {
     /// Open the store and bring every stored agent back as `closed` (Paseo's
     /// loader; lifecycle `RestartRepair`).
-    pub fn open(store: Store, providers: Vec<Arc<dyn Provider>>) -> Result<Self, ManagerError> {
+    pub fn open(store: Store, providers: Vec<Arc<dyn Provider>>, lanes: LaneConfig) -> Result<Self, ManagerError> {
         let providers: HashMap<String, Arc<dyn Provider>> =
             providers.into_iter().map(|p| (p.info().id, p)).collect();
         let (bus, _) = broadcast::channel(4096);
         let (generation, _) = watch::channel(0);
         let manager = Manager {
-            inner: Arc::new(Inner { store, providers, agents: Mutex::new(HashMap::new()), bus, generation }),
+            inner: Arc::new(Inner { store, providers, lanes, agents: Mutex::new(HashMap::new()), bus, generation }),
         };
         for mut record in manager.inner.store.load_all()? {
             let k = AgentState {
@@ -228,6 +237,7 @@ impl Manager {
                 capabilities: Capabilities::stored(),
                 modes: info.as_ref().map(|i| i.modes.clone()).unwrap_or_default(),
                 echoes_user_message: info.as_ref().is_some_and(|i| i.echoes_user_message),
+                chain_active: false,
                 record,
                 k: t.next,
                 session: None,
@@ -287,7 +297,11 @@ impl Manager {
             model: r.config.model.clone(),
             features: None,
             thinking_option_id: r.config.thinking_option_id.clone(),
-            effective_thinking_option_id: r.config.thinking_option_id.clone(),
+            effective_thinking_option_id: r
+                .config
+                .thinking_option_id
+                .clone()
+                .or_else(|| runtime.as_ref().and_then(|ri| ri.thinking_option_id.clone())),
             created_at: r.created_at.clone(),
             updated_at: r.updated_at.clone(),
             last_user_message_at: r.last_user_message_at.clone(),
@@ -567,11 +581,42 @@ impl Manager {
     // -----------------------------------------------------------------------
     // Operations
 
-    pub async fn create(&self, req: CreateRequest) -> Result<AgentSnapshot, ManagerError> {
+    pub async fn create(&self, mut req: CreateRequest) -> Result<AgentSnapshot, ManagerError> {
         if let Some(key) = req.idempotency_key.as_deref() {
             if let Some(id) = self.inner.store.find_by_idempotency_key(key)? {
                 return self.snapshot(&id);
             }
+        }
+        if let Some(category) = req.chain.clone() {
+            let lanes: Vec<(String, &'static str, Lane)> = self
+                .inner
+                .lanes
+                .chain(&category)
+                .into_iter()
+                .filter(|(_, p, _)| self.inner.providers.contains_key(*p))
+                .collect();
+            let Some((first_name, first_provider, first_lane)) = lanes.first().cloned() else {
+                return Err(ManagerError::Invalid(format!("no lane of chain \"{category}\" can run here")));
+            };
+            req.provider = first_provider.to_string();
+            req.model = first_lane.model.clone();
+            req.thinking_option_id = first_lane.effort.clone();
+            req.labels.insert("lucina.chain".into(), category.clone());
+            req.labels.insert("lucina.lane".into(), first_name);
+            let prompt = req.prompt.take();
+            if req.title.is_none() {
+                req.title = resolve_titles(None, prompt.as_deref()).1;
+            }
+            let snap = Box::pin(self.create(CreateRequest { chain: None, ..req })).await?;
+            if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
+                if let Some(a) = self.lock().get_mut(&snap.id) {
+                    a.chain_active = true;
+                }
+                let manager = self.clone();
+                let id = snap.id.clone();
+                tokio::spawn(async move { manager.run_chain(id, prompt, lanes).await });
+            }
+            return self.snapshot(&snap.id);
         }
         let (provider_id, model) = split_provider(&req.provider, req.model.clone());
         let provider = self
@@ -635,6 +680,7 @@ impl Manager {
                 capabilities: info.capabilities.clone(),
                 modes: info.modes.clone(),
                 echoes_user_message: info.echoes_user_message,
+                chain_active: false,
             };
             self.persist(&mut agent);
             self.publish_state(&agent);
@@ -914,7 +960,9 @@ impl Manager {
             {
                 let agents = self.lock();
                 let a = agents.get(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
-                let status = if !a.pending.is_empty() {
+                let status = if a.chain_active && a.pending.is_empty() {
+                    None
+                } else if !a.pending.is_empty() {
                     Some("permission")
                 } else {
                     match a.k.status {
@@ -955,12 +1003,135 @@ impl Manager {
         }
     }
 
-    /// Stop every running turn and close every session (shutdown).
-    pub async fn shutdown(&self) {
-        let sessions: Vec<Arc<dyn Session>> = self.lock().values_mut().filter_map(|a| a.session.take()).collect();
-        for s in sessions {
+    /// Note something on an agent's timeline (lane decisions).
+    fn note(&self, id: &str, level: lucina_agents::timeline::NotificationLevel, message: String) {
+        let mut agents = self.lock();
+        if let Some(agent) = agents.get_mut(id) {
+            self.append(agent, TimelineItem::Notification { level, message }, None);
+            self.persist(agent);
+        }
+    }
+
+    /// Close the session and continue on another lane's provider (same agent).
+    async fn switch_lane(&self, id: &str, lane_name: &str, provider: &str, lane: &Lane) -> Result<(), ManagerError> {
+        let info = self.inner.providers.get(provider).map(|p| p.info()).ok_or_else(|| ManagerError::UnknownProvider(provider.into()))?;
+        let session = {
+            let mut agents = self.lock();
+            let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.into()))?;
+            if agent.k.status != AgentStatus::Closed {
+                self.transition(agent, Event::Close, None)?;
+            }
+            agent.session.take()
+        };
+        if let Some(s) = session {
             s.close().await;
         }
+        let mut agents = self.lock();
+        let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.into()))?;
+        agent.record.provider = provider.to_string();
+        agent.record.config.model = lane.model.clone();
+        agent.record.config.thinking_option_id = lane.effort.clone();
+        agent.record.config.mode_id = None;
+        agent.record.persistence = None;
+        agent.record.runtime_info = None;
+        agent.record.labels.insert("lucina.lane".into(), lane_name.to_string());
+        agent.capabilities = info.capabilities.clone();
+        agent.modes = info.modes.clone();
+        agent.echoes_user_message = info.echoes_user_message;
+        self.persist(agent);
+        self.publish_state(agent);
+        Ok(())
+    }
+
+    /// The text a failed attempt is classified on: the error and the last system
+    /// error item (which carries the provider's code, e.g. `code: quota`).
+    fn failure_text(&self, id: &str) -> String {
+        let agents = self.lock();
+        let Some(a) = agents.get(id) else { return String::new() };
+        let last_system = a.rows.iter().rev().find_map(|r| match &r.item {
+            TimelineItem::AssistantMessage { text, .. } if text.starts_with(lucina_agents::events::SYSTEM_ERROR_PREFIX) => Some(text.clone()),
+            _ => None,
+        });
+        format!("{}\n{}", a.record.last_error.clone().unwrap_or_default(), last_system.unwrap_or_default())
+    }
+
+    async fn worktree_status(cwd: &str) -> Option<String> {
+        let out = tokio::process::Command::new("git").args(["-C", cwd, "status", "--porcelain"]).output().await.ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// lane's rules: try each lane in order; fall through only on quota or
+    /// unavailable, and never when the failed attempt left changes in the workspace.
+    async fn run_chain(&self, id: String, prompt: String, lanes: Vec<(String, &'static str, Lane)>) {
+        use lucina_agents::timeline::NotificationLevel::{Info, Warning};
+        let cwd = self.lock().get(&id).map(|a| a.record.cwd.clone()).unwrap_or_default();
+        let baseline = Self::worktree_status(&cwd).await;
+        for (i, (name, provider, lane)) in lanes.iter().enumerate() {
+            if i > 0 {
+                if let Err(e) = self.switch_lane(&id, name, provider, lane).await {
+                    self.note(&id, Warning, format!("lane {name}: cannot switch ({e}); the chain stops"));
+                    break;
+                }
+            }
+            let started = self.start_turn(&id, &prompt).await;
+            if started.is_ok() {
+                let mut rx = self.inner.generation.subscribe();
+                loop {
+                    let busy = self.lock().get(&id).is_some_and(|a| {
+                        a.pending.is_empty() && matches!(a.k.status, AgentStatus::Running | AgentStatus::Initializing)
+                    });
+                    if !busy || rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+            let (status, waiting) = match self.lock().get(&id) {
+                Some(a) => (a.k.status, !a.pending.is_empty()),
+                None => return,
+            };
+            if waiting || (started.is_ok() && status != AgentStatus::Error) {
+                break;
+            }
+            let text = match &started {
+                Err(e) => format!("{e}\n{}", self.failure_text(&id)),
+                Ok(()) => self.failure_text(&id),
+            };
+            let outcome = if text.contains("code: quota") {
+                Outcome::Quota("provider-quota-reply".into())
+            } else {
+                self.inner.lanes.classify(name, &lane.kind, &text, None)
+            };
+            let (what, detector) = match &outcome {
+                Outcome::Quota(d) => ("quota", d.clone()),
+                Outcome::Unavailable(d) => ("unavailable", d.clone()),
+                Outcome::Failed => {
+                    self.note(&id, Warning, format!("lane {name}: failed; the chain stops"));
+                    break;
+                }
+            };
+            if Self::worktree_status(&cwd).await != baseline {
+                self.note(&id, Warning, format!("lane {name}: {what} ({detector}) after changing the workspace; the chain stops (dirty_after_quota)"));
+                break;
+            }
+            match lanes.get(i + 1) {
+                Some((next, _, _)) => self.note(&id, Info, format!("lane {name}: {what} ({detector}); trying lane {next}")),
+                None => self.note(&id, Warning, format!("lane {name}: {what} ({detector}); no lanes left")),
+            }
+        }
+        if let Some(a) = self.lock().get_mut(&id) {
+            a.chain_active = false;
+        }
+        self.bump();
+    }
+
+    /// Stop every running turn and close every session, all at once (shutdown).
+    pub async fn shutdown(&self) {
+        let sessions: Vec<Arc<dyn Session>> = self.lock().values_mut().filter_map(|a| a.session.take()).collect();
+        let mut set = tokio::task::JoinSet::new();
+        for s in sessions {
+            set.spawn(async move { s.close().await });
+        }
+        while set.join_next().await.is_some() {}
     }
 }
 

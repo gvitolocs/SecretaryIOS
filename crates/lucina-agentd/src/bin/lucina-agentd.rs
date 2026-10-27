@@ -9,9 +9,12 @@ use std::time::Duration;
 use clap::Parser;
 use lucina_agentd::api::router;
 use lucina_agentd::config::{default_socket, default_state_dir, dev_enabled};
+use lucina_agentd::lane::LaneConfig;
 use lucina_agentd::manager::Manager;
 use lucina_agentd::mock::{MockProvider, MockSlowProvider};
+use lucina_agentd::process::Registry;
 use lucina_agentd::provider::Provider;
+use lucina_agentd::providers;
 use lucina_agentd::store::Store;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::signal::unix::{signal, SignalKind};
@@ -26,6 +29,9 @@ struct Args {
     /// Also listen on this loopback address (e.g. 127.0.0.1:6768)
     #[arg(long)]
     listen: Option<std::net::SocketAddr>,
+    /// Register only the mock providers (tests).
+    #[arg(long)]
+    no_real_providers: bool,
 }
 
 async fn shutdown_signal() {
@@ -47,12 +53,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_dir = args.state_dir.unwrap_or_else(default_state_dir);
     let socket = args.socket.unwrap_or_else(default_socket);
 
-    let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
+    std::fs::create_dir_all(&state_dir)?;
+    let registry = Registry::open(&state_dir)?;
+    let reaped = registry.reap_leftovers();
+    if !reaped.is_empty() {
+        tracing::warn!(count = reaped.len(), "reaped provider processes from a previous run");
+    }
+    let lanes = LaneConfig::load();
+    let mut providers: Vec<Arc<dyn Provider>> = if args.no_real_providers { Vec::new() } else { providers::installed(&lanes, &registry) };
     if dev_enabled() {
         providers.push(Arc::new(MockProvider));
         providers.push(Arc::new(MockSlowProvider));
     }
-    let manager = Manager::open(Store::open(&state_dir)?, providers)?;
+    let manager = Manager::open(Store::open(&state_dir)?, providers, lanes)?;
 
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
@@ -96,7 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })
     .await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), manager.shutdown()).await;
+    // Provider processes get up to 4 s (each closes with a 3 s grace): 3 + 4 s stays
+    // under the unit's 10 s stop timeout.
+    let _ = tokio::time::timeout(Duration::from_secs(4), manager.shutdown()).await;
     let _ = std::fs::remove_file(&socket);
     Ok(())
 }

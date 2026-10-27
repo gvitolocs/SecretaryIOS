@@ -44,15 +44,15 @@ deterministic on both sides.
 | A16 | Agents | rewind (conversation/files/both), fork with chat-history context (100k chars) | `lagent rewind`, `lagent fork` | 6 | diff: mock supports all rewind modes | todo |
 | A17 | Agents | mode / model / thinking / feature changes, reload | `lagent agent set-*`, `reload` | 2 | diff | todo |
 | A18 | Agents | idempotent creation (`creations/*.json` + claim) | idempotency key on `POST /v1/agents` | 1 | test: double submit | built (daemon.rs idempotent_create) |
-| P1 | Providers | claude (Agent SDK) | Claude Code CLI stream-json | 2 | manual run + permission | todo |
-| P2 | Providers | codex (`codex app-server`) | same protocol | 2 | manual run + permission | todo |
-| P3 | Providers | opencode (`opencode serve`, HTTP+SSE) | same | 2 | manual run | todo |
-| P4 | Providers | copilot (ACP), custom ACP providers (cursor, kimi, kiro, trae) | generic ACP adapter | 2 | manual: cursor via ACP or stream-json | todo |
-| P5 | Providers | pi, omp (`--mode rpc`) | pi adapter (omp if installed) | 2 | manual | todo |
+| P1 | Providers | claude (Agent SDK) | Claude Code CLI stream-json | 2 | manual run + permission | built: stream-json + SDK control protocol; real run blocked by quota (resets 20:30 UTC) — quota path verified in the deep-chain run |
+| P2 | Providers | codex (`codex app-server`) | same protocol | 2 | manual run + permission | green: real runs (reply, shell tool, follow-up in the same thread); since then the workspace is out of credits |
+| P3 | Providers | opencode (`opencode serve`, HTTP+SSE) | same | 2 | manual run | green: real run over `opencode acp` (intentional difference: ACP instead of `opencode serve`) |
+| P4 | Providers | copilot (ACP), custom ACP providers (cursor, kimi, kiro, trae) | generic ACP adapter | 2 | manual: cursor via ACP or stream-json | built: Copilot and Cursor over ACP reach the agent; both accounts are out of quota (quota replies classified); Cursor forced to fast=false |
+| P5 | Providers | pi, omp (`--mode rpc`) | pi adapter (omp if installed) | 2 | manual | built: pi --mode rpc reaches Pi; its models fail (Cloudflare 401) or need the ZCode sign-in. ZCode built; sign-in expired (project_token_login_failed) |
 | P6 | Providers | plugin providers antigravity, muse, hoplite | provider plugins (phase 10) | 10 | manual | todo |
 | P7 | Providers | provider subagents (Claude Task, OpenCode children) with their own timelines | same | 6 | manual: a Claude Task run | todo |
-| P8 | Providers | `provider ls`, models, modes, profiles, inspect | `lagent provider …`, from chains.toml + adapters | 2 | diff: field set | todo |
-| P9 | Providers | (Lucina only) chain fall-through on quota | lane detectors | 2 | test with a fake quota lane | todo |
+| P8 | Providers | `provider ls`, models, modes, profiles, inspect | `lagent provider …`, from chains.toml + adapters | 2 | diff: field set | built: `lagent providers` (installed CLIs, lane defaults) |
+| P9 | Providers | (Lucina only) chain fall-through on quota | lane detectors | 2 | test with a fake quota lane | green: tests/chain.rs + a real `--chain deep` run classified claude, cursor and codex as quota and zcode as unavailable |
 | P10 | Providers | mock, mock-slow | `mock`, `mock-slow` | 1 | diff | wip: mock triggers for failure, plan, questions, settled/streaming replies, pre-echo, delays; mock-slow built |
 | R1 | Permissions | request kinds tool/plan/question/mode/other, actions, updatedInput | same types | 3 | diff: "emit synthetic plan approval", "emit synthetic question" | todo |
 | R2 | Permissions | `permit ls/allow/deny` (non-zero exit after 15 s without confirmation) | `lagent permit` | 3 | diff | todo |
@@ -106,5 +106,5 @@ deterministic on both sides.
 | SEC5 | Security | `usesCleartextTraffic: true` | intentionally not ported: no cleartext in the web, iOS or Android apps | 8 | review: manifest/ATS checks | n/a (not ported) |
 | SEC6 | Security | Android `SYSTEM_ALERT_WINDOW`, `RECEIVE_BOOT_COMPLETED`, launcher badge permissions | intentionally not ported: camera and microphone only, requested at first use | 8 | review: manifest diff | n/a (not ported) |
 | SEC7 | Security | relay `relay.paseo.sh` / `rrorelay.paseo.sh`, ad-SDK traces, stray third-party URLs | intentionally not ported: no third-party relay or SDKs; Lucina Link only | 7 | review | n/a (not ported) |
-| Z1 | Ops | supervisor/worker, pid lock, rotated logs, managed-process reaping | systemd user unit, journald, reaping on start | 1 | test: kill -9, restart, no orphans | wip: SIGTERM drain + exit 0 tested; process reaping comes with the real providers (phase 2) |
+| Z1 | Ops | supervisor/worker, pid lock, rotated logs, managed-process reaping | systemd user unit, journald, reaping on start | 1 | test: kill -9, restart, no orphans | green: SIGTERM drain; provider process groups reaped after a crash, reused pids never killed (process.rs tests) |
 | Z2 | Ops | (Lucina only) no leftover worktrees, capped background CPU | `wt` lifecycle, `systemd-run --scope` | 4/5 | test | todo |
