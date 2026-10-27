@@ -358,15 +358,13 @@ async fn upload_pipeline_brief_and_naming() {
     let e = env();
     let app = &e.app;
 
-    // Create (idempotent by key), with a folder named after the app (no calendar here).
+    // Create (idempotent by key); no calendar event, so the folder is the title alone (not the app).
     let (s, id) = create(app, "rec-1", "Algorithms Q&A").await;
     assert_eq!(s, StatusCode::CREATED);
     assert!(id.starts_with("mtg_"));
     let (s, again) = create(app, "rec-1", "Algorithms Q&A").await;
     assert_eq!((s, again.as_str()), (StatusCode::OK, id.as_str()));
-    let folder = e
-        .base
-        .join("2026/2026-10-26 1430 Microsoft Teams – Algorithms Q&A");
+    let folder = e.base.join("2026/2026-10-26 1430 Algorithms Q&A");
     assert!(folder.join("meeting.json").is_file());
 
     // Completing early is refused; a wrong offset gets 409 with the stored Range.
@@ -519,9 +517,7 @@ async fn upload_pipeline_brief_and_naming() {
     assert!(s2.voice_id.as_deref().unwrap().starts_with("vu_"));
 
     // The Obsidian note in Meetings/, and the index.
-    let note = e
-        .vault
-        .join("Meetings/2026-10-26 1430 Microsoft Teams – Algorithms Q&A.md");
+    let note = e.vault.join("Meetings/2026-10-26 1430 Algorithms Q&A.md");
     let md = std::fs::read_to_string(&note).unwrap();
     assert!(md.starts_with("---\ntype: meeting\n"));
     assert!(md.contains("- [ ] Read chapter six — Giuseppe, due 2026-11-02, 0:12"));

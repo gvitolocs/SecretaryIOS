@@ -119,7 +119,8 @@ async fn create(
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty() && s.len() <= 300);
     // The folder is named now: the calendar event (by the Mac's id) and its company, looked up
-    // briefly; when the calendar is slow the app's name stands in.
+    // briefly; with no event the folder is the title alone (the app or display name the Mac
+    // reports, e.g. "Built-in Retina Display", says nothing about the meeting).
     let mut event = None;
     if let (Some(want), true) = (&event_id, crate::events::configured(&app)) {
         let from = b.started_at - chrono::Duration::hours(1);
@@ -139,8 +140,7 @@ async fn create(
     let source_app = b.source_app.unwrap_or_default();
     let prefix = company
         .clone()
-        .or_else(|| event.as_ref().map(|e| e.title.clone()))
-        .or_else(|| source_app.name.clone());
+        .or_else(|| event.as_ref().map(|e| e.title.clone()));
     let linked = event.is_some();
     let (m, created) = store.create(NewMeeting {
         idempotency_key: key,

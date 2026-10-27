@@ -58,7 +58,7 @@ unmounted MyBook answers `503 storage_unavailable` instead of filling the system
 
 The folder name is `<YYYY-MM-DD HHmm> <company or calendar title> – <title>` in the owner's zone: the company from
 the attendees' e-mail domains (personal providers and `LUCINA_MEETINGS_OWN_DOMAINS` skipped), else the calendar
-event's title, else the recording app; the prefix is left out when it equals the title; a second recording with the
+event's title, else none (the title alone, never the recording app or display); the prefix is left out when it equals the title; a second recording with the
 same name gets ` 2`. The calendar event comes from secretary-server by the Mac's `calendar_event_id` (looked up for
 4 s at create; later by the worker, or the event the recording falls in, kernel K8). Each step writes its output
 before `meeting.json` records it, so a crash or restart continues; at start-up the index is rebuilt from every

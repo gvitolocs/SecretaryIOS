@@ -32,6 +32,12 @@ fi
 [ -f "$HOME/models/diarization/onnxruntime/lib/libonnxruntime.so" ] || echo "note: diarization models/ONNX Runtime missing (docs/meetings.md, one-time download)" >&2
 
 install -m 0644 "$REPO/deploy/lucina-memo/lucina-memo.service" "$UNITS/"
+# DeepSeek key from infisical-brokerd (caller svc-lucina-memo in /etc/infisical-broker/broker.toml).
+if [ -s "$HOME/.config/infisical-mcp/svc-lucina-memo.token" ]; then
+  install -D -m 0644 "$REPO/deploy/lucina-memo/70-infisical.conf" "$UNITS/lucina-memo.service.d/70-infisical.conf"
+else
+  echo "note: no ~/.config/infisical-mcp/svc-lucina-memo.token; summaries and briefs fall back (no DeepSeek key)" >&2
+fi
 systemctl --user daemon-reload
 systemctl --user enable lucina-memo.service >/dev/null
 systemctl --user restart lucina-memo.service
