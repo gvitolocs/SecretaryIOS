@@ -156,9 +156,10 @@ pub async fn handle_chat(
         }));
     }
     let (text, held) = crate::owner_secrets::mask_message(&st, &text);
-    if let Some(name) = Some(&text)
-        .filter(|_| held.is_empty())
-        .and_then(|t| crate::owner_secrets::project_request(t))
+    if let Some(name) = held
+        .is_empty()
+        .then(|| crate::owner_secrets::project_request(&text))
+        .flatten()
     {
         let timeline = st.timeline_for(&session);
         let user = timeline.record(lucina_store::timeline::NewItem {

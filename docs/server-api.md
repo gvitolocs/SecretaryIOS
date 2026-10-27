@@ -1954,6 +1954,35 @@ location/source and say when progress, sessions or relationships are unknown.
 note as `[obsidian:<vault>/<path>#L<line>]`, stating that mentions are not
 reading evidence and saying plainly when no vault has been indexed.
 
+## Secrets ("Add secret")
+
+The owner stores secrets and creates projects in Infisical from the apps. **Device login only**
+(Bearer device token, or the browser session with `X-Secretary-CSRF: 1`); Lucina's service token
+gets 401. Every call signs one single-use **owner grant** (Ed25519, key
+`$SECRETARY_DATA_DIR/secret-grant.key`, 0600, made on first use; lifetime 90 s) naming exactly the
+action, and forwards it to Lucina (`POST /api/secretary/secrets/grant`), which relays it to
+infisical-brokerd. The broker trusts only this server's public key (`[owner_grants]` in
+`broker.toml`). Values are never logged, stored or put in a grant (it carries the sha256).
+
+| Route | Body / query | Answer |
+|---|---|---|
+| `GET /v1/secrets/status` | | `{grantKey, audience}`: the public key for broker.toml (also `secretary-server secret-grant-key`) |
+| `GET /v1/secrets/catalog` | | `{projects: [{id, name, slug, alias, environments: [{slug, name}]}]}`: every secret-manager project the broker's owner identity sees, names only |
+| `GET /v1/secrets/names` | `project, environment, path` | `{folders: [name], secrets: [{key, version, updated_at}]}` at that folder, no values |
+| `POST /v1/secrets` | `{name, value \| held, project, environment, path?, overwrite?, createFolder?, confirmed: true}` | `{key, project: {id, name}, environment, path, action: created\|updated, version, fingerprint, receipt}` |
+| `POST /v1/secrets/projects` | `{name, slug?, confirmed: true}` | `{project: {id, name, slug, environments}, access, receipt}`. No access for the agents or services identities. |
+
+`name`: `[A-Za-z0-9_.@-]`, 1-256. `path`: folders of the same characters. `value`: 1-65536 bytes.
+`held`: a value Lucina holds after the owner typed `/secret` or pasted a token in chat (410
+`held_expired` after 10 minutes). Errors: 400 `bad_request` (never echoes the value), 403
+`grant_*`, 404 `unknown_project`/`unknown_environment`, 409 `exists` (send `overwrite: true` after
+the owner saw the name), 502 `upstream_unauthorized` (the owner identity's org role cannot create
+projects), 503 `secrets_unconfigured` / `broker_unavailable`.
+
+Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved `NAME` in project /
+env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
+or replay cache, and token-shaped text is masked before the turn and offered as a held value.
+
 ## Models
 
 The owner's private 3D gallery: models Lucina made with Meshy AI (crate
