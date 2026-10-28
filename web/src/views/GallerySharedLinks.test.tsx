@@ -1,8 +1,9 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api/gallery";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import { galleryShare } from "../test/galleryParityFixtures";
 import GallerySharedLinksView from "./GallerySharedLinks";
 
@@ -136,5 +137,49 @@ describe("sharing an album", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create link" }));
     await waitFor(() => expect(createAlbumShare).toHaveBeenCalledWith("alb_1", expect.objectContaining({ expiresInDays: 7 })));
     expect(await screen.findByLabelText("Share link")).toHaveValue("https://getsecretary.tech/a/NEWALB");
+  });
+});
+
+describe("on the page system (desktop)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the shared Gallery header with Shared current and Share an album as the one accent button", async () => {
+    stubWide();
+    open();
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "Shared" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(document.querySelector(".sl-head")).toBeNull();
+    const active = await screen.findByRole("region", { name: "Active · 2" });
+    expect(active).toHaveClass("pg-card");
+    expect(within(active).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByRole("region", { name: "Turned off or expired · 2" })).toBeInTheDocument();
+  });
+
+  it("confirms before turning a link off, and shows the empty and error states", async () => {
+    stubWide();
+    open();
+    const row = (await screen.findByText("Weekend")).closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: /Turn off link/ }));
+    expect(within(row).getByText("Turn it off for good?")).toBeInTheDocument();
+    expect(row.querySelector(".pg-btn--danger")).not.toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+  });
+
+  it("shows the friendly empty state", async () => {
+    stubWide();
+    listShares.mockResolvedValue([]);
+    open();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("You haven't shared anything yet"));
+  });
+
+  it("shows the error state with a retry", async () => {
+    stubWide();
+    listShares.mockRejectedValue(new Error("down"));
+    open();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveClass("pg-error");
+    expect(within(alert).getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 });

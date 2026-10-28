@@ -914,3 +914,10 @@ html[data-shell="desktop"] .g-title {
 .pg .pp-off-card p { margin-bottom: 8px; }
 .pg .pp-card__actions { margin-top: 16px; }
 .pg .pp-menu__list { background: var(--pg-surface-raised); border: 1px solid var(--pg-border); }
+.pg .sl-line { display: block; }
+.pg .sl-row--over { opacity: 0.65; }
+.pg .sl-cover { flex: none; width: 56px; height: 56px; overflow: hidden; border-radius: var(--pg-radius-control); background: var(--pg-fill); }
+.pg .sl-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pg .sl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pg .sl-ask { color: var(--pg-muted); font-size: 13px; }
+.pg .pg-card--list + .pg-card--list { margin-top: 16px; }

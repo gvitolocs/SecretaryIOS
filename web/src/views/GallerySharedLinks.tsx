@@ -1,4 +1,6 @@
 import { A } from "@solidjs/router";
+import { Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PrimaryAction, RowList, useWide } from "../components/page";
+import { GalleryHeader } from "../components/gallery/GalleryHeader";
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { listAlbums, listShares, revokeShare, type GalleryShare } from "../api/gallery";
 import { AlbumIcon } from "../components/gallery/ViewerIcons";
@@ -21,6 +23,7 @@ async function copyText(text: string): Promise<boolean> {
 
 /** /gallery/shared: every link made from the Gallery (albums and chosen photos), with its views and expiry, and Turn off. */
 export default function GallerySharedLinksView() {
+  const { wide, track } = useWide();
   const [shares, { refetch, mutate }] = createResource(listShares);
   const [albums] = createResource(() => listAlbums().catch(() => []));
   const [picking, setPicking] = createSignal(false);
@@ -38,45 +41,93 @@ export default function GallerySharedLinksView() {
     mutate((list) => list?.map((s) => (s.token === share.token ? { ...s, live: false, revokedAt: new Date().toISOString() } : s)));
   };
 
-  return (
-    <div class="sl-page">
-      <header class="sl-head">
-        <A class="sl-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
-          <BackIcon />
-        </A>
-        <h1 class="sl-h1">{t("galleryShare.pageTitle")}</h1>
-        <button type="button" class="btn" onClick={() => setPicking(true)}>
-          <AlbumIcon /> {t("galleryShare.shareAlbum")}
-        </button>
-      </header>
-
-      <Show when={!shares.loading} fallback={<p class="sl-empty" role="status">{t("galleryShare.loading")}</p>}>
+  const rows = (list: GalleryShare[]) => <For each={list}>{(s) => <SharedLinkRow wide={wide()} share={s} onCopy={copy} onRevoke={revoke} />}</For>;
+  const group = (title: string, list: GalleryShare[]) => (
+    <Show when={wide()} fallback={<><h2 class="sl-section">{title}</h2><ul class="sl-list">{rows(list)}</ul></>}>
+      <Card list title={title}>
+        <RowList>{rows(list)}</RowList>
+      </Card>
+    </Show>
+  );
+  const sections = () => (
+    <>
+      <Show when={live().length}>{group(t("galleryShare.active", { count: live().length }), live())}</Show>
+      <Show when={over().length}>{group(t("galleryShare.ended", { count: over().length }), over())}</Show>
+    </>
+  );
+  const body = () => (
+    <Show
+      when={!shares.loading}
+      fallback={
+        <Show when={wide()} fallback={<p class="sl-empty" role="status">{t("galleryShare.loading")}</p>}>
+          <LoadingState label={t("galleryShare.loading")} />
+        </Show>
+      }
+    >
+      <Show
+        when={!shares.error}
+        fallback={
+          <Show
+            when={wide()}
+            fallback={
+              <p class="sl-empty" role="alert">
+                {t("galleryShare.loadFailed")}{" "}
+                <button type="button" class="btn" onClick={() => void refetch()}>
+                  {t("galleryShare.retry")}
+                </button>
+              </p>
+            }
+          >
+            <ErrorState message={t("galleryShare.loadFailed")} retryLabel={t("galleryShare.retry")} onRetry={() => void refetch()} />
+          </Show>
+        }
+      >
         <Show
-          when={!shares.error}
+          when={ordered().length > 0}
           fallback={
-            <p class="sl-empty" role="alert">
-              {t("galleryShare.loadFailed")}{" "}
-              <button type="button" class="btn" onClick={() => void refetch()}>
-                {t("galleryShare.retry")}
-              </button>
-            </p>
+            <Show when={wide()} fallback={<p class="sl-empty">{t("galleryShare.none")}</p>}>
+              <Card label={t("galleryShare.pageTitle")}>
+                <EmptyState text={t("galleryShare.none")} />
+              </Card>
+            </Show>
           }
         >
-          <Show when={ordered().length > 0} fallback={<p class="sl-empty">{t("galleryShare.none")}</p>}>
-            <Show when={live().length}>
-              <h2 class="sl-section">{t("galleryShare.active", { count: live().length })}</h2>
-              <ul class="sl-list">
-                <For each={live()}>{(s) => <SharedLinkRow share={s} onCopy={copy} onRevoke={revoke} />}</For>
-              </ul>
-            </Show>
-            <Show when={over().length}>
-              <h2 class="sl-section">{t("galleryShare.ended", { count: over().length })}</h2>
-              <ul class="sl-list">
-                <For each={over()}>{(s) => <SharedLinkRow share={s} onCopy={copy} onRevoke={revoke} />}</For>
-              </ul>
-            </Show>
-          </Show>
+          {sections()}
         </Show>
+      </Show>
+    </Show>
+  );
+
+  return (
+    <div class={wide() ? "g-page-root" : "sl-page"} ref={track}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <header class="sl-head">
+              <A class="sl-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
+                <BackIcon />
+              </A>
+              <h1 class="sl-h1">{t("galleryShare.pageTitle")}</h1>
+              <button type="button" class="btn" onClick={() => setPicking(true)}>
+                <AlbumIcon /> {t("galleryShare.shareAlbum")}
+              </button>
+            </header>
+            {body()}
+          </>
+        }
+      >
+        <Page class="g-lib">
+          <GalleryHeader
+            count={shares.loading || shares.error ? undefined : ordered().length}
+            action={
+              <PrimaryAction icon={<AlbumIcon />} onClick={() => setPicking(true)}>
+                {t("galleryShare.shareAlbum")}
+              </PrimaryAction>
+            }
+          />
+          <PageGrid layout="single">{body()}</PageGrid>
+        </Page>
       </Show>
 
       <Show when={picking()}>
