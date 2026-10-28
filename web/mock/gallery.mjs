@@ -230,6 +230,7 @@ function out(it) {
     origin: it.origin,
     favorite: it.favorite,
     rotation: it.rotation,
+    edited: Boolean(it.edits),
     albums: it.albums,
     trashed_at: it.trashed_at,
     trash_expires_at: expires(it),
@@ -240,6 +241,7 @@ function out(it) {
       original: `${base}/original`,
       download: `${base}/original?download=1`,
       ...(it.kind === "video" ? { poster: `${base}/thumb?size=1024` } : {}),
+      ...(it.edits ? { edited: `${base}/original?edited=${it.edits.stamp}`, download_edited: `${base}/edits/download` } : {}),
     },
   };
 }
@@ -492,6 +494,7 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
       if (typeof body.taken_at === "string") { it.taken_at = body.taken_at; it.sort_at = body.taken_at; }
       return send(res, 200, out(it)), true;
     }
+    if (sub === "edits" || sub.startsWith("edits/")) return editsFor(req, res, it, sub, method, { send, fail, readJson }), true;
     if (sub === "" && method === "DELETE") return trashIt(it, false), send(res, 200, { ok: true }), true;
     if (sub === "restore" && method === "POST") return (it.trashed_at = null), send(res, 200, out(it)), true;
     if (method === "GET" && (sub === "thumb" || sub === "r/grid" || sub === "r/preview" || sub === "original")) {
@@ -500,4 +503,36 @@ export async function handleGallery(req, res, { path, method, url, send, fail, r
     }
   }
   return false;
+}
+
+// ---- editor: the edit list per item (docs/media-library.md, "Photo edits") -----------------------------------------------
+// The mock stores the list and flags the item as edited; it does not render a derivative (the pictures are generated SVGs),
+// so the editor's preview, undo and save can be tried, and a revert, but not the saved picture's look.
+
+async function editsFor(req, res, it, sub, method, { send, fail, readJson }) {
+  const state = () => ({
+    edited: Boolean(it.edits),
+    edits: it.edits?.list ?? null,
+    updated_at: it.edits ? new Date(it.edits.stamp).toISOString() : null,
+    base_url: `/v1/media/items/${it.id}/edits/base`,
+    item: out(it),
+  });
+  if (sub === "edits/base" && method === "GET") return image(res, it, 1600);
+  if (sub === "edits/download" && method === "GET") return it.edits ? image(res, it, 1600) : fail(res, 404, "not_found", "not edited");
+  if (sub !== "edits") return fail(res, 404, "not_found", "no such route");
+  if (method === "GET") return send(res, 200, state());
+  if (method === "DELETE") {
+    it.edits = null;
+    return send(res, 200, state());
+  }
+  if (method === "PUT") {
+    const list = await readJson(req);
+    if (list?.v !== 1) return fail(res, 400, "bad_request", "unsupported edit list version");
+    if (it.kind !== "photo") return fail(res, 400, "bad_request", "only photos can be edited");
+    const identity = !list.rotate && !list.straighten && !list.crop && !list.filter && !(list.markup ?? []).length && Object.values(list.adjust ?? {}).every((v) => v === 0);
+    it.edits = identity ? null : { list, stamp: Date.now() };
+    await new Promise((r) => setTimeout(r, Number(process.env.MOCK_EDIT_MS ?? 400)));
+    return send(res, 200, state());
+  }
+  return fail(res, 405, "method_not_allowed", "method not allowed");
 }

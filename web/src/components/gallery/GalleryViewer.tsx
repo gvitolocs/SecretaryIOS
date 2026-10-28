@@ -9,6 +9,8 @@ import "../../styles/gallery-viewer.css";
 import { AlbumPicker } from "./AlbumPicker";
 import { DeleteDialog, type DeleteResult } from "./DeleteDialog";
 import { PhotoInfo } from "./PhotoInfo";
+import { EditIcon } from "./editor/EditorIcons";
+import { PhotoEditor } from "./editor/PhotoEditor";
 import { RenameDialog } from "./RenameDialog";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
 
@@ -60,6 +62,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
   const [infoOpen, setInfoOpen] = createSignal(storedInfoOpen());
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const [error, setError] = createSignal<string | null>(null);
+  const [editing, setEditing] = createSignal(false);
 
   // ---- optimistic edits ------------------------------------------------------------------------------------------
   // `base` is the list's item the edit started from: once the list holds another object for that id (the parent applied
@@ -180,6 +183,13 @@ export function GalleryViewer(props: GalleryViewerProps) {
     props.onChanged(updated);
   };
 
+  /** The editor saved or reverted: the item as the server has it now (new rendition URLs, `edited`, its size). */
+  const edited = (updated: GalleryItem) => {
+    setEditing(false);
+    put(updated, false);
+    props.onChanged(updated);
+  };
+
   const toggleInfo = () => {
     const open = !infoOpen();
     setInfoOpen(open);
@@ -201,8 +211,8 @@ export function GalleryViewer(props: GalleryViewerProps) {
   // ---- keys ------------------------------------------------------------------------------------------------------
 
   const onKeyDown = (e: KeyboardEvent): boolean => {
-    // A dialog owns the keyboard; so does a text field.
-    if (dialog() || typing(e.target)) return true;
+    // A dialog owns the keyboard; so does a text field, and the editor over the viewer.
+    if (editing() || dialog() || typing(e.target)) return true;
     if (e.metaKey || e.ctrlKey || e.altKey) return false;
     switch (e.key) {
       case "i":
@@ -219,6 +229,11 @@ export function GalleryViewer(props: GalleryViewerProps) {
       case "R":
         e.preventDefault();
         rotate();
+        return true;
+      case "e":
+      case "E":
+        e.preventDefault();
+        if (current()?.kind === "photo" && !props.trash) setEditing(true);
         return true;
       case "Delete":
       case "Backspace":
@@ -237,7 +252,8 @@ export function GalleryViewer(props: GalleryViewerProps) {
       const item = view(raw);
       return {
         src: previewUrl(item, jxl() ?? false),
-        original: item.urls.original,
+        // Zooming past the preview loads the full-size picture: the edit's derivative when there is one.
+        original: item.urls.edited ?? item.urls.original,
         name: item.title || item.origin.filename || "",
         mime: item.mime,
         kind: item.kind,
@@ -279,6 +295,11 @@ export function GalleryViewer(props: GalleryViewerProps) {
                 <RotateIcon />
               </button>
             </Show>
+            <Show when={item().kind === "photo"}>
+              <button type="button" class="pv-btn" aria-label={item().edited ? t("editor.editEdited") : t("editor.edit")} title={`${item().edited ? t("editor.editEdited") : t("editor.edit")} (E)`} onClick={() => setEditing(true)}>
+                <EditIcon />
+              </button>
+            </Show>
             <button type="button" class="pv-btn" aria-label={t("galleryInfo.rename")} title={t("galleryInfo.rename")} onClick={() => setDialog("rename")}>
               <RenameIcon />
             </button>
@@ -289,6 +310,13 @@ export function GalleryViewer(props: GalleryViewerProps) {
           <Show when={item().urls.download ?? item().urls.original}>
             {(href) => (
               <a class="pv-btn" href={href()} download={item().origin.filename ?? item().title ?? ""} aria-label={t("galleryInfo.download")} title={t("galleryInfo.download")}>
+                <DownloadIcon />
+              </a>
+            )}
+          </Show>
+          <Show when={item().urls.downloadEdited}>
+            {(href) => (
+              <a class="pv-btn" href={href()} download="" aria-label={t("editor.downloadEdited")} title={t("editor.downloadEdited")}>
                 <DownloadIcon />
               </a>
             )}
@@ -342,6 +370,7 @@ export function GalleryViewer(props: GalleryViewerProps) {
           </Portal>
         )}
       </Show>
+      <Show when={editing() && current()}>{(item) => <PhotoEditor item={item()} onClose={() => setEditing(false)} onSaved={edited} />}</Show>
       <Show when={current()}>
         {(item) => (
           <Switch>

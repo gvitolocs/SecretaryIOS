@@ -4,6 +4,7 @@
 // Deleting in Lucina never deletes the original on the device; only `alsoFromDevice` asks the device to (it then asks
 // the system, which confirms on the device).
 
+import { parseEditList, type EditList } from "../lib/editList";
 import { request } from "./client";
 import { sameOriginPath } from "./media";
 
@@ -28,6 +29,9 @@ export interface GalleryUrls {
   download?: string;
   poster?: string;
   play?: string;
+  /** The editor's full-resolution derivative; present only while the photo is edited (`urls.original` stays untouched). */
+  edited?: string;
+  downloadEdited?: string;
 }
 
 export interface GalleryOrigin {
@@ -56,6 +60,8 @@ export interface GalleryItem {
   origin: GalleryOrigin;
   favorite: boolean;
   rotation: Rotation;
+  /** The photo has editor changes: the renditions show them, `urls.edited` is the derivative, `urls.original` the file as taken. */
+  edited: boolean;
   albums: string[];
   trashedAt: string | null;
   trashExpiresAt: string | null;
@@ -149,10 +155,12 @@ function parsePlace(v: unknown): GalleryPlace | null {
 function parseUrls(v: unknown): GalleryUrls {
   const u = obj(v);
   const out: GalleryUrls = {};
-  for (const key of ["thumb", "large", "grid", "preview", "original", "download", "poster", "play"] as const) {
+  for (const key of ["thumb", "large", "grid", "preview", "original", "download", "poster", "play", "edited"] as const) {
     const value = sameOriginPath(u[key]);
     if (value) out[key] = value;
   }
+  const downloadEdited = sameOriginPath(u.download_edited);
+  if (downloadEdited) out.downloadEdited = downloadEdited;
   return out;
 }
 
@@ -183,6 +191,7 @@ export function parseItem(raw: unknown): GalleryItem | null {
     origin: { filename: str(origin.filename), folder: str(origin.folder), importedFrom: str(origin.imported_from) },
     favorite: r.favorite === true,
     rotation: (rotation !== null && ROTATIONS.has(rotation) ? rotation : 0) as Rotation,
+    edited: r.edited === true,
     albums: Array.isArray(r.albums) ? r.albums.filter((a): a is string => typeof a === "string") : [],
     trashedAt: str(r.trashed_at),
     trashExpiresAt: str(r.trash_expires_at),
@@ -341,4 +350,45 @@ export function tileUrl(item: GalleryItem, jxl: boolean): string | null {
 /** The viewer image: the 1440 px preview (JXL) where supported, else the 1024 px JPEG. */
 export function previewUrl(item: GalleryItem, jxl: boolean): string | null {
   return (jxl ? item.urls.preview : undefined) ?? item.urls.large ?? item.urls.thumb ?? null;
+}
+
+// ---- editor (components/gallery/editor): the edit list per item and the revert -----------------------------------------
+// A save renders the derivative from the original on the server (a second or two for a phone photo), then answers with the
+// item as it is now: `edited`, new rendition URLs, the derivative's size. The original file is never changed.
+
+export interface ItemEdits {
+  edited: boolean;
+  /** The stored list (null when never edited). */
+  edits: EditList | null;
+  updatedAt: string | null;
+  /** The unedited picture at 1600 px: what the editor works on, whatever the item's renditions show now. */
+  baseUrl: string | null;
+  item: GalleryItem | null;
+}
+
+function parseItemEdits(raw: unknown): ItemEdits {
+  const body = obj(raw);
+  return {
+    edited: body.edited === true,
+    edits: parseEditList(body.edits),
+    updatedAt: str(body.updated_at),
+    baseUrl: sameOriginPath(body.base_url) ?? null,
+    item: parseItem(body.item),
+  };
+}
+
+const EDIT_TIMEOUT_MS = 120_000;
+
+export async function getEdits(id: string): Promise<ItemEdits> {
+  return parseItemEdits(await request<unknown>("GET", `/v1/media/items/${enc(id)}/edits`));
+}
+
+/** Save `list` (an identity list reverts) and return the item as the server has it now. */
+export async function putEdits(id: string, list: EditList): Promise<ItemEdits> {
+  return parseItemEdits(await request<unknown>("PUT", `/v1/media/items/${enc(id)}/edits`, { body: list, timeoutMs: EDIT_TIMEOUT_MS }));
+}
+
+/** Revert to the original: the edit list and the derivative go, the renditions come from the original again. */
+export async function deleteEdits(id: string): Promise<ItemEdits> {
+  return parseItemEdits(await request<unknown>("DELETE", `/v1/media/items/${enc(id)}/edits`, { timeoutMs: EDIT_TIMEOUT_MS }));
 }

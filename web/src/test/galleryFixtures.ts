@@ -22,6 +22,7 @@ export function galleryItem(id: string, over: Partial<GalleryItem> = {}): Galler
     origin: { filename: `IMG_${id}.JPG`, folder: "DCIM/100TEST", importedFrom: null },
     favorite: false,
     rotation: 0,
+    edited: false,
     albums: [],
     trashedAt: null,
     trashExpiresAt: null,
