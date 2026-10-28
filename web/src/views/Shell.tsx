@@ -34,7 +34,12 @@ function NavLinks(props: { class: string }) {
   const under = (paths: string[]) => paths.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`));
   return (
     <nav class={props.class} aria-label={t("shell.sections")}>
-      <A href="/" end class="tab" activeClass="tab--active">
+      <A href="/" end class="tab" activeClass="tab--active" onClick={(e) => {
+        if (location.pathname === "/") {
+          e.preventDefault();
+          window.dispatchEvent(new CustomEvent("secretary:chat-latest"));
+        }
+      }}>
         <ChatIcon />
         <span>{t("shell.navChat")}</span>
       </A>

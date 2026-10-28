@@ -662,6 +662,14 @@ export default function ChatView() {
   }
   /** While our own scroll-to-end runs, scroll events are not the reader's. */
   let autoScrollUntil = 0;
+  let userScrolled = false;
+  let lastScrollTop = 0;
+  let content: HTMLDivElement | undefined;
+  let draggingList = false;
+  const readerScroll = () => {
+    userScrolled = true;
+    autoScrollUntil = 0;
+  };
 
   function autosize() {
     if (!input) return;
@@ -670,7 +678,7 @@ export default function ChatView() {
   }
 
   function scrollToEnd(smooth: boolean) {
-    if (!list) return;
+    if (!list || !atBottom) return;
     const reduce = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
     autoScrollUntil = Date.now() + (smooth && !reduce ? AUTO_SCROLL_MS : 100);
     if (typeof list.scrollTo === "function") {
@@ -685,18 +693,52 @@ export default function ChatView() {
     if (!list || !hasMore() || olderState() === "loading") return;
     const height = list.scrollHeight;
     const top = list.scrollTop;
+    atBottom = false;
     const added = await loadOlder();
-    if (added > 0 && list) list.scrollTop = top + (list.scrollHeight - height);
+    if (added > 0 && list) {
+      autoScrollUntil = Date.now() + 100;
+      list.scrollTop = top + (list.scrollHeight - height);
+      lastScrollTop = list.scrollTop;
+    }
   }
 
   function onScroll() {
-    if (!list || Date.now() < autoScrollUntil) return;
-    atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < STICK_PX;
-    if (list.scrollTop < LOAD_OLDER_PX && hasMore()) void older();
+    if (!list) return;
+    const top = list.scrollTop;
+    if (Date.now() < autoScrollUntil) {
+      lastScrollTop = top;
+      return;
+    }
+    const movedUp = top < lastScrollTop;
+    if (movedUp) userScrolled = true;
+    lastScrollTop = top;
+    if (!userScrolled) return;
+    atBottom = !movedUp && list.scrollHeight - top - list.clientHeight < STICK_PX;
+    if (!atBottom && top < LOAD_OLDER_PX && hasMore()) void older();
   }
 
   onMount(() => {
-    scrollToEnd(false);
+    const frame = requestAnimationFrame(() => scrollToEnd(false));
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+      if (atBottom) scrollToEnd(false);
+    }) : null;
+    if (content) observer?.observe(content);
+    const latest = () => {
+      atBottom = true;
+      userScrolled = false;
+      scrollToEnd(true);
+    };
+    const release = () => { draggingList = false; };
+    window.addEventListener("secretary:chat-latest", latest);
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    onCleanup(() => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("secretary:chat-latest", latest);
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    });
     onCleanup(connectTimeline());
   });
 
@@ -957,99 +999,110 @@ export default function ChatView() {
         class="messages"
         ref={list}
         onScroll={onScroll}
+        onWheel={readerScroll}
+        onTouchMove={readerScroll}
+        onPointerDown={() => { draggingList = true; }}
+        onPointerMove={() => { if (draggingList) readerScroll(); }}
+        onKeyDown={(e) => {
+          if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key) &&
+              !(e.target as Element).closest("input, textarea, [contenteditable=true]")) readerScroll();
+        }}
+        tabindex="0"
         role="log"
         aria-live="off"
         aria-label={t("chat.conversation")}
       >
-        <div class="timeline-top">
-          <Switch>
-            <Match when={olderState() === "loading"}>
-              <span class="timeline-hint" role="status">
-                {t("chat.loadingEarlier")}
-              </span>
-            </Match>
-            <Match when={olderState() === "error"}>
-              <button type="button" class="btn btn--small" onClick={() => void older()}>
-                {t("chat.earlierFailed")}
-              </button>
-            </Match>
-            <Match when={hasMore()}>
-              <button type="button" class="btn btn--small" onClick={() => void older()}>
-                {t("chat.loadEarlier")}
-              </button>
-            </Match>
-            <Match when={chat.loaded && chat.messages.length > 0}>
-              <span class="timeline-hint">{t("chat.start")}</span>
-            </Match>
-          </Switch>
-        </div>
-        <Show when={loadState() === "error"}>
-          <div class="timeline-error" role="alert">
-            <span>{t("chat.loadFailed")}</span>
-            <button type="button" class="btn btn--small" onClick={() => void loadLatest()}>
-              {t("common.tryAgain")}
-            </button>
+        <div class="messages-content" ref={content}>
+          <div class="timeline-top">
+            <Switch>
+              <Match when={olderState() === "loading"}>
+                <span class="timeline-hint" role="status">
+                  {t("chat.loadingEarlier")}
+                </span>
+              </Match>
+              <Match when={olderState() === "error"}>
+                <button type="button" class="btn btn--small" onClick={() => void older()}>
+                  {t("chat.earlierFailed")}
+                </button>
+              </Match>
+              <Match when={hasMore()}>
+                <button type="button" class="btn btn--small" onClick={() => void older()}>
+                  {t("chat.loadEarlier")}
+                </button>
+              </Match>
+              <Match when={chat.loaded && chat.messages.length > 0}>
+                <span class="timeline-hint">{t("chat.start")}</span>
+              </Match>
+            </Switch>
           </div>
-        </Show>
-        <Show when={!chat.loaded && chat.messages.length === 0 && loadState() !== "error"}>
-          <p class="timeline-hint" role="status">
-            {t("chat.loading")}
-          </p>
-        </Show>
-        <Show when={chat.loaded && chat.messages.length === 0 && !sending()}>
-          <div class="empty">
-            <p class="empty-title">{t("chat.emptyTitle")}</p>
-            <p class="empty-sub">{t("chat.emptySub")}</p>
-          </div>
-        </Show>
-        <Show when={chat.loaded && focusOutreach() && !focused() ? focusOutreach() : null}>
-          {(id) => (
-            <div class="proactive-missing" role="status">
-              <p>{t("chat.outreachMissing")}</p>
-              <FeedbackButtons outreachId={id()} />
-              <button type="button" class="btn btn--small" onClick={dismissFocus}>
-                {t("chat.close")}
+          <Show when={loadState() === "error"}>
+            <div class="timeline-error" role="alert">
+              <span>{t("chat.loadFailed")}</span>
+              <button type="button" class="btn btn--small" onClick={() => void loadLatest()}>
+                {t("common.tryAgain")}
               </button>
             </div>
-          )}
-        </Show>
-        <Show when={chat.messages.length > 0 && visible().length === 0}>
-          <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
-        </Show>
-        <For each={rows()}>
-          {(row) => (
-            <>
-              <Show when={dayBreak(position().get(isToolRun(row) ? row.first : row.key) ?? -1)}>
-                {(label) => (
-                  <div class="day-sep" role="separator" aria-label={label()}>
-                    <span>{label()}</span>
-                  </div>
+          </Show>
+          <Show when={!chat.loaded && chat.messages.length === 0 && loadState() !== "error"}>
+            <p class="timeline-hint" role="status">
+              {t("chat.loading")}
+            </p>
+          </Show>
+          <Show when={chat.loaded && chat.messages.length === 0 && !sending()}>
+            <div class="empty">
+              <p class="empty-title">{t("chat.emptyTitle")}</p>
+              <p class="empty-sub">{t("chat.emptySub")}</p>
+            </div>
+          </Show>
+          <Show when={chat.loaded && focusOutreach() && !focused() ? focusOutreach() : null}>
+            {(id) => (
+              <div class="proactive-missing" role="status">
+                <p>{t("chat.outreachMissing")}</p>
+                <FeedbackButtons outreachId={id()} />
+                <button type="button" class="btn btn--small" onClick={dismissFocus}>
+                  {t("chat.close")}
+                </button>
+              </div>
+            )}
+          </Show>
+          <Show when={chat.messages.length > 0 && visible().length === 0}>
+            <p class="timeline-hint">{t("chat.noFiltered", { source: filterLabel() })}</p>
+          </Show>
+          <For each={rows()}>
+            {(row) => (
+              <>
+                <Show when={dayBreak(position().get(isToolRun(row) ? row.first : row.key) ?? -1)}>
+                  {(label) => (
+                    <div class="day-sep" role="separator" aria-label={label()}>
+                      <span>{label()}</span>
+                    </div>
+                  )}
+                </Show>
+                {isToolRun(row) ? (
+                  <ToolSteps steps={row.steps} />
+                ) : (
+                  <MessageItem
+                    message={row}
+                    focused={!!focusOutreach() && focused()?.key === row.key}
+                    inferredChoice={inferredChoices().get(row.key)}
+                  />
                 )}
-              </Show>
-              {isToolRun(row) ? (
-                <ToolSteps steps={row.steps} />
-              ) : (
-                <MessageItem
-                  message={row}
-                  focused={!!focusOutreach() && focused()?.key === row.key}
-                  inferredChoice={inferredChoices().get(row.key)}
-                />
-              )}
-            </>
-          )}
-        </For>
-        <Show when={sending()}>
-          <div class="msg msg--lucina">
-            <div class="bubble bubble--thinking">
-              <span class="typing" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </span>
-              {t("chat.thinking")}
+              </>
+            )}
+          </For>
+          <Show when={sending()}>
+            <div class="msg msg--lucina">
+              <div class="bubble bubble--thinking">
+                <span class="typing" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                {t("chat.thinking")}
+              </div>
             </div>
-          </div>
-        </Show>
+          </Show>
+        </div>
       </div>
       <div class="sr-only" aria-live="polite" aria-atomic="true">
         {sending() ? t("chat.thinkingSr") : lastReply() ? t("chat.replySr", { text: lastReply() }) : ""}

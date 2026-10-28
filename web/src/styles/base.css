@@ -1938,6 +1938,13 @@ select.text-input option {
   scrollbar-color: var(--surface-3) transparent;
 }
 
+.messages-content {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: inherit;
+}
+
 .messages > *,
 .composer {
   width: 100%;

@@ -1,8 +1,8 @@
 import { createMemoryHistory, MemoryRouter, Route, useNavigate } from "@solidjs/router";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import type { JSX } from "solid-js";
-import { beforeEach, describe, expect, it } from "vitest";
-import { chat, reloadChatFromStorage } from "../state/chat";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { chat, loadLatest, reloadChatFromStorage } from "../state/chat";
 import { installEventSource, MockEventSource } from "../test/eventsource";
 import { deferred, stubFetch, type Call, type Handler } from "../test/fetch";
 import ChatView from "./Chat";
@@ -46,6 +46,77 @@ const MIXED = [
 
 describe("Chat", () => {
   beforeEach(() => reloadChatFromStorage());
+
+  it("pins cached messages through late growth, ignores the initial top, preserves older messages and handles latest taps", async () => {
+    installEventSource();
+    let height = 1200;
+    let resized: (() => void) | undefined;
+    const originalObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) { resized = () => callback([], this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    const heightSpy = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("messages") ? height : 0;
+    });
+    const clientSpy = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400);
+    let olderCalls = 0;
+    const gate = deferred<{ body: { items: typeof MIXED; nextBefore: null } }>();
+    serve(() => ({ body: {} }), (c) => {
+      if (c.url.includes("before=")) {
+        olderCalls++;
+        return gate.promise;
+      }
+      return { body: { items: MIXED, nextBefore: "3" } };
+    });
+    try {
+      await loadLatest();
+      render(() => <ChatView />);
+      const log = screen.getByRole("log");
+      let top = 0;
+      log.scrollTo = (options?: ScrollToOptions | number) => {
+        log.scrollTop = typeof options === "number" ? options : options?.top ?? 0;
+      };
+      Object.defineProperty(log, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => { top = Math.min(value, height - 400); },
+      });
+      fireEvent.scroll(log);
+      expect(olderCalls).toBe(0);
+      await waitFor(() => expect(top).toBe(800));
+      height = 1500;
+      resized?.();
+      expect(top).toBe(1100);
+      // Even a small upward scroll releases the pin before content grows again.
+      fireEvent.scroll(log);
+      fireEvent.wheel(log, { deltaY: -50 });
+      top = 1050;
+      fireEvent.scroll(log);
+      height = 1600;
+      resized?.();
+      expect(top).toBe(1050);
+      top = 0;
+      fireEvent.scroll(log);
+      await waitFor(() => expect(olderCalls).toBe(1));
+      height = 1800;
+      resized?.();
+      expect(top).toBe(0);
+      gate.resolve({ body: { items: [{ ...MIXED[0]!, id: "1", ts: at(40 * H), text: "Earlier page" }], nextBefore: null } });
+      await screen.findByText("Earlier page");
+      await waitFor(() => expect(top).toBe(200));
+      window.dispatchEvent(new CustomEvent("secretary:chat-latest"));
+      expect(top).toBe(1400);
+      window.dispatchEvent(new CustomEvent("secretary:chat-latest"));
+      expect(top).toBe(1400);
+    } finally {
+      heightSpy.mockRestore();
+      clientSpy.mockRestore();
+      globalThis.ResizeObserver = originalObserver;
+    }
+  });
 
   it("shows an optimistic bubble, a thinking indicator, then the reply as plain text", async () => {
     const gate = deferred<void>();
