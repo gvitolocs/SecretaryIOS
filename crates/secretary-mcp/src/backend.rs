@@ -293,6 +293,18 @@ impl Backend {
         self.call(Method::GET, path, query, None).await
     }
 
+    /// Decision creation has a 60 s server deadline, plus transport headroom.
+    pub async fn create_decision(&self, body: &Value) -> BResult<Value> {
+        self.send_device(
+            Method::POST,
+            "/v1/decisions",
+            Some(body),
+            Duration::from_secs(65),
+            HeaderMap::new(),
+        )
+        .await
+    }
+
     pub async fn post(&self, path: &str, body: &Value) -> BResult<Value> {
         self.call(Method::POST, path, &[], Some(body)).await
     }

@@ -2,7 +2,7 @@
 //! (`Call::*` constructors), forwards with the server's Lucina token and
 //! returns Lucina's `data` unwrapped.
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
@@ -86,6 +86,40 @@ async fn hermes_update(State(st): State<AppState>, JsonBody(body): JsonBody<Valu
 
 async fn job(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
     forward(&st, Call::job(&id)?).await
+}
+
+/// Lucina decision creation may take up to 40 seconds.
+pub const DECISION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+async fn create_decision(State(st): State<AppState>, JsonBody(body): JsonBody<Value>) -> ApiResult {
+    let call = Call::create_decision(body)?;
+    let data = st
+        .lucina()?
+        .call_with_timeout::<Value>(&call, DECISION_TIMEOUT)
+        .await?;
+    Ok((StatusCode::OK, Json(data)))
+}
+
+async fn decision(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    forward(&st, Call::decision(&id)?).await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionsQuery {
+    status: Option<String>,
+    limit: Option<String>,
+}
+
+async fn decisions(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<DecisionsQuery>,
+) -> ApiResult {
+    forward(
+        &st,
+        Call::decisions(q.status.as_deref(), q.limit.as_deref())?,
+    )
+    .await
 }
 
 async fn reminders(
@@ -220,6 +254,13 @@ pub fn protected() -> Router<AppState> {
         .route("/v1/chat", axum::routing::post(chat))
         .route("/v1/hermes", get(hermes).put(hermes_update))
         .route("/v1/jobs/{id}", get(job))
+        .route(
+            "/v1/decisions",
+            get(decisions)
+                .post(create_decision)
+                .layer(DefaultBodyLimit::max(32 * 1024)),
+        )
+        .route("/v1/decisions/{id}", get(decision))
         .route("/v1/reminders", get(reminders).post(create_reminder))
         .route("/v1/reminders/{id}", delete(cancel_reminder))
         .route("/v1/agenda", get(agenda))

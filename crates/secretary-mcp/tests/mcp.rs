@@ -5,8 +5,11 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 32] = [
+const ALL_TOOLS: [&str; 35] = [
     "ask_lucina",
+    "lucina_decide",
+    "lucina_decision_status",
+    "lucina_job_status",
     "lucina_timeline",
     "shopping_list",
     "shopping_add",
@@ -70,6 +73,25 @@ async fn initialize_and_tools_list() {
         assert!(tool["description"].as_str().unwrap().len() > 40, "{tool}");
         assert!(tool["annotations"].is_object(), "{tool}");
     }
+    for name in [
+        "lucina_decide",
+        "lucina_decision_status",
+        "lucina_job_status",
+    ] {
+        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], name != "lucina_decide");
+        assert_eq!(
+            tool["annotations"]["idempotentHint"],
+            name != "lucina_decide"
+        );
+        assert_eq!(tool["annotations"]["destructiveHint"], false);
+    }
+    let decide = tools.iter().find(|t| t["name"] == "lucina_decide").unwrap();
+    assert!(decide["inputSchema"]["properties"]["wait_seconds"].is_object());
+    assert!(decide["inputSchema"]["properties"]
+        .get("asking_client")
+        .is_none());
     let ask = &tools[0];
     assert_eq!(ask["inputSchema"]["required"], json!(["message"]));
     assert!(ask["inputSchema"]["properties"]["conversation"].is_object());
@@ -210,7 +232,7 @@ async fn scopes_are_enforced() {
     let chat_only = h.issue("bot", "chat");
     assert_eq!(
         h.tool_names(&chat_only).await,
-        vec!["ask_lucina".to_string()]
+        vec!["ask_lucina".to_string(), "lucina_decide".to_string(), "lucina_decision_status".to_string(), "lucina_job_status".to_string()]
     );
     let r = h.rpc(&chat_only, "resources/list", json!({})).await;
     assert_eq!(r["resources"], json!([]));
@@ -1740,5 +1762,98 @@ async fn computer_tools_need_the_computer_scope() {
     assert_eq!(
         h.mock.requests("/v1/computer/task")[0].body["task"],
         "open example.com"
+    );
+}
+
+#[tokio::test]
+async fn decisions_validate_forward_and_stop_polling() {
+    let h = start().await;
+    let t = h.issue("claude-code", "chat");
+    let base = json!({"question":"Ship?","options":["Ship","Wait"],"recommendation":"1","impact":"low","reversible":true});
+    for (field, value) in [
+        ("options", json!(["Ship"])),
+        ("options", json!(["a", "b", "c", "d", "e", "f", "g"])),
+        ("options", json!(["Ship", " ship "])),
+        ("options", json!(["", "Wait"])),
+        ("recommendation", json!("nope")),
+        ("question", json!("x".repeat(2001))),
+        ("context", json!("x".repeat(8001))),
+        ("topic", json!("x".repeat(65))),
+        ("asking_session", json!("x".repeat(121))),
+        ("wait_seconds", json!(101)),
+        ("wait_seconds", json!(-1)),
+        ("asking_client", json!("spoof")),
+        ("unknown", json!(true)),
+    ] {
+        let mut args = base.clone();
+        args[field] = value;
+        assert!(h.call(&t, "lucina_decide", args).await.0, "{field}");
+    }
+    assert!(h.mock.requests("/v1/decisions").is_empty());
+    let mut args = base.clone();
+    args["wait_seconds"] = json!(7);
+    let (err, text) = h.call(&t, "lucina_decide", args).await;
+    assert!(!err, "{text}");
+    assert!(text.starts_with("Lucina decided: GO with \"Ship\" (confidence 0.86)."));
+    assert_eq!(h.mock.requests("/v1/decisions/dc-012345abcdef").len(), 1);
+    let sent = &h.mock.requests("/v1/decisions")[0];
+    assert_eq!(sent.body["asking_client"], "claude-code");
+    assert!(sent.body.get("wait_seconds").is_none());
+    assert_eq!(
+        sent.headers["authorization"],
+        format!("Bearer {DEVICE_TOKEN}")
+    );
+    let (err, text) = h
+        .call(
+            &t,
+            "lucina_decision_status",
+            json!({"decision_id":"dc-012345abcdef","wait_seconds":7}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert_eq!(h.mock.requests("/v1/decisions/dc-012345abcdef").len(), 2);
+    for args in [
+        json!({"decision_id":"bad"}),
+        json!({"decision_id":"dc-012345abcdef","wait_seconds":101}),
+        json!({"decision_id":"dc-012345abcdef","extra":true}),
+    ] {
+        assert!(h.call(&t, "lucina_decision_status", args).await.0);
+    }
+    let (err, text) = h
+        .call(&t, "lucina_job_status", json!({"job_id":"j1"}))
+        .await;
+    assert!(!err, "{text}");
+    for part in [
+        "done",
+        "research",
+        "Found it",
+        "createdAt",
+        "startedAt",
+        "finishedAt",
+    ] {
+        assert!(text.contains(part), "{text}");
+    }
+    assert!(
+        h.call(&t, "lucina_job_status", json!({"job_id":"j1","extra":true}))
+            .await
+            .0
+    );
+}
+
+#[tokio::test]
+async fn ask_allow_is_encoded_in_prefix() {
+    let h = start().await;
+    let t = h.issue("claude-code", "chat");
+    let (err, text) = h
+        .call(
+            &t,
+            "ask_lucina",
+            json!({"message":"Hi","allow":["tasks","notes","tasks"]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert_eq!(
+        h.mock.requests("/v1/chat")[0].body["message"],
+        "[via Lucina MCP, from claude-code; allow=notes,tasks] Hi"
     );
 }

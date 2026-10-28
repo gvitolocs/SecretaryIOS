@@ -126,6 +126,7 @@ async fn mock_handler(
             "result": "here you go", "error": null, "imageUrl": "https://img.example/x.png",
             "createdAt": "t0", "updatedAt": "t1",
         })),
+        (_, p) if p.starts_with("/api/secretary/decisions") => ok(echo),
         ("GET", "/api/secretary/reminders") => ok(json!({
             "scope": "today", "includeSent": true, "timeZone": "Europe/Rome",
             "reminders": [reminder("r1", "call mum", "pending")], "query": seen.query,
@@ -690,7 +691,10 @@ async fn session_login_cookie_flags_and_status() {
         json!({"authenticated": true, "deviceId": h.device_id, "deviceName": "test iPhone"})
     );
     let (_, b, _) = h.send(h.http.get(h.url("/v1/session"))).await;
-    assert_eq!(b, json!({"authenticated": false, "deviceId": null, "deviceName": null}));
+    assert_eq!(
+        b,
+        json!({"authenticated": false, "deviceId": null, "deviceName": null})
+    );
     let (_, b, _) = h.send(h.req(Method::GET, "/v1/session")).await;
     assert_eq!(b["authenticated"], true, "Bearer counts too");
     assert_eq!(b["deviceId"], h.device_id);
@@ -1144,4 +1148,79 @@ async fn token_cli_issue_list_revoke_roundtrip() {
 
     let (ok, _) = cli(&data, &["token", "revoke", "dev_nope"]);
     assert!(!ok);
+}
+
+#[tokio::test]
+async fn decisions_forward_and_validate() {
+    assert_eq!(
+        secretary_server::routes::DECISION_TIMEOUT,
+        Duration::from_secs(60)
+    );
+    let h = Harness::default().await;
+    let body = json!({"question":"Ship?", "extra":{"unchanged":true}});
+    let (status, response, _) = h
+        .send(h.req(Method::POST, "/v1/decisions").json(&body))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["body"], body);
+    assert_eq!(
+        h.mock.last().auth.as_deref(),
+        Some("Bearer lucina-server-secret")
+    );
+    assert_eq!(h.mock.last().path, "/api/secretary/decisions");
+    assert_eq!(
+        h.get("/v1/decisions/dc-012345abcdef").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.mock.last().path,
+        "/api/secretary/decisions/dc-012345abcdef"
+    );
+    assert_eq!(
+        h.get("/v1/decisions?status=pending&limit=010").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.mock.last().query.as_deref(),
+        Some("status=pending&limit=010")
+    );
+    for status in ["decided", "expired"] {
+        assert_eq!(
+            h.get(&format!("/v1/decisions?status={status}&limit=100"))
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+    let count = h.mock.count();
+    for path in [
+        "/v1/decisions/nope",
+        "/v1/decisions/dc-012345ABCDEF",
+        "/v1/decisions/dc-012345abcde",
+        "/v1/decisions/dc-012345abcdef0",
+        "/v1/decisions/dc-012345abcdeg",
+        "/v1/decisions/a%2F..%2Fadmin",
+        "/v1/decisions?status=bad",
+        "/v1/decisions?limit=0",
+        "/v1/decisions?limit=101",
+        "/v1/decisions?other=x",
+    ] {
+        assert_eq!(h.get(path).await.0, StatusCode::BAD_REQUEST, "{path}");
+    }
+    assert_eq!(
+        h.send(h.req(Method::POST, "/v1/decisions").json(&json!([])))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.send(
+            h.req(Method::POST, "/v1/decisions")
+                .json(&json!({"context":"x".repeat(32768)}))
+        )
+        .await
+        .0,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(h.mock.count(), count);
 }

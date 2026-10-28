@@ -4,7 +4,7 @@
 //! Safety: no tool buys anything, messages third parties or deletes data.
 //! `reminder_cancel` only moves a pending reminder to `cancelled` (Lucina
 //! keeps the record). Everything else that could act in the world goes
-//! through `ask_lucina`, i.e. through Lucina's own pipeline and its own
+//! through dedicated tools, i.e. through Lucina's own pipeline and its own
 //! confirmation flow. Notes are the owner's own local data: `note_save` and
 //! `note_append` write without a confirmation step, and every write is
 //! logged with the caller.
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::backend::{seg, BackendError};
@@ -72,6 +72,89 @@ pub struct AskArgs {
     /// Optional conversation name (letters, digits, '-' and '_', up to 32) to keep separate threads, e.g. "travel". Default: one conversation per client.
     #[serde(default)]
     pub conversation: Option<String>,
+    /// Permit this one message to act on these request kinds; duplicates are removed and kinds sorted.
+    pub allow: Option<Vec<AllowArg>>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AllowArg {
+    Reminders,
+    Notes,
+    Tasks,
+    Shopping,
+}
+impl AllowArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Reminders => "reminders",
+            Self::Notes => "notes",
+            Self::Tasks => "tasks",
+            Self::Shopping => "shopping",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ImpactArg {
+    Low,
+    Medium,
+    High,
+}
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum UrgencyArg {
+    Low,
+    Normal,
+    High,
+}
+
+/// A structured go-ahead request. The authenticated client name is supplied by the server.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecideArgs {
+    /// The decision to make, 1-2000 characters.
+    pub question: String,
+    /// 2-6 choices, each 1-200 characters; unique ignoring case and surrounding whitespace.
+    pub options: Vec<String>,
+    /// Recommended option text (case-insensitive, trimmed) or its 1-based number, e.g. "2".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendation: Option<String>,
+    /// Supporting context, up to 8000 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Whether the proposed action can be undone. False always requires the owner.
+    pub reversible: bool,
+    /// Consequence level. High always requires the owner.
+    pub impact: ImpactArg,
+    /// How urgent the decision is; default normal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub urgency: Option<UrgencyArg>,
+    /// Subject grouping, up to 64 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Asking session name or id, up to 120 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asking_session: Option<String>,
+    /// Poll a pending answer every 3 seconds for 0-100 seconds; default 0.
+    #[serde(skip_serializing)]
+    pub wait_seconds: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionStatusArgs {
+    /// Decision id: dc- followed by 12 lowercase hexadecimal digits.
+    pub decision_id: String,
+    /// Poll a pending answer every 3 seconds for 0-100 seconds; default 0.
+    pub wait_seconds: Option<u32>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobStatusArgs {
+    /// Background job id returned by ask_lucina.
+    pub job_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -542,7 +625,13 @@ macro_rules! spec {
 pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec!("ask_lucina", "Ask Lucina", Scope::Chat, ro = false, destructive = false, idempotent = false, AskArgs,
-            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and can act through her own tools (reminders, shopping, research jobs, images). Use it for anything that needs Lucina's judgement or memory. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
+            "Send a message to Lucina, the owner's personal AI assistant, and get her reply. Lucina knows the owner (long-term memory), their reminders, shopping list, notes and recent conversations on every channel, and recent context. For agent clients this is consult-only: answers, no jobs, computer tasks, reminders, posts or list writes. For a go-ahead use lucina_decide. For actions use reminder_create, shopping_add, note_save, task_add, computer_task or agent_run. The optional allow array lets this one message act on that kind of request. She is told which client is asking. Actions with consequences (purchases, posts, messages to other people) go through Lucina's own confirmation flow. Messages are limited to 12000 characters: do NOT paste long documents, briefings or context here; save them with note_save (and note_append) and then tell Lucina the note's slug. A turn can take up to two minutes; long jobs finish in the background and show up in lucina_timeline."),
+        spec!("lucina_decide", "Ask Lucina for a decision", Scope::Chat, ro = false, destructive = false, idempotent = false, DecideArgs,
+            "THE way for agents to get a go-ahead: use this instead of asking the owner or using ask_lucina. Lucina decides from the owner's memory, messages and earlier decisions with JEV. She asks the owner on his phone for high impact, irreversible or owner-only requests, conflicting evidence or low confidence. A pending answer means do not act yet; follow it with lucina_decision_status. Optionally wait and poll for up to 100 seconds."),
+        spec!("lucina_decision_status", "Lucina decision status", Scope::Chat, ro = true, destructive = false, idempotent = true, DecisionStatusArgs,
+            "Check a structured go-ahead from lucina_decide, optionally polling for up to 100 seconds. Pending means do not act yet; decided and expired answers include the full decision record."),
+        spec!("lucina_job_status", "Lucina job status", Scope::Chat, ro = true, destructive = false, idempotent = true, JobStatusArgs,
+            "Follow a background job started by Lucina: status, action, result or error, and created, started and finished times. For go-aheads use lucina_decide; ask_lucina is answers-only for agents."),
         spec!("lucina_timeline", "Lucina timeline", Scope::Read, ro = true, destructive = false, idempotent = true, TimelineArgs,
             "Recent messages between the owner and Lucina on all channels (Telegram, Discord, web app, iOS app, Alexa, MCP), newest first, with time, channel and who spoke. Paginate with `before`."),
         spec!("shopping_list", "Shopping list", Scope::Read, ro = true, destructive = false, idempotent = true, ShoppingListArgs,
@@ -584,7 +673,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("task_complete", "Complete task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskCompleteArgs,
             "Mark one of the owner's tasks done (by id from tasks_list, or by words of its title). A recurring task moves to its next date in Todoist. Deleting tasks is not possible here; ask the owner."),
         spec!("lucina_status", "Lucina status", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
-            "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has."),
+            "Health of the Secretary gateway and of Lucina (reachable, latency), the owner's time zone and current local time, and which client and scopes this connection has. Use lucina_decide for go-aheads; ask_lucina is answers-only for agents."),
         spec!("library_list_books", "Library list books", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryListArgs, "List books. Ownership and Kindle presence do not imply reading or completion."),
         spec!("library_search", "Library search", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryListArgs, "Search titles, authors, tags and clippings, with source references."),
         spec!("library_get_book", "Library get book", Scope::Read, ro = true, destructive = false, idempotent = true, LibraryBookArgs, "Read book metadata and highlights with references."),
@@ -855,12 +944,131 @@ pub fn ask_prefix(caller: &str) -> String {
     format!("[via Lucina MCP, from {caller}] ")
 }
 
+/// Prefix for a single message allowed to act on selected request kinds.
+pub fn ask_prefix_allow(caller: &str, allow: &[AllowArg]) -> String {
+    let mut kinds: Vec<_> = allow.iter().map(|a| a.as_str()).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    format!(
+        "[via Lucina MCP, from {caller}; allow={}] ",
+        kinds.join(",")
+    )
+}
+
+fn wait_seconds(wait: Option<u32>) -> Result<u32, ToolError> {
+    let wait = wait.unwrap_or(0);
+    if wait > 100 {
+        return Err(bad("`wait_seconds` must be 0-100"));
+    }
+    Ok(wait)
+}
+
+impl DecideArgs {
+    fn validate(&self) -> Result<(), ToolError> {
+        fn length(field: &str, text: &str, min: usize, max: usize) -> Result<(), ToolError> {
+            if !(min..=max).contains(&text.chars().count()) {
+                return Err(bad(format!("`{field}` must be {min}-{max} characters")));
+            }
+            Ok(())
+        }
+        length("question", &self.question, 1, 2000)?;
+        if !(2..=6).contains(&self.options.len()) {
+            return Err(bad("`options` must have 2-6 entries"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for option in &self.options {
+            length("options", option, 1, 200)?;
+            if !seen.insert(option.trim().to_lowercase()) {
+                return Err(bad("`options` must be unique ignoring case and whitespace"));
+            }
+        }
+        if let Some(r) = &self.recommendation {
+            let r = r.trim().to_lowercase();
+            if !seen.contains(&r) && !(1..=self.options.len()).any(|i| r == i.to_string()) {
+                return Err(bad(
+                    "`recommendation` must be an option or its 1-based number",
+                ));
+            }
+        }
+        for (field, text, max) in [
+            ("context", &self.context, 8000),
+            ("topic", &self.topic, 64),
+            ("asking_session", &self.asking_session, 120),
+        ] {
+            if let Some(text) = text {
+                length(field, text, 0, max)?;
+            }
+        }
+        wait_seconds(self.wait_seconds)?;
+        Ok(())
+    }
+}
+
 pub struct Tools<'a> {
     pub app: &'a App,
     pub caller: &'a Caller,
 }
 
 impl Tools<'_> {
+    async fn poll_decision(&self, mut response: Value, wait: u32) -> Result<Value, ToolError> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait.into());
+        while response["status"] == "pending" && wait > 0 {
+            let next = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            if next > deadline {
+                break;
+            }
+            let id = response["decision_id"]
+                .as_str()
+                .ok_or_else(|| bad("Pending response missing decision_id"))?
+                .to_owned();
+            secretary_core::Call::decision(&id).map_err(|e| bad(e.to_string()))?;
+            tokio::time::sleep_until(next).await;
+            match tokio::time::timeout_at(
+                deadline,
+                self.app.backend.get(&format!("/v1/decisions/{id}"), &[]),
+            )
+            .await
+            {
+                Ok(result) => response = result?,
+                Err(_) => break,
+            }
+        }
+        Ok(response)
+    }
+
+    pub async fn decide(&self, args: &JsonObject) -> ToolResult {
+        let a: DecideArgs = parse(args)?;
+        a.validate()?;
+        let wait = wait_seconds(a.wait_seconds)?;
+        let mut body = serde_json::to_value(&a).map_err(|e| bad(e.to_string()))?;
+        body["asking_client"] = json!(self.caller.name);
+        let response = self.app.backend.create_decision(&body).await?;
+        Ok(format::decision(&self.poll_decision(response, wait).await?))
+    }
+
+    pub async fn decision_status(&self, args: &JsonObject) -> ToolResult {
+        let a: DecisionStatusArgs = parse(args)?;
+        let wait = wait_seconds(a.wait_seconds)?;
+        secretary_core::Call::decision(&a.decision_id).map_err(|e| bad(e.to_string()))?;
+        let response = self
+            .app
+            .backend
+            .get(&format!("/v1/decisions/{}", a.decision_id), &[])
+            .await?;
+        Ok(format::decision(&self.poll_decision(response, wait).await?))
+    }
+
+    pub async fn job_status(&self, args: &JsonObject) -> ToolResult {
+        let a: JobStatusArgs = parse(args)?;
+        secretary_core::Call::job(&a.job_id).map_err(|e| bad(e.to_string()))?;
+        let response = self
+            .app
+            .backend
+            .get(&format!("/v1/jobs/{}", seg(&a.job_id)), &[])
+            .await?;
+        Ok(format::job(&response))
+    }
+
     pub async fn ask(&self, args: &JsonObject) -> ToolResult {
         let a: AskArgs = parse(args)?;
         let msg = check_text("message", &a.message, MAX_ASK_CHARS)?;
@@ -884,7 +1092,7 @@ impl Tools<'_> {
         }
         session.truncate(64);
         let body = json!({
-            "message": format!("{}{msg}", ask_prefix(&self.caller.name)),
+            "message": format!("{}{msg}", a.allow.as_deref().filter(|a| !a.is_empty()).map(|a| ask_prefix_allow(&self.caller.name, a)).unwrap_or_else(|| ask_prefix(&self.caller.name))),
             "sessionId": session,
             "clientMessageId": uuid::Uuid::new_v4().to_string(),
             "channel": "web",
@@ -2333,5 +2541,87 @@ mod library_tests {
             &json!({"book":{"id":"bk_a","title":"Book","status":"unknown","progress":null}})
         )
         .contains("progress unknown"));
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    #[test]
+    fn decision_argument_contract() {
+        let base = json!({"question":"Ship?", "options":["Ship", "Wait"], "reversible":true, "impact":"low"});
+        for recommendation in [" ship ", "2"] {
+            let mut args = base.clone();
+            args["recommendation"] = json!(recommendation);
+            args["wait_seconds"] = json!(100);
+            serde_json::from_value::<DecideArgs>(args)
+                .unwrap()
+                .validate()
+                .unwrap();
+        }
+        for (field, value) in [
+            ("question", json!("")),
+            ("question", json!("é".repeat(2001))),
+            ("options", json!(["only"])),
+            ("options", json!(["a", "b", "c", "d", "e", "f", "g"])),
+            ("options", json!(["Ship", " SHIP "])),
+            ("options", json!(["x".repeat(201), "Wait"])),
+            ("recommendation", json!("3")),
+            ("recommendation", json!("other")),
+            ("context", json!("x".repeat(8001))),
+            ("topic", json!("x".repeat(65))),
+            ("asking_session", json!("x".repeat(121))),
+            ("wait_seconds", json!(101)),
+        ] {
+            let mut args = base.clone();
+            args[field] = value;
+            assert!(
+                serde_json::from_value::<DecideArgs>(args)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{field}"
+            );
+        }
+        let mut boundary = base.clone();
+        boundary["question"] = json!("é".repeat(2000));
+        boundary["context"] = json!("x".repeat(8000));
+        boundary["topic"] = json!("x".repeat(64));
+        boundary["asking_session"] = json!("x".repeat(120));
+        boundary["wait_seconds"] = json!(0);
+        serde_json::from_value::<DecideArgs>(boundary)
+            .unwrap()
+            .validate()
+            .unwrap();
+        for (field, value) in [
+            ("asking_client", json!("spoof")),
+            ("extra", json!(1)),
+            ("wait_seconds", json!(-1)),
+            ("impact", json!("unknown")),
+            ("urgency", json!("medium")),
+        ] {
+            let mut args = base.clone();
+            args[field] = value;
+            assert!(serde_json::from_value::<DecideArgs>(args).is_err());
+        }
+    }
+
+    #[test]
+    fn prefixes() {
+        assert_eq!(
+            ask_prefix("claude-code"),
+            "[via Lucina MCP, from claude-code] "
+        );
+        assert_eq!(
+            ask_prefix_allow(
+                "claude-code",
+                &[AllowArg::Tasks, AllowArg::Notes, AllowArg::Notes]
+            ),
+            "[via Lucina MCP, from claude-code; allow=notes,tasks] "
+        );
+        assert_eq!(
+            ask_prefix_allow("claude-code", &[]),
+            "[via Lucina MCP, from claude-code; allow=] "
+        );
     }
 }

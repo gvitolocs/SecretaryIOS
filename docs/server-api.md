@@ -2368,7 +2368,7 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 503 | `apns_disabled` | server | `POST /v1/push/apns` without APNs configured. |
 | 404 | `subscription_not_found` | server | `DELETE /v1/push/subscriptions/{id}`, `POST /v1/push/test`. |
 | 503 | `reminders_disabled`, `owner_chat_unconfigured`, `grocery_unavailable` | Lucina | Feature off on Lucina's host; show it, don't retry in a loop. |
-| 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, else 15 s). |
+| 504 | `lucina_timeout` | server | Lucina did not answer in time (chat 120 s, decision creation 60 s, else 15 s). |
 | 504 | `tts_unavailable` | server | Kokoro did not answer within 30 s. |
 
 Any other Lucina 4xx code is passed through with Lucina's status.
@@ -2428,3 +2428,21 @@ It matches the standalone `/lucina/` page that Caddy serves
 origins, so the web build must not use inline `<script>`, remote scripts or fonts, or
 remote images (`imageUrl` from a `generate_image` job will not render in an
 `<img>` under this CSP; open it as a link instead).
+
+### Decisions: `POST /v1/decisions`, `GET /v1/decisions/{id}`, `GET /v1/decisions`
+
+Device-token routes forwarded to Lucina's `/api/secretary/decisions…` with the
+server's Lucina credential. See [the decision contract](design/decisions-api.md)
+for request and response fields and the go-ahead policy.
+
+- POST accepts a JSON object up to 32 KB, passed through unchanged, and uses a
+  60 s upstream timeout (allow at least 65 s in clients).
+- GET by id requires `dc-` followed by exactly 12 lowercase hexadecimal digits;
+  invalid ids return 400. Lucina's `404 decision_not_found` passes through.
+- GET list accepts only `status=pending|decided|expired` and `limit=1..100`
+  (default 20); unknown query parameters return 400. Returns `{"items": [...]}`,
+  newest first.
+
+Pending decisions mean do not act yet. Agents request a go-ahead with
+`lucina_decide` and follow it with `lucina_decision_status`; `ask_lucina` is
+answers-only for agent clients unless its one-message `allow` opts into a request kind.

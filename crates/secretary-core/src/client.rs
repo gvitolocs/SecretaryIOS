@@ -299,6 +299,52 @@ impl Call {
         Ok(Self::new(Method::GET, &["jobs", id]))
     }
 
+    /// `POST /decisions`: opaque JSON object, at most 32 KiB.
+    pub fn create_decision(body: Value) -> Result<Self> {
+        if !body.is_object() || body.to_string().len() > 32 * 1024 {
+            return Err(Error::Invalid {
+                field: "body",
+                message: "must be a JSON object up to 32 KB".into(),
+            });
+        }
+        Ok(Self::new(Method::POST, &["decisions"]).with_body(body))
+    }
+
+    /// `GET /decisions/{id}` with a contract decision id.
+    pub fn decision(id: &str) -> Result<Self> {
+        if id.len() != 15
+            || !id.starts_with("dc-")
+            || !id.as_bytes()[3..]
+                .iter()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+        {
+            return Err(Error::Invalid {
+                field: "id",
+                message: "must be dc- followed by 12 lowercase hex digits".into(),
+            });
+        }
+        Ok(Self::new(Method::GET, &["decisions", id]))
+    }
+
+    /// `GET /decisions?status=&limit=`.
+    pub fn decisions(status: Option<&str>, limit: Option<&str>) -> Result<Self> {
+        let mut call = Self::new(Method::GET, &["decisions"]);
+        if let Some(status) = status {
+            if !matches!(status, "pending" | "decided" | "expired") {
+                return Err(Error::Invalid {
+                    field: "status",
+                    message: "must be pending, decided or expired".into(),
+                });
+            }
+            call.query.push(("status", status.to_owned()));
+        }
+        if let Some(limit) = limit {
+            validate::bounded_int("limit", limit, 1, 100)?;
+            call.query.push(("limit", limit.to_owned()));
+        }
+        Ok(call)
+    }
+
     /// `GET /reminders?scope=&includeSent=`.
     pub fn reminders(q: &ReminderQuery) -> Result<Self> {
         let mut call = Self::new(Method::GET, &["reminders"]);

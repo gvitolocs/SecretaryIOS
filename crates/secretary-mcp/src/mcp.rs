@@ -30,7 +30,7 @@ pub const RES_SHOPPING: &str = "lucina://shopping/default";
 const LIST_TTL_MS: u64 = 60_000;
 
 const INSTRUCTIONS: &str = "Lucina is the owner's personal AI assistant (memory, reminders, shopping, gym and body tracking). \
-Use ask_lucina for anything that needs her judgement or memory; Lucina is told which client is asking. \
+Use lucina_decide for go-aheads instead of asking the owner. ask_lucina is answers-only for agents, for consultation and memory; Lucina is told which client is asking. \
 Use the direct tools for quick reads (lucina_timeline, shopping_list, reminders_list, gym_summary, body_summary, lucina_status) \
 and small edits (shopping_add, shopping_mark_bought, reminder_create, reminder_cancel). \
 To hand Lucina a briefing, document or anything long or worth keeping, save it as a note (note_save, then note_append for further parts) \
@@ -220,6 +220,9 @@ impl LucinaMcp {
                     }
                 }
             }
+            "lucina_decide" => t.decide(args).await,
+            "lucina_decision_status" => t.decision_status(args).await,
+            "lucina_job_status" => t.job_status(args).await,
             "lucina_timeline" => t.timeline(args).await,
             "shopping_list" => t.shopping_list(args).await,
             "shopping_add" => t.shopping_add(args).await,
@@ -373,7 +376,13 @@ impl ServerHandler for LucinaMcp {
             tracing::warn!(target: "secretary_mcp::audit", event = "scope_denied", name = %name, caller = %c.name, need = %spec.scope);
             if spec.scope == Scope::Agents {
                 let args = request.arguments.unwrap_or_default();
-                agents::audit(&self.app.cfg.data_dir, &name, &c, &args, Err("scope_denied"));
+                agents::audit(
+                    &self.app.cfg.data_dir,
+                    &name,
+                    &c,
+                    &args,
+                    Err("scope_denied"),
+                );
             }
             return Ok(self.insufficient(&c, spec.scope, &name).into());
         }

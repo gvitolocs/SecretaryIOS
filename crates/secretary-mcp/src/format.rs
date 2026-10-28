@@ -99,8 +99,8 @@ pub fn chat_reply(r: &Value) -> String {
     let action = s(r, "action").unwrap_or("reply");
     if let Some(job) = r.get("job").filter(|j| j.is_object()) {
         out.push_str(&format!(
-            "\n\n[Lucina started a background job: {action}, id {}. Its result will appear in lucina_timeline.]",
-            scalar(job.get("id"))
+            "\n\n[Lucina started a background job: {action}, id {}. Follow it with lucina_job_status {{\"job_id\": \"{}\"}}; the result also appears in lucina_timeline.]",
+            scalar(job.get("id")), scalar(job.get("id"))
         ));
     } else if action != "reply" {
         out.push_str(&format!("\n\n[action: {action}]"));
@@ -113,10 +113,51 @@ pub fn chat_reply(r: &Value) -> String {
             s(rem, "dueAt").unwrap_or("?")
         ));
     }
+    if r.get("consult").and_then(Value::as_bool) == Some(true) {
+        if let Some(not_run) = s(r, "notRun") {
+            let hint = s(r, "hint").map(|h| format!(" {h}")).unwrap_or_default();
+            out.push_str(&format!("\n\n[Lucina only answered: this is a consult turn, so she did not run {not_run}.{hint}]"));
+        }
+    }
     if r.get("duplicate").and_then(Value::as_bool) == Some(true) {
         out.push_str("\n[duplicate: this is the earlier answer to the same message]");
     }
     out
+}
+
+/// Contract decision summary followed by the complete record.
+pub fn decision(r: &Value) -> String {
+    let id = s(r, "decision_id").unwrap_or("?");
+    let reason = s(r, "reason").unwrap_or("");
+    let line = match s(r, "status").unwrap_or("") {
+        "pending" => format!("Pending: Lucina asked the owner on his phone (decision {id}). Do not act on this yet; check with lucina_decision_status {{\"decision_id\": \"{id}\"}}."),
+        "expired" => format!("Expired: the owner did not answer within 24 h (decision {id}). Ask again or leave it."),
+        _ if s(r, "decision") == Some("owner_reply") => format!("The owner answered: \"{reason}\""),
+        _ => {
+            let who = if s(r, "decided_by") == Some("owner") { "The owner" } else { "Lucina" };
+            let choice = s(r, "chosen_option").unwrap_or("");
+            let action = if s(r, "decision") == Some("change") { "CHANGE to" } else { "GO with" };
+            let confidence = r.get("confidence").and_then(Value::as_f64).unwrap_or(0.0);
+            format!("{who} decided: {action} \"{choice}\" (confidence {confidence:.2}). Reason: {reason}  Decision {id}")
+        }
+    };
+    // Keep the human summary on one line even when the owner replies with newlines.
+    format!(
+        "{}\n\n```json\n{}\n```",
+        line.replace(['\n', '\r'], " "),
+        serde_json::to_string_pretty(r).unwrap_or_default()
+    )
+}
+
+/// Job summary and full payload, including result/error and lifecycle timestamps.
+pub fn job(r: &Value) -> String {
+    format!(
+        "Job {}: {}, action {}.\n\n```json\n{}\n```",
+        scalar(r.get("id")),
+        s(r, "status").unwrap_or("?"),
+        s(r, "action").unwrap_or("?"),
+        serde_json::to_string_pretty(r).unwrap_or_default()
+    )
 }
 
 // -- timeline ------------------------------------------------------------------------
@@ -142,7 +183,26 @@ pub fn timeline(page: &Value, channel: Option<&str>, limit: usize, tz: Tz) -> St
             break;
         }
         last_id = Some(scalar(it.get("id")));
-        let who = if role == "user" { "owner" } else { "Lucina" };
+        let who =
+            if role == "user" && it.pointer("/meta/via").and_then(Value::as_str) == Some("mcp") {
+                let caller = it
+                    .pointer("/meta/caller")
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.trim().is_empty())
+                    .unwrap_or("mcp");
+                match it
+                    .pointer("/meta/conversation")
+                    .and_then(Value::as_str)
+                    .filter(|c| !c.is_empty())
+                {
+                    Some(c) => format!("{caller} ({c})"),
+                    None => caller.to_owned(),
+                }
+            } else if role == "user" {
+                "owner".to_owned()
+            } else {
+                "Lucina".to_owned()
+            };
         let mut text = clip(s(it, "text").unwrap_or(""), MAX_ITEM_TEXT).replace('\n', " ⏎ ");
         if let Some(att) = it
             .get("attachments")
@@ -725,6 +785,7 @@ pub fn status(
         app.cfg.timezone.name(),
         now_line(app.cfg.timezone)
     ));
+    out.push_str("\nUse lucina_decide for go-aheads; ask_lucina is answers-only for agents.");
     out
 }
 
@@ -1339,10 +1400,10 @@ mod tests {
             {"id": "e", "channel": "web", "role": "user", "text": "App", "meta": {"caller": "test"}}
         ]});
         let t = timeline(&page, Some("web"), 20, chrono_tz::UTC);
-        assert!(t.contains(" · mcp:claude-code] owner: Hi"), "{t}");
+        assert!(t.contains(" · mcp:claude-code] claude-code: Hi"), "{t}");
         assert!(t.contains(" · mcp:www] Lucina: Hello"), "{t}");
         assert!(t.contains(" · mcp] Lucina: Missing"), "{t}");
-        assert!(t.contains(" · mcp] owner: Empty"), "{t}");
+        assert!(t.contains(" · mcp] mcp: Empty"), "{t}");
         assert!(t.contains(" · web] owner: App"), "{t}");
         assert_eq!(
             timeline(&page, Some("mcp"), 20, chrono_tz::UTC),
@@ -1420,5 +1481,48 @@ mod tests {
             add_result(&items, "default", &r),
             "Added on list default: latte, lavatrici, pane."
         );
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn contract_answer_text() {
+        let mut r = json!({"decision_id":"dc-012345abcdef","status":"decided","decision":"go","chosen_option":"Ship","confidence":0.86,"reason":"Small fix","decided_by":"lucina"});
+        for (by, choice, expected) in [
+            ("lucina", "go", "Lucina decided: GO with \"Ship\" (confidence 0.86). Reason: Small fix  Decision dc-012345abcdef"),
+            ("lucina", "change", "Lucina decided: CHANGE to \"Ship\" (confidence 0.86). Reason: Small fix  Decision dc-012345abcdef"),
+            ("owner", "go", "The owner decided: GO with \"Ship\" (confidence 0.86). Reason: Small fix  Decision dc-012345abcdef"),
+            ("owner", "owner_reply", "The owner answered: \"Small fix\""),
+        ] {
+            r["decided_by"] = json!(by);
+            r["decision"] = json!(choice);
+            assert_eq!(decision(&r), format!("{expected}\n\n```json\n{}\n```", serde_json::to_string_pretty(&r).unwrap()));
+        }
+        r["status"] = json!("pending");
+        assert_eq!(decision(&r).lines().next().unwrap(), "Pending: Lucina asked the owner on his phone (decision dc-012345abcdef). Do not act on this yet; check with lucina_decision_status {\"decision_id\": \"dc-012345abcdef\"}.");
+        r["status"] = json!("expired");
+        assert_eq!(decision(&r).lines().next().unwrap(), "Expired: the owner did not answer within 24 h (decision dc-012345abcdef). Ask again or leave it.");
+    }
+
+    #[test]
+    fn consult_and_job_lines() {
+        assert_eq!(chat_reply(&json!({"reply":"Hello","consult":true,"notRun":"research","hint":"Use agent_run."})), "Hello\n\n[Lucina only answered: this is a consult turn, so she did not run research. Use agent_run.]");
+        assert_eq!(
+            chat_reply(&json!({"reply":"Hello","consult":true,"notRun":"research"})),
+            "Hello\n\n[Lucina only answered: this is a consult turn, so she did not run research.]"
+        );
+        assert_eq!(chat_reply(&json!({"reply":"Started","action":"research","job":{"id":"j1"}})), "Started\n\n[Lucina started a background job: research, id j1. Follow it with lucina_job_status {\"job_id\": \"j1\"}; the result also appears in lucina_timeline.]");
+    }
+
+    #[test]
+    fn mcp_conversation_speaker() {
+        let r = json!({"items":[{"role":"user","channel":"web","text":"Hi","meta":{"via":"mcp","caller":"claude-code","conversation":"coordinator"}}, {"role":"user","channel":"web","text":"Hi","meta":{"via":"mcp","caller":"claude-code","conversation":""}}]});
+        let text = timeline(&r, None, 20, chrono_tz::UTC);
+        assert!(text.contains("mcp:claude-code] claude-code (coordinator): Hi"));
+        assert!(text.contains("mcp:claude-code] claude-code: Hi"));
     }
 }

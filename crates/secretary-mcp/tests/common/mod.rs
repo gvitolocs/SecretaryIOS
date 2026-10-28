@@ -341,6 +341,9 @@ async fn handle(
         ("GET", ["v1", "library", "books", _, "highlights"]) => Json(json!({"highlights":[library_highlight()]})).into_response(),
         ("POST", ["v1", "library", "books", _, "brief"]) => Json(library_brief()).into_response(),
         ("GET", ["v1", "session"]) => Json(json!({"authenticated": true, "deviceName": "lucina-mcp"})).into_response(),
+        ("POST", ["v1", "decisions"]) => Json(json!({"decision_id":"dc-012345abcdef", "status":"pending"})).into_response(),
+        ("GET", ["v1", "decisions", id]) => Json(json!({"decision_id":id, "status":"decided", "decision":"go", "chosen_option":"Ship", "reason":"Small fix", "decided_by":"lucina", "confidence":0.86})).into_response(),
+        ("GET", ["v1", "jobs", id]) => Json(json!({"id":id,"status":"done","action":"research","result":"Found it","error":null,"createdAt":"t0","startedAt":"t1","finishedAt":"t2"})).into_response(),
         ("POST", ["v1", "chat"]) => {
             let msg = body["message"].as_str().unwrap_or("");
             Json(json!({"reply": format!("Ciao! You said: {msg}"), "action": "reply", "job": null,
