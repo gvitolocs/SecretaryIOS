@@ -1,6 +1,8 @@
 //! Test harness: a mock secretary-server and a running secretary-mcp.
 #![allow(dead_code)]
 
+pub mod agents;
+
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +46,10 @@ pub struct MockState {
     pub race: u32,
     /// Open tasks (task views as `/v1/tasks/state` returns them).
     pub tasks: Vec<Value>,
+    /// Lucina Agents snapshots (`common::agents`).
+    pub agents: Vec<Value>,
+    /// Agent schedules; `None`: the route is not there yet (phase 6).
+    pub schedules: Option<Vec<Value>>,
 }
 
 #[derive(Clone)]
@@ -271,6 +277,8 @@ async fn handle(
     let mut st = m.state.lock().unwrap();
     let seg: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (method.as_str(), seg.as_slice()) {
+        // Lucina Agents (crate::agents), forwarded to agentd by the real server.
+        (m, ["v1", "agents", rest @ ..]) => agents::route(&mut st, m, rest, &query, &headers, &body),
         // Lucina's computer (crate::computer): a job that finishes on the first poll.
         ("POST", ["v1", "computer", "task"]) if device_ok(&headers) => (
             StatusCode::ACCEPTED,
@@ -710,6 +718,7 @@ pub async fn start_with(f: impl FnOnce(&mut secretary_mcp::Config, &Mock)) -> Ha
     cfg.backend_url = mock.url.clone();
     cfg.backend_token = Some(DEVICE_TOKEN.into());
     cfg.service_token = Some(SERVICE_TOKEN.into());
+    cfg.agents_token = Some(agents::AGENTS_TOKEN.into());
     f(&mut cfg, &mock);
     let (addr, ct, _h) = secretary_mcp::spawn(cfg).await.unwrap();
     Harness {
@@ -742,6 +751,24 @@ impl Harness {
             )
             .unwrap()
             .1
+    }
+
+    /// A token at a delegation depth; returns (token id, secret).
+    pub fn issue_at(&self, name: &str, scopes: &str, depth: u8) -> (String, String) {
+        let store = secretary_mcp::tokens::TokenStore::new(self.data_dir());
+        let (rec, secret) = store
+            .issue_at(name, secretary_mcp::scope::Scopes::parse_list(scopes).unwrap(), depth)
+            .unwrap();
+        (rec.id, secret)
+    }
+
+    /// The lines of `agents-audit.jsonl`.
+    pub fn agents_audit(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.data_dir().join("agents-audit.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     /// One JSON-RPC request to /mcp; returns (HTTP status, JSON-RPC message or Null).

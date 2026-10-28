@@ -65,6 +65,8 @@ pub type BResult<T> = Result<T, BackendError>;
 enum Cred {
     Device,
     Service,
+    /// `SECRETARY_MCP_AGENTS_TOKEN_FILE`, for `/v1/agents/*` only.
+    Agents,
     None,
 }
 
@@ -83,6 +85,7 @@ pub struct Backend {
     base: String,
     device_token: Option<String>,
     service_token: Option<String>,
+    agents_token: Option<String>,
 }
 
 impl Backend {
@@ -98,7 +101,18 @@ impl Backend {
             base: base.trim_end_matches('/').to_owned(),
             device_token,
             service_token,
+            agents_token: None,
         }
+    }
+
+    /// The service token `/v1/agents/*` calls carry (`crate::agents`).
+    pub fn with_agents_token(mut self, token: Option<String>) -> Self {
+        self.agents_token = token;
+        self
+    }
+
+    pub fn has_agents_token(&self) -> bool {
+        self.agents_token.is_some()
     }
 
     pub fn has_device_token(&self) -> bool {
@@ -139,6 +153,12 @@ impl Backend {
                 BackendError::local(
                     "backend_not_configured",
                     "SECRETARY_MCP_SERVICE_TOKEN_FILE is not set",
+                )
+            })?),
+            Cred::Agents => Some(self.agents_token.as_deref().ok_or_else(|| {
+                BackendError::local(
+                    "agents_not_configured",
+                    "SECRETARY_MCP_AGENTS_TOKEN_FILE is not set",
                 )
             })?),
             Cred::None => None,
@@ -237,6 +257,22 @@ impl Backend {
         )
         .await
         .map(|(_, _, v)| v)
+    }
+
+    /// A `/v1/agents/*` call with the agents service token (never the device
+    /// token), its own deadline and the caller headers (`crate::agents`).
+    pub(crate) async fn send_agents(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        timeout: Duration,
+        extra: HeaderMap,
+    ) -> BResult<Value> {
+        self.send(method, path, query, body, Cred::Agents, timeout, extra)
+            .await
+            .map(|(_, _, v)| v)
     }
 
     /// A device-token call with its own deadline and headers (`crate::computer`).

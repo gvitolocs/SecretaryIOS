@@ -8,6 +8,9 @@
 //! | `SECRETARY_MCP_BACKEND_URL` | `http://127.0.0.1:8800` | secretary-server |
 //! | `SECRETARY_MCP_BACKEND_TOKEN_FILE` | unset | a secretary-server device token (`sec_…`), one line |
 //! | `SECRETARY_MCP_SERVICE_TOKEN_FILE` | unset | the secretary-server service token (`svc_…`) for `/v1/insights/summary` |
+//! | `SECRETARY_MCP_AGENTS_TOKEN_FILE` | unset | the secretary-server service token for `/v1/agents/*` (scope `agents.mcp`; the agent tools say "not connected" without it). Never the device token: the server maps it to origin `mcp:…`, which cannot answer permissions |
+//! | `SECRETARY_MCP_AGENTS_MAX_RUNNING` | `4` | running agents one MCP token may have at once |
+//! | `SECRETARY_MCP_AGENTS_RUNS_PER_HOUR` | `30` | `agent_run` calls per token per hour |
 //! | `SECRETARY_MCP_TIMEZONE` | `Europe/Rome` | for gym/body summaries and timeline times |
 //! | `SECRETARY_MCP_TRUST_PROXY` | `0` | `1`: client IP from the right-most `X-Forwarded-For` |
 //! | `SECRETARY_MCP_OAUTH_REDIRECTS` | ChatGPT's two | allowed `redirect_uri`s: exact URLs, or prefixes ending in `/` |
@@ -46,6 +49,10 @@ pub struct Config {
     pub backend_url: String,
     pub backend_token: Option<String>,
     pub service_token: Option<String>,
+    /// Service token for `/v1/agents/*` (`crate::agents`).
+    pub agents_token: Option<String>,
+    pub agents_max_running: usize,
+    pub agents_runs_per_hour: usize,
     pub timezone: chrono_tz::Tz,
     pub trust_proxy: bool,
     pub redirect_allow: Vec<String>,
@@ -74,6 +81,12 @@ impl std::fmt::Debug for Config {
                 "service_token",
                 &self.service_token.as_ref().map(|_| "<set>"),
             )
+            .field(
+                "agents_token",
+                &self.agents_token.as_ref().map(|_| "<set>"),
+            )
+            .field("agents_max_running", &self.agents_max_running)
+            .field("agents_runs_per_hour", &self.agents_runs_per_hour)
             .field("timezone", &self.timezone)
             .field("trust_proxy", &self.trust_proxy)
             .field("redirect_allow", &self.redirect_allow)
@@ -104,6 +117,9 @@ impl Config {
             backend_url: "http://127.0.0.1:8800".into(),
             backend_token: None,
             service_token: None,
+            agents_token: None,
+            agents_max_running: 4,
+            agents_runs_per_hour: 30,
             timezone: chrono_tz::Europe::Rome,
             trust_proxy: false,
             redirect_allow: CHATGPT_REDIRECTS.iter().map(|s| (*s).to_owned()).collect(),
@@ -133,6 +149,15 @@ impl Config {
         }
         if let Some(p) = get("SECRETARY_MCP_SERVICE_TOKEN_FILE") {
             cfg.service_token = Some(read_secret(&p, "SECRETARY_MCP_SERVICE_TOKEN_FILE")?);
+        }
+        if let Some(p) = get("SECRETARY_MCP_AGENTS_TOKEN_FILE") {
+            cfg.agents_token = Some(read_secret(&p, "SECRETARY_MCP_AGENTS_TOKEN_FILE")?);
+        }
+        if let Some(s) = get("SECRETARY_MCP_AGENTS_MAX_RUNNING") {
+            cfg.agents_max_running = s.parse().context("SECRETARY_MCP_AGENTS_MAX_RUNNING")?;
+        }
+        if let Some(s) = get("SECRETARY_MCP_AGENTS_RUNS_PER_HOUR") {
+            cfg.agents_runs_per_hour = s.parse().context("SECRETARY_MCP_AGENTS_RUNS_PER_HOUR")?;
         }
         if let Some(p) = get("SECRETARY_MCP_STATUS_TOKEN_FILE") {
             cfg.status_token = Some(read_secret(&p, "SECRETARY_MCP_STATUS_TOKEN_FILE")?);
