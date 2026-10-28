@@ -54,6 +54,9 @@ secretary-server. Companion to `PORT_PLAN.md` §5 and `INVENTORY.md` §4.2.
 old binary until its own restart), `~/.config/lucina-rs/node.env` generated from the running `lucina-nez`
 (`lucina-rs env-from-node`, values never printed), `mode.env` = `shadow.env`, user units `lucina-rs.service`
 (health gate on start) and `lucina-rs-health.timer` (restart when `/health` stops answering).
+Since the Node retirement (2026-10-27, `RETIREMENT.md`) `install.sh` no longer touches `node.env` or `lucina-nez`:
+it needs `lucina.env` and `mode.env` in place, always builds the release binary, installs the units and restarts
+`lucina-rs` (2026-10-28).
 
 Shadow: listens on 127.0.0.1:8790 and 100.107.164.33:8790, real DeepSeek, Honcho read only, reminders forwarded to
 Node, scheduler/Telegram/Discord/Harness jobs off, its own timeline `data/lucina-rs/timeline-shadow.jsonl`.

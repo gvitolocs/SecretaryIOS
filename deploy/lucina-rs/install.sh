@@ -1,31 +1,35 @@
 #!/usr/bin/env bash
 # Install or update the Rust Lucina on nezopt (user units, no root):
-#   deploy/lucina-rs/install.sh            # shadow mode on first install; keeps the current mode after
-# - installs target/release/lucina as ~/.local/bin/lucina-rs (previous kept as .prev;
+#   deploy/lucina-rs/install.sh
+# - builds and installs target/release/lucina as ~/.local/bin/lucina-rs (previous kept as .prev;
 #   the running lucina-presence watcher keeps its old binary until its next restart);
-# - regenerates ~/.config/lucina-rs/node.env from the running lucina-nez (values never printed);
-# - installs lucina-rs.service and the health timer, then (re)starts lucina-rs.
+# - installs lucina-rs.service and the health timer, then restarts lucina-rs and checks /health.
+# Config is not generated here: ~/.config/lucina-rs/lucina.env (frozen from the retired Node Lucina,
+# now canonical) and mode.env must exist; drop-ins in lucina-rs.service.d (Infisical, LAN, Gemini)
+# are left as they are. The Node container lucina-nez is gone (docs/lucina-rust/RETIREMENT.md).
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-BIN=$REPO/target/release/lucina
+TARGET=${CARGO_TARGET_DIR:-$REPO/target}
+BIN=$TARGET/release/lucina
 CFG=$HOME/.config/lucina-rs
 UNITS=$HOME/.config/systemd/user
-[ -x "$BIN" ] || (cd "$REPO" && cargo build --release -p lucina-server)
+
+for f in lucina.env mode.env; do
+  [ -s "$CFG/$f" ] || { echo "install.sh: $CFG/$f is missing; restore it from its .bak-* copy first" >&2; exit 1; }
+done
+# Always build: cargo is incremental, and an old binary must never be installed by mistake.
+(cd "$REPO" && cargo build --release -p lucina-server)
 
 install -m 0755 "$BIN" "$HOME/.local/bin/lucina-rs.new"
 [ -f "$HOME/.local/bin/lucina-rs" ] && cp -p "$HOME/.local/bin/lucina-rs" "$HOME/.local/bin/lucina-rs.prev"
 mv -f "$HOME/.local/bin/lucina-rs.new" "$HOME/.local/bin/lucina-rs"
-
-mkdir -p "$CFG" "$UNITS"; chmod 700 "$CFG"
-"$HOME/.local/bin/lucina-rs" env-from-node --container lucina-nez --format systemd \
-  --out "$CFG/node.env" --token-out "$CFG/node-secretary.token" | sed -E 's/: .*/ (names in the file)/'
-[ -f "$CFG/mode.env" ] || install -m 0600 "$REPO/deploy/lucina-rs/shadow.env" "$CFG/mode.env"
-mkdir -p /home/nez/Projects/Lucina/data/lucina-rs
+mkdir -p "$UNITS" /home/nez/Projects/Lucina/data/lucina-rs
 
 install -m 0644 "$REPO/deploy/lucina-rs.service" "$REPO/deploy/lucina-rs-health.service" "$REPO/deploy/lucina-rs-health.timer" "$UNITS/"
 systemctl --user daemon-reload
 systemctl --user enable lucina-rs.service lucina-rs-health.timer >/dev/null
+# The unit's ExecStartPost waits for /health, so a failed start fails here.
 systemctl --user restart lucina-rs.service
 systemctl --user start lucina-rs-health.timer
 systemctl --user --no-pager --lines=0 status lucina-rs.service | head -5
-curl -fsS http://127.0.0.1:8790/health | head -c 600; echo
+curl -fsS -m 5 http://127.0.0.1:8790/health | head -c 600; echo
