@@ -161,6 +161,10 @@ pub async fn classify(
                 if guard.ends_with(":planner") {
                     c.reply_mode = "full_plan".into();
                 }
+                // Jev agrees with a rule: the rule's own classification (its direct plan, reply mode).
+                if agreed {
+                    return rule.expect("agreed");
+                }
                 return c;
             }
             Err(reason) => {

@@ -181,6 +181,7 @@ pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, co
 /// Tier-0 intents that start work in the world (jobs, posts, reminders, writes).
 pub const SIDE_EFFECT_INTENTS: &[&str] = &[
     "cursor_task",
+    "computer_task",
     "schedule_reminder",
     "study_focus_reminders",
     "social_post",
