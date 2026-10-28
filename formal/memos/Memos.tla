@@ -20,6 +20,8 @@ CONSTANTS FixNotePath,        \* kernel K7: record the note path before the rsyn
           FixOldNotes,        \* every earlier note path is kept for deletion (B5: one slot)
           FixLinkRecheck,     \* the link write re-checks the owner's choice (kernel K9)
           Events,             \* calendar linking on
+          LateEvent,          \* the event reaches the server only after the memo was processed
+          FixRelink,          \* the re-link job links it then, with a quiet re-summary (2026-10-28)
           Kills, Crashes, NetFails, OwnerActs, OtherJobs, EventActs, GiveUps
 
 VARIABLES rec, appAlive, la, queued, uploaded, devSent,
@@ -27,14 +29,14 @@ VARIABLES rec, appAlive, la, queued, uploaded, devSent,
           notified, tgMarker, done, revision, title, step, lease, gpuWasBusy,
           vault, telegram, inbox,
           kills, crashes, netFails, ownerActs, otherJobs, toggles,
-          oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps
+          oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, calendarHas, relinked
 
 vars == <<rec, appAlive, la, queued, uploaded, devSent,
           transcript, hadWhisper, sawUpgrade, summarized, rendered, noteRec, published,
           notified, tgMarker, done, revision, title, step, lease, gpuWasBusy,
           vault, telegram, inbox,
           kills, crashes, netFails, ownerActs, otherJobs, toggles,
-          oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps>>
+          oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, calendarHas, relinked>>
 
 None == -1   \* no marker / no owner choice
 NoNote == <<>>   \* no recorded note path; a path is <<folder, name>>
@@ -43,7 +45,7 @@ Root == 0
 Course == 1
 Meeting == 2
 
-EventVars == <<oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps>>
+EventVars == <<oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, calendarHas, relinked>>
 
 Init == /\ rec = "recording" /\ appAlive = TRUE /\ la = "running"
         /\ queued = FALSE /\ uploaded = FALSE /\ devSent = FALSE
@@ -56,6 +58,7 @@ Init == /\ rec = "recording" /\ appAlive = TRUE /\ la = "running"
         /\ ownerActs = OwnerActs /\ otherJobs = OtherJobs /\ toggles = 2
         /\ oldNotes = {} /\ event = Root /\ eventSrc = "none" /\ linked = FALSE
         /\ ownerChoice = None /\ failed = FALSE /\ eventActs = EventActs /\ giveUps = GiveUps
+        /\ calendarHas = ~LateEvent /\ relinked = FALSE
 
 Pending == IF ~uploaded \/ done \/ failed THEN 0
            ELSE IF transcript = "none" THEN 1
@@ -170,7 +173,8 @@ WorkerFinishStep ==
          [] step = "linking" -> \* the update closure: the owner may have chosen meanwhile
                                 /\ linked' = TRUE
                                 /\ IF ~FixLinkRecheck \/ eventSrc # "owner"
-                                      THEN event' = Course /\ eventSrc' = "auto"
+                                      THEN /\ eventSrc' = "auto"   \* no event known yet: link-pending
+                                           /\ event' = (IF calendarHas THEN Course ELSE event)
                                       ELSE UNCHANGED <<event, eventSrc>>
                                 /\ UNCHANGED <<lease, transcript, hadWhisper, noteRec, published, notified, vault, oldNotes>>
          [] step = "pushed"  -> /\ noteRec' = (IF noteRec = NoNote THEN <<Folder, title>> ELSE noteRec)
@@ -181,7 +185,8 @@ WorkerFinishStep ==
                                                event, eventSrc, linked>>
     /\ UNCHANGED PhoneVars
     /\ UNCHANGED <<sawUpgrade, summarized, rendered, tgMarker, done, revision, title, gpuWasBusy,
-                   telegram, inbox, crashes, ownerActs, otherJobs, ownerChoice, failed, eventActs, giveUps>>
+                   telegram, inbox, crashes, ownerActs, otherJobs, ownerChoice, failed, eventActs, giveUps,
+                   calendarHas, relinked>>
 
 Name == IF noteRec = NoNote THEN title ELSE noteRec[2]   \* K7: the name stays
 Path == <<Folder, Name>>
@@ -195,7 +200,7 @@ WorkerStartStep ==
     /\ step = "idle" /\ Pending > 0
     /\ UNCHANGED PhoneVars
     /\ UNCHANGED <<crashes, ownerActs, otherJobs, title, revision, sawUpgrade>>
-    /\ UNCHANGED <<event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps>>
+    /\ UNCHANGED <<event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, calendarHas, relinked>>
     /\ (Pending # 4 => UNCHANGED oldNotes)
     /\ CASE Pending = 1 ->
               IF lease = "free"
@@ -245,17 +250,35 @@ OwnerChoosesEvent ==
           ELSE UNCHANGED <<summarized, rendered, published, notified, done, revision, telegram>>
     /\ UNCHANGED PhoneVars
     /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, noteRec, tgMarker, title, step, lease, gpuWasBusy,
-                   vault, inbox, crashes, ownerActs, otherJobs, oldNotes, giveUps>>
+                   vault, inbox, crashes, ownerActs, otherJobs, oldNotes, giveUps, calendarHas, relinked>>
 \* The last attempt failed (e.g. the old note's delete kept failing): `failed` until the owner acts.
 WorkerGivesUp ==
     /\ giveUps > 0 /\ step = "idle" /\ Pending > 0
     /\ giveUps' = giveUps - 1 /\ failed' = TRUE
     /\ UNCHANGED PhoneVars /\ UNCHANGED ServerVars
-    /\ UNCHANGED <<oldNotes, event, eventSrc, linked, ownerChoice, eventActs>>
+    /\ UNCHANGED <<oldNotes, event, eventSrc, linked, ownerChoice, eventActs, calendarHas, relinked>>
+\* The event becomes known to the server (lucina-memo's calendar cache), however late.
+CalendarGainsEvent ==
+    /\ Events /\ ~calendarHas /\ calendarHas' = TRUE
+    /\ UNCHANGED PhoneVars /\ UNCHANGED ServerVars
+    /\ UNCHANGED <<oldNotes, event, eventSrc, linked, ownerChoice, failed, eventActs, giveUps, relinked>>
+\* worker::relink_one: one store.update links a finished (or failed) memo still without an event,
+\* unless the owner chose (K9), and queues a quiet re-summary (the owner is not notified again).
+WorkerRelink ==
+    /\ FixRelink /\ calendarHas /\ linked /\ event = Root /\ eventSrc # "owner"
+    /\ (done \/ failed) /\ step = "idle"
+    /\ event' = Course /\ eventSrc' = "auto" /\ relinked' = TRUE /\ failed' = FALSE
+    /\ summarized' = FALSE /\ rendered' = FALSE /\ published' = FALSE /\ done' = FALSE
+    /\ revision' = revision + 1 /\ telegram' = 0
+    /\ UNCHANGED PhoneVars
+    /\ UNCHANGED <<transcript, hadWhisper, sawUpgrade, noteRec, notified, tgMarker, title, step, lease, gpuWasBusy,
+                   vault, inbox, crashes, ownerActs, otherJobs, oldNotes, linked, ownerChoice, eventActs, giveUps,
+                   calendarHas>>
 
 Next == \/ TogglePause \/ Stop \/ KillApp \/ Relaunch \/ UploadOk \/ UploadFails \/ SendDeviceTranscript
         \/ OtherTakesGpu \/ OtherReleasesGpu \/ PruneDeadLease \/ OwnerRename \/ OwnerReprocess \/ Upgrade
         \/ WorkerCrash \/ WorkerFinishStep \/ WorkerStartStep \/ OwnerChoosesEvent \/ WorkerGivesUp
+        \/ CalendarGainsEvent \/ WorkerRelink
 
 Spec == Init /\ [][Next]_vars
 
@@ -263,6 +286,8 @@ Spec == Init /\ [][Next]_vars
 \* Every note in the vault is the memo's current one or a copy listed for deletion.
 NoDuplicateNotes == \A p \in vault : p = noteRec \/ p \in oldNotes
 OwnerChoiceKept == ownerChoice # None => (event = ownerChoice /\ eventSrc = "owner")
+\* Witness target: a late event re-links the memo quietly (one notification, note in the course folder).
+NeverRelinkedQuietly == ~(relinked /\ done /\ vault = {<<Course, 0>>} /\ Len(inbox) = 1)
 TelegramAtMostOnce == telegram <= 1
 AppInboxOncePerRevision == \A i, j \in 1..Len(inbox) : i # j => inbox[i] # inbox[j]
 WhisperNeverDowngraded == ~(hadWhisper /\ transcript = "device")

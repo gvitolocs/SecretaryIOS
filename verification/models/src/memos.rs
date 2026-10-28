@@ -35,7 +35,11 @@
 //! - `fix_old_notes`: every earlier note path is kept for deletion (the first
 //!   draft kept one slot: two moves around a crash left a second note, B5);
 //! - `fix_link_recheck`: the worker's write of the link re-checks the owner's
-//!   choice (without it, a choice made while the calendar was being read is lost).
+//!   choice (without it, a choice made while the calendar was being read is lost);
+//! - `late_event` / `fix_relink` (2026-10-28): the event reaches the server only
+//!   after the memo was processed (the iPhone sent it late, or never in time);
+//!   the re-link job links the memo when it appears and re-summarises it quietly
+//!   (before it, step 1b was the only chance and the memo stayed unlinked).
 
 use stateright::{Model, Property};
 
@@ -151,6 +155,10 @@ pub struct State {
     pub toggles: u8,
     pub event_acts: u8,
     pub give_ups: u8,
+    /// The server knows the memo's event (its calendar cache has it).
+    pub calendar_has: bool,
+    /// The re-link job linked it after the pipeline had run.
+    pub relinked: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -173,6 +181,8 @@ pub enum Action {
     OwnerReprocess,
     OwnerChoosesEvent,
     Upgrade,
+    CalendarGainsEvent,
+    WorkerRelink,
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +198,8 @@ pub struct Memos {
     pub events: bool,
     pub event_acts: u8,
     pub give_ups: u8,
+    pub late_event: bool,
+    pub fix_relink: bool,
     /// The memo is short (the iPhone transcribes it).
     pub short: bool,
     pub kills: u8,
@@ -286,6 +298,8 @@ impl Model for Memos {
             toggles: 2,
             event_acts: self.event_acts,
             give_ups: self.give_ups,
+            calendar_has: !self.late_event,
+            relinked: false,
         }]
     }
 
@@ -323,6 +337,20 @@ impl Model for Memos {
         }
         if s.give_ups > 0 && s.step == Step::Idle && self.pending_step(s).is_some() {
             out.push(Action::WorkerGivesUp);
+        }
+        if self.events && !s.calendar_has {
+            out.push(Action::CalendarGainsEvent);
+        }
+        // `worker::relink_one`: idle, a finished (or failed) memo still without an event.
+        if self.fix_relink
+            && s.calendar_has
+            && s.linked
+            && s.event.is_none()
+            && Self::may_auto_link(s)
+            && (s.done || s.failed)
+            && s.step == Step::Idle
+        {
+            out.push(Action::WorkerRelink);
         }
         if s.other_jobs > 0 && s.lease == Lease::Free {
             out.push(Action::OtherTakesGpu);
@@ -401,6 +429,20 @@ impl Model for Memos {
                 n.give_ups -= 1;
                 n.failed = true;
             }
+            Action::CalendarGainsEvent => n.calendar_has = true,
+            Action::WorkerRelink => {
+                // One store.update: the link, then a quiet re-summary (no second notification).
+                n.event = Some(COURSE);
+                n.event_source = Link::Auto;
+                n.relinked = true;
+                n.summarized = false;
+                n.rendered = false;
+                n.published = false;
+                n.done = false;
+                n.failed = false;
+                n.revision += 1;
+                n.telegram = 0;
+            }
             Action::OtherTakesGpu => {
                 n.other_jobs -= 1;
                 n.lease = Lease::Other;
@@ -477,8 +519,13 @@ impl Model for Memos {
                     n.step = Step::Idle;
                     n.linked = true;
                     if !self.fix_link_recheck || Self::may_auto_link(s) {
-                        n.event = Some(COURSE);
                         n.event_source = Link::Auto;
+                        // No event known yet: the memo goes on unlinked (link-pending).
+                        n.event = if s.calendar_has {
+                            Some(COURSE)
+                        } else {
+                            s.event
+                        };
                     }
                 }
                 Step::Pushed => {
@@ -614,6 +661,14 @@ impl Model for Memos {
             Property::sometimes("note_moved_to_the_owner_s_event", |_, s: &State| {
                 s.done && s.vault == [(MEETING, 0)] && s.event_source == Link::Owner
             }),
+            // A memo recorded in a lecture ends linked to it (or to the owner's choice), however
+            // late the event reaches the server.
+            Property::eventually("lecture_memo_ends_linked", |_, s: &State| {
+                s.done && (s.owner_choice.is_some() || s.event == Some(COURSE))
+            }),
+            Property::sometimes("relinked_quietly", |_, s: &State| {
+                s.relinked && s.done && s.vault == [(COURSE, 0)] && s.inbox.len() == 1
+            }),
         ]
     }
 }
@@ -631,6 +686,8 @@ pub fn cases(deep: bool) -> Vec<Case> {
         events: false,
         event_acts: 0,
         give_ups: 0,
+        late_event: false,
+        fix_relink: true,
         short: true,
         kills: 1,
         crashes: if deep { 2 } else { 1 },
@@ -728,6 +785,38 @@ pub fn cases(deep: bool) -> Vec<Case> {
             events(true, false, 0),
             None,
             vec![("owner_choice_kept", Violated)],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V late event: the re-link job links it later, quietly (calendar cache)",
+            Memos {
+                late_event: true,
+                event_acts: 1,
+                ..events(true, true, 0)
+            },
+            None,
+            vec![
+                ("no_duplicate_notes", Holds),
+                ("owner_choice_kept", Holds),
+                ("telegram_at_most_once", Holds),
+                ("app_inbox_once_per_revision", Holds),
+                ("done_has_every_output", Holds),
+                ("finished_with_one_note_pdf_notification", Holds),
+                ("lecture_memo_ends_linked", Holds),
+                ("relinked_quietly", Reached),
+            ],
+        ),
+        Case::new(
+            PROTOCOL,
+            "V late event without the re-link job (before 2026-10-28)",
+            Memos {
+                late_event: true,
+                fix_relink: false,
+                event_acts: 0,
+                ..events(true, true, 0)
+            },
+            None,
+            vec![("lecture_memo_ends_linked", Violated)],
         ),
     ]
 }

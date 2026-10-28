@@ -533,6 +533,9 @@ or reprocesses (once done). Calendar link (2026-10-26, cases "V calendar link", 
 reads the calendar and then writes the link (two steps, so the owner can act in between); the owner picks the event
 (a meeting, then none) before the summary or once the memo is done or failed; a linked note lives in its event's
 folder and moves when the event changes; the worker may give up (`failed`, e.g. the old note's delete keeps failing).
+Late events (2026-10-28, cases "V late event", `Memos_late_event_*.cfg`): the event may reach the server only after
+the memo was processed; step 1b then leaves it link-pending, and the re-link job (`worker::relink_one`, over
+lucina-memo's own calendar cache) links it when the event appears, with a quiet re-summary (no second notification).
 
 Invariants (Stateright name / TLA+ name):
 
@@ -540,7 +543,10 @@ Invariants (Stateright name / TLA+ name):
   listed for deletion (`obsidian_old_notes`), whatever the crashes, renames and event changes; with the liveness
   property below, the vault ends with exactly one note.
 - `owner_choice_kept` / `OwnerChoiceKept`: once the owner picked an event (or none), the memo keeps exactly that
-  choice; the worker's link never overwrites it (K9).
+  choice; the worker's link never overwrites it (K9), nor does the re-link job.
+- `lecture_memo_ends_linked` (eventually, Stateright): a memo recorded in a lecture ends linked to it (or to the
+  owner's choice) however late the event reaches the server; violated without the re-link job (the old one-shot link).
+  Witness `relinked_quietly` / `Memos_late_event_witness.cfg`: linked late, note in the course folder, one notification.
 - `telegram_at_most_once` / `TelegramAtMostOnce`: at most one Telegram message per revision.
 - `app_inbox_once_per_revision` / `AppInboxOncePerRevision`: the app inbox has one entry per revision (dedup key).
 - `whisper_never_downgraded` / `WhisperNeverDowngraded`: a Whisper transcript is never replaced by the iPhone's.
@@ -594,6 +600,8 @@ test: `crates/lucina-memo/tests/verus_kernel.rs` (production kernel vs the prove
 | `OwnerChoosesEvent` | `PUT /v1/memos/{id}/event` (`choose_event`), then `worker::request_resummary` |
 | `WorkerStep` 4 / `Pushed` (events) | `obsidian::event_folder`, `obsidian::move_note` before the push, `obsidian::delete_note` of every old path after it |
 | `WorkerGivesUp` | the last attempt fails: `status = failed` |
+| `CalendarGainsEvent` | lucina-memo's calendar cache (`calendar.rs`) gains the event (iPhone report, any source) |
+| `WorkerRelink` | `worker::relink_one`: one `store.update` re-checking `kernel::may_auto_link`, then the quiet re-summary |
 
 ### 11. Media player resume positions
 
