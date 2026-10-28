@@ -22,6 +22,7 @@
 //! pinned to `local:lucina-workspace`.
 
 mod client;
+pub mod jev_drive;
 pub mod control;
 mod sandbox;
 pub mod viewer;

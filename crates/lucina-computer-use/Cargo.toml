@@ -8,6 +8,10 @@ description = "Lucina's computer use: the Hermes/Cua sandbox engine and the Cua 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+lucina-jev = { path = "../lucina-jev" }
+lucina-llm = { path = "../lucina-llm" }
+base64 = "=0.22.1"
+flate2 = "1"
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

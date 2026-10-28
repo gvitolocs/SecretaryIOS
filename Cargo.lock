@@ -2530,7 +2530,11 @@ dependencies = [
 name = "lucina-computer-use"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "flate2",
  "libc",
+ "lucina-jev",
+ "lucina-llm",
  "serde",
  "serde_json",
  "tempfile",

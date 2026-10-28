@@ -364,6 +364,8 @@ impl AppState {
                 .expect("drive tool registers");
         }
         // Lucina's own computers (LUCINA_COMPUTER_USE_ENABLED=true, crate lucina_computer_use).
+        // The Jev engine there words its typing and answers with her text model.
+        lucina_computer_use::jev_drive::set_text_model(model.clone());
         if std::env::var("LUCINA_COMPUTER_USE_ENABLED").as_deref() == Ok("true")
             && cfg.tools.allows("computer")
         {

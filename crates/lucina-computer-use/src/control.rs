@@ -529,16 +529,76 @@ pub fn shared_client() -> &'static Client {
 /// Runs one engine task on the workspace for `who` (`lucina`, `mcp:claude`, …)
 /// under the driver lock. A task the owner interrupted fails with
 /// [`Error::OwnerDriving`].
+///
+/// The Jev engine ([`crate::jev_drive`]) tries first when the task is browsing
+/// or the Android phone; whatever it cannot finish goes to Hermes, told what
+/// was already done.
 pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<ComputerResult, Error> {
     let client = shared_client();
     if !client.ready() {
         return Err(Error::NotEnabled);
     }
-    let guard = control().begin_task(SandboxId::Workspace, who, prompt, cancel.clone())?;
-    let out = client.run(prompt, cancel).await;
+    let mut prompt = std::borrow::Cow::Borrowed(prompt);
+    if let Some(r) = jev_first(&prompt, cancel).await? {
+        match r {
+            Ok(done) => return Ok(done),
+            Err(handover) => prompt = std::borrow::Cow::Owned(handover),
+        }
+    }
+    let guard = control().begin_task(SandboxId::Workspace, who, &prompt, cancel.clone())?;
+    let out = client.run(&prompt, cancel).await;
     match out {
         Err(_) if guard.preempted() => Err(Error::OwnerDriving),
         other => other,
+    }
+}
+
+/// The Jev engine's try: `None` when it does not apply (off, no quota, not a
+/// browsing or phone task), `Some(Ok(result))` when it finished, and
+/// `Some(Err(prompt))` with the task for Hermes, told what was already done.
+async fn jev_first(
+    prompt: &str,
+    cancel: &Cancel,
+) -> Result<Option<Result<ComputerResult, String>>, Error> {
+    use crate::jev_drive::{self, Outcome, Where};
+    let jev = lucina_jev::shared();
+    if !jev_drive::enabled() || !jev.available() {
+        return Ok(None);
+    }
+    let target = match jev_drive::route(jev, prompt).await {
+        Some(t @ (Where::Desktop | Where::Android)) => t,
+        _ => return Ok(None),
+    };
+    match jev_drive::drive(jev, target, prompt, cancel).await {
+        Ok(Outcome::Done { reply, actions }) => {
+            tracing::info!(target: "lucina_jev::drive", ?target, steps = actions.len(), "jev engine finished the task");
+            Ok(Some(Ok(ComputerResult {
+                status: crate::Status::Completed,
+                reply,
+                session_id: None,
+                executed_tools: actions.iter().map(|a| format!("jev: {a}")).collect(),
+                tool_errors: 0,
+            })))
+        }
+        Ok(Outcome::Escalate {
+            reason,
+            seen,
+            actions,
+        }) => {
+            tracing::info!(target: "lucina_jev::drive", ?target, %reason, steps = actions.len(), "jev engine hands the task to Hermes");
+            if actions.is_empty() {
+                return Ok(Some(Err(prompt.to_owned())));
+            }
+            Ok(Some(Err(format!(
+                "{prompt}\n\n(A quick first attempt already did: {}. It stopped on \"{seen}\" ({reason}). Continue from the current screen; do not repeat those steps.)",
+                actions.join("; ")
+            ))))
+        }
+        Err(e @ (Error::OwnerDriving | Error::Cancelled | Error::Busy)) => Err(e),
+        Err(e) => {
+            tracing::warn!(target: "lucina_jev::drive", error = %e, "jev engine failed; Hermes takes the task");
+            Ok(None)
+        }
     }
 }
 

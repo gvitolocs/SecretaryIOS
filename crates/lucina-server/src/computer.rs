@@ -419,6 +419,9 @@ pub async fn computer(
             let cfg = shared_client().config();
             Ok(ok(json!({
                 "taskEngine": {"enabled": cfg.enabled, "ready": cfg.ready(), "timeoutSecs": cfg.timeout.as_secs()},
+                // TypeSafe Jev: intent routing, the first-tool hint and the Jev engine (tried before Hermes).
+                "jev": lucina_jev::shared().stats(),
+                "jevEngine": lucina_computer_use::jev_drive::enabled(),
                 "sandboxes": [
                     {"name": "workspace", "space": lucina_computer_use::WORKSPACE_SPACE, "kind": "linux-desktop", "control": control().state(SandboxId::Workspace)},
                     {"name": "android", "space": lucina_computer_use::ANDROID_SPACE, "kind": "android", "control": control().state(SandboxId::Android)},
