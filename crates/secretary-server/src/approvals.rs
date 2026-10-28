@@ -37,6 +37,7 @@
 //! |---|---|---|
 //! | `POST /v1/approvals` | svc or device | create |
 //! | `GET /v1/approvals/{id}/wait?timeout=` | svc or device (the requester) | long poll, at most 30 s |
+//! | `POST /v1/approvals/{id}/withdraw` | svc or device (the requester) | the requester no longer needs the answer: a pending request becomes `expired` |
 //! | `GET /v1/approvals/public-key` | public | the grant verification key |
 //! | `GET /v1/approvals?status=pending\|all` | device | what this device may decide now |
 //! | `GET /v1/approvals/{id}` | device | one request, decided or expired too |
@@ -770,6 +771,35 @@ impl Approvals {
         })
     }
 
+    /// The requester gives up: a pending request expires now (status
+    /// `expired`, so old clients need no new value) and leaves every
+    /// approver's list. Idempotent; a request that was already decided keeps
+    /// its status. Only the identity that asked can; anyone else gets 404.
+    fn withdraw_at(&self, id: &str, who: &str, now: i64) -> Result<&'static str, ApiError> {
+        let mut map = self.lock();
+        self.sweep_locked(&mut map, now);
+        let a = map
+            .get_mut(id)
+            .filter(|a| a.requester_id == who)
+            .ok_or_else(not_found)?;
+        if !a.open(now) {
+            return Ok(match &a.decided {
+                Some(d) if d.approve && now < a.expires_ms => "approved",
+                Some(d) if d.approve => "expired",
+                Some(_) => "denied",
+                None => "expired",
+            });
+        }
+        a.expires_ms = now;
+        // The audit line below replaces the sweeper's `expired` one.
+        a.expiry_logged = true;
+        self.audit
+            .log("withdrawn", json!({"id": a.id, "action": a.action}));
+        drop(map);
+        self.wake();
+        Ok("expired")
+    }
+
     fn still_open(&self, id: &str, now: i64) -> bool {
         self.lock().get(id).is_some_and(|a| a.open(now))
     }
@@ -1165,6 +1195,17 @@ async fn wait(
             () = crate::notify::stopped(&mut shutdown) => {}
         }
     }
+}
+
+/// `POST /v1/approvals/{id}/withdraw`
+async fn withdraw(
+    State(st): State<AppState>,
+    Extension(who): Extension<Identity>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let status = st.approvals.withdraw_at(&id, &who.device_id, now_ms())?;
+    tracing::info!(id = %id, requester = %who.device_id, status, "approval withdrawn");
+    Ok(Json(json!({"id": id, "status": status})))
 }
 
 /// `GET /v1/approvals/public-key`
@@ -1612,6 +1653,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
     let requester = Router::new()
         .route("/v1/approvals", post(create))
         .route("/v1/approvals/{id}/wait", get(wait))
+        .route("/v1/approvals/{id}/withdraw", post(withdraw))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_device_or_service,

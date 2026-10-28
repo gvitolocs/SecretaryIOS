@@ -393,13 +393,23 @@ async fn later_phases_say_not_available_yet() {
 async fn schedules_change_only_when_created_here() {
     let h = start().await;
     let (tok_id, t) = h.issue_at("hermes", "read,agents", 0);
+    // agentd's schedule shape (lucina-agents `schedule::Schedule`).
+    let sched = |id: &str, cron: &str, provider: &str, name: &str, labels: Value| {
+        json!({"id": id, "name": name, "prompt": "p", "cadence": {"type": "cron", "expression": cron, "timezone": "Europe/Rome"},
+               "target": {"type": "new-agent", "config": {"provider": provider, "cwd": "/w"}}, "status": "active",
+               "nextRunAt": "2026-10-29T06:00:00.000Z", "labels": labels, "createdBy": "local", "runs": []})
+    };
     h.mock.state.lock().unwrap().schedules = Some(vec![
-        json!({"id": "sch_owner", "cron": "0 7 * * *", "provider": "claude", "title": "owner's", "labels": {}}),
-        json!({"id": "sch_other", "cron": "0 8 * * *", "provider": "codex", "title": "grok's", "labels": {"lucina.mcp-token": "tok_other"}}),
-        json!({"id": "sch_mine", "cron": "0 9 * * *", "provider": "claude", "title": "mine", "labels": {"lucina.mcp-token": tok_id}}),
+        sched("sch_owner", "0 7 * * *", "claude", "owner's", json!({})),
+        sched("sch_other", "0 8 * * *", "codex", "grok's", json!({"lucina.mcp-token": "tok_other"})),
+        sched("sch_mine", "0 9 * * *", "claude", "mine", json!({"lucina.mcp-token": tok_id})),
+        json!({"id": "sch_hb", "name": null, "prompt": "check the PR", "cadence": {"type": "every", "everyMs": 300000},
+               "target": {"type": "agent", "agentId": "a1"}, "status": "paused", "nextRunAt": null, "labels": {}, "createdBy": "agent:a1", "runs": []}),
     ]);
     let (_, list) = h.call(&t, "schedules_list", json!({})).await;
     assert!(list.contains("sch_mine") && list.matches("(yours)").count() == 1, "{list}");
+    assert!(list.contains("- sch_mine · 0 9 * * * (Europe/Rome) · claude · active · next 2026-10-29T06:00:00.000Z · mine (yours)"), "{list}");
+    assert!(list.contains("- sch_hb · every 5 min · heartbeat · paused · next - · check the PR"), "{list}");
     for id in ["sch_owner", "sch_other"] {
         let (err, text) = h.call(&t, "schedule_remove", json!({"schedule_id": id})).await;
         assert!(err && text.contains("not created by this connection"), "{text}");
@@ -414,6 +424,24 @@ async fn schedules_change_only_when_created_here() {
     assert!(!err);
     let add = agent_requests(&h).into_iter().find(|r| r.method == "POST" && r.path == "/v1/agents/schedules").unwrap();
     assert_eq!(add.body["labels"]["lucina.mcp-token"], tok_id.as_str());
+    assert_eq!(add.body["modeId"], "default", "an unattended run keeps permission prompts");
+    // A provider without permission prompts can't be scheduled from the MCP.
+    let (err, text) = h.call(&t, "schedule_add", json!({"cron": "0 7 * * *", "provider": "zcode", "prompt": "x", "workspace_id": WS})).await;
+    assert!(err, "{text}");
+}
+
+#[tokio::test]
+async fn search_uses_agentd_when_it_has_it() {
+    let h = start().await;
+    let t = h.issue("hermes", "read,agents");
+    h.mock.state.lock().unwrap().search = Some(json!({"query": "websocket", "results": [
+        {"agentId": "a0000001-aaaa", "title": "Fix the scroll anchor", "provider": "claude", "status": "idle",
+         "matches": [{"field": "timeline", "seq": 3, "kind": "assistant_message", "snippet": "the [websocket] reconnect\nloop"}]}]}));
+    let (err, text) = h.call(&t, "agents_search", json!({"q": "websocket"})).await;
+    assert!(!err, "{text}");
+    assert!(text.contains("- a0000001 Fix the scroll anchor · claude · idle") && text.contains("    timeline: the [websocket] reconnect loop"), "{text}");
+    let req = agent_requests(&h).into_iter().find(|r| r.path == "/v1/agents/search").unwrap();
+    assert!(req.query.contains("q=websocket"), "{}", req.query);
 }
 
 #[tokio::test]

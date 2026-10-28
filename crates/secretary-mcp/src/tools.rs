@@ -635,7 +635,7 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("agent_inspect", "Inspect a coding agent", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::AgentArgs,
             "Details of one coding agent: id, title, provider/model, status, mode, directory and workspace, timestamps, last error, last turn's token use, the finished-run gate, labels (who started it, delegation depth) and pending permission requests (read only)."),
         spec!("agents_search", "Search coding agents", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::SearchArgs,
-            "Find coding agents (current and archived) by words in their title, id, directory, provider, model or labels."),
+            "Find coding agents (current and archived) by their title, workspace, branch or project (typos allowed), or by words they or the owner said."),
         spec!("workspaces_list", "Agent workspaces", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::WorkspacesArgs,
             "The workspaces coding agents work in: git worktrees on nezopt with their id, title, project, branch and base, directory and setup status. Filter with q."),
         spec!("workspace_create", "Create agent workspace", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::WorkspaceCreateArgs,
@@ -659,15 +659,15 @@ pub fn specs() -> Vec<ToolSpec> {
         spec!("script_stop", "Stop workspace script", Scope::Agents, ro = false, destructive = false, idempotent = true, crate::agents::ScriptArgs,
             "Stop a running workspace script (scripts_list) and the programs it started."),
         spec!("schedules_list", "Agent schedules", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
-            "Scheduled coding-agent runs (cron), marking the ones this connection created (Lucina Agents phase 6; until then it says not available)."),
+            "Scheduled coding-agent runs and heartbeats (cron), with their next run, marking the ones this connection created."),
         spec!("schedule_add", "Add agent schedule", Scope::Agents, ro = false, destructive = false, idempotent = false, crate::agents::ScheduleAddArgs,
-            "Schedule a recurring coding-agent run with a cron expression (Lucina Agents phase 6; until then it says not available). Agents started from the MCP can't add schedules."),
+            "Schedule a recurring coding-agent run with a cron expression in the owner's time zone; each run starts a new agent in a mode that keeps permission prompts. Agents started from the MCP can't add schedules."),
         spec!("schedule_remove", "Remove agent schedule", Scope::Agents, ro = false, destructive = true, idempotent = true, crate::agents::ScheduleArgs,
-            "Remove a schedule this connection created; others belong to the owner (Lucina Agents phase 6; until then it says not available)."),
+            "Remove a schedule this connection created; others belong to the owner."),
         spec!("permissions_list", "Agent permission requests", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::PermissionsArgs,
             "Permission requests from coding agents (and from the secrets broker) waiting for the owner: what is asked, by which agent, until when. Read only: only the owner answers them, in the Secretary app."),
         spec!("agents_usage", "Coding agent usage", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
-            "Coding agents by provider (how many, how many running, tokens of their last turns, cost when the provider reports it) and the providers this server has."),
+            "Coding agents by provider (how many, how many running, tokens of their last turns, cost when the provider reports it), the providers this server has, and the schedules."),
 
     ]
 }

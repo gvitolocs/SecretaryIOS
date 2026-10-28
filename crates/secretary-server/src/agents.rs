@@ -23,8 +23,9 @@
 //! keeps from MCP callers. Lucina's own service token is refused here.
 //!
 //! Paths: `/v1/agents` and `/v1/agents/{id}…` are the daemon's `/agents…`;
-//! `/v1/agents/{permissions,workspaces,projects,clone,providers,stream,commands,files,health,terminals}…`
-//! are the daemon's top-level routes; `/v1/agents/items` is `/agents/items`.
+//! `/v1/agents/{permissions,workspaces,projects,clone,providers,stream,commands,files,health,schedules,usage,terminals}…`
+//! are the daemon's top-level routes; `/v1/agents/items` and `/v1/agents/search` are `/agents/items` and
+//! `/agents/search`.
 //!
 //! Phase 5: `/v1/agents/terminals/{id}/stream` streams like `/v1/agents/stream`.
 //! `/v1/agents/workspaces/{id}/services/{name}/…` proxies the dev server an agent
@@ -75,7 +76,7 @@ pub const STREAM_IDLE: Duration = Duration::from_secs(90);
 const LONG_POLL: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The daemon's top-level routes.
-const TOP: [&str; 10] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "terminals"];
+const TOP: [&str; 12] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals"];
 const PASS: [HeaderName; 3] = [header::CONTENT_TYPE, header::ACCEPT, HeaderName::from_static("last-event-id")];
 /// Also passed on to a workspace service (the dev server an agent started).
 const PASS_SERVICE: [&str; 5] = ["accept-language", "if-none-match", "if-modified-since", "range", "x-requested-with"];
@@ -448,6 +449,12 @@ mod tests {
             ("/v1/agents/workspaces/wks_1/scripts/web/start", "/workspaces/wks_1/scripts/web/start"),
             ("/v1/agents/workspaces/wks_1/services/web/", "/workspaces/wks_1/services/web/"),
             ("/v1/agents/workspaces/wks_1/services/web/assets/i-a+b=.js", "/workspaces/wks_1/services/web/assets/i-a+b=.js"),
+            ("/v1/agents/schedules", "/schedules"),
+            ("/v1/agents/schedules/ab12cd34/run-once", "/schedules/ab12cd34/run-once"),
+            ("/v1/agents/usage", "/usage"),
+            ("/v1/agents/search", "/agents/search"),
+            ("/v1/agents/0b6e/prompts", "/agents/0b6e/prompts"),
+            ("/v1/agents/0b6e/detach", "/agents/0b6e/detach"),
         ] {
             assert_eq!(daemon_path(public).as_deref(), Some(daemon), "{public}");
         }
