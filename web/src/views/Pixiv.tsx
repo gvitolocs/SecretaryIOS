@@ -2,6 +2,7 @@ import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { pixivApi, RANKING_MODES, RANKING_MODES_R18, type PixivItem, type RankingMode, type SearchOrder, type SearchSafety, type SearchType } from "../api/pixiv";
 import { BackIcon, BookmarkIcon, SearchIcon } from "../components/Icons";
+import { Button, Card as PageCard, EmptyState, ErrorState, Page, PageGrid, PageHeader, SectionNav, useWide, type SectionNavItem } from "../components/page";
 import { Reader } from "../components/pixiv/Reader";
 import { t } from "../i18n";
 import { showAdult } from "../lib/adult";
@@ -55,7 +56,7 @@ function Card(props: { item: PixivItem; onOpen: (item: PixivItem) => void }) {
 }
 
 /** The grid of works with its footer: loading, errors, "load more" and the end-of-list note. */
-function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) => void; infinite?: boolean }) {
+function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) => void; infinite?: boolean; wide?: boolean }) {
   let sentinel: HTMLDivElement | undefined;
   onMount(() => {
     if (typeof IntersectionObserver === "undefined" || !sentinel || props.infinite === false) return;
@@ -89,17 +90,30 @@ function FeedGrid(props: { feed: Feed; empty: string; onOpen: (item: PixivItem) 
       </div>
       <div ref={sentinel} class="px-foot" aria-live="polite">
         <Show when={props.feed.error()}>
-          <p class="px-note px-note--error" role="alert">{props.feed.error()}</p>
-          <button type="button" class="px-btn" onClick={() => void props.feed.retry()}>{t("pixiv.retry")}</button>
+          <Show
+            when={props.wide}
+            fallback={
+              <>
+                <p class="px-note px-note--error" role="alert">{props.feed.error()}</p>
+                <button type="button" class="px-btn" onClick={() => void props.feed.retry()}>{t("pixiv.retry")}</button>
+              </>
+            }
+          >
+            <ErrorState message={props.feed.error()!} retryLabel={t("pixiv.retry")} onRetry={() => void props.feed.retry()} />
+          </Show>
         </Show>
         <Show when={props.feed.loading()}>
           <p class="px-note" role="status">{t("pixiv.loading")}</p>
         </Show>
         <Show when={!props.feed.loading() && !props.feed.error() && props.feed.hasMore()}>
-          <button type="button" class="px-btn" onClick={() => void props.feed.more()}>{t("pixiv.loadMore")}</button>
+          <Show when={props.wide} fallback={<button type="button" class="px-btn" onClick={() => void props.feed.more()}>{t("pixiv.loadMore")}</button>}>
+            <Button onClick={() => void props.feed.more()}>{t("pixiv.loadMore")}</Button>
+          </Show>
         </Show>
         <Show when={!props.feed.loading() && !props.feed.error() && props.feed.started() && props.feed.items().length === 0}>
-          <p class="px-note">{props.empty}</p>
+          <Show when={props.wide} fallback={<p class="px-note">{props.empty}</p>}>
+            <EmptyState text={props.empty} />
+          </Show>
         </Show>
         <Show when={!props.feed.loading() && !props.feed.error() && !props.feed.hasMore() && props.feed.items().length > 0}>
           <p class="px-note px-note--end">{t("pixiv.end")}</p>
@@ -185,79 +199,122 @@ export default function PixivView() {
     ["bookmarks", () => t("pixiv.tabBookmarks")],
   ];
 
-  return (
-    <section class="pixiv" aria-labelledby="pixiv-title">
-      <A href="/plugins" class="media-back pixiv-back">
-        <BackIcon /> {t("pixiv.back")}
-      </A>
-      <h1 id="pixiv-title">{t("pixiv.title")}</h1>
+  const { wide, track } = useWide();
 
-      <div class="px-tabs" role="tablist" aria-label={t("pixiv.tabs")}>
-        <For each={tabs}>
-          {([id, label]) => (
-            <button type="button" role="tab" id={`px-tab-${id}`} aria-selected={tab() === id} aria-controls="px-panel" class="px-tab" classList={{ "px-tab--on": tab() === id }} onClick={() => setTab(id)}>
-              {label()}
-            </button>
-          )}
-        </For>
-      </div>
+  const sectionNavItems = (): SectionNavItem[] =>
+    tabs.map(([id, label]) => ({
+      label: label(),
+      onSelect: () => setTab(id),
+      current: tab() === id,
+    }));
 
-      <div id="px-panel" role="tabpanel" aria-labelledby={`px-tab-${tab()}`} class="px-panel">
-        <Show when={tab() === "ranking"}>
-          <div class="px-chips" role="group" aria-label={t("pixiv.modes")}>
-            <For each={modes()}>
-              {(m) => (
-                <button type="button" class="px-chip" classList={{ "px-chip--on": mode() === m, "px-chip--adult": m.endsWith("_r18") }} aria-pressed={mode() === m} data-mode={m} onClick={() => setMode(m)}>
-                  {MODE_LABEL[m]()}
-                </button>
-              )}
-            </For>
-          </div>
-        </Show>
+  const panel = (desk: boolean) => (
+    <div id="px-panel" role="tabpanel" aria-labelledby={`px-tab-${tab()}`} class="px-panel">
+      <Show when={tab() === "ranking"}>
+        <div class="px-chips" role="group" aria-label={t("pixiv.modes")}>
+          <For each={modes()}>
+            {(m) => (
+              <button type="button" class="px-chip" classList={{ "px-chip--on": mode() === m, "px-chip--adult": m.endsWith("_r18") }} aria-pressed={mode() === m} data-mode={m} onClick={() => setMode(m)}>
+                {MODE_LABEL[m]()}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
-        <Show when={tab() === "search"}>
-          <form class="px-search" role="search" onSubmit={submitSearch}>
-            <label class="media-search px-search__field">
-              <SearchIcon />
-              <input type="search" name="q" placeholder={t("pixiv.searchPlaceholder")} aria-label={t("pixiv.searchLabel")} value={draft()} onInput={(e) => setDraft(e.currentTarget.value)} enterkeyhint="search" />
-            </label>
-            <button type="submit" class="px-btn px-btn--primary">{t("pixiv.searchGo")}</button>
-            <label class="px-select">
-              <span>{t("pixiv.order")}</span>
-              <select name="order" value={order()} onChange={(e) => { setOrder(e.currentTarget.value as SearchOrder); if (query()) startSearch(); }}>
-                <option value="date_d">{t("pixiv.orderNew")}</option>
-                <option value="date">{t("pixiv.orderOld")}</option>
-              </select>
-            </label>
-            <label class="px-select">
-              <span>{t("pixiv.type")}</span>
-              <select name="type" value={kind()} onChange={(e) => { setKind(e.currentTarget.value as SearchType); if (query()) startSearch(); }}>
-                <option value="all">{t("pixiv.typeAll")}</option>
-                <option value="illust">{t("pixiv.typeIllust")}</option>
-                <option value="manga">{t("pixiv.typeManga")}</option>
-                <option value="ugoira">{t("pixiv.typeUgoira")}</option>
-              </select>
-            </label>
-            <label class="px-select">
-              <span>{t("pixiv.safety")}</span>
-              <select name="safety" value={safety()} onChange={(e) => { setSafety(e.currentTarget.value as SearchSafety); if (query()) startSearch(); }}>
-                <option value="safe">{t("pixiv.safetySafe")}</option>
-                <option value="all">{t("pixiv.safetyAll")}</option>
-                <Show when={showAdult()}>
-                  <option value="r18">{t("pixiv.safetyR18")}</option>
-                </Show>
-              </select>
-            </label>
-          </form>
-          <Show when={!query()}>
-            <p class="px-note">{t("pixiv.searchHint")}</p>
+      <Show when={tab() === "search"}>
+        <form class="px-search" role="search" onSubmit={submitSearch}>
+          <label class="media-search px-search__field">
+            <SearchIcon />
+            <input type="search" name="q" placeholder={t("pixiv.searchPlaceholder")} aria-label={t("pixiv.searchLabel")} value={draft()} onInput={(e) => setDraft(e.currentTarget.value)} enterkeyhint="search" />
+          </label>
+          <Show when={desk} fallback={<button type="submit" class="px-btn px-btn--primary">{t("pixiv.searchGo")}</button>}>
+            <Button type="submit">{t("pixiv.searchGo")}</Button>
+          </Show>
+          <label class="px-select">
+            <span>{t("pixiv.order")}</span>
+            <select name="order" value={order()} onChange={(e) => { setOrder(e.currentTarget.value as SearchOrder); if (query()) startSearch(); }}>
+              <option value="date_d">{t("pixiv.orderNew")}</option>
+              <option value="date">{t("pixiv.orderOld")}</option>
+            </select>
+          </label>
+          <label class="px-select">
+            <span>{t("pixiv.type")}</span>
+            <select name="type" value={kind()} onChange={(e) => { setKind(e.currentTarget.value as SearchType); if (query()) startSearch(); }}>
+              <option value="all">{t("pixiv.typeAll")}</option>
+              <option value="illust">{t("pixiv.typeIllust")}</option>
+              <option value="manga">{t("pixiv.typeManga")}</option>
+              <option value="ugoira">{t("pixiv.typeUgoira")}</option>
+            </select>
+          </label>
+          <label class="px-select">
+            <span>{t("pixiv.safety")}</span>
+            <select name="safety" value={safety()} onChange={(e) => { setSafety(e.currentTarget.value as SearchSafety); if (query()) startSearch(); }}>
+              <option value="safe">{t("pixiv.safetySafe")}</option>
+              <option value="all">{t("pixiv.safetyAll")}</option>
+              <Show when={showAdult()}>
+                <option value="r18">{t("pixiv.safetyR18")}</option>
+              </Show>
+            </select>
+          </label>
+        </form>
+        <Show when={!query()}>
+          <Show when={desk} fallback={<p class="px-note">{t("pixiv.searchHint")}</p>}>
+            <EmptyState text={t("pixiv.searchHint")} />
           </Show>
         </Show>
+      </Show>
 
-        <Show when={tab() !== "search" || query()}>
-          <FeedGrid feed={feedOf()} empty={tab() === "bookmarks" ? t("pixiv.emptyBookmarks") : t("pixiv.empty")} onOpen={openWork} infinite={tab() !== "bookmarks"} />
-        </Show>
-      </div>
+      <Show when={tab() !== "search" || query()}>
+        <FeedGrid feed={feedOf()} empty={tab() === "bookmarks" ? t("pixiv.emptyBookmarks") : t("pixiv.empty")} onOpen={openWork} infinite={tab() !== "bookmarks"} wide={desk} />
+      </Show>
+    </div>
+  );
+
+  return (
+    <section class="pixiv" classList={{ "pixiv--wide": wide() }} ref={track} aria-labelledby={wide() ? undefined : "pixiv-title"}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <A href="/plugins" class="media-back pixiv-back">
+              <BackIcon /> {t("pixiv.back")}
+            </A>
+            <h1 id="pixiv-title">{t("pixiv.title")}</h1>
+
+            <div class="px-tabs" role="tablist" aria-label={t("pixiv.tabs")}>
+              <For each={tabs}>
+                {([id, label]) => (
+                  <button type="button" role="tab" id={`px-tab-${id}`} aria-selected={tab() === id} aria-controls="px-panel" class="px-tab" classList={{ "px-tab--on": tab() === id }} onClick={() => setTab(id)}>
+                    {label()}
+                  </button>
+                )}
+              </For>
+            </div>
+
+            {panel(false)}
+          </>
+        }
+      >
+        <Page class="pixiv-desk">
+          <PageHeader title={t("pixiv.title")} nav={<SectionNav label={t("pixiv.tabs")} items={sectionNavItems()} />} />
+          <Show when={openId()}>
+            <a
+              href="/pixiv"
+              class="pg-link pg-back"
+              onClick={(e) => {
+                e.preventDefault();
+                closeWork();
+              }}
+            >
+              {t("pixiv.back")}
+            </a>
+          </Show>
+          <PageGrid layout="full">
+            <PageCard class="pixiv-surface">{panel(true)}</PageCard>
+          </PageGrid>
+        </Page>
+      </Show>
 
       <Show when={openId()} keyed>
         {(id) => <Reader id={id} preview={preview()?.id === id ? preview() : undefined} onClose={closeWork} onTag={searchFor} onBookmark={onBookmark} />}
