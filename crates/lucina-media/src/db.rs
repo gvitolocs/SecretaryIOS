@@ -268,6 +268,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Stacks and the duplicate review's decisions (2026-10-28): `stacks.rs`, `dedup_review.rs`.
     crate::stacks::migrate(conn)?;
     crate::dedup_review::migrate(conn)?;
+    // Faces and people (2026-10-28): opt-in face recognition (`faces.rs`).
+    crate::faces::migrate(conn)?;
     Ok(())
 }
 
@@ -628,6 +630,10 @@ pub struct ListQuery {
     pub bbox: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
+    /// Only photos with a face of this person (`faces.rs`). Set by the server (`people/{id}/items`,
+    /// smart search's `person=`), not a parameter of `GET items`.
+    #[serde(skip)]
+    pub person: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -767,6 +773,14 @@ pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::
     }
     if q.favorite == Some(true) {
         wh.push("i.favorite = 1".into());
+    }
+    if let Some(p) = &q.person {
+        add(
+            &mut wh,
+            &mut args,
+            "i.id IN (SELECT item_id FROM faces WHERE person_id = ?)",
+            p.clone().into(),
+        );
     }
     if let Some(t) = &q.doc_type {
         add(

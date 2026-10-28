@@ -8,6 +8,7 @@
 //!   `album`, `bbox`, `favorite`, `archived`…), `limit` (1..200, 60) and `cursor`: items by
 //!   relevance, with `scores` (0..1) in the same order. 503 when smart search is off.
 //! - `GET items/{id}/similar`: the same, from a photo's own vector (the photo left out).
+//! - Both take `person=<id>` to keep only photos with a face of that person (`faces.rs`).
 //!
 //! The worker is off unless `LUCINA_MEDIA_ML=1`. It runs on its own thread at nice 19 with 3
 //! ONNX threads, embeds the grid rendition (`s.jpg`; a video's `poster.jpg`; never a store
@@ -15,6 +16,9 @@
 //! while the CPU is at or above `LUCINA_MEDIA_ML_TEMP_LIMIT` (90 °C) or the load is above 16. A
 //! photo whose item changed after it was embedded (an edit) is embedded again. Nothing in the
 //! library is changed: the vectors go to their own tables (`lucina_media_ml::store`).
+//!
+//! The same thread runs the face scan (`faces::step`) whenever there is nothing left to embed, so
+//! one background worker, with these pauses, does all the machine learning.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
@@ -29,6 +33,7 @@ use lucina_media_ml::index::{Hit, VectorIndex};
 use lucina_media_ml::siglip::{Siglip, SiglipConfig};
 use lucina_media_ml::{store, thermal, Embedder};
 use rusqlite::{params, Connection};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::db::{self, ListQuery};
@@ -110,6 +115,14 @@ pub struct Smart {
 fn registry() -> &'static Mutex<HashMap<PathBuf, Arc<Smart>>> {
     static R: OnceLock<Mutex<HashMap<PathBuf, Arc<Smart>>>> = OnceLock::new();
     R.get_or_init(Default::default)
+}
+
+/// Whether the worker is paused for heat or load (shown by the faces status too).
+pub fn pauses(lib: &Library) -> (bool, bool) {
+    state(lib).map_or((false, false), |s| {
+        let p = s.progress.lock().unwrap_or_else(|p| p.into_inner());
+        (p.paused_hot, p.paused_busy)
+    })
 }
 
 pub fn state(lib: &Library) -> Option<Arc<Smart>> {
@@ -304,6 +317,20 @@ fn embed_loop(
         }
         match embed_pending(&lib, &smart) {
             Ok(0) => {
+                // Nothing to embed: the face scan, when the owner turned it on.
+                match crate::faces::step(&lib) {
+                    Ok(n) if n > 0 => {
+                        set_progress(&smart, |p| p.running = true);
+                        std::thread::sleep(Duration::from_millis(250));
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "face scan step failed");
+                        std::thread::sleep(Duration::from_secs(30));
+                        continue;
+                    }
+                }
                 set_progress(&smart, |p| p.running = false);
                 if let Some(s) = &siglip {
                     s.release_idle(Duration::from_secs(600), true);
@@ -316,6 +343,9 @@ fn embed_loop(
                         ),
                         Ok(_) => {}
                         Err(e) => tracing::warn!(error = %e, "smart search: prune failed"),
+                    }
+                    if let Err(e) = crate::faces::prune(&lib) {
+                        tracing::warn!(error = %e, "faces: prune failed");
                     }
                     last_prune = Instant::now();
                 }
@@ -377,6 +407,8 @@ pub async fn worker(lib: Library, cfg: SmartConfig) {
         vectors = smart.index.read().unwrap_or_else(|p| p.into_inner()).len(),
         "smart search on"
     );
+    // Face recognition rides on this thread; it stays off until the owner turns it on.
+    crate::faces::install_real(lib.clone()).await;
     let (limit, max_load) = (cfg.temp_limit, cfg.max_load);
     if let Err(e) = std::thread::Builder::new()
         .name("smart-embed".into())
@@ -546,7 +578,17 @@ impl Smart {
     }
 }
 
-async fn search(State(lib): State<Library>, Query(q): Query<ListQuery>) -> ApiResult<Json<Value>> {
+/// `person=<id>`: only photos with a face of that person.
+#[derive(Deserialize, Default)]
+struct PersonParam {
+    person: Option<String>,
+}
+
+async fn search(
+    State(lib): State<Library>,
+    Query(q): Query<ListQuery>,
+    Query(p): Query<PersonParam>,
+) -> ApiResult<Json<Value>> {
     let smart = state(&lib).ok_or_else(off)?;
     let text = q.q.clone().unwrap_or_default();
     let text = text.trim().to_string();
@@ -556,7 +598,8 @@ async fn search(State(lib): State<Library>, Query(q): Query<ListQuery>) -> ApiRe
     if text.chars().count() > 300 {
         return Err(crate::http::bad("q is too long"));
     }
-    let (q, offset, limit) = filters(&lib, q)?;
+    let (mut q, offset, limit) = filters(&lib, q)?;
+    q.person = p.person.filter(|s| !s.is_empty());
     let s2 = smart.clone();
     let hits =
         tokio::task::spawn_blocking(move || -> Result<Vec<Hit>, lucina_media_ml::MlError> {
@@ -581,9 +624,11 @@ async fn similar(
     State(lib): State<Library>,
     Path(id): Path<String>,
     Query(q): Query<ListQuery>,
+    Query(p): Query<PersonParam>,
 ) -> ApiResult<Json<Value>> {
     let smart = state(&lib).ok_or_else(off)?;
-    let (q, offset, limit) = filters(&lib, q)?;
+    let (mut q, offset, limit) = filters(&lib, q)?;
+    q.person = p.person.filter(|s| !s.is_empty());
     let id = lib
         .db
         .call(move |c| crate::dedup_merge::resolve(c, &id))

@@ -132,6 +132,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::renditions::routes())
         .merge(crate::lab_http::routes())
         .merge(crate::smart::routes())
+        .merge(crate::faces_http::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -313,7 +314,7 @@ fn first_album_titles(
         .collect()
 }
 
-async fn list_items(
+pub(crate) async fn list_items(
     State(lib): State<Library>,
     Query(mut q): Query<ListQuery>,
 ) -> ApiResult<Json<Value>> {
@@ -2031,7 +2032,7 @@ async fn item_details(
         return Err(not_found());
     }
     let iid = id.clone();
-    let (it, album, info) = lib
+    let (it, album, info, people) = lib
         .db
         .call(move |c| {
             let Some(it) = db::get_item(c, &iid)? else {
@@ -2041,7 +2042,8 @@ async fn item_details(
                 .pop()
                 .flatten();
             let info = drive::info_for(c, &iid)?;
-            Ok(Some((it, a, info)))
+            let people = crate::faces_http::people_of_item(c, &iid)?;
+            Ok(Some((it, a, info, people)))
         })
         .await?
         .ok_or_else(not_found)?;
@@ -2057,8 +2059,8 @@ async fn item_details(
     Ok(Json(json!({
         "item": item_out_full(&lib, it, album, info, None),
         "exif": exif,
-        // Faces are not recognised yet; the field is here for the viewer.
-        "people": [],
+        // The people with a face in this photo (`faces.rs`); empty while face recognition is off.
+        "people": people,
     })))
 }
 
