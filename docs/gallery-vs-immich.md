@@ -303,6 +303,31 @@ more) for one builder, including tests.
 - A model change rebuilds the embeddings in the background, and search keeps using the old vectors until the new set
   is complete.
 
+## Status (2026-10-28, evening)
+
+**Live** (lucina-media `99f535d`, web-live `ad75e7a3`):
+- Smart search: `lucina-media-ml` and `smart.rs`.
+- The albums page and album view.
+- Live Photos playback.
+- The smart-search UI, with "Similar photos".
+- **Smart search is off** (`LUCINA_MEDIA_ML` unset) until the owner OKs the backfill, about 70 CPU-minutes.
+
+**Built, waiting for review and deploy:**
+
+| Feature | Server branch | Web branch | Notes |
+|---|---|---|---|
+| Faces and people (gap 2) | `gallery-faces` | `gallery-faces-web` | YuNet + SFace, own clustering. Opt-in from the People page. |
+| Duplicate review and stacks (gap 4) | `gallery-dedup` | `gallery-dedup-web` | Each branch also contains the faces branch, so it merges cleanly after it. |
+
+**Follow-ups found while building:**
+- **Live Photos on iOS.** The catalog has no Live pairs. The iPhone app sends the motion half only when "include videos" is on (`PhotoBackup.swift`, scan).
+- **Bursts on iOS.** The app never sends `burstIdentifier` and doesn't fetch `includeAllBurstAssets`, so only each burst's key photo is backed up. Server-side bursts are guessed from 1.5 s gaps and pHash.
+- **Duplicate hashes.** Nothing hashes new uploads (`item_hashes` is empty on the live catalog). The duplicate screen shows "hashes pending" until `dedup-hash` runs. A background hash step in the single embed thread is the natural fix.
+- **Purge hooks.** `purge_in` calls `lucina_media_ml::forget_item`, which covers vectors and faces. Stacks keep themselves consistent with a trigger on `items.trashed_at`.
+- **Phone header.** The Gallery header now has many icons and overflows at phone width. It needs a "More" menu.
+- **Unrelated test failure.** `web/src/views/Shell.approvals.test.tsx` ("shows inside Secretary Code…") fails on web-live here, independent of the Gallery work.
+- **Next gaps by rank:** OCR (6), share-link password (7), the memories viewer (8), smart albums (9), locked folder (10).
+
 ## Who builds what (agreed with the media session, 2026-10-28)
 
 - **Media session:** owns `lucina-media` and `/gallery`, and is applying the JPEG XL archive. It reviews, merges into
