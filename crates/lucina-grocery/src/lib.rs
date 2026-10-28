@@ -539,6 +539,9 @@ impl GroceryRepo {
             "unit": opt_str(&row.unit),
             "section": pick(&row.section_override, &o.section),
             "icon": pick(&client_icon(&row.icon_key), &o.icon),
+            // The row's own (hand-picked) emoji; otherwise `icon` is the catalog's
+            // and clients draw the catalog item's art instead.
+            "iconPicked": client_icon(&row.icon_key).is_some(),
             "status": row.status,
             "position": row.position,
             "purchasedAt": row.purchased_at.map(iso),

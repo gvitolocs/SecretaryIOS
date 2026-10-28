@@ -16,6 +16,7 @@ lucina-discord = { path = "../lucina-discord" }
 lucina-meshy = { path = "../lucina-meshy" }
 lucina-delegate = { path = "../lucina-delegate" }
 lucina-computer-use = { path = "../lucina-computer-use" }
+lucina-ops = { path = "../lucina-ops" }
 async-trait = { workspace = true }
 schemars = "1"
 jsonschema = { version = "0.59", default-features = false }

@@ -93,6 +93,8 @@ pub struct Config {
     /// `LUCINA_OPERATOR_BRIEF_MAX_CHARS` (2800) and `LUCINA_POKOIN_HANDOFF_PATH`.
     pub operator_brief_max_chars: usize,
     pub pokoin_handoff_path: PathBuf,
+    /// The ops record (`LUCINA_OPS_*`, crate::ops).
+    pub ops: crate::ops::OpsSettings,
     pub data_dir: PathBuf,
     pub persona: String,
     pub host_label: String,
@@ -566,6 +568,7 @@ impl Config {
             telegram: crate::telegram::TelegramConfig::from_lookup(&get, &data_dir),
             discord: crate::discord::DiscordConfig::from_lookup(&get, &data_dir),
             discord_token: crate::discord::token_from_lookup(&get),
+            ops: crate::ops::OpsSettings::from_lookup(&get, &data_dir),
             data_dir,
         })
     }

@@ -387,6 +387,7 @@ pub fn spawn(st: &AppState) -> tokio::task::JoinHandle<()> {
             for (path, alert, detail) in m.check(Utc::now()) {
                 let text = alert_text(&path, alert, &detail, m.after);
                 tracing::warn!(%path, ?alert, "delivery path alert");
+                crate::ops::delivery_alert(&st, &path, alert == Alert::Down, &text);
                 if path == "app" {
                     telegram_owner(&st, &text).await;
                 } else {

@@ -9,7 +9,8 @@
 //! - [`create`]: validate, gather evidence, decide or ask, record, report on the timeline.
 //! - [`owner_answer`]: his reply ("Decision dc-…: 2") in his own chat resolves a pending decision.
 //! - Records: `<LUCINA_DATA_DIR>/decisions/decisions.jsonl`, the full object after every change
-//!   (the last line of an id wins).
+//!   (the last line of an id wins), and every settled decision in the ops record (`kind=decision`,
+//!   crate `lucina_ops`), whose earlier decisions are evidence for the next ones.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -531,6 +532,86 @@ async fn owner_memory(st: &AppState, r: &Request, query: &str) -> Vec<Evidence> 
     }
 }
 
+/// Earlier decisions in the ops record (sessions', Lucina's and his own).
+async fn ops_decisions(st: &AppState, r: &Request, words: &[String]) -> Vec<Evidence> {
+    let Some(ops) = st.ops.clone() else {
+        return Vec::new();
+    };
+    let q = match &r.topic {
+        Some(t) => format!("{t} {}", words.iter().take(6).cloned().collect::<Vec<_>>().join(" ")),
+        None => words.iter().take(8).cloned().collect::<Vec<_>>().join(" "),
+    };
+    let query = lucina_ops::SearchQuery {
+        q: clip(&q, 400),
+        kind: Some(lucina_ops::Kind::Decision),
+        limit: Some(4),
+        ..Default::default()
+    };
+    match tokio::time::timeout(MEMORY_TIMEOUT, ops.search(query)).await {
+        Ok(Ok(found)) => found
+            .items
+            .into_iter()
+            .map(|i| Evidence {
+                kind: "ops_decision".into(),
+                text: clip(
+                    &format!("[{} {}, recorded by {}] {}: {}", day(&i.at), i.project, i.source, i.title, i.body),
+                    EVIDENCE_CHARS,
+                ),
+            })
+            .collect(),
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "decision: ops search failed");
+            Vec::new()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// A settled decision goes to the ops record; its id becomes the decision's `record_id`.
+async fn record_ops(st: &AppState, d: &mut Decision) {
+    let Some(ops) = st.ops.clone() else {
+        return;
+    };
+    if d.status != "decided" {
+        return;
+    }
+    let project = d
+        .topic
+        .as_deref()
+        .map(lucina_intent::mcp::note_source)
+        .filter(|p| p != "lucina" && p.len() <= 48)
+        .unwrap_or_else(|| "lucina".into());
+    let by = if d.decided_by.as_deref() == Some("owner") {
+        lucina_ops::DecidedBy::Owner
+    } else {
+        lucina_ops::DecidedBy::Lucina
+    };
+    let answer = d.chosen_option.clone().unwrap_or_else(|| d.reason.clone());
+    let mut new = lucina_ops::NewRecord::new(
+        lucina_ops::Kind::Decision,
+        &project,
+        &clip(&format!("{} → {answer}", d.question), 200),
+    );
+    new.body = format!(
+        "Asked by {} ({}). Options: {}. Recommended: {}. Impact {}, {}.\n\nAnswer: {answer}. {}",
+        d.who(),
+        d.decision_id,
+        d.options.join(" / "),
+        d.recommendation.as_deref().unwrap_or("none"),
+        d.impact,
+        if d.reversible { "reversible" } else { "irreversible" },
+        d.reason
+    );
+    new.decided_by = Some(by);
+    new.question = Some(clip(&d.question, 2000));
+    new.asked_by = Some(d.who());
+    new.dedup_key = Some(format!("{}:{}", d.decision_id, d.decided_by.as_deref().unwrap_or("lucina")));
+    match ops.record(new, "lucina").await {
+        Ok(r) => d.record_id = r.id,
+        Err(e) => tracing::warn!(error = %e, decision = %d.decision_id, "decision: ops record failed (kept in the local log)"),
+    }
+}
+
 fn earlier(d: &Decision) -> Evidence {
     let who = d.decided_by.as_deref().unwrap_or("?");
     let who = if who == "owner" { "Giuseppe" } else { "Lucina" };
@@ -797,6 +878,7 @@ pub async fn create(st: &AppState, body: &Value) -> Result<Decision, ApiError> {
         clip(&r.context, 500)
     ));
     let mut evidence: Vec<Evidence> = store.similar(&r, 3).iter().map(earlier).collect();
+    evidence.extend(ops_decisions(st, &r, &words).await);
     evidence.extend(owner_messages(st, &words, now));
     let query = clip(&format!("{} {}", r.question, r.options.join(" / ")), 400);
     evidence.extend(owner_memory(st, &r, &query).await);
@@ -859,6 +941,7 @@ pub async fn create(st: &AppState, body: &Value) -> Result<Decision, ApiError> {
             d.owner_item_id = ask_owner(st, &d).await;
         }
     }
+    record_ops(st, &mut d).await;
     store
         .put(&d)
         .map_err(|e| ApiError::new(500, "internal_error", format!("decisions log: {e}")))?;
@@ -1104,6 +1187,7 @@ pub async fn owner_answer(st: &AppState, text: &str) -> Option<OwnerReply> {
             d.expires_at = None;
         }
     }
+    record_ops(st, &mut d).await;
     if let Err(e) = store.put(&d) {
         tracing::error!(error = %e, "decisions log write failed");
         return Some(OwnerReply {
