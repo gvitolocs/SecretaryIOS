@@ -4,6 +4,7 @@ import { Portal } from "solid-js/web";
 import type { AppNotification, Category } from "../api/notifications";
 import { locale, t } from "../i18n";
 import { agentNotificationRoute } from "../lib/agentsRoute";
+import { decisionNotificationRoute } from "../lib/decisionsRoute";
 import { prefetchPushKey } from "../lib/push";
 import {
   markAllRead,
@@ -128,6 +129,10 @@ export function PushCta(props: { desktop?: boolean }) {
     void turnOnPush().then((e) => setError(e));
   };
   return (
+    <>
+    <Show when={pushStatus() === "desktop-app"}>
+      <p class={props.desktop ? "pg-muted" : "muted small notif-cta-desktop"} role="note">{t("notify.pushDesktop")}</p>
+    </Show>
     <Show when={pushStatus() === "off" || pushStatus() === "needs-install" || pushStatus() === "denied"}>
       <Show
         when={props.desktop}
@@ -174,6 +179,7 @@ export function PushCta(props: { desktop?: boolean }) {
         </Card>
       </Show>
     </Show>
+    </>
   );
 }
 
@@ -198,7 +204,7 @@ export function NotificationPanel(props: { open: boolean; onClose: () => void; o
   function open(n: AppNotification) {
     void markRead([n.id]);
     props.onClose();
-    navigate(agentNotificationRoute(n) ?? safeRoute(n.route));
+    navigate(agentNotificationRoute(n) ?? decisionNotificationRoute(n) ?? safeRoute(n.route));
   }
 
   return (

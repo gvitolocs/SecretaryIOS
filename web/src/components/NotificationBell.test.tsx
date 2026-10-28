@@ -1,4 +1,4 @@
-import { Route } from "@solidjs/router";
+import { Route, useParams } from "@solidjs/router";
 import { fireEvent, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppNotification } from "../api/notifications";
@@ -80,6 +80,36 @@ describe("NotificationBell", () => {
     expect(read.body).toEqual({ ids: ["n_1"] });
     expect(read.headers["x-secretary-csrf"]).toBe("1");
     expect(unreadCount()).toBe(1);
+  });
+
+  it("opens /decisions/<id> for a 'Decision needed' notification, even when its route is old", async () => {
+    const id = "dc-0123456789ab";
+    const decisionItems: AppNotification[] = [
+      n("n_d1", { title: "Decision needed: claude-code (s1)", body: "Ship today?", route: `/decisions/${id}`, data: { kind: "decision", decisionId: id } }),
+      n("n_d2", { title: "Decision needed: codex", body: "Old one", route: "/", data: { kind: "decision", decisionId: "dc-ffffffffffff" } }),
+    ];
+    stubFetch((c) => {
+      if (c.url.startsWith("/v1/notifications?")) return { body: { items: decisionItems, unread: 2, nextBefore: null } };
+      if (c.url === "/v1/notifications/read") return { body: { updated: 1, unread: 1 } };
+      if (c.url === "/v1/push/key") return { body: { publicKey: "BAAA" } };
+      return { status: 404, body: {} };
+    });
+    setNotificationsForTests(decisionItems, 2);
+    const open = () => renderAt("/", () => (
+      <>
+        <Route path="/" component={() => <NotificationBell onSettings={vi.fn()} />} />
+        <Route path="/decisions/:id" component={() => <p>Decision {useParams().id}</p>} />
+      </>
+    ));
+    const view = open();
+    fireEvent.click(screen.getByRole("button", { name: "Notifications, 2 unread" }));
+    fireEvent.click(await screen.findByText("Decision needed: claude-code (s1)"));
+    expect(await screen.findByText(`Decision ${id}`)).toBeInTheDocument();
+    view.unmount();
+    open();
+    fireEvent.click(screen.getByRole("button", { name: /Notifications/ }));
+    fireEvent.click(await screen.findByText("Decision needed: codex"));
+    expect(await screen.findByText("Decision dc-ffffffffffff")).toBeInTheDocument();
   });
 
   it("never asks for notification permission without a click", async () => {

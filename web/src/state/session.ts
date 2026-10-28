@@ -3,6 +3,7 @@ import { setUnauthorizedHandler, toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { t } from "../i18n";
 import { resetBody } from "./body";
+import { resetDecisions } from "./decisions";
 import { clearChat, setChatDevice } from "./chat";
 import { resetGym } from "./gym";
 import { resetInstagramBadges } from "./instagramBadge";
@@ -28,6 +29,7 @@ function forgetLocalData(): void {
   resetNotifications();
   resetKeep();
   resetInstagramBadges();
+  resetDecisions();
 }
 
 export async function checkSession(): Promise<void> {
