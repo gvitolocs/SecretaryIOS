@@ -47,6 +47,8 @@ final class AppModel {
     var showNotes = false
     /// Tasks, a plugin like Notes.
     var showTasks = false
+    /// Lucina Agents (the coding agents on nezopt), a plugin pushed on the Plugins tab.
+    var showAgents = false
     /// Scan a QR sign-in code and approve it (Features/Login/QrSignIn.swift), a sheet from Plugins.
     var showQrSignIn = false
     /// The Countdown plugin (pinned events for the countdown widget, `/countdowns`).
@@ -100,6 +102,8 @@ final class AppModel {
     let notes: NotesStore
     /// Tasks synced with Todoist (/v1/tasks).
     let tasks: TasksStore
+    /// Lucina Agents: the list and the live stream (/v1/agents).
+    let agents: AgentsStore
     let health: HealthStore
     let lucina: LucinaStageController
     /// Lucina's outfit (GET/PUT /v1/avatar), applied to the stage.
@@ -167,6 +171,7 @@ final class AppModel {
         weight = PerfLog.measure("weight") { WeightStore(client: { BodyClient(client: client) }) }
         notes = PerfLog.measure("notes") { NotesStore(api: { NotesAPI(client: client) }) }
         tasks = PerfLog.measure("tasks") { TasksStore(api: { TasksAPI(client: client) }) }
+        agents = PerfLog.measure("agents") { AgentsStore(api: { client.accessKey?.isEmpty == false ? AgentsAPI(client: client) : nil }) }
         health = HealthStore(api: { SecretaryAPI(client: client) })
         // Cheap: no web view, model or voice engine until the Lucina tab first opens.
         lucina = PerfLog.measure("lucina") { LucinaStageController(client: client, chat: chat) }
@@ -259,6 +264,10 @@ final class AppModel {
             selectedTab = .plugins
             showTasks = true
         }
+        if launch.openAgents {
+            selectedTab = .plugins
+            showAgents = true
+        }
         if launch.openMemos {
             selectedTab = .plugins
             showMemos = true
@@ -307,6 +316,7 @@ final class AppModel {
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         approvals.onTransportError = onError
+        agents.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -427,6 +437,8 @@ final class AppModel {
         weight.reset()
         notifications.reset()
         approvals.reset()
+        agents.reset()
+        showAgents = false
         memos.reset()
         showMemos = false
         lucinaNotice = nil
@@ -589,6 +601,8 @@ struct LaunchOptions {
     var openNotes = false
     /// `-SecretaryInitialTab tasks`: start on the Tasks screen.
     var openTasks = false
+    /// `-SecretaryInitialTab agents`: start on the Agents screen.
+    var openAgents = false
     /// `-SecretaryInitialTab media`: start on the media library.
     var openMedia = false
     /// `-SecretaryInitialTab gallery`: start on the Gallery.
@@ -607,6 +621,7 @@ struct LaunchOptions {
         openSettings = defaults.string(forKey: "SecretaryInitialTab") == "settings"
         openNotes = defaults.string(forKey: "SecretaryInitialTab") == "notes"
         openTasks = defaults.string(forKey: "SecretaryInitialTab") == "tasks"
+        openAgents = defaults.string(forKey: "SecretaryInitialTab") == "agents"
         openMedia = ["media", "films"].contains(defaults.string(forKey: "SecretaryInitialTab") ?? "")
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"

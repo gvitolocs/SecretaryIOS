@@ -36,12 +36,22 @@ struct Plugin: Identifiable {
                    detail: String(localized: "Sign in another device")) { app.showQrSignIn = true },
             Plugin(id: "notes", icon: "doc.text", title: "Notes") { app.showNotes = true },
             Plugin(id: "tasks", icon: "checkmark.circle", title: "Tasks") { app.showTasks = true },
+            Plugin(id: "agents", icon: "terminal", title: "Agents",
+                   detail: agentsDetail(app)) { app.showAgents = true },
             Plugin(id: "countdown", icon: "hourglass", title: "Countdown",
                    detail: Countdown.visible(Countdown.pinned, fresher: [], now: Date()).first
                        .map { "\(Countdown.label($0, now: Date())) · \($0.title)" }) { app.showCountdowns = true },
             Plugin(id: "wardrobe", icon: "tshirt", title: "Wardrobe",
                    detail: String(localized: "Lucina's outfits")) { app.wardrobe.presented = true },
         ]
+    }
+
+    /// "2 need you" / "1 running" once the list has been loaded.
+    @MainActor private static func agentsDetail(_ app: AppModel) -> String? {
+        let needs = app.agents.items.filter { $0.bucket == .needsInput }.count
+        if needs > 0 { return String(localized: "\(needs) need you") }
+        let running = app.agents.items.filter { $0.bucket == .running }.count
+        return running > 0 ? String(localized: "\(running) running") : String(localized: "Coding agents on nezopt")
     }
 }
 
@@ -67,6 +77,7 @@ struct PluginsView: View {
         .navigationDestination(isPresented: $app.showMedia) { FilmsView() }
         .navigationDestination(isPresented: $app.showNotes) { NotesView() }
         .navigationDestination(isPresented: $app.showTasks) { TasksView() }
+        .navigationDestination(isPresented: $app.showAgents) { AgentsView() }
         .navigationDestination(isPresented: $app.showCountdowns) { CountdownsView() }
         .navigationDestination(isPresented: $app.showPokemon) { PokemonView() }
         .navigationDestination(isPresented: $app.showAllChats) { AllChatsView() }

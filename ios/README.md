@@ -177,3 +177,16 @@ Screen Time is on.
 - Needs the paid Apple Developer Program: Family Controls **distribution** (Apple must
   approve it for TestFlight / App Store), TestFlight itself, push notifications (APNs), and
   profiles longer than 7 days.
+
+## Lucina Agents (Features/Agents)
+
+Plugins → Agents: the coding agents on nezopt (`/v1/agents/*`, contract `docs/design/agents-api.md`).
+- List: `GET /v1/agents/items` (archived toggle, pull to refresh), grouped by state bucket. `AgentsStore` keeps one SSE
+  stream (`GET /v1/agents/stream`) while an Agents screen is up and the app is active: `Last-Event-ID` resume,
+  `stream.reset` → refetch, backoff 1/2/5/10/30 s; without the stream the screens poll (list 5 s, open agent 3 s).
+- Agent: timeline (`afterSeq` pages; tool-call rows folded by `callId`, assistant chunks joined, Markdown via `NoteMarkdownView`),
+  composer (`send`, `activeTurnBehavior: "steer"` while running), Stop, Archive, pending permissions with Allow/Deny
+  (`POST /v1/agents/{id}/permissions/{requestId}`; "Also in Approvals" when the bridge filed an `approvalId`), read-only diff
+  (`/v1/agents/workspaces/{id}/diff`). Strings are English only. No terminals.
+- Device tests run in English: `xcodebuild test … -testLanguage en -testRegion US` (the iPhone is Danish).
+- `-SecretaryInitialTab agents` opens the screen (SCREENSHOTS builds).
