@@ -8,7 +8,9 @@ import { contentToItems, keep } from "../../state/keep";
 import { useKeep } from "./ctx";
 import { NoteFields, newBlankItem } from "./Editors";
 import { CheckBoxIcon, ClockIcon, CloseIcon, ImageIcon, PinFilledIcon, PinOutlineIcon, TextFormatIcon } from "./icons";
+import { imageTarget } from "./imageTarget";
 import { NoteToolbar } from "./NoteToolbar";
+import { dragHasFiles, pastedImages } from "../../lib/keepPaste";
 
 /** Save a closed draft as a note (an empty one is discarded). Returns the new note's temporary id. */
 export function saveDraft(d: Draft): string | null {
@@ -30,6 +32,9 @@ export function Composer(props: { initialLabel?: string | undefined }) {
   let imageInput: HTMLInputElement | undefined;
 
   const patch = (p: Partial<Draft>) => setDraft({ ...draft(), ...p });
+  // Pasted or dropped images: onto the open card they join the draft, onto the closed bar they start a note.
+  const addImages = (files: File[]) => (open() ? patch({ files: [...draft().files, ...files] }) : start("text", files));
+  const drop = imageTarget(addImages);
   const previews = createMemo(() => draft().files.map((f) => ({ name: f.name, url: URL.createObjectURL(f) })), [], { equals: false });
   createEffect(on(previews, (_, prev) => prev?.forEach((p) => URL.revokeObjectURL(p.url)), { defer: true }));
   onCleanup(() => previews().forEach((p) => URL.revokeObjectURL(p.url)));
@@ -59,6 +64,29 @@ export function Composer(props: { initialLabel?: string | undefined }) {
     };
     document.addEventListener("pointerdown", outside, true);
     onCleanup(() => document.removeEventListener("pointerdown", outside, true));
+
+    // An image pasted with nothing focused (no field, no open note) starts a note with it, like a drop on the bar.
+    const paste = (e: ClipboardEvent) => {
+      if (e.defaultPrevented || open() || document.querySelector(".kp-dialog")) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      const p = pastedImages(e.clipboardData);
+      if (!p.files.length && !p.rejected) return;
+      e.preventDefault();
+      drop.take(p);
+    };
+    // A file dropped beside a note would otherwise replace the page with the file (in Secretary Code too).
+    const guard = (e: DragEvent) => {
+      if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+    };
+    document.addEventListener("paste", paste);
+    document.addEventListener("dragover", guard);
+    document.addEventListener("drop", guard);
+    onCleanup(() => {
+      document.removeEventListener("paste", paste);
+      document.removeEventListener("dragover", guard);
+      document.removeEventListener("drop", guard);
+    });
   });
 
   const toggleList = () => {
@@ -78,7 +106,7 @@ export function Composer(props: { initialLabel?: string | undefined }) {
       <Show
         when={open()}
         fallback={
-          <div class="kp-composer kp-composer--collapsed" role="group" aria-label={t("keep.takeNote")}>
+          <div class="kp-composer kp-composer--collapsed" classList={{ "kp-dropping": drop.over() }} role="group" aria-label={t("keep.takeNote")} {...drop.handlers}>
             <button type="button" class="kp-composer-ph" onClick={() => start("text")}>
               {t("keep.takeNote")}
             </button>
@@ -106,6 +134,8 @@ export function Composer(props: { initialLabel?: string | undefined }) {
         <div
           ref={card}
           class="kp-composer kp-composer--open kp-editor"
+          classList={{ "kp-dropping": drop.over() }}
+          {...drop.handlers}
           data-color={draft().color}
           style={{ "--kp-card-bg": cardBackground(draft().color, ctx.theme()), "--kp-card-border": cardBorder(draft().color, ctx.theme()) }}
           role="group"
