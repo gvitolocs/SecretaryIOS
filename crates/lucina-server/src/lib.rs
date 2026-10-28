@@ -32,6 +32,7 @@ pub mod jev_route;
 pub mod grocery_turn;
 pub mod jobs;
 pub mod lan;
+pub mod ops;
 pub mod otp;
 pub mod owner_secrets;
 pub mod parity;
@@ -128,6 +129,8 @@ pub struct Inner {
     pub monitor: Arc<delivery_monitor::Monitor>,
     /// Background loops checked by `/health`.
     pub supervisor: Arc<delivery_monitor::Supervisor>,
+    /// The ops record (`LUCINA_OPS_VAULT_DIR`, crate::ops); `None`: off.
+    pub ops: Option<Arc<lucina_ops::Ops>>,
 }
 
 #[derive(Clone)]
@@ -219,7 +222,9 @@ impl AppState {
             None => None,
         };
         let memory = Arc::new(Memory::new(cfg.memory_mode, cfg.honcho.clone())?);
+        let ops = ops::open(&cfg.ops, cfg.time_zone, cfg.memory_mode, &cfg.honcho);
         let mut env = ToolEnv::new(&cfg.data_dir, cfg.time_zone);
+        env.ops = ops.clone();
         env.reminders = Some(reminders.clone());
         env.reminder_writer = Some(writer.clone());
         env.reminders_enabled = cfg.reminders_enabled;
@@ -373,6 +378,12 @@ impl AppState {
                 .register(Arc::new(lucina_tools::tools::computer::ComputerTool))
                 .expect("computer tool registers");
         }
+        // The ops record: owner channels and MCP turns alike (every agent reports).
+        if env.ops.is_some() && cfg.tools.allows("ops") {
+            registry
+                .register(Arc::new(lucina_tools::tools::ops::OpsTool))
+                .expect("ops tool registers");
+        }
         // Root commands after the owner's approval of the exact commands (crate lucina_approvals).
         if approvals.is_some() && cfg.tools.allows("root_exec") {
             registry
@@ -467,6 +478,7 @@ impl AppState {
                 cfg.data_dir.join("lucina-rs").join("delivery-monitor.json"),
             )),
             supervisor: Arc::default(),
+            ops,
             hospital_health: Arc::new(Mutex::new(bot_hospital::HospitalHealth {
                 enabled: cfg.hospital.enabled && cfg.hospital.daily_audit_enabled,
                 ..Default::default()
@@ -585,6 +597,9 @@ impl AppState {
         }
         self.supervisor
             .watch("delivery monitor", delivery_monitor::spawn(self));
+        if let Some(h) = ops::spawn(self) {
+            self.supervisor.watch("ops record", h);
+        }
         if self.cfg.scheduler {
             if self.cfg.reminders_writer == WriterKind::Node {
                 tracing::warn!("LUCINA_SCHEDULER=true ignored: reminders.json is owned by the Node Lucina (LUCINA_REMINDERS_WRITER=node)");

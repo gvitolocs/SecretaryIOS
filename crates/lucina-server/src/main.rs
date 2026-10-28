@@ -200,6 +200,20 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DriveCmd,
     },
+    /// The ops record (crate lucina_ops): record, search, Map/ pages, conflict sweep.
+    Ops {
+        #[command(subcommand)]
+        cmd: OpsCmd,
+        /// The synced folder (default LUCINA_OPS_VAULT_DIR, else /home/nez/data/lucina-vault/Lucina).
+        #[arg(long, global = true)]
+        vault: Option<PathBuf>,
+        /// records.jsonl and the lock (default LUCINA_OPS_STATE_DIR, else <LUCINA_DATA_DIR>/ops).
+        #[arg(long, global = true)]
+        state: Option<PathBuf>,
+        /// Log dates and times (default LUCINA_TIMEZONE, else Europe/Rome).
+        #[arg(long, global = true)]
+        tz: Option<String>,
+    },
     /// Grocery deals near home: list | cheapest <query> | lunch | map | digest | alerts
     /// [--dry-run|--send] [--channel app|telegram|both] [--user ID] [--fixtures DIR]
     /// [--items "A,B"] [--radiusM 500-15000]. Digest and alerts are dry runs unless --send.
@@ -216,6 +230,32 @@ enum Cmd {
         #[arg(long)]
         token_file: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum OpsCmd {
+    /// Record from stdin (one JSON object, an array or JSON lines); prints one result per line.
+    /// No Honcho here: the server's loop sends the records within 10 minutes.
+    Record {
+        /// Who reports (`cli`, `deploy-guard`, `project-map`, ...).
+        #[arg(long, default_value = "cli")]
+        source: String,
+    },
+    /// Search the store (no Honcho); prints the result as JSON.
+    Search {
+        #[arg(default_value = "")]
+        query: String,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+    },
+    /// Write a whole page under Map/ from stdin (the project-map session); prints {path, changed}.
+    Page { path: String },
+    /// Move Syncthing conflict copies to Conflicts/ and put lost entries back.
+    Sweep,
 }
 
 #[derive(Subcommand)]
@@ -356,6 +396,79 @@ async fn google_auth(service: &str, code: Option<String>, read_only: bool) -> an
             "tokenPath": g.token_file,
         })
     );
+    Ok(())
+}
+
+async fn ops_cmd(
+    cmd: OpsCmd,
+    vault: Option<PathBuf>,
+    state: Option<PathBuf>,
+    tz: Option<String>,
+) -> anyhow::Result<()> {
+    use std::io::Read as _;
+    let ops = lucina_server::ops::open_cli(vault, state, tz)?;
+    let stdin = || -> anyhow::Result<String> {
+        let mut s = String::new();
+        std::io::stdin()
+            .take(lucina_ops::vault::MAX_PAGE_BYTES as u64 + 1)
+            .read_to_string(&mut s)?;
+        if s.len() > lucina_ops::vault::MAX_PAGE_BYTES {
+            anyhow::bail!("stdin exceeds {} bytes", lucina_ops::vault::MAX_PAGE_BYTES);
+        }
+        Ok(s)
+    };
+    match cmd {
+        OpsCmd::Record { source } => {
+            let mut failed = 0;
+            for v in lucina_server::ops::parse_records_input(&stdin()?)? {
+                let r = match serde_json::from_value::<lucina_ops::NewRecord>(v) {
+                    Ok(new) => ops.record(new, &source).await.map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+                match r {
+                    Ok(r) => println!("{}", serde_json::to_string(&r)?),
+                    Err(e) => {
+                        failed += 1;
+                        println!("{}", serde_json::json!({"error": e}));
+                    }
+                }
+            }
+            if failed > 0 {
+                anyhow::bail!("{failed} record(s) refused");
+            }
+        }
+        OpsCmd::Search {
+            query,
+            project,
+            kind,
+            limit,
+        } => {
+            let kind = kind
+                .map(|k| serde_json::from_value(serde_json::json!(k)))
+                .transpose()
+                .map_err(|_| {
+                    anyhow::anyhow!("kind: deploy, incident, decision, status or finding")
+                })?;
+            let r = ops
+                .search(lucina_ops::SearchQuery {
+                    q: query,
+                    project,
+                    kind,
+                    limit: Some(limit),
+                    ..Default::default()
+                })
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        }
+        OpsCmd::Page { path } => {
+            let changed = ops.vault().write_page(&path, &stdin()?)?;
+            println!("{}", serde_json::json!({"path": path, "changed": changed}));
+        }
+        OpsCmd::Sweep => {
+            let r = ops.sweep_conflicts()?;
+            println!("{}", serde_json::to_string(&r)?);
+        }
+    }
     Ok(())
 }
 
@@ -632,6 +745,12 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             read_only,
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
+        Cmd::Ops {
+            cmd,
+            vault,
+            state,
+            tz,
+        } => ops_cmd(cmd, vault, state, tz).await?,
         Cmd::Serve => {
             let cfg = Config::from_env()?;
             tracing::info!(config = ?cfg, "lucina starting (shadow mode: scheduler, Telegram and Discord off unless stated)");

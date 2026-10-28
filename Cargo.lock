@@ -2807,6 +2807,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucina-ops"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "getrandom 0.3.4",
+ "libc",
+ "lucina-memory",
+ "lucina-secrets",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "lucina-otp-relay"
 version = "0.1.0"
 dependencies = [
@@ -2913,6 +2933,7 @@ dependencies = [
  "lucina-memo",
  "lucina-memory",
  "lucina-meshy",
+ "lucina-ops",
  "lucina-phone-core",
  "lucina-secrets",
  "lucina-store",
@@ -3002,6 +3023,7 @@ dependencies = [
  "lucina-jev",
  "lucina-llm",
  "lucina-meshy",
+ "lucina-ops",
  "lucina-secrets",
  "lucina-store",
  "proptest",

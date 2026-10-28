@@ -12,6 +12,7 @@ pub mod memos;
 pub mod meshy;
 pub mod notes;
 pub mod notify;
+pub mod ops;
 pub mod places;
 pub mod plugins;
 pub mod presence;

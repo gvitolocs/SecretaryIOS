@@ -239,6 +239,8 @@ pub struct ToolEnv {
     pub plugins: tools::plugins::Plugins,
     /// Owner approvals (pinned grant key present): the `root_exec` tool.
     pub approvals: Option<Arc<lucina_approvals::Approvals>>,
+    /// The ops record (`ops`): deploys, incidents, decisions of every project.
+    pub ops: Option<Arc<lucina_ops::Ops>>,
 }
 
 impl ToolEnv {
@@ -289,6 +291,7 @@ impl ToolEnv {
             drive: None,
             plugins: tools::plugins::Plugins::default(),
             approvals: None,
+            ops: None,
         }
     }
 }

@@ -111,7 +111,7 @@ fn is_clipboard_event(e: &Value) -> bool {
 }
 
 /// `x-lucina-caller` from secretary-server: `[a-z0-9:-]{1,40}`, else `app`.
-fn caller(headers: &HeaderMap) -> String {
+pub(crate) fn caller(headers: &HeaderMap) -> String {
     headers
         .get("x-lucina-caller")
         .and_then(|v| v.to_str().ok())

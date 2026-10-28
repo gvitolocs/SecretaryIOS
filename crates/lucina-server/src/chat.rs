@@ -42,6 +42,7 @@ pub mod drive_turn;
 pub mod media_turn;
 pub mod memo_turn;
 pub mod meshy_turn;
+mod ops_turn;
 pub mod plugin_turn;
 pub mod reply;
 mod share_turn;
@@ -1425,6 +1426,11 @@ async fn json_turn(
             return Finish::refusal(&persona, "computer_task");
         }
         return computer_task_finish(t, &plan, cmid).await;
+    }
+
+    // The ops record (crate::ops): "what happened with X" from the record; the owner's decisions recorded.
+    if let Some(f) = ops_turn::try_turn(t, memory, Utc::now()).await {
+        return f;
     }
 
     // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request.
