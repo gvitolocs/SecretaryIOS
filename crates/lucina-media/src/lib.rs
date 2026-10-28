@@ -15,6 +15,8 @@
 pub mod archive;
 pub mod archive_jxl;
 pub mod archive_jxl_measure;
+pub mod archive_manifest;
+pub mod archive_png;
 pub mod batch;
 pub mod browse;
 pub mod config;
