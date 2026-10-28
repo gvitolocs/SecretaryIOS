@@ -104,12 +104,10 @@ function NoteDeskRow(props: { note: NoteSummary; active: boolean }) {
           </span>
         </Show>
       }
-      sub={excerpt()}
-      meta={
+      // The list column is narrow: the title gets the whole line, the source and date lead the sub line.
+      sub={
         <>
-          <SourceBadge source={props.note.source} />
-          {" · "}
-          {formatDate(ms(props.note.updatedAt))}
+          <SourceBadge source={props.note.source} /> {formatDate(ms(props.note.updatedAt))} · {excerpt()}
         </>
       }
     />
@@ -696,7 +694,9 @@ export default function NotesView() {
     <>
       <Show when={mode() === "none"}>
         <Show when={desk} fallback={<div class="notes-placeholder" aria-hidden="true"><NoteIcon /></div>}>
-          <EmptyState text={t("notes.pickNote")} />
+          <Card>
+            <EmptyState text={t("notes.pickNote")} />
+          </Card>
         </Show>
       </Show>
       <Show when={mode() === "new"}>

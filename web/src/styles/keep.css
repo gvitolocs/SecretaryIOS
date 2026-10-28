@@ -2158,6 +2158,11 @@
 
 /* ---------- Desktop page system (views/Keep.tsx) ---------- */
 
+/* Desktop (page system): Keep sits on the page's own background like every page. */
+.kp.kp--desk {
+  background: transparent;
+}
+
 .kp--desk .kp-top {
   display: none;
 }

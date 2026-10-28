@@ -68,7 +68,13 @@ function headerContext(): JSX.Element | undefined {
 function RunsMain(props: { route: AgentsRoute }) {
   const agent = createMemo(() => (props.route.page === "agent" ? props.route : undefined));
   return (
-    <Switch fallback={<EmptyState text={t("agents.pickOne")} action={<a href="/agents/new" class="pg-link">{t("agents.newRun")}</a>} />}>
+    <Switch
+      fallback={
+        <Card>
+          <EmptyState text={t("agents.pickOne")} action={<a href="/agents/new" class="pg-link">{t("agents.newRun")}</a>} />
+        </Card>
+      }
+    >
       <Match when={props.route.page === "new"}>
         <Card class="ag-desk-page">
           <NewRun />
