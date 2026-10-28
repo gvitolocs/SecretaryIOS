@@ -58,6 +58,11 @@
  *    Ctrl+V. A Ctrl/Cmd+C or X while driving tells the page (`lucina:copied`)
  *    to look for files on her clipboard, which it offers as downloads.
  *
+ * 6. Toolbar. In focus mode the page's drive bar is the only toolbar:
+ *    `lucina:chrome {toolbar:false}` hides Cua's, whose buttons (scale,
+ *    clipboard sync, sound, stats) are reported as `lucina:buttons` and pressed
+ *    with `lucina:button {id}`.
+ *
  * It also reports the stream state to the parent (`lucina:state`) so the app
  * can stop showing "Connecting…" on the first frame rather than on load.
  */
@@ -841,6 +846,56 @@
     );
   }
 
+  // ----------------------------------------------------------------- toolbar
+
+  /** Cua's buttons the page's drive bar mirrors in focus mode (its own toolbar is hidden there). */
+  var MIRRORED = ["scale", "clipboard", "audio", "stats"];
+  var lastButtons = "";
+
+  function reportButtons() {
+    var bar = document.querySelector(".cua-toolbar");
+    if (!bar) return;
+    var list = [];
+    MIRRORED.forEach(function (id) {
+      var b = bar.querySelector('[data-id="' + id + '"]');
+      if (!b) return;
+      list.push({ id: id, label: b.getAttribute("aria-label") || b.title || id, pressed: b.classList.contains("on"), hidden: !!b.hidden });
+    });
+    var key = JSON.stringify(list);
+    if (key === lastButtons) return;
+    lastButtons = key;
+    send({ type: "lucina:buttons", buttons: list });
+  }
+
+  /** `lucina:chrome {toolbar:false}` hides Cua's toolbar; its buttons are reported as they change. */
+  function mirrorToolbar() {
+    var style = document.createElement("style");
+    style.textContent = "html.lucina-no-toolbar .cua-toolbar{display:none!important}";
+    (document.head || document.documentElement).appendChild(style);
+    var watched = null;
+    var watch = function () {
+      var bar = document.querySelector(".cua-toolbar");
+      if (!bar || bar === watched) return;
+      watched = bar;
+      new MutationObserver(reportButtons).observe(bar, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["class", "hidden", "aria-label"],
+      });
+      reportButtons();
+    };
+    // The toolbar is built once the viewer starts (and again on a reload of it).
+    setInterval(watch, 1000);
+    watch();
+  }
+
+  function pressViewerButton(id) {
+    if (MIRRORED.indexOf(id) < 0) return;
+    var b = document.querySelector('.cua-toolbar [data-id="' + id + '"]');
+    if (b) b.click();
+  }
+
   // ------------------------------------------------------------------ wiring
 
   window.addEventListener("message", function (event) {
@@ -877,6 +932,12 @@
       case "lucina:clipboard-done":
         if (typeof data.id === "number" && clipWaiting[data.id]) clipWaiting[data.id](data.ok === true);
         break;
+      case "lucina:chrome":
+        document.documentElement.classList.toggle("lucina-no-toolbar", data.toolbar === false);
+        break;
+      case "lucina:button":
+        if (typeof data.id === "string") pressViewerButton(data.id);
+        break;
       case "lucina:files-done":
         if (typeof data.id === "number" && filesWaiting[data.id]) {
           var done = filesWaiting[data.id];
@@ -904,5 +965,6 @@
   forwardEscapeWhileWatching();
   relayClipboardWrites();
   sendFilesWhileDriving();
+  mirrorToolbar();
   send({ type: "lucina:ready", coarse: COARSE, mode: mode });
 })();
