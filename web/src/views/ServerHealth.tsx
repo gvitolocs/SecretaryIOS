@@ -1,6 +1,7 @@
 import { A, useLocation, useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { toApiError } from "../api/client";
+import { mapHref } from "../lib/agentsRoute";
 import { allComponents, attentionTotal, flappingTotal, systemOverviewApi, type SourceName, type SystemOverview } from "../api/systemOverview";
 import { BackIcon, RefreshIcon } from "../components/Icons";
 import { relativeTime } from "../components/NotificationBell";
@@ -215,7 +216,21 @@ export default function ServerHealthView() {
         )}
       </Show>
 
-      <Sheet open={sheetOpen() && !!data()} onClose={closeSheet} title={sheetTitle()} size={search.host ? "wide" : "default"} class="sh-sheet">
+      <Sheet
+        open={sheetOpen() && !!data()}
+        onClose={closeSheet}
+        title={sheetTitle()}
+        size={search.host ? "wide" : "default"}
+        class="sh-sheet"
+        // A host's sheet opens on its charts: focus lands on this link, not on a row further down.
+        tools={
+          !item() && host()?.component_id ? (
+            <A href={mapHref(host()!.component_id!)} class="pg-btn">
+              {t("serverHealth.openInMap")}
+            </A>
+          ) : undefined
+        }
+      >
         <Show when={item()} fallback={
           <Show when={host()} fallback={
             <Show when={component()} fallback={<p class="pg-muted">{t("serverHealth.notFound")}</p>}>
