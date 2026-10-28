@@ -4,6 +4,19 @@ import { toApiError } from "../api/client";
 import { NOTE_MAX_BYTES, NOTE_TITLE_MAX, notesApi, parseTags, plainExcerpt, utf8Bytes, type Note, type NoteSummary } from "../api/notes";
 import { BackIcon, NoteIcon, PinIcon, PlusIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { Markdown } from "../components/Markdown";
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  ListRow,
+  LoadingState,
+  Page,
+  PageGrid,
+  PageHeader,
+  PrimaryAction,
+  RowList,
+  useWide,
+} from "../components/page";
 import { t, type MessageKey } from "../i18n";
 import { formatDate, formatDateTime } from "../lib/units";
 import { onTimelineItem } from "../state/chat";
@@ -74,6 +87,32 @@ function NoteCard(props: { note: NoteSummary; active: boolean }) {
         </span>
       </A>
     </li>
+  );
+}
+
+function NoteDeskRow(props: { note: NoteSummary; active: boolean }) {
+  const excerpt = createMemo(() => plainExcerpt(props.note.excerpt, props.note.title));
+  return (
+    <ListRow
+      class={props.active ? "notes-desk-row--active" : undefined}
+      href={`/notes/${props.note.slug}`}
+      title={props.note.title}
+      leading={
+        <Show when={props.note.pinned}>
+          <span class="note-pin" aria-label={t("notes.pinned")}>
+            <PinIcon />
+          </span>
+        </Show>
+      }
+      sub={excerpt()}
+      meta={
+        <>
+          <SourceBadge source={props.note.source} />
+          {" · "}
+          {formatDate(ms(props.note.updatedAt))}
+        </>
+      }
+    />
   );
 }
 
@@ -520,169 +559,279 @@ export default function NotesView() {
     }
   }
 
-  return (
-    <div class="notes" classList={{ "notes--open": mode() !== "none" }}>
-      <div class="notes-inner">
-        <aside class="notes-pane notes-pane--list" aria-label={t("notes.title")}>
-          <header class="notes-head">
-            <h1 class="view-title">{t("notes.title")}</h1>
-            <div class="notes-head-actions">
-              <A href="/notes/trash" class="icon-btn" aria-label={t("notes.trash")} title={t("notes.trash")}>
-                <TrashIcon />
-              </A>
-              <A href="/notes/new" class="btn btn--primary btn--small">
-                <PlusIcon />
-                <span>{t("notes.newNote")}</span>
-              </A>
-            </div>
-          </header>
-          <Show when={flash()}>
-            {(f) => (
-              <div class="notice" role="status">
-                <span>{f().text}</span>
-                <Show when={f().undoId}>
-                  {(id) => (
-                    <button class="btn btn--small" type="button" onClick={() => void undoDelete(id())}>
-                      {t("notes.undo")}
-                    </button>
-                  )}
-                </Show>
-                <button class="banner-close" type="button" onClick={() => setFlash(null)} aria-label={t("common.dismiss")}>
-                  ×
-                </button>
-              </div>
-            )}
-          </Show>
-          <label class="notes-search">
-            <SearchIcon />
-            <span class="sr-only">{t("notes.search")}</span>
-            <input
-              class="notes-search-input"
-              type="search"
-              placeholder={t("notes.search")}
-              value={query()}
-              onInput={(e) => setQuery(e.currentTarget.value)}
-              autocomplete="off"
-            />
-          </label>
-          <Show when={tagsAll().length}>
-            <div class="chip-group notes-tags" role="group" aria-label={t("notes.filterTag")}>
-              <button type="button" class="chip" classList={{ "chip--active": !tag() }} aria-pressed={!tag()} onClick={() => setTag("")}>
-                {t("notes.all")}
+  const measured = useWide();
+  const wide = measured.wide;
+
+  const flashNotice = (
+    <Show when={flash()}>
+      {(f) => (
+        <div class={wide() ? "pg-notice" : "notice"} role="status">
+          <span>{f().text}</span>
+          <Show when={f().undoId}>
+            {(id) => (
+              <button class={wide() ? "pg-btn" : "btn btn--small"} type="button" onClick={() => void undoDelete(id())}>
+                {t("notes.undo")}
               </button>
-              <For each={tagsAll()}>
-                {(tg) => (
-                  <button type="button" class="chip" classList={{ "chip--active": tag() === tg }} aria-pressed={tag() === tg} onClick={() => setTag(tag() === tg ? "" : tg)}>
-                    #{tg}
-                  </button>
-                )}
-              </For>
-            </div>
-          </Show>
-          <Show when={loadError()}>
-            {(m) => (
-              <div class="notice" role="alert">
-                <span>{m()}</span>
-                <button class="btn btn--small" type="button" onClick={() => void refresh()}>
-                  {t("common.tryAgain")}
-                </button>
-              </div>
             )}
           </Show>
-          <Show
-            when={notes()}
-            fallback={
-              <Show when={!loadError()}>
-                <p class="muted center" role="status">
-                  {t("notes.loading")}
-                </p>
-              </Show>
-            }
-          >
-            {(list) => (
-              <Show
-                when={list().length}
-                fallback={
-                  <Show
-                    when={query() || tag()}
-                    fallback={
-                      <div class="empty notes-empty">
-                        <span class="notes-empty-icon" aria-hidden="true">
-                          <NoteIcon />
-                        </span>
-                        <p class="empty-title">{t("notes.empty")}</p>
-                        <p class="empty-sub">{t("notes.emptySub")}</p>
-                      </div>
-                    }
-                  >
-                    <p class="muted center">{t("notes.noResults", { q: query() || `#${tag()}` })}</p>
-                  </Show>
-                }
-              >
-                <Show when={pinned().length}>
-                  <h2 class="notes-section hud">{t("notes.pinned")}</h2>
-                  <ul class="note-list">
-                    <For each={pinned()}>{(n) => <NoteCard note={n} active={activeKey(n)} />}</For>
-                  </ul>
-                </Show>
-                <Show when={others().length}>
-                  <Show when={pinned().length}>
-                    <h2 class="notes-section hud">{t("notes.others")}</h2>
-                  </Show>
-                  <ul class="note-list">
-                    <For each={others()}>{(n) => <NoteCard note={n} active={activeKey(n)} />}</For>
-                  </ul>
-                </Show>
-              </Show>
-            )}
-          </Show>
-        </aside>
-        <section class="notes-pane notes-pane--detail">
-          <Show when={mode() === "none"}>
-            <div class="notes-placeholder" aria-hidden="true">
-              <NoteIcon />
-            </div>
-          </Show>
-          <Show when={mode() === "new"}>
-            <div class="note-detail">
-              <A href="/notes" class="note-back">
-                <BackIcon />
-                <span>{t("notes.backToList")}</span>
-              </A>
-              <NoteEditor
-                onCancel={() => navigate("/notes")}
-                onSaved={(n) => {
-                  void refresh();
-                  navigate(`/notes/${n.slug}`, { replace: true });
-                }}
-              />
-            </div>
-          </Show>
-          <Show when={mode() === "trash"}>
-            <TrashPanel
-              onRestored={(n) => {
-                setFlash({ text: t("notes.restored", { title: n.title }) });
-                void refresh();
-                navigate(`/notes/${n.slug}`);
-              }}
-            />
-          </Show>
-          <Show when={mode() === "note" && key()}>
-            {(k) => (
-              <NoteDetail
-                noteKey={k()}
-                version={version()}
-                onChanged={() => void refresh()}
-                onDeleted={(n) => {
-                  setFlash({ text: t("notes.movedToTrash", { title: n.title }), undoId: n.id });
-                  void refresh();
-                  navigate("/notes", { replace: true });
-                }}
-              />
-            )}
-          </Show>
-        </section>
+          <button class="banner-close" type="button" onClick={() => setFlash(null)} aria-label={t("common.dismiss")}>
+            ×
+          </button>
+        </div>
+      )}
+    </Show>
+  );
+
+  const tagFilters = (
+    <Show when={tagsAll().length}>
+      <div class="chip-group notes-tags" role="group" aria-label={t("notes.filterTag")}>
+        <button type="button" class="chip" classList={{ "chip--active": !tag() }} aria-pressed={!tag()} onClick={() => setTag("")}>
+          {t("notes.all")}
+        </button>
+        <For each={tagsAll()}>
+          {(tg) => (
+            <button type="button" class="chip" classList={{ "chip--active": tag() === tg }} aria-pressed={tag() === tg} onClick={() => setTag(tag() === tg ? "" : tg)}>
+              #{tg}
+            </button>
+          )}
+        </For>
       </div>
+    </Show>
+  );
+
+  const noteRows = (desk: boolean) => (
+    <>
+      <Show when={pinned().length}>
+        <Show when={desk}>
+          <p class="notes-desk-group-label">{t("notes.pinned")}</p>
+        </Show>
+        <Show when={!desk}>
+          <h2 class="notes-section hud">{t("notes.pinned")}</h2>
+        </Show>
+        <Show
+          when={desk}
+          fallback={
+            <ul class="note-list">
+              <For each={pinned()}>{(n) => <NoteCard note={n} active={activeKey(n)} />}</For>
+            </ul>
+          }
+        >
+          <RowList label={t("notes.pinned")}>
+            <For each={pinned()}>{(n) => <NoteDeskRow note={n} active={activeKey(n)} />}</For>
+          </RowList>
+        </Show>
+      </Show>
+      <Show when={others().length}>
+        <Show when={pinned().length}>
+          <Show when={desk}>
+            <p class="notes-desk-group-label">{t("notes.others")}</p>
+          </Show>
+          <Show when={!desk}>
+            <h2 class="notes-section hud">{t("notes.others")}</h2>
+          </Show>
+        </Show>
+        <Show
+          when={desk}
+          fallback={
+            <ul class="note-list">
+              <For each={others()}>{(n) => <NoteCard note={n} active={activeKey(n)} />}</For>
+            </ul>
+          }
+        >
+          <RowList label={t("notes.others")}>
+            <For each={others()}>{(n) => <NoteDeskRow note={n} active={activeKey(n)} />}</For>
+          </RowList>
+        </Show>
+      </Show>
+    </>
+  );
+
+  const listBody = (desk: boolean) => (
+    <Show
+      when={notes()}
+      fallback={
+        <Show when={!loadError()}>
+          <Show when={desk} fallback={<p class="muted center" role="status">{t("notes.loading")}</p>}>
+            <LoadingState label={t("notes.loading")} />
+          </Show>
+        </Show>
+      }
+    >
+      {(list) => (
+        <Show
+          when={list().length}
+          fallback={
+            <Show
+              when={query() || tag()}
+              fallback={
+                <Show
+                  when={desk}
+                  fallback={
+                    <div class="empty notes-empty">
+                      <span class="notes-empty-icon" aria-hidden="true">
+                        <NoteIcon />
+                      </span>
+                      <p class="empty-title">{t("notes.empty")}</p>
+                      <p class="empty-sub">{t("notes.emptySub")}</p>
+                    </div>
+                  }
+                >
+                  <EmptyState title={t("notes.empty")} text={t("notes.emptySub")} />
+                </Show>
+              }
+            >
+              <Show when={desk} fallback={<p class="muted center">{t("notes.noResults", { q: query() || `#${tag()}` })}</p>}>
+                <EmptyState text={t("notes.noResults", { q: query() || `#${tag()}` })} />
+              </Show>
+            </Show>
+          }
+        >
+          {noteRows(desk)}
+        </Show>
+      )}
+    </Show>
+  );
+
+  const detailBody = (desk: boolean) => (
+    <>
+      <Show when={mode() === "none"}>
+        <Show when={desk} fallback={<div class="notes-placeholder" aria-hidden="true"><NoteIcon /></div>}>
+          <EmptyState text={t("notes.pickNote")} />
+        </Show>
+      </Show>
+      <Show when={mode() === "new"}>
+        <div class="note-detail">
+          <Show when={!desk}>
+            <A href="/notes" class="note-back">
+              <BackIcon />
+              <span>{t("notes.backToList")}</span>
+            </A>
+          </Show>
+          <NoteEditor
+            onCancel={() => navigate("/notes")}
+            onSaved={(n) => {
+              void refresh();
+              navigate(`/notes/${n.slug}`, { replace: true });
+            }}
+          />
+        </div>
+      </Show>
+      <Show when={mode() === "trash"}>
+        <TrashPanel
+          onRestored={(n) => {
+            setFlash({ text: t("notes.restored", { title: n.title }) });
+            void refresh();
+            navigate(`/notes/${n.slug}`);
+          }}
+        />
+      </Show>
+      <Show when={mode() === "note" && key()}>
+        {(k) => (
+          <NoteDetail
+            noteKey={k()}
+            version={version()}
+            onChanged={() => void refresh()}
+            onDeleted={(n) => {
+              setFlash({ text: t("notes.movedToTrash", { title: n.title }), undoId: n.id });
+              void refresh();
+              navigate("/notes", { replace: true });
+            }}
+          />
+        )}
+      </Show>
+    </>
+  );
+
+  const deskList = (
+    <Card list label={t("notes.title")}>
+      <div class="notes-desk-list-tools">
+        <input
+          class="pg-input"
+          type="search"
+          placeholder={t("notes.search")}
+          aria-label={t("notes.search")}
+          value={query()}
+          onInput={(e) => setQuery(e.currentTarget.value)}
+          autocomplete="off"
+        />
+        {tagFilters}
+      </div>
+      <Show when={loadError()}>
+        {(m) => <ErrorState message={m()} retryLabel={t("common.tryAgain")} onRetry={() => void refresh()} />}
+      </Show>
+      <Show when={!loadError()}>{listBody(true)}</Show>
+    </Card>
+  );
+
+  return (
+    <div class="notes" classList={{ "notes--open": mode() !== "none" && !wide(), "notes--desk": wide() }} ref={measured.track}>
+      <Show
+        when={wide()}
+        fallback={
+          <div class="notes-inner">
+            <aside class="notes-pane notes-pane--list" aria-label={t("notes.title")}>
+              <header class="notes-head">
+                <h1 class="view-title">{t("notes.title")}</h1>
+                <div class="notes-head-actions">
+                  <A href="/notes/trash" class="icon-btn" aria-label={t("notes.trash")} title={t("notes.trash")}>
+                    <TrashIcon />
+                  </A>
+                  <A href="/notes/new" class="btn btn--primary btn--small">
+                    <PlusIcon />
+                    <span>{t("notes.newNote")}</span>
+                  </A>
+                </div>
+              </header>
+              {flashNotice}
+              <label class="notes-search">
+                <SearchIcon />
+                <span class="sr-only">{t("notes.search")}</span>
+                <input
+                  class="notes-search-input"
+                  type="search"
+                  placeholder={t("notes.search")}
+                  value={query()}
+                  onInput={(e) => setQuery(e.currentTarget.value)}
+                  autocomplete="off"
+                />
+              </label>
+              {tagFilters}
+              <Show when={loadError()}>
+                {(m) => (
+                  <div class="notice" role="alert">
+                    <span>{m()}</span>
+                    <button class="btn btn--small" type="button" onClick={() => void refresh()}>
+                      {t("common.tryAgain")}
+                    </button>
+                  </div>
+                )}
+              </Show>
+              {listBody(false)}
+            </aside>
+            <section class="notes-pane notes-pane--detail">{detailBody(false)}</section>
+          </div>
+        }
+      >
+        <Page class="notes-desk">
+          <PageHeader
+            title={t("notes.title")}
+            action={
+              <>
+                <A href="/notes/trash" class="pg-icon-btn" aria-label={t("notes.trash")} title={t("notes.trash")}>
+                  <TrashIcon />
+                </A>
+                <PrimaryAction href="/notes/new" icon={<PlusIcon />}>
+                  {t("notes.newNote")}
+                </PrimaryAction>
+              </>
+            }
+          />
+          {flashNotice}
+          <PageGrid layout="split" railLabel={t("notes.title")} rail={deskList}>
+            {detailBody(true)}
+          </PageGrid>
+        </Page>
+      </Show>
     </div>
   );
 }
