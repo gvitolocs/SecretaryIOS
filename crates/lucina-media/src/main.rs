@@ -151,6 +151,7 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
     tokio::spawn(ingest::thumb_worker(lib.clone()));
     tokio::spawn(ingest::spool_mover(lib.clone()));
     tokio::spawn(lucina_media::trash::retention_worker(lib.clone()));
+    tokio::spawn(lucina_media::lab_run::worker(lib.clone(), lucina_media::lab_run::LabConfig::from_env()));
     {
         let l = lib.clone();
         tokio::spawn(async move {
