@@ -619,6 +619,11 @@ impl Device {
                 args["pid"] = json!(pid);
                 args["window_id"] = json!(wid);
             }
+            // Chromium refuses background pointer and key input (occluded renderer):
+            // asking for foreground first saves a refused call per action.
+            if matches!(tool, "click" | "type_text" | "hotkey" | "press_key") {
+                args["delivery_mode"] = json!("foreground");
+            }
         }
         let mut r = self.sandbox.call_tool(tool, args.clone()).await;
         if r.as_ref().err().is_some_and(transient) {

@@ -16,8 +16,9 @@ pub fn read_args() -> Value {
     serde_json::json!({
         "include_screenshot": false,
         "tree_format": "elements",
-        "max_elements": 1200,
-        "timeout_ms": 3000,
+        // A Google Flights date picker is ~1800 nodes; its Done button is near the end.
+        "max_elements": 4000,
+        "timeout_ms": 6000,
     })
 }
 
@@ -200,9 +201,6 @@ pub fn parse_desktop_elements(v: &Value, title: &str, kind: Kind) -> Screen {
         if !seen_el.insert((role.to_owned(), full.clone(), centre.0, centre.1)) {
             continue;
         }
-        if screen.elements.len() >= MAX_ELEMENTS {
-            continue;
-        }
         let mut state = String::new();
         if !value.is_empty() && value != label {
             state.push_str(&format!("value=\"{}\"", lucina_jev::clip(&value, 60)));
@@ -256,8 +254,12 @@ pub fn finish(screen: &mut Screen, previous: Option<&Screen>) {
                 e.fresh = false;
             }
         }
-        screen.elements.sort_by_key(|e| !e.fresh);
     }
+    // New things first; calendar days and list rows after the buttons and fields,
+    // so a dialog's Done button survives the cap next to 60 day cells.
+    let bulk = |e: &Element| matches!(e.role.as_str(), "table cell" | "list item" | "tree item");
+    screen.elements.sort_by_key(|e| (!e.fresh, bulk(e)));
+    screen.elements.truncate(MAX_ELEMENTS);
     screen.fingerprint = fingerprint(screen);
 }
 
