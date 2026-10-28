@@ -928,3 +928,8 @@ html[data-shell="desktop"] .g-title {
 .pg .g-places__main { position: relative; height: clamp(420px, 68vh, 880px); }
 .pg .g-place-thumb { width: 56px; height: 56px; flex: none; border-radius: var(--pg-radius-control); object-fit: cover; }
 .pg .g-places__state { position: static; margin: 0; }
+.pg .g-detail-title { margin: 0 0 16px; }
+.pg .lab-list { margin: 0; }
+.pg .lab-card { border-color: var(--pg-border); border-radius: var(--pg-radius); background: var(--pg-surface); }
+.pg .lab-badge, .pg .lab-bar { color: var(--pg-text); }
+.pg .lab-prompt-heading, .pg .lab-note, .pg .lab-when, .pg .lab-ref-line { color: var(--pg-muted); }

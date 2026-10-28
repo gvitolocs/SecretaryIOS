@@ -10,6 +10,8 @@ import "../../../styles/gallery-lab.css";
 import { LabIcon } from "./LabIcons";
 
 export interface LabCardProps {
+  /** Page-system buttons (desktop): quiet fills, no accent button per card. */
+  wide?: boolean;
   job: LabJob;
   /** An action on this job is running. */
   busy: "accept" | "discard" | "retry" | "cancel" | null;
@@ -57,6 +59,7 @@ export function LabCard(props: LabCardProps) {
   const placeholder = () => thumbHashToImage(job().original?.thumbhash ?? undefined)?.url ?? null;
   const line = () => progressLine(job());
   const idle = () => props.busy === null;
+  const btn = (primary = false) => (props.wide ? "pg-btn" : `btn btn--small${primary ? " btn--primary" : ""}`);
 
   return (
     <li class="lab-card" classList={{ [`lab-card--${job().status}`]: true }} data-status={job().status} data-job={job().id}>
@@ -136,28 +139,28 @@ export function LabCard(props: LabCardProps) {
       <div class="lab-actions">
         <Switch>
           <Match when={job().status === "done"}>
-            <button type="button" class="btn btn--primary btn--small" disabled={!idle()} onClick={() => props.onAccept(job())}>
+            <button type="button" class={btn(true)} disabled={!idle()} onClick={() => props.onAccept(job())}>
               {props.busy === "accept" ? t("lab.accepting") : t("lab.accept")}
             </button>
-            <button type="button" class="btn btn--small" title={t("lab.discardHint")} disabled={!idle()} onClick={() => props.onDiscard(job())}>
+            <button type="button" class={btn()} title={t("lab.discardHint")} disabled={!idle()} onClick={() => props.onDiscard(job())}>
               {props.busy === "discard" ? t("lab.discarding") : t("lab.discard")}
             </button>
           </Match>
           <Match when={job().status === "failed"}>
-            <button type="button" class="btn btn--primary btn--small" disabled={!idle()} onClick={() => props.onRetry(job())}>
+            <button type="button" class={btn(true)} disabled={!idle()} onClick={() => props.onRetry(job())}>
               {props.busy === "retry" ? t("lab.retrying") : t("lab.retry")}
             </button>
-            <button type="button" class="btn btn--small" disabled={!idle()} onClick={() => props.onRemove(job())}>
+            <button type="button" class={btn()} disabled={!idle()} onClick={() => props.onRemove(job())}>
               {t("lab.removeJob")}
             </button>
           </Match>
           <Match when={job().status === "queued"}>
-            <button type="button" class="btn btn--small" disabled={!idle()} onClick={() => props.onRemove(job())}>
+            <button type="button" class={btn()} disabled={!idle()} onClick={() => props.onRemove(job())}>
               {t("lab.cancelJob")}
             </button>
           </Match>
           <Match when={job().status === "accepted"}>
-            <A class="btn btn--small" href="/gallery">
+            <A class={btn()} href="/gallery">
               <LabIcon />
               {t("lab.openInGallery")}
             </A>
