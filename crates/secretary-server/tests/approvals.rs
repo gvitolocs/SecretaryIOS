@@ -202,6 +202,47 @@ impl H {
         .await
     }
 
+    /// Register `sk` on `dev` while another device already has a key: the registration opens an
+    /// `approver.enroll` request, which `approver` approves with its key. Returns the new key id.
+    async fn enroll(
+        &self,
+        dev: &Dev,
+        sk: &SigningKey,
+        approver: &Dev,
+        approver_key: &SigningKey,
+        approver_key_id: &str,
+    ) -> String {
+        let (s, v) = self.register_key(dev, sk).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["status"], "pending_approval", "{v}");
+        let key_id = v["keyId"].as_str().unwrap().to_owned();
+        let id = v["approvalId"].as_str().unwrap().to_owned();
+        let (_, item) = self
+            .call(
+                "GET",
+                &format!("/v1/approvals/{id}"),
+                Some(&approver.token),
+                None,
+            )
+            .await;
+        assert_eq!(
+            (item["action"].as_str(), item["sensitive"].clone()),
+            (Some("approver.enroll"), json!(true))
+        );
+        let hash = item["payloadHash"].as_str().unwrap().to_owned();
+        let (s, v) = self
+            .call(
+                "POST",
+                &format!("/v1/approvals/{id}/decide"),
+                Some(&approver.token),
+                Some(json!({"decision": "approve", "payloadHash": hash,
+                            "proof": proof(approver_key, approver_key_id, &id, &hash, "approve")})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        key_id
+    }
+
     /// Approve with the app PIN instead of a proof.
     async fn decide_pin(&self, dev: &Dev, id: &str, pin: &str) -> (StatusCode, Value) {
         self.call(
@@ -1094,9 +1135,9 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
     let (ia, ib) = {
         let ia = v["keyId"].as_str().unwrap().to_owned();
         assert_eq!(ia.len(), 8);
-        let (s, v) = h.register_key(&b, &kb).await;
-        assert_eq!(s, StatusCode::OK, "{v}");
-        (ia, v["keyId"].as_str().unwrap().to_owned())
+        // The second device's key waits for the first device's Face ID.
+        let ib = h.enroll(&b, &kb, &a, &ka, &ia).await;
+        (ia, ib)
     };
     assert_ne!(ia, ib);
     let (_, v) = h
@@ -1110,7 +1151,11 @@ async fn sensitive_approval_needs_this_devices_biometric_key() {
     // Both devices were told, and the audit log has the registrations.
     assert_eq!(
         h.notices(&a).await,
-        ["Approvals set up on iPad", "Approvals set up on iPhone"]
+        [
+            "iPad can now approve requests (added on Face ID on iPhone)",
+            "Add iPad as an approver device (Face ID on iPhone)",
+            "Approvals set up on iPhone"
+        ]
     );
     assert_eq!(
         h.audit()
@@ -1797,4 +1842,373 @@ async fn a_pin_never_helps_with_the_other_checks() {
     assert_eq!(h.decide_pin(&a, &id, PIN).await.0, StatusCode::OK);
     let r = h.decide_pin(&a, &id, PIN).await;
     assert_eq!(code(&r), (StatusCode::CONFLICT, Some("approval_decided")));
+}
+
+/// The proof that revokes `target`'s key, signed by the caller's key.
+fn revoke_proof(sk: &SigningKey, caller: &str, target: &str) -> Value {
+    let sig: Signature =
+        sk.sign(format!("secretary-approval-revoke-v1\n{caller}\n{target}").as_bytes());
+    json!({"signature": STANDARD.encode(sig.to_der().as_bytes())})
+}
+
+#[tokio::test]
+async fn a_mac_becomes_an_approver_only_with_the_iphones_face_id_and_can_be_revoked() {
+    let h = harness(|c| {
+        c.approvals.escalate_after = Duration::from_secs(60);
+        c.approvals.min_ttl = Duration::from_secs(1);
+    })
+    .await;
+    let (phone, mac) = (h.device("iPhone"), h.device("MacBook Air"));
+    let (kp, km, kx) = (key(11), key(12), key(13));
+    // The iPhone is the first approver and the main device.
+    let (s, v) = h.register_key(&phone, &kp).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let ip = v["keyId"].as_str().unwrap().to_owned();
+    let (s, _) = h
+        .call(
+            "PUT",
+            "/v1/approvals/settings",
+            Some(&phone.token),
+            Some(json!({"mainDeviceId": phone.id})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        h.put_pin(
+            &phone,
+            json!({"pin": PIN, "proof": pin_proof(&kp, &phone.id)})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    // The Mac registers a key: it is only pending, and useless until the iPhone approves.
+    let pkm = pk_b64(&km);
+    let (s, v) = h
+        .call(
+            "POST",
+            "/v1/approvals/keys",
+            Some(&mac.token),
+            Some(json!({"publicKey": pkm, "label": "Touch ID on MacBook Air",
+                          "proof": key_proof(&km, &mac.id, &pkm)})),
+        )
+        .await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (StatusCode::OK, Some("pending_approval")),
+        "{v}"
+    );
+    let im = v["keyId"].as_str().unwrap().to_owned();
+    let enroll = v["approvalId"].as_str().unwrap().to_owned();
+    let (_, item) = h
+        .call(
+            "GET",
+            &format!("/v1/approvals/{enroll}"),
+            Some(&phone.token),
+            None,
+        )
+        .await;
+    let ehash = item["payloadHash"].as_str().unwrap().to_owned();
+    assert_eq!(
+        item["summary"],
+        "Add MacBook Air as an approver device (Touch ID on MacBook Air)"
+    );
+    let root = h.ask("root.exec").await;
+    let (s, v) = h
+        .decide(
+            &mac,
+            &root,
+            "approve",
+            Some(proof(&km, &im, &root, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a pending key approves nothing: {v}"
+    );
+
+    // The Mac can't approve its own enrollment; the PIN can't either; nor a proof by the wrong key.
+    let decide_enroll = |dev: &Dev, body: Value| {
+        let (h, token, enroll) = (&h, dev.token.clone(), enroll.clone());
+        async move {
+            h.call(
+                "POST",
+                &format!("/v1/approvals/{enroll}/decide"),
+                Some(&token),
+                Some(body),
+            )
+            .await
+        }
+    };
+    let (s, v) = decide_enroll(
+        &mac,
+        json!({"decision": "approve", "payloadHash": ehash,
+        "proof": proof(&km, &im, &enroll, &ehash, "approve")}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("self_approval")),
+        "{v}"
+    );
+    let (s, v) = decide_enroll(
+        &phone,
+        json!({"decision": "approve", "payloadHash": ehash, "pin": PIN}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("biometric_required")),
+        "{v}"
+    );
+    let (s, _) = decide_enroll(
+        &phone,
+        json!({"decision": "approve", "payloadHash": ehash,
+        "proof": proof(&kx, &ip, &enroll, &ehash, "approve")}),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a foreign key under the iPhone's key id"
+    );
+
+    // Face ID on the iPhone adds it; the Mac learns it from its own wait.
+    let (s, v) = decide_enroll(
+        &phone,
+        json!({"decision": "approve", "payloadHash": ehash,
+        "proof": proof(&kp, &ip, &enroll, &ehash, "approve")}),
+    )
+    .await;
+    assert_eq!((s, v), (StatusCode::OK, json!({"status": "approved"})));
+    let (s, v) = h
+        .call(
+            "GET",
+            &format!("/v1/approvals/{enroll}/wait?timeout=0"),
+            Some(&mac.token),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (s, v["status"].as_str(), v["decidedVia"].as_str()),
+        (StatusCode::OK, Some("approved"), Some("Face ID on iPhone")),
+        "{v}"
+    );
+    let ev: Vec<Value> = h
+        .audit()
+        .into_iter()
+        .filter(|e| e["event"] == "key_registered")
+        .collect();
+    assert_eq!(ev.last().unwrap()["approvedVia"], "Face ID on iPhone");
+
+    // An approver device sees requests at once, without the main device's head start (60 s here).
+    let (_, list) = h.call("GET", "/v1/approvals", Some(&mac.token), None).await;
+    assert!(
+        list["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == root.as_str()),
+        "{list}"
+    );
+
+    // Good signature: the Mac's own key approves, and every record names the Mac.
+    // Wrong device first: the iPhone's key (or key id) does not work from the Mac.
+    let (s, _) = h
+        .decide(
+            &mac,
+            &root,
+            "approve",
+            Some(proof(&kp, &ip, &root, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = h
+        .decide(
+            &mac,
+            &root,
+            "approve",
+            Some(proof(&kp, &im, &root, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let good = proof(&km, &im, &root, HASH, "approve");
+    let (s, v) = h.decide(&mac, &root, "approve", Some(good.clone())).await;
+    assert_eq!((s, v), (StatusCode::OK, json!({"status": "approved"})));
+    let (_, w) = h.wait(&root, 0).await;
+    assert_eq!(
+        (w["decidedBy"].as_str(), w["decidedVia"].as_str()),
+        (Some("MacBook Air"), Some("Touch ID on MacBook Air"))
+    );
+    let g = h.verify_grant(w["grant"].as_str().unwrap()).await;
+    assert_eq!(
+        (g["decidedBy"].as_str(), g["verifiedBy"].as_str()),
+        (Some(mac.id.as_str()), Some("device_key"))
+    );
+    let decided = h
+        .audit()
+        .into_iter()
+        .find(|e| e["event"] == "decided" && e["id"] == root.as_str())
+        .unwrap();
+    assert_eq!(decided["via"], "Touch ID on MacBook Air");
+    // First answer wins: the iPhone's late answer is refused, and its card closes.
+    let (s, v) = h
+        .decide(
+            &phone,
+            &root,
+            "approve",
+            Some(proof(&kp, &ip, &root, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("approval_decided"))
+    );
+    let (_, list) = h
+        .call("GET", "/v1/approvals", Some(&phone.token), None)
+        .await;
+    assert!(list["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["id"] != root.as_str()));
+
+    // Replay: the same proof again, or on another request, does nothing.
+    let (s, _) = h.decide(&mac, &root, "approve", Some(good.clone())).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let other = h.ask("root.exec").await;
+    let (s, v) = h.decide(&mac, &other, "approve", Some(good.clone())).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("biometric_required"))
+    );
+
+    // Expired: a valid proof is too late.
+    let short = h
+        .ask_with("root.exec", {
+            let mut b = H::req_body("root.exec");
+            b["ttlSecs"] = json!(1);
+            b
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    let (s, v) = h
+        .decide(
+            &mac,
+            &short,
+            "approve",
+            Some(proof(&km, &im, &short, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::GONE, Some("approval_expired"))
+    );
+
+    // Revoking: needs the caller's own key or the PIN; a device without a key can't revoke anyone.
+    let revoke = |by: &Dev, target: &str, body: Value| {
+        let (h, token, path) = (&h, by.token.clone(), format!("/v1/approvals/keys/{target}"));
+        async move { h.call("DELETE", &path, Some(&token), Some(body)).await }
+    };
+    let (s, _) = revoke(&phone, &mac.id, json!({})).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = revoke(
+        &phone,
+        &mac.id,
+        json!({"proof": revoke_proof(&km, &phone.id, &mac.id)}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "signed by the wrong key");
+    let (s, v) = revoke(
+        &phone,
+        &mac.id,
+        json!({"proof": revoke_proof(&kp, &phone.id, &mac.id)}),
+    )
+    .await;
+    assert_eq!(
+        (s, v["removed"].clone()),
+        (StatusCode::OK, json!(true)),
+        "{v}"
+    );
+    // Revoked device: its key no longer approves, and it no longer sees requests early.
+    let (s, v) = h
+        .decide(
+            &mac,
+            &other,
+            "approve",
+            Some(proof(&km, &im, &other, HASH, "approve")),
+        )
+        .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("not_main_device")),
+        "{v}"
+    );
+    let (s, _) = revoke(
+        &mac,
+        &phone.id,
+        json!({"proof": revoke_proof(&km, &mac.id, &phone.id)}),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a revoked device can't revoke back"
+    );
+    assert!(h
+        .notices(&phone)
+        .await
+        .iter()
+        .any(|n| n == "MacBook Air can no longer approve requests (revoked on iPhone)"));
+    assert!(h
+        .audit()
+        .iter()
+        .any(|e| e["event"] == "key_revoked" && e["device"] == mac.id.as_str()));
+
+    // A denied enrollment leaves no key behind.
+    let (s, v) = h
+        .call(
+            "POST",
+            "/v1/approvals/keys",
+            Some(&mac.token),
+            Some(json!({"publicKey": pkm, "label": "Touch ID on MacBook Air",
+                          "proof": key_proof(&km, &mac.id, &pkm)})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let again = v["approvalId"].as_str().unwrap().to_owned();
+    let (_, item) = h
+        .call(
+            "GET",
+            &format!("/v1/approvals/{again}"),
+            Some(&phone.token),
+            None,
+        )
+        .await;
+    let (s, _) = h
+        .call(
+            "POST",
+            &format!("/v1/approvals/{again}/decide"),
+            Some(&phone.token),
+            Some(json!({"decision": "deny", "payloadHash": item["payloadHash"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, st) = h
+        .call("GET", "/v1/approvals/settings", Some(&mac.token), None)
+        .await;
+    let me = st["devices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == mac.id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (me["hasBiometricKey"].clone(), me.get("pendingApprovalId")),
+        (json!(false), None),
+        "{me}"
+    );
 }
