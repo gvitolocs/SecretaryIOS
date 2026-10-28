@@ -154,7 +154,7 @@ fn the_offer_drops_banned_actions_and_caps_scrolls_and_waits() {
     mem.opened_tab = true;
     let o = step::offer(Where::Desktop, &s, &mem, &plan);
     let ops: Vec<&str> = o.ops.iter().map(|(k, _)| *k).collect();
-    assert_eq!(ops, ["click", "type", "scroll_down", "wait", "done", "blocked"]);
+    assert_eq!(ops, ["click", "type", "scroll_down", "escape", "wait", "done", "blocked"]);
     // Clicking "Search" changed nothing: not offered again on this page.
     mem.push("click", "Search", "clicked push button \"Search\"".into(), s.fingerprint);
     mem.settled(s.fingerprint);
@@ -252,6 +252,18 @@ fn jev_is_acted_on_at_075_and_below_the_fallback_gets_the_top_five() {
     assert_eq!(got[2].2, "Where from?");
     assert!(c.windows(2).all(|w| w[0].p >= w[1].p));
     assert_eq!(step::parse_pick(r#"{"pick":"c2"}"#, &c).unwrap().op, "type");
+    // Jev leaning towards done puts done in the list.
+    let leaning = decision(
+        vec![
+            choice("operation", "click", 0.5, &[("click", 0.9), ("done", 0.0)]),
+            choice("click_target", &search, 0.4, &[(&search, 0.4), (&from, 0.3), ("e42", 0.2), ("e43", 0.1)]),
+        ],
+        0.55,
+        0.0,
+    );
+    let c = step::candidates(&o, &leaning);
+    assert_eq!(c.len(), step::TOP_K);
+    assert_eq!(c.last().unwrap().op, "done", "added in place of the fifth click");
     assert!(step::parse_pick(r#"{"pick":"none"}"#, &c).is_none());
     assert!(step::parse_pick("click Search", &c).is_none());
 }

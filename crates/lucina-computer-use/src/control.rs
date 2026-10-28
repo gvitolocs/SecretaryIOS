@@ -549,7 +549,8 @@ pub fn shared_client() -> &'static Client {
 /// The Jev engine ([`crate::jev_drive`]) tries first when the task is browsing
 /// or the Android phone; whatever it cannot finish goes to Hermes, told what
 /// was already done. A task that starts with `[engine:hermes]` goes straight
-/// to Hermes, and `[engine:jev]` skips the route question (comparisons, tests).
+/// to Hermes, and `[engine:jev]` runs the Jev engine alone on the desktop: no
+/// route question and no Hermes after it (comparisons, tests).
 pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<ComputerResult, Error> {
     let client = shared_client();
     if !client.ready() {
@@ -561,6 +562,16 @@ pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<Comput
         if let Some(r) = jev_first(&prompt, engine == Some("jev"), cancel).await? {
             match r {
                 Ok(done) => return Ok(done),
+                Err(handover) if engine == Some("jev") => {
+                    return Ok(ComputerResult {
+                        status: crate::Status::Partial,
+                        reply: format!("The Jev engine stopped without finishing; Hermes was not asked ([engine:jev]).\n\n{handover}"),
+                        session_id: None,
+                        executed_tools: Vec::new(),
+                        tool_errors: 0,
+                        handover: None,
+                    })
+                }
                 Err(handover) => prompt = std::borrow::Cow::Owned(handover),
             }
         }
