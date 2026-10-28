@@ -1271,6 +1271,125 @@ pub fn list(st: &AppState, status: Option<&str>, limit: Option<&str>) -> Result<
     Ok(json!({ "items": items }))
 }
 
+/// `lucina-rs decide …` (main.rs): a client of the running server.
+pub mod cli {
+    use std::time::Duration;
+
+    use serde_json::Value;
+
+    /// The unit's env files, in the order systemd reads them (the last value wins).
+    const ENV_FILES: &[&str] = &[".config/lucina-rs/lucina.env", ".config/lucina-rs/mode.env"];
+
+    /// `KEY=value` from the environment, else from the unit's env files.
+    fn setting(key: &str) -> Option<String> {
+        if let Ok(v) = std::env::var(key) {
+            return Some(v);
+        }
+        let home = std::env::var("HOME").ok()?;
+        let mut found = None;
+        for f in ENV_FILES {
+            let Ok(text) = std::fs::read_to_string(std::path::Path::new(&home).join(f)) else {
+                continue;
+            };
+            for line in text.lines() {
+                if let Some(v) = line.trim().strip_prefix(key).and_then(|r| r.strip_prefix('=')) {
+                    found = Some(v.trim().trim_matches('"').to_owned());
+                }
+            }
+        }
+        found
+    }
+
+    pub struct Client {
+        http: reqwest::Client,
+        base: String,
+        token: String,
+    }
+
+    impl Client {
+        pub fn from_env() -> anyhow::Result<Self> {
+            let token = setting("SECRETARY_API_TOKEN_FILE")
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .or_else(|| setting("SECRETARY_API_TOKEN"))
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("no SECRETARY_API_TOKEN in the environment or ~/.config/lucina-rs/*.env"))?;
+            let bind = setting("LUCINA_DECIDE_URL").unwrap_or_else(|| {
+                let first = setting("LUCINA_BIND").unwrap_or_default();
+                let first = first.split(',').next().unwrap_or("").trim().to_owned();
+                format!("http://{}", if first.is_empty() { "127.0.0.1:8790" } else { &first })
+            });
+            Ok(Self {
+                http: reqwest::Client::builder().timeout(Duration::from_secs(90)).build()?,
+                base: format!("{}/api/secretary/decisions", bind.trim_end_matches('/')),
+                token,
+            })
+        }
+
+        async fn send(&self, rb: reqwest::RequestBuilder) -> anyhow::Result<Value> {
+            let r = rb.bearer_auth(&self.token).send().await?;
+            let status = r.status();
+            let v: Value = r.json().await.unwrap_or(Value::Null);
+            if !status.is_success() {
+                anyhow::bail!(
+                    "Lucina answered {status}: {}",
+                    v["message"].as_str().or(v["error"].as_str()).unwrap_or("")
+                );
+            }
+            Ok(v.get("data").cloned().unwrap_or(v))
+        }
+
+        pub async fn create(&self, body: &Value) -> anyhow::Result<Value> {
+            self.send(self.http.post(&self.base).json(body)).await
+        }
+
+        pub async fn get(&self, id: &str) -> anyhow::Result<Value> {
+            if !super::valid_id(id) {
+                anyhow::bail!("a decision id is dc- and 12 hex digits");
+            }
+            self.send(self.http.get(format!("{}/{id}", self.base))).await
+        }
+
+        pub async fn list(&self, status: Option<&str>, limit: u32) -> anyhow::Result<Value> {
+            let mut q = vec![("limit", limit.to_string())];
+            if let Some(s) = status {
+                q.push(("status", s.to_owned()));
+            }
+            self.send(self.http.get(&self.base).query(&q)).await
+        }
+
+        /// Poll every 3 s while it is pending, up to `seconds` (at most 600).
+        pub async fn wait(&self, mut d: Value, seconds: u64) -> anyhow::Result<Value> {
+            let until = std::time::Instant::now() + Duration::from_secs(seconds.min(600));
+            while d["status"] == "pending" && std::time::Instant::now() + Duration::from_secs(3) <= until {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let id = d["decision_id"].as_str().unwrap_or("").to_owned();
+                d = self.get(&id).await?;
+            }
+            Ok(d)
+        }
+    }
+
+    /// The one line for a human (stderr): the same words as the MCP tool.
+    pub fn line(d: &Value) -> String {
+        let s = |k: &str| d[k].as_str().unwrap_or("");
+        let id = s("decision_id");
+        match (s("status"), s("decision")) {
+            ("pending", _) => format!("Pending: Lucina asked the owner on his phone (decision {id}). Do not act on this yet; check with: lucina-rs decide status {id} --wait 60"),
+            ("expired", _) => format!("Expired: the owner did not answer within 24 h (decision {id})."),
+            (_, "owner_reply") => format!("The owner answered: \"{}\"  Decision {id}", s("reason")),
+            (_, kind) => format!(
+                "{} decided: {} \"{}\" (confidence {:.2}). Reason: {}  Decision {id}",
+                if s("decided_by") == "owner" { "The owner" } else { "Lucina" },
+                if kind == "change" { "CHANGE to" } else { "GO with" },
+                s("chosen_option"),
+                d["confidence"].as_f64().unwrap_or(0.0),
+                s("reason")
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1409,6 +1528,15 @@ mod tests {
         assert_eq!(answer_option(&opts, "3"), None);
         assert_eq!(answer_option(&opts, "no, wait until Friday"), None);
         assert!(valid_id("dc-0123456789ab") && !valid_id("dc-0123") && !valid_id("../etc/passwd"));
+    }
+
+    #[test]
+    fn cli_lines() {
+        let d = json!({"decision_id": "dc-0123456789ab", "status": "decided", "decision": "go",
+            "chosen_option": "merge", "confidence": 0.9, "reason": "Reviewed clean.", "decided_by": "lucina"});
+        assert_eq!(cli::line(&d), "Lucina decided: GO with \"merge\" (confidence 0.90). Reason: Reviewed clean.  Decision dc-0123456789ab");
+        let p = json!({"decision_id": "dc-0123456789ab", "status": "pending"});
+        assert!(cli::line(&p).contains("lucina-rs decide status dc-0123456789ab"));
     }
 
     #[test]

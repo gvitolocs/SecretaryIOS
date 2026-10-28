@@ -214,6 +214,16 @@ enum Cmd {
         #[arg(long, global = true)]
         tz: Option<String>,
     },
+    /// Ask Lucina for a go-ahead through the running server (docs/design/decisions-api.md): she
+    /// decides, or pushes the question to the owner's phone and answers `pending`. Prints the
+    /// decision as JSON. `decide status <id> [--wait N]` and `decide list` read them back.
+    #[command(args_conflicts_with_subcommands = true)]
+    Decide {
+        #[command(subcommand)]
+        cmd: Option<DecideCmd>,
+        #[command(flatten)]
+        ask: DecideArgs,
+    },
     /// Grocery deals near home: list | cheapest <query> | lunch | map | digest | alerts
     /// [--dry-run|--send] [--channel app|telegram|both] [--user ID] [--fixtures DIR]
     /// [--items "A,B"] [--radiusM 500-15000]. Digest and alerts are dry runs unless --send.
@@ -229,6 +239,61 @@ enum Cmd {
         /// File holding the bot token (mode 0600).
         #[arg(long)]
         token_file: Option<PathBuf>,
+    },
+}
+
+#[derive(clap::Args)]
+struct DecideArgs {
+    /// What to decide (1-2000 characters).
+    #[arg(long)]
+    question: Option<String>,
+    /// One option per flag, 2-6 (`--option merge --option hold`).
+    #[arg(long = "option")]
+    options: Vec<String>,
+    /// The option you recommend (its text or number).
+    #[arg(long = "recommend")]
+    recommendation: Option<String>,
+    /// Facts Lucina should weigh (up to 8000 characters).
+    #[arg(long)]
+    context: Option<String>,
+    /// low | medium | high.
+    #[arg(long)]
+    impact: Option<String>,
+    /// true | false: can it be undone?
+    #[arg(long)]
+    reversible: Option<bool>,
+    /// low | normal | high.
+    #[arg(long)]
+    urgency: Option<String>,
+    /// Groups decisions on one subject (ops record project).
+    #[arg(long)]
+    topic: Option<String>,
+    /// Who asks: your session name or id.
+    #[arg(long = "asked-by")]
+    asked_by: Option<String>,
+    /// The client kind recorded with it.
+    #[arg(long, default_value = "claude-code")]
+    client: String,
+    /// Seconds to wait (polling every 3 s) while the owner has not answered (0-600).
+    #[arg(long, default_value_t = 0)]
+    wait: u64,
+}
+
+#[derive(Subcommand)]
+enum DecideCmd {
+    /// One decision as JSON (`--wait N`: poll while it is pending).
+    Status {
+        id: String,
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
+    /// Recent decisions as JSON.
+    List {
+        /// pending | decided | expired.
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
     },
 }
 
@@ -396,6 +461,41 @@ async fn google_auth(service: &str, code: Option<String>, read_only: bool) -> an
             "tokenPath": g.token_file,
         })
     );
+    Ok(())
+}
+
+/// `lucina-rs decide …`: a client of the running server (`/api/secretary/decisions`), so the
+/// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
+/// ops record. The API token comes from the unit's env files and is never printed.
+async fn decide_cmd(cmd: Option<DecideCmd>, a: DecideArgs) -> anyhow::Result<()> {
+    use lucina_server::decide::cli;
+    let c = cli::Client::from_env()?;
+    let out = match cmd {
+        Some(DecideCmd::Status { id, wait }) => c.wait(c.get(&id).await?, wait).await?,
+        Some(DecideCmd::List { status, limit }) => c.list(status.as_deref(), limit).await?,
+        None => {
+            let question = a
+                .question
+                .ok_or_else(|| anyhow::anyhow!("--question is required (or use `decide status <id>`)"))?;
+            let body = serde_json::json!({
+                "question": question,
+                "options": a.options,
+                "recommendation": a.recommendation,
+                "context": a.context,
+                "impact": a.impact,
+                "reversible": a.reversible,
+                "urgency": a.urgency,
+                "topic": a.topic,
+                "asking_session": a.asked_by,
+                "asking_client": a.client,
+            });
+            c.wait(c.create(&body).await?, a.wait).await?
+        }
+    };
+    if out.get("decision_id").is_some() {
+        eprintln!("{}", cli::line(&out));
+    }
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
 
@@ -700,7 +800,7 @@ fn main() -> anyhow::Result<()> {
     };
     // Logs are a sink: every formatted line goes through the redactor.
     // `deals` prints its results on stdout, so its logs go to stderr.
-    if matches!(cmd, Cmd::Deals { .. }) {
+    if matches!(cmd, Cmd::Deals { .. } | Cmd::Decide { .. }) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
             .with_writer(lucina_secrets::log::RedactingMakeWriter::new(
@@ -745,6 +845,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             read_only,
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
+        Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
         Cmd::Ops {
             cmd,
             vault,
