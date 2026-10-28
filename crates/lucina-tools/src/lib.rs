@@ -31,6 +31,7 @@ pub mod agent;
 pub mod google;
 pub mod pending;
 pub mod reminder_writer;
+pub mod shopping_gate;
 pub mod tools;
 
 use std::collections::{HashMap, HashSet};

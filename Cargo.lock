@@ -2999,6 +2999,7 @@ dependencies = [
  "lucina-delegate",
  "lucina-discord",
  "lucina-grocery",
+ "lucina-jev",
  "lucina-llm",
  "lucina-meshy",
  "lucina-secrets",

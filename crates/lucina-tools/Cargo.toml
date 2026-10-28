@@ -11,6 +11,7 @@ lucina-approvals = { path = "../lucina-approvals" }
 lucina-llm = { path = "../lucina-llm" }
 lucina-store = { path = "../lucina-store" }
 lucina-grocery = { path = "../lucina-grocery" }
+lucina-jev = { path = "../lucina-jev" }
 lucina-discord = { path = "../lucina-discord" }
 lucina-meshy = { path = "../lucina-meshy" }
 lucina-delegate = { path = "../lucina-delegate" }

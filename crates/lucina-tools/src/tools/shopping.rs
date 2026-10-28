@@ -96,6 +96,7 @@ impl Tool for ShoppingTool {
             .filter(|s| !s.is_empty())
             .take(50)
             .collect();
+        let mut asks: Vec<Value> = Vec::new();
         let state = if a.action == Action::List {
             repo.list_state(user, &list_id)
                 .await
@@ -105,7 +106,29 @@ impl Tool for ShoppingTool {
                 return Err(ToolError::new("items is required"));
             }
             let ops: Vec<Value> = if a.action == Action::Add {
-                items.iter().map(|n| json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "name": n})).collect()
+                // Jev checks each item first: implausible ones are asked about, not added.
+                let idx = repo.catalog_index();
+                let lang = lucina_grocery::message_language(&items.join(", "), None);
+                let mut ops = Vec::new();
+                for n in &items {
+                    let g = crate::shopping_gate::check(lucina_jev::shared(), &idx, n, lang).await;
+                    match g.add_op(n) {
+                        Some(op) => ops.push(op),
+                        None => {
+                            if let crate::shopping_gate::Gate::Ask { question, suggestion } = g {
+                                asks.push(json!({"item": n, "question": question, "suggestion": suggestion}));
+                            }
+                        }
+                    }
+                }
+                if ops.is_empty() {
+                    return Ok(json!({
+                        "added": [],
+                        "needsConfirmation": asks,
+                        "note": "Nothing was added. Ask the owner the question(s) above, then add what they confirm.",
+                    }));
+                }
+                ops
             } else {
                 let current = repo
                     .list_state(user, &list_id)
@@ -155,6 +178,7 @@ impl Tool for ShoppingTool {
             "needed": names(&all, "needed"),
             "recentlyBought": names(&all, "recent"),
             "rejected": state.get("rejected").cloned().unwrap_or(json!([])),
+            "needsConfirmation": asks,
         }))
     }
 }

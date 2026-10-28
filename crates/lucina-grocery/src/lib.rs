@@ -1911,21 +1911,34 @@ impl GroceryRepo {
         modified_by: &str,
         lang: Option<&str>,
     ) -> Result<Value> {
+        self.add_item_with(user_id, product, raw_name, modified_by, lang, &json!({}))
+            .await
+    }
+
+    /// [`Self::add_item_in`] with extra `add` op fields (`catalogId`, `section`).
+    pub async fn add_item_with(
+        &self,
+        user_id: &str,
+        product: &Product,
+        raw_name: &str,
+        modified_by: &str,
+        lang: Option<&str>,
+        extra: &Value,
+    ) -> Result<Value> {
         let op_id = Uuid::new_v4().to_string();
         let name = if raw_name.trim().is_empty() {
             product.name.clone()
         } else {
             raw_name.to_owned()
         };
+        let mut op = json!({"opId": op_id, "type": "add", "text": name});
+        for k in ["catalogId", "section"] {
+            if let Some(v) = extra.get(k).filter(|v| v.is_string()) {
+                op[k] = v.clone();
+            }
+        }
         let out = self
-            .apply_ops_in(
-                user_id,
-                "default",
-                &json!([{"opId": op_id, "type": "add", "text": name}]),
-                None,
-                modified_by,
-                lang,
-            )
+            .apply_ops_in(user_id, "default", &json!([op]), None, modified_by, lang)
             .await?;
         if let Some(r) = out.rejected.first() {
             return Err(GroceryError::shopping(

@@ -224,6 +224,11 @@ impl CatalogIndex {
     }
 
     /// Every section, in catalog order.
+    /// Every item (any order).
+    pub fn items(&self) -> impl Iterator<Item = &CatalogItem> {
+        self.items.values()
+    }
+
     pub fn sections(&self) -> &[CatalogSection] {
         &self.sections
     }

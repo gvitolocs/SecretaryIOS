@@ -226,13 +226,31 @@ pub async fn process(
         "grocery.shopping_list.add" => {
             let product = product.expect("add has a product");
             let lang = lucina_grocery::message_language(text, None);
+            // Jev checks the item first (TypeSafe; off: added as before).
+            let typed = if parsed.raw_product.trim().is_empty() {
+                product.name.clone()
+            } else {
+                parsed.raw_product.clone()
+            };
+            let gate = lucina_tools::shopping_gate::check(
+                lucina_jev::shared(),
+                &repo.catalog_index(),
+                &typed,
+                lang,
+            )
+            .await;
+            if let lucina_tools::shopping_gate::Gate::Ask { question, .. } = &gate {
+                return Ok(handled(intent, question.clone()));
+            }
+            let extra = gate.add_op(&typed).unwrap_or_default();
             let added = repo
-                .add_item_in(
+                .add_item_with(
                     user_id,
                     &product,
                     &parsed.raw_product,
                     modified_by,
                     Some(lang),
+                    &extra,
                 )
                 .await?;
             let name = added["name"].as_str().unwrap_or(&product.name).to_owned();
