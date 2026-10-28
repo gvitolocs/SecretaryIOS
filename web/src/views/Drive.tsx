@@ -30,6 +30,19 @@ import {
 } from "../components/Icons";
 import { locale, t } from "../i18n";
 import {
+  Button,
+  Card,
+  EmptyState,
+  ErrorState,
+  ListRow,
+  LoadingState,
+  Page,
+  PageGrid,
+  PageHeader,
+  RowList,
+  useWide,
+} from "../components/page";
+import {
   albumHref,
   type ArchiveListing,
   breadcrumbs,
@@ -182,6 +195,47 @@ function FileRow(props: { item: DriveItem; jxl: boolean; showLocation: boolean; 
         </span>
       </button>
     </li>
+  );
+}
+
+function DeskFolderRow(props: { name: string; detail: string; onOpen: () => void }) {
+  return (
+    <ListRow
+      leading={<FolderGlyph />}
+      title={
+        <button type="button" class="pg-row-name" onClick={() => props.onOpen()}>
+          {props.name}
+        </button>
+      }
+      sub={props.detail}
+    />
+  );
+}
+
+function DeskFileRow(props: { item: DriveItem; jxl: boolean; showLocation: boolean; onOpen: () => void }) {
+  const location = () => (props.showLocation ? itemLocation(props.item) : "");
+  return (
+    <ListRow
+      leading={<FileGlyph type={itemType(props.item)} ext={props.item.drive?.ext} thumb={thumbnailUrl(props.item, props.jxl)} />}
+      title={
+        <button type="button" class="pg-row-name" onClick={() => props.onOpen()}>
+          {itemName(props.item)}
+        </button>
+      }
+      sub={
+        <>
+          <Show when={location()}>
+            <span>
+              <FolderIcon /> {location()}
+            </span>
+          </Show>
+          <Show when={props.item.snippet}>
+            <span>{props.item.snippet}</span>
+          </Show>
+        </>
+      }
+      meta={fileMeta(props.item)}
+    />
   );
 }
 
@@ -614,6 +668,8 @@ const SORT_KEYS: Record<DriveSort, "sortName" | "sortModified" | "sortSize" | "s
 };
 
 export default function DriveView() {
+  const measured = useWide();
+  const wide = measured.wide;
   const location = useLocation<{ drivePreview?: boolean } | undefined>();
   const navigate = useNavigate();
   const route = createMemo(() => parseDriveRoute(location.pathname));
@@ -651,7 +707,7 @@ export default function DriveView() {
     const c = context();
     return !!c && c.kind !== "folder";
   });
-  const [roots] = createResource(
+  const [roots, { refetch: refetchRoots }] = createResource(
     () => needRoots() || undefined,
     () => driveApi.roots(),
   );
@@ -804,148 +860,127 @@ export default function DriveView() {
   const showLocation = () => searching() || rootSearch();
   const listEmpty = () => !loading() && !error() && folders().length === 0 && files().length === 0;
 
-  return (
-    <section class="media drive" aria-labelledby="drive-title">
-      <A href="/plugins" class="media-back">
-        <BackIcon /> {t("drive.back")}
-      </A>
-      <h1 id="drive-title">{t("drive.title")}</h1>
+  const contextPath = createMemo(() => {
+    const tr = trail();
+    return tr.length ? tr.map((c) => c.label).join(" › ") : undefined;
+  });
 
-      <nav class="drive-crumbs" aria-label={t("drive.location")}>
-        <ol>
-          <li>
-            <A href="/drive" aria-current={trail().length === 0 ? "page" : undefined}>
-              {t("drive.title")}
-            </A>
-          </li>
-          <For each={trail()}>
-            {(c, i) => (
-              <li>
-                <span class="drive-crumbs__sep" aria-hidden="true">
-                  ›
-                </span>
-                <A href={c.href} aria-current={i() === trail().length - 1 ? "page" : undefined}>
-                  {c.label}
-                </A>
-              </li>
-            )}
-          </For>
-        </ol>
-      </nav>
+  const typeChips = () => (
+    <div class="drive-chips" role="group" aria-label={t("drive.filters")}>
+      <For each={FILTERS}>
+        {(type) => (
+          <button
+            type="button"
+            class="media-chip"
+            aria-pressed={filters().type === type ? "true" : "false"}
+            onClick={() => setFilters({ type })}
+          >
+            {type ? t(`drive.${filterLabelKey(type)}`) : t("drive.filterAll")}
+          </button>
+        )}
+      </For>
+    </div>
+  );
 
-      <div class="media-tools drive-tools">
-        <label class="media-search">
-          <SearchIcon />
-          <input type="search" placeholder={searchPlaceholder()} aria-label={searchPlaceholder()} value={draft()} onInput={(e) => onSearch(e.currentTarget.value)} />
+  const folderSort = () => (
+    <Show when={isFolder()}>
+      <div class="drive-sort">
+        <SortIcon />
+        <label class="media-select">
+          <span class="sr-only">{t("drive.sortBy")}</span>
+          <select
+            aria-label={t("drive.sortBy")}
+            value={filters().sort ?? (searching() ? "modified" : "name")}
+            onChange={(e) => {
+              const sort = e.currentTarget.value as DriveSort;
+              setFilters({ sort, order: defaultOrder(sort) });
+            }}
+          >
+            <For each={DRIVE_SORTS}>{(s) => <option value={s}>{t(`drive.${SORT_KEYS[s]}`)}</option>}</For>
+          </select>
         </label>
-        <Show when={isFolder()}>
-          <div class="drive-sort">
-            <SortIcon />
-            <label class="media-select">
-              <span class="sr-only">{t("drive.sortBy")}</span>
-              <select
-                aria-label={t("drive.sortBy")}
-                value={filters().sort ?? (searching() ? "modified" : "name")}
-                onChange={(e) => {
-                  const sort = e.currentTarget.value as DriveSort;
-                  setFilters({ sort, order: defaultOrder(sort) });
-                }}
-              >
-                <For each={DRIVE_SORTS}>{(s) => <option value={s}>{t(`drive.${SORT_KEYS[s]}`)}</option>}</For>
-              </select>
-            </label>
-            {(() => {
-              const sort = () => filters().sort ?? (searching() ? "modified" : "name");
-              const order = () => filters().order ?? defaultOrder(sort());
-              return (
-                <button
-                  type="button"
-                  class="drive-btn"
-                  aria-label={order() === "asc" ? t("drive.ascending") : t("drive.descending")}
-                  title={order() === "asc" ? t("drive.ascending") : t("drive.descending")}
-                  onClick={() => setFilters({ sort: sort(), order: order() === "asc" ? "desc" : "asc" })}
-                >
-                  {order() === "asc" ? "↑" : "↓"}
-                </button>
-              );
-            })()}
-          </div>
-        </Show>
-      </div>
-
-      <div class="drive-chips" role="group" aria-label={t("drive.filters")}>
-        <For each={FILTERS}>
-          {(type) => (
+        {(() => {
+          const sort = () => filters().sort ?? (searching() ? "modified" : "name");
+          const order = () => filters().order ?? defaultOrder(sort());
+          return (
             <button
               type="button"
-              class="media-chip"
-              aria-pressed={filters().type === type ? "true" : "false"}
-              onClick={() => setFilters({ type })}
+              class="drive-btn"
+              aria-label={order() === "asc" ? t("drive.ascending") : t("drive.descending")}
+              title={order() === "asc" ? t("drive.ascending") : t("drive.descending")}
+              onClick={() => setFilters({ sort: sort(), order: order() === "asc" ? "desc" : "asc" })}
             >
-              {type ? t(`drive.${filterLabelKey(type)}`) : t("drive.filterAll")}
+              {order() === "asc" ? "↑" : "↓"}
             </button>
-          )}
-        </For>
+          );
+        })()}
       </div>
+    </Show>
+  );
 
-      <Show when={showRoots()}>
-        <Show when={roots.error}>
-          <p class="media-muted" role="alert">
-            {errorText(roots.error)}
-          </p>
-        </Show>
-        <Show when={roots.loading}>
-          <p class="media-muted" role="status">
-            {t("drive.loading")}
-          </p>
-        </Show>
-        <Show when={rootsData()}>
-          {(r) => (
-            <>
-              <Show when={r().folders.length > 0}>
-                <h2 class="media-section">{t("drive.folders")}</h2>
-                <ul class="drive-list">
-                  <For each={r().folders}>{(f) => <FolderRow name={f.folder} detail={folderDetail(f)} onOpen={() => openFolder(f.folder, "")} />}</For>
-                </ul>
-              </Show>
-              <Show when={r().albums.length > 0}>
-                <h2 class="media-section">{t("drive.collections")}</h2>
-                <ul class="drive-list">
-                  <For each={r().albums}>
-                    {(a) => (
-                      <FolderRow
-                        name={a.title}
-                        detail={a.count !== null ? t("drive.items", { count: a.count }) : ""}
-                        onOpen={() => navigate(albumHref(a.id))}
-                      />
-                    )}
-                  </For>
-                </ul>
-              </Show>
-              <Show when={r().folders.length === 0 && r().albums.length === 0}>
-                <p class="media-muted">{t("drive.emptyDrive")}</p>
-              </Show>
-            </>
-          )}
-        </Show>
+  const searchField = () => (
+    <label class="media-search">
+      <SearchIcon />
+      <input
+        type="search"
+        class={wide() ? "pg-input" : undefined}
+        placeholder={searchPlaceholder()}
+        aria-label={searchPlaceholder()}
+        value={draft()}
+        onInput={(e) => onSearch(e.currentTarget.value)}
+      />
+    </label>
+  );
+
+  const deskRoots = () => (
+    <Show when={rootsData()}>
+      {(r) => (
+        <>
+          <Show when={r().folders.length + r().albums.length === 0}>
+            <EmptyState text={t("drive.emptyDrive")} />
+          </Show>
+          <Show when={r().folders.length + r().albums.length > 0}>
+            <Card list label={t("drive.title")}>
+              <RowList>
+                <For each={r().folders}>
+                  {(f) => <DeskFolderRow name={f.folder} detail={folderDetail(f)} onOpen={() => openFolder(f.folder, "")} />}
+                </For>
+                <For each={r().albums}>
+                  {(a) => (
+                    <DeskFolderRow
+                      name={a.title}
+                      detail={a.count !== null ? t("drive.items", { count: a.count }) : ""}
+                      onOpen={() => navigate(albumHref(a.id))}
+                    />
+                  )}
+                </For>
+              </RowList>
+            </Card>
+          </Show>
+        </>
+      )}
+    </Show>
+  );
+
+  const deskBrowse = () => (
+    <>
+      <Show when={error()}>
+        <ErrorState message={error()} retryLabel={t("common.tryAgain")} onRetry={() => void load(false)} />
       </Show>
-
-      <Show when={!showRoots() && context()}>
-        <Show when={error()}>
-          <p class="media-muted" role="alert">
-            {error()}
-          </p>
-        </Show>
-        <Show when={(searching() || rootSearch()) && total() !== null && !loading()}>
-          <p class="media-muted" role="status">
-            {t("drive.results", { count: total() ?? 0 })}
-          </p>
-        </Show>
-        <Show when={folders().length > 0 || files().length > 0}>
-          <ul class="drive-list">
+      <Show when={(searching() || rootSearch()) && total() !== null && !loading()}>
+        <p class="pg-context" role="status">
+          {t("drive.results", { count: total() ?? 0 })}
+        </p>
+      </Show>
+      <Show when={listEmpty() && !error()}>
+        <EmptyState text={searching() || filters().type ? t("drive.noResults") : t("drive.emptyFolder")} />
+      </Show>
+      <Show when={folders().length > 0 || files().length > 0}>
+        <Card list label={t("drive.title")}>
+          <RowList>
             <For each={folders()}>
               {(f) => (
-                <FolderRow
+                <DeskFolderRow
                   name={f.name}
                   detail={folderDetail(f)}
                   onOpen={() => {
@@ -955,23 +990,168 @@ export default function DriveView() {
                 />
               )}
             </For>
-            <For each={files()}>{(item) => <FileRow item={item} jxl={jxl()} showLocation={showLocation()} onOpen={() => openFile(item)} />}</For>
-          </ul>
-        </Show>
-        <Show when={listEmpty()}>
-          <p class="media-muted">{searching() || filters().type ? t("drive.noResults") : t("drive.emptyFolder")}</p>
-        </Show>
-        <Show when={loading()}>
-          <p class="media-muted" role="status">
-            {t("drive.loading")}
-          </p>
-        </Show>
-        <Show when={next() && !loading()}>
-          <button type="button" class="media-text-btn drive-more" onClick={() => void load(true)}>
-            {t("drive.loadMore")}
-          </button>
-        </Show>
+            <For each={files()}>{(item) => <DeskFileRow item={item} jxl={jxl()} showLocation={showLocation()} onOpen={() => openFile(item)} />}</For>
+          </RowList>
+        </Card>
       </Show>
+      <Show when={loading()}>
+        <LoadingState label={t("drive.loading")} />
+      </Show>
+      <Show when={next() && !loading()}>
+        <Button class="drive-more" onClick={() => void load(true)}>
+          {t("drive.loadMore")}
+        </Button>
+      </Show>
+    </>
+  );
+
+  return (
+    <>
+      <div ref={measured.track}>
+        <Show
+          when={wide()}
+          fallback={
+            <section class="media drive" aria-labelledby="drive-title">
+              <A href="/plugins" class="media-back">
+                <BackIcon /> {t("drive.back")}
+              </A>
+              <h1 id="drive-title">{t("drive.title")}</h1>
+
+              <nav class="drive-crumbs" aria-label={t("drive.location")}>
+                <ol>
+                  <li>
+                    <A href="/drive" aria-current={trail().length === 0 ? "page" : undefined}>
+                      {t("drive.title")}
+                    </A>
+                  </li>
+                  <For each={trail()}>
+                    {(c, i) => (
+                      <li>
+                        <span class="drive-crumbs__sep" aria-hidden="true">
+                          ›
+                        </span>
+                        <A href={c.href} aria-current={i() === trail().length - 1 ? "page" : undefined}>
+                          {c.label}
+                        </A>
+                      </li>
+                    )}
+                  </For>
+                </ol>
+              </nav>
+
+              <div class="media-tools drive-tools">
+                {searchField()}
+                {folderSort()}
+              </div>
+
+              {typeChips()}
+
+              <Show when={showRoots()}>
+                <Show when={roots.error}>
+                  <p class="media-muted" role="alert">
+                    {errorText(roots.error)}
+                  </p>
+                </Show>
+                <Show when={roots.loading}>
+                  <p class="media-muted" role="status">
+                    {t("drive.loading")}
+                  </p>
+                </Show>
+                <Show when={rootsData()}>
+                  {(r) => (
+                    <>
+                      <Show when={r().folders.length > 0}>
+                        <h2 class="media-section">{t("drive.folders")}</h2>
+                        <ul class="drive-list">
+                          <For each={r().folders}>{(f) => <FolderRow name={f.folder} detail={folderDetail(f)} onOpen={() => openFolder(f.folder, "")} />}</For>
+                        </ul>
+                      </Show>
+                      <Show when={r().albums.length > 0}>
+                        <h2 class="media-section">{t("drive.collections")}</h2>
+                        <ul class="drive-list">
+                          <For each={r().albums}>
+                            {(a) => (
+                              <FolderRow
+                                name={a.title}
+                                detail={a.count !== null ? t("drive.items", { count: a.count }) : ""}
+                                onOpen={() => navigate(albumHref(a.id))}
+                              />
+                            )}
+                          </For>
+                        </ul>
+                      </Show>
+                      <Show when={r().folders.length === 0 && r().albums.length === 0}>
+                        <p class="media-muted">{t("drive.emptyDrive")}</p>
+                      </Show>
+                    </>
+                  )}
+                </Show>
+              </Show>
+
+              <Show when={!showRoots() && context()}>
+                <Show when={error()}>
+                  <p class="media-muted" role="alert">
+                    {error()}
+                  </p>
+                </Show>
+                <Show when={(searching() || rootSearch()) && total() !== null && !loading()}>
+                  <p class="media-muted" role="status">
+                    {t("drive.results", { count: total() ?? 0 })}
+                  </p>
+                </Show>
+                <Show when={folders().length > 0 || files().length > 0}>
+                  <ul class="drive-list">
+                    <For each={folders()}>
+                      {(f) => (
+                        <FolderRow
+                          name={f.name}
+                          detail={folderDetail(f)}
+                          onOpen={() => {
+                            const c = context();
+                            if (c?.kind === "folder") openFolder(c.folder, f.path);
+                          }}
+                        />
+                      )}
+                    </For>
+                    <For each={files()}>{(item) => <FileRow item={item} jxl={jxl()} showLocation={showLocation()} onOpen={() => openFile(item)} />}</For>
+                  </ul>
+                </Show>
+                <Show when={listEmpty()}>
+                  <p class="media-muted">{searching() || filters().type ? t("drive.noResults") : t("drive.emptyFolder")}</p>
+                </Show>
+                <Show when={loading()}>
+                  <p class="media-muted" role="status">
+                    {t("drive.loading")}
+                  </p>
+                </Show>
+                <Show when={next() && !loading()}>
+                  <button type="button" class="media-text-btn drive-more" onClick={() => void load(true)}>
+                    {t("drive.loadMore")}
+                  </button>
+                </Show>
+              </Show>
+            </section>
+          }
+        >
+          <Page class="drive-desk">
+            <PageHeader title={t("drive.title")} context={contextPath()} action={searchField()} />
+            <PageGrid layout="single">
+              {typeChips()}
+              {folderSort()}
+              <Show when={showRoots()}>
+                <Show when={roots.error}>
+                  <ErrorState message={errorText(roots.error)} retryLabel={t("common.tryAgain")} onRetry={() => void refetchRoots()} />
+                </Show>
+                <Show when={roots.loading && !rootsData()}>
+                  <LoadingState label={t("drive.loading")} />
+                </Show>
+                {deskRoots()}
+              </Show>
+              <Show when={!showRoots() && context()}>{deskBrowse()}</Show>
+            </PageGrid>
+          </Page>
+        </Show>
+      </div>
 
       <Show when={openId()}>
         <PreviewDialog item={opened.error ? null : (opened() ?? null)} loading={opened.loading} failed={!!opened.error || (!opened.loading && !opened())} onClose={closePreview} />
@@ -981,7 +1161,7 @@ export default function DriveView() {
       <Show when={media.open() && media.current()}>
         <Player />
       </Show>
-    </section>
+    </>
   );
 }
 

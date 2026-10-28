@@ -1,9 +1,10 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "../i18n";
 import { type Call, stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import DriveView from "./Drive";
 
 const ROOTS = {
@@ -268,5 +269,26 @@ describe("Drive", () => {
     setLocale("da");
     expect(await screen.findByRole("heading", { name: "Mapper" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Regneark" })).toBeInTheDocument();
+  });
+});
+
+describe("Drive desktop", () => {
+  beforeEach(() => stubWide());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows the page header, type chips and list rows", async () => {
+    stubFetch((call) => {
+      if (call.url === "/v1/media/drive") return { body: ROOTS };
+      if (call.url.startsWith("/v1/media/drive/browse")) return browse(call);
+      return { status: 404, body: {} };
+    });
+    renderAt("/drive/folder/Lezioni/Digital%20Forensics", routes);
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Drive");
+    expect(screen.getByText("Lezioni › Digital Forensics")).toBeInTheDocument();
+    expect(document.querySelector(".drive-crumbs")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    expect(screen.getByRole("searchbox")).toHaveClass("pg-input");
+    expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /L05 slides\.pdf/ })).toBeInTheDocument();
   });
 });
