@@ -915,7 +915,7 @@ fn evidence_block(e: &[Evidence]) -> String {
     for t in 1..=4u8 {
         let lines: Vec<String> = e
             .iter()
-            .filter(|x| x.tier.max(1).min(4) == t)
+            .filter(|x| x.tier.clamp(1, 4) == t)
             .map(|x| format!("- {}", x.text))
             .collect();
         if !lines.is_empty() {
