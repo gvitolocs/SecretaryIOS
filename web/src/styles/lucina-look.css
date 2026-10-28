@@ -224,6 +224,16 @@ samp {
   outline-offset: 2px;
 }
 
+.plugins-adult {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  font-size: 14px;
+  color: var(--lu-text-secondary, var(--lu-text));
+}
+
+
 .plugin-icon {
   display: grid;
   place-items: center;

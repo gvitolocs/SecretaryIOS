@@ -41,6 +41,7 @@ const en = {
   code: "Code",
   codeDetail: "Coding sessions on this Mac",
   serverDetail: "Services, disks and alerts",
+  showAdult: "Show adult plugins on this device",
 };
 
 export const plugins: FeatureDictionary<typeof en> = {
@@ -84,6 +85,7 @@ export const plugins: FeatureDictionary<typeof en> = {
     code: "Codice",
     codeDetail: "Sessioni di programmazione su questo Mac",
     serverDetail: "Servizi, dischi e avvisi",
+    showAdult: "Mostra i plugin per adulti su questo dispositivo",
   },
   da: {
     title: "Plugins",
@@ -124,5 +126,6 @@ export const plugins: FeatureDictionary<typeof en> = {
     code: "Kode",
     codeDetail: "Kodesessioner på denne Mac",
     serverDetail: "Tjenester, diske og advarsler",
+    showAdult: "Vis plugins for voksne på denne enhed",
   },
 };

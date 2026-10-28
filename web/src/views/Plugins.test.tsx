@@ -1,7 +1,8 @@
 import { Route, Router } from "@solidjs/router";
 import { render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import PluginsView, { PLUGINS } from "./Plugins";
+import { setShowAdult } from "../lib/adult";
+import PluginsView, { PLUGINS, visiblePlugins } from "./Plugins";
 
 function renderPlugins() {
   render(() => (
@@ -55,5 +56,21 @@ describe("Plugins", () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Linux; Android 15) SecretaryAndroid/0.2.0");
     renderPlugins();
     expect(screen.getByRole("button", { name: /Phone/ })).toBeInTheDocument();
+  });
+
+  it("hides adult plugins when this device's switch is off", () => {
+    PLUGINS.push({ id: "adult-test", icon: () => null, title: () => "Adult test", adult: true, href: "/adult-test" });
+    try {
+      setShowAdult(true);
+      expect(visiblePlugins().some((p) => p.id === "adult-test")).toBe(true);
+      setShowAdult(false);
+      expect(visiblePlugins().some((p) => p.id === "adult-test")).toBe(false);
+      expect(localStorage.getItem("secretary.showAdultPlugins")).toBe("0");
+      renderPlugins();
+      expect(screen.getByRole("checkbox", { name: /Show adult plugins/ })).not.toBeChecked();
+    } finally {
+      PLUGINS.pop();
+      setShowAdult(true);
+    }
   });
 });
