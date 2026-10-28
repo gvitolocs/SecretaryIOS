@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use lucina_media::config::Config;
 use lucina_media::ingest::{self, Library};
-use lucina_media::{drive, extract, http, import, store};
+use lucina_media::{archive_jxl, archive_jxl_measure, drive, extract, http, import, store};
 
 #[derive(Parser)]
 #[command(name = "lucina-media", about = "Lucina's media library server")]
@@ -36,6 +36,45 @@ enum Cmd {
     /// Index a folder in place (no copy) as album LABEL: a film folder's media, or every file of a
     /// Drive folder.
     IndexFolder { label: String, path: PathBuf },
+    /// The JPEG XL archive format for the photos in the store (docs/media-library.md).
+    /// `--dry-run` measures a sample read-only; `--apply` converts (and, with `--delete-originals`,
+    /// deletes originals that proved themselves); `--restore-originals` undoes the deletions.
+    ArchiveJxl {
+        #[arg(long)]
+        dry_run: bool,
+        /// Convert the store's JPEGs. Refuses to run without --i-have-a-backup.
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        restore_originals: bool,
+        /// The owner has a backup of the store (required by --apply).
+        #[arg(long)]
+        i_have_a_backup: bool,
+        /// Delete each original after its verified round trip (with --apply).
+        #[arg(long)]
+        delete_originals: bool,
+        /// Dry run: sample size (default 600: 300 old-backup JPEGs, 150 iPhone JPEGs, up to 100
+        /// lossless-source files, up to 50 HEIC/RAW).
+        #[arg(long)]
+        sample: Option<usize>,
+        /// Dry run: write the full report (summary and per-file records) here as JSON.
+        #[arg(long)]
+        report: Option<PathBuf>,
+        #[arg(long, default_value_t = 20261028)]
+        seed: u64,
+        /// Dry run: worker threads (run under a CPU quota).
+        #[arg(long, default_value_t = 3)]
+        jobs: usize,
+        /// Apply: stop after this many converted files (one batch).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Pause while the CPU is at or above this temperature in degrees.
+        #[arg(long, default_value_t = 90)]
+        max_temp: u32,
+        /// Dry run: JPEGs per stratum that also get the slower effort-9 transcode, for comparison.
+        #[arg(long, default_value_t = 25)]
+        effort9: usize,
+    },
     /// Write the text of a document to OUTPUT (the Drive worker runs this in a capped child process).
     /// Exits 3 when the file has no text.
     ExtractText {
@@ -129,6 +168,72 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await??;
                 println!("{r:?}");
+            }
+        }
+        Cmd::ArchiveJxl {
+            dry_run,
+            apply,
+            restore_originals,
+            i_have_a_backup,
+            delete_originals,
+            sample,
+            report,
+            seed,
+            jobs,
+            limit,
+            max_temp,
+            effort9,
+        } => {
+            anyhow::ensure!(
+                [dry_run, apply, restore_originals]
+                    .iter()
+                    .filter(|b| **b)
+                    .count()
+                    == 1,
+                "pass exactly one of --dry-run, --apply, --restore-originals"
+            );
+            anyhow::ensure!(
+                !delete_originals || apply,
+                "--delete-originals only goes with --apply"
+            );
+            if dry_run {
+                // Read-only: the catalog is opened read-only and nothing is written but the report.
+                let opts = archive_jxl_measure::DryRunOpts {
+                    sample: sample.unwrap_or(600),
+                    seed,
+                    jobs,
+                    max_temp_c: max_temp,
+                    effort9_per_stratum: effort9,
+                    checkpoint: report.as_ref().map(|p| p.with_extension("jsonl")),
+                };
+                let rep =
+                    tokio::task::spawn_blocking(move || archive_jxl_measure::dry_run(&cfg, &opts))
+                        .await??;
+                if let Some(path) = report {
+                    std::fs::write(&path, serde_json::to_vec_pretty(&rep)?)?;
+                }
+                println!("{}", serde_json::to_string_pretty(&rep.summary)?);
+            } else if apply {
+                anyhow::ensure!(
+                    i_have_a_backup,
+                    "--apply needs --i-have-a-backup: a backup of the store must exist first"
+                );
+                let lib = Library::open(cfg)?;
+                let opts = archive_jxl::ApplyOpts {
+                    i_have_a_backup,
+                    delete_originals,
+                    limit,
+                    max_temp_c: max_temp,
+                };
+                let stats =
+                    tokio::task::spawn_blocking(move || archive_jxl::apply(&lib, &opts)).await??;
+                // Counts only.
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            } else {
+                let lib = Library::open(cfg)?;
+                let n = tokio::task::spawn_blocking(move || archive_jxl::restore_originals(&lib))
+                    .await??;
+                println!("restored {n}");
             }
         }
         Cmd::ExtractText { .. } => unreachable!("handled above"),

@@ -255,6 +255,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute(&format!("ALTER TABLE items ADD COLUMN {ddl}"), [])?;
         }
     }
+    // The JPEG XL archive format: which originals have a verified JXL copy.
+    crate::archive_jxl::migrate(conn)?;
     Ok(())
 }
 

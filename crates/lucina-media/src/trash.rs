@@ -126,6 +126,7 @@ pub fn purge_in(c: &Connection, ids: &[String]) -> rusqlite::Result<PurgeReport>
             continue;
         }
         if let Some(b) = crate::db::blob(c, &hash)? {
+            c.execute("DELETE FROM archive_blobs WHERE hash = ?1", params![hash])?;
             c.execute("DELETE FROM blobs WHERE hash = ?1", params![hash])?;
             if matches!(b.location.as_str(), "store" | "spool") {
                 report.orphans.push(b);
@@ -150,6 +151,7 @@ pub fn finish_purge(cfg: &Config, report: &PurgeReport) -> usize {
     let mut removed = 0;
     for b in &report.orphans {
         let path = store::path_of(cfg, b);
+        crate::archive_jxl::remove_archive_files(cfg, &b.hash);
         match std::fs::remove_file(&path) {
             Ok(()) => removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

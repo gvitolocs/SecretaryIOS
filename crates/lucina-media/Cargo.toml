@@ -33,7 +33,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 blake3 = "1"
 nom-exif = "3"
 reverse_geocoder = "4"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff", "bmp"] }
 futures-util = "0.3"
 subtle = "2"
 mime_guess = "2"
@@ -52,6 +52,8 @@ pdf-extract = "0.9"
 # JPEG XL renditions (libjxl built from source; nezopt has no libjxl headers).
 jpegxl-rs = { version = "0.16", features = ["vendored"] }
 jpegxl-sys = { version = "=0.13.0", features = ["vendored"] }
+# CPU time of a thread, for the archive-jxl measurements (load-independent timings).
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
