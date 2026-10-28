@@ -1,5 +1,6 @@
 import Charts
 import SwiftUI
+import UIKit
 
 // The Server plugin's detail screens: a host (pushed), an attention item and a component (sheets).
 
@@ -37,7 +38,7 @@ struct HostDetailView: View {
     }
 
     @ViewBuilder private func content(_ host: ServerHost, _ overview: ServerOverview) -> some View {
-        Card(spacing: LucinaTokens.Space.sm) {
+        Card(spacing: LucinaTokens.Space.sm, cornerRadius: 16) {
             HStack(spacing: 8) {
                 ServerDot(state: host.state, size: 11)
                 Text(verbatim: host.state.label).font(LucinaTokens.Fonts.headline)
@@ -57,7 +58,7 @@ struct HostDetailView: View {
             }
         }
         if !host.findings.isEmpty {
-            Card(spacing: 6) {
+            Card(spacing: 6, cornerRadius: 16) {
                 Text("Findings").font(LucinaTokens.Fonts.headline)
                 ForEach(Array(host.findings.enumerated()), id: \.offset) { _, finding in
                     Label(finding, systemImage: "exclamationmark.circle")
@@ -75,7 +76,7 @@ struct HostDetailView: View {
             }
         }
         if !host.disks.isEmpty {
-            Card(spacing: LucinaTokens.Space.md) {
+            Card(spacing: LucinaTokens.Space.md, cornerRadius: 16) {
                 Text("Disks").font(LucinaTokens.Fonts.headline)
                 ForEach(host.disks) { disk in ServerDiskBar(disk: disk, showsSize: true) }
             }
@@ -83,7 +84,7 @@ struct HostDetailView: View {
         let items = overview.attention(onHost: host.id)
         if !items.isEmpty {
             SectionHeader("Needs attention")
-            Card(spacing: 0) {
+            Card(spacing: 0, cornerRadius: 16) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     if index > 0 { Divider() }
                     Button { sheet = .item(item.key) } label: { ServerAttentionRow(item: item, hostName: host.name) }
@@ -94,7 +95,7 @@ struct HostDetailView: View {
         let components = overview.components(onHost: host.id)
         if !components.isEmpty {
             SectionHeader("Components")
-            Card(spacing: 0) {
+            Card(spacing: 0, cornerRadius: 16) {
                 ForEach(Array(components.enumerated()), id: \.element.id) { index, ref in
                     if index > 0 { Divider() }
                     Button { sheet = .component(ref.id) } label: { ServerComponentRow(ref: ref).padding(.vertical, 10) }
@@ -134,7 +135,7 @@ struct ServerHistoryChart: View {
     let end: Date?
 
     var body: some View {
-        Card(spacing: LucinaTokens.Space.md) {
+        Card(spacing: LucinaTokens.Space.md, cornerRadius: 16) {
             HStack(alignment: .firstTextBaseline) {
                 Text(verbatim: metric.title).font(LucinaTokens.Fonts.headline)
                 Spacer(minLength: 4)
@@ -144,16 +145,16 @@ struct ServerHistoryChart: View {
             }
             Chart {
                 ForEach(points) { point in
-                    AreaMark(x: .value("Time", point.date), y: .value("Value", point.value))
+                    AreaMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value))
                         .foregroundStyle(LucinaChartStyle.area)
                         .interpolationMethod(.monotone)
-                    LineMark(x: .value("Time", point.date), y: .value("Value", point.value))
+                    LineMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value))
                         .foregroundStyle(Theme.accent)
                         .lineStyle(LucinaChartStyle.line)
                         .interpolationMethod(.monotone)
                 }
                 if metric == .temperature {
-                    RuleMark(y: .value("Limit", ServerMetric.hotLimit))
+                    RuleMark(y: .value(String(localized: "Limit"), ServerMetric.hotLimit))
                         .foregroundStyle(LucinaChartStyle.goalColor)
                         .lineStyle(LucinaChartStyle.goal)
                         .annotation(position: .top, alignment: .leading) {
@@ -274,7 +275,7 @@ struct ServerItemView: View {
                 .accessibilityElement(children: .combine)
                 facts(hostName: hostName)
                 if !item.details.isEmpty {
-                    Card(spacing: 6) {
+                    Card(spacing: 6, cornerRadius: 16) {
                         Text("Details").font(LucinaTokens.Fonts.headline)
                         ForEach(Array(item.details.enumerated()), id: \.offset) { _, line in
                             Text(verbatim: "• \(line)")
@@ -286,7 +287,7 @@ struct ServerItemView: View {
                 }
                 if let impact = item.impact, !impact.isEmpty { ServerImpactCard(impact: impact) }
                 if !item.caused.isEmpty {
-                    Card(spacing: 6) {
+                    Card(spacing: 6, cornerRadius: 16) {
                         Text("Also down because of this").font(LucinaTokens.Fonts.headline)
                         Text(verbatim: item.caused.map { store.overview?.component($0)?.component.name ?? $0 }.joined(separator: ", "))
                             .font(LucinaTokens.Fonts.subheadline)
@@ -303,7 +304,7 @@ struct ServerItemView: View {
     }
 
     private func facts(hostName: String?) -> some View {
-        Card(spacing: LucinaTokens.Space.sm) {
+        Card(spacing: LucinaTokens.Space.sm, cornerRadius: 16) {
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 VStack(alignment: .leading, spacing: LucinaTokens.Space.sm) {
                     if let since = item.sinceDate {
@@ -327,7 +328,7 @@ struct ServerImpactCard: View {
     let impact: ServerImpact
 
     var body: some View {
-        Card(spacing: LucinaTokens.Space.sm) {
+        Card(spacing: LucinaTokens.Space.sm, cornerRadius: 16) {
             Text("Impact").font(LucinaTokens.Fonts.headline)
             if !impact.broken.isEmpty {
                 line("Broken", impact.broken.map(\.name), color: Theme.negative)
@@ -380,7 +381,7 @@ struct ServerItemActions: View {
                 .buttonStyle(.bordered)
             }
             if let runbook = item.runbook, !runbook.isEmpty {
-                Card {
+                Card(cornerRadius: 16) {
                     DisclosureGroup(isExpanded: $runbookOpen) {
                         Text(Self.markdown(runbook))
                             .font(LucinaTokens.Fonts.subheadline)
@@ -463,7 +464,7 @@ struct ServerComponentView: View {
                         .textSelection(.enabled)
                 }
                 .accessibilityElement(children: .combine)
-                Card(spacing: LucinaTokens.Space.sm) {
+                Card(spacing: LucinaTokens.Space.sm, cornerRadius: 16) {
                     ServerFact(label: "Kind", value: component.kind)
                     ServerFact(label: "Host", value: hostName)
                     ServerFact(label: "Project", value: "\(ref.group) · \(ref.project)")
@@ -471,7 +472,7 @@ struct ServerComponentView: View {
                     ServerFact(label: "State", value: component.state.label)
                 }
                 if let description = component.description, !description.isEmpty {
-                    Card(spacing: 6) {
+                    Card(spacing: 6, cornerRadius: 16) {
                         Text("Description").font(LucinaTokens.Fonts.headline)
                         Text(verbatim: description).font(LucinaTokens.Fonts.subheadline).foregroundStyle(Theme.textSecondary)
                     }

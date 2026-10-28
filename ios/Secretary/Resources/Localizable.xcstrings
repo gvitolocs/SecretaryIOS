@@ -20403,6 +20403,22 @@
           }
         }
       }
+    },
+    "Limit" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Limite"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grænse"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

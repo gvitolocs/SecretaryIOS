@@ -60,6 +60,10 @@ struct ServerWidgetView: View {
         guard let section else {
             return entry.state == .offline ? String(localized: "Server unreachable") : String(localized: "No data yet")
         }
+        if section.attentionCount == 0 {
+            if section.overall == "unknown" { return String(localized: "No data yet") }
+            if section.overall == "crit" { return String(localized: "Server unreachable") }
+        }
         return section.attentionCount == 0 ? String(localized: "All systems normal") : String(localized: "\(section.attentionCount) need attention")
     }
 
@@ -73,9 +77,14 @@ struct ServerWidgetView: View {
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
                 Label(String(localized: "Server"), systemImage: "server.rack").font(.headline).widgetAccentable()
-                Text(status).font(.caption).lineLimit(1)
-                if let first = section?.titles.first {
-                    Text(first).font(.caption).lineLimit(1)
+                if entry.state == .signedOut {
+                    WidgetMessage.signedOut()
+                } else {
+                    HStack(spacing: 4) {
+                        Circle().fill(color).frame(width: 6, height: 6).accessibilityHidden(true)
+                        Text(status).font(.caption).lineLimit(1)
+                    }
+                    if let updated { Text(updated).font(.caption2).lineLimit(1) }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -101,6 +110,7 @@ struct ServerWidgetView: View {
                                     .font(LucinaTokens.Fonts.subheadline)
                                     .foregroundStyle(LucinaTokens.Colors.text)
                                     .lineLimit(1)
+                                    .privacySensitive()
                             }
                         }
                     }

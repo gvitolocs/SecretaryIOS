@@ -87,8 +87,7 @@ struct ServerChip: View {
     }
 }
 
-/// Keeps the data fresh while the screen is up: on appear and on return to the foreground (unless it just
-/// loaded), then every 60 s.
+/// Keeps the data fresh on appear, on return to the foreground, then every 60 s.
 private struct ServerLive: ViewModifier {
     let store: ServerStore
     @Environment(\.scenePhase) private var phase
@@ -96,7 +95,7 @@ private struct ServerLive: ViewModifier {
     func body(content: Content) -> some View {
         content.task(id: phase) {
             guard phase == .active else { return }
-            if Date().timeIntervalSince(store.loadedAt ?? .distantPast) > 20 { await store.load() }
+            await store.load()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 if Task.isCancelled { break }
@@ -257,13 +256,13 @@ struct ServerOverviewTab: View {
         }
         SectionHeader("Needs attention")
         if overview.attention.isEmpty {
-            Card {
+            Card(cornerRadius: 16) {
                 Label("Nothing needs attention", systemImage: "checkmark.seal")
                     .font(LucinaTokens.Fonts.subheadline)
                     .foregroundStyle(Theme.textSecondary)
             }
         } else {
-            Card(spacing: 0) {
+            Card(spacing: 0, cornerRadius: 16) {
                 ForEach(Array(overview.attention.enumerated()), id: \.element.id) { index, item in
                     if index > 0 { Divider() }
                     Button { store.sheet = .item(item.key) } label: {
@@ -282,7 +281,7 @@ struct ServerHostCard: View {
     let host: ServerHost
 
     var body: some View {
-        Card(spacing: LucinaTokens.Space.sm) {
+        Card(spacing: LucinaTokens.Space.sm, cornerRadius: 16) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 ServerDot(state: host.state)
                 VStack(alignment: .leading, spacing: 1) {
@@ -317,7 +316,7 @@ struct ServerHostCard: View {
             }
         }
         .frame(width: 260)
-        .contentShape(RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityHint(Text("Opens the host's details"))
     }
@@ -390,6 +389,11 @@ enum ServerMetric: String, CaseIterable, Identifiable {
         if withLimit, self == .temperature { high = max(high, Self.hotLimit + 2) }
         if self == .memory { low = min(low, 0); high = max(high, 100) }
         if self == .load { low = min(low, 0) }
+        if self == .temperature {
+            let padding = max(2, (high - low) * 0.05)
+            low -= padding
+            high += padding
+        }
         if high - low < 1 { low -= 0.5; high += 0.5 }
         return low...high
     }
@@ -422,7 +426,7 @@ struct ServerSparkline: View {
             }
             if points.count >= 2 {
                 Chart(points) { point in
-                    LineMark(x: .value("Time", point.date), y: .value("Value", point.value))
+                    LineMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value))
                         .foregroundStyle(Theme.accent)
                         .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                         .interpolationMethod(.monotone)
@@ -533,7 +537,7 @@ struct ServerAllGood: View {
         let groups = overview.healthyByGroup
         let count = overview.checksOk ?? groups.reduce(0) { total, group in total + group.components.count }
         if count > 0 {
-            Card {
+            Card(cornerRadius: 16) {
                 DisclosureGroup(isExpanded: $expanded) {
                     VStack(alignment: .leading, spacing: LucinaTokens.Space.md) {
                         ForEach(groups) { group in
@@ -610,7 +614,7 @@ struct ServerServicesTab: View {
             let shown = blocks
             if store.overview != nil, shown.isEmpty {
                 Section {
-                    Text(query.isEmpty ? "No services in the catalog." : "No service matches.")
+                    Text(query.isEmpty ? String(localized: "No services in the catalog.") : String(localized: "No service matches."))
                         .foregroundStyle(Theme.textSecondary)
                 }
             }
@@ -697,7 +701,7 @@ struct ServerTimelineTab: View {
             let shown = days
             if store.overview != nil, shown.isEmpty {
                 Section {
-                    Text(tab == .incidents ? "No incidents or changes recently." : "No deploys or decisions recently.")
+                    Text(tab == .incidents ? String(localized: "No incidents or changes recently.") : String(localized: "No deploys or decisions recently."))
                         .foregroundStyle(Theme.textSecondary)
                 }
             }

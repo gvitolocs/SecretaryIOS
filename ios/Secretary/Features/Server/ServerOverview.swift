@@ -22,14 +22,14 @@ extension KeyedDecodingContainer {
     /// An integer that may arrive as `142` or `142.0`.
     func serverInt(_ key: Key) -> Int? {
         if let i = lenientOptional(Int.self, key) { return i }
-        return lenientOptional(Double.self, key).flatMap { $0.isFinite ? Int($0) : nil }
+        return lenientOptional(Double.self, key).flatMap { Int(exactly: $0) }
     }
 }
 
 // MARK: - State
 
 /// ok | warn | crit | idle | unknown (catalog `effective` mapped by the server).
-enum ServerHealth: String, Sendable, Comparable {
+enum ServerHealth: String, Codable, Sendable, Comparable {
     case ok, warn, crit, idle, unknown
 
     init(raw: String?) { self = raw.flatMap(ServerHealth.init(rawValue:)) ?? .unknown }
@@ -72,7 +72,7 @@ enum ServerDates {
 
 // MARK: - The overview
 
-struct ServerOverview: Decodable, Equatable, Sendable {
+struct ServerOverview: Codable, Equatable, Sendable {
     var generatedAt: String?
     var overall: ServerHealth
     var attentionCount: Int
@@ -174,7 +174,7 @@ struct ServerOverview: Decodable, Equatable, Sendable {
     }
 }
 
-struct ServerSource: Decodable, Equatable, Sendable {
+struct ServerSource: Codable, Equatable, Sendable {
     var ok: Bool
     var at: String?
     var error: String?
@@ -191,7 +191,7 @@ struct ServerSource: Decodable, Equatable, Sendable {
 
 // MARK: - Hosts
 
-struct ServerHost: Decodable, Equatable, Identifiable, Sendable {
+struct ServerHost: Codable, Equatable, Identifiable, Sendable {
     let id: String
     var name: String
     var role: String?
@@ -249,7 +249,7 @@ struct ServerHost: Decodable, Equatable, Identifiable, Sendable {
     var load1: Double? { load?.first }
 }
 
-struct ServerDisk: Decodable, Equatable, Identifiable, Sendable {
+struct ServerDisk: Codable, Equatable, Identifiable, Sendable {
     var mount: String
     var usedPct: Double?
     var freeGb: Double?
@@ -276,7 +276,7 @@ struct ServerPoint: Identifiable, Equatable, Sendable {
 }
 
 /// The last 24 h in 15-minute buckets, oldest first; nil = no sample.
-struct ServerHistory: Decodable, Equatable, Sendable {
+struct ServerHistory: Codable, Equatable, Sendable {
     var stepS: Int
     var end: String?
     var tctl: [Double?]
@@ -300,14 +300,14 @@ struct ServerHistory: Decodable, Equatable, Sendable {
         let count = values.count
         return values.enumerated().compactMap { index, value in
             guard let value, value.isFinite else { return nil }
-            return ServerPoint(id: index, date: last.addingTimeInterval(-Double((count - 1 - index) * stepS)), value: value)
+            return ServerPoint(id: index, date: last.addingTimeInterval(-Double(count - 1 - index) * Double(stepS)), value: value)
         }
     }
 }
 
 // MARK: - Attention
 
-struct ServerAttention: Decodable, Equatable, Identifiable, Sendable {
+struct ServerAttention: Codable, Equatable, Identifiable, Sendable {
     let key: String
     var sources: [String]
     var severity: ServerHealth
@@ -365,7 +365,7 @@ struct ServerAttention: Decodable, Equatable, Identifiable, Sendable {
     var impactCount: Int { (impact?.broken.count ?? 0) + (impact?.degraded.count ?? 0) }
 }
 
-struct ServerImpact: Decodable, Equatable, Sendable {
+struct ServerImpact: Codable, Equatable, Sendable {
     var broken: [ServerRef]
     var degraded: [ServerRef]
     var publicHostnamesBroken: [String]
@@ -382,7 +382,7 @@ struct ServerImpact: Decodable, Equatable, Sendable {
     var isEmpty: Bool { broken.isEmpty && degraded.isEmpty && publicHostnamesBroken.isEmpty }
 }
 
-struct ServerRef: Decodable, Equatable, Identifiable, Sendable {
+struct ServerRef: Codable, Equatable, Identifiable, Sendable {
     let id: String
     var name: String
 
@@ -397,7 +397,7 @@ struct ServerRef: Decodable, Equatable, Identifiable, Sendable {
 
 // MARK: - Services
 
-struct ServerGroup: Decodable, Equatable, Identifiable, Sendable {
+struct ServerGroup: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var state: ServerHealth
     var projects: [ServerProject]
@@ -414,7 +414,7 @@ struct ServerGroup: Decodable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey { case name, state, projects }
 }
 
-struct ServerProject: Decodable, Equatable, Identifiable, Sendable {
+struct ServerProject: Codable, Equatable, Identifiable, Sendable {
     let id: String
     var state: ServerHealth
     var components: [ServerComponent]
@@ -429,7 +429,7 @@ struct ServerProject: Decodable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey { case id, state, components }
 }
 
-struct ServerComponent: Decodable, Equatable, Identifiable, Sendable {
+struct ServerComponent: Codable, Equatable, Identifiable, Sendable {
     let id: String
     var name: String
     var kind: String?
@@ -477,7 +477,7 @@ struct ServerComponentRef: Equatable, Identifiable, Sendable {
 
 // MARK: - Timeline
 
-struct ServerEvent: Decodable, Equatable, Sendable {
+struct ServerEvent: Codable, Equatable, Sendable {
     var at: String
     var kind: String
     var title: String
@@ -602,7 +602,7 @@ struct ServerLink: Equatable, Sendable {
         }
         switch parts.first {
         case "server-health":
-            var link = ServerLink()
+            var link = ServerLink(tab: .overview)
             if parts.count >= 2 { link.tab = ServerTab(rawValue: parts[1]) }
             if let item = query["item"], !item.isEmpty {
                 link.target = .item(item)
@@ -626,6 +626,8 @@ enum ServerText {
     static func pluginDetail(_ overview: ServerOverview?) -> String {
         guard let overview else { return String(localized: "Hosts, services, incidents") }
         let n = overview.needCount
+        if n == 0, overview.overall == .unknown { return String(localized: "No data yet") }
+        if n == 0, overview.overall == .crit { return String(localized: "Server unreachable") }
         return n == 0 ? String(localized: "All systems normal") : String(localized: "\(n) need attention")
     }
 
@@ -678,7 +680,7 @@ enum ServerText {
             lines.append(String(localized: "Since \(when) (\(length))."))
         }
         if let impact = item.impact {
-            let names = (impact.broken + impact.degraded).map(\.name)
+            let names = (impact.broken + impact.degraded).map(\.name) + impact.publicHostnamesBroken
             if !names.isEmpty { lines.append(String(localized: "Affects: \(names.joined(separator: ", ")).")) }
         }
         if let logs = item.logs, !logs.isEmpty { lines.append(String(localized: "Logs: \(logs)")) }

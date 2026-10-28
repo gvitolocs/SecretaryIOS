@@ -29,13 +29,14 @@ enum Theme {
 
 struct Card<Content: View>: View {
     var spacing: CGFloat = 12
+    var cornerRadius: CGFloat = Theme.cornerRadius
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) { content }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(LucinaTokens.Space.cardPadding)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cornerRadius, style: .continuous))
+            .background(Theme.card, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 

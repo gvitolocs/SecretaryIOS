@@ -1241,5 +1241,6 @@
   "No data yet": ["Ancora nessun dato", "Ingen data endnu"],
   "Hosts and services at a glance, and what needs attention.": ["Host e servizi a colpo d'occhio, e cosa richiede attenzione.", "Værter og tjenester på et øjeblik, og hvad der kræver opmærksomhed."],
   "Server section": ["Sezione del server", "Serversektion"],
-  "Waiting": ["In attesa", "Venter"]
+  "Waiting": ["In attesa", "Venter"],
+  "Limit": ["Limite", "Grænse"]
 }

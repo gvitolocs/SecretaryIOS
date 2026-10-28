@@ -32,20 +32,21 @@ final class ServerStore {
     @ObservationIgnored private(set) var pending: ServerTarget?
     @ObservationIgnored private let api: () -> ServerAPI?
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var targetTask: Task<Void, Never>?
 
     init(api: @escaping () -> ServerAPI?) {
         self.api = api
     }
 
     func load(fresh: Bool = false) async {
-        guard let api = api() else { return }
+        guard !Task.isCancelled, !isLoading || fresh, let api = api() else { return }
         generation += 1
         let mine = generation
         isLoading = true
         defer { if mine == generation { isLoading = false } }
         do {
             let next = try await api.overview(fresh: fresh)
-            guard mine == generation else { return }
+            guard mine == generation, !Task.isCancelled else { return }
             overview = next
             loadedAt = Date()
             error = nil
@@ -54,24 +55,28 @@ final class ServerStore {
         } catch is CancellationError {
             return
         } catch {
-            guard mine == generation else { return }
+            guard mine == generation, !Task.isCancelled else { return }
             let e = APIError.wrap(error)
             self.error = e.userMessage
             if e.endsSession { onTransportError?(e) }
-            // Nothing will hold it: a target that can't be found is dropped rather than opening later by surprise.
-            if overview == nil { pending = nil }
+            // Keep the requested target across an outage; the next successful load resolves it.
         }
     }
 
     /// A push, widget or link: show `tab` and open `target` (now, or once the data has loaded).
     func open(_ link: ServerLink) {
+        pending = nil
+        sheet = nil
+        openHost = nil
         if let tab = link.tab { self.tab = tab }
         guard let target = link.target else { return }
         pending = target
-        if case .host = target {} else { openHost = nil }
         applyPending(final: false)
         // Not in the data on screen (or nothing loaded yet): look again.
-        if pending != nil { Task { await load() } }
+        if pending != nil, !isLoading {
+            targetTask?.cancel()
+            targetTask = Task { await load() }
+        }
     }
 
     /// Opens the pending target if the current data holds it. `final` (fresh data): a target that isn't there
@@ -95,6 +100,8 @@ final class ServerStore {
     }
 
     func reset() {
+        targetTask?.cancel()
+        targetTask = nil
         generation += 1
         overview = nil
         error = nil

@@ -168,7 +168,25 @@ final class ServerTests: XCTestCase {
         // Nothing at all is still an overview (unknown, empty).
         let empty = try Fixtures.decode(ServerOverview.self, "{}")
         XCTAssertEqual(empty.overall, .unknown)
-        XCTAssertEqual(empty.needCount, 1 - 1 + 0)
+        XCTAssertEqual(empty.needCount, 0)
+    }
+
+    func testCodableRoundTripPreservesContractKeys() throws {
+        let original = try full()
+        let encoded = try JSONEncoder().encode(original)
+        XCTAssertEqual(try JSONDecoder().decode(ServerOverview.self, from: encoded), original)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNotNil(json["generated_at"])
+        XCTAssertNotNil(json["attention_count"])
+        XCTAssertNil(json["generatedAt"])
+    }
+
+    func testOutOfRangeIntegerFallsBackWithoutTrapping() throws {
+        let overview = try Fixtures.decode(ServerOverview.self, #"{"attention_count":1e100,"hosts":[{"id":"x","cpus":1e100}]}"#)
+        XCTAssertEqual(overview.attentionCount, 0)
+        XCTAssertNil(overview.hosts.first?.cpus)
+        let widgetJSON = try Fixtures.decode(JSONValue.self, #"{"attention_count":1e100}"#)
+        XCTAssertEqual(WidgetFetcher.serverSection(widgetJSON).attentionCount, 0)
     }
 
     // MARK: Texts
@@ -182,6 +200,10 @@ final class ServerTests: XCTestCase {
         let hostDown = try Fixtures.decode(ServerOverview.self, #"{"overall":"crit","attention_count":0,"hosts":[{"id":"a","state":"crit"},{"id":"b","state":"ok"}]}"#)
         XCTAssertEqual(hostDown.needCount, 1)
         XCTAssertEqual(ServerText.status(nil, failed: true), String(localized: "Server unreachable"))
+        let unknown = try Fixtures.decode(ServerOverview.self, "{}")
+        XCTAssertEqual(ServerText.pluginDetail(unknown), String(localized: "No data yet"))
+        let unavailable = try Fixtures.decode(ServerOverview.self, #"{"overall":"crit"}"#)
+        XCTAssertEqual(ServerText.pluginDetail(unavailable), String(localized: "Server unreachable"))
     }
 
     func testAskLucinaMessage() throws {
@@ -191,8 +213,21 @@ final class ServerTests: XCTestCase {
         XCTAssertTrue(text.contains("nezopt"))
         XCTAssertTrue(text.contains("Not running; port 18210 not listening"))
         XCTAssertTrue(text.contains("Lucina Maps"))
+        XCTAssertTrue(text.contains("maps.example.com"))
         XCTAssertTrue(text.contains("journalctl --user -u gmaps-server -n 100 --no-pager"))
         XCTAssertFalse(text.contains("systemctl"), "the restart command is not sent")
+    }
+
+    func testServicesSearchAndDecisionTimeline() throws {
+        let overview = try full()
+        let ref = try XCTUnwrap(overview.component("gmaps-server"))
+        for query in ["gmaps-server", "Google Maps", "NEZOPT", "secretary", "  "] {
+            XCTAssertTrue(ref.matches(query), query)
+        }
+        XCTAssertFalse(ref.matches("no such service"))
+        let timeline = try Fixtures.decode(ServerOverview.self, #"{"timeline":[{"kind":"decision","title":"Restart approved","ops_id":"decision-1"}]}"#)
+        XCTAssertEqual(timeline.events(.deploys).first?.opsId, "decision-1")
+        XCTAssertTrue(timeline.events(.incidents).isEmpty)
     }
 
     func testMetricAccessibilityLabel() throws {
@@ -207,10 +242,10 @@ final class ServerTests: XCTestCase {
     // MARK: Routes
 
     func testRouteParsing() {
-        XCTAssertEqual(ServerLink.parse("/server-health"), ServerLink(tab: nil, target: nil))
-        XCTAssertEqual(ServerLink.parse("server-health?item=catalog:x"), ServerLink(tab: nil, target: .item("catalog:x")))
-        XCTAssertEqual(ServerLink.parse("/server-health?item=sentinel%3Anezopt%3Aunit%3Ax"), ServerLink(tab: nil, target: .item("sentinel:nezopt:unit:x")))
-        XCTAssertEqual(ServerLink.parse("/server-health?host=nezopt"), ServerLink(tab: nil, target: .host("nezopt")))
+        XCTAssertEqual(ServerLink.parse("/server-health"), ServerLink(tab: .overview, target: nil))
+        XCTAssertEqual(ServerLink.parse("server-health?item=catalog:x"), ServerLink(tab: .overview, target: .item("catalog:x")))
+        XCTAssertEqual(ServerLink.parse("/server-health?item=sentinel%3Anezopt%3Aunit%3Ax"), ServerLink(tab: .overview, target: .item("sentinel:nezopt:unit:x")))
+        XCTAssertEqual(ServerLink.parse("/server-health?host=nezopt"), ServerLink(tab: .overview, target: .host("nezopt")))
         XCTAssertEqual(ServerLink.parse("/server-health/incidents"), ServerLink(tab: .incidents, target: nil))
         XCTAssertEqual(ServerLink.parse("agents/map/x"), ServerLink(tab: .overview, target: .component("x")))
         XCTAssertEqual(ServerLink.parse("/agents/map/gmaps-server"), ServerLink(tab: .overview, target: .component("gmaps-server")))
@@ -269,9 +304,9 @@ final class ServerTests: XCTestCase {
 
         // Loaded: a host opens at once; an unknown target is dropped.
         store.sheet = nil
-        store.open(ServerLink(tab: nil, target: .host("nezopt")))
+        store.open(ServerLink(tab: .overview, target: .host("nezopt")))
         XCTAssertEqual(store.openHost, "nezopt")
-        store.open(ServerLink(tab: nil, target: .item("sentinel:gone")))
+        store.open(ServerLink(tab: .overview, target: .item("sentinel:gone")))
         await store.load()
         XCTAssertNil(store.sheet)
         XCTAssertNil(store.pending)
@@ -291,6 +326,37 @@ final class ServerTests: XCTestCase {
         XCTAssertFalse(store.isLoading)
     }
 
+    func testPendingTargetSurvivesOutageAndOverviewLinkClearsSelection() async throws {
+        var fail = true
+        StubURLProtocol.handler = { _ in fail ? .init(status: 502, body: "") : .init(body: Self.fullJSON) }
+        let client = StubURLProtocol.makeClient()
+        let store = ServerStore(api: { ServerAPI(client: client) })
+        store.open(try XCTUnwrap(ServerLink.parse("server-health?item=catalog:gmaps-server")))
+        await store.load(fresh: true)
+        XCTAssertNil(store.overview)
+        XCTAssertEqual(store.pending, .item("catalog:gmaps-server"))
+        fail = false
+        await store.load(fresh: true)
+        XCTAssertEqual(store.sheet, .item("catalog:gmaps-server"))
+        XCTAssertNil(store.pending)
+        store.tab = .deploys
+        store.open(try XCTUnwrap(ServerLink.parse("server-health")))
+        XCTAssertEqual(store.tab, .overview)
+        XCTAssertNil(store.sheet)
+        XCTAssertNil(store.openHost)
+    }
+
+    func testResetCancelsQueuedTargetLoad() async {
+        let client = StubURLProtocol.makeClient()
+        let store = ServerStore(api: { ServerAPI(client: client) })
+        store.open(ServerLink(tab: .overview, target: .host("nezopt")))
+        store.reset()
+        await Task.yield()
+        XCTAssertTrue(StubURLProtocol.requests.isEmpty)
+        XCTAssertNil(store.pending)
+        XCTAssertNil(store.overview)
+    }
+
     // MARK: Widget
 
     func testWidgetSection() throws {
@@ -304,5 +370,9 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(fromApp.overall, section.overall)
         XCTAssertEqual(fromApp.attentionCount, section.attentionCount)
         XCTAssertEqual(fromApp.titles, section.titles)
+        let partial = try Fixtures.decode(JSONValue.self, Self.partialJSON)
+        let partialSection = WidgetFetcher.serverSection(partial)
+        let partialApp = ServerSection(try Fixtures.decode(ServerOverview.self, Self.partialJSON), fetchedAt: partialSection.fetchedAt)
+        XCTAssertEqual(partialSection, partialApp)
     }
 }
