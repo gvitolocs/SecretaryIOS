@@ -104,6 +104,12 @@ pub struct Memo {
     /// Bumped by every re-summary, so a new result notifies and republishes.
     #[serde(default)]
     pub revision: u32,
+    #[serde(default)]
+    pub link_checked_gen: Option<u64>,
+    #[serde(default)]
+    pub archived_rev: Option<u32>,
+    #[serde(default)]
+    pub archived_at: Option<DateTime<Utc>>,
     /// Where the current transcript came from: `whisper` (the server) or `device` (the
     /// iPhone's, used while the GPU was busy; the worker upgrades it to Whisper later).
     #[serde(default)]

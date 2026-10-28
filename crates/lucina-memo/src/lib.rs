@@ -15,6 +15,8 @@
 //! Recordings stay on this host and the owner's Pi; only transcript text goes
 //! to Lucina's chat model for the summary.
 pub mod api;
+pub mod archive;
+pub mod calendar;
 pub mod diarize;
 pub mod events;
 pub mod kernel;
@@ -39,6 +41,8 @@ use chrono_tz::Tz;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub data_dir: PathBuf,
+    pub archive_dir: Option<PathBuf>,
+    pub archive_require_mount: Option<PathBuf>,
     /// Listen addresses (`127.0.0.1:8795`, the tailnet address for p1's Caddy).
     pub binds: Vec<String>,
     /// Shared secret Caddy on p1 adds as `X-Memo-Gateway` after the device
@@ -81,6 +85,14 @@ impl Config {
                 get("LUCINA_MEMO_DIR")
                     .unwrap_or_else(|| format!("{home}/Projects/Lucina/data/memos")),
             ),
+            archive_dir: get("LUCINA_MEMO_ARCHIVE_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            archive_require_mount: {
+                let v = get("LUCINA_MEMO_ARCHIVE_REQUIRE_MOUNT")
+                    .unwrap_or_else(|| "/home/nez/mnt/mybook".into());
+                (!v.is_empty()).then(|| PathBuf::from(v))
+            },
             binds: get("LUCINA_MEMO_BIND")
                 .unwrap_or_else(|| "127.0.0.1:8795".into())
                 .split(',')
@@ -140,7 +152,11 @@ impl Config {
     }
 
     pub fn from_env() -> Self {
-        Self::from_lookup(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        Self::from_lookup(|k| {
+            std::env::var(k)
+                .ok()
+                .filter(|v| !v.is_empty() || k == "LUCINA_MEMO_ARCHIVE_REQUIRE_MOUNT")
+        })
     }
 
     /// The app link of a memo (`/memos/<id>` in the web app).
@@ -158,6 +174,10 @@ impl Config {
 pub struct App {
     pub cfg: Config,
     pub store: store::Store,
+    pub calendar: calendar::CalendarCache,
+    pub(crate) archive_lock: std::sync::Mutex<()>,
+    pub(crate) archive_retries:
+        std::sync::Mutex<std::collections::HashMap<String, (u32, chrono::DateTime<chrono::Utc>)>>,
     pub llm: Arc<dyn lucina_llm::ChatModel>,
     pub llm_label: String,
     /// Wakes the worker when a memo is queued.
@@ -212,6 +232,9 @@ impl App {
             memory,
             meetings: std::sync::Mutex::new(None),
             diarizer: std::sync::Mutex::new(None),
+            calendar: calendar::CalendarCache::open(&cfg.data_dir)?,
+            archive_lock: std::sync::Mutex::new(()),
+            archive_retries: std::sync::Mutex::default(),
             cfg,
             store,
             llm,
