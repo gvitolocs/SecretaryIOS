@@ -33,6 +33,8 @@ it("renders a list row with its status and retryable error", async () => {
   expect(screen.getByRole("list", { name: "Decisions" }).querySelectorAll(".pg-row")).toHaveLength(1);
   expect(screen.getByText("Pending")).toBeInTheDocument();
   frame(container);
+  expect(container.querySelector(".pg-context")).toHaveTextContent("1 waiting");
+  expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/^Decisions$/);
 });
 it("keeps the parent header and back link on a failed detail", async () => {
   stubFetch(() => ({ status: 500, body: {} }));

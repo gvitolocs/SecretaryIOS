@@ -15,23 +15,13 @@
 .pg .apv-asking, .pg .apv-expiry { color: var(--pg-muted); font-size: 13px; }
 .pg .apv-badge { background: var(--pg-fill); color: var(--pg-muted); border-color: var(--pg-border); font-size: 12px; font-weight: 600; }
 
-/* The navigation entry's count: a red dot on the tab (hidden at 0), like the Plugins cards. */
-.tab-badge {
-  position: absolute;
-  top: 2px;
-  left: calc(50% + 6px);
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  box-sizing: border-box;
-  border-radius: 999px;
-  background: #ff3b30;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  text-align: center;
-  pointer-events: none;
+/* The top-bar button next to the bell: it reuses the bell's .notif-badge for the count (hidden at 0). */
+.decisions-btn {
+  position: relative;
+}
+
+.decisions-btn[aria-current="page"] {
+  color: var(--text);
 }
 
 /* "Lucina needs your decision": above the phone's tab bar, bottom-centre elsewhere. */

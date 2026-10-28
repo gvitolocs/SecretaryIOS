@@ -2,9 +2,10 @@ import { A, useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createSignal, lazy, on, onCleanup, onMount, Show, Suspense, type JSX } from "solid-js";
 import { ApprovalPopup } from "../components/ApprovalPopup";
 import { DecisionBanner } from "../components/DecisionBanner";
+import { DecisionsButton } from "../components/DecisionsButton";
 import { AccountDialog } from "../components/AccountDialog";
 import { SecretSheet } from "../components/SecretSheet";
-import { AvatarIcon, ChatIcon, CheckCircleIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
+import { AvatarIcon, ChatIcon, DumbbellIcon, GridIcon, ListIcon, LogoutIcon, UserIcon } from "../components/Icons";
 import { LucinaDock } from "../components/LucinaDock";
 import { NotificationBell } from "../components/NotificationBell";
 import { StatusDot } from "../components/StatusDot";
@@ -17,7 +18,7 @@ import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
 import { startInstagramBadges } from "../state/instagramBadge";
-import { pendingDecisionCount, startDecisions } from "../state/decisions";
+import { startDecisions } from "../state/decisions";
 import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
@@ -30,7 +31,6 @@ const Wardrobe = lazy(() => import("../components/Wardrobe"));
 // The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
 // Training + Weight, Plugins. Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const DECISION_PATHS = ["/decisions"];
 const PLUGIN_PATHS = ["/approvals", "/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram", "/agents"];
 
 function NavLinks(props: { class: string }) {
@@ -54,15 +54,6 @@ function NavLinks(props: { class: string }) {
       <A href="/training" class="tab" classList={{ "tab--active": under(TRAINING_PATHS) }} aria-current={under(TRAINING_PATHS) ? "page" : undefined}>
         <DumbbellIcon />
         <span>{t("shell.navTraining")}</span>
-      </A>
-      <A href="/decisions" class="tab" classList={{ "tab--active": under(DECISION_PATHS) }} aria-current={under(DECISION_PATHS) ? "page" : undefined}>
-        <CheckCircleIcon />
-        <span>{t("shell.navDecisions")}</span>
-        <Show when={pendingDecisionCount() > 0}>
-          <span class="tab-badge" role="img" aria-label={t("decisions.waiting", { count: pendingDecisionCount() })}>
-            {pendingDecisionCount() > 99 ? "99+" : pendingDecisionCount()}
-          </span>
-        </Show>
       </A>
       <A href="/plugins" class="tab" classList={{ "tab--active": under(PLUGIN_PATHS) }} aria-current={under(PLUGIN_PATHS) ? "page" : undefined}>
         <GridIcon />
@@ -181,6 +172,7 @@ export default function Shell(props: { children?: JSX.Element }) {
                 <AvatarIcon />
               </button>
             </Show>
+            <DecisionsButton />
             <NotificationBell
               onSettings={() => {
                 setAccountSection("notifications");

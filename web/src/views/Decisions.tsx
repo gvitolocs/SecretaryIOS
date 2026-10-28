@@ -49,7 +49,7 @@ export default function Decisions() {
     </Show>
     <A class="btn" href="/">{t("login.backHome")}</A>
   </section>}><Page>
-    <PageHeader title={t("decisions.title")} context={t("decisions.listSub")} />
+    <PageHeader title={t("decisions.title")} context={pending().length ? t("decisions.waitingShort", { count: pending().length }) : t("decisions.listSub")} />
     <PageGrid layout="single">
       <Show when={loading()}><LoadingState label={t("decisions.loading")} /></Show>
       <Show when={error()}><ErrorState message={t("decisions.loadError")} retryLabel={t("decisions.retry")} onRetry={() => void load()} /></Show>

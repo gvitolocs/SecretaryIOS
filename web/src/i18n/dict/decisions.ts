@@ -39,6 +39,7 @@ const en = {
   byOwner: "Answered by owner",
   byLucina: "Answered by Lucina",
   waiting: "{count} waiting for your answer",
+  waitingShort: "{count} waiting",
   banner: "Lucina needs your decision: {question}",
   bannerLabel: "Decision needed",
   bannerMore: "{count} more waiting",
@@ -47,6 +48,6 @@ const en = {
 
 export const decisions: FeatureDictionary<typeof en> = {
   en,
-  it: { ...en, title: "Decisioni", earlier: "Precedenti", all: "Tutte le decisioni", answerOwn: "Rispondi con parole mie", waiting: "{count} in attesa della tua risposta", banner: "Lucina ha bisogno di una tua decisione: {question}", bannerLabel: "Decisione richiesta", bannerMore: "Altre {count} in attesa", review: "Apri" },
-  da: { ...en, title: "Beslutninger", earlier: "Tidligere", all: "Alle beslutninger", answerOwn: "Svar med mine egne ord", waiting: "{count} venter på dit svar", banner: "Lucina har brug for din beslutning: {question}", bannerLabel: "Beslutning påkrævet", bannerMore: "{count} flere venter", review: "Gennemse" },
+  it: { ...en, title: "Decisioni", earlier: "Precedenti", all: "Tutte le decisioni", answerOwn: "Rispondi con parole mie", waiting: "{count} in attesa della tua risposta", waitingShort: "{count} in attesa", banner: "Lucina ha bisogno di una tua decisione: {question}", bannerLabel: "Decisione richiesta", bannerMore: "Altre {count} in attesa", review: "Apri" },
+  da: { ...en, title: "Beslutninger", earlier: "Tidligere", all: "Alle beslutninger", answerOwn: "Svar med mine egne ord", waiting: "{count} venter på dit svar", waitingShort: "{count} venter", banner: "Lucina har brug for din beslutning: {question}", bannerLabel: "Beslutning påkrævet", bannerMore: "{count} flere venter", review: "Gennemse" },
 };

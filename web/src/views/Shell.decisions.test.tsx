@@ -42,22 +42,26 @@ describe("Shell: decisions", () => {
     delete document.documentElement.dataset.shell;
   });
 
-  it("has a Decisions entry in the navigation with a badge for the pending count", async () => {
+  it("has no Decisions tab, but a button next to the bell with a badge for the pending count", async () => {
     serve(() => [decision("dc-000000000001", "Ship today?"), decision("dc-000000000002", "Restart p1?")]);
     mount();
-    const links = document.querySelectorAll<HTMLAnchorElement>('.tabbar a[href="/decisions"]');
-    expect(links).toHaveLength(1);
-    expect(links[0]).toHaveTextContent("Decisions");
-    expect(await screen.findAllByRole("img", { name: "2 waiting for your answer" })).toHaveLength(2); // top bar + tab bar
-    expect(links[0]!.querySelector(".tab-badge")).toHaveTextContent("2");
+    const button = await screen.findByRole("link", { name: "2 waiting for your answer" });
+    expect(button).toHaveAttribute("href", "/decisions");
+    expect(button.closest(".topbar-actions")).not.toBeNull();
+    expect(button.nextElementSibling).toHaveClass("notif-bell");
+    expect(button.querySelector(".notif-badge")).toHaveTextContent("2");
+    expect(document.querySelectorAll('.tabbar a[href="/decisions"]')).toHaveLength(0);
+    expect(document.querySelectorAll(".tabbar a")).toHaveLength(4);
+    expect(document.querySelectorAll('.tabs-top a[href="/decisions"]')).toHaveLength(0);
   });
 
   it("hides the badge when nothing is pending", async () => {
     const calls = serve(() => []);
     mount();
     await waitFor(() => expect(calls.some((c) => c.url === "/v1/decisions?status=pending&limit=50")).toBe(true));
-    expect(document.querySelector('.tabbar a[href="/decisions"]')).not.toBeNull();
-    expect(document.querySelector(".tab-badge")).toBeNull();
+    const button = screen.getByRole("link", { name: "Decisions" });
+    expect(button).toHaveAttribute("href", "/decisions");
+    expect(button.querySelector(".notif-badge")).toBeNull();
     expect(screen.queryByRole("status", { name: "Decision needed" })).toBeNull();
   });
 
@@ -81,7 +85,7 @@ describe("Shell: decisions", () => {
     mount("/decisions");
     await screen.findByText("Decisions page");
     await waitFor(() => expect(calls.some((c) => c.url.startsWith("/v1/decisions?"))).toBe(true));
-    await screen.findAllByRole("img", { name: "1 waiting for your answer" });
+    await screen.findByRole("link", { name: "1 waiting for your answer" });
     expect(screen.queryByRole("status", { name: "Decision needed" })).toBeNull();
   });
 
