@@ -42,7 +42,9 @@ With the `agents` scope you can also drive Lucina Agents, the owner's coding age
 make a git worktree with workspace_create, start an agent in it with agent_run (provider + task), follow it with agent_wait and agent_logs, \
 steer it with agent_send, read its changes with workspace_diff, files_list and file_read, and agent_stop / agent_archive it when done; agents_list and agents_search find agents. \
 Agents ask the owner before risky steps: those permission requests (permissions_list) are answered only by the owner in the Secretary app, never through this MCP; \
-pushing, opening PRs and merging are the owner's too. Agents you start can't start further agents, and each connection has a budget of running agents and runs per hour.\n\n\
+pushing, opening PRs and merging are the owner's too. Agents you start can't start further agents, and each connection has a budget of running agents and runs per hour. \
+Before restarting, stopping, deploying or changing a service, ask the Homelab catalog: catalog_get (where it runs, logs, restart, rollback, runbook), \
+catalog_impact (what breaks if it is down), catalog_health (what is unhealthy right now) and catalog_drift.\n\n\
 Times are in the owner's time zone (see lucina_status). Never use these tools to buy things or contact other people; ask the owner first.";
 
 #[derive(Clone)]

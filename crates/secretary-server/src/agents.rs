@@ -76,7 +76,7 @@ pub const STREAM_IDLE: Duration = Duration::from_secs(90);
 const LONG_POLL: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The daemon's top-level routes.
-const TOP: [&str; 12] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals"];
+const TOP: [&str; 13] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "schedules", "usage", "terminals", "catalog"];
 const PASS: [HeaderName; 3] = [header::CONTENT_TYPE, header::ACCEPT, HeaderName::from_static("last-event-id")];
 /// Also passed on to a workspace service (the dev server an agent started).
 const PASS_SERVICE: [&str; 5] = ["accept-language", "if-none-match", "if-modified-since", "range", "x-requested-with"];
@@ -455,6 +455,9 @@ mod tests {
             ("/v1/agents/search", "/agents/search"),
             ("/v1/agents/0b6e/prompts", "/agents/0b6e/prompts"),
             ("/v1/agents/0b6e/detach", "/agents/0b6e/detach"),
+            ("/v1/agents/catalog", "/catalog"),
+            ("/v1/agents/catalog/impact/pi-home%2Cpokoin-db-writer", "/catalog/impact/pi-home%2Cpokoin-db-writer"),
+            ("/v1/agents/catalog/components/codevira@cardvault", "/catalog/components/codevira@cardvault"),
         ] {
             assert_eq!(daemon_path(public).as_deref(), Some(daemon), "{public}");
         }

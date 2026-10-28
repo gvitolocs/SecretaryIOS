@@ -355,6 +355,34 @@ pub struct ScheduleArgs {
 #[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
+/// Arguments of `catalog_get`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogGetArgs {
+    /// A component id from the catalog, e.g. pokoin-db-writer, lucina-rs, pi-home (catalog_health lists the unhealthy ones).
+    pub id: String,
+}
+
+/// Arguments of `catalog_impact`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogImpactArgs {
+    /// Component ids to treat as down together (1-20), e.g. ["pi-home"] or ["pokoin-db-writer"].
+    pub ids: Vec<String>,
+}
+
+/// Arguments of `catalog_health`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogHealthArgs {
+    /// One component; without it, everything that is not healthy right now.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Rescan that component's host now instead of reading the last 5-minute scan (needs id; slower).
+    #[serde(default)]
+    pub live: Option<bool>,
+}
+
 // -- run budget ----------------------------------------------------------------
 
 /// `agent_run` times per token over the last hour.
@@ -982,6 +1010,169 @@ fn route_missing(e: &BackendError, found_code: &str) -> bool {
     (e.status == 404 || e.status == 405) && e.code != found_code
 }
 
+// -- catalog ------------------------------------------------------------------------
+
+fn catalog_id(s: &str) -> Result<&str, ToolError> {
+    let s = s.trim();
+    if word(s, 80, b"-_.@") {
+        Ok(s)
+    } else {
+        Err(bad("`id` is a catalog component id, e.g. pokoin-db-writer or pi-home"))
+    }
+}
+
+fn join_ids(v: &Value) -> String {
+    v.as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", ")
+}
+
+fn finding_lines(findings: &Value) -> String {
+    let mut out = String::new();
+    for f in findings.as_array().into_iter().flatten() {
+        out.push_str(&format!("  - {} {}: {}\n", str_of(f, "level"), str_of(f, "what"), str_of(f, "detail")));
+    }
+    out
+}
+
+/// One component, for a model deciding whether it is safe to act.
+fn component_text(c: &Value) -> String {
+    let st = &c["status"];
+    let mut out = format!(
+        "{} ({}) — {} / {}, {} on {}\nState: {}",
+        str_of(c, "id"),
+        c["name"].as_str().unwrap_or(str_of(c, "id")),
+        str_of(c, "group"),
+        str_of(c, "project"),
+        str_of(c, "kind"),
+        c["host"].as_str().unwrap_or("-"),
+        st["effective"].as_str().unwrap_or("unknown"),
+    );
+    if st.is_object() {
+        out.push_str(&format!(" (own check {}, since {})", str_of(st, "level"), str_of(st, "since")));
+        let by: Vec<&str> = st["impacted_by"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+        if !by.is_empty() {
+            out.push_str(&format!(", because of {}", by.join(" ← ")));
+        }
+    }
+    out.push_str(&format!(". Criticality {}.\n", str_of(c, "criticality")));
+    if let Some(d) = c["description"].as_str().filter(|d| !d.is_empty()) {
+        out.push_str(&format!("{d}\n"));
+    }
+    out.push_str(&finding_lines(&st["findings"]));
+    for (label, key) in [("Units", "units"), ("Containers", "containers"), ("k8s", "k8s"), ("Serves", "serves"), ("Needs", "depends_on"), ("Uses", "soft_depends_on")] {
+        let v = join_ids(&c[key]);
+        if !v.is_empty() {
+            out.push_str(&format!("{label}: {v}\n"));
+        }
+    }
+    for g in c["depends_on_any"].as_array().into_iter().flatten() {
+        out.push_str(&format!("Needs one of: {}\n", join_ids(g)));
+    }
+    let deps: Vec<String> =
+        c["dependents"].as_array().into_iter().flatten().map(|d| format!("{} ({})", str_of(d, "id"), str_of(d, "how"))).collect();
+    if !deps.is_empty() {
+        out.push_str(&format!("Needed by: {}\n", deps.join(", ")));
+    }
+    if let Some(r) = c["repo"].as_str() {
+        out.push_str(&format!("Repo: {r}{}\n", c["branch"].as_str().map(|b| format!(", line {b}")).unwrap_or_default()));
+    }
+    if let Some(p) = c["path"].as_str() {
+        out.push_str(&format!("Path: {p}\n"));
+    }
+    let d = &c["deploy"];
+    if d.is_object() {
+        let commit: String = str_of(d, "commit").chars().take(10).collect();
+        out.push_str(&format!("Last deploy: {} {commit} \"{}\" ({})\n", str_of(d, "target"), str_of(d, "subject"), str_of(d, "recorded")));
+    }
+    for (label, key) in [("Logs", "logs"), ("Restart", "restart"), ("Rollback", "rollback")] {
+        if let Some(v) = c[key].as_str() {
+            out.push_str(&format!("{label}: {v}\n"));
+        }
+    }
+    if let Some(r) = c["runbook"].as_str().filter(|r| !r.trim().is_empty()) {
+        out.push_str(&format!("Runbook:\n{}\n", r.trim()));
+    }
+    out
+}
+
+fn impact_line(i: &Value) -> String {
+    let serves = join_ids(&i["serves"]);
+    let via: Vec<&str> = i["via"].as_array().into_iter().flatten().filter_map(|x| x.as_str()).collect();
+    format!(
+        "- {} ({}){} via {}\n",
+        str_of(i, "id"),
+        str_of(i, "criticality"),
+        if serves.is_empty() { String::new() } else { format!(", serves {serves}") },
+        via.join(" ← ")
+    )
+}
+
+fn impact_text(v: &Value) -> String {
+    let down = join_ids(&v["down"]);
+    let broken = v["broken"].as_array().cloned().unwrap_or_default();
+    let degraded = v["degraded"].as_array().cloned().unwrap_or_default();
+    if broken.is_empty() && degraded.is_empty() {
+        return format!("If {down} went down, nothing else in the catalog depends on it.");
+    }
+    let mut out = format!("If {down} went down: {} break, {} degrade.\n", broken.len(), degraded.len());
+    if !broken.is_empty() {
+        out.push_str("Breaks:\n");
+        broken.iter().for_each(|i| out.push_str(&impact_line(i)));
+    }
+    if !degraded.is_empty() {
+        out.push_str("Degrades (still works, worse or with less redundancy):\n");
+        degraded.iter().for_each(|i| out.push_str(&impact_line(i)));
+    }
+    let public = join_ids(&v["public_hostnames_broken"]);
+    if !public.is_empty() {
+        out.push_str(&format!("Public addresses that would fail: {public}\n"));
+    }
+    out
+}
+
+fn status_text(v: &Value) -> String {
+    let problems = v["problems"].as_array().cloned().unwrap_or_default();
+    if problems.is_empty() {
+        return format!("As of {} everything catalogued is healthy.", str_of(v, "generated_at"));
+    }
+    let mut out = format!(
+        "As of {} ({} not healthy; drift: {} unknown, {} missing):\n",
+        str_of(v, "generated_at"),
+        problems.len(),
+        v["drift"]["unknown"],
+        v["drift"]["missing"]
+    );
+    for p in &problems {
+        let by = join_ids(&p["impacted_by"]);
+        let crit = p["criticality"].as_str().unwrap_or("-");
+        if by.is_empty() {
+            out.push_str(&format!("- {} {} ({crit})\n", str_of(p, "effective"), str_of(p, "id")));
+            let bad: Vec<Value> =
+                p["findings"].as_array().into_iter().flatten().filter(|f| f["level"] != "ok" && f["level"] != "idle").cloned().collect();
+            out.push_str(&finding_lines(&json!(bad)));
+        } else {
+            out.push_str(&format!("- {} {} ({crit}), because of {by}\n", str_of(p, "effective"), str_of(p, "id")));
+        }
+    }
+    out
+}
+
+fn drift_text(v: &Value) -> String {
+    let unknown = v["unknown"].as_array().cloned().unwrap_or_default();
+    let missing = v["missing"].as_array().cloned().unwrap_or_default();
+    let mut out = format!("Running but not in the catalog: {}. In the catalog but not found: {}.\n", unknown.len(), missing.len());
+    for i in &unknown {
+        out.push_str(&format!("- unknown {} on {}: {} ({})\n", str_of(i, "kind"), str_of(i, "host"), str_of(i, "item"), str_of(i, "detail")));
+    }
+    for m in &missing {
+        out.push_str(&format!("- missing {} (component {})\n", str_of(m, "key"), str_of(m, "component")));
+    }
+    let skipped = join_ids(&v["skipped_hosts"]);
+    if !skipped.is_empty() {
+        out.push_str(&format!("Not scanned (unreachable): {skipped}\n"));
+    }
+    out
+}
+
 // -- tools --------------------------------------------------------------------------
 
 impl Tools<'_> {
@@ -1598,6 +1789,54 @@ impl Tools<'_> {
                 }
                 self.areq(Method::DELETE, &path, &[], None, CALL_TIMEOUT).await.map_err(refusal)?;
                 Ok(Outcome { text: format!("Removed schedule {id}."), target: Some(id.to_owned()) })
+            }
+            "catalog_get" => {
+                let a: CatalogGetArgs = parse(args)?;
+                let id = catalog_id(&a.id)?;
+                let c = self.aget(&format!("/catalog/components/{}", seg(id)), &[]).await?;
+                Ok(Outcome { text: clip(&component_text(&c)), target: Some(id.to_owned()) })
+            }
+            "catalog_impact" => {
+                let a: CatalogImpactArgs = parse(args)?;
+                if a.ids.is_empty() || a.ids.len() > 20 {
+                    return Err(bad("`ids` takes 1-20 component ids"));
+                }
+                let ids = a.ids.iter().map(|i| catalog_id(i)).collect::<Result<Vec<_>, _>>()?;
+                let v = self.aget(&format!("/catalog/impact/{}", seg(&ids.join(","))), &[]).await?;
+                Ok(Outcome::text(clip(&impact_text(&v))))
+            }
+            "catalog_health" => {
+                let a: CatalogHealthArgs = parse(args)?;
+                let Some(id) = a.id.as_deref().map(catalog_id).transpose()? else {
+                    if a.live == Some(true) {
+                        return Err(bad("live needs an id: it rescans that component's host"));
+                    }
+                    let v = self.aget("/catalog/status", &[]).await?;
+                    return Ok(Outcome::text(clip(&status_text(&v))));
+                };
+                let mut q = vec![("id", id.to_owned())];
+                let mut timeout = CALL_TIMEOUT;
+                if a.live == Some(true) {
+                    q.push(("live", "true".into()));
+                    timeout = Duration::from_secs(160);
+                }
+                let v = self.areq(Method::GET, "/catalog/health", &q, None, timeout).await.map_err(refusal)?;
+                let s = &v["status"];
+                let by = join_ids(&s["impacted_by"]);
+                let mut out = format!(
+                    "{id}: {} (own check {}, since {}; scan {}){}\n",
+                    str_of(s, "effective"),
+                    str_of(s, "level"),
+                    str_of(s, "since"),
+                    str_of(&v, "generated_at"),
+                    if by.is_empty() { String::new() } else { format!(", because of {by}") }
+                );
+                out.push_str(&finding_lines(&s["findings"]));
+                Ok(Outcome { text: clip(&out), target: Some(id.to_owned()) })
+            }
+            "catalog_drift" => {
+                let v = self.aget("/catalog/drift", &[]).await?;
+                Ok(Outcome::text(clip(&drift_text(&v))))
             }
             _ => Err(bad(format!("unknown tool {name}"))),
         }
