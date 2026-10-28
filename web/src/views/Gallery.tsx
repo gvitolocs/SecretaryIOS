@@ -11,7 +11,8 @@ import { ArchiveBoxIcon, PlacesIcon } from "../components/gallery/browse/BrowseI
 import { MemoriesStrip } from "../components/gallery/browse/MemoriesStrip";
 import { SourceBar } from "../components/gallery/SourceBar";
 import { LabIcon } from "../components/gallery/lab/LabIcons";
-import { BackIcon, SearchIcon, TrashIcon } from "../components/Icons";
+import { ShareSheet } from "../components/gallery/share/ShareSheet";
+import { BackIcon, LinkIcon, SearchIcon, TrashIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { rangeIds, sectionKey, sourceIdOf, toggleId, type GroupBy } from "../lib/galleryLayout";
 import { supportsJxl } from "../lib/jxl";
@@ -185,6 +186,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
 
   const [deleting, setDeleting] = createSignal<GalleryItem[] | null>(null);
   const [albumFor, setAlbumFor] = createSignal<string[] | null>(null);
+  const [sharing, setSharing] = createSignal<GalleryItem[] | null>(null);
 
   async function run(op: "favorite" | "unfavorite" | "restore" | "archive" | "unarchive", items: GalleryItem[]): Promise<string[]> {
     setBusy(true);
@@ -359,6 +361,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
                 <A class="g-iconbtn" href="/gallery/lab" aria-label={t("lab.labLink")} title={t("lab.labLink")}>
                   <LabIcon />
                 </A>
+                <A class="g-iconbtn" href="/gallery/shared" aria-label={t("galleryShare.manage")} title={t("galleryShare.manage")}>
+                  <LinkIcon />
+                </A>
                 <A class="g-iconbtn" href="/gallery/trash" aria-label={t("gallery.trashLink")} title={t("gallery.trashLink")}>
                   <TrashIcon />
                 </A>
@@ -376,6 +381,7 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
             onClear={clearSelection}
             onFavorite={() => void favoriteSelected()}
             onAlbum={() => setAlbumFor(selectedItems().map((i) => i.id))}
+            onShare={() => setSharing(selectedItems())}
             onDownload={downloadSelected}
             onDelete={() => onCommand("delete")}
             onRestore={() => void restoreSelected()}
@@ -537,6 +543,9 @@ export default function GalleryView(props: { trash?: boolean; archive?: boolean 
       </Show>
       <Show when={deleting()}>
         {(list) => <DeleteDialog items={list()} purge={trash()} onDone={deleted} onCancel={() => setDeleting(null)} />}
+      </Show>
+      <Show when={sharing()}>
+        {(list) => <ShareSheet target={{ kind: "items", items: list() }} onClose={() => setSharing(null)} />}
       </Show>
       <Show when={albumFor()}>
         {(list) => (
