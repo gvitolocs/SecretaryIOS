@@ -89,7 +89,7 @@
 		<string>INSendMessageIntent</string>
 	</array>
 	<key>SecretaryAPNsEnabled</key>
-	<false/>
+	<true/>
 	<key>SecretaryKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)tech.getsecretary.shared</string>
 	<key>UIApplicationSceneManifest</key>
@@ -102,6 +102,7 @@
 		<string>fetch</string>
 		<string>audio</string>
 		<string>processing</string>
+		<string>remote-notification</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict>

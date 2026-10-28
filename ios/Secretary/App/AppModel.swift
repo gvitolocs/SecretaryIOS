@@ -324,6 +324,7 @@ final class AppModel {
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
         approvals.onTransportError = onError
+        approvals.onPendingChanged = { items in AppModel.publishApprovals(items) }
         agents.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess

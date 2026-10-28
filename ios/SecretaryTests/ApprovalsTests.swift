@@ -29,6 +29,16 @@ final class FakeApprovalSigner: ApprovalSigning, @unchecked Sendable {
         if let error { throw error }
         return ApprovalProof(keyId: keyId ?? "", signature: "c2ln")
     }
+
+    /// Whether a Face ID unlock just happened (a lock-screen Approve can sign without a prompt).
+    var recentlyUnlocked = false
+    private(set) var signedAfterUnlock: [String] = []
+
+    func signAfterUnlock(_ message: String) async throws -> ApprovalProof {
+        guard recentlyUnlocked, keyId != nil else { throw ApprovalSignError.needsInteraction }
+        signedAfterUnlock.append(message)
+        return ApprovalProof(keyId: keyId ?? "", signature: "dW5sb2Nr")
+    }
 }
 
 /// Records what would go to `UNUserNotificationCenter`, delivered removals included.
@@ -43,6 +53,9 @@ final class ApprovalFakeCenter: NotificationScheduling, @unchecked Sendable {
     func requestAuthorization() async throws -> Bool { true }
     func setBadge(_ count: Int) async {}
     func removeDelivered(_ identifiers: [String]) async { delivered.append(contentsOf: identifiers) }
+    /// Approval ids the server's APNs push already put on the lock screen (identifier `apns-<id>`).
+    var pushed: Set<String> = []
+    func deliveredApprovals(_ ids: Set<String>) async -> [String] { ids.intersection(pushed).map { "apns-\($0)" } }
 }
 
 @MainActor
@@ -59,6 +72,8 @@ final class FakeApprovalNotifier: ApprovalNotifying {
 
     func postFailure(for item: ApprovalItem) async { failures.append(item.id) }
     func remove(ids: [String]) async { removed.append(contentsOf: ids) }
+    private(set) var confirms: [String] = []
+    func postConfirm(for item: ApprovalItem) async { confirms.append(item.id) }
 }
 
 private func itemJSON(id: String, sensitive: Bool, status: String? = nil, extra: String = "") -> String {
@@ -304,7 +319,7 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(ApprovalNotificationAction.deny.route(sensitive: true), .decide(.deny))
         XCTAssertEqual(ApprovalNotificationAction.deny.route(sensitive: false), .decide(.deny))
         XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: false), .decide(.approve))
-        XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: true), .openSheet)
+        XCTAssertEqual(ApprovalNotificationAction.approve.route(sensitive: true), .decide(.approve))
         XCTAssertEqual(ApprovalNotificationAction.open.route(sensitive: false), .openSheet)
         XCTAssertEqual(ApprovalNotificationAction.open.route(sensitive: true), .openSheet)
     }
@@ -381,21 +396,58 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertTrue(signer.signed.isEmpty)
     }
 
-    func testSensitiveApproveButtonOpensThePromptInsteadOfSigning() async throws {
+    func testSensitiveApproveFromTheLockScreenIsSignedAfterTheFaceIDUnlock() async throws {
         let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
         await store.apply([secret])
         await store.dismissSheet()
-        XCTAssertNil(store.sheetItem)
+        signer.recentlyUnlocked = true
         await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_secret", sensitive: true)
-        XCTAssertEqual(store.sheetItem?.id, "apr_secret")
-        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertEqual(decideRequests().count, 1)
+        let body = decodeBody(decideRequests()[0])
+        XCTAssertEqual(body["decision"] as? String, "approve")
+        XCTAssertEqual((body["proof"] as? [String: Any])?["signature"] as? String, "dW5sb2Nr")
+        XCTAssertEqual(signer.signedAfterUnlock, [secret.signingString(for: .approve)])
+        // No Face ID prompt, no sheet: the app stayed in the background.
         XCTAssertTrue(signer.signed.isEmpty)
-        // A request that turned sensitive after the notification was made is not approved blindly either.
+        XCTAssertNil(store.sheetItem)
+        XCTAssertTrue(notifier.removed.contains("apr_secret"))
+    }
+
+    func testSensitiveApproveWithoutARecentFaceIDUnlockAsksInTheApp() async throws {
+        let secret = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_secret", sensitive: true))
+        await store.apply([secret])
+        await store.dismissSheet()
+        // Unlocked with the passcode (or long ago): nothing is sent, a "Confirm with Face ID" notification opens the prompt.
+        signer.recentlyUnlocked = false
+        await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_secret", sensitive: true)
+        XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertEqual(notifier.confirms, ["apr_secret"])
+        XCTAssertTrue(signer.signed.isEmpty)
+        // A request that turned sensitive after the notification was made is not approved without the proof either.
         let turned = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_turned", sensitive: true))
         await store.apply([secret, turned])
         await store.handleNotification(actionIdentifier: ApprovalNotifier.approveAction, approvalId: "apr_turned", sensitive: false)
         XCTAssertTrue(decideRequests().isEmpty)
+        XCTAssertEqual(notifier.confirms, ["apr_secret", "apr_turned"])
+        // Its tap opens the prompt.
+        await store.handleNotification(actionIdentifier: UNNotificationDefaultActionIdentifier, approvalId: "apr_turned", sensitive: true)
         XCTAssertEqual(store.sheetItem?.id, "apr_turned")
+    }
+
+    func testARequestAlreadyPushedIsNotPostedAgain() async throws {
+        let center = ApprovalFakeCenter()
+        center.pushed = ["apr_1"]
+        let notifier = ApprovalNotifier(center: center)
+        let pushed = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_1", sensitive: true))
+        let fresh = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_2", sensitive: true))
+        await notifier.post(pushed, previews: true)
+        await notifier.post(fresh, previews: true)
+        XCTAssertEqual(center.added.map(\.identifier), ["approval.apr_2"])
+        XCTAssertEqual(center.added.first?.content.categoryIdentifier, ApprovalNotifier.sensitiveCategory)
+        // Answered: the APNs one goes too.
+        await notifier.remove(ids: ["apr_1"])
+        XCTAssertTrue(center.delivered.contains("apns-apr_1"))
+        XCTAssertTrue(center.delivered.contains("approval.apr_1"))
     }
 
     func testAFailedButtonAnswerTellsTheOwner() async throws {

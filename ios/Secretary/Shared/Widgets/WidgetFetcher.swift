@@ -29,6 +29,28 @@ struct WidgetFetcher: Sendable {
         return ["it", "en", "da"].contains(code) ? code : "en"
     }
 
+    // MARK: Approvals
+
+    func approvals() async throws -> ApprovalsSection {
+        let page: JSONValue = try await client.get("/v1/approvals", query: [URLQueryItem(name: "status", value: "pending")], timeout: 10)
+        let items = (page["approvals"]?.arrayValue ?? []).compactMap(Self.approval)
+        return ApprovalsSection(fetchedAt: Date(), items: items)
+    }
+
+    static func approval(_ v: JSONValue) -> ApprovalsSection.Item? {
+        guard let id = v["id"]?.nonEmptyString, let hash = v["payloadHash"]?.nonEmptyString else { return nil }
+        let who = v["requester"]
+        return ApprovalsSection.Item(id: id, requester: who?["name"]?.nonEmptyString ?? who?["kind"]?.nonEmptyString ?? "",
+                                     summary: v["summary"]?.stringValue ?? "", details: v["details"]?.stringValue ?? "",
+                                     sensitive: v["sensitive"]?.boolValue ?? true, payloadHash: hash, expiresAt: date(v["expiresAt"]))
+    }
+
+    /// Deny needs no Face ID (the contract): the widget's button sends it from the extension.
+    func denyApproval(_ id: String, payloadHash: String) async throws {
+        struct Body: Encodable { let decision = "deny"; let payloadHash: String }
+        let _: JSONValue = try await client.send("POST", "/v1/approvals/\(Self.segment(id))/decide", body: Body(payloadHash: payloadHash))
+    }
+
     // MARK: Ask Lucina
 
     func ask() async throws -> AskSection {

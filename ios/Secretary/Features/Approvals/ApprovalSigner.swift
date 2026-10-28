@@ -16,6 +16,14 @@ protocol ApprovalSigning: Sendable {
     func removeKey() throws
     /// Signs `message` (ASCII bytes) after Face ID or the passcode. `reason` is what the sheet says.
     func sign(_ message: String, reason: String) async throws -> ApprovalProof
+    /// Signs `message` without any prompt, for a notification's Approve with the app in the background. Works only
+    /// right after the owner unlocked the iPhone with Face ID (the button asks for that); otherwise
+    /// `.needsInteraction`, and the app must ask in the prompt.
+    func signAfterUnlock(_ message: String) async throws -> ApprovalProof
+}
+
+extension ApprovalSigning {
+    func signAfterUnlock(_ message: String) async throws -> ApprovalProof { throw ApprovalSignError.needsInteraction }
 }
 
 enum ApprovalSignError: Error, Equatable {
@@ -26,6 +34,8 @@ enum ApprovalSignError: Error, Equatable {
     /// Face ID is not enrolled or locked out, or there is no passcode: what to do about it.
     case needsDeviceSecurity
     case unavailable
+    /// No recent Face ID unlock to reuse (the passcode was typed, or too long ago): ask in the app.
+    case needsInteraction
     case failed(String)
 
     var userMessage: String {
@@ -35,6 +45,7 @@ enum ApprovalSignError: Error, Equatable {
         case .needsDeviceSecurity:
             return String(localized: "Set up Face ID in Settings → Face ID & Passcode, or approve with your passcode.")
         case .unavailable: return String(localized: "This iPhone can't keep an approval key.")
+        case .needsInteraction: return String(localized: "Confirm with Face ID in Secretary.")
         case let .failed(message): return message
         }
     }
@@ -129,6 +140,31 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
     func signWithPreparedKey(_ message: String, reason: String) async throws -> String {
         guard let key = lock.withLock({ prepared }) else { throw ApprovalSignError.noKey }
         return try await Self.sign(message, reason: reason, keyData: key.dataRepresentation)
+    }
+
+    /// How recent the Face ID unlock must be for a notification's Approve to sign without a prompt. The button's
+    /// `.authenticationRequired` unlocks the iPhone a moment before the app gets the tap; keep the window short.
+    static let unlockReuse: TimeInterval = 30
+
+    func signAfterUnlock(_ message: String) async throws -> ApprovalProof {
+        guard let stored = stored(), let blob = Data(base64Encoded: stored.data) else { throw ApprovalSignError.noKey }
+        let context = LAContext()
+        // Succeeds without a prompt only when the iPhone was unlocked with Face ID in the last `unlockReuse` seconds
+        // (a passcode unlock doesn't count); never shows UI from the background.
+        context.touchIDAuthenticationAllowableReuseDuration = Self.unlockReuse
+        context.interactionNotAllowed = true
+        let signature: Data
+        do {
+            try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
+                                             localizedReason: String(localized: "Approve the request"))
+            signature = try await Task.detached {
+                let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob, authenticationContext: context)
+                return try key.signature(for: Data(message.utf8)).derRepresentation
+            }.value
+        } catch {
+            throw ApprovalSignError.needsInteraction
+        }
+        return ApprovalProof(keyId: stored.keyId, signature: signature.base64EncodedString())
     }
 
     /// Face ID, or the passcode, then the Secure Enclave signature (base64 DER) over `message`.

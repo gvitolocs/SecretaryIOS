@@ -3,20 +3,11 @@ import Foundation
 import UIKit
 import UserNotifications
 
-/// Remote push (APNs): **ready, and off.**
-///
-/// The app is signed with a free Personal Team, which cannot use the
-/// `aps-environment` entitlement, so `registerForRemoteNotifications()` would
-/// fail and nothing can wake the app from the server. With a paid Apple
-/// Developer Program team (docs/notifications.md, "APNs with a paid account"):
-/// 1. add `aps-environment: development` to `Secretary.entitlements`
-///    (`production` for TestFlight/App Store) and the Push Notifications
-///    capability for the App ID;
-/// 2. set `SecretaryAPNsEnabled` to `true` in `project.yml` (Info.plist);
-/// 3. create an APNs auth key (.p8) for that team and set `SECRETARY_APNS_*`
-///    on the server.
-/// The app then sends its device token to `POST /v1/push/apns`, and the server
-/// pushes every notification there too.
+/// Remote push (APNs): **on** (paid team 2N4DA9L8VH, `aps-environment: development` in
+/// `Secretary.entitlements`, `SecretaryAPNsEnabled` in `project.yml`). The app sends its device token to
+/// `POST /v1/push/apns`; the server pushes there once it has an APNs auth key (`SECRETARY_APNS_*`,
+/// docs/notifications.md). Approval pushes carry `approvalId`, so their Approve / Deny buttons work from the
+/// lock screen, and `content-available`, so the app refreshes its approvals and the widget.
 enum APNsAdapter {
     static var isEnabled: Bool {
         Bundle.main.object(forInfoDictionaryKey: "SecretaryAPNsEnabled") as? Bool == true
@@ -91,7 +82,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        // Expected without a paid team; local notifications keep working.
+        // Local notifications keep working.
+    }
+
+    /// An approval push woke the app (`content-available`): refresh the approvals and the widget. The push's own
+    /// banner is already showing, so the request is not posted again.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        guard let approvalId = userInfo[ApprovalNotifier.idKey] as? String else { return .noData }
+        return await Task { @MainActor in
+            let app = AppModel.shared
+            guard app.phase == .signedIn else { return UIBackgroundFetchResult.noData }
+            app.approvals.markNotified(approvalId)
+            await app.approvals.poll()
+            return .newData
+        }.value
     }
 
     /// Show banners while the app is open (the store only posts what the owner isn't looking at).
@@ -105,7 +109,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         let info = response.notification.request.content.userInfo
         // An approval: Approve / Deny from the notification, or its tap opens the prompt.
         if let approvalId = info[ApprovalNotifier.idKey] as? String {
-            let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? true
+            // Local notifications say `approvalSensitive`, older server pushes only `sensitive`; unknown = sensitive.
+            let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? info["sensitive"] as? Bool ?? true
             let action = response.actionIdentifier
             await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
             return

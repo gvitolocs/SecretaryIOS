@@ -6,6 +6,7 @@ import WidgetKit
 @main
 struct SecretaryWidgets: WidgetBundle {
     var body: some Widget {
+        ApprovalsWidget()
         AskLucinaWidget()
         AppointmentWidget()
         CountdownWidget()
