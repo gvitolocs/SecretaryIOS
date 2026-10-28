@@ -63,10 +63,8 @@ impl Gate {
             return false;
         };
         if let Some(id) = catalog_id {
+            // The catalog id is also the illustration key: clients draw its art from it.
             op["catalogId"] = json!(id);
-            // The catalog id is also the illustration key; an explicit `svg:` icon
-            // wins over any emoji in every client.
-            op["icon"] = json!(format!("svg:{id}"));
         }
         if let (None, Some(s)) = (catalog_id, section) {
             if op.get("section").is_none_or(Value::is_null) {
@@ -314,7 +312,7 @@ mod tests {
         );
         let op = g.add_op("Pastiglie bucato").unwrap();
         assert_eq!(op["catalogId"], "laundry-detergent");
-        assert_eq!(op["icon"], "svg:laundry-detergent");
+        assert!(op.get("icon").is_none(), "no svg: icon is written");
         assert_eq!(op["text"], "Pastiglie bucato");
         assert!(op.get("section").is_none(), "the catalog item brings its section");
 
