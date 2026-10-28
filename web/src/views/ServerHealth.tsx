@@ -1,219 +1,68 @@
-import { A } from "@solidjs/router";
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { A, useLocation, useNavigate, useParams, useSearchParams } from "@solidjs/router";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { toApiError } from "../api/client";
-import {
-  healthyByGroup,
-  needsAttention,
-  systemHealthApi,
-  type CheckGroup,
-  type HealthEvent,
-  type HealthState,
-  type HostHealth,
-  type SystemHealth,
-} from "../api/systemHealth";
-import { relativeTime } from "../components/NotificationBell";
+import { allComponents, attentionTotal, systemOverviewApi, type SourceName, type SystemOverview } from "../api/systemOverview";
 import { BackIcon, RefreshIcon } from "../components/Icons";
-import { locale, t } from "../i18n";
+import { relativeTime } from "../components/NotificationBell";
+import { Card, EmptyState, ErrorState, LoadingState, Page, PageHeader, SectionNav, Sheet } from "../components/page";
+import { AttentionDetail, AttentionRows, ComponentDetail, HealthyChecks } from "../components/server/Attention";
+import { HostCard, HostDetail } from "../components/server/Hosts";
+import { hostHref, type Links } from "../components/server/links";
+import { Dot } from "../components/server/parts";
+import { ServicesTab } from "../components/server/Services";
+import { RecentCard, TimelineTab } from "../components/server/Timeline";
+import { t, type MessageKey } from "../i18n";
 import "../styles/server-health.css";
 
-// Server health (Plugins → Server health): each host's latest snapshot from its sentinel
-// (state, metrics, the checks that need attention, the healthy ones collapsed by group) and the
-// state changes of the last 30 days. Refreshes every minute while the page is visible.
+// The Server page (Plugins → Server): the owner's ops dashboard on GET /v1/system/overview.
+// Overview (hosts, what needs attention, recent events), Services (the catalog tree), Incidents and
+// Deploys (the timeline). An attention item, a host or a component opens in a sheet whose state is
+// in the URL (?item=, ?host=, ?component=). Refreshes every minute while the page is visible.
 
 export const REFRESH_MS = 60_000;
-const HISTORY_PAGE = 50;
+export const BASE = "/server-health";
 
-const stateLabel = (s: HealthState) => t(`serverHealth.${s}`);
-const groupLabel = (g: CheckGroup) => (g === "Other" ? t("serverHealth.groupOther") : g);
+type Section = "overview" | "services" | "incidents" | "deploys";
+const SECTIONS: Section[] = ["overview", "services", "incidents", "deploys"];
+const sectionPath = (s: Section) => (s === "overview" ? BASE : `${BASE}/${s}`);
 
-/** "12 min", "3 h", "2 d": how long ago `iso` was, without "ago". */
-export function duration(iso: string, now = Date.now(), loc = locale()): string {
-  const min = Math.max(0, Math.floor((now - Date.parse(iso)) / 60_000));
-  const [value, unit] = min < 60 ? [min, "minute"] : min < 48 * 60 ? [Math.floor(min / 60), "hour"] : [Math.floor(min / 1440), "day"];
-  try {
-    return new Intl.NumberFormat(loc, { style: "unit", unit, unitDisplay: "short" }).format(value);
-  } catch {
-    return `${value} ${unit}`;
-  }
-}
+const SOURCE_TEXT: Record<SourceName, MessageKey> = {
+  catalog: "serverHealth.sourceCatalog",
+  sentinel: "serverHealth.sourceSentinel",
+  ops: "serverHealth.sourceOps",
+};
 
-/** "10:30" today, "27 Oct, 10:30" otherwise. */
-function clock(iso: string, loc = locale()): string {
-  const d = new Date(iso);
-  const today = new Date().toDateString() === d.toDateString();
-  const opts: Intl.DateTimeFormatOptions = today ? { hour: "2-digit", minute: "2-digit" } : { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" };
-  return new Intl.DateTimeFormat(loc, opts).format(d);
-}
-
-const num = (n: number, digits = 0) => new Intl.NumberFormat(locale(), { maximumFractionDigits: digits }).format(n);
-
-/** The host's state as shown: its overall state, or "stale" when it stopped reporting. */
-export function hostState(h: HostHealth): HealthState | "stale" {
-  return h.stale ? "stale" : h.snapshot.overall;
-}
-
-function HostTiles(props: { host: HostHealth }) {
-  const m = () => props.host.snapshot.metrics;
-  return (
-    <div class="sh-tiles">
-      <For each={m().disks}>
-        {(d) => (
-          <div class="sh-tile" data-level={d.used_pct >= 95 ? "crit" : d.used_pct >= 85 ? "warn" : "ok"}>
-            <span class="sh-tile-label">{t("serverHealth.diskFree", { mount: d.mount })}</span>
-            <strong class="sh-tile-value">{num(d.free_gb)} GB</strong>
-            <span class="sh-tile-sub">{t("serverHealth.diskValue", { free: num(d.free_gb), used: num(d.used_pct, 1) })}</span>
-          </div>
-        )}
-      </For>
-      <div class="sh-tile">
-        <span class="sh-tile-label">{t("serverHealth.cpuTemp")}</span>
-        <strong class="sh-tile-value">{m().cpu_temp_c == null ? t("serverHealth.unknown") : `${num(m().cpu_temp_c as number, 1)} °C`}</strong>
-      </div>
-      <div class="sh-tile">
-        <span class="sh-tile-label">{t("serverHealth.memory")}</span>
-        <strong class="sh-tile-value">{num(m().mem_used_pct)}%</strong>
-        <span class="sh-tile-sub">{t("serverHealth.memoryValue", { used: num(m().mem_used_pct, 1) })}</span>
-      </div>
-      <div class="sh-tile">
-        <span class="sh-tile-label">{t("serverHealth.load")}</span>
-        <strong class="sh-tile-value">{num(m().load[0], 2)}</strong>
-        <span class="sh-tile-sub">{m().load.map((l) => num(l, 2)).join(" · ")}</span>
-      </div>
-    </div>
-  );
-}
-
-function HostDetail(props: { host: HostHealth; named: boolean }) {
-  const checks = () => props.host.snapshot.checks;
-  const attention = createMemo(() => needsAttention(checks()));
-  const healthy = createMemo(() => healthyByGroup(checks()));
-  const healthyCount = () => healthy().reduce((n, g) => n + g.checks.length, 0);
-  const suffix = () => (props.named ? ` · ${props.host.host}` : "");
-  return (
-    <section class="sh-host" data-host={props.host.host}>
-      <h2>
-        {t("serverHealth.metrics")}
-        {suffix()}
-      </h2>
-      <HostTiles host={props.host} />
-      <h2>
-        {t("serverHealth.needsAttention")}
-        {suffix()}
-      </h2>
-      <Show when={attention().length > 0} fallback={<p class="sh-card sh-muted">{t("serverHealth.nothingNeeds")}</p>}>
-        <ul class="sh-card sh-checks" aria-label={t("serverHealth.needsAttention")}>
-          <For each={attention()}>
-            {(c) => (
-              <li class="sh-check" data-state={c.state}>
-                <span class="sh-dot" data-state={c.state} aria-hidden="true" />
-                <div class="sh-check-main">
-                  <div class="sh-check-head">
-                    <strong>{c.name}</strong>
-                    <span class="sh-badge" data-state={c.state}>
-                      {stateLabel(c.state)}
-                    </span>
-                    <span class="sh-muted sh-group">{groupLabel(c.group)}</span>
-                  </div>
-                  <Show when={c.detail}>
-                    <p class="sh-detail">{c.detail}</p>
-                  </Show>
-                  <p class="sh-meta sh-muted">
-                    <span title={c.since}>{t("serverHealth.since", { time: duration(c.since) })}</span>
-                    <Show when={c.restarts_1h > 0}>
-                      <span>{`· ${t("serverHealth.restarts", { count: c.restarts_1h })}`}</span>
-                    </Show>
-                  </p>
-                </div>
-              </li>
-            )}
-          </For>
-        </ul>
-      </Show>
-      <Show when={healthyCount() > 0}>
-        <details class="sh-card sh-healthy">
-          <summary>
-            {t("serverHealth.allGood", { count: healthyCount() })}
-            {suffix()}
-          </summary>
-          <For each={healthy()}>
-            {(g) => (
-              <div class="sh-group-block">
-                <h3>{groupLabel(g.group)}</h3>
-                <ul>
-                  <For each={g.checks}>
-                    {(c) => (
-                      <li>
-                        <span class="sh-dot" data-state="ok" aria-hidden="true" />
-                        <span class="sh-name">{c.name}</span>
-                        <span class="sh-muted sh-detail-inline">{c.detail}</span>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </div>
-            )}
-          </For>
-        </details>
-      </Show>
-    </section>
-  );
-}
-
-function History(props: { events: HealthEvent[]; named: boolean }) {
-  const [shown, setShown] = createSignal(HISTORY_PAGE);
-  return (
-    <section class="sh-history">
-      <h2>{t("serverHealth.history")}</h2>
-      <Show when={props.events.length > 0} fallback={<p class="sh-card sh-muted">{t("serverHealth.noHistory")}</p>}>
-        <ol class="sh-card sh-events" aria-label={t("serverHealth.history")}>
-          <For each={props.events.slice(0, shown())}>
-            {(e) => (
-              <li class="sh-event" data-to={e.to}>
-                <time class="sh-muted sh-event-time" dateTime={e.at}>
-                  {clock(e.at)}
-                </time>
-                <div class="sh-event-main">
-                  <strong>{e.name}</strong>
-                  <Show when={props.named}>
-                    <span class="sh-muted"> · {e.host}</span>
-                  </Show>
-                  <span class="sh-transition">
-                    {" "}
-                    {stateLabel(e.from)} → <span data-state={e.to}>{stateLabel(e.to)}</span>
-                  </span>
-                  <Show when={e.detail}>
-                    <p class="sh-detail">{e.detail}</p>
-                  </Show>
-                </div>
-              </li>
-            )}
-          </For>
-        </ol>
-        <Show when={props.events.length > shown()}>
-          <button type="button" class="btn btn--small sh-more" onClick={() => setShown((n) => n + HISTORY_PAGE)}>
-            {t("serverHealth.showMore")}
-          </button>
-        </Show>
-      </Show>
-    </section>
-  );
-}
+type SheetParams = { item?: string; host?: string; component?: string };
 
 export default function ServerHealthView() {
-  const [data, setData] = createSignal<SystemHealth | null>(null);
+  const params = useParams<{ section?: string }>();
+  const [search, setSearch] = useSearchParams<SheetParams>();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const section = (): Section => (SECTIONS.includes(params.section as Section) ? (params.section as Section) : "overview");
+
+  const [data, setData] = createSignal<SystemOverview | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [now, setNow] = createSignal(Date.now());
+  let seq = 0;
 
-  const load = async () => {
-    if (loading()) return;
+  const load = async (fresh = false) => {
+    if (loading() && !fresh) return;
+    const mine = ++seq;
     setLoading(true);
     try {
-      setData(await systemHealthApi.get());
+      const next = await systemOverviewApi.get(fresh);
+      if (mine !== seq) return;
+      setData(next);
       setError(null);
     } catch (e) {
+      if (mine !== seq) return;
       setError(toApiError(e).message || t("serverHealth.loadError"));
     } finally {
-      setLoading(false);
+      if (mine === seq) setLoading(false);
+      setNow(Date.now());
     }
   };
 
@@ -222,73 +71,207 @@ export default function ServerHealthView() {
     const timer = window.setInterval(() => {
       if (!document.hidden) void load();
     }, REFRESH_MS);
+    const tick = window.setInterval(() => setNow(Date.now()), 30_000);
     const onVisible = () => {
       if (!document.hidden) void load();
     };
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
     onCleanup(() => {
       window.clearInterval(timer);
+      window.clearInterval(tick);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     });
   });
 
-  const hosts = () => data()?.hosts ?? [];
-  const named = () => hosts().length > 1;
+  const links = createMemo<Links>(() => {
+    const d = data();
+    const names = new Map<string, string>();
+    for (const c of allComponents(d?.services ?? [])) names.set(c.id, c.name);
+    return { base: sectionPath(section()), attention: d?.attention ?? [], names };
+  });
+
+  // ---- The sheet ----------------------------------------------------------------------------
+  // Opened from a link inside the page → close goes back (the URL it came from); opened from a
+  // reload or a push route → close drops the parameter in place.
+  const sheetOpen = () => !!(search.item || search.host || search.component);
+  let openedHere = false;
+  createEffect(
+    on(
+      () => location.search,
+      () => {
+        openedHere = sheetOpen();
+      },
+      { defer: true },
+    ),
+  );
+  const closeSheet = () => {
+    if (openedHere) {
+      openedHere = false;
+      navigate(-1);
+    } else setSearch({ item: undefined, host: undefined, component: undefined }, { replace: true });
+  };
+
+  const item = () => (search.item ? data()?.attention.find((a) => a.key === search.item) : undefined);
+  const host = () => (search.host ? data()?.hosts.find((h) => h.id === search.host) : undefined);
+  const component = () => (search.component ? allComponents(data()?.services ?? []).find((c) => c.id === search.component) : undefined);
+  const sheetTitle = () => item()?.title ?? host()?.name ?? component()?.name ?? search.item ?? search.host ?? search.component ?? "";
+
+  // ---- Header -------------------------------------------------------------------------------
+  const status = () => {
+    const d = data();
+    if (!d) return error() ? ({ state: "crit", text: t("serverHealth.unreachableServer") } as const) : null;
+    const n = attentionTotal(d);
+    if (n === 0 && d.overall === "ok") return { state: "ok", text: t("serverHealth.allNormal") } as const;
+    return { state: d.overall === "crit" ? "crit" : "warn", text: t("serverHealth.needAttentionCount", { count: Math.max(1, n) }) } as const;
+  };
+  const updated = () => {
+    const d = data();
+    return d ? t("serverHealth.updated", { time: relativeTime(Date.parse(d.generated_at), now()) }) : null;
+  };
+
+  const brokenSources = () => {
+    const s = data()?.sources;
+    return s ? (Object.keys(SOURCE_TEXT) as SourceName[]).filter((k) => s[k] && !s[k].ok) : [];
+  };
+
+  const navItems = () =>
+    SECTIONS.map((s) => ({
+      label: t(`serverHealth.${s}`),
+      href: sectionPath(s),
+      current: section() === s,
+    }));
 
   return (
-    <section class="sh-page" aria-labelledby="sh-title" aria-busy={loading()}>
-      <A href="/plugins" class="sh-back">
-        <BackIcon /> {t("plugins.title")}
+    <Page class="sh-page" label={t("serverHealth.title")}>
+      <A href="/plugins" class="pg-link pg-back">
+        <BackIcon /> {t("serverHealth.back")}
       </A>
-      <div class="sh-titlebar">
-        <h1 id="sh-title">{t("serverHealth.title")}</h1>
-        <button type="button" class="btn btn--small sh-refresh" onClick={() => void load()} disabled={loading()} aria-label={t("serverHealth.refresh")}>
-          <RefreshIcon />
-        </button>
-      </div>
-
-      <Show when={error()}>
-        <div role="alert" class="sh-card sh-error">
-          <p>{data() ? error() : t("serverHealth.loadError")}</p>
-          <Show when={!data()}>
-            <p class="sh-muted">{error()}</p>
+      <PageHeader
+        title={t("serverHealth.title")}
+        context={
+          <Show when={status()} fallback={t("serverHealth.loading")}>
+            {(s) => (
+              <span class="sh-status" data-state={s().state}>
+                <Dot state={s().state} />
+                <span class="sh-status-text">{s().text}</span>
+                <Show when={updated()}>
+                  <span> · {updated()}</span>
+                </Show>
+              </span>
+            )}
           </Show>
-          <button type="button" class="btn btn--small" onClick={() => void load()}>
-            {t("serverHealth.retry")}
+        }
+        nav={<SectionNav label={t("serverHealth.sections")} items={navItems()} />}
+        action={
+          <button
+            type="button"
+            class="pg-icon-btn sh-refresh"
+            classList={{ "sh-refresh--busy": loading() }}
+            aria-label={t("serverHealth.refresh")}
+            aria-busy={loading()}
+            onClick={() => void load(true)}
+          >
+            <RefreshIcon />
           </button>
-        </div>
+        }
+      />
+
+      <Show when={data()} fallback={<Show when={error()} fallback={<LoadingState label={t("serverHealth.loading")} />}>
+        <ErrorState message={t("serverHealth.loadError")} retryLabel={t("serverHealth.retry")} onRetry={() => void load(true)} />
+      </Show>}>
+        {(d) => (
+          <>
+            <Show when={error()}>
+              <p class="sh-banner sh-banner--error" role="alert">
+                {t("serverHealth.refreshError", { error: error()! })}
+              </p>
+            </Show>
+            <For each={brokenSources()}>
+              {(s) => (
+                <p class="sh-banner" data-source={s}>
+                  {t(SOURCE_TEXT[s])}
+                </p>
+              )}
+            </For>
+
+            <Show when={section() === "overview"}>
+              <Overview data={d()} links={links()} />
+            </Show>
+            <Show when={section() === "services"}>
+              <ServicesTab services={d().services} links={links()} />
+            </Show>
+            <Show when={section() === "incidents"}>
+              <TimelineTab items={d().timeline} kinds={["incident", "change"]} label={t("serverHealth.incidents")} empty={t("serverHealth.noIncidents")} />
+            </Show>
+            <Show when={section() === "deploys"}>
+              <TimelineTab items={d().timeline} kinds={["deploy", "decision"]} label={t("serverHealth.deploys")} empty={t("serverHealth.noDeploys")} />
+            </Show>
+          </>
+        )}
       </Show>
 
-      <Show when={!data() && !error()}>
-        <p class="sh-muted" role="status">
-          {t("serverHealth.loading")}
-        </p>
-      </Show>
+      <Sheet open={sheetOpen() && !!data()} onClose={closeSheet} title={sheetTitle()} size={search.host ? "wide" : "default"} class="sh-sheet">
+        <Show when={item()} fallback={
+          <Show when={host()} fallback={
+            <Show when={component()} fallback={<p class="pg-muted">{t("serverHealth.notFound")}</p>}>
+              {(c) => <ComponentDetail component={c()} />}
+            </Show>
+          }>
+            {(h) => <HostDetail host={h()} services={data()!.services} attention={data()!.attention} links={links()} />}
+          </Show>
+        }>
+          {(a) => <AttentionDetail item={a()} links={links()} />}
+        </Show>
+      </Sheet>
+    </Page>
+  );
+}
 
-      <Show when={data()}>
-        <Show when={hosts().length > 0} fallback={<p class="sh-card sh-muted">{t("serverHealth.empty")}</p>}>
-          <ul class="sh-hosts" aria-label={t("serverHealth.title")}>
-            <For each={hosts()}>
+function Overview(props: { data: SystemOverview; links: Links }) {
+  const d = () => props.data;
+  return (
+    <div class="sh-overview">
+      <section class="sh-hosts-section" aria-labelledby="sh-hosts-title">
+        <h2 id="sh-hosts-title" class="sr-only">
+          {t("serverHealth.hosts")}
+        </h2>
+        <Show when={d().hosts.length} fallback={<Card><EmptyState text={t("serverHealth.noHosts")} /></Card>}>
+          <ul class="sh-hosts">
+            <For each={d().hosts}>
               {(h) => (
-                <li class="sh-card sh-host-head" data-host={h.host} data-state={hostState(h)}>
-                  <span class="sh-dot sh-dot--big" data-state={hostState(h)} aria-hidden="true" />
-                  <div>
-                    <strong class="sh-host-name">{h.host}</strong>
-                    <p class="sh-host-state">
-                      {h.stale ? t("serverHealth.unreachableSince", { time: clock(h.received_at) }) : stateLabel(h.snapshot.overall)}
-                    </p>
-                    <Show when={!h.stale}>
-                      <p class="sh-muted sh-meta">{t("serverHealth.lastReport", { time: relativeTime(Date.parse(h.received_at)) })}</p>
-                    </Show>
-                  </div>
+                <li>
+                  <HostCard host={h} href={hostHref(props.links, h.id)} />
                 </li>
               )}
             </For>
           </ul>
-          <For each={hosts()}>{(h) => <HostDetail host={h} named={named()} />}</For>
         </Show>
-        <History events={data()!.events} named={named()} />
-      </Show>
-    </section>
+      </section>
+
+      <div class="sh-overview-grid">
+        <div class="sh-col">
+          <Show
+            when={d().attention.length}
+            fallback={
+              <Card class="sh-calm" label={t("serverHealth.needsAttention")}>
+                <EmptyState title={t("serverHealth.nothingNeeds")} text={t("serverHealth.nothingNeedsText")} />
+              </Card>
+            }
+          >
+            <Card title={t("serverHealth.needsAttention")} list class="sh-attention">
+              <AttentionRows items={d().attention} links={props.links} />
+            </Card>
+          </Show>
+          <Show when={d().checks_ok > 0}>
+            <HealthyChecks count={d().checks_ok} services={d().services} links={props.links} />
+          </Show>
+        </div>
+        <aside class="sh-col sh-col--side" aria-label={t("serverHealth.recent")}>
+          <RecentCard items={d().timeline} />
+        </aside>
+      </div>
+    </div>
   );
 }
