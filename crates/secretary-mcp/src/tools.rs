@@ -593,7 +593,18 @@ pub struct ToolSpec {
     schema: fn() -> Tool,
 }
 
+/// A second scope that also allows a tool: every coding agent (scope `agents`)
+/// reports to and reads Lucina's ops record.
+pub fn also_allowed(name: &str) -> Option<Scope> {
+    name.starts_with("ops_").then_some(Scope::Agents)
+}
+
 impl ToolSpec {
+    /// Whether a caller with these scopes may list and call the tool.
+    pub fn allowed(&self, has: impl Fn(Scope) -> bool) -> bool {
+        has(self.scope) || also_allowed(self.name).is_some_and(&has)
+    }
+
     pub fn tool(&self) -> Tool {
         (self.schema)().with_title(self.title).with_annotations(
             ToolAnnotations::with_title(self.title)
@@ -666,6 +677,13 @@ pub fn specs() -> Vec<ToolSpec> {
             "Find the owner's notes, briefings, documents and checklists by words (title, slug, labels, content, checklist items), label, colour or kind (list, text, image, audio, link, reminder); archived notes are included unless archived=exclude (or archived=only). Pinned first, newest first. Each hit shows its slug, title, source, labels, colour, checklist progress (3/7 done), reminder and an excerpt. Without `q` it lists the latest notes."),
         spec!("note_labels", "Note labels", Scope::Read, ro = true, destructive = false, idempotent = true, NoArgs,
             "The owner's note labels (Keep labels) by display name, with how many notes each has. Use a name with notes_search label=."),
+        // Lucina's ops record (crate::ops): every session and agent reports here; `agents` tokens too.
+        spec!("ops_record", "Report to Lucina's record", Scope::Write, ro = false, destructive = false, idempotent = true, crate::ops::RecordArgs,
+            "Report to Lucina's record of the owner's projects. Call it whenever you deploy something, hit or fix an incident, make or learn of a decision, finish a piece of work (status), or find something worth keeping (finding). Lucina writes it to the Obsidian log (Lucina/Log/<date>.md), the project page (Lucina/Projects/<project>.md), an incident page for incidents, and her memory, so the owner and every agent can later ask what happened. One record per event; repeats are de-duplicated; secrets in the text are redacted. project is a short slug (lucina, lucina-agents, pokoin, orchestra, nezopt, p1, ...). For incidents give severity, timeline, cause, fix and follow_ups when known. For decisions say who decided (decided_by owner, lucina or session), the question and who asked (asked_by): when Lucina decides something you asked her through ask_lucina, record it with decided_by lucina. at = when it happened (RFC 3339) when that was not just now."),
+        spec!("ops_search", "Search Lucina's record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::SearchArgs,
+            "Search Lucina's record of the owner's projects (deploys, incidents, decisions, status, findings) by words, project, kind and dates: answers 'what happened with X', 'why did we decide Y', 'when did Z go live'. Newest first when q is empty."),
+        spec!("ops_get", "Read a record", Scope::Read, ro = true, destructive = false, idempotent = true, crate::ops::GetArgs,
+            "One record of Lucina's ops record in full (timeline, cause, fix, follow-ups, links, pages), by the id ops_record or ops_search returned."),
         spec!("tasks_list", "Tasks", Scope::Read, ro = true, destructive = false, idempotent = true, TasksListArgs,
             "The owner's tasks (synced with Todoist): by default Today with the overdue ones first, like Todoist's Today view; or upcoming, inbox, a project, a search or Todoist filter, or what was completed. Each task shows its id, project, due date (↻ = recurring), priority and labels, plus the daily goal."),
         spec!("task_add", "Add task", Scope::Write, ro = false, destructive = false, idempotent = false, TaskAddArgs,
@@ -757,6 +775,15 @@ pub fn specs() -> Vec<ToolSpec> {
             "Permission requests from coding agents (and from the secrets broker) waiting for the owner: what is asked, by which agent, until when. Read only: only the owner answers them, in the Secretary app."),
         spec!("agents_usage", "Coding agent usage", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
             "Coding agents by provider (how many, how many running, tokens of their last turns, cost when the provider reports it), the providers this server has, and the schedules."),
+        // The Homelab service catalog (agentd /catalog, nezopt ~/Projects/Homelab/catalog): ask before acting.
+        spec!("catalog_get", "Catalog component", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogGetArgs,
+            "One component of the owner's systems from the Homelab catalog (hosts nezopt, p1, pi-home, oracle-peer1…; services, timers, containers, k3s workloads, databases, tunnels, sites, repos): where it runs, its units, containers and ports, what it needs and what needs it, its health right now (checked every 5 minutes), the last deploy, its logs, restart and rollback commands, and its runbook. Ask before restarting, deploying or changing anything."),
+        spec!("catalog_impact", "Catalog impact", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogImpactArgs,
+            "What breaks and what degrades if these components are down (stopped, restarted, unreachable), following the dependency graph, with the public hostnames that would fail. Use it before stopping, restarting or redeploying anything, or to understand an outage."),
+        spec!("catalog_health", "Catalog health", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::CatalogHealthArgs,
+            "Health from the catalog: without id, everything that is down, broken, degraded or warning right now (worst first, with the reason); with id, that component's checks. live=true rescans its host first (slower)."),
+        spec!("catalog_drift", "Catalog drift", Scope::Agents, ro = true, destructive = false, idempotent = true, crate::agents::NoArgs,
+            "Drift between the catalog and reality: units, containers, k8s workloads, tunnels, Caddy sites and repos that run but are not catalogued, and catalogued ones that are missing."),
 
     ]
 }

@@ -130,14 +130,19 @@ fn refusal(e: crate::backend::BackendError) -> ToolError {
     }
 }
 
+/// `X-Secretary-Caller: mcp:<name>`: the MCP client, as secretary-server passes it to Lucina.
+pub(crate) fn caller_headers(caller: &str) -> HeaderMap {
+    let mut h = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&format!("mcp:{caller}")) {
+        h.insert("x-secretary-caller", v);
+    }
+    h
+}
+
 impl Backend {
     /// A `/v1/computer/*` call named as the MCP client (`X-Secretary-Caller: mcp:<name>`).
     pub async fn computer(&self, method: Method, path: &str, body: Option<&Value>, caller: &str) -> BResult<Value> {
-        let mut h = HeaderMap::new();
-        if let Ok(v) = HeaderValue::from_str(&format!("mcp:{caller}")) {
-            h.insert("x-secretary-caller", v);
-        }
-        self.send_device(method, path, body, CALL_TIMEOUT, h).await
+        self.send_device(method, path, body, CALL_TIMEOUT, caller_headers(caller)).await
     }
 }
 

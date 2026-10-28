@@ -206,6 +206,31 @@ pub fn route(st: &mut MockState, method: &str, rest: &[&str], query: &str, heade
             }
         }
         ("GET", ["search"]) if st.search.is_some() => Json(st.search.clone()).into_response(),
+        // The Homelab catalog (agentd `/catalog/*`, top-level like `/schedules`).
+        ("GET", ["catalog", "components", "pokoin-db-writer"]) => Json(json!({
+            "id": "pokoin-db-writer", "name": "Pokoin Postgres writer (nezopt)", "kind": "db", "group": "Pokoin", "project": "pokoin",
+            "host": "nezopt", "criticality": "critical", "containers": ["pokoin-marketplace-postgres-15t"], "depends_on": ["docker-nezopt"],
+            "restart": "docker restart pokoin-marketplace-postgres-15t", "runbook": "Reads keep working from the Pi replica.",
+            "status": {"level": "down", "effective": "down", "since": "2026-10-28T16:00:00Z", "impacted_by": [],
+                       "findings": [{"level": "down", "what": "container pokoin-marketplace-postgres-15t", "detail": "Exited (0)"}]},
+            "dependents": [{"id": "k3s-pokoin-api", "how": "hard"}, {"id": "pokoin-db-replica", "how": "soft"}],
+        })).into_response(),
+        ("GET", ["catalog", "components", _]) => err(StatusCode::NOT_FOUND, "CATALOG_NOT_FOUND", "no component `x`"),
+        ("GET", ["catalog", "impact", ids]) => Json(json!({
+            "down": ids.split(',').collect::<Vec<_>>(),
+            "broken": [{"id": "k3s-pokoin-api", "effect": "broken", "via": ["pokoin-db-writer"], "criticality": "high", "serves": []}],
+            "degraded": [{"id": "site-api", "effect": "degraded", "via": ["cloudflared-pi", "pokoin-db-writer"], "criticality": "critical", "serves": ["api.pokoin.com"]}],
+            "public_hostnames_broken": [],
+        })).into_response(),
+        ("GET", ["catalog", "status"]) => Json(json!({"generated_at": "2026-10-28T16:35:00Z", "drift": {"unknown": 0, "missing": 1},
+            "problems": [{"id": "pokoin-db-writer", "effective": "down", "criticality": "critical", "impacted_by": [],
+                          "findings": [{"level": "down", "what": "container pokoin-marketplace-postgres-15t", "detail": "Exited (0)"}]},
+                         {"id": "k3s-pokoin-api", "effective": "broken", "criticality": "high", "impacted_by": ["pokoin-db-writer"], "findings": []}]})).into_response(),
+        ("GET", ["catalog", "health"]) => Json(json!({"id": "pokoin-db-writer", "generated_at": "2026-10-28T16:36:00Z",
+            "status": {"level": "ok", "effective": "ok", "since": "2026-10-28T16:36:00Z", "impacted_by": [],
+                       "findings": [{"level": "ok", "what": "container pokoin-marketplace-postgres-15t", "detail": "Up 1 minute (healthy)"}]}})).into_response(),
+        ("GET", ["catalog", "drift"]) => Json(json!({"unknown": [{"kind": "unit", "host": "nezopt", "item": "user:new-thing.service", "detail": "active/running"}],
+            "missing": [], "skipped_hosts": [], "discovered": 300})).into_response(),
         // agentd today: `/agents/schedules` reads as an agent id.
         (_, ["schedules", ..]) => err(StatusCode::NOT_FOUND, "AGENT_NOT_FOUND", "No agent found matching: schedules"),
         ("GET", [id]) => match find(st, id) {

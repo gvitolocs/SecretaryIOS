@@ -256,7 +256,7 @@ async fn full_flow_register_login_token_call_refresh() {
     assert!(access.starts_with("mcpa_") && refresh.starts_with("mcpr_"));
 
     // call a tool with the access token: Lucina sees "chatgpt"
-    assert_eq!(h.tool_names(&access).await.len(), 35);
+    assert_eq!(h.tool_names(&access).await.len(), 38);
     let (err, text) = h
         .call(&access, "ask_lucina", json!({"message": "ciao"}))
         .await;
@@ -327,7 +327,7 @@ async fn full_flow_register_login_token_call_refresh() {
     assert_eq!(s, 200, "{tok3}");
     assert_eq!(tok3["scope"], "read");
     let access3 = tok3["access_token"].as_str().unwrap().to_owned();
-    assert_eq!(h.tool_names(&access3).await.len(), 20);
+    assert_eq!(h.tool_names(&access3).await.len(), 22);
     // replaying an old refresh token revokes the whole grant
     let (s, v) = token(
         &h,

@@ -29,6 +29,7 @@ pub mod links;
 pub mod models;
 pub mod notes;
 pub mod notify;
+pub mod ops;
 pub mod owner;
 pub mod owner_secrets;
 pub mod proactive;
@@ -301,6 +302,7 @@ pub fn app(state: AppState) -> Router {
         .merge(todoist::routes())
         .merge(system_health::routes())
         .merge(computer::routes())
+        .merge(ops::routes())
         .merge(desk::routes())
         .merge(owner_secrets::routes());
     if state.upstream.is_some() {

@@ -1853,6 +1853,26 @@ kept unless `--replace`. `secretary-server notes list` prints id, slug,
 size, source and title. The running server picks imported notes up on its
 next request.
 
+## Ops record
+
+Lucina's record of every project (crate `lucina-ops` in lucina-rs): deploys, incidents, decisions, status and
+findings, written to the Obsidian folder `Lucina/` (daily log, project pages, incident pages; synced to the owner's
+Mac) and to the Honcho session `lucina_ops`. Owner devices only (device token or web session), forwarded to Lucina's
+`/api/secretary/ops/*`; the MCP names its client in `X-Secretary-Caller`, which Lucina keeps as the reporter.
+
+| Method | Path | Body / query | Answer |
+| --- | --- | --- | --- |
+| POST | `/v1/ops/records` | NewRecord (below, ≤ 256 KiB) | 201 new / 200 duplicate: `{id, duplicate, redacted, honcho, paths: {log, project, incident?}}` |
+| GET | `/v1/ops/records/{id}` | id = 16 lowercase hex | the stored record; 404 `record_not_found` |
+| GET | `/v1/ops/search` | `q, project, kind, since, until (YYYY-MM-DD), limit (1-50)` | `{items: [...], honcho: ok\|off\|error}` |
+
+NewRecord (snake_case; unknown fields are refused): `kind` deploy|incident|decision|status|finding, `project` slug
+`[a-z0-9][a-z0-9-]{0,47}`, `title` (1-200, one line), `body` (≤ 20000, Markdown), `links` (≤ 20), `commit` (7-40 hex),
+`host`, `severity` low|medium|high|critical, `timeline` (≤ 50 lines), `cause`, `fix`, `follow_ups` (≤ 20), `at`
+(RFC 3339, when it happened), `dedup_key` (≤ 200). Secrets in every field are redacted before anything is stored.
+Lucina answers 404 `ops_disabled` when the record is off (`LUCINA_OPS_VAULT_DIR` unset). MCP tools: `ops_record`
+(scope write), `ops_search` and `ops_get` (scope read); `agents` tokens may call all three.
+
 ## Library
 
 Books and clippings imported from a read-only Kindle USB scan. Ownership,
