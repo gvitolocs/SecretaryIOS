@@ -2,6 +2,7 @@ import { A, useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createMemo, createResource, createSignal, For, onMount, Show } from "solid-js";
 import { formatTime, mediaApi, type MediaItem } from "../api/player";
 import { BackIcon, CheckIcon, RepeatIcon, SearchIcon } from "../components/Icons";
+import { Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t } from "../i18n";
 import { continueItems, isFinished, media, playQueue, progressOf, ready, syncProgress } from "../state/media";
 import { MiniPlayer, Player, Poster } from "./Media";
@@ -92,8 +93,10 @@ function FilmCard(props: { film: MediaItem; remaining?: boolean }) {
 }
 
 export default function FilmsView() {
+  const measured = useWide();
+  const wide = measured.wide;
   const [query, setQuery] = createSignal("");
-  const [folders] = createResource(loadFolders);
+  const [folders, { refetch }] = createResource(loadFolders);
   onMount(() => {
     void ready();
     void syncProgress();
@@ -122,36 +125,31 @@ export default function FilmsView() {
     if (film) playFilm(film);
   });
 
-  return (
-    <section class="films" aria-labelledby="films-title" aria-busy={folders.loading}>
-      <A href="/plugins" class="media-back">
-        <BackIcon /> {t("media.back")}
-      </A>
-      <h1 id="films-title">{t("films.title")}</h1>
-      <label class="media-search">
-        <SearchIcon />
-        <input type="search" placeholder={t("films.search")} aria-label={t("films.search")} value={query()} onInput={(e) => setQuery(e.currentTarget.value)} />
-      </label>
+  const filmCount = () => allFilms().length;
+  const searchField = () => (
+    <label class="media-search films-search">
+      <SearchIcon />
+      <input
+        type="search"
+        class={wide() ? "pg-input" : undefined}
+        placeholder={t("films.search")}
+        aria-label={t("films.search")}
+        value={query()}
+        onInput={(e) => setQuery(e.currentTarget.value)}
+      />
+    </label>
+  );
 
-      <Show when={folders.error}>
-        <p class="media-muted" role="alert">{String(folders.error?.message ?? folders.error)}</p>
-      </Show>
-      <Show when={!folders.loading && !folders.error && (folders() ?? []).length === 0}>
-        <div class="films-empty">
-          <p class="films-empty__title">{t("films.empty")}</p>
-          <p class="media-muted">{t("films.emptyDetail")}</p>
-        </div>
-      </Show>
-
+  const collections = () => (
+    <>
       <Show when={resume().length > 0}>
         <section class="films-section" aria-labelledby="films-continue">
           <h2 id="films-continue" class="media-section">{t("films.continue")}</h2>
-          <div class="films-row">
+          <div class={wide() ? "films-grid" : "films-row"}>
             <For each={resume()}>{(film) => <FilmCard film={film} remaining />}</For>
           </div>
         </section>
       </Show>
-
       <For each={shown()}>
         {(folder) => (
           <section class="films-section" aria-labelledby={`films-${folder.id}`}>
@@ -165,11 +163,80 @@ export default function FilmsView() {
           </section>
         )}
       </For>
+    </>
+  );
+
+  return (
+    <div ref={measured.track}>
+      <Show
+        when={wide()}
+        fallback={
+          <section class="films" aria-labelledby="films-title" aria-busy={folders.loading}>
+            <A href="/plugins" class="media-back">
+              <BackIcon /> {t("media.back")}
+            </A>
+            <h1 id="films-title">{t("films.title")}</h1>
+            {searchField()}
+
+            <Show when={folders.error}>
+              <p class="media-muted" role="alert">{String(folders.error?.message ?? folders.error)}</p>
+            </Show>
+            <Show when={!folders.loading && !folders.error && (folders() ?? []).length === 0}>
+              <div class="films-empty">
+                <p class="films-empty__title">{t("films.empty")}</p>
+                <p class="media-muted">{t("films.emptyDetail")}</p>
+              </div>
+            </Show>
+            {collections()}
+          </section>
+        }
+      >
+        <Page class="films-desk">
+          <PageHeader
+            title={t("films.title")}
+            context={filmCount() > 0 ? t("films.count", { count: filmCount() }) : undefined}
+            action={searchField()}
+          />
+          <Show when={folders.error}>
+            <ErrorState
+              message={String(folders.error?.message ?? folders.error)}
+              retryLabel={t("common.tryAgain")}
+              onRetry={() => void refetch()}
+            />
+          </Show>
+          <Show when={folders.loading && !folders() && !folders.error}>
+            <LoadingState label={t("common.loading")} />
+          </Show>
+          <Show when={!folders.loading && !folders.error && (folders() ?? []).length === 0}>
+            <EmptyState title={t("films.empty")} text={t("films.emptyDetail")} />
+          </Show>
+          <Show when={(folders() ?? []).length > 0}>
+            <PageGrid layout="full">
+              <Show when={resume().length > 0}>
+                <Card title={t("films.continue")}>
+                  <div class="films-grid">
+                    <For each={resume()}>{(film) => <FilmCard film={film} remaining />}</For>
+                  </div>
+                </Card>
+              </Show>
+              <For each={shown()}>
+                {(folder) => (
+                  <Card title={folder.title} actions={folder.films.length}>
+                    <div class="films-grid">
+                      <For each={folder.films}>{(film) => <FilmCard film={film} />}</For>
+                    </div>
+                  </Card>
+                )}
+              </For>
+            </PageGrid>
+          </Show>
+        </Page>
+      </Show>
 
       <MiniPlayer />
       <Show when={media.open() && media.current()}>
         <Player />
       </Show>
-    </section>
+    </div>
   );
 }

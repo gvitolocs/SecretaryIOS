@@ -37,3 +37,6 @@
 .film-card:hover .film-card__restart, .film-card:focus-within .film-card__restart { opacity: 1; }
 .film-card__restart:focus-visible { outline: 2px solid var(--lu-accent); outline-offset: 2px; }
 @media (hover: none) { .film-card__restart { opacity: 1; } }
+
+.pg.films-desk .films-search { flex: 1; min-width: 12rem; max-width: 20rem; }
+.pg.films-desk .films-grid { margin: 0; }
