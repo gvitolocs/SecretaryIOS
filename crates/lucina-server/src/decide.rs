@@ -480,12 +480,36 @@ fn keywords(text: &str) -> Vec<String> {
     let mut out: Vec<String> = text
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-        .filter(|w| w.chars().count() >= 4 && !STOPWORDS.contains(w))
+        .filter(|w| {
+            let n = w.chars().count();
+            (n >= 4 || (n >= 3 && w.chars().any(|c| c.is_ascii_digit()))) && !STOPWORDS.contains(w)
+        })
         .map(str::to_owned)
         .collect();
     out.sort();
     out.dedup();
     out
+}
+
+/// How many of the question's keywords a text must share to count as on topic: more for a long question
+/// (2026-10-28: a Lucina Maps question matched the owner's old opencode / Firefox commands on 2-3
+/// generic words).
+pub fn needed(words: &[String]) -> usize {
+    match words.len() {
+        0..=2 => 1,
+        n => ((n as f64 * 0.1).ceil() as usize).clamp(2, 4),
+    }
+}
+
+/// On topic: enough shared keywords, at least one of them a specific one (7+ letters, or a name with
+/// a digit or a dash such as `pr-513`, `gmaps-server`).
+pub fn relevant(words: &[String], text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let shared: Vec<&String> = words.iter().filter(|w| lower.contains(w.as_str())).collect();
+    shared.len() >= needed(words)
+        && shared
+            .iter()
+            .any(|w| w.chars().count() >= 7 || w.chars().any(|c| c.is_ascii_digit() || c == '-'))
 }
 
 fn overlap(words: &[String], text: &str) -> usize {
@@ -514,7 +538,6 @@ fn third_person(text: &str) -> bool {
 
 /// His own recent messages that talk about the same thing (never an MCP caller's).
 fn owner_messages(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Evidence> {
-    let need = if words.len() >= 4 { 2 } else { 1 };
     let since = now - chrono::Duration::days(OWNER_MESSAGE_DAYS);
     let mut found: Vec<(usize, TimelineItem)> = Vec::new();
     let mut before: Option<String> = None;
@@ -536,7 +559,7 @@ fn owner_messages(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Ev
                 continue;
             }
             let score = overlap(words, &item.text);
-            if score >= need {
+            if relevant(words, &item.text) {
                 found.push((score, item));
             }
         }
@@ -558,7 +581,7 @@ fn owner_messages(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Ev
 }
 
 /// His long-term memory (Honcho), his own messages only.
-async fn owner_memory(st: &AppState, r: &Request, query: &str) -> Vec<Evidence> {
+async fn owner_memory(st: &AppState, r: &Request, query: &str, words: &[String]) -> Vec<Evidence> {
     let mcp = lucina_intent::mcp::McpTurn {
         caller: r.asking_client.clone(),
         text: String::new(),
@@ -582,6 +605,7 @@ async fn owner_memory(st: &AppState, r: &Request, query: &str) -> Vec<Evidence> 
                 }) && !m.content.contains("via Lucina MCP")
                     && !third_person(&m.content)
             })
+            .filter(|m| relevant(words, &m.content))
             .take(4)
             .map(|m| Evidence {
                 tier: 1,
@@ -618,7 +642,7 @@ fn owner_actions(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Evi
                 continue;
             };
             let receipt = item.meta.as_ref().is_some_and(|m| m.kind.as_deref() == Some("secret_receipt"));
-            if receipt && overlap(words, &item.text) >= 1 {
+            if receipt && relevant(words, &item.text) {
                 out.push(Evidence {
                     tier: 2,
                     kind: "owner_action".into(),
@@ -636,7 +660,7 @@ fn owner_actions(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Evi
             let ts = v["ts"].as_str().unwrap_or("");
             let recent = DateTime::parse_from_rfc3339(ts).is_ok_and(|t| t.with_timezone(&Utc) >= since);
             let reason = v["reason"].as_str().unwrap_or("");
-            if matches!(event, "approved" | "denied") && recent && overlap(words, reason) >= 2 {
+            if matches!(event, "approved" | "denied") && recent && relevant(words, reason) {
                 out.push(Evidence {
                     tier: 2,
                     kind: "owner_action".into(),
@@ -668,6 +692,7 @@ async fn ops_decisions(st: &AppState, r: &Request, words: &[String]) -> Vec<Evid
         Ok(Ok(found)) => found
             .items
             .into_iter()
+            .filter(|i| relevant(words, &format!("{} {}", i.title, i.body)))
             .map(|i| {
                 let (tier, kind) = ops_tier(&i.source, i.decided_by);
                 Evidence {
@@ -1032,18 +1057,18 @@ pub async fn create(st: &AppState, body: &Value) -> Result<Decision, ApiError> {
     let store = store(&st.cfg.data_dir);
     let only = owner_only(&r);
     // Evidence: earlier decisions, his own recent messages, his long-term memory.
+    // What the question is about: its own words, not the agent's context (which drags in generic terms).
     let words = keywords(&format!(
-        "{} {} {} {}",
+        "{} {} {}",
         r.question,
         r.options.join(" "),
-        r.topic.as_deref().unwrap_or(""),
-        clip(&r.context, 500)
+        r.topic.as_deref().unwrap_or("")
     ));
     let mut evidence: Vec<Evidence> = store.similar(&r, 3).iter().map(earlier).collect();
     evidence.extend(ops_decisions(st, &r, &words).await);
     evidence.extend(owner_messages(st, &words, now));
     let query = clip(&format!("{} {}", r.question, r.options.join(" / ")), 400);
-    evidence.extend(owner_memory(st, &r, &query).await);
+    evidence.extend(owner_memory(st, &r, &query, &words).await);
     evidence.extend(owner_actions(st, &words, now));
     // Best tier first: his words and actions lead, agents' records come last.
     evidence.sort_by_key(|e| e.tier);
@@ -1216,7 +1241,7 @@ async fn ask_owner(st: &AppState, d: &Decision) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     let text = format!(
-        "{} needs a decision: {}{context}\n\n{options}\n\n{} · {}\nTap an option, or answer \"Decision {}: <your words>\".",
+        "{} needs a decision: {}{context}\n\n{options}\n\n{} · {}\nTap an option (or open Secretary → Decisions), or answer \"Decision {}: <your words>\".",
         d.who(),
         d.question,
         flags.join(" · "),
@@ -1267,12 +1292,20 @@ async fn ask_owner(st: &AppState, d: &Decision) -> Option<String> {
         ..Default::default()
     });
     let id = item.map(|i| i.id);
+    // Tapping opens the decision (app and web: `/decisions/<id>`); the text says where to answer when a
+    // client can't open it (2026-10-28: the first tap opened a chat that didn't show the question).
     let mut push = json!({
         "category": "lucina_message",
-        "title": format!("Decision needed ({})", d.asking_client),
-        "body": clip(&d.question, 300),
-        "route": "/",
+        "title": format!("Decision needed: {}", d.who()),
+        "body": format!(
+            "{}\n{}\nAnswer in the Secretary app → Decisions, or reply \"Decision {}: <number>\".",
+            clip(&d.question, 220),
+            d.options.iter().enumerate().map(|(i, o)| format!("{}. {}", i + 1, clip(o, 60))).collect::<Vec<_>>().join("  "),
+            d.decision_id
+        ),
+        "route": format!("/decisions/{}", d.decision_id),
         "channel": "web",
+        "data": {"kind": "decision", "decisionId": d.decision_id, "options": d.options},
     });
     if let Some(id) = &id {
         // The timeline ingest pushes the same item: one dedup key for both.
@@ -1711,6 +1744,23 @@ mod tests {
             Verdict::Decide { .. }
         ));
         assert!(third_person("The owner said these decisions go to you") && !third_person("tienilo fino a domani"));
+    }
+
+    #[test]
+    fn evidence_must_be_on_topic() {
+        // The Lucina Maps question (dc-5a25fb70af10) and the owner messages it wrongly matched.
+        let maps = keywords("Lucina Maps: disable the opensource map and use Google Maps embedded as before? Real Google Maps: native Google Maps SDK map with his own Android API key; Wolt takeover, split screen and red trip move onto it. Engine-only via a cloudflared tunnel with a device token, plus a LAN ufw rule. Keep the current map; only drop the engine down wording.");
+        for old in [
+            "Fai questo comando con opencode cd /home/nez/deepseek-harness-local opencode run -m opencode/deepseek-v4.1-flash-free \"Inspect and fix the DSH planner and worker router\"",
+            "Use your sandbox. Create a separate local Firefox profile named Lucina at /home/cua/.mozilla/firefox/lucina, keeping its files private. Use native terminal for profile creation/launch",
+            "Verifica con opencode deepseek l'ora sul server e l'ora su questo iPhone",
+        ] {
+            assert!(!relevant(&maps, old), "{old}");
+        }
+        assert!(relevant(&maps, "Per Lucina Maps voglio di nuovo Google Maps embedded, niente opensource"));
+        let short = keywords("Merge PR #513 into main?");
+        assert!(relevant(&short, "PR #513 can merge once the review is clean"));
+        assert!(needed(&maps) >= 3, "a long question needs more shared words");
     }
 
     #[test]
