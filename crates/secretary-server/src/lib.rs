@@ -41,6 +41,7 @@ pub mod service;
 pub mod sessions;
 pub mod shopping;
 pub mod system_health;
+pub mod system_overview;
 pub mod tasks;
 pub mod timeline;
 pub mod todoist;
@@ -155,6 +156,8 @@ pub struct Inner {
     pub tasks: Arc<tasks::TasksHub>,
     /// Host health snapshots and their state changes (`system-health.json`).
     pub system_health: Arc<system_health::HealthStore>,
+    /// The last `GET /v1/system/overview` (30 s).
+    pub system_overview: system_overview::Cache,
     /// Signs the owner grants of "Add secret" (`secret-grant.key`).
     pub grant_signer: owner_secrets::GrantSigner,
     /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
@@ -219,6 +222,7 @@ impl AppState {
             proactive: Arc::new(proactive::FeedbackStore::new(&cfg.data_dir)),
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
             system_health: system_health::store(&cfg.data_dir),
+            system_overview: tokio::sync::Mutex::new(None),
             grant_signer: owner_secrets::GrantSigner::new(&cfg.data_dir),
             approvals: Arc::new(approvals::Approvals::open(
                 &cfg.data_dir,
@@ -301,6 +305,7 @@ pub fn app(state: AppState) -> Router {
         .merge(links::routes())
         .merge(todoist::routes())
         .merge(system_health::routes())
+        .merge(system_overview::routes())
         .merge(computer::routes())
         .merge(ops::routes())
         .merge(desk::routes())

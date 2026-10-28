@@ -131,6 +131,35 @@ impl Agents {
             streams: StreamSlots::new(STREAMS_PER_CALLER, STREAMS_TOTAL),
         })
     }
+
+    /// `GET <daemon path>` as `origin`, for this server's own reads (the system
+    /// overview's catalog). The error is one short line, never the URL or a body.
+    pub async fn get_json(&self, daemon_path: &str, origin: &str, timeout: Duration) -> Result<serde_json::Value, String> {
+        let url = format!("{}/api/secretary/agentd{daemon_path}", self.base);
+        let up = self
+            .http
+            .get(&url)
+            .header(header::AUTHORIZATION, &self.auth)
+            .header(ORIGIN_HEADER, origin)
+            .header(header::ACCEPT, "application/json")
+            .timeout(timeout)
+            .send()
+            .await
+            .map_err(|e| if e.is_timeout() { "Lucina did not answer in time".to_owned() } else { "Lucina unreachable".to_owned() })?;
+        let status = up.status();
+        if !status.is_success() {
+            let code = up
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v["error"]["code"].as_str().or(v["code"].as_str()).or(v["error"].as_str()).map(str::to_owned));
+            return Err(match code {
+                Some(c) => format!("agentd answered {}: {c}", status.as_u16()),
+                None => format!("agentd answered {}", status.as_u16()),
+            });
+        }
+        up.json().await.map_err(|e| if e.is_timeout() { "Lucina did not answer in time".to_owned() } else { "agentd sent no JSON".to_owned() })
+    }
 }
 
 /// Who is calling.
