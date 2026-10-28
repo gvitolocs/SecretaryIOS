@@ -109,10 +109,10 @@ render(
       <Route path="/media" component={() => <Navigate href="/gallery" />} />
       <Route path="/media/library" component={MediaView} />
       <Route path="/gallery" component={GalleryView} />
-      <Route path="/gallery/trash" component={() => <GalleryView trash />} />
+      <Route path="/gallery/trash" component={() => <GalleryView trash desktop />} />
       <Route path="/instagram/:username?" component={InstagramView} />
       <Route path="/agents/*rest" component={AgentsView} />
-      <Route path="/gallery/archive" component={() => <GalleryView archive />} />
+      <Route path="/gallery/archive" component={() => <GalleryView archive desktop />} />
       <Route path="/gallery/albums" component={GalleryAlbumsView} />
       <Route path="/gallery/album/:id" component={GalleryAlbumView} />
       <Route path="/gallery/people" component={GalleryPeopleView} />

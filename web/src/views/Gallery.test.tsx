@@ -766,3 +766,38 @@ it("renders the toolbar and the photo grid as full-width children of the grid pa
   expect(main.querySelector(":scope > .g-top .g-filters")).not.toBeNull();
   expect(main.querySelector(":scope > .g-main .g-body .g-scroll")).not.toBeNull();
 });
+
+function mountShelf(path: string) {
+  // The routes of src/index.tsx: the shelves ask for the desktop layout.
+  return renderAt(path, () => (
+    <>
+      <Route path="/gallery" component={() => <GalleryView />} />
+      <Route path="/gallery/trash" component={() => <GalleryView trash desktop />} />
+      <Route path="/gallery/archive" component={() => <GalleryView archive desktop />} />
+    </>
+  ));
+}
+
+describe("Trash and Archive on the page system (desktop)", () => {
+  it.each([
+    ["/gallery/trash", "Trash"],
+    ["/gallery/archive", "Archive"],
+  ])("%s keeps the Gallery header (Photos current) over a back link and the %s heading", async (path, title) => {
+    stubWide(); backend(library(5)); mountShelf(path);
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Gallery sections" })).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { level: 2, name: title })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery");
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(document.querySelector(".g-title")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+    await waitFor(() => expect(document.querySelector(".pg-grid--full > .pg-main > .g-main .g-scroll")).not.toBeNull());
+    // Shelves have no source bar, memories strip or shelf icons.
+    expect(document.querySelector(".pg-icon-btn")).toBeNull();
+  });
+
+  it("shows the friendly empty state in the Trash", async () => {
+    stubWide(); backend([]); mountShelf("/gallery/trash");
+    await waitFor(() => expect(document.querySelector(".pg-empty")).not.toBeNull());
+  });
+});
