@@ -6,6 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use lucina_memory::{Scope, TurnSurface};
+use lucina_store::TimelineStore;
 use serde_json::Value;
 
 use crate::share::memory::Record;
@@ -36,16 +37,19 @@ fn clip(s: &str, n: usize) -> String {
     out
 }
 
-/// The block for a turn replying to `id` ("" when the turn may not read the
-/// owner's timeline, or the item is unknown or unreadable).
-pub async fn block(st: &AppState, surface: &TurnSurface, id: &str) -> String {
+/// The block for a turn of `session` replying to `id` ("" when the turn may not
+/// read the owner's timeline, or the item is unknown or unreadable). The item
+/// is looked up in the timeline the turn writes (`AppState::timeline_for`): a
+/// self-test quotes its own conversation, never the owner's.
+pub async fn block(st: &AppState, surface: &TurnSurface, session: &str, id: &str) -> String {
     if !surface.may_read(&Scope::OwnerPersonal) {
         surface.log_denied("read", &Scope::OwnerPersonal, "reply_to");
         return String::new();
     }
     let st2 = st.clone();
+    let timeline = st.timeline_for(session);
     let id2 = id.to_owned();
-    let out = tokio::task::spawn_blocking(move || build(&st2, &id2))
+    let out = tokio::task::spawn_blocking(move || build(&st2, &timeline, &id2))
         .await
         .unwrap_or_default();
     if out.is_empty() {
@@ -54,8 +58,8 @@ pub async fn block(st: &AppState, surface: &TurnSurface, id: &str) -> String {
     out
 }
 
-fn build(st: &AppState, id: &str) -> String {
-    let item = match st.timeline.get(id) {
+fn build(st: &AppState, timeline: &TimelineStore, id: &str) -> String {
+    let item = match timeline.get(id) {
         Ok(Some(i)) => i,
         Ok(None) => return String::new(),
         Err(e) => {
@@ -121,7 +125,7 @@ fn build(st: &AppState, id: &str) -> String {
                     })
                     .or_else(|| {
                         heard
-                            .get_or_insert_with(|| voice_transcript(st, id))
+                            .get_or_insert_with(|| voice_transcript(timeline, id))
                             .clone()
                     });
                 match transcript {
@@ -183,8 +187,8 @@ fn build(st: &AppState, id: &str) -> String {
 
 /// The transcript on Lucina's reply to a voice note (`meta.transcript` of the
 /// Lucina item whose `replyTo` is `id`).
-fn voice_transcript(st: &AppState, id: &str) -> Option<String> {
-    let items = st.timeline.read_all().ok()?;
+fn voice_transcript(timeline: &TimelineStore, id: &str) -> Option<String> {
+    let items = timeline.read_all().ok()?;
     items
         .iter()
         .rev()

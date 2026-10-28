@@ -718,7 +718,7 @@ async fn run_turn_scoped(
     let reply_meta = existing.as_ref().map(|s| s.reply_meta.clone());
     // Swipe to reply: the quoted message rides in every model call's user part.
     let reply_block = match reply_to.as_deref() {
-        Some(id) => reply::block(&st, &surface, id).await,
+        Some(id) => reply::block(&st, &surface, &session, id).await,
         None => String::new(),
     };
     // An id that names nothing readable is ignored, on the timeline too.
