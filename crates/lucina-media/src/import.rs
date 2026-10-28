@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::db;
+use crate::gallery;
 use crate::ingest::{self, Library};
 use crate::meta::ClientMeta;
 
@@ -152,9 +153,12 @@ pub fn import_path(lib: &Library, root: &Path, opts: &ImportOpts) -> anyhow::Res
             continue;
         }
         stats.seen += 1;
+        let (origin_folder, origin_root) = gallery::import_origin(root, path);
         let mut client = ClientMeta {
             filename: Some(name.clone()),
             source: Some(opts.source.clone()),
+            origin_folder,
+            origin_root,
             ..Default::default()
         };
         client.album = opts.album.clone();
@@ -261,6 +265,12 @@ fn import_zip(
         let mut client = ClientMeta {
             filename: Some(name.clone()),
             source: Some(opts.source.clone()),
+            // In a zip the "root" is the archive and the folder is the entry's folder in it.
+            origin_folder: gallery::clean_folder(&dir),
+            origin_root: zip_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(gallery::clean_name),
             ..Default::default()
         };
         client.album = opts.album.clone();

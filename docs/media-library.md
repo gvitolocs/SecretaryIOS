@@ -73,10 +73,10 @@ kernel DK3).
 
 - `GET items?scope=&kind=&from=&to=&q=&near=lat,lon,km&album=&favorite=&trashed=&cursor=&limit=` gives newest first
   (`taken_at`, else `added_at`).
-  - `scope` splits the library into the owner's three places (2026-10-26): `gallery` is only what the phones backed
-    up (`source` phone-…: the Gallery); `films` is the film folders (`LUCINA_MEDIA_FILM_FOLDERS`, default
+  - `scope` splits the library into the owner's three places (2026-10-26): `gallery` is what the devices backed
+    up plus the pictures from chat and shares and Lucina's own (see "The Gallery" below); `films` is the film folders (`LUCINA_MEDIA_FILM_FOLDERS`, default
     `Film;Dansk film`: the Films plugin); `drive` is everything else (old Nextcloud files, computer photo backups,
-    audio, other folders, shared files, voice memos: the Drive). Without it, everything. `GET albums?scope=` lists
+    audio, other folders, shared documents, voice memos: the Drive). Without it, everything. `GET albums?scope=` lists
     only the albums with items there, counted there.
   - `q` searches title, caption, place, country (also in Danish/Italian), month words ("July 2025"), camera and album titles.
   - `album` takes an id or a title.
@@ -112,7 +112,73 @@ kernel DK3).
   device's photos; the Gallery (`scope=gallery`) is everything that came from a device: `source` phone-… or `device`
   set (`db::FROM_DEVICE`, the Drive kernel's DK2 `phone` input). The old nespc backups are the device
   `nespc-backup`.
-- `GET devices/{device}/assets`, `GET summary`, `GET events` (SSE: `item.added|updated|trashed`).
+- `GET devices/{device}/assets`, `GET summary`, `GET events` (SSE: `item.added|updated|trashed|purged`).
+- The Gallery (2026-10-28, `gallery.rs`, `batch.rs`, `trash.rs`, `deletions.rs`). Everything the web Gallery needs:
+  - **Item fields.** Every item (list and single) also carries:
+    - `device` (id or null) and `device_name` (from the registry, null if unknown);
+    - `rotation` (0, 90, 180 or 270);
+    - `trash_expires_at` (`trashed_at` plus the retention, RFC 3339, only while trashed and only if the Trash is
+      not kept forever);
+    - `origin: {filename, folder, imported_from}`:
+      - `filename`: the original file name (uploads: the upload's `filename`; imports and in-place folders: the
+        file's name; a Drive file: its Drive name; older items: the title when it reads as a file name);
+      - `folder`: the folder under the import root, `DCIM/2019` (Takeout zips: the folder inside the zip; Drive
+        files and in-place folders: under the folder's root). `null` at the top;
+      - `imported_from`: the import root's own name (a folder or zip name), a Drive or film folder's label, else the
+        import `source` (`takeout`, `nextcloud`, `import`) for older imports.
+      - An absolute host path never appears: imports and folders store the path relative to their root
+        (`gallery::import_origin`, `relative_to_roots`), and what a client sends in `meta.origin_folder` /
+        `meta.origin_root` is refused when it is absolute or has `..` (`gallery::clean_folder`). These are stored in
+        `items.origin_name|origin_folder|origin_root` when the item arrives; items stored before only have what can
+        be derived.
+  - `GET items/{id}/details` answers `{item, exif, people}`. `item` is the item as above. `exif` is read on demand
+    from the original with nom-exif: `{make, model, lens, iso, exposure_s, f_number, focal_mm, flash, orientation,
+    software, taken_at, offset, duration_ms}`. `exposure_s` is seconds (0.008 = 1/125), `flash` is whether it fired,
+    `taken_at` is UTC, `offset` is `+02:00` when the file states one, and `duration_ms` is only set for videos and
+    audio (an addition to the contract's list). A field the file lacks is `null`. `exif` is `null` when there is
+    nothing to read (a PNG, or the original is not reachable). `people` is `[]` until faces are recognised.
+  - `PATCH items/{id}` also takes `rotation` (0, 90, 180, 270, else 400). **The client draws the rotation (CSS);
+    the renditions are not re-rendered and the original is untouched.**
+  - **Sources.** `GET sources` is the switcher: `{sources: [...], all: {photos, videos}}`. Each source is `{id, label,
+    kind, photos, videos, latest_taken_at}`:
+    - one `device:<id>` per registered device, most recently seen first (kept even with nothing in it), then
+      `chat` ("Chat & shares") and `lucina` ("Lucina"), which are left out while they hold nothing;
+    - `chat` = photos and videos whose `source` starts with `ios-chat`, `ios-share`, `web-chat`, `web-share`, `chat`,
+      `telegram` or `discord`; `lucina` = `source` starts with `lucina` (`gallery::source_group`, a test keeps the SQL
+      and the Rust rule the same). A document shared from a phone is not a Gallery picture: it stays a Drive file;
+    - `all` counts the Gallery: devices, chat and Lucina, not the Drive. Hidden Live Photo parts and the Trash are
+      never counted.
+  - **Filters on `GET items`** (and `items/months`): `origin=all|device:<id>|chat|lucina` (other values are 400; blank
+    means none) and `kind=photo,video` as a comma list. `origin=all` and `scope=gallery` are the same set
+    (`db::FROM_DEVICE`): from a device, or a photo or video from chat or shares, or Lucina's own. The Drive scope is
+    the rest, so each item is in exactly one of the three scopes (the kernel's DK2 partition keeps holding). Paging
+    is unchanged: `cursor`, `limit` up to 500, `next_cursor`, newest `taken_at`/`added_at` first.
+  - `GET items/months?origin=&kind=` (any listing filter, also `trashed=true`) answers
+    `{months: [{month: "2026-10", count}]}`, newest month first. A month is the UTC month of the sort date, which is
+    what the listing pages by.
+  - **Batch.** `POST items/batch {op, ids, album?, also_from_device?}` answers `{done: [ids], failed: [{id, error}],
+    queued}`. At most 500 ids (duplicates count once); a bad request is 400 and a missing album 404 before anything
+    runs. All ids of one call run in one transaction; an id that cannot be done is `failed` and the others go on.
+    - `trash`, `restore`, `favorite`, `unfavorite`, `album_add`, `album_remove` (the last two need `album`: an id).
+    - `purge` (below).
+    - `also_from_device: true` goes only with `trash`. `queued` counts the device deletions it queued.
+    - Errors per id: `not_found`, `invalid_id`, `already_trashed`, `not_trashed`.
+    - The single routes (`DELETE items/{id}` = trash, `POST items/{id}/restore`) work as before.
+  - **Purge** is the only permanent delete, and it only acts on items already in the trash (`not_trashed` otherwise).
+    It deletes the item row and its versions, album links, externals, Drive row, search text and upload record, and
+    the thumbnails. An original's file is removed only when no item and no version row still references its hash,
+    and only when the library owns the file (store or spool); a file in place (a Drive file, a voice memo) is never
+    deleted. A Live Photo's hidden motion part is not touched. The same function runs the retention.
+  - **Retention.** Items trashed longer ago than `LUCINA_MEDIA_TRASH_DAYS` (30; 0 never purges) are purged by a task
+    once an hour (`trash::retention_worker`); it logs how many, never names.
+  - **Copy semantics (the owner's rule).** Deleting in Lucina never deletes the original on a device. Only
+    `also_from_device` queues a request, for items that have a device and an asset id, and the device app asks the
+    system to delete (PhotoKit shows its own confirmation):
+    - table `device_deletions(device, asset_id, item_id, requested_at, done_at)`;
+    - `GET devices/{id}/deletions` → `{pending: [{asset_id, item_id, requested_at}]}`;
+    - `POST devices/{id}/deletions/ack {asset_ids}` → `{acked: n}` (only pending ones count).
+    - A request stays queued if its item is purged, and is queued again if the item is trashed again after the ack.
+    - The iOS side that consumes this is a follow-up.
 - Share links (2026-10-27, `share.rs`, `share_http.rs`):
   - owner: `POST albums/{id}/shares {expires_in_days?, allow_original?}` → `{token, url_path, …}`;
     `GET albums/{id}/shares`, `GET shares` (with views and `live`); `DELETE shares/{token}` revokes (the row stays).
@@ -198,6 +264,7 @@ An upload whose bytes are gone answers 410 on finish, and the phone starts that 
 ## Not done yet
 
 - Web gallery tab.
+- The iOS consumer of the device deletion queue; face recognition (`people`).
 - Android upload: the Rust module for the Android app.
 - WebDAV upload endpoint.
 - HEIC decoding on the server (needs a user-space libde265 + libheif build); the phone's preview covers iPhone uploads.
