@@ -58,7 +58,8 @@ impl std::fmt::Debug for GrantSigner {
     }
 }
 
-fn load_or_create(path: &Path) -> io::Result<Vec<u8>> {
+/// The PKCS#8 bytes of the Ed25519 key at `path`, made (0600) when missing.
+pub(crate) fn load_or_create(path: &Path) -> io::Result<Vec<u8>> {
     if let Some(dir) = path.parent() {
         crate::devices::ensure_dir(dir)?;
     }
@@ -79,7 +80,7 @@ fn load_or_create(path: &Path) -> io::Result<Vec<u8>> {
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
             let meta = std::fs::metadata(path)?;
             if meta.permissions().mode() & 0o077 != 0 {
-                tracing::warn!(path = %path.display(), "secret-grant.key is readable by group/others; chmod 600 it");
+                tracing::warn!(path = %path.display(), "grant key is readable by group/others; chmod 600 it");
             }
             let mut buf = Vec::new();
             std::fs::File::open(path)?.read_to_end(&mut buf)?;

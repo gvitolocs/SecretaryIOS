@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 
-const ALL_TOOLS: [&str; 30] = [
+const ALL_TOOLS: [&str; 32] = [
     "ask_lucina",
     "lucina_timeline",
     "shopping_list",
@@ -20,8 +20,10 @@ const ALL_TOOLS: [&str; 30] = [
     "body_summary",
     "note_save",
     "note_append",
+    "note_update",
     "note_get",
     "notes_search",
+    "note_labels",
     "tasks_list",
     "task_add",
     "task_complete",
@@ -861,6 +863,529 @@ async fn notes_save_append_get_search() {
     assert!(err && text.contains("note_append"), "{text}");
 }
 
+fn patches(h: &Harness, path: &str) -> Vec<Recorded> {
+    h.mock
+        .requests(path)
+        .into_iter()
+        .filter(|r| r.method == "PATCH")
+        .collect()
+}
+
+async fn shopping_note(h: &Harness, t: &str) {
+    let (err, text) = h
+        .call(
+            t,
+            "note_save",
+            json!({"title": "Shopping", "items": ["Milk", "Bread", "Eggs"], "labels": ["GodLevel", "Fisica 2"],
+                   "color": "Blue", "pinned": true}),
+        )
+        .await;
+    assert!(!err, "{text}");
+}
+
+#[tokio::test]
+async fn keep_note_save_and_get() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,chat,write");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "Shopping", "items": ["Milk", {"text": "Bread", "checked": true}, {"text": "Eggs"}],
+                   "labels": ["GodLevel", "Fisica 2"], "color": "Blue", "pinned": true, "archived": true}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("Saved note \"shopping\" (Shopping) (checklist, 1/3 done)"),
+        "{text}"
+    );
+    let post = h
+        .mock
+        .requests("/v1/notes")
+        .into_iter()
+        .find(|r| r.method == "POST")
+        .unwrap();
+    assert_eq!(post.body["color"], "blue", "colour names are lower-cased");
+    assert_eq!(post.body["labels"], json!(["GodLevel", "Fisica 2"]));
+    assert_eq!(post.body["pinned"], true);
+    assert_eq!(post.body["archived"], true);
+    assert_eq!(
+        post.body["items"],
+        json!([
+            {"text": "Milk", "checked": false, "indent": 0},
+            {"text": "Bread", "checked": true, "indent": 0},
+            {"text": "Eggs", "checked": false, "indent": 0},
+        ])
+    );
+    assert!(
+        post.body.get("content").is_none(),
+        "a checklist needs no content"
+    );
+
+    // note_get: labels by display name, colour, state, numbered items (no derived content).
+    let (err, text) = h.call(&t, "note_get", json!({"slug": "shopping"})).await;
+    assert!(!err, "{text}");
+    assert!(text.contains("[pinned] [archived]"), "{text}");
+    assert!(text.contains("colour blue"), "{text}");
+    assert!(text.contains("labels: GodLevel, Fisica 2"), "{text}");
+    assert!(
+        text.ends_with("Checklist, 1/3 done:\n1. [ ] Milk\n2. [x] Bread\n3. [ ] Eggs"),
+        "{text}"
+    );
+    assert!(!text.contains("- [ ]"), "{text}");
+
+    // Attachments, links, collaborators and the reminder of a note.
+    h.mock.state.lock().unwrap().notes.push(json!({
+        "id": "n_rich", "slug": "rich", "title": "", "content": "Hello", "tags": [], "source": "google-keep",
+        "createdAt": "2026-10-22T11:30:00.000Z", "updatedAt": "2026-10-22T11:30:00.000Z",
+        "deletedAt": "2026-10-23T11:30:00.000Z",
+        "attachments": [{"id": "a", "file": "a.jpg", "mimetype": "image/jpeg", "size": 2_500_000, "name": "photo.jpg"}],
+        "annotations": [{"url": "https://example.org/x", "title": "Example"}],
+        "collaborators": ["anna@example.com"],
+        "reminder": {"at": "2026-11-03T09:00:00+01:00", "recurrence": "weekly", "lucinaId": "r9"},
+    }));
+    let (err, text) = h.call(&t, "note_get", json!({"slug": "rich"})).await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains("\"untitled\"") && text.contains("[in the trash]"),
+        "{text}"
+    );
+    assert!(
+        text.contains("reminder 2026-11-03 09:00 (weekly)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Attachments: photo.jpg (image/jpeg, 2.4 MB)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Links: Example <https://example.org/x>"),
+        "{text}"
+    );
+    assert!(text.contains("Shared with: anna@example.com"), "{text}");
+    assert!(text.ends_with("5 characters.\n\nHello"), "{text}");
+
+    // Mistakes the model can fix.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "x", "content": "y", "color": "mauve"}),
+        )
+        .await;
+    assert!(err && text.contains("cerulean"), "{text}");
+    let (err, text) = h.call(&t, "note_save", json!({"title": "x"})).await;
+    assert!(err && text.contains("items"), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "x", "labels": ["a,b"], "content": "y"}),
+        )
+        .await;
+    assert!(err && text.contains("comma"), "{text}");
+
+    // replace=true carries the Keep fields into the PATCH.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "Shopping", "slug": "shopping", "items": ["Tea"]}),
+        )
+        .await;
+    assert!(err && text.contains("replace=true"), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_save",
+            json!({"title": "Shopping", "slug": "shopping", "items": ["Tea"], "color": "red", "replace": true}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("Replaced note \"shopping\" (Shopping) (checklist, 0/1 done)"),
+        "{text}"
+    );
+    let p = &patches(&h, "/v1/notes/shopping")[0];
+    assert_eq!(p.body["color"], "red");
+    assert_eq!(p.body["items"][0]["text"], "Tea");
+}
+
+#[tokio::test]
+async fn note_update_checks_items_by_number_and_by_text() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,chat,write");
+    shopping_note(&h, &t).await;
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "check": [1, "bread"], "addItems": ["Butter", {"text": "Jam", "checked": true}],
+                   "removeItems": [3]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with(
+            "Updated note \"shopping\" (Shopping): checked 2 items, removed 1 item, added 2 items."
+        ),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(
+            "Checklist, 3/4 done:\n1. [x] Milk\n2. [x] Bread\n3. [ ] Butter\n4. [x] Jam"
+        ),
+        "{text}"
+    );
+    let p = &patches(&h, "/v1/notes/shopping")[0];
+    assert!(p.body["baseUpdatedAt"].is_string(), "{}", p.body);
+    assert!(p.body.get("content").is_none(), "{}", p.body);
+    let items = p.body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 4);
+    assert!(
+        items[0]["id"].as_str().unwrap().starts_with("i_"),
+        "existing items keep their ids"
+    );
+    assert!(
+        items[2].get("id").is_none(),
+        "new items get theirs from the server"
+    );
+
+    // uncheck by number and by text, case-insensitive; the numbers are note_get's.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"id": "n_00000000000000000000", "uncheck": [2, "MILK"]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("unchecked 2 items"), "{text}");
+    assert!(text.contains("1. [ ] Milk\n2. [ ] Bread"), "{text}");
+
+    // Errors say what the list holds.
+    let (err, text) = h
+        .call(&t, "note_update", json!({"slug": "shopping", "check": [9]}))
+        .await;
+    assert!(
+        err && text.contains("No item number 9") && text.contains("1. Milk"),
+        "{text}"
+    );
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "check": ["nope"]}),
+        )
+        .await;
+    assert!(
+        err && text.contains("No item with the text \"nope\"") && text.contains("2. Bread"),
+        "{text}"
+    );
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "addItems": ["Milk"]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "check": ["milk"]}),
+        )
+        .await;
+    assert!(
+        err && text.contains("2 items have the text") && text.contains("numbers 1, 5"),
+        "{text}"
+    );
+    let (err, text) = h.call(&t, "note_update", json!({"slug": "shopping"})).await;
+    assert!(err && text.contains("Nothing to change"), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "content": "x", "check": [1]}),
+        )
+        .await;
+    assert!(err && text.contains("not both"), "{text}");
+    let (err, text) = h
+        .call(&t, "note_update", json!({"slug": "ghost", "pinned": true}))
+        .await;
+    assert!(err && text.contains("No note \"ghost\""), "{text}");
+    // A text note is not a checklist.
+    h.call(
+        &t,
+        "note_save",
+        json!({"title": "Plain", "content": "a\nb"}),
+    )
+    .await;
+    let (err, text) = h
+        .call(&t, "note_update", json!({"slug": "plain", "check": [1]}))
+        .await;
+    assert!(err && text.contains("convert=\"list\""), "{text}");
+}
+
+#[tokio::test]
+async fn note_update_retries_once_on_conflict() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,chat,write");
+    shopping_note(&h, &t).await;
+    h.mock.state.lock().unwrap().race = 1;
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "check": ["Milk"]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    let ps = patches(&h, "/v1/notes/shopping");
+    assert_eq!(ps.len(), 2, "the first PATCH hit the 409");
+    assert_ne!(
+        ps[0].body["baseUpdatedAt"], ps[1].body["baseUpdatedAt"],
+        "the retry edits the new version"
+    );
+    assert!(
+        text.ends_with(
+            "Checklist, 1/4 done:\n1. [x] Milk\n2. [ ] Bread\n3. [ ] Eggs\n4. [ ] Added elsewhere"
+        ),
+        "the concurrent change is kept: {text}"
+    );
+
+    // A second conflict is reported, not retried forever.
+    h.mock.state.lock().unwrap().race = 2;
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "check": ["Bread"]}),
+        )
+        .await;
+    assert!(err && text.contains("changed by someone else"), "{text}");
+    assert_eq!(patches(&h, "/v1/notes/shopping").len(), 4);
+}
+
+#[tokio::test]
+async fn note_update_labels_colour_reminder_and_convert() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,chat,write");
+    shopping_note(&h, &t).await;
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "addLabels": ["#Work", "godlevel"], "removeLabels": ["Fisica  2"],
+                   "color": "teal", "pinned": false, "archived": true, "title": "Groceries"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(
+        text.contains(
+            "title, colour teal, unpinned, archived, label +Work, +godlevel, label -Fisica 2"
+        ),
+        "{text}"
+    );
+    let p = &patches(&h, "/v1/notes/shopping")[0];
+    assert_eq!(p.body["labels"], json!(["godlevel", "Work"]), "{}", p.body);
+    assert_eq!(p.body["color"], "teal");
+    assert_eq!(p.body["pinned"], false);
+    assert_eq!(p.body["archived"], true);
+    assert_eq!(p.body["title"], "Groceries");
+    assert!(p.body.get("items").is_none());
+
+    // Reminder: set, keep the repeat when the time moves, clear.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "reminderAt": "2026-11-03T09:00:00+01:00", "reminderRepeat": "weekly"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("reminder 2026-11-03 09:00"), "{text}");
+    let (err, _) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "reminderAt": "2026-11-10T09:00:00+01:00"}),
+        )
+        .await;
+    assert!(!err);
+    let ps = patches(&h, "/v1/notes/shopping");
+    assert_eq!(
+        ps[1].body["reminder"],
+        json!({"at": "2026-11-03T09:00:00+01:00", "recurrence": "weekly"})
+    );
+    assert_eq!(
+        ps[2].body["reminder"],
+        json!({"at": "2026-11-10T09:00:00+01:00", "recurrence": "weekly"})
+    );
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "reminderAt": null}),
+        )
+        .await;
+    assert!(!err && text.contains("reminder cleared"), "{text}");
+    assert!(patches(&h, "/v1/notes/shopping")[3].body["reminder"].is_null());
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "reminderRepeat": "daily"}),
+        )
+        .await;
+    assert!(err && text.contains("no reminder yet"), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "reminderAt": "tomorrow 9"}),
+        )
+        .await;
+    assert!(err && text.contains("RFC 3339"), "{text}");
+    // Lucina unreachable: the server answers 502 and the note is unchanged.
+    h.call(
+        &t,
+        "note_save",
+        json!({"title": "No Lucina", "content": "x", "slug": "no-lucina"}),
+    )
+    .await;
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "no-lucina", "reminderAt": "2026-11-03T09:00:00+01:00"}),
+        )
+        .await;
+    assert!(
+        err && text.contains("Lucina could not be reached"),
+        "{text}"
+    );
+
+    // convert: list -> text -> list.
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "convert": "text"}),
+        )
+        .await;
+    assert!(!err && text.contains("converted to text"), "{text}");
+    assert!(!text.contains("Checklist"), "{text}");
+    let (err, text) = h
+        .call(
+            &t,
+            "note_update",
+            json!({"slug": "shopping", "convert": "list", "addItems": ["Tea"]}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    assert!(text.contains("converted to list, added 1 item"), "{text}");
+    assert!(
+        text.ends_with("Checklist, 0/4 done:\n1. [ ] Milk\n2. [ ] Bread\n3. [ ] Eggs\n4. [ ] Tea"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn notes_search_filters_and_hits_show_keep_fields() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read,chat,write");
+    shopping_note(&h, &t).await;
+    h.call(&t, "note_update", json!({"slug": "shopping", "check": [1], "reminderAt": "2026-11-03T09:00:00+01:00", "archived": true})).await;
+    h.call(
+        &t,
+        "note_save",
+        json!({"title": "Plain", "content": "milk is white"}),
+    )
+    .await;
+
+    let (err, text) = h
+        .call(
+            &t,
+            "notes_search",
+            json!({"label": "#GodLevel", "color": "Blue", "type": "list", "archived": "only"}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    let q = &h
+        .mock
+        .requests("/v1/notes")
+        .into_iter()
+        .filter(|r| r.method == "GET")
+        .last()
+        .unwrap()
+        .query;
+    for part in ["tag=godlevel", "color=blue", "type=list", "archived=only"] {
+        assert!(q.contains(part), "{q}");
+    }
+    assert!(
+        text.starts_with(
+            "1 note(s) with label \"GodLevel\" in colour blue of type list (archived only):"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("[pinned] [archived]"), "{text}");
+    assert!(text.contains("colour blue · labels: GodLevel, Fisica 2 · checklist 1/3 done · reminder 2026-11-03 09:00"), "{text}");
+    assert!(
+        text.contains("- [x] Milk"),
+        "the excerpt is the derived checklist: {text}"
+    );
+
+    // The old `tag` argument still works, and archived=exclude hides the archived one.
+    let (_, text) = h
+        .call(
+            &t,
+            "notes_search",
+            json!({"tag": "godlevel", "archived": "exclude"}),
+        )
+        .await;
+    assert_eq!(text, "No notes with label \"godlevel\" (archive excluded).");
+    let (_, text) = h.call(&t, "notes_search", json!({"tag": "godlevel"})).await;
+    assert!(
+        text.starts_with("1 note(s) with label \"godlevel\":"),
+        "{text}"
+    );
+    let (_, text) = h
+        .call(&t, "notes_search", json!({"q": "milk", "type": "text"}))
+        .await;
+    assert!(
+        text.contains("\"Plain\"") && !text.contains("\"Shopping\""),
+        "{text}"
+    );
+    let (err, text) = h.call(&t, "notes_search", json!({"type": "video"})).await;
+    assert!(err && text.contains("Invalid arguments"), "{text}");
+}
+
+#[tokio::test]
+async fn note_labels_lists_display_names_with_counts() {
+    let h = start().await;
+    let t = h.issue("claude-code", "read");
+    let (_, text) = h.call(&t, "note_labels", json!({})).await;
+    assert_eq!(text, "No labels yet.");
+    let w = h.issue("claude-code", "read,write");
+    shopping_note(&h, &w).await;
+    h.call(
+        &w,
+        "note_save",
+        json!({"title": "Two", "content": "x", "labels": ["GodLevel"]}),
+    )
+    .await;
+    let (err, text) = h.call(&t, "note_labels", json!({})).await;
+    assert!(!err, "{text}");
+    assert!(
+        text.starts_with("2 label(s):\n- GodLevel (2 notes)\n- Fisica 2 (1 note)\n"),
+        "{text}"
+    );
+    assert_eq!(h.mock.requests("/v1/notes/labels")[1].method, "GET");
+}
+
 #[tokio::test]
 async fn notes_need_the_right_scopes() {
     let h = start().await;
@@ -868,6 +1393,13 @@ async fn notes_need_the_right_scopes() {
     let names = h.tool_names(&reader).await;
     assert!(names.contains(&"note_get".to_owned()) && names.contains(&"notes_search".to_owned()));
     assert!(!names.contains(&"note_save".to_owned()) && !names.contains(&"note_append".to_owned()));
+    assert!(
+        names.contains(&"note_labels".to_owned()) && !names.contains(&"note_update".to_owned())
+    );
+    let (err, text) = h
+        .call(&reader, "note_update", json!({"slug": "x", "pinned": true}))
+        .await;
+    assert!(err && text.contains("lacks the `write` scope"), "{text}");
     let (err, text) = h
         .call(&reader, "note_save", json!({"title": "x", "content": "y"}))
         .await;
@@ -1101,10 +1633,14 @@ async fn computer_tools_need_the_computer_scope() {
     let full = h.issue("grok", "read,chat,write");
     let names = h.tool_names(&full).await;
     assert!(
-        !names.iter().any(|n| n.starts_with("computer_") || n.starts_with("android_")),
+        !names
+            .iter()
+            .any(|n| n.starts_with("computer_") || n.starts_with("android_")),
         "{names:?}"
     );
-    let (err, text) = h.call(&full, "computer_bash", json!({"command": "id"})).await;
+    let (err, text) = h
+        .call(&full, "computer_bash", json!({"command": "id"}))
+        .await;
     assert!(err && text.contains("`computer` scope"), "{text}");
     assert!(h.mock.requests("/v1/computer/call").is_empty());
 
@@ -1114,7 +1650,10 @@ async fn computer_tools_need_the_computer_scope() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|t| t["name"].as_str().unwrap().contains("computer_") || t["name"].as_str().unwrap().starts_with("android_"))
+        .filter(|t| {
+            t["name"].as_str().unwrap().contains("computer_")
+                || t["name"].as_str().unwrap().starts_with("android_")
+        })
         .collect();
     assert_eq!(tools.len(), 11);
     for t in &tools {
@@ -1122,25 +1661,49 @@ async fn computer_tools_need_the_computer_scope() {
     }
 
     let r = h
-        .rpc(&owner, "tools/call", json!({"name": "computer_screenshot", "arguments": {}}))
+        .rpc(
+            &owner,
+            "tools/call",
+            json!({"name": "computer_screenshot", "arguments": {}}),
+        )
         .await;
     assert_eq!(r["content"][0]["type"], "image");
     assert_eq!(r["content"][0]["mimeType"], "image/png");
-    assert!(r["content"][1]["text"].as_str().unwrap().contains("window_id"));
+    assert!(r["content"][1]["text"]
+        .as_str()
+        .unwrap()
+        .contains("window_id"));
 
-    let (err, text) = h.call(&owner, "computer_bash", json!({"command": "echo hi"})).await;
+    let (err, text) = h
+        .call(&owner, "computer_bash", json!({"command": "echo hi"}))
+        .await;
     assert!(!err && text == "hi\n", "{text}");
     let sent = h.mock.requests("/v1/computer/call");
     assert_eq!(sent.last().unwrap().body["sandbox"], "workspace");
-    assert_eq!(sent.last().unwrap().headers["x-secretary-caller"], "mcp:claude");
+    assert_eq!(
+        sent.last().unwrap().headers["x-secretary-caller"],
+        "mcp:claude"
+    );
 
-    let (err, text) = h.call(&owner, "android_bash", json!({"command": "id"})).await;
+    let (err, text) = h
+        .call(&owner, "android_bash", json!({"command": "id"}))
+        .await;
     assert!(err && text.contains("driving"), "{text}");
 
     let (err, text) = h
-        .call(&owner, "computer_task", json!({"task": "open example.com", "wait_seconds": 10}))
+        .call(
+            &owner,
+            "computer_task",
+            json!({"task": "open example.com", "wait_seconds": 10}),
+        )
         .await;
     assert!(!err, "{text}");
-    assert!(text.contains("completed in 12 s") && text.ends_with("Example Domain."), "{text}");
-    assert_eq!(h.mock.requests("/v1/computer/task")[0].body["task"], "open example.com");
+    assert!(
+        text.contains("completed in 12 s") && text.ends_with("Example Domain."),
+        "{text}"
+    );
+    assert_eq!(
+        h.mock.requests("/v1/computer/task")[0].body["task"],
+        "open example.com"
+    );
 }
