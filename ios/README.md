@@ -120,6 +120,24 @@ route (CSRF-exempt, as on the real server), `POST /v1/auth/device` and
   Personal Team cannot use it. Until a paid team exists, the home-screen web app gives real
   push on the iPhone (Web Push, iOS 16.4+).
 
+## Owner approvals (Features/Approvals)
+
+When Lucina, the secrets broker or agentd need the owner's permission, the server holds a request
+(`/v1/approvals`, contract "Owner approvals v1") and this iPhone asks:
+
+- `ApprovalsStore` polls `GET /v1/approvals?status=pending` every 3 s while the app is active and once per
+  background refresh. A server without the routes (404) is left alone: no banner, one request every 30 s.
+- The prompt is a bottom sheet in a window of its own (`ApprovalPresenter`), above every tab and every other
+  sheet: who is asking, the summary, the exact details in monospace, risk and sensitive badges, a countdown.
+- Each new request id posts one local notification (`approval.<id>`, category `APPROVAL`; `APPROVAL_SENSITIVE`
+  for a sensitive one, whose Approve also opens the app, because a notification's buttons are per category).
+  Deny, and Approve of a non-sensitive request, are answered from the notification; a sensitive Approve opens the
+  prompt. No APNs: the free Personal Team has none.
+- A sensitive approve is signed: a Secure Enclave P-256 key (`[.privateKeyUsage, .biometryCurrentSet]`) signs
+  `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}` after Face ID, and the base64 DER signature goes in
+  `proof`. Settings → Approvals registers the key (`POST /v1/approvals/keys`, needs the owner's password) and
+  picks the main device. Deny never needs a proof.
+- Screenshots: `SHOTS="approval approval-plain" scripts/device-shots.sh …` (fixture data, nothing is sent).
 ## Device bridge (docs/device-bridge.md)
 
 Settings → Lucina's access turns each source on, with an explanation before iOS asks:

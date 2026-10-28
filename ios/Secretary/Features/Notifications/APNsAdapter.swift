@@ -50,6 +50,7 @@ enum BackgroundRefresh {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        ApprovalNotifier.registerCategories()
         Task { @MainActor in APNsAdapter.registerIfEnabled() }
         // Photo backup: longer passes when iOS grants processing time (Wi-Fi, often charging).
         BGTaskScheduler.shared.register(forTaskWithIdentifier: PhotoBackup.processingIdentifier, using: nil) { task in
@@ -95,11 +96,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     /// Show banners while the app is open (the store only posts what the owner isn't looking at).
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        // An approval is already on screen as the prompt while the app is open: no banner on top of it.
+        if notification.request.content.userInfo[ApprovalNotifier.idKey] != nil { return [.list] }
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
+        // An approval: Approve / Deny from the notification, or its tap opens the prompt.
+        if let approvalId = info[ApprovalNotifier.idKey] as? String {
+            let sensitive = info[ApprovalNotifier.sensitiveKey] as? Bool ?? true
+            let action = response.actionIdentifier
+            await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
+            return
+        }
         let route = info[LocalNotifier.routeKey] as? String
         let id = info[LocalNotifier.idKey] as? String
         await MainActor.run {
@@ -124,6 +134,7 @@ extension BackgroundRefresh {
         let app = AppModel.shared
         guard app.client.accessKey?.isEmpty == false else { return }
         await app.notifications.backgroundRefresh()
+        await app.approvals.poll()
         app.memos.queue.kick()
     }
 }

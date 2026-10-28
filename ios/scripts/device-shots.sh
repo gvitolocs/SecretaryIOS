@@ -5,6 +5,8 @@
 # Build the app as Release with the SCREENSHOTS condition so it reads -SecretaryInitialTab:
 #   xcodebuild ... -configuration Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) SCREENSHOTS' build
 # Needs pymobiledevice3 (it opens the iOS 17+ developer tunnel itself; run outside the sandbox).
+# SHOTS="approval approval-plain" takes only the named screens (names as in the list below).
+# The approval prompt shows fixture data (-SecretaryInitialTab approval*): nothing is sent to the server.
 # Several sessions share the phone: the lock directory /tmp/iphone16e.lock is held throughout.
 set -u
 app=${1:?Secretary.app}
@@ -20,9 +22,12 @@ i=0
 for shot in "chat:-SecretaryInitialTab chat" "lucina:-SecretaryInitialTab lucina" "shopping:-SecretaryInitialTab shopping" \
             "training:-SecretaryInitialTab fitness" "training-lower:-SecretaryInitialTab fitness -SecretaryScrollTo training" \
             "plugins:-SecretaryInitialTab plugins" "settings:-SecretaryInitialTab settings" \
-            "notes:-SecretaryInitialTab notes" "tasks:-SecretaryInitialTab tasks"; do
-  i=$((i+1))
+            "notes:-SecretaryInitialTab notes" "tasks:-SecretaryInitialTab tasks" \
+            "approval:-SecretaryInitialTab approval" "approval-plain:-SecretaryInitialTab approval-plain" \
+            "approval-done:-SecretaryInitialTab approval-done" "approval-already:-SecretaryInitialTab approval-already"; do
   tab=${shot%%:*}
+  [[ -n ${SHOTS:-} && " $SHOTS " != *" $tab "* ]] && continue
+  i=$((i+1))
   xcrun devicectl device process launch --device "$dev" --terminate-existing tech.getsecretary.app -- ${=shot#*:} > /dev/null 2>&1
   sleep 7
   pymobiledevice3 developer dvt screenshot "$out/$(printf %02d $i)-$tab.png" > /dev/null 2>&1 || echo "$tab: screenshot failed"

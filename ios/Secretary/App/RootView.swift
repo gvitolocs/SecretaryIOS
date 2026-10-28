@@ -56,6 +56,8 @@ struct MainTabs: View {
         #if DEBUG || SCREENSHOTS
         .task { await WidgetSelfTest.runIfRequested(app) }
         #endif
+        // The owner's approval prompt, over every tab and every sheet (a window of its own).
+        .modifier(ApprovalHost(store: app.approvals, openSettings: { app.showSettings = true }))
         // Lucina in the room (AR), over everything.
         .modifier(LucinaARHost(controller: app.lucina))
         #if SCREENSHOTS
@@ -143,6 +145,11 @@ struct MainTabs: View {
                 if app.backup.settings.enabled { PhotoBackup.scheduleProcessing(chargingOnly: app.backup.settings.chargingOnly) }
                 Task { await app.notifications.reschedule() }
             }
+        }
+        // Pending approvals: a look now and every 3 s while the app is active (no launch delay: someone is waiting).
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await app.approvals.foregroundLoop()
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }

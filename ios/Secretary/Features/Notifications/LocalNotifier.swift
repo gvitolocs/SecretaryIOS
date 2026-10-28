@@ -9,6 +9,12 @@ protocol NotificationScheduling: AnyObject, Sendable {
     func authorizationStatus() async -> UNAuthorizationStatus
     func requestAuthorization() async throws -> Bool
     func setBadge(_ count: Int) async
+    /// Takes notifications off the lock screen and Notification Center (an approval answered elsewhere).
+    func removeDelivered(_ identifiers: [String]) async
+}
+
+extension NotificationScheduling {
+    func removeDelivered(_ identifiers: [String]) async {}
 }
 
 final class SystemNotificationCenter: NotificationScheduling, @unchecked Sendable {
@@ -27,6 +33,11 @@ final class SystemNotificationCenter: NotificationScheduling, @unchecked Sendabl
     }
 
     func setBadge(_ count: Int) async { try? await center.setBadgeCount(count) }
+
+    func removeDelivered(_ identifiers: [String]) async {
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
 }
 
 /// Local notifications: immediate ones for what arrives while the app runs or

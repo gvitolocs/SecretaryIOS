@@ -105,6 +105,8 @@ final class AppModel {
     let device: DeviceHub
     /// Inbox, settings and local notifications.
     let notifications: NotificationCenterStore
+    /// The owner's approvals: the prompt, its local notifications and the Face ID proof (/v1/approvals).
+    let approvals: ApprovalsStore
     /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
     let media: MediaPlayer
     /// The photo library on the server (/v1/media), shown by the Gallery plugin.
@@ -168,6 +170,13 @@ final class AppModel {
         let weight = weight
         device = PerfLog.measure("device") { DeviceHub(client: client, weight: weight) }
         notifications = PerfLog.measure("notifications") { NotificationCenterStore(api: { NotificationsClient(client: client) }) }
+        let notificationStore = notifications
+        approvals = PerfLog.measure("approvals") {
+            ApprovalsStore(api: { client.accessKey?.isEmpty == false ? ApprovalsAPI(client: client) : nil },
+                           signer: SecureEnclaveApprovalSigner(), notifier: ApprovalNotifier(),
+                           previews: { notificationStore.rules.settings.previews },
+                           deviceLabel: { UIDevice.current.name })
+        }
         var mediaBase = client.primaryURL
         #if DEBUG || SCREENSHOTS
         let selftest = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
@@ -234,6 +243,9 @@ final class AppModel {
         pendingWidgetRoute = WidgetRouter.pending
         WidgetRouter.pending = nil
         if launch.openSettings { showSettings = true }
+        #if DEBUG || SCREENSHOTS
+        if let name = launch.approvalFixture { approvals.loadFixture(name) }
+        #endif
         if launch.openNotes {
             selectedTab = .plugins
             showNotes = true
@@ -289,6 +301,7 @@ final class AppModel {
         }
         weight.onLogged = { grams, date in Task { await device.health.exportWeight(grams: grams, at: date) } }
         gym.onFinished = { start, end in Task { await device.health.exportWorkout(start: start, end: end) } }
+        approvals.onTransportError = onError
         shopping.onTransportError = onError
         shopping.onTransportSuccess = onSuccess
         shoppingV2.onTransportError = onError
@@ -408,6 +421,7 @@ final class AppModel {
         gym.reset()
         weight.reset()
         notifications.reset()
+        approvals.reset()
         memos.reset()
         showMemos = false
         lucinaNotice = nil
@@ -563,6 +577,8 @@ struct LaunchOptions {
     var openMemos = false
     /// `-SecretaryInitialTab pokemon`: start on Lucina's Pokémon game.
     var openPokemon = false
+    /// `-SecretaryInitialTab approval | approval-plain | approval-done | approval-already`: the approval prompt with fixture data.
+    var approvalFixture: String?
 
     init(defaults: UserDefaults) {
         #if DEBUG || SCREENSHOTS
@@ -575,6 +591,7 @@ struct LaunchOptions {
         openGallery = defaults.string(forKey: "SecretaryInitialTab") == "gallery"
         openMemos = defaults.string(forKey: "SecretaryInitialTab") == "memos"
         openPokemon = defaults.string(forKey: "SecretaryInitialTab") == "pokemon"
+        approvalFixture = defaults.string(forKey: "SecretaryInitialTab").flatMap { $0.hasPrefix("approval") ? $0 : nil }
         #endif
     }
 }

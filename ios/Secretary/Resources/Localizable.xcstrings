@@ -18355,6 +18355,822 @@
           }
         }
       }
+    },
+    "Something" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noget"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Qualcosa"
+          }
+        }
+      }
+    },
+    "This request changed while you were looking at it. Review it again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne anmodning ændrede sig, mens du så på den. Gennemgå den igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa richiesta è cambiata mentre la guardavi. Controllala di nuovo."
+          }
+        }
+      }
+    },
+    "Your main device answers first. This iPhone can answer in a few seconds." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Din primære enhed svarer først. Denne iPhone kan svare om få sekunder."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Risponde prima il tuo dispositivo principale. Questo iPhone potrà rispondere tra qualche secondo."
+          }
+        }
+      }
+    },
+    "A device can't approve its own request." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "En enhed kan ikke godkende sin egen anmodning."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Un dispositivo non può approvare la propria richiesta."
+          }
+        }
+      }
+    },
+    "%@ needs your OK" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ har brug for dit OK"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ha bisogno del tuo OK"
+          }
+        }
+      }
+    },
+    "Open Secretary to see what it is." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary for at se, hvad det er."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary per vedere di cosa si tratta."
+          }
+        }
+      }
+    },
+    "Your answer didn't go through" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dit svar gik ikke igennem"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La tua risposta non è arrivata"
+          }
+        }
+      }
+    },
+    "Open Secretary and answer again: %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Åbn Secretary og svar igen: %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Secretary e rispondi di nuovo: %@"
+          }
+        }
+      }
+    },
+    "Face ID on %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID på %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID su %@"
+          }
+        }
+      }
+    },
+    "That password isn't right." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Den adgangskode er forkert."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa password non è corretta."
+          }
+        }
+      }
+    },
+    "%lld more waiting" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld mere venter"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Altre %lld in attesa"
+          }
+        }
+      }
+    },
+    "%@ is asking" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ beder om din tilladelse"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ chiede il tuo permesso"
+          }
+        }
+      }
+    },
+    "Sensitive" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Følsom"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sensibile"
+          }
+        }
+      }
+    },
+    "Low risk" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lav risiko"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rischio basso"
+          }
+        }
+      }
+    },
+    "Medium risk" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mellem risiko"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rischio medio"
+          }
+        }
+      }
+    },
+    "High risk" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Høj risiko"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rischio alto"
+          }
+        }
+      }
+    },
+    "Exactly what will happen" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Præcis hvad der vil ske"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cosa succederà esattamente"
+          }
+        }
+      }
+    },
+    "Approve with Face ID" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkend med Face ID"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Approva con Face ID"
+          }
+        }
+      }
+    },
+    "Expired" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Udløbet"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scaduta"
+          }
+        }
+      }
+    },
+    "Approved" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkendt"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Approvata"
+          }
+        }
+      }
+    },
+    "Denied" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Afvist"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rifiutata"
+          }
+        }
+      }
+    },
+    "Already approved on %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allerede godkendt på %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Già approvata su %@"
+          }
+        }
+      }
+    },
+    "Already denied on %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allerede afvist på %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Già rifiutata su %@"
+          }
+        }
+      }
+    },
+    "Already answered on %@" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allerede besvaret på %@"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Già risposto su %@"
+          }
+        }
+      }
+    },
+    "Already approved" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allerede godkendt"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Già approvata"
+          }
+        }
+      }
+    },
+    "Already denied" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allerede afvist"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Già rifiutata"
+          }
+        }
+      }
+    },
+    "Already answered" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allerede besvaret"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Già risposto"
+          }
+        }
+      }
+    },
+    "This request expired" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne anmodning er udløbet"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa richiesta è scaduta"
+          }
+        }
+      }
+    },
+    "This request is no longer there" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne anmodning findes ikke længere"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questa richiesta non esiste più"
+          }
+        }
+      }
+    },
+    "Approvals aren't available on this server yet." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkendelser er endnu ikke tilgængelige på denne server."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le approvazioni non sono ancora disponibili su questo server."
+          }
+        }
+      }
+    },
+    "Main device for approvals" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Primær enhed til godkendelser"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dispositivo principale per le approvazioni"
+          }
+        }
+      }
+    },
+    "Approvals" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkendelser"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Approvazioni"
+          }
+        }
+      }
+    },
+    "Your Secretary password" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Din Secretary-adgangskode"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La tua password di Secretary"
+          }
+        }
+      }
+    },
+    "Set up" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt op"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Configura"
+          }
+        }
+      }
+    },
+    "This iPhone will no longer be able to approve secrets, root commands, messages or payments." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne iPhone kan ikke længere godkende hemmeligheder, root-kommandoer, beskeder eller betalinger."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo iPhone non potrà più approvare segreti, comandi root, messaggi o pagamenti."
+          }
+        }
+      }
+    },
+    "Checking…" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tjekker…"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Controllo…"
+          }
+        }
+      }
+    },
+    "Face ID or passcode isn't set up for approvals on this iPhone." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID eller kode er ikke sat op til godkendelser på denne iPhone."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID o codice non configurati per le approvazioni su questo iPhone."
+          }
+        }
+      }
+    },
+    "Set up Face ID in Settings → Face ID & Passcode, or approve with your passcode." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt Face ID op i Indstillinger → Face ID og kode, eller godkend med din kode."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Configura Face ID in Impostazioni → Face ID e codice, oppure approva con il codice."
+          }
+        }
+      }
+    },
+    "This iPhone can't keep an approval key." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne iPhone kan ikke gemme en godkendelsesnøgle."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Questo iPhone non può conservare una chiave di approvazione."
+          }
+        }
+      }
+    },
+    "Approvals aren't on the server yet. Try again later." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Godkendelser er endnu ikke på serveren. Prøv igen senere."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Le approvazioni non sono ancora sul server. Riprova più tardi."
+          }
+        }
+      }
+    },
+    "Face ID or passcode isn't set up for approvals on this iPhone, so a sensitive request can't be approved here." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID eller kode er ikke sat op til godkendelser på denne iPhone, så en følsom anmodning kan ikke godkendes her."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID o codice non configurati per le approvazioni su questo iPhone, quindi qui non si può approvare una richiesta delicata."
+          }
+        }
+      }
+    },
+    "Set up Face ID or passcode again" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sæt Face ID eller kode op igen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Configura di nuovo Face ID o codice"
+          }
+        }
+      }
+    },
+    "Use Face ID or passcode for sensitive approvals" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brug Face ID eller kode til følsomme godkendelser"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Usa Face ID o codice per le approvazioni delicate"
+          }
+        }
+      }
+    },
+    "Remove the approval key" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern godkendelsesnøglen"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimuovi la chiave di approvazione"
+          }
+        }
+      }
+    },
+    "Remove the approval key?" : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fjern godkendelsesnøglen?"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rimuovere la chiave di approvazione?"
+          }
+        }
+      }
+    },
+    "When Lucina needs your OK, the main device gets the prompt first. Your other devices get it after %lld seconds. Secrets, root commands, messages and payments need Face ID or the passcode on the device that approves them." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Når Lucina har brug for dit OK, får den primære enhed anmodningen først. Dine andre enheder får den efter %lld sekunder. Hemmeligheder, root-kommandoer, beskeder og betalinger kræver Face ID eller koden på den enhed, der godkender dem."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Quando Lucina ha bisogno del tuo OK, il dispositivo principale riceve la richiesta per primo. Gli altri tuoi dispositivi la ricevono dopo %lld secondi. Segreti, comandi root, messaggi e pagamenti richiedono Face ID o il codice sul dispositivo che li approva."
+          }
+        }
+      }
+    },
+    "This proves it's you. It's sent once to your server to register this iPhone's approval key, and never stored." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Det beviser, at det er dig. Den sendes én gang til din server for at registrere denne iPhones godkendelsesnøgle og gemmes aldrig."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Serve a dimostrare che sei tu. Viene inviata una volta al tuo server per registrare la chiave di approvazione di questo iPhone, e non viene mai salvata."
+          }
+        }
+      }
+    },
+    "Face ID or passcode is set up for approvals on this iPhone." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID eller kode er sat op til godkendelser på denne iPhone."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Face ID o codice configurati per le approvazioni su questo iPhone."
+          }
+        }
+      }
+    },
+    "Optional. Without it this iPhone can't approve secrets, root commands, messages or payments." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Valgfrit. Uden det kan denne iPhone ikke godkende hemmeligheder, root-kommandoer, beskeder eller betalinger."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Facoltativo. Senza, questo iPhone non può approvare segreti, comandi root, messaggi o pagamenti."
+          }
+        }
+      }
+    },
+    "This iPhone's key isn't registered on the server. Set it up again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Denne iPhones nøgle er ikke registreret på serveren. Sæt den op igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "La chiave di questo iPhone non è registrata sul server. Configurala di nuovo."
+          }
+        }
+      }
+    },
+    "The server has a key for this device that this iPhone no longer has. Set it up again." : {
+      "localizations" : {
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Serveren har en nøgle til denne enhed, som denne iPhone ikke længere har. Sæt den op igen."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Il server ha una chiave per questo dispositivo che questo iPhone non ha più. Configurala di nuovo."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var confirmSignOut = false
     @State private var showPassword = false
     @State private var showQrSignIn = false
+    @State private var approvalPrompts = ApprovalsSettingsPrompts()
     @State private var developerTaps = 0
     @AppStorage("secretary.debug.showDeveloper") private var showDeveloper = false
     @AppStorage(LucinaVoiceReplies.settingKey) private var voiceReplies = true
@@ -119,6 +120,8 @@ struct SettingsView: View {
                 .accessibilityIdentifier("notificationSettings")
             }
 
+            ApprovalsSettingsSection(prompts: approvalPrompts)
+
             Section("This device") {
                 LabeledContent("Device name", value: app.deviceName ?? "—")
                 Button("Sign in another device", systemImage: "qrcode.viewfinder") { showQrSignIn = true }
@@ -191,6 +194,7 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .modifier(ApprovalsSettingsPromptsModifier(prompts: approvalPrompts))
         .confirmationDialog("Sign out of Secretary on this iPhone?", isPresented: $confirmSignOut, titleVisibility: .visible) {
             Button("Sign out", role: .destructive) { app.signOut() }
         } message: {

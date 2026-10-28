@@ -64,6 +64,8 @@ targets:
         NSLocationAlwaysAndWhenInUseUsageDescription: "To notice when you arrive at or leave a place, even when Secretary is closed."
         NSCalendarsFullAccessUsageDescription: "Lucina sees your upcoming events and adds or removes them when you ask."
         NSRemindersFullAccessUsageDescription: "Lucina adds, completes and reads your reminders when you ask."
+        # Face ID unlocks the key that signs sensitive approvals (Features/Approvals); localized in InfoPlist.xcstrings.
+        NSFaceIDUsageDescription: "Secretary asks for Face ID before it approves a sensitive request for you, like revealing a secret or running a command as root."
         NSAlarmKitUsageDescription: "Lucina sets alarms and timers for you when you ask."
         NSSupportsLiveActivities: true
         SecretaryKeychainGroup: "$(AppIdentifierPrefix)tech.getsecretary.shared"
