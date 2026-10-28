@@ -84,6 +84,14 @@ describe("itemVisual", () => {
     expect(v({ icon: "🛒", name: "ünbekannt" })).toEqual({ kind: "initial", letter: "Ü" });
   });
 
+  it("draws the Casa list's needed rows (2026-10-28) with art", () => {
+    // As the server sends them: catalog rows with the catalog's emoji, a custom item with its own.
+    expect(art({ icon: "🥚", catalogId: "eggs", name: "Uova", section: "dairy-eggs", iconPicked: false })).toMatch(/^eggs/);
+    expect(art({ icon: "🍖", catalogId: "prosciutto", name: "Prosciutto crudo", section: "deli", iconPicked: false })).toMatch(/^prosciutto/);
+    expect(art({ icon: "🍖", catalogId: "ham", name: "Prosciutto cotto", section: "deli", iconPicked: false })).toMatch(/^ham/);
+    expect(art({ icon: "🧽", catalogId: null, name: "Lavatrici", section: "household", iconPicked: false })).toMatch(/^household/);
+  });
+
   it("works before the catalog has loaded", () => {
     expect(itemVisual({ icon: "🍌", catalogId: "banana", name: "Banane" }, null, [])).toMatchObject({ kind: "art" });
     expect(itemVisual({ icon: "🍌", name: "Banane" }, null, [])).toEqual({ kind: "emoji", emoji: "🍌" });
