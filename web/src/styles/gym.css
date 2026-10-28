@@ -958,3 +958,229 @@
   transform: scale(1.08);
   box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 40%, transparent);
 }
+
+/* ======================================================================
+   Desktop (GymHome on a page at least WIDE_MIN_PX wide, gym/shared.tsx
+   `useWide`): a header row (title, this week, start), the tabs under it,
+   then the training column and the Training page's weight rail. One
+   column width (1360 px), one gap (24 px); the phone layout above is
+   untouched because the desktop pieces only exist in the wide markup.
+   ====================================================================== */
+
+.gym-theme.gym-page--wide .gym-inner {
+  max-width: 1360px;
+  padding: 28px max(32px, var(--safe-right)) 48px max(32px, var(--safe-left));
+}
+
+.gym-desk-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px) auto;
+  align-items: end;
+  gap: 32px;
+}
+
+.gym-desk-titles {
+  min-width: 0;
+}
+
+.gym-desk-title {
+  margin: 6px 0 0;
+  font-family: var(--gym-rounded);
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: -0.8px;
+  line-height: 1.1;
+}
+
+.gym-desk-head .gym-week-head {
+  margin-bottom: 8px;
+}
+
+.gym-desk-head .gym-week-count {
+  margin-top: 4px;
+  font-size: 0.9375rem;
+}
+
+.gym-desk-head .gym-week-icon .icon {
+  width: 20px;
+  height: 20px;
+}
+
+.gym-theme .gym-desk-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  min-height: 42px;
+  padding: 0 20px;
+  white-space: nowrap;
+}
+
+.gym-theme .gym-desk-start .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.gym-theme.gym-page--wide .gym-inner > .gym-subnav {
+  width: fit-content;
+  margin-top: 22px;
+}
+
+.gym-theme.gym-page--wide .gym-subnav-tab {
+  flex: none;
+  min-height: 34px;
+  padding: 0 18px;
+}
+
+.gym-theme.gym-page--wide .gym-inner > .gym-desk-grid {
+  margin-top: 24px;
+}
+
+.gym-desk-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.gym-desk-grid--rail {
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+}
+
+.gym-desk-main {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+.gym-desk-main .gym-section-head {
+  margin: 0 0 12px;
+}
+
+.gym-desk-main > .gym-section > .section-title {
+  margin: 0 0 12px;
+}
+
+.gym-theme .gym-desk-main .gym-list {
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.gym-desk-main .gym-row {
+  height: 100%;
+  padding: 16px;
+}
+
+.gym-desk-main .gym-metrics {
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--glass);
+}
+
+.gym-desk-main .gym-footer {
+  padding-bottom: 0;
+}
+
+/* The weight rail: the compact Weight view, tightened to the rail. */
+.gym-desk-rail {
+  position: sticky;
+  top: 0;
+  min-width: 0;
+}
+
+.gym-desk-rail .weight {
+  flex: none;
+  overflow: visible;
+}
+
+.gym-desk-rail .weight-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+
+.gym-desk-rail .weight-log {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+}
+
+.gym-desk-rail .weight-log > .weight-log-row > .weight-input {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.gym-desk-rail .weight-log > .weight-log-row > .segmented {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.gym-desk-rail .weight-log-row {
+  display: contents;
+}
+
+.gym-desk-rail .weight-log .view-title {
+  grid-column: 1 / -1;
+  margin: 0 0 4px;
+  font-size: 1.125rem;
+}
+
+.gym-desk-rail .weight-log > #weight-note {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+.gym-desk-rail .weight-log > .form-error {
+  grid-column: 1 / -1;
+  grid-row: 4;
+  margin: 0;
+}
+
+.gym-desk-rail .weight-log > .btn--primary {
+  grid-column: 2;
+  grid-row: 3;
+  width: auto;
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.gym-desk-rail .segmented-btn {
+  min-width: 36px;
+  min-height: 32px;
+}
+
+.gym-desk-rail .stat-grid {
+  gap: 8px;
+}
+
+.gym-desk-rail .stat-card {
+  padding: 12px 14px;
+}
+
+.gym-desk-rail .stat-value {
+  font-size: 1.25rem;
+}
+
+.gym-desk-rail .stat-value--muted {
+  font-size: 0.9375rem;
+}
+
+.gym-desk-rail .stat-detail {
+  margin: 0 2px;
+}
+
+.gym-desk-rail .weight-chart-card {
+  padding: 16px;
+}
+
+.gym-desk-rail .weight-chart-card .section-title {
+  margin-bottom: 8px;
+  font-size: 1rem;
+}

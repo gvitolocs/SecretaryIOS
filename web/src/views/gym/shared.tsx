@@ -86,7 +86,7 @@ type GymTab = "training" | "journal" | "progress" | "settings";
 
 function currentTab(pathname: string, search: string): GymTab | null {
   const path = pathname.replace(/\/+$/, "") || "/";
-  if (path === "/gym") return isSettingsSearch(search) ? "settings" : "training";
+  if (path === "/gym" || path === "/training") return isSettingsSearch(search) ? "settings" : "training";
   if (path.startsWith("/gym/history")) return "journal";
   if (path.startsWith("/gym/progress")) return "progress";
   return null;
@@ -203,6 +203,9 @@ export function useGymClock() {
  */
 export function GymPage(props: {
   subnav?: boolean;
+  /** The desktop frame: a wider column (styles/gym.css, "Desktop"). */
+  wide?: boolean;
+  ref?: (el: HTMLDivElement) => void;
   children: (view: () => GymView) => JSX.Element;
 }) {
   onMount(() => {
@@ -220,7 +223,7 @@ export function GymPage(props: {
   });
 
   return (
-    <div class="gym-page gym-theme">
+    <div class="gym-page gym-theme" classList={{ "gym-page--wide": props.wide === true }} ref={(el) => props.ref?.(el)}>
       <div class="gym-inner">
         <Show when={props.subnav !== false}>
           <GymSubNav />
@@ -273,6 +276,30 @@ export function GymPage(props: {
       </div>
     </div>
   );
+}
+
+/** Content width from which a Gym page switches to its desktop layout. */
+export const WIDE_MIN_PX = 880;
+
+/**
+ * Whether the element given to `track` is desktop-wide. Measures the page's
+ * own slot (the shell's rail and Lucina's dock take part of the window), and
+ * stays false where ResizeObserver is missing (jsdom), so tests see the phone layout.
+ */
+export function useWide() {
+  const [wide, setWide] = createSignal(false);
+  let observer: ResizeObserver | undefined;
+  onCleanup(() => observer?.disconnect());
+  function track(el: HTMLElement) {
+    if (typeof ResizeObserver !== "function") return;
+    observer?.disconnect();
+    observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setWide(width >= WIDE_MIN_PX);
+    });
+    observer.observe(el);
+  }
+  return { wide, track };
 }
 
 /**
