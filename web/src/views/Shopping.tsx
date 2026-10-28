@@ -29,6 +29,8 @@ import {
   undoLast,
 } from "../state/shopping";
 import "../styles/shopping.css";
+import { Button, Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PageHeader, useWide } from "../components/page";
+import { t as ui } from "../i18n";
 import { DetailsSheet } from "./shopping/DetailsSheet";
 import { withFlip } from "./shopping/flip";
 import { SectionIcon } from "./shopping/ItemIcon";
@@ -112,6 +114,7 @@ function SectionHeader(props: {
 }
 
 export default function ShoppingView() {
+  const { wide, track } = useWide();
   const [detailsId, setDetailsId] = createSignal<string | null>(null);
   const [chooserOpen, setChooserOpen] = createSignal(false);
   const [orderOpen, setOrderOpen] = createSignal(false);
@@ -257,304 +260,452 @@ export default function ShoppingView() {
     );
   };
 
-  return (
-    <div class="bring shop" ref={root} lang={shop.lang}>
-      <div class="bring-scroll shop-scroll">
-        <header class={`shop-head bring-theme--${theme()}`}>
-          <div class="shop-bar">
-            <h1 class="shop-title">
-              <button
-                ref={listsBtn}
-                type="button"
-                class="shop-list-btn"
-                aria-label={t("switchList", { name: listName() })}
-                aria-haspopup="dialog"
-                onClick={() => setChooserOpen(true)}
-              >
-                <span class="shop-list-art" aria-hidden="true">
-                  {THEME_ICON[theme()]}
-                </span>
-                <span class="shop-list-name">{listName()}</span>
-                <span class="bring-badge shop-badge" role="status" aria-label={t("toBuyCount", { n: needed().length })}>
-                  {needed().length}
-                </span>
-                <span class="shop-caret" aria-hidden="true" />
-              </button>
-            </h1>
-            <div class="shop-bar-end">
-              <Show when={shop.pending > 0 || !shop.online}>
-                <span class="bring-sync" classList={{ "bring-sync--offline": !shop.online }} role="status">
-                  {shop.online ? t("syncing") : t("offline", { n: shop.pending })}
-                </span>
-              </Show>
-              <A href="/shopping/map" class="shop-icon-btn" aria-label={t("mapBtn")} title={t("mapBtn")}>
-                <span class="shop-map-glyph" aria-hidden="true" />
-              </A>
-              <button
-                type="button"
-                class="shop-icon-btn"
-                aria-label={t("settings")}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen()}
-                onClick={() => setMenuOpen((v) => !v)}
-              >
-                <span aria-hidden="true">•••</span>
-              </button>
-            </div>
-            <Show when={menuOpen()}>
-              <div class="bring-menu shop-menu" role="menu" aria-label={t("settings")} onKeyDown={(e) => e.key === "Escape" && setMenuOpen(false)}>
-                <button
-                  type="button"
-                  class="bring-menu-row"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setOrderOpen(true);
-                  }}
-                >
-                  {t("sortSections")}
-                </button>
-                <label class="bring-menu-row">
-                  <input type="checkbox" checked={shop.grouped} onChange={(e) => setGrouped(e.currentTarget.checked)} />
-                  <span>{t("groupToggle")}</span>
-                </label>
-                <label class="bring-menu-row">
-                  <span>{t("itemNames")}</span>
-                  <select
-                    class="bring-menu-select"
-                    value={shop.itemLangPref ?? ""}
-                    onChange={(e) => setItemLang((e.currentTarget.value || null) as Lang | null)}
-                  >
-                    <option value="">
-                      {t("itemNamesAuto")} ({LANG_LABEL[itemLang()]})
-                    </option>
-                    <For each={LANGS}>{(l) => <option value={l}>{LANG_LABEL[l]}</option>}</For>
-                  </select>
-                </label>
-                <label class="bring-menu-row">
-                  <span>{t("language")}</span>
-                  <select class="bring-menu-select" value={shop.lang} onChange={(e) => setLang(e.currentTarget.value as Lang)}>
-                    <For each={LANGS}>{(l) => <option value={l}>{LANG_LABEL[l]}</option>}</For>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  class="bring-menu-row"
-                  role="menuitem"
-                  disabled={refreshing() || syncing()}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    refreshShopping();
-                  }}
-                >
-                  {t("refresh")}
-                </button>
-              </div>
-            </Show>
-          </div>
-          <SearchField search={search} act={act} resultsId={RESULTS_ID} />
-        </header>
+  /** The ⋯ menu of the list: section order, headers, languages, refresh. */
+  const ListMenu = () => (
+    <>
+      <Show when={menuOpen()}>
+        <div class="bring-menu shop-menu" role="menu" aria-label={t("settings")} onKeyDown={(e) => e.key === "Escape" && setMenuOpen(false)}>
+          <button
+            type="button"
+            class="bring-menu-row"
+            role="menuitem"
+            onClick={() => {
+              setMenuOpen(false);
+              setOrderOpen(true);
+            }}
+          >
+            {t("sortSections")}
+          </button>
+          <label class="bring-menu-row">
+            <input type="checkbox" checked={shop.grouped} onChange={(e) => setGrouped(e.currentTarget.checked)} />
+            <span>{t("groupToggle")}</span>
+          </label>
+          <label class="bring-menu-row">
+            <span>{t("itemNames")}</span>
+            <select
+              class="bring-menu-select"
+              value={shop.itemLangPref ?? ""}
+              onChange={(e) => setItemLang((e.currentTarget.value || null) as Lang | null)}
+            >
+              <option value="">
+                {t("itemNamesAuto")} ({LANG_LABEL[itemLang()]})
+              </option>
+              <For each={LANGS}>{(l) => <option value={l}>{LANG_LABEL[l]}</option>}</For>
+            </select>
+          </label>
+          <label class="bring-menu-row">
+            <span>{t("language")}</span>
+            <select class="bring-menu-select" value={shop.lang} onChange={(e) => setLang(e.currentTarget.value as Lang)}>
+              <For each={LANGS}>{(l) => <option value={l}>{LANG_LABEL[l]}</option>}</For>
+            </select>
+          </label>
+          <button
+            type="button"
+            class="bring-menu-row"
+            role="menuitem"
+            disabled={refreshing() || syncing()}
+            onClick={() => {
+              setMenuOpen(false);
+              refreshShopping();
+            }}
+          >
+            {t("refresh")}
+          </button>
+        </div>
+      </Show>
+    </>
+  );
 
-        <Show when={shop.actionError}>
-          {(msg) => (
-            <div class="bring-notice" role="alert">
-              <span>{msg()}</span>
-              <button type="button" class="bring-notice-close" onClick={dismissShoppingError} aria-label={t("close")}>
-                ×
-              </button>
-            </div>
-          )}
-        </Show>
+  /** The list switcher: the big themed button on a phone, a quiet button in the desktop header. */
+  const ListButton = () => (
+    <button
+      ref={listsBtn}
+      type="button"
+      class={wide() ? "pg-btn" : "shop-list-btn"}
+      aria-label={t("switchList", { name: listName() })}
+      aria-haspopup="dialog"
+      onClick={() => setChooserOpen(true)}
+    >
+      <Show when={!wide()}>
+        <span class="shop-list-art" aria-hidden="true">
+          {THEME_ICON[theme()]}
+        </span>
+      </Show>
+      <span class="shop-list-name">{listName()}</span>
+      <Show when={!wide()}>
+        <span class="bring-badge shop-badge" role="status" aria-label={t("toBuyCount", { n: needed().length })}>
+          {needed().length}
+        </span>
+      </Show>
+      <span class="shop-caret" aria-hidden="true" />
+    </button>
+  );
 
-        <div
-          class="bring-board shop-board"
-          ref={board}
-          onKeyDown={(e) => onTileKeyDown(e, (search.active() && document.getElementById(RESULTS_ID)) || board)}
-        >
+  /** The to-buy tiles (one grid, or one per section when headers are on), or the empty state. */
+  const ToBuy = () => (
+    <section class="shop-tobuy" aria-label={wide() ? undefined : t("toBuy")}>
+      <Show
+        when={needed().length > 0}
+        fallback={
           <Show
-            when={shop.loaded}
+            when={wide()}
             fallback={
-              <Show
-                when={shop.loadError}
-                fallback={
-                  <p class="bring-muted bring-center" role="status">
-                    {t("loading")}
-                  </p>
-                }
-              >
+              <div class="bring-empty shop-empty">
+                <span class="bring-empty-art" aria-hidden="true">
+                  🧺
+                </span>
+                <div>
+                  <p class="bring-empty-title">{t("emptyTitle")}</p>
+                  <p class="bring-empty-hint">{t("emptyHint")}</p>
+                </div>
+              </div>
+            }
+          >
+            <EmptyState title={t("emptyTitle")} text={t("emptyHint")} />
+          </Show>
+        }
+      >
+        <Show
+          when={shop.grouped}
+          fallback={
+            <div class="shop-grid" role="list" aria-label={t("toBuy")}>
+              <For each={needed()}>{(item) => <ItemTile item={item} />}</For>
+            </div>
+          }
+        >
+          <For each={groups()}>
+            {(g) => (
+              <>
+                <h2 class="shop-group-title">{g.name}</h2>
+                <div class="shop-grid" role="list" aria-label={g.name}>
+                  <For each={g.items}>{(item) => <ItemTile item={item} />}</For>
+                </div>
+              </>
+            )}
+          </For>
+        </Show>
+      </Show>
+    </section>
+  );
+
+  /** Recently used: a collapsible section with its ⋯ menu and the edit bar. */
+  const Recent = () => (
+    <Show when={recent().length > 0}>
+      <section class="bring-section shop-section shop-recent">
+        <SectionHeader
+          id={RECENT_SECTION}
+          title={t("recently")}
+          open={!!expanded[RECENT_SECTION] || editing()}
+          onToggle={() => toggleSection(RECENT_SECTION)}
+          onMore={() => setRecentMenu((v) => !v)}
+          moreOpen={recentMenu()}
+        />
+        <Show when={recentMenu()}>
+          <div class="bring-menu bring-menu--section" role="menu" aria-label={t("recently")}>
+            <button type="button" class="bring-menu-row" role="menuitem" onClick={startEditing}>
+              {t("editRecently")}
+            </button>
+            <button
+              type="button"
+              class="bring-menu-row"
+              role="menuitem"
+              onClick={() => {
+                setRecentMenu(false);
+                act(clearRecent);
+              }}
+            >
+              {t("clearRecently")}
+            </button>
+          </div>
+        </Show>
+        <Show when={editing()}>
+          <div class="bring-edit-bar">
+            <button type="button" class={wide() ? "pg-btn" : "bring-btn bring-btn--secondary bring-btn--small"} onClick={stopEditing}>
+              {t("cancel")}
+            </button>
+            <button
+              type="button"
+              class={wide() ? "pg-btn" : "bring-btn bring-btn--secondary bring-btn--small"}
+              disabled={selectedIds().length === 0}
+              onClick={() => {
+                const ids = selectedIds();
+                act(() => removeItems(ids));
+                stopEditing();
+              }}
+            >
+              {selectedIds().length ? t("removeN", { n: selectedIds().length }) : t("remove")}
+            </button>
+          </div>
+        </Show>
+        <Show when={expanded[RECENT_SECTION] || editing()}>
+          <div class="shop-grid" id={`bring-sec-${RECENT_SECTION}`} role="list" aria-label={t("recently")}>
+            <For each={recent()}>{(item) => <ItemTile item={item} />}</For>
+          </div>
+        </Show>
+      </section>
+    </Show>
+  );
+
+  /** The catalogue sections in store-walk order. */
+  const CatalogSections = () => (
+    <For each={catalogSections()}>
+      {(sec) => (
+        <section class="bring-section shop-section">
+          <SectionHeader
+            id={sec.id}
+            title={sec.name}
+            icon={{ id: sec.id, icon: sec.icon }}
+            count={neededBySection().get(sec.id)}
+            countLabel={t("onListCount", { n: neededBySection().get(sec.id) ?? 0 })}
+            open={!!expanded[sec.id]}
+            onToggle={() => toggleSection(sec.id)}
+          />
+          <Show when={expanded[sec.id]}>
+            <div class="shop-grid" id={`bring-sec-${sec.id}`} role="list" aria-label={sec.name}>
+              <For each={sec.items}>
+                {(cat) => {
+                  const name = () => catalogName(cat, itemLang());
+                  const row = () => rowByKey().get(itemKey(cat.id, name()));
+                  const onList = () => row()?.status === "needed";
+                  return (
+                    <Tile
+                      flipId={`catalog:${cat.id}`}
+                      kind="catalog"
+                      icon={cat.icon}
+                      catalogId={cat.id}
+                      name={name()}
+                      spec={onList() ? row()?.spec : undefined}
+                      selected={onList()}
+                      label={onList() ? t("toBuyItem", { name: name() }) : t("catalogItem", { name: name() })}
+                      onTap={() => {
+                        const r = row();
+                        act(() => (r?.status === "needed" ? tapItem(r.id) : void addCatalogItem(cat)));
+                      }}
+                    />
+                  );
+                }}
+              </For>
+            </div>
+          </Show>
+        </section>
+      )}
+    </For>
+  );
+
+  const PhoneLayout = () => (
+    <>
+            <div class="bring-scroll shop-scroll">
+              <header class={`shop-head bring-theme--${theme()}`}>
+                <div class="shop-bar">
+                  <h1 class="shop-title">
+      <ListButton />
+                  </h1>
+                  <div class="shop-bar-end">
+                    <Show when={shop.pending > 0 || !shop.online}>
+                      <span class="bring-sync" classList={{ "bring-sync--offline": !shop.online }} role="status">
+                        {shop.online ? t("syncing") : t("offline", { n: shop.pending })}
+                      </span>
+                    </Show>
+                    <A href="/shopping/map" class="shop-icon-btn" aria-label={t("mapBtn")} title={t("mapBtn")}>
+                      <span class="shop-map-glyph" aria-hidden="true" />
+                    </A>
+                    <button
+                      type="button"
+                      class="shop-icon-btn"
+                      aria-label={t("settings")}
+                      aria-haspopup="menu"
+                      aria-expanded={menuOpen()}
+                      onClick={() => setMenuOpen((v) => !v)}
+                    >
+                      <span aria-hidden="true">•••</span>
+                    </button>
+                  </div>
+      <ListMenu />
+                </div>
+                <SearchField search={search} act={act} resultsId={RESULTS_ID} />
+              </header>
+
+              <Show when={shop.actionError}>
                 {(msg) => (
-                  <div class="bring-empty" role="alert">
-                    <p class="bring-empty-title">{msg()}</p>
-                    <button type="button" class="bring-btn bring-btn--secondary" onClick={() => refreshShopping()}>
-                      {t("retry")}
+                  <div class="bring-notice" role="alert">
+                    <span>{msg()}</span>
+                    <button type="button" class="bring-notice-close" onClick={dismissShoppingError} aria-label={t("close")}>
+                      ×
                     </button>
                   </div>
                 )}
               </Show>
-            }
-          >
-            <Show when={shop.loadError}>
-              {(msg) => (
-                <p class="bring-muted shop-pad" role="status">
-                  {msg()} {t("showingCached")}
-                </p>
-              )}
-            </Show>
 
-            <Show when={search.active()}>
-              <SearchResults search={search} act={act} id={RESULTS_ID} />
-            </Show>
-
-            <div class="shop-home" hidden={search.active()}>
-              {/* To buy */}
-              <section class="shop-tobuy" aria-label={t("toBuy")}>
+              <div
+                class="bring-board shop-board"
+                ref={board}
+                onKeyDown={(e) => onTileKeyDown(e, (search.active() && document.getElementById(RESULTS_ID)) || board)}
+              >
                 <Show
-                  when={needed().length > 0}
+                  when={shop.loaded}
                   fallback={
-                    <div class="bring-empty shop-empty">
-                      <span class="bring-empty-art" aria-hidden="true">
-                        🧺
-                      </span>
-                      <div>
-                        <p class="bring-empty-title">{t("emptyTitle")}</p>
-                        <p class="bring-empty-hint">{t("emptyHint")}</p>
-                      </div>
-                    </div>
+                    <Show
+                      when={shop.loadError}
+                      fallback={
+                        <p class="bring-muted bring-center" role="status">
+                          {t("loading")}
+                        </p>
+                      }
+                    >
+                      {(msg) => (
+                        <div class="bring-empty" role="alert">
+                          <p class="bring-empty-title">{msg()}</p>
+                          <button type="button" class="bring-btn bring-btn--secondary" onClick={() => refreshShopping()}>
+                            {t("retry")}
+                          </button>
+                        </div>
+                      )}
+                    </Show>
                   }
                 >
-                  <Show
-                    when={shop.grouped}
-                    fallback={
-                      <div class="shop-grid" role="list" aria-label={t("toBuy")}>
-                        <For each={needed()}>{(item) => <ItemTile item={item} />}</For>
-                      </div>
-                    }
-                  >
-                    <For each={groups()}>
-                      {(g) => (
-                        <>
-                          <h2 class="shop-group-title">{g.name}</h2>
-                          <div class="shop-grid" role="list" aria-label={g.name}>
-                            <For each={g.items}>{(item) => <ItemTile item={item} />}</For>
-                          </div>
-                        </>
-                      )}
-                    </For>
+                  <Show when={shop.loadError}>
+                    {(msg) => (
+                      <p class="bring-muted shop-pad" role="status">
+                        {msg()} {t("showingCached")}
+                      </p>
+                    )}
                   </Show>
-                </Show>
-              </section>
 
-              {/* Recently used */}
-              <Show when={recent().length > 0}>
-                <section class="bring-section shop-section shop-recent">
-                  <SectionHeader
-                    id={RECENT_SECTION}
-                    title={t("recently")}
-                    open={!!expanded[RECENT_SECTION] || editing()}
-                    onToggle={() => toggleSection(RECENT_SECTION)}
-                    onMore={() => setRecentMenu((v) => !v)}
-                    moreOpen={recentMenu()}
-                  />
-                  <Show when={recentMenu()}>
-                    <div class="bring-menu bring-menu--section" role="menu" aria-label={t("recently")}>
-                      <button type="button" class="bring-menu-row" role="menuitem" onClick={startEditing}>
-                        {t("editRecently")}
-                      </button>
-                      <button
-                        type="button"
-                        class="bring-menu-row"
-                        role="menuitem"
-                        onClick={() => {
-                          setRecentMenu(false);
-                          act(clearRecent);
-                        }}
-                      >
-                        {t("clearRecently")}
-                      </button>
-                    </div>
+                  <Show when={search.active()}>
+                    <SearchResults search={search} act={act} id={RESULTS_ID} />
                   </Show>
-                  <Show when={editing()}>
-                    <div class="bring-edit-bar">
-                      <button type="button" class="bring-btn bring-btn--secondary bring-btn--small" onClick={stopEditing}>
-                        {t("cancel")}
-                      </button>
-                      <button
-                        type="button"
-                        class="bring-btn bring-btn--secondary bring-btn--small"
-                        disabled={selectedIds().length === 0}
-                        onClick={() => {
-                          const ids = selectedIds();
-                          act(() => removeItems(ids));
-                          stopEditing();
-                        }}
-                      >
-                        {selectedIds().length ? t("removeN", { n: selectedIds().length }) : t("remove")}
-                      </button>
-                    </div>
-                  </Show>
-                  <Show when={expanded[RECENT_SECTION] || editing()}>
-                    <div class="shop-grid" id={`bring-sec-${RECENT_SECTION}`} role="list" aria-label={t("recently")}>
-                      <For each={recent()}>{(item) => <ItemTile item={item} />}</For>
-                    </div>
-                  </Show>
-                </section>
-              </Show>
 
-              {/* Catalogue, in store-walk order */}
-              <Show when={catalogSections().length > 0}>
-                <div class="shop-cat-head">
-                  <h2 class="shop-heading">{t("catalog")}</h2>
-                  <button type="button" class="shop-link-btn" onClick={() => setOrderOpen(true)}>
-                    {t("sortSections")}
-                  </button>
-                </div>
-              </Show>
-              <For each={catalogSections()}>
-                {(sec) => (
-                  <section class="bring-section shop-section">
-                    <SectionHeader
-                      id={sec.id}
-                      title={sec.name}
-                      icon={{ id: sec.id, icon: sec.icon }}
-                      count={neededBySection().get(sec.id)}
-                      countLabel={t("onListCount", { n: neededBySection().get(sec.id) ?? 0 })}
-                      open={!!expanded[sec.id]}
-                      onToggle={() => toggleSection(sec.id)}
-                    />
-                    <Show when={expanded[sec.id]}>
-                      <div class="shop-grid" id={`bring-sec-${sec.id}`} role="list" aria-label={sec.name}>
-                        <For each={sec.items}>
-                          {(cat) => {
-                            const name = () => catalogName(cat, itemLang());
-                            const row = () => rowByKey().get(itemKey(cat.id, name()));
-                            const onList = () => row()?.status === "needed";
-                            return (
-                              <Tile
-                                flipId={`catalog:${cat.id}`}
-                                kind="catalog"
-                                icon={cat.icon}
-                                catalogId={cat.id}
-                                name={name()}
-                                spec={onList() ? row()?.spec : undefined}
-                                selected={onList()}
-                                label={onList() ? t("toBuyItem", { name: name() }) : t("catalogItem", { name: name() })}
-                                onTap={() => {
-                                  const r = row();
-                                  act(() => (r?.status === "needed" ? tapItem(r.id) : void addCatalogItem(cat)));
-                                }}
-                              />
-                            );
-                          }}
-                        </For>
+                  <div class="shop-home" hidden={search.active()}>
+                    {/* To buy */}
+                    <ToBuy />
+                    {/* Recently used */}
+                    <Recent />
+                    {/* Catalogue, in store-walk order */}
+                    <Show when={catalogSections().length > 0}>
+                      <div class="shop-cat-head">
+                        <h2 class="shop-heading">{t("catalog")}</h2>
+                        <button type="button" class="shop-link-btn" onClick={() => setOrderOpen(true)}>
+                          {t("sortSections")}
+                        </button>
                       </div>
                     </Show>
-                  </section>
-                )}
-              </For>
+                    <CatalogSections />
+                  </div>
+                </Show>
+              </div>
             </div>
-          </Show>
+    </>
+  );
+
+  /** The desktop frame: page header, search and tiles in the main column, recently used and offers in the rail. */
+  const WideLayout = () => (
+    <div class="bring-scroll shopping-scroll">
+      <Page class="shopping-wide">
+        <PageHeader
+          title={ui("shell.navShopping")}
+          context={
+            <>
+              {listName()} · {t("toBuyCount", { n: needed().length })}
+              <Show when={shop.pending > 0 || !shop.online}>
+                {" · "}
+                <span role="status">{shop.online ? t("syncing") : t("offline", { n: shop.pending })}</span>
+              </Show>
+              <Show when={shop.loaded && shop.loadError}> · {t("showingCached")}</Show>
+            </>
+          }
+          action={
+            <div class="shopping-head-tools">
+              <ListButton />
+              <Button aria-label={t("settings")} aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => setMenuOpen((v) => !v)}>
+                •••
+              </Button>
+              <ListMenu />
+            </div>
+          }
+        />
+        <Show when={shop.actionError}>
+          {(msg) => (
+            <div class="pg-notice" role="alert">
+              <span>{msg()}</span>
+              <Button variant="ghost" onClick={dismissShoppingError} aria-label={t("close")}>
+                ×
+              </Button>
+            </div>
+          )}
+        </Show>
+        <div ref={board} onKeyDown={(e) => onTileKeyDown(e, (search.active() && document.getElementById(RESULTS_ID)) || board)}>
+          <PageGrid
+            layout="rail"
+            railLabel={t("recently")}
+            rail={
+              <>
+                <Show when={shop.loaded && recent().length > 0}>
+                  <Card label={t("recently")} class="shopping-recent">
+                    <Recent />
+                  </Card>
+                </Show>
+                <Card title={t("mapTitle")}>
+                  <A class="pg-link" href="/shopping/map">
+                    {t("mapBtn")}
+                  </A>
+                </Card>
+              </>
+            }
+          >
+            <SearchField search={search} act={act} resultsId={RESULTS_ID} wide />
+            <Show
+              when={shop.loaded}
+              fallback={
+                <Show when={shop.loadError} fallback={<LoadingState label={t("loading")} />}>
+                  {(msg) => <ErrorState message={msg()} retryLabel={t("retry")} onRetry={() => refreshShopping()} />}
+                </Show>
+              }
+            >
+              <Show
+                when={search.active()}
+                fallback={
+                  <>
+                    <Card title={t("toBuy")}>
+                      <ToBuy />
+                    </Card>
+                    <Show when={catalogSections().length > 0}>
+                      <Card
+                        title={t("catalog")}
+                        actions={
+                          <Button variant="ghost" onClick={() => setOrderOpen(true)}>
+                            {t("sortSections")}
+                          </Button>
+                        }
+                      >
+                        <CatalogSections />
+                      </Card>
+                    </Show>
+                  </>
+                }
+              >
+                <Card label={t("suggestions")}>
+                  <SearchResults search={search} act={act} id={RESULTS_ID} />
+                </Card>
+              </Show>
+            </Show>
+          </PageGrid>
         </div>
-      </div>
+      </Page>
+    </div>
+  );
+
+  return (
+    <div
+      class="bring shop"
+      ref={(el) => {
+        root = el;
+        track(el);
+      }}
+      lang={shop.lang}
+    >
+      <Show when={wide()} fallback={<PhoneLayout />}>
+        <WideLayout />
+      </Show>
 
       <div class="bring-snackbar-region" role="status" aria-live="polite">
         <Show when={shop.undo}>
@@ -574,9 +725,10 @@ export default function ShoppingView() {
         </Show>
       </div>
 
-      <DetailsSheet itemId={detailsId()} onClose={() => setDetailsId(null)} />
-      <SectionOrderSheet open={orderOpen()} onClose={() => setOrderOpen(false)} />
+      <DetailsSheet wide={wide()} itemId={detailsId()} onClose={() => setDetailsId(null)} />
+      <SectionOrderSheet wide={wide()} open={orderOpen()} onClose={() => setOrderOpen(false)} />
       <ListChooser
+        wide={wide()}
         open={chooserOpen()}
         onClose={() => {
           setChooserOpen(false);

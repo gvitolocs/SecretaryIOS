@@ -2060,3 +2060,189 @@
   font-size: 1.2em;
   line-height: 1.1;
 }
+
+/* ---------- Desktop: the page system frame (components/page, docs/design/page-system.md) ----------
+   Shown from 880 px wide (useWide). The tiles keep their look; the frame around them (header, cards,
+   search field, buttons, dialogs) uses the pg-* classes and tokens. The phone layout above is untouched. */
+
+.shopping-scroll {
+  padding-bottom: 0;
+}
+
+/* The list switcher and the ⋯ menu sit in the header; the menu opens under them. */
+.shopping-wide .shopping-head-tools {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shopping-wide .shop-menu {
+  top: calc(100% + 8px);
+  right: 0;
+}
+
+.shopping-wide .shop-caret {
+  margin: -4px 0 0 2px;
+}
+
+/* Search / add field at the top of the main column. */
+.shopping-wide .shop-search {
+  margin: 0;
+}
+
+.shopping-wide .shop-search-row .pg-input {
+  flex: 1;
+  min-height: 40px;
+  padding: 0 80px 0 38px;
+}
+
+.shopping-wide .shop-search-row .pg-icon-btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  margin-top: -16px;
+}
+
+.shopping-wide .shop-search-clear {
+  right: 40px;
+}
+
+.shopping-wide .shop-quick {
+  margin-top: 12px;
+}
+
+.shopping-wide .shop-chip--on {
+  border-color: color-mix(in srgb, var(--pg-data) 60%, transparent);
+  background: color-mix(in srgb, var(--pg-data) 16%, transparent);
+  color: var(--pg-text);
+}
+
+/* Tiles and catalogue sections sit in cards: the card owns the padding, so the sections drop theirs. */
+.shopping-wide .shop-tobuy {
+  padding-bottom: 0;
+}
+
+.shopping-wide .shop-results {
+  padding-bottom: 0;
+}
+
+.shopping-wide .shop-results > .shop-heading {
+  display: none;
+}
+
+.shopping-wide .shop-section:first-child {
+  margin-top: 0;
+}
+
+.shopping-wide .shopping-recent .shop-section {
+  margin-top: 0;
+}
+
+.shopping-wide .shopping-recent .bring-menu--section {
+  top: 40px;
+  right: 0;
+}
+
+/* Dialogs (item details, store order, lists) are portalled out of the page into the shell: the body
+   re-opens the .bring scope for its tokens and drops the phone sheet's own margins. */
+.bring.shopping-sheet-body {
+  display: block;
+  flex: none;
+  overflow: visible;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.shopping-sheet-body .bring-details-body {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.shopping-sheet-body .bring-details-title {
+  margin: 24px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.shopping-sheet-body .bring-details-body > .bring-details-title:first-child {
+  margin-top: 0;
+}
+
+.shopping-sheet-body .bring-details-body > .pg-input {
+  display: block;
+  width: 100%;
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body :is(.bring-chips, .bring-qty-row, .bring-history) {
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body .bring-chips {
+  gap: 8px;
+}
+
+.shopping-sheet-body .bring-controls {
+  gap: 8px;
+  margin: 24px 0 0;
+}
+
+.shopping-sheet-body .bring-panel {
+  margin: 8px 0 0;
+  gap: 4px;
+  background: transparent;
+}
+
+.shopping-sheet-body .bring-panel > .pg-btn {
+  justify-content: flex-start;
+}
+
+.shopping-sheet-body .bring-qty .pg-input {
+  font-weight: 400;
+}
+
+.shopping-sheet-body .pg-btn:is([aria-pressed="true"], [aria-checked="true"], [aria-expanded="true"]) {
+  border-color: color-mix(in srgb, var(--pg-data) 60%, transparent);
+  background: color-mix(in srgb, var(--pg-data) 16%, transparent);
+  color: var(--pg-text);
+}
+
+.shopping-sheet-body .shopping-confirm {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.shopping-sheet-body .bring-details-body > .pg-btn {
+  margin-top: 24px;
+}
+
+.shopping-sheet-body .bring-muted.shop-order-hint {
+  margin: 0 0 12px;
+}
+
+.shopping-sheet-body .bring-cards {
+  padding: 0;
+}
+
+.shopping-sheet-body .bring-card-item {
+  margin: 0 0 8px;
+}
+
+.shopping-sheet-body .bring-create {
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body .bring-list-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.shopping-sheet-body .bring-list-settings .pg-input {
+  align-self: stretch;
+}
