@@ -17,6 +17,10 @@
 //! | worktree path | `<paseo home>/worktrees/<hash>/<slug>` | `~/Projects/.worktrees/<Repo>/<branch>` (`wt add`); only the last part is compared |
 //! | archived worktree's branch | kept | deleted when merged (`git branch -d`, the owner's rule) |
 //! | workspace ids, project ids, file mtimes | random, times | not compared; `ls` entries are compared sorted (Paseo lists in directory order) |
+//! | terminal env | `PASEO_HOME`; `PASEO_TERMINAL_ACTIVITY_URL` on its HTTP port | no home; the URL only with `--listen` (`lagent hooks` uses the socket) |
+//! | plain script env | the terminal's only | also `PASEO_SCRIPTNAME` and setup's worktree variables |
+//! | a plain script's terminal | stays open as a shell | ends with the script (its output stays capturable) |
+//! | `send-keys Up` (CLI) | types the word `Up` | the arrow key (the MCP encoder, as Paseo's MCP tool) |
 
 mod common;
 
@@ -421,6 +425,136 @@ fn scenario_workspaces(p: &Paseo, l: &Daemon) {
     }
 }
 
+fn wait_until(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while !f() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `KEY=value` lines of a file, for the given prefix.
+fn env_file(path: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// Phase 5 (T1, S1): terminals (create, send-keys, capture, ls, kill) and scripts
+/// (ls, start, env, ports from `servicePorts.range`, stop).
+fn scenario_terminals_scripts(p: &Paseo, l: &Daemon) {
+    let root = tempfile::Builder::new().prefix("ldiff-term.").tempdir_in("/tmp").unwrap();
+    let mk = |side: &str| {
+        let r = root.path().join(side).join("app");
+        std::fs::create_dir_all(&r).unwrap();
+        std::fs::write(
+            r.join("paseo.json"),
+            json!({
+                "worktree": {"servicePorts": {"range": "4300-4399"}},
+                "scripts": {
+                    "env": {"command": "env | grep -E '^(PASEO_|HOST=)' | sort > env.txt"},
+                    "web": {"command": "env | grep -E '^(PASEO_|HOST=)' | sort > web-env.txt; exec python3 -m http.server \"$PASEO_PORT\" --bind 127.0.0.1", "type": "service"},
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        r
+    };
+    let (pr, lr) = (mk("paseo"), mk("lucina"));
+    let (rp, rl) = (pr.display().to_string(), lr.display().to_string());
+    let ws = |v: &Value| v["workspaceId"].as_str().or(v["id"].as_str()).unwrap_or_default().to_string();
+    let pw = ws(&p.json(&["workspace", "create", "--isolation", "local", "--path", &rp]));
+    let lw = ws(&l.json(&["workspace", "create", "--isolation", "local", "--path", &rl]));
+
+    // Terminals.
+    let pt = p.json(&["terminal", "create", "--workspace", &pw, "--name", "diff-term"]);
+    let lt = l.json(&["terminal", "create", "--workspace", &lw, "--name", "diff-term"]);
+    same("terminal create", &json!({"name": pt["name"], "ws": pt["workspaceId"] == pw.as_str()}), &json!({"name": lt["name"], "ws": lt["workspaceId"] == lw.as_str()}));
+    let (pid, lid) = (pt["id"].as_str().unwrap().to_string(), lt["id"].as_str().unwrap().to_string());
+    let cap = |side: &str, id: &str| -> Value { if side == "p" { p.json(&["terminal", "capture", id]) } else { l.json(&["terminal", "capture", id]) } };
+    let has = |v: &Value, f: &dyn Fn(&str) -> bool| v["lines"].as_array().into_iter().flatten().any(|x| f(x.as_str().unwrap_or("")));
+    for (side, id) in [("p", &pid), ("l", &lid)] {
+        wait_until("a shell prompt", 30, || has(&cap(side, id), &|x| !x.trim().is_empty()));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let ps = p.json(&["terminal", "send-keys", &pid, "echo lucina-$((6*7))", "Enter"]);
+    let ls = l.json(&["terminal", "send-keys", &lid, "echo lucina-$((6*7))", "Enter"]);
+    same("send-keys", &pick(&ps, &["keysSent"]), &pick(&ls, &["keysSent"]));
+    for (side, id) in [("p", &pid), ("l", &lid)] {
+        wait_until("the echo", 20, || has(&cap(side, id), &|x| x == "lucina-42"));
+    }
+    let shape = |v: &Value| json!({"keys": keys(v), "typed": has(v, &|x| x.ends_with("echo lucina-$((6*7))")), "out": has(v, &|x| x == "lucina-42"), "total": v["totalLines"]});
+    same("capture after keys", &shape(&cap("p", &pid)), &shape(&cap("l", &lid)));
+    let range = |side: &str, id: &str| -> Value {
+        let v = if side == "p" { p.json(&["terminal", "capture", id, "--start", "0", "--end", "1"]) } else { l.json(&["terminal", "capture", id, "--start", "0", "--end", "1"]) };
+        json!(v["lines"].as_array().map(Vec::len))
+    };
+    same("capture --start 0 --end 1", &range("p", &pid), &range("l", &lid));
+    let pls = p.json(&["terminal", "ls", "--workspace", &pw]);
+    let lls = l.json(&["terminal", "ls", "--workspace", &lw]);
+    let names = |v: &Value| json!(v.as_array().into_iter().flatten().map(|t| t["name"].clone()).collect::<Vec<_>>());
+    same("terminal ls", &names(&pls), &names(&lls));
+    same("terminal kill", &pick(&p.json(&["terminal", "kill", &pid]), &["success"]), &pick(&l.json(&["terminal", "kill", &lid]), &["success"]));
+    let (pe, le) = (p.cmd(&["terminal", "capture", "nope-nope", "--json"]), l.lagent(&["terminal", "capture", "nope-nope", "--json"]));
+    let err_code = |r: &Run| -> Value { serde_json::from_str::<Value>(if r.stdout.trim().is_empty() { &r.stderr } else { &r.stdout }).map(|v| v["error"]["code"].clone()).unwrap_or(Value::Null) };
+    same("capture of a missing terminal", &json!([pe.code, err_code(&pe)]), &json!([le.code, err_code(&le)]));
+
+    // Scripts.
+    let row = |v: &Value| json!(v.as_array().into_iter().flatten().map(|x| pick(x, &["scriptName", "type", "lifecycle"])).collect::<Vec<_>>());
+    same("script ls", &row(&p.json(&["script", "ls", "--workspace", &pw])), &row(&l.json(&["script", "ls", "--workspace", &lw])));
+    let pe = p.json(&["script", "start", "env", "--workspace", &pw]);
+    let le = l.json(&["script", "start", "env", "--workspace", &lw]);
+    same("script start (plain)", &pick(&pe, &["scriptName", "type", "lifecycle", "port"]), &pick(&le, &["scriptName", "type", "lifecycle", "port"]));
+    for d in [&pr, &lr] {
+        wait_until("env.txt", 20, || d.join("env.txt").exists() && !env_file(&d.join("env.txt")).is_empty());
+    }
+    // Paseo types into an interactive shell; give both a moment to finish writing.
+    std::thread::sleep(Duration::from_millis(300));
+    let (penv, lenv) = (env_file(&pr.join("env.txt")), env_file(&lr.join("env.txt")));
+    let norm = |m: &std::collections::BTreeMap<String, String>, side: &str, ws: &str| -> Value {
+        let base = root.path().join(side).display().to_string();
+        json!(m.iter().filter(|(k, _)| !matches!(k.as_str(), "PASEO_ACTIVITY_TOKEN" | "PASEO_TERMINAL_ID")).map(|(k, v)| (k.clone(), v.replace(&base, "<root>").replace(ws, "<ws>"))).collect::<std::collections::BTreeMap<_, _>>())
+    };
+    let (pn, ln) = (norm(&penv, "paseo", &pw), norm(&lenv, "lucina", &lw));
+    let pk: Vec<&String> = pn.as_object().unwrap().keys().collect();
+    // Intentional: no Paseo home; the activity URL only with `--listen` (`lagent hooks` uses the socket).
+    let missing: Vec<&&String> = pk
+        .iter()
+        .filter(|k| !matches!(k.as_str(), "PASEO_HOME" | "PASEO_TERMINAL_ACTIVITY_URL"))
+        .filter(|k| !ln.as_object().unwrap().contains_key(k.as_str()))
+        .collect();
+    assert!(missing.is_empty(), "plain script env: Lucina lacks {missing:?}\n--- paseo\n{pn:#}\n--- lucina\n{ln:#}");
+    same("plain script PASEO_WORKSPACE_ID", &pn["PASEO_WORKSPACE_ID"], &ln["PASEO_WORKSPACE_ID"]);
+    for (what, v) in [("paseo", &pn), ("lucina", &ln)] {
+        assert!(v["PASEO_HOOK_CLI"].as_str().is_some_and(|c| std::path::Path::new(c).exists()), "{what}: PASEO_HOOK_CLI");
+    }
+
+    let pw_ = p.json(&["script", "start", "web", "--workspace", &pw]);
+    let lw_ = l.json(&["script", "start", "web", "--workspace", &lw]);
+    same("script start (service)", &pick(&pw_, &["scriptName", "type", "lifecycle"]), &pick(&lw_, &["scriptName", "type", "lifecycle"]));
+    for (what, v) in [("paseo", &pw_), ("lucina", &lw_)] {
+        let port = v["port"].as_u64().unwrap_or(0);
+        assert!((4300..=4399).contains(&port), "{what} service port from servicePorts.range: {v}");
+    }
+    for d in [&pr, &lr] {
+        wait_until("web-env.txt", 20, || !env_file(&d.join("web-env.txt")).is_empty());
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let (pwe, lwe) = (norm(&env_file(&pr.join("web-env.txt")), "paseo", &pw), norm(&env_file(&lr.join("web-env.txt")), "lucina", &lw));
+    let names_of = |v: &Value| json!(v.as_object().unwrap().keys().filter(|k| k.starts_with("PASEO_PORT") || k.starts_with("PASEO_SERVICE_") || *k == "HOST" || *k == "PASEO_URL").cloned().collect::<Vec<_>>());
+    same("service env names", &names_of(&pwe), &names_of(&lwe));
+    same("service HOST", &pwe["HOST"], &lwe["HOST"]);
+    same("service PASEO_PORT = its port", &json!(pwe["PASEO_PORT"] == json!(pw_["port"].to_string())), &json!(lwe["PASEO_PORT"] == json!(lw_["port"].to_string())));
+    let stop = |v: Value| pick(&v, &["scriptName", "lifecycle"]);
+    same("script stop", &stop(p.json(&["script", "stop", "web", "--workspace", &pw])), &stop(l.json(&["script", "stop", "web", "--workspace", &lw])));
+    let (pst, lst) = (p.cmd(&["script", "stop", "web", "--workspace", &pw, "--json"]), l.lagent(&["script", "stop", "web", "--workspace", &lw, "--json"]));
+    same("stop a stopped script", &json!([pst.code, err_code(&pst)]), &json!([lst.code, err_code(&lst)]));
+}
+
 fn keys_of(v: &Value) -> Value {
     keys(v)
 }
@@ -440,7 +574,7 @@ fn paseo_parity() {
         ("LUCINA_AGENTD_METADATA_PROVIDER", "off".to_string()),
     ]);
     type Scenario = fn(&Paseo, &Daemon);
-    let scenarios: [(&str, Scenario); 7] = [
+    let scenarios: [(&str, Scenario); 8] = [
         ("a run/logs/inspect/ls", scenario_run_logs_inspect),
         ("b turn failure", scenario_turn_failure),
         ("c plan approval + stop", scenario_plan_approval_stop),
@@ -448,6 +582,7 @@ fn paseo_parity() {
         ("e archive/ls/delete/not found", scenario_archive_delete),
         ("f permit ls/allow/deny + errors", scenario_permit),
         ("g projects/workspaces/worktrees, diffs, files, archive", scenario_workspaces),
+        ("h terminals, send-keys, capture; scripts, env, ports", scenario_terminals_scripts),
     ];
     for (name, scenario) in scenarios {
         let start = Instant::now();

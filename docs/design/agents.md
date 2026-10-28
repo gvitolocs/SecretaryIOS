@@ -220,7 +220,10 @@ How phase 4 built it (`crates/lucina-agentd/src/workspaces/`, guard kernel `work
 
 ### Terminals, scripts and services
 
-- PTYs (`portable-pty`) live in agentd and survive client disconnects. They stream over WebSocket to xterm.js on the
+- PTYs (`portable-pty`) live in agentd and survive client disconnects. (Phase 5: the two forwarders on the way
+  from p1 carry no upgrade, so the output streams as SSE with byte offsets for resume, and input is a POST; see
+  `agents-api.md`.)
+  They stream to xterm.js on the
   web and desktop, SwiftTerm on iOS, and a terminal view on Android. Pasting images and dropping files into a
   terminal works, as in Paseo 0.13.
 - Scripts are declared in `.lucina/agents.toml` (`[scripts.dev] cmd = "…", port = "auto", health = "/health"`).
@@ -256,7 +259,7 @@ limits and audit. Push uses the existing notify module. Remote access comes for 
   `/v1/agents/workspaces[/{id}/{diff|files|scripts|services}]`, `/v1/agents/schedules`, `/v1/agents/hosts`,
   `/v1/agents/usage`, `/v1/agents/providers`.
 - Streams: `GET /v1/agents/stream` (SSE: agent states, timeline items, permissions) and
-  `GET /v1/agents/terminals/{id}` (WebSocket).
+  `GET /v1/agents/terminals/{id}/stream` (SSE; phase 5: the forwarders carry no upgrade).
 - The wire types live in `lucina-agents`, so the server, the MCP and the apps can't drift.
 
 ## QR login (Discord-style), for every Secretary client
@@ -431,7 +434,7 @@ they are, so the matrix rows keep their phase.
 | 4 | Workspaces, worktrees via `wt`, diffs, files, branch names, cleanup on merge, setup scripts | matrix rows green |
 | 7 | secretary-server `/v1/agents`, streams. The QR login is already live (the QR session, server-live), so it is reused, not rebuilt | the Mac app's agents mirror (SecretaryCode c1cd168) talks to it |
 | 9 | MCP tools (`agents` scope), Hermes token | Hermes runs an agent |
-| 5 | Terminals, scripts, ports, service proxy | |
+| 5 | Terminals, scripts, ports, service proxy | rows T1-T3, S1, S2, W3 green; diff h same as Paseo (built 2026-10-28, branches agents-p5 / agents-p5-server) |
 | 6 | Schedules, heartbeats, subagents, notify-on-finish, search | |
 | 8 | UIs: web plugin, Secretary Code panel, iOS, Android | screenshots on each |
 | 10 | Connected hosts, plugins and catalog | |

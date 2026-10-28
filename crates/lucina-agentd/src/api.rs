@@ -34,6 +34,7 @@
 //! gets its waiting commands (without ids).
 //!
 //! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
+//! Terminals, scripts and the service proxy: [`terminals`].
 //!
 //! Answers and external requests check the caller ([`crate::peer`]): only the owner
 //! answers, never an MCP token or a process an agent started.
@@ -63,6 +64,7 @@ use crate::journal::{Sequenced, Subscription};
 use crate::peer::{self, origin, Peer};
 use crate::workspaces::WsError;
 
+pub mod terminals;
 mod workspaces;
 
 pub struct ApiError(StatusCode, String, String);
@@ -128,6 +130,8 @@ pub fn router(manager: Manager) -> Router {
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
         .merge(workspaces::routes())
+        .merge(terminals::routes())
+        .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
         .with_state(manager)
 }
 

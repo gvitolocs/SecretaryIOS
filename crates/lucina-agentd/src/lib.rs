@@ -20,6 +20,7 @@
 //! - [`providers`]: Claude (stream-json), Codex (app-server), the ACP agents
 //!   (Cursor, OpenCode, Copilot, custom), Pi (rpc) and ZCode, launched through
 //!   [`process`] and [`jsonrpc`]; defaults come from the owner's [`lane`] config.
+//! - [`terminals`]: PTY terminals, workspace scripts and services (phase 5).
 
 #![forbid(unsafe_code)]
 
@@ -39,6 +40,7 @@ pub mod process;
 pub mod provider;
 pub mod providers;
 pub mod store;
+pub mod terminals;
 pub mod workspaces;
 
 /// RFC 3339 with milliseconds and `Z`, as JavaScript's `Date.toISOString()`.

@@ -314,3 +314,24 @@ fn checkout_branch_errors_projects_and_clone() {
     assert_eq!(del["removedWorkspaceIds"].as_array().map(Vec::len), Some(2));
     assert!(e.workspaces().iter().all(|w| w["project"] != "Lucina"));
 }
+
+/// W3 (phase 5): `paseo.json` `worktree.terminals` open once setup ends, with their
+/// commands typed in; archiving the workspace kills them.
+#[test]
+fn worktree_terminals_open_after_setup() {
+    let Some(e) = Env::start() else { return };
+    let cfg = r#"{"worktree": {"setup": "true", "terminals": [{"name": "watch", "command": "echo auto-$((2+3))"}]}}"#;
+    let repo = e.repo("Terms", &[("paseo.json", cfg)]);
+    let ws = e.d.json(&["workspace", "create", "--isolation", "worktree", "--path", &repo.display().to_string(), "--new-branch", "feat/t"]);
+    let id = ws["workspaceId"].as_str().unwrap().to_string();
+    let terms = || e.http("GET", &format!("/terminals?workspaceId={id}"), None).1["terminals"].as_array().cloned().unwrap_or_default();
+    wait_for("the worktree terminal", || terms().len() == 1);
+    let t = terms()[0].clone();
+    assert_eq!((t["name"].as_str(), t["cwd"].as_str(), t["owner"].as_str()), (Some("watch"), ws["cwd"].as_str(), Some("owner")));
+    let tid = t["id"].as_str().unwrap().to_string();
+    wait_for("its command's output", || {
+        e.http("GET", &format!("/terminals/{tid}/capture"), None).1["lines"].as_array().is_some_and(|l| l.iter().any(|x| x == "auto-5"))
+    });
+    e.d.json(&["workspace", "archive", &id]);
+    assert!(terms().is_empty());
+}

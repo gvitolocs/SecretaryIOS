@@ -59,25 +59,31 @@ fn stat_ids(pid: i32) -> Option<(i32, i32, i32)> {
 
 /// Whether `pid` runs under one of `providers` (ancestor, process group or session).
 pub fn descends_from(pid: i32, providers: &HashSet<u32>) -> bool {
+    provider_of(pid, providers).is_some()
+}
+
+/// The provider (or terminal) process `pid` runs under: an ancestor, or the leader of
+/// its process group or session, that is in `providers`.
+pub fn provider_of(pid: i32, providers: &HashSet<u32>) -> Option<u32> {
     if providers.is_empty() {
-        return false;
+        return None;
     }
-    let hit = |p: i32| p > 0 && providers.contains(&(p as u32));
+    let hit = |p: i32| (p > 0 && providers.contains(&(p as u32))).then_some(p as u32);
     let mut current = pid;
     for _ in 0..64 {
-        if hit(current) {
-            return true;
+        if let Some(p) = hit(current) {
+            return Some(p);
         }
-        let Some((ppid, pgrp, session)) = stat_ids(current) else { return false };
-        if hit(pgrp) || hit(session) {
-            return true;
+        let (ppid, pgrp, session) = stat_ids(current)?;
+        if let Some(p) = hit(pgrp).or_else(|| hit(session)) {
+            return Some(p);
         }
         if ppid <= 1 {
-            return false;
+            return None;
         }
         current = ppid;
     }
-    false
+    None
 }
 
 /// The origin of a request (see the module docs).
