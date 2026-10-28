@@ -32,6 +32,9 @@ pub struct Prepared {
     /// part of every model call of the turn (`planner::TURN_SYSTEM`), so trimming never drops it; owner turns
     /// also take the full planner so the model can choose game_hint.
     pub game: String,
+    /// The run is playing right now (`GameContext::running`): only then do owner turns skip the cheap
+    /// router and take the full planner with the game rules. A paused run keeps `game` as information.
+    pub game_live: bool,
 }
 
 /// Node's `clipRecentTurns`: keep the header and the newest turns.
@@ -217,7 +220,10 @@ pub async fn prepare_keyed(
         String::new()
     };
     // Her own Pokémon Red run, live, so she answers as the player and can pass it advice (game_hint).
-    let game = crate::bridges::game_context(&st.secretary.http).await;
+    let crate::bridges::GameContext {
+        block: game,
+        running: game_live,
+    } = crate::bridges::game_context(&st.secretary.http).await;
     let calendar = if owner && st.cfg.calendar_enabled {
         crate::bridges::calendar_context(&st.secretary, user_text, now, tz).await
     } else {
@@ -315,5 +321,6 @@ pub async fn prepare_keyed(
         classification,
         policy,
         game,
+        game_live,
     }
 }

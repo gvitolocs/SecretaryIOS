@@ -418,7 +418,8 @@ async fn auth_validation_limits_and_library_without_llm() {
             .all(|a| a["state"] == "read"),
         "{done}"
     );
-    assert_eq!(done["reply"], "Salvato nella raccolta Shared.");
+    // `lang=it` is the device locale and is ignored; with no note and no recent messages: English.
+    assert_eq!(done["reply"], "Saved to the Shared library.");
     assert!(
         h.fake.requests().is_empty(),
         "library must not call the chat model"
@@ -523,6 +524,54 @@ async fn redirects_recheck_addresses_and_media_outage_keeps_original() {
         .collect::<Vec<_>>();
     assert_eq!(files.len(), 1);
     assert!(files[0].path().join("03-test.txt").exists());
+}
+
+/// 2026-10-26/27: a Danish device locale made summaries and replies Danish for Italian notes and for bare
+/// links. The reply language is the owner's note, else his recent messages, else English.
+#[tokio::test]
+async fn the_device_locale_never_sets_the_reply_language() {
+    let services = services().await;
+    let h = setup(&services).await;
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-lang-it-001")
+            .text("lang", "da-DK")
+            .text("note", "[selftest] Comprare: latte, uova, pane integrale, 2 limoni")
+            .text("text", "Lista di prova"),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    assert_eq!(finished(&h, "share-lang-it-001").await["status"], "done");
+    let all = h
+        .fake
+        .requests()
+        .iter()
+        .map(|r| r.to_string())
+        .collect::<String>();
+    assert!(!all.contains("Device language"), "{all}");
+    assert!(!all.contains("da-DK"), "{all}");
+    assert!(!all.contains("Se hvad jeg har delt"), "{all}");
+    assert!(all.contains("Reply language: Italian"), "{all}");
+
+    // A bare link: no words of his own, no recent messages, so English; never the device's Danish.
+    let before = h.fake.requests().len();
+    let r = submit(
+        &h,
+        Form::new()
+            .text("shareId", "share-lang-en-001")
+            .text("lang", "da-DK")
+            .text("text", "https://en.wikipedia.org/wiki/The_Little_Mermaid_(statue)"),
+    )
+    .await;
+    assert_eq!(r.status(), 202);
+    assert_eq!(finished(&h, "share-lang-en-001").await["status"], "done");
+    let all = h.fake.requests()[before..]
+        .iter()
+        .map(|r| r.to_string())
+        .collect::<String>();
+    assert!(!all.contains("Device language"), "{all}");
+    assert!(all.contains("Reply language: English"), "{all}");
 }
 
 #[tokio::test]
@@ -851,13 +900,31 @@ async fn failed_or_empty_voice_transcription_asks_to_repeat_without_model() {
         assert_eq!(done["attachments"][0]["state"], "failed");
         let lines = h.timeline_lines();
         assert_eq!(lines.len(), 2);
-        assert_eq!(
-            lines[1]["text"],
-            "Non sono riuscita a sentirti. Puoi ripetere?"
-        );
+        // The device locale (`lang=it`) is ignored: no words of his own and no recent messages: English.
+        assert_eq!(lines[1]["text"], "I couldn't hear you. Could you repeat that?");
         assert_eq!(lines[1]["meta"]["voiceReply"], true);
         assert!(h.fake.requests().is_empty());
     }
+}
+
+#[tokio::test]
+async fn the_repeat_request_follows_the_language_of_his_caption() {
+    let services = services().await;
+    let h = voice_setup(&services, false, "").await;
+    let bytes = b"unreadable".to_vec();
+    assert_eq!(
+        submit(
+            &h,
+            voice_form("voice-caption-1", bytes, Some("  "), "Non si sente niente, cosa dice?")
+        )
+        .await
+        .status(),
+        202
+    );
+    let done = finished(&h, "voice-caption-1").await;
+    assert_eq!(done["status"], "done", "{done}");
+    let lines = h.timeline_lines();
+    assert_eq!(lines[1]["text"], "Non sono riuscita a sentirti. Puoi ripetere?");
 }
 
 #[tokio::test]

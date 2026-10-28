@@ -12,11 +12,14 @@ use serde_json::Value;
 
 use crate::calendar::{day_label, day_of_text, guess_lang, ymd_plus};
 use crate::jsre::Re;
+use crate::name_match::{self, PersonAliases};
 use crate::notes::words_src;
 use crate::re;
 
 /// How far ahead (days after today) an event is looked for when no day is named.
 pub const LOOKAHEAD_DAYS: i64 = 13;
+/// Events listed in [`no_match_context_in`].
+const LISTED: usize = 15;
 
 /// What a topic names: an event by its title, a lecture, or any event ("the next meeting").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +55,7 @@ const NEXT: &str = r"prossim[oaie]|next|næste";
 const LECTURE: &str = r"lezion[ei]|lecture|lectures|class|lesson|forelæsning(?:en)?|undervisning(?:en)?|lektion(?:en)?|time[nr]?";
 const ANY: &str = r"impegn[oi]|event[oi]?|appuntament[oi]|riunion[ei]|events?|appointments?|meetings?|aftale[n]?|møde[t]?|begivenhed(?:en)?";
 /// Words a title need not contain ("il corso di Security" names "Security and Privacy").
-const FILLER: &[&str] = &[
+pub(crate) const FILLER: &[&str] = &[
     "corso",
     "course",
     "kursus",
@@ -71,6 +74,10 @@ const FILLER: &[&str] = &[
     "med",
     "with",
 ];
+/// A terse question with no verb: "Dove la mia prossima lezione?", "dove la riunione con Teresa?".
+const BARE_CUE: &str = r"^\s*(?:dove|where|hvor)";
+/// What a bare question must name besides the cue (so "dove sei?" stays no calendar question).
+const BARE_KIND: &str = r"prossim[oaie]|next|næste|lezion[ei]|lectures?|class|lesson|forelæsning(?:en)?|undervisning(?:en)?|lektion(?:en)?|riunion[ei]|appuntament[oi]|impegn[oi]|event[oi]?|events?|appointments?|meetings?|møde[t]?|aftale[n]?";
 /// A calendar entry from the university timetable (title, calendar or description).
 const TIMETABLE: &str = r"timetable|skema|lecture|lezione|forelæsning|undervisning|holdundervisning|exercise\s+class|øvelse";
 
@@ -94,6 +101,10 @@ pub fn parse_event_question(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<Ev
             } else {
                 (after.to_owned(), true)
             }
+        }
+        // "Dove la mia prossima lezione?": the cue without its verb.
+        None if t.split_whitespace().count() <= 8 && bare_question(t).is_some() => {
+            (bare_question(t).unwrap_or_default(), true)
         }
         // "prossima lezione?", "next lecture": asks when and where on its own.
         None if w(NEXT).test(t) && t.split_whitespace().count() <= 6 => (t.to_owned(), false),
@@ -152,12 +163,24 @@ pub fn parse_event_question(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<Ev
     })
 }
 
+/// What follows a verbless "dove"/"where"/"hvor" when it names a kind of event or the next one.
+fn bare_question(t: &str) -> Option<String> {
+    let (_, end, _) = w(BARE_CUE).find(t)?;
+    let rest = t[end..].trim();
+    w(BARE_KIND).test(rest).then(|| rest.to_owned())
+}
+
 fn text<'a>(e: &'a Value, key: &str) -> &'a str {
     e[key].as_str().map(str::trim).unwrap_or("")
 }
 
 /// The event answers the question (by title, location, or kind).
 pub fn matches(q: &EventQuestion, event: &Value) -> bool {
+    matches_with(q, event, &PersonAliases::default())
+}
+
+/// [`matches`], with the spellings the owner told Lucina are one person.
+pub fn matches_with(q: &EventQuestion, event: &Value, aliases: &PersonAliases) -> bool {
     match q.kind {
         EventKind::Any => true,
         EventKind::Lecture => {
@@ -171,17 +194,11 @@ pub fn matches(q: &EventQuestion, event: &Value) -> bool {
                 || re!(r"^\d{4}-\d{2,4}[A-Za-z]?\b").test(text(event, "location"))
         }
         EventKind::Named => {
-            let title = clean_title(text(event, "title")).to_lowercase();
-            let location = text(event, "location").to_lowercase();
-            let words: Vec<&str> = q
-                .topic
-                .split_whitespace()
-                .filter(|w| !FILLER.contains(w))
-                .collect();
-            [title, location].iter().any(|hay| {
-                hay.contains(&q.topic)
-                    || (!words.is_empty() && words.iter().all(|w| hay.contains(w)))
-            })
+            let title = clean_title(text(event, "title"));
+            let location = text(event, "location").to_owned();
+            [title, location]
+                .iter()
+                .any(|hay| name_match::topic_matches(&q.topic, hay, aliases))
         }
     }
 }
@@ -199,7 +216,19 @@ fn not_over(e: &Value, now: DateTime<Utc>, tz: Tz) -> bool {
 /// The events that answer `q`, in calendar order: every match of a named day, else the next
 /// one that has not ended.
 pub fn select(q: &EventQuestion, events: &[Value], now: DateTime<Utc>, tz: Tz) -> Vec<Value> {
-    let hits = events.iter().filter(|e| matches(q, e));
+    select_with(q, events, now, tz, &PersonAliases::default())
+}
+
+/// [`select`], with the spellings the owner told Lucina are one person. An event that has begun
+/// and not ended (or begins now) counts as not over.
+pub fn select_with(
+    q: &EventQuestion,
+    events: &[Value],
+    now: DateTime<Utc>,
+    tz: Tz,
+    aliases: &PersonAliases,
+) -> Vec<Value> {
+    let hits = events.iter().filter(|e| matches_with(q, e, aliases));
     if q.day_named {
         return hits.cloned().collect();
     }
@@ -329,6 +358,52 @@ pub fn no_match_context(q: &EventQuestion) -> String {
     format!(
         "Giuseppe's calendar {range}: no event matches \"{}\". Say it is not in his calendar; do not guess a time or place.",
         q.topic
+    )
+}
+
+/// [`no_match_context`] with the events of the range, so the model can recognise the one asked
+/// about under another spelling or name (at most [`LISTED`], in the owner's zone).
+pub fn no_match_context_in(
+    q: &EventQuestion,
+    events: &[Value],
+    now: DateTime<Utc>,
+    tz: Tz,
+) -> String {
+    let upcoming: Vec<&Value> = events
+        .iter()
+        .filter(|e| q.day_named || not_over(e, now, tz))
+        .collect();
+    if upcoming.is_empty() {
+        return no_match_context(q);
+    }
+    let lines: Vec<String> = upcoming
+        .iter()
+        .take(LISTED)
+        .map(|e| {
+            let when = match (e["allDay"].as_bool().unwrap_or(false), local(text(e, "start"), tz)) {
+                (false, Some(t)) => t.format("%a %d %b %H:%M").to_string(),
+                (_, Some(t)) => format!("{} all day", t.format("%a %d %b")),
+                _ => text(e, "start").chars().take(10).collect(),
+            };
+            let place = Some(text(e, "location")).filter(|l| !l.is_empty());
+            let place = place.map(|l| format!(" @ {l}")).unwrap_or_default();
+            format!("{when} {}{place}", clean_title(text(e, "title")))
+        })
+        .collect();
+    let more = match upcoming.len().saturating_sub(LISTED) {
+        0 => String::new(),
+        n => format!("; +{n} more"),
+    };
+    let range = if q.from == q.to {
+        q.from.clone()
+    } else {
+        format!("{}..{}", q.from, q.to)
+    };
+    format!(
+        "Giuseppe's calendar {range} ({}): no event matches \"{}\". Events in that range: {}{more}. If one of these is the event asked about under another spelling or name, answer with it; otherwise say it is not in his calendar. Do not guess a time or place.",
+        tz.name(),
+        q.topic,
+        lines.join("; ")
     )
 }
 
@@ -538,5 +613,144 @@ mod tests {
             "Hack Night: Rust meets AI"
         );
         assert_eq!(clean_title("(123456)"), "(123456)");
+    }
+
+    fn at(h: u32, m: u32, sec: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 28, h, m, sec).unwrap()
+    }
+
+    /// 2026-10-28, 12:00 in Copenhagen: the owner's iPhone calendar.
+    fn therese_zoom() -> Value {
+        json!({"id": "iphone:77", "title": "Therese zoom", "calendar": "iPhone",
+               "start": "2026-10-28T11:00:00.000Z", "end": "2026-10-28T12:00:00.000Z",
+               "allDay": false, "location": "Home"})
+    }
+
+    fn afternoon_lecture() -> Value {
+        json!({"id": "ics:au:2", "title": "Security and Privacy (Aarhus Universitet - Personal timetable: 810677)",
+               "calendar": "AU timetable", "start": "2026-10-28T13:15:00.000Z", "end": "2026-10-28T15:00:00.000Z",
+               "allDay": false, "location": "5789-003B Seminarrum"})
+    }
+
+    #[test]
+    fn therese_is_teresa_finds_the_zoom_an_hour_ahead() {
+        let now = at(10, 0, 47);
+        let text = "You know what time is the meeting therese è teresa";
+        let q = parse_event_question(text, now, TZ).unwrap();
+        assert_eq!(q.kind, EventKind::Named);
+        assert_eq!((q.from.as_str(), q.to.as_str()), ("2026-10-28", "2026-11-10"));
+        assert_eq!(q.lang, "en");
+        let events = [afternoon_lecture(), therese_zoom()];
+        let hits = select(&q, &events, now, TZ);
+        assert_eq!(hits, vec![therese_zoom()]);
+        assert_eq!(
+            answer_sentence(&hits[0], now, TZ, "en"),
+            "Therese zoom is today at 12:00, at Home."
+        );
+    }
+
+    #[test]
+    fn other_spellings_and_languages_find_the_same_zoom() {
+        let now = at(10, 0, 47);
+        let events = [afternoon_lecture(), therese_zoom()];
+        for text in [
+            "a che ora è la riunione con Teresa?",
+            "when is the Theresa call?",
+            "quando è la chiamata con Tereza?",
+            "hvornår er mødet med Therese?",
+        ] {
+            let q = parse_event_question(text, now, TZ).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!(select(&q, &events, now, TZ), vec![therese_zoom()], "{text}");
+        }
+    }
+
+    #[test]
+    fn accents_fold_and_strangers_do_not_match() {
+        let named = |topic: &str| EventQuestion {
+            topic: topic.into(),
+            kind: EventKind::Named,
+            from: "2026-10-28".into(),
+            to: "2026-10-28".into(),
+            day_named: true,
+            lang: "en",
+        };
+        let ev = |title: &str| json!({"title": title, "start": "2026-10-28T11:00:00.000Z", "end": "2026-10-28T12:00:00.000Z", "allDay": false});
+        assert!(matches(&named("café"), &ev("Cafe meetup")));
+        assert!(matches(&named("Jørgen"), &ev("Jorgen")));
+        assert!(!matches(&named("teresa"), &ev("Tessa party")));
+        assert!(!matches(&named("teresa"), &ev("Theater")));
+        let now = at(8, 0, 0);
+        let q = parse_event_question("dove si tiene la cena da Anna?", now, TZ).unwrap();
+        assert!(select(&q, &[hack_night(), lecture(), therese_zoom()], now, TZ).is_empty());
+    }
+
+    #[test]
+    fn a_person_alias_from_the_store_finds_the_event() {
+        let now = at(10, 0, 47);
+        let mut aliases = PersonAliases::default();
+        let q = parse_event_question("when is the meeting with Resa?", now, TZ).unwrap();
+        assert!(select_with(&q, &[therese_zoom()], now, TZ, &aliases).is_empty());
+        assert_eq!(
+            alias_to_remember_of("meeting therese è resa"),
+            Some(("therese".into(), "resa".into()))
+        );
+        aliases.add("therese", "resa");
+        assert_eq!(select_with(&q, &[therese_zoom()], now, TZ, &aliases).len(), 1);
+    }
+
+    fn alias_to_remember_of(topic: &str) -> Option<(String, String)> {
+        name_match::alias_to_remember(topic)
+    }
+
+    #[test]
+    fn an_event_in_progress_or_starting_now_is_selected() {
+        let q = parse_event_question("when is the Therese zoom?", at(10, 0, 0), TZ).unwrap();
+        let zoom = [therese_zoom()];
+        // Started five minutes ago, and starting right now.
+        assert_eq!(select(&q, &zoom, at(11, 5, 0), TZ).len(), 1);
+        assert_eq!(select(&q, &zoom, at(11, 0, 0), TZ).len(), 1);
+        // Ended a minute ago (and exactly now).
+        assert!(select(&q, &zoom, at(12, 1, 0), TZ).is_empty());
+        assert!(select(&q, &zoom, at(12, 0, 0), TZ).is_empty());
+    }
+
+    #[test]
+    fn no_match_lists_the_range_in_local_time() {
+        let now = at(10, 0, 47);
+        let q = parse_event_question("quando è la cena da Anna?", now, TZ).unwrap();
+        let ctx = no_match_context_in(&q, &[therese_zoom(), afternoon_lecture()], now, TZ);
+        assert!(ctx.contains("no event matches \"cena da anna\""), "{ctx}");
+        assert!(ctx.contains("Wed 28 Oct 12:00 Therese zoom @ Home"), "{ctx}");
+        assert!(ctx.contains("Wed 28 Oct 14:15 Security and Privacy @ 5789-003B Seminarrum"), "{ctx}");
+        assert!(ctx.contains("under another spelling or name, answer with it"), "{ctx}");
+        assert!(ctx.contains("otherwise say it is not in his calendar"), "{ctx}");
+        assert!(!ctx.contains("11:00"), "{ctx}");
+        // An event that is over is not offered; an empty range keeps the plain text.
+        assert_eq!(no_match_context_in(&q, &[], now, TZ), no_match_context(&q));
+        let many: Vec<Value> = (0..20).map(|_| therese_zoom()).collect();
+        let ctx = no_match_context_in(&q, &many, now, TZ);
+        assert_eq!(ctx.matches("Therese zoom").count(), 15);
+        assert!(ctx.contains("+5 more"), "{ctx}");
+    }
+
+    #[test]
+    fn a_question_without_its_verb_is_still_a_question() {
+        let q = parse_event_question("Dove la mia prossima lezione?", now(), TZ).unwrap();
+        assert_eq!((q.kind, q.lang, q.topic.as_str()), (EventKind::Lecture, "it", "lezione"));
+        assert!(!q.day_named);
+        let mut past = lecture();
+        past["start"] = json!("2026-10-26T07:15:00.000Z");
+        past["end"] = json!("2026-10-26T08:00:00.000Z");
+        assert_eq!(
+            select(&q, &[past, hack_night(), lecture()], now(), TZ),
+            vec![lecture()]
+        );
+        let q = parse_event_question("dove la riunione con Teresa?", now(), TZ).unwrap();
+        assert_eq!(q.kind, EventKind::Named);
+        let q = parse_event_question("where my next lecture?", now(), TZ).unwrap();
+        assert_eq!(q.kind, EventKind::Lecture);
+        for text in ["dove sei?", "where are you", "hvor er du", "dove vai domani"] {
+            assert_eq!(parse_event_question(text, now(), TZ), None, "{text}");
+        }
     }
 }

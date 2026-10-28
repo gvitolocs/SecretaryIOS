@@ -56,6 +56,9 @@ pub struct Resolution {
     pub at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The owner device whose approval answered it (verified grant of the approvals bridge).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +81,9 @@ pub struct PermissionView {
     pub status: Status,
     pub created_at: String,
     pub expires_at: String,
+    /// The owner approval (secretary-server) filed for this request, once it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
 }
@@ -86,6 +92,17 @@ pub(super) struct Entry {
     view: PermissionView,
     gate: Gate,
     resolved_at_ms: Option<u64>,
+    /// Questions (AskUserQuestion-style) need an answer, not a Yes: no owner approval for them.
+    question: bool,
+}
+
+/// A pending request the approvals bridge may file as an owner approval.
+#[derive(Debug, Clone)]
+pub struct ApprovalCandidate {
+    pub view: PermissionView,
+    /// The agent's title and provider (agent requests).
+    pub agent_title: Option<String>,
+    pub provider: Option<String>,
 }
 
 /// Resolved entries stay readable this long.
@@ -126,6 +143,11 @@ pub(super) fn agent_key(agent_id: &str, request_id: &str) -> String {
     format!("{agent_id}/{request_id}")
 }
 
+/// The book's key: agent requests by agent and request id, external ones by their id.
+fn book_key(agent_id: Option<&str>, id: &str) -> String {
+    agent_id.map_or_else(|| id.to_string(), |a| agent_key(a, id))
+}
+
 fn refusal(outcome: Outcome, what: &str) -> ManagerError {
     match outcome {
         Outcome::NotAllowed => ManagerError::Forbidden(format!("This caller may not answer {what}: only the owner can")),
@@ -146,6 +168,7 @@ impl Entry {
                 by: if expired { "expiry" } else { origin_by },
                 at: iso_at(now),
                 message: if expired { Some(EXPIRED_MESSAGE.into()) } else { message },
+                device_id: None,
             });
             self.resolved_at_ms = Some(now);
         }
@@ -189,6 +212,7 @@ impl Manager {
             status: Status::Pending,
             created_at: iso_at(now),
             expires_at: iso_at(gate.expires_at_ms),
+            approval_id: None,
             resolution: None,
         };
         let policy: ToolPolicy = agent
@@ -206,13 +230,14 @@ impl Manager {
             let step = pg::answer(&gate, Origin::Policy, Verdict::Allow, now);
             gate = step.next;
             view.status = gate.status;
-            view.resolution = Some(Resolution { behavior: Verdict::Allow, by: "policy", at: iso_at(now), message: None });
+            view.resolution = Some(Resolution { behavior: Verdict::Allow, by: "policy", at: iso_at(now), message: None, device_id: None });
             resolved_at_ms = Some(now);
         }
         {
             let mut book = self.book();
             Self::prune(&mut book, now);
-            book.insert(agent_key(&agent.record.id, &request.id), Entry { view: view.clone(), gate, resolved_at_ms });
+            let question = request.kind == lucina_agents::permission::PermissionKind::Question;
+            book.insert(agent_key(&agent.record.id, &request.id), Entry { view: view.clone(), gate, resolved_at_ms, question });
         }
         self.publish_permission(&view);
         if !preapproved {
@@ -246,7 +271,7 @@ impl Manager {
                 PermissionResponse::Deny { message, .. } => message.clone(),
                 PermissionResponse::Allow { .. } => None,
             };
-            e.view.resolution = Some(Resolution { behavior: v, by: "provider", at: iso_at(now), message });
+            e.view.resolution = Some(Resolution { behavior: v, by: "provider", at: iso_at(now), message, device_id: None });
             e.resolved_at_ms = Some(now);
             e.view.clone()
         };
@@ -269,6 +294,11 @@ impl Manager {
     /// Answer an agent's permission request (Paseo `respondToPermission`), then wait
     /// up to 15 s for the provider to confirm it (Paseo `respondToPermissionAndWait`).
     pub async fn respond_permission(&self, agent_id: &str, request_id: &str, response: PermissionResponse, origin: Origin) -> Result<(), ManagerError> {
+        self.respond_permission_as(agent_id, request_id, response, origin, None).await
+    }
+
+    /// [`Self::respond_permission`], remembering which owner device's approval answered.
+    pub(super) async fn respond_permission_as(&self, agent_id: &str, request_id: &str, response: PermissionResponse, origin: Origin, device: Option<&str>) -> Result<(), ManagerError> {
         let what = format!("Permission request {request_id}");
         let key = agent_key(agent_id, request_id);
         let now = now_ms();
@@ -289,6 +319,11 @@ impl Manager {
                 PermissionResponse::Allow { .. } => None,
             };
             entry.apply(&step, by(origin), message, now);
+            if step.outcome == Outcome::Applied {
+                if let Some(r) = entry.view.resolution.as_mut() {
+                    r.device_id = device.map(str::to_string);
+                }
+            }
             let view = entry.view.clone();
             drop(book);
             self.publish_permission(&view);
@@ -409,12 +444,13 @@ impl Manager {
             status: Status::Pending,
             created_at: iso_at(now),
             expires_at: iso_at(gate.expires_at_ms),
+            approval_id: None,
             resolution: None,
         };
         {
             let mut book = self.book();
             Self::prune(&mut book, now);
-            book.insert(id.clone(), Entry { view: view.clone(), gate, resolved_at_ms: None });
+            book.insert(id.clone(), Entry { view: view.clone(), gate, resolved_at_ms: None, question: false });
         }
         self.publish_permission(&view);
         if let Some(n) = &self.inner.options.notifier {
@@ -454,6 +490,10 @@ impl Manager {
     }
 
     pub fn answer_external(&self, id: &str, verdict: Verdict, message: Option<String>, origin: Origin) -> Result<PermissionView, ManagerError> {
+        self.answer_external_as(id, verdict, message, origin, None)
+    }
+
+    fn answer_external_as(&self, id: &str, verdict: Verdict, message: Option<String>, origin: Origin, device: Option<&str>) -> Result<PermissionView, ManagerError> {
         let now = now_ms();
         let (view, step) = {
             let mut book = self.book();
@@ -466,6 +506,11 @@ impl Manager {
                 return Err(refusal(step.outcome, &format!("Permission request {id}")));
             }
             entry.apply(&step, by(origin), message, now);
+            if step.outcome == Outcome::Applied {
+                if let Some(r) = entry.view.resolution.as_mut() {
+                    r.device_id = device.map(str::to_string);
+                }
+            }
             (entry.view.clone(), step)
         };
         self.publish_permission(&view);
@@ -510,6 +555,82 @@ impl Manager {
             .collect();
         v.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
         v
+    }
+
+    // -- owner approvals (the approvals bridge) ---------------------------------------
+
+    /// Pending requests that have no owner approval yet and need a Yes (not questions).
+    pub fn approval_candidates(&self) -> Vec<ApprovalCandidate> {
+        let agents = self.lock();
+        let book = self.book();
+        book.values().filter(|e| e.view.approval_id.is_none()).filter_map(|e| Self::candidate_of(&agents, e)).collect()
+    }
+
+    /// One pending request that needs a Yes (with or without an approval already filed).
+    pub fn approval_candidate(&self, agent_id: Option<&str>, id: &str) -> Option<ApprovalCandidate> {
+        let agents = self.lock();
+        let book = self.book();
+        book.get(&book_key(agent_id, id)).and_then(|e| Self::candidate_of(&agents, e))
+    }
+
+    fn candidate_of(agents: &std::collections::HashMap<String, Agent>, e: &Entry) -> Option<ApprovalCandidate> {
+        if e.view.status != Status::Pending || e.question {
+            return None;
+        }
+        let agent = e.view.agent_id.as_deref().and_then(|id| agents.get(id));
+        Some(ApprovalCandidate {
+            view: e.view.clone(),
+            agent_title: agent.and_then(|a| a.record.title.clone()),
+            provider: agent.map(|a| a.record.provider.clone()),
+        })
+    }
+
+    /// The request as it is now, any status (agent requests by `agent_id`).
+    pub fn permission_view(&self, agent_id: Option<&str>, id: &str) -> Option<PermissionView> {
+        self.book().get(&book_key(agent_id, id)).map(|e| e.view.clone())
+    }
+
+    /// Record the owner approval filed for a still-pending request (it replaces an
+    /// earlier one) and tell the streams. `false`: the request is no longer pending.
+    pub fn attach_approval(&self, agent_id: Option<&str>, id: &str, approval_id: &str) -> bool {
+        let view = {
+            let mut book = self.book();
+            let Some(e) = book.get_mut(&book_key(agent_id, id)) else { return false };
+            if e.gate.status != Status::Pending {
+                return false;
+            }
+            e.view.approval_id = Some(approval_id.to_string());
+            e.view.clone()
+        };
+        self.publish_permission(&view);
+        true
+    }
+
+    /// The owner answered through approval `approval_id` (on device `device_id`, taken
+    /// from a grant the caller verified; `None` for a denial, which has no grant). This is an ordinary owner answer: the gate
+    /// decides with `Origin::OwnerDevice`, so a request that was answered or expired
+    /// meanwhile is refused as `AlreadyAnswered` / `Expired`, and the request must be
+    /// the one this very approval was filed for.
+    pub async fn answer_from_approval(&self, agent_id: Option<&str>, id: &str, approval_id: &str, verdict: Verdict, device_id: Option<&str>) -> Result<(), ManagerError> {
+        let filed = self.book().get(&book_key(agent_id, id)).map(|e| e.view.approval_id.clone());
+        match filed {
+            None => return Err(ManagerError::PermissionNotFound(format!("Permission request not found: {id}"))),
+            Some(a) if a.as_deref() != Some(approval_id) => {
+                return Err(ManagerError::Forbidden(format!("Approval {approval_id} was not filed for permission request {id}")));
+            }
+            Some(_) => {}
+        }
+        let message = (verdict == Verdict::Deny).then(|| "The owner denied this on their device.".to_string());
+        match agent_id {
+            Some(agent) => {
+                let response = match verdict {
+                    Verdict::Allow => PermissionResponse::Allow { selected_action_id: None, updated_input: None, updated_permissions: None },
+                    Verdict::Deny => PermissionResponse::Deny { selected_action_id: None, message, interrupt: None },
+                };
+                self.respond_permission_as(agent, id, response, Origin::OwnerDevice, device_id).await
+            }
+            None => self.answer_external_as(id, verdict, message, Origin::OwnerDevice, device_id).map(|_| ()),
+        }
     }
 
     /// A push for an agent that needs attention (Paseo: push unless a client is

@@ -44,7 +44,7 @@ pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, ORIGIN_LABEL};
 pub use schedules::{owner_timezone, ScheduleInput, RUN_LABEL, SCHEDULE_LABEL};
 pub use search::{PromptEntry, SearchMatch, SearchResult};
-pub use permissions::{ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
 
 use crate::workspaces::{Registry as Workspaces, WsError};

@@ -38,7 +38,7 @@ through the full planner (Harness tasks, reminders, sheets) instead of only Curs
 
 - Concise replies unless detail is requested.
 - Never invent bookings, emails sent, or tool results.
-- Lucina has no email access: the Gmail integration was removed on 2026-09-20. If asked to read, search, or send email, say plainly that it can't.
+- Lucina has no email API (the Gmail integration was removed on 2026-09-20), but she reads Giuseppe's Outlook (givi@au.dk) and Google/Gmail in her own computer's Chromium, through accessibility tools: read-only by default, and she sends, replies or deletes only with his explicit OK.
 - Never print secrets, tokens, or key paths' values.
 
 ## Poko News Peer1 Recovery

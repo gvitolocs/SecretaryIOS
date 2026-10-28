@@ -383,12 +383,15 @@ pub(super) fn clip(s: &str, n: usize) -> String {
 fn intent(s: &str) -> bool {
     ["ask", "library", "shopping", "note", "remind"].contains(&s)
 }
-fn default_note(lang: &str) -> &'static str {
-    match lang.split(['-', '_']).next().unwrap_or("") {
-        "it" => "Guarda cosa ti ho condiviso e dimmi cosa ne pensi.",
-        "da" => "Se hvad jeg har delt, og fortæl mig om det.",
-        _ => "Look at what I shared and tell me about it.",
-    }
+/// The language replies, summaries and fixed texts of a share use: that of the owner's own note, else of
+/// his recent messages, else English. The device locale (`lang` on the request) is never used: on
+/// 2026-10-26/27 a Danish device made the app's default line, the summaries and Lucina's replies Danish for
+/// Italian notes and bare links.
+fn owner_language(st: &AppState, session: &str, note: &str) -> lucina_intent::lang::Lang {
+    crate::planner::resolve_reply_language(
+        note,
+        &crate::planner::recent_owner_texts(&st.recent, session),
+    )
 }
 fn check_parts(count: usize) -> Result<(), Error> {
     if count > MAX_PARTS {
@@ -1142,19 +1145,14 @@ pub(crate) async fn transcribe_local(st: &AppState, path: &Path) -> anyhow::Resu
 }
 
 /// The share turn message around the read content (see `process`).
-pub(crate) fn turn_message(note: &str, lang: &str, content: &str) -> String {
+pub(crate) fn turn_message(note: &str, _device_lang: &str, content: &str) -> String {
     let note = note.trim();
     let owner = if note.is_empty() {
-        format!(
-            "(no note: react as rule 2 says; the app's default line was \"{}\")",
-            default_note(lang)
-        )
+        "(no note: react as rule 2 says)".to_owned()
     } else {
         format!("\"{note}\"")
     };
-    format!(
-        "Owner's question or note: {owner}\nDevice language: {lang}\n\n<Shared content>{content}</Shared content>"
-    )
+    format!("Owner's question or note: {owner}\n\n<Shared content>{content}</Shared content>")
 }
 
 async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()> {
@@ -1191,7 +1189,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
         if let Some(p) = &original {
             job.parts[i].path = Some(work_path(dir, i, p).await?);
         }
-        let lang = job.lang.clone();
+        let lang = owner_language(st, &job.session, &job.note).code().to_owned();
         let result = tokio::time::timeout(
             Duration::from_secs(seconds),
             extract::read(
@@ -1295,7 +1293,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             .iter()
             .any(|p| p.attachment.kind == "voice" && p.attachment.transcript.is_none())
     {
-        let reply = match job.lang.split(['-', '_']).next().unwrap_or("") {
+        let reply = match owner_language(st, &job.session, &job.note).code() {
             "it" => "Non sono riuscita a sentirti. Puoi ripetere?",
             "da" => "Jeg kunne ikke høre dig. Kan du gentage det?",
             _ => "I couldn't hear you. Could you repeat that?",
@@ -1326,7 +1324,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
                 "content":clip(&format!("{}\n{}", job.note, content), 19_000)
             }), &ctx)).await.context("saving shared note timed out")?.map_err(|e| anyhow::anyhow!(e.to_string()))?;
         }
-        let reply = match job.lang.split(['-', '_']).next().unwrap_or("") {
+        let reply = match owner_language(st, &job.session, &job.note).code() {
             "it" => "Salvato nella raccolta Shared.",
             "da" => "Gemt i samlingen Shared.",
             _ => "Saved to the Shared library.",
@@ -1344,10 +1342,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
     } else {
         let note = job.note.trim();
         let owner = if note.is_empty() {
-            format!(
-                "(no note: react as rule 2 says; the app's default line was \"{}\")",
-                default_note(&job.lang)
-            )
+            "(no note: react as rule 2 says)".to_owned()
         } else {
             format!("\"{note}\"")
         };
@@ -1357,8 +1352,7 @@ async fn process(st: &AppState, dir: &Path, job: &mut Job) -> anyhow::Result<()>
             message.push('\n');
         }
         message.push_str(&format!(
-            "Owner's question or note: {owner}\nDevice language: {}\n\n<Shared content>{content}</Shared content>",
-            job.lang
+            "Owner's question or note: {owner}\n\n<Shared content>{content}</Shared content>"
         ));
         if voice_only {
             message = voice_transcripts.remove(0);
@@ -1429,18 +1423,19 @@ mod tests {
                 && intent("remind")
         );
         assert!(!intent("delete"));
-        assert_eq!(
-            default_note("it-IT"),
-            "Guarda cosa ti ho condiviso e dimmi cosa ne pensi."
-        );
-        assert_eq!(
-            default_note("da"),
-            "Se hvad jeg har delt, og fortæl mig om det."
-        );
-        assert_eq!(
-            default_note("fr"),
-            "Look at what I shared and tell me about it."
-        );
+    }
+
+    #[test]
+    fn the_share_message_carries_no_device_language() {
+        for device in ["da-DK", "da", "it-IT"] {
+            let m = turn_message("", device, "<page text>");
+            assert!(!m.contains("Device language"), "{m}");
+            assert!(!m.contains("Se hvad jeg har delt"), "{m}");
+            assert!(m.contains("(no note: react as rule 2 says)"));
+        }
+        let m = turn_message("[selftest] Comprare: latte, uova", "da-DK", "x");
+        assert!(m.contains("\"[selftest] Comprare: latte, uova\""));
+        assert!(!m.contains("da-DK"));
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub const INTENTS: &[&str] = &[
     "poko_news_scout_retry",
     "social_post",
     "cursor_task",
+    "computer_task",
     "lucina_log_inspect",
     "grocery.purchase",
     "grocery.consume",
@@ -249,6 +250,12 @@ pub fn looks_like_direct_log_inspect(text: &str) -> bool {
 pub fn classify_tier0(text: &str, memory: &str, s: &Settings) -> Option<Classification> {
     use Classification as C;
     let len = lucina_store::timeutil::utf16_len(text);
+    // The owner's mail on her own computer ("Explore Outlook in your sandbox", "has Giuseppe
+    // sent an email …"): first, so no shortcut or earlier turn (a voice note about errands)
+    // can take it. Each message is its own intent; `memory` is not consulted.
+    if crate::computer_route::wants_computer(text) {
+        return Some(C::t0("computer_task", 0.97, false, true, "direct"));
+    }
     if !looks_like_reminder_request(text) && explicit_recall(text) {
         return Some(C::t0("explicit_memory_recall", 0.9, true, false, "chat"));
     }
@@ -367,6 +374,7 @@ pub fn is_misrouted(c: &Classification, text: &str, memory: &str) -> bool {
         "model_status" => !looks_like_model_status(text),
         "revive_qwen" => !looks_like_revive_qwen(text),
         "spreadsheet_update" => !looks_like_spreadsheet_write(text),
+        "computer_task" => !crate::computer_route::wants_computer(text),
         "social_post" => !looks_like_social_post(text),
         "poko_news_scout_retry" => {
             !(looks_like_poko_news_scout_retry(text)
@@ -467,6 +475,7 @@ pub fn direct_plan(c: &Classification, text: &str, memory: &str, s: &Settings) -
             .join("\n\n");
             json!({"action": "cursor_task", "prompt": prompt, "ack": "Avvio Harness con Qwen locale su nezopt per questo task adesso."})
         }
+        "computer_task" => return crate::computer_route::plan(text),
         "study_focus_reminders" => {
             json!({"action": "study_focus_reminders", "ack": "Programmo i promemoria studio (focus/dopamina) per la sessione di oggi."})
         }
@@ -562,5 +571,55 @@ mod tests {
         assert_eq!(normalize_confidence(&json!("high")), 0.92);
         assert_eq!(normalize_confidence(&json!("85")), 0.85);
         assert_eq!(normalize_confidence(&json!(85)), 1.0);
+    }
+
+    /// The owner's recent turn before "Explode outlook …" (10:58, a voice note about errands).
+    const ERRANDS: &str = "[10:58] Giuseppe (voice note): prima la lavanderia, poi il pacco alla posta, poi la spesa e a casa per Teresa.\n[10:58] Lucina: Ok, ho capito il giro delle commissioni.";
+    const MCP_CHECK: &str = "Quick check only: has Giuseppe already SENT an email this morning (28 Oct 2026) from givi@au.dk to Marianne/Arkaitz about CRAFT self-assessment / \"Ecosystem self assessment-tool for replication\"? If you can see Outlook Sent or notes, say yes/no. If you cannot check, say cannot check. One short answer.";
+
+    #[test]
+    fn explore_outlook_goes_to_the_computer_after_a_voice_note_about_errands() {
+        let text = "Explode outlook in your sandbox";
+        for settings in [s(), Settings::default()] {
+            let c = classify_tier0(text, ERRANDS, &settings).expect("routed");
+            assert_eq!(c.intent, "computer_task");
+            assert!(c.tier0());
+            assert!(!should_use_full_plan(&c, text, &settings), "a direct plan, no planner LLM");
+            assert!(!is_misrouted(&c, text, ERRANDS));
+            let p = direct_plan(&c, text, ERRANDS, &settings).expect("plan");
+            assert_eq!(p["action"], "computer_task");
+            let task = p["task"].as_str().unwrap();
+            assert!(task.starts_with("Explore Outlook in your sandbox"), "{task}");
+            assert!(task.contains("givi@au.dk"));
+            assert!(task.contains("Read only: do not send, reply, forward, delete, move, archive or change anything."));
+            assert_eq!(
+                p["ack"],
+                "Ok, I'm opening Outlook on my computer and having a look — read-only."
+            );
+        }
+    }
+
+    #[test]
+    fn the_mcp_sent_mail_check_goes_to_the_computer() {
+        let c = classify_tier0(MCP_CHECK, "", &s()).expect("routed");
+        assert_eq!(c.intent, "computer_task");
+        assert!(!should_use_full_plan(&c, MCP_CHECK, &s()));
+        let p = direct_plan(&c, MCP_CHECK, "", &s()).unwrap();
+        assert_eq!(p["action"], "computer_task");
+        let task = p["task"].as_str().unwrap();
+        assert!(task.contains("Marianne/Arkaitz"));
+        assert!(task.contains("Sent folder"));
+        assert!(task.contains("Read only"));
+    }
+
+    #[test]
+    fn the_computer_route_leaves_reminders_and_errands_alone() {
+        assert_eq!(
+            intent("ricordami alle 18:30 di controllare Outlook").as_deref(),
+            Some("schedule_reminder")
+        );
+        assert_ne!(intent("vado alla posta a ritirare il pacco").as_deref(), Some("computer_task"));
+        let c = classify_tier0("Explode outlook in your sandbox", "", &s()).unwrap();
+        assert!(is_misrouted(&Classification { ..c.clone() }, "che bella giornata", ""));
     }
 }

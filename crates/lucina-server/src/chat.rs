@@ -654,8 +654,52 @@ pub(crate) async fn share_turn(
     .await
 }
 
+/// Pins the turn's reply language (`planner::TURN_LANG`) before anything else runs: the language of the
+/// owner's own text (a share's note, a voice note's transcript, the message), else of his recent messages,
+/// else English. Never the device locale.
 #[allow(clippy::too_many_arguments)]
 async fn run_turn_inner(
+    st: AppState,
+    message: String,
+    session: String,
+    cmid: Option<String>,
+    channel: String,
+    mcp_turn: Option<McpTurn>,
+    surface: TurnSurface,
+    existing: Option<ShareTurn>,
+    origin: Option<Arc<ChannelOrigin>>,
+    reply_to: Option<String>,
+    device_meta: Meta,
+) -> Result<Value, ApiError> {
+    let owner_text = existing
+        .as_ref()
+        .map_or_else(|| message.clone(), |s| s.owner_text.clone());
+    let line = match &origin {
+        Some(o) => crate::planner::reply_language_line(&o.recent, &o.recent_key, &owner_text),
+        None => crate::planner::reply_language_line(&st.recent, &session, &owner_text),
+    };
+    crate::planner::TURN_LANG
+        .scope(
+            line,
+            run_turn_scoped(
+                st,
+                message,
+                session,
+                cmid,
+                channel,
+                mcp_turn,
+                surface,
+                existing,
+                origin,
+                reply_to,
+                device_meta,
+            ),
+        )
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_turn_scoped(
     st: AppState,
     message: String,
     session: String,
@@ -1222,6 +1266,122 @@ async fn compound_blocks(t: &Turn<'_>, domains: &[&'static str], memory: &str) -
     blocks
 }
 
+/// Queue an async action as a job: the ack now, the result on the timeline when it finishes
+/// (`spawn_job`). `computer_task` carries its own ack in the owner's language (`plan["ack"]`).
+fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Finish {
+    let st = t.st;
+    let blocker = if action == "generate_image" && st.cfg.image_jobs {
+        None
+    } else {
+        jobs::blocker(plan, &st.cfg.dsh)
+    };
+    if let Some(b) = blocker {
+        return Finish::reply(b, action);
+    }
+    let now = now_iso();
+    let job = Job {
+        id: uuid::Uuid::new_v4().to_string(),
+        action: action.to_owned(),
+        status: "queued".into(),
+        result: None,
+        error: None,
+        image_url: None,
+        session_id: t.session.clone(),
+        client_message_id: cmid.map(str::to_owned),
+        created_at: now.clone(),
+        started_at: None,
+        finished_at: None,
+        updated_at: now,
+        timeline_item_id: None,
+        owner: None,
+        boot_id: None,
+        extra: Default::default(),
+    };
+    match st.jobs.insert(job) {
+        Ok(job) => {
+            let ack = plan["ack"]
+                .as_str()
+                .map(str::trim)
+                .filter(|a| action == "computer_task" && !a.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!(
+                        "On it: I started the {}. The result will appear here when it finishes.",
+                        jobs::label(action)
+                    )
+                });
+            let mut f = Finish::reply(ack, action);
+            f.job = Some(job);
+            f.job_plan = Some(plan.clone());
+            f
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "secretary job insert failed");
+            Finish::reply(
+                format!("I could not start the {}.", jobs::label(action)),
+                action,
+            )
+        }
+    }
+}
+
+/// Lucina's own computer (lucina_computer_use): she does the job herself in her sandbox, as a job. The owner
+/// gets her ack at once ("I can check via my computer, starting now") and the result lands on the timeline.
+/// A planner `web_crawl_task` (read a page, or search the web) as a read-only `computer_task` in her
+/// one Chromium window. The ack is the planner's when it gave one.
+fn web_crawl_as_computer_task(plan: &Value, message: &str) -> Value {
+    let s = |k: &str| plan[k].as_str().map(str::trim).unwrap_or_default();
+    let goal = if s("query").is_empty() { message.trim() } else { s("query") };
+    let what = if s("url").is_empty() {
+        format!("Search the web for this in a new tab (Google): {goal}")
+    } else {
+        format!("Open {} in a new tab and read it. Goal: {goal}", s("url"))
+    };
+    let ack = if s("ack").is_empty() {
+        crate::planner::web_read_ack()
+    } else {
+        s("ack")
+    };
+    json!({
+        "action": "computer_task",
+        "task": format!("{what}. Use your one Chromium window through accessibility tools (get_window_state, click, type_text, press_key; ctrl+t opens a new tab). Read only: do not log in, buy, post, send or change anything. Answer briefly with what the page actually says and its URL."),
+        "ack": ack,
+    })
+}
+
+async fn computer_task_finish(t: &Turn<'_>, plan: &Value, cmid: Option<&str>) -> Finish {
+    queue_job(t, plan, "computer_task", cmid)
+}
+
+/// The job body of a `computer_task`: runs the task and words the outcome for the owner.
+async fn run_computer_task(task: &str) -> Result<(String, String), String> {
+    if !lucina_computer_use::shared_client().ready() {
+        return Err("My own computer is switched off on this runtime.".into());
+    }
+    match lucina_computer_use::run_task("lucina", task, &lucina_computer_use::Cancel::new()).await {
+        Ok(r) => {
+            let status = r.status.as_str();
+            let text = if r.reply.trim().is_empty() {
+                format!("Done on my computer ({status}).")
+            } else {
+                r.reply.clone()
+            };
+            Ok((
+                text,
+                format!("[computer {status}: {} tool calls]", r.executed_tools.len()),
+            ))
+        }
+        Err(lucina_computer_use::Error::OwnerDriving) => Ok((
+            "You're driving my computer from the live view right now, so I left it alone. Give it back and ask me again.".into(),
+            "[computer: owner driving]".into(),
+        )),
+        Err(e) => {
+            tracing::warn!(error = %e, "computer task failed");
+            Err(format!("My computer couldn't finish that ({}).", e.code()))
+        }
+    }
+}
+
 async fn json_turn(
     t: &Turn<'_>,
     prepared: &crate::context::Prepared,
@@ -1252,6 +1412,15 @@ async fn json_turn(
             return Finish::reply(reply, "reply");
         }
         return share_turn::run(t, memory).await;
+    }
+
+    // Her own computer ("explore Outlook in your sandbox", "check my inbox"): before every other shortcut,
+    // so the notes, tasks, calendar, memo and media routes, and a playing game, cannot take the message.
+    if let Some(plan) = lucina_intent::computer_route::plan(&t.message) {
+        if t.guarded && !mcp::ALLOWED_ACTIONS.contains(&"computer_task") {
+            return Finish::refusal(&persona, "computer_task");
+        }
+        return computer_task_finish(t, &plan, cmid).await;
     }
 
     // Meshy 3D (LUCINA_MESHY=true): a pending plan's yes/no, or a 3D request.
@@ -1488,10 +1657,10 @@ async fn json_turn(
         }
     }
 
-    // The JSON-action planner, with the turn's classification. While her game is live, owner turns skip the
-    // casual chat shortcut (which clips the context and cannot choose actions) so she reasons over the game
-    // state and can pass advice to her playing self (game_hint).
-    let game_live = !t.guarded && !prepared.game.is_empty();
+    // The JSON-action planner, with the turn's classification. While her game is playing (not paused or
+    // finished), owner turns skip the casual chat shortcut (which clips the context and cannot choose actions)
+    // so she reasons over the game state and can pass advice to her playing self (game_hint).
+    let game_live = !t.guarded && prepared.game_live;
     let routed = if game_live {
         st.planner
             .plan_response(&t.input(memory, t.planner_platform()))
@@ -1510,16 +1679,9 @@ async fn json_turn(
         Ok(p) => p,
         Err(e) => {
             tracing::error!(surface = "secretary", error = %e, "response planning failed");
-            match st
-                .planner
-                .generate_reply(&t.input(memory, t.platform_label()), "", "", "reply")
-                .await
-            {
-                Ok(text) => json!({"action": "reply", "text": text}),
-                Err(_) => {
-                    json!({"action": "reply", "text": format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")})
-                }
-            }
+            // Planning failed twice (JSON mode, then one repair retry): say so briefly instead of a
+            // tool-less guess that may answer the wrong thing.
+            json!({"action": "reply", "text": crate::planner::plan_failed_text()})
         }
     };
     let action = plan["action"]
@@ -1618,49 +1780,6 @@ async fn json_turn(
             ),
             Some(Meta::kind("game")),
         );
-    }
-
-    // Lucina's own computer (lucina_computer_use): she does the job herself in her sandbox.
-    if action == "computer_task" {
-        let task = plan["task"]
-            .as_str()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&t.message)
-            .to_owned();
-        if !lucina_computer_use::shared_client().ready() {
-            return Finish::reply(
-                "My own computer is switched off on this runtime.",
-                "computer",
-            );
-        }
-        return match lucina_computer_use::run_task("lucina", &task, &lucina_computer_use::Cancel::new()).await {
-            Ok(r) => {
-                let status = r.status.as_str();
-                let text = if r.reply.trim().is_empty() {
-                    format!("Done on my computer ({status}).")
-                } else {
-                    r.reply.clone()
-                };
-                Finish::reply(text, "computer").with(
-                    format!("[computer {status}: {} tool calls]", r.executed_tools.len()),
-                    Some(Meta::kind("computer")),
-                )
-            }
-            Err(lucina_computer_use::Error::OwnerDriving) => Finish::reply(
-                "You're driving my computer from the live view right now, so I left it alone. Give it back and ask me again.",
-                "computer",
-            )
-            .with("[computer: owner driving]", Some(Meta::kind("computer"))),
-            Err(e) => {
-                tracing::warn!(error = %e, "computer task failed");
-                Finish::reply(
-                    format!("My computer couldn't finish that ({}).", e.code()),
-                    "computer",
-                )
-                .with("[computer failed]", Some(Meta::kind("computer")))
-            }
-        };
     }
 
     // Lucina decided herself that another agent should do it.
@@ -1775,55 +1894,15 @@ async fn json_turn(
         };
     }
 
+    // Reading a public page or searching the web: the Rust Lucina has no crawler, but her computer's
+    // Chromium can, so the job goes there (read-only) instead of "this app can't run it".
+    if action == "web_crawl_task" && lucina_computer_use::shared_client().ready() {
+        let plan = web_crawl_as_computer_task(&plan, &t.message);
+        return queue_job(t, &plan, "computer_task", cmid);
+    }
+
     if jobs::ASYNC_ACTIONS.contains(&action.as_str()) {
-        let blocker = if action == "generate_image" && st.cfg.image_jobs {
-            None
-        } else {
-            jobs::blocker(&plan, &st.cfg.dsh)
-        };
-        if let Some(b) = blocker {
-            return Finish::reply(b, &action);
-        }
-        let now = now_iso();
-        let job = Job {
-            id: uuid::Uuid::new_v4().to_string(),
-            action: action.clone(),
-            status: "queued".into(),
-            result: None,
-            error: None,
-            image_url: None,
-            session_id: t.session.clone(),
-            client_message_id: cmid.map(str::to_owned),
-            created_at: now.clone(),
-            started_at: None,
-            finished_at: None,
-            updated_at: now,
-            timeline_item_id: None,
-            owner: None,
-            boot_id: None,
-            extra: Default::default(),
-        };
-        match st.jobs.insert(job) {
-            Ok(job) => {
-                let mut f = Finish::reply(
-                    format!(
-                        "On it: I started the {}. The result will appear here when it finishes.",
-                        jobs::label(&action)
-                    ),
-                    &action,
-                );
-                f.job = Some(job);
-                f.job_plan = Some(plan.clone());
-                return f;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "secretary job insert failed");
-                return Finish::reply(
-                    format!("I could not start the {}.", jobs::label(&action)),
-                    &action,
-                );
-            }
-        }
+        return queue_job(t, &plan, &action, cmid);
     }
 
     if action == "reply" {
@@ -1862,7 +1941,7 @@ async fn json_turn(
         .to_owned()
     } else {
         format!(
-            "{} This request needs the \"{action}\" tool, which the Secretary app cannot run. Say so in one sentence, answer whatever you can without it, and suggest asking on Telegram for the tool. Never claim the tool ran.",
+            "{} This request needs the \"{action}\" tool, which this Lucina cannot run yet. Say so in one sentence and answer whatever you can without it. Never claim the tool ran.",
             t.extra_system
         )
     };
@@ -2031,6 +2110,60 @@ struct JobDest {
     origin: Option<Arc<ChannelOrigin>>,
 }
 
+/// Video report jobs a restart interrupted (crate::video::Resume) start again, reporting on
+/// the app's timeline (a Telegram reply sink does not survive a restart). Once per process.
+pub(crate) fn resume_video_jobs(st: &AppState) {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let cfg = &st.cfg.video;
+    for mut r in crate::video::pending_resumes(cfg) {
+        let job = match st.jobs.adopt(&r.job_id) {
+            Ok(Some(job)) if r.attempts < crate::video::MAX_ATTEMPTS => job,
+            Ok(Some(_)) => {
+                tracing::warn!(job_id = %r.job_id, "youtube report: interrupted too often; not resuming");
+                let _ = st.jobs.update(&r.job_id, |j| {
+                    j.status = "error".into();
+                    j.error = Some("interrupted by restarts".into());
+                    j.finished_at = Some(now_iso());
+                });
+                st.jobs.finish(&r.job_id);
+                crate::video::clear_resume(cfg, &r.plan);
+                continue;
+            }
+            _ => {
+                crate::video::clear_resume(cfg, &r.plan);
+                continue;
+            }
+        };
+        tracing::info!(job_id = %job.id, attempt = r.attempts + 1, "youtube report: resuming after a restart");
+        r.attempts += 1;
+        crate::video::save_resume(cfg, &r);
+        let surface = crate::surface::chat_surface(
+            &st.cfg,
+            Some(BearerVerified::checked()),
+            &r.channel,
+            None,
+        );
+        spawn_job(
+            st.clone(),
+            job,
+            r.plan.clone(),
+            r.message.clone(),
+            String::new(),
+            JobDest {
+                turn_meta: None,
+                session: r.session.clone(),
+                user_item: r.user_item.clone(),
+                channel: r.channel.clone(),
+                surface,
+                origin: None,
+            },
+        );
+    }
+}
+
 /// A finished job on the owner's devices (`/v1/notify`), keyed to its timeline item so it is
 /// one notification with secretary-server's timeline ingester.
 fn notify_job(
@@ -2125,7 +2258,24 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     let reply = st.planner.generate_skill_reply(&t, "Google Drive spreadsheet update through Cursor", &result, "Answer in 1-3 short sentences. Say updated only if the result contains \"Verification: PASS\"; otherwise say it was not confirmed.").await.map_err(|e| e.to_string())?;
                     Ok((reply, result))
                 }
-                crate::video::ACTION => crate::video::run(&st, &plan, &job.id).await,
+                "computer_task" => {
+                    run_computer_task(plan["task"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&message)).await
+                }
+                crate::video::ACTION => {
+                    let cfg = &st.cfg.video;
+                    crate::video::save_resume(cfg, &crate::video::Resume {
+                        job_id: job.id.clone(),
+                        plan: plan.clone(),
+                        message: message.clone(),
+                        session: session.clone(),
+                        channel: channel.clone(),
+                        user_item: user_item.clone(),
+                        attempts: 1,
+                    });
+                    let out = crate::video::run(&st, &plan, &job.id).await;
+                    crate::video::clear_resume(cfg, &plan);
+                    out
+                }
                 "oracle_monitor_task" => Ok(("Oracle SSH monitoring is disabled on nezopt. Oracle peer1 runs Poko only, not Lucina.".into(), String::new())),
                 "generate_image" => Err("image generation (ComfyUI) is not available on the Rust Lucina yet".into()),
                 "graph_task" => Err("graph_task needs rclone and the Drive cache, which the Rust Lucina does not have".into()),
@@ -2581,14 +2731,21 @@ async fn tools_turn(
     let fallback = || {
         format!("{persona}: I misread that turn and could not recover it. Please send the message once more.")
     };
-    let delegation = match (&st.delegator, &secrets) {
-        (Some(d), None) => delegation_settings(d, &message, mcp).await,
+    // Her own computer ("explore Outlook in your sandbox"): before every other route, like the JSON turn.
+    let computer = if secrets.is_none() {
+        lucina_intent::computer_route::plan(&message)
+    } else {
+        None
+    };
+    let delegation = match (&st.delegator, &secrets, &computer) {
+        (Some(d), None, None) => delegation_settings(d, &message, mcp).await,
         _ => None,
     };
     // Calendar questions ("cosa ho domani?", "dove si tiene la Hack Night?") are answered from
     // the calendar like on the JSON planner, never by the model from memory or notes.
     let calendar = if secrets.is_none()
         && delegation.is_none()
+        && computer.is_none()
         && settled.is_none()
         && st.cfg.calendar_enabled
     {
@@ -2598,6 +2755,24 @@ async fn tools_turn(
     };
     let finish = if let Some(f) = secrets {
         f
+    } else if let Some(plan) = computer {
+        // No job queue in tools mode: her ack, then the result, in one reply.
+        if mcp {
+            Finish::refusal(&persona, "computer_task")
+        } else {
+            let ack = plan["ack"].as_str().unwrap_or("").trim().to_owned();
+            let task = plan["task"].as_str().unwrap_or(&message).to_owned();
+            let (text, result) = match run_computer_task(&task).await {
+                Ok(ok) => ok,
+                Err(e) => (e, "[computer failed]".into()),
+            };
+            let text = if ack.is_empty() {
+                text
+            } else {
+                format!("{ack}\n\n{text}")
+            };
+            Finish::reply(text, "computer").with(result, Some(Meta::kind("computer")))
+        }
     } else if let Some(f) = delegation {
         f
     } else if let Some(o) = calendar {
@@ -2606,7 +2781,10 @@ async fn tools_turn(
         let reply = st.planner.generate_skill_reply(&t, "pending action", &result, "Tell the owner what happened in one or two sentences, in the language of the message.").await.unwrap_or_else(|_| fallback());
         effects_to_finish(&ctx.effects(), reply)
     } else {
-        let extra = format!("{SECRETARY_EXTRA_SYSTEM} {voice_system} {pending_note}");
+        let extra = format!(
+            "{SECRETARY_EXTRA_SYSTEM} {voice_system} {pending_note} {}",
+            crate::capabilities::SUBLOOP_SCOPE_RULE
+        );
         let system = st.planner.prompts.agent_system(
             PLATFORM_LABEL,
             &message,
@@ -2647,7 +2825,10 @@ async fn tools_turn(
                     .planner
                     .generate_reply(
                         &t,
-                        &format!("{SECRETARY_EXTRA_SYSTEM} {voice_system}"),
+                        &format!(
+                            "{SECRETARY_EXTRA_SYSTEM} {voice_system} {}",
+                            crate::capabilities::SUBLOOP_SCOPE_RULE
+                        ),
                         "",
                         "reply",
                     )
@@ -2725,6 +2906,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_page_read_runs_read_only_on_her_computer() {
+        let p = web_crawl_as_computer_task(
+            &json!({"action": "web_crawl_task", "url": "https://example.com", "query": "the page title"}),
+            "Read https://example.com and tell me the page title.",
+        );
+        assert_eq!(p["action"], "computer_task");
+        let task = p["task"].as_str().unwrap();
+        assert!(task.starts_with(
+            "Open https://example.com in a new tab and read it. Goal: the page title."
+        ));
+        assert!(task.contains("Read only"));
+        assert_eq!(
+            p["ack"],
+            "Ok, I'm opening it in my computer's browser and will report back."
+        );
+        let p = web_crawl_as_computer_task(
+            &json!({"action": "web_crawl_task", "url": "", "ack": "Cerco subito."}),
+            "Search online: when does daylight saving time start in Denmark in 2027?",
+        );
+        assert!(p["task"].as_str().unwrap().starts_with(
+            "Search the web for this in a new tab (Google): Search online: when does daylight saving time start in Denmark in 2027?"
+        ));
+        assert_eq!(p["ack"], "Cerco subito.");
+    }
+
+    #[tokio::test]
+    async fn a_failed_plan_is_said_in_the_turn_language() {
+        let it = crate::planner::TURN_LANG
+            .scope(
+                lucina_intent::lang::language_line(lucina_intent::lang::Lang::It),
+                async { crate::planner::plan_failed_text() },
+            )
+            .await;
+        assert!(it.starts_with("Scusa"), "{it}");
+        assert!(crate::planner::plan_failed_text().starts_with("Sorry"));
+    }
+
+    #[test]
     fn plugin_turns_are_private_and_get_their_page_button() {
         let f = effects_to_finish(
             &[
@@ -2739,7 +2958,10 @@ mod tests {
         assert_eq!(f.action, PRIVATE_ACTION);
         assert_eq!(f.routes[0]["label"], "Open Pixiv");
         assert_eq!(f.routes[0]["payload"]["path"], "/pixiv");
-        assert_eq!(gallery_action("/instagram", 2, "en")["label"], "Open Instagram");
+        assert_eq!(
+            gallery_action("/instagram", 2, "en")["label"],
+            "Open Instagram"
+        );
         // an ordinary reply is not private
         assert_eq!(effects_to_finish(&[], "ok".into()).action, "reply");
     }

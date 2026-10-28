@@ -15,6 +15,7 @@ path = "src/bin/lagent.rs"
 
 [dependencies]
 lucina-agents = { path = "../lucina-agents" }
+lucina-approvals = { path = "../lucina-approvals" }
 async-trait = { workspace = true }
 axum = "0.8"
 chrono = { workspace = true }
@@ -36,4 +37,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
+lucina-approvals = { path = "../lucina-approvals", features = ["testing"] }
 tempfile = "3"

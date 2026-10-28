@@ -176,6 +176,24 @@ agentd sends `POST /v1/notify` with category `agent` and `data: {kind, agentId |
 actions?}` (phase 3), plus `scheduleId` and `parentAgentId` when they apply (phase 6). Route `/agents/<agentId>`. The apps' notification actions (Allow/Deny) call
 `POST /v1/agents/{id}/permissions/{requestId}` or `POST /v1/agents/permissions/{id}`.
 
+### Permissions in the owner approvals (phase 8)
+
+When a permission request becomes pending (an agent's or an external one), agentd's approvals bridge files it as an
+owner approval (`POST /v1/approvals`, action `agent.permission`, `payloadHash` = sha256 of the canonical JSON
+`{agentId|null, requestId, kind, name, input}`) with the same service token as `/v1/notify`. The phone, the web pop-up
+and Secretary Code then show the usual Yes/No prompt, with Face ID or the PIN for sensitive ones (external requests,
+tool input that mentions sudo, root or secrets). `PermissionView.approvalId` (absent until filed) is that approval's id,
+also in the stream's `permission` events; the web links it to `/approvals/<approvalId>`. The bridge long-polls the
+approval; an approved or denied one is answered through the normal gate as `device:<decidedBy>`, only after its grant is
+verified (pinned key, `payloadHash`, `action`, single use). Nothing else can answer through it: MCP callers still
+cannot. A permission answered elsewhere (web `/agents`, `lagent permit`, the apps' actions) or expired makes the bridge
+call `POST /v1/approvals/{id}/withdraw`: the approval becomes `expired` (no new status value), leaves every pending list,
+and deciding it afterwards gives 410 `approval_expired`. Only the requester that filed it can withdraw (anyone else gets
+404), and doing it twice is fine. The bridge is off (logged once) when the URL, token or key is missing. It reads `LUCINA_AGENTD_NOTIFY_URL` and
+`LUCINA_AGENTD_NOTIFY_TOKEN` (the same service token as the pushes), `LUCINA_AGENTD_APPROVAL_PUBKEY_FILE` (default
+`~/.config/lucina-rs/approval-grant.pub`), `LUCINA_AGENTD_APPROVAL_USED_FILE` (single-use ids, default
+`~/.local/state/lucina-agentd/approvals-used.jsonl`) and `LUCINA_AGENTD_APPROVALS=off`.
+
 ## MCP tools (phase 9)
 
 The tools are thin wrappers over these routes, with the caller's `mcp:<tokenId>` origin:

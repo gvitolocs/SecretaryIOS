@@ -41,6 +41,7 @@ struct St {
     poll_cap: Duration,
     create_status: AtomicU16,
     waits: AtomicUsize,
+    withdrawn: Mutex<Vec<String>>,
 }
 
 /// How to build a grant (defaults: a correct one).
@@ -54,6 +55,10 @@ pub struct GrantSpec {
     pub exp_in: i64,
     /// Sign with a different key.
     pub wrong_key: bool,
+    /// The grant's `decidedBy` (default `dev_main`, a device id).
+    pub decided_by: Option<String>,
+    /// The grant's `requester.kind` (default: the one the request was made with).
+    pub requester_kind: Option<String>,
 }
 
 impl Default for GrantSpec {
@@ -65,6 +70,8 @@ impl Default for GrantSpec {
             biometric: true,
             exp_in: 120,
             wrong_key: false,
+            decided_by: None,
+            requester_kind: None,
         }
     }
 }
@@ -186,6 +193,31 @@ async fn wait(
     }
 }
 
+async fn withdraw(
+    State(st): State<Arc<St>>,
+    h: HeaderMap,
+    AxPath(id): AxPath<String>,
+) -> (StatusCode, Json<Value>) {
+    if !authed(&h) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        );
+    }
+    let mut items = st.items.lock().unwrap();
+    let Some(it) = items.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "approval_not_found"})),
+        );
+    };
+    st.withdrawn.lock().unwrap().push(id.clone());
+    if it.status == "pending" {
+        it.status = "expired";
+    }
+    (StatusCode::OK, Json(json!({"id": id, "status": it.status})))
+}
+
 async fn public_key(State(st): State<Arc<St>>) -> Json<Value> {
     Json(json!({"alg": "ed25519", "publicKey": st.public_b64, "keyId": "0123abcd"}))
 }
@@ -211,11 +243,13 @@ impl Mock {
             poll_cap,
             create_status: AtomicU16::new(0),
             waits: AtomicUsize::new(0),
+            withdrawn: Mutex::new(Vec::new()),
         });
         let app = Router::new()
             .route("/v1/approvals", post(create))
             .route("/v1/approvals/public-key", get(public_key))
             .route("/v1/approvals/{id}/wait", get(wait))
+            .route("/v1/approvals/{id}/withdraw", post(withdraw))
             .with_state(st.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -228,6 +262,21 @@ impl Mock {
     /// Make `POST /v1/approvals` answer this status (0: back to normal).
     pub fn fail_create_with(&self, status: u16) {
         self.st.create_status.store(status, Ordering::SeqCst);
+    }
+
+    /// Ids that were withdrawn, one entry per call (a second call adds a second entry).
+    pub fn withdrawn(&self) -> Vec<String> {
+        self.st.withdrawn.lock().unwrap().clone()
+    }
+
+    /// The status the server holds for `id` (`pending`, `approved`, `denied`, `expired`).
+    pub fn status_of(&self, id: &str) -> String {
+        let items = self.st.items.lock().unwrap();
+        items
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.status.to_owned())
+            .unwrap_or_default()
     }
 
     /// How many wait polls the server got.
@@ -301,10 +350,13 @@ impl Mock {
             "v": 1,
             "id": spec.id.clone().unwrap_or_else(|| it.id.clone()),
             "action": spec.action.clone().unwrap_or_else(|| it.body["action"].as_str().unwrap_or("").to_owned()),
-            "requester": {"kind": it.body["requester"]["kind"], "name": it.body["requester"]["name"]},
+            "requester": {
+                "kind": spec.requester_kind.clone().map(Value::from).unwrap_or_else(|| it.body["requester"]["kind"].clone()),
+                "name": it.body["requester"]["name"],
+            },
             "payloadHash": spec.payload_hash.clone().unwrap_or_else(|| it.body["payloadHash"].as_str().unwrap_or("").to_owned()),
             "decision": "approved",
-            "decidedBy": "dev_main",
+            "decidedBy": spec.decided_by.clone().unwrap_or_else(|| "dev_main".to_owned()),
             "biometric": spec.biometric,
             "iat": now,
             "exp": now + spec.exp_in,

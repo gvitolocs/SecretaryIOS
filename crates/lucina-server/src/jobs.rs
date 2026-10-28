@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-pub const ASYNC_ACTIONS: [&str; 7] = [
+pub const ASYNC_ACTIONS: [&str; 8] = [
+    "computer_task",
     "cursor_task",
     "oracle_monitor_task",
     "spreadsheet_update_task",
@@ -35,6 +36,7 @@ pub fn label(action: &str) -> &'static str {
         "graph_task" => "graph task",
         "generate_image" => "image generation",
         "social_post_task" => "social post",
+        "computer_task" => "computer task",
         crate::video::ACTION => "video report",
         _ => "Hermes action",
     }
@@ -127,6 +129,9 @@ pub fn blocker(plan: &Value, dsh: &DshConfig) -> Option<String> {
             dsh.skill_name(),
             dsh.host_phrase()
         )),
+        "computer_task" if !lucina_computer_use::shared_client().ready() => {
+            Some("My own computer is switched off on this runtime.".into())
+        }
         "generate_image" => Some(
             "ComfyUI is not configured or running, so I cannot generate the image right now."
                 .into(),

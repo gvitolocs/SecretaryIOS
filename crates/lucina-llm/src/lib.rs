@@ -203,6 +203,23 @@ pub fn recover_text_tool_calls(msg: &mut Message) {
     msg.tool_calls = Some(calls);
 }
 
+/// Raw tool-call markup in a reply text: DeepSeek DSML (`<｜｜DSML｜｜ calls>`),
+/// its special tokens (`<｜tool▁calls▁begin｜>`), `<tool_call>` / `<function_calls>`
+/// blocks. Such text is never an answer for the owner (seen live 2026-10-25 in
+/// a drive loop): re-ask, or fail honestly.
+pub fn has_tool_markup(text: &str) -> bool {
+    const MARKS: &[&str] = &[
+        "DSML",
+        "<\u{ff5c}tool",
+        "<tool_call",
+        "</tool_call",
+        "<function_calls",
+        "<invoke name=\"",
+        "<|tool_call",
+    ];
+    MARKS.iter().any(|m| text.contains(m))
+}
+
 fn parse_dsml_calls(text: &str) -> Vec<ToolCall> {
     const INVOKE: &str = "invoke name=\"";
     const PARAM: &str = "parameter name=\"";
@@ -940,5 +957,14 @@ mod dsml_tests {
         recover_text_tool_calls(&mut m);
         assert!(m.tool_calls.is_none());
         assert_eq!(m.content.as_deref(), Some("Ho trovato la cartella Lucina."));
+    }
+    #[test]
+    fn tool_markup_is_detected() {
+        assert!(has_tool_markup("<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} calls>\n<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} invoke name=\"drive\">"));
+        assert!(has_tool_markup("<\u{ff5c}tool\u{2581}calls\u{2581}begin\u{ff5c}>"));
+        assert!(has_tool_markup("ok <tool_call>{\"name\":\"drive\"}</tool_call>"));
+        assert!(has_tool_markup("<function_calls><invoke name=\"x\">"));
+        assert!(!has_tool_markup("Ho trovato la cartella Lucina."));
+        assert!(!has_tool_markup("I called a tool and it worked."));
     }
 }

@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use lucina_intent::calendar::{self as cal, Create};
 use lucina_intent::calendar_event as ev;
+use lucina_intent::name_match::PersonAliases;
 use lucina_intent::notes::{self as nt, NotesIntent};
 use lucina_intent::outfit::{self, LookIntent};
 use lucina_intent::tasks as tk;
@@ -627,7 +628,8 @@ pub async fn calendar_read(
         return None;
     }
     let evs = r.data["events"].as_array().cloned().unwrap_or_default();
-    let hits = ev::select(&q, &evs, now, tz);
+    let aliases = person_aliases(&q);
+    let hits = ev::select_with(&q, &evs, now, tz, &aliases);
     let first = hits.first()?;
     let sentence = ev::answer_sentence(first, now, tz, q.lang);
     let action_result = format!(
@@ -674,6 +676,30 @@ pub async fn calendar_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, t
     )
 }
 
+/// Where the owner's "X is Y" statements about names are kept: `person-aliases.json` next to
+/// the other state of this server (`LUCINA_DATA_DIR`, as in [`crate::config`]).
+fn person_aliases_path() -> PathBuf {
+    let dir = std::env::var("LUCINA_DATA_DIR").unwrap_or_else(|_| "data".into());
+    PathBuf::from(dir).join("lucina-rs").join("person-aliases.json")
+}
+
+/// The names the owner said are one person, read on every event question. When the question
+/// itself says it ("the meeting Therese è Teresa"), the pair is saved first, so a later question
+/// naming only one of them finds the event too.
+fn person_aliases(q: &ev::EventQuestion) -> PersonAliases {
+    static WRITE: Mutex<()> = Mutex::new(());
+    let path = person_aliases_path();
+    if q.kind == ev::EventKind::Named {
+        if let Some((a, b)) = lucina_intent::name_match::alias_to_remember(&q.topic) {
+            let _guard = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = PersonAliases::remember(&path, &a, &b) {
+                tracing::warn!(error = %e, "person alias not saved");
+            }
+        }
+    }
+    PersonAliases::load(&path)
+}
+
 /// The calendar's answer to a question about one event, for the planner: the matching events,
 /// or that none matches (so the model never answers it from memory or notes).
 async fn event_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, tz: Tz) -> String {
@@ -688,9 +714,10 @@ async fn event_context(s: &Secretary, prompt: &str, now: DateTime<Utc>, tz: Tz) 
         );
     }
     let evs = r.data["events"].as_array().cloned().unwrap_or_default();
-    let hits = ev::select(&q, &evs, now, tz);
+    let aliases = person_aliases(&q);
+    let hits = ev::select_with(&q, &evs, now, tz, &aliases);
     if hits.is_empty() {
-        return ev::no_match_context(&q);
+        return ev::no_match_context_in(&q, &evs, now, tz);
     }
     format!(
         "Giuseppe's calendar, events matching \"{}\" ({}): {}. Answer from this list only.",
@@ -824,9 +851,9 @@ pub const GAME_IDENTITY: &str = "This Pokémon Red run is YOU: your own playing 
 
 /// Live summary of Lucina's Pokémon Red run for the turn context ("" when the game server is off or not
 /// answering). Built from `/state` and the head of `/observe` (place, team, bag, plan, objective, notes).
-pub async fn game_context(http: &reqwest::Client) -> String {
+pub async fn game_context(http: &reqwest::Client) -> GameContext {
     let Some(base) = game_base() else {
-        return String::new();
+        return GameContext::default();
     };
     let get = |p: &str| {
         http.get(format!("{base}{p}"))
@@ -834,17 +861,29 @@ pub async fn game_context(http: &reqwest::Client) -> String {
             .send()
     };
     let Ok(r) = get("/state").await else {
-        return String::new();
+        return GameContext::default();
     };
     let Ok(state) = r.json::<Value>().await else {
-        return String::new();
+        return GameContext::default();
     };
     let running = state["running"].as_bool().unwrap_or(false);
     let obs = match get("/observe").await {
         Ok(r) => r.text().await.unwrap_or_default(),
         Err(_) => String::new(),
     };
-    game_block(&state, &obs, running)
+    GameContext {
+        block: game_block(&state, &obs, running),
+        running,
+    }
+}
+
+/// The game block for the turn, and whether the run is playing right now. `/state` has no activity
+/// timestamp, so `running` is the only liveness signal: a paused or finished run (the Hall of Fame, 2026-10-27)
+/// stays in the context as information but is not a "live game" for routing.
+#[derive(Debug, Clone, Default)]
+pub struct GameContext {
+    pub block: String,
+    pub running: bool,
 }
 
 /// The context block from `/state` and `/observe` (pure, for tests).
@@ -854,7 +893,7 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
         .next()
         .unwrap_or("")
         .chars()
-        .take(3000)
+        .take(if running { 3000 } else { 700 })
         .collect();
     let tail: Vec<&str> = obs
         .lines()
@@ -865,7 +904,7 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
         .map(|a| {
             a.iter()
                 .rev()
-                .take(6)
+                .take(if running { 6 } else { 2 })
                 .rev()
                 .filter_map(|v| v.as_str())
                 .collect()
@@ -888,9 +927,16 @@ pub fn game_block(state: &Value, obs: &str, running: bool) -> String {
         }
     }
     // The identity rule last, so a tail clip of the context keeps it, and it ranks above old chat turns.
-    s += &format!("\n{GAME_IDENTITY}\n{GAME_OVERRIDE}");
+    if running {
+        s += &format!("\n{GAME_IDENTITY}\n{GAME_OVERRIDE}");
+    } else {
+        s += &format!("\n{GAME_PAUSED_NOTE}");
+    }
     s
 }
+
+/// A paused or finished run: information only. It must not make unrelated messages game turns.
+pub const GAME_PAUSED_NOTE: &str = "This Pokémon Red run is YOU (your own playing self, the same Lucina), but it is paused: the block above is background only. Use it only when Giuseppe's message is about the game, and then answer as the player, never denying it. For every other message ignore this block and do not choose game_hint, game_start or game_pause. Only if he asks to resume or start the run choose {\"action\":\"game_start\"}; if he asks for advice on it, {\"action\":\"game_hint\",\"text\":\"<one clear instruction, in English>\",\"ack\":\"<short reply in his language>\"}. An earlier reply of yours denying that you play was wrong.";
 
 /// For MCP turns: same identity, but no game actions from there.
 pub const GAME_MCP_NOTE: &str = "This turn comes from an MCP client: game_hint, game_start and game_pause are not available here, but you are still the player and say so; answer game questions from the live state.";
@@ -1121,5 +1167,21 @@ mod game_tests {
         assert!(b.contains("LAST RESULT: No known walking route"));
         assert!(!b.contains("no text on screen"));
         assert!(game_block(&json!({"running": false}), "", false).contains("paused"));
+    }
+
+    #[test]
+    fn a_paused_run_is_information_not_a_routing_rule() {
+        let state = json!({"running": false, "actions": 17274, "events": ["a", "b", "c"]});
+        let obs = format!("MODE: Dialog\nLOCATION: CHAMPIONS_ROOM\n{}\nSCREEN TEXT:\nx", "y".repeat(2000));
+        let b = game_block(&state, &obs, false);
+        assert!(b.contains("paused"));
+        assert!(b.contains("CHAMPIONS_ROOM"));
+        assert!(!b.contains(GAME_IDENTITY), "no rule that pushes game actions");
+        assert!(!b.contains(GAME_OVERRIDE));
+        assert!(b.contains("do not choose game_hint, game_start or game_pause"));
+        assert!(b.chars().count() < 1800, "clipped: {}", b.chars().count());
+        assert!(!b.contains("Your last moves: a"), "only the last two moves");
+        let live = game_block(&json!({"running": true}), &obs, true);
+        assert!(live.contains(GAME_IDENTITY) && live.contains(GAME_OVERRIDE));
     }
 }
