@@ -38,6 +38,7 @@ const ComputerView = lazy(() => import("./views/Computer"));
 const MediaView = lazy(() => import("./views/Media"));
 const GalleryView = lazy(() => import("./views/Gallery"));
 const FilmsView = lazy(() => import("./views/Films"));
+const PixivView = lazy(() => import("./views/Pixiv"));
 const DriveView = lazy(() => import("./views/Drive"));
 const ServerHealthView = lazy(() => import("./views/ServerHealth"));
 const NotificationsView = lazy(() => import("./views/ShellSheets").then((m) => ({ default: m.NotificationsView })));
@@ -98,6 +99,7 @@ render(
       <Route path="/gallery/trash" component={() => <GalleryView trash />} />
       <Route path="/films" component={FilmsView} />
       <Route path="/films/play/:id" component={FilmsView} />
+      <Route path="/pixiv/:id?" component={PixivView} />
       <Route path="/drive/*rest" component={DriveView} />
       <Route path="/server-health" component={ServerHealthView} />
       <Route path="/notifications" component={NotificationsView} />

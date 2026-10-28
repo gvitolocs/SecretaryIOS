@@ -33,7 +33,8 @@ import { gallery } from "./dict/gallery";
 import { galleryInfo } from "./dict/galleryInfo";
 import { weight } from "./dict/weight";
 import { nclient } from "./dict/nclient";
+import { pixiv } from "./dict/pixiv";
 
-export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient };
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv };
 
 export type Dictionaries = typeof dictionaries;
