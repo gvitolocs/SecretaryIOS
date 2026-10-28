@@ -108,6 +108,8 @@ export interface GalleryQuery {
   album?: string;
   /** Only pictures with a face of this person (the people API: `people/{id}/items`, and smart search's `person=`). */
   person?: string;
+  /** Only pictures of this automatic category (`categories/{cat}/items`; set by the category page, not in the query string). */
+  category?: GalleryCategory;
   /** With `q`: rank by meaning (smart search) instead of matching words; see `listGalleryPage`. */
   smart?: boolean;
   /** Pictures that look like this one (smart search); `q` is ignored. */
@@ -147,6 +149,8 @@ export interface ItemDetails {
   item: GalleryItem;
   exif: Exif | null;
   people: PersonRef[];
+  /** The automatic category the server decided (or the owner chose); null while it has none. */
+  category?: ItemCategory | null;
 }
 
 export type BatchOp = "trash" | "restore" | "purge" | "favorite" | "unfavorite" | "album_add" | "album_remove" | "archive" | "unarchive";
@@ -340,7 +344,7 @@ export async function getDetails(id: string): Promise<ItemDetails | null> {
   const body = obj(await request<unknown>("GET", `/v1/media/items/${enc(id)}/details`));
   const item = parseItem(body.item);
   if (!item) return null;
-  return { item, exif: parseExif(body.exif), people: parsePersonRefs(body.people) };
+  return { item, exif: parseExif(body.exif), people: parsePersonRefs(body.people), category: parseItemCategory(body.category) };
 }
 
 export interface ItemEdit {
@@ -1511,4 +1515,108 @@ export async function listUnassignedFaces(opts: { cursor?: string | null; limit?
     faces.push({ id, itemId: str(r.item_id), thumbUrl: sameOriginPath(r.thumb_url) ?? faceThumbUrl(id), score: num(r.score) ?? 0 });
   }
   return { faces, nextCursor: str(body.next_cursor) };
+}
+
+// ---- categories --------------------------------------------------------------------------------------------------
+//
+// The server decides what kind of picture each photo is, once, in the background: the automatic albums of the Albums page
+// ("Things"). They are views of the Gallery, not albums: nothing is copied, they cannot be shared, and the photo stays in the
+// Gallery. The owner's correction is final: no later decision overwrites it.
+
+export type GalleryCategory = "screenshot" | "receipt" | "document" | "note" | "ticket" | "map" | "meme" | "food" | "pet" | "photo";
+
+/** Every category, in the order the apps show them. */
+export const GALLERY_CATEGORIES: readonly GalleryCategory[] = ["screenshot", "receipt", "document", "note", "ticket", "map", "meme", "food", "pet", "photo"];
+
+export const isGalleryCategory = (v: unknown): v is GalleryCategory => typeof v === "string" && (GALLERY_CATEGORIES as readonly string[]).includes(v);
+
+export type CategoryDecider = "rules" | "jev" | "owner";
+
+export interface ItemCategory {
+  category: GalleryCategory;
+  /** 0 to 1; 1 for the owner's own choice. */
+  confidence: number;
+  decidedBy: CategoryDecider;
+  /** For the owner's choice: what the server had decided before (null when it had not). */
+  autoCategory: GalleryCategory | null;
+}
+
+/** One automatic album: how many photos, and the newest one as its cover. `photo` is never listed. */
+export interface CategoryAlbum {
+  category: GalleryCategory;
+  count: number;
+  cover: GalleryItem | null;
+}
+
+export interface CategoryStatus {
+  enabled: boolean;
+  model: string | null;
+  decided: number;
+  pending: number;
+  stale: number;
+  running: boolean;
+  pausedHot: boolean;
+  pausedBusy: boolean;
+  decider: { kind: string; id: string } | null;
+  byDecider: { rules: number; jev: number; owner: number };
+}
+
+export function parseItemCategory(raw: unknown): ItemCategory | null {
+  const r = obj(raw);
+  if (!isGalleryCategory(r.category)) return null;
+  const by = r.decided_by;
+  return {
+    category: r.category,
+    confidence: Math.min(1, Math.max(0, num(r.confidence) ?? 0)),
+    decidedBy: by === "owner" || by === "jev" ? by : "rules",
+    autoCategory: isGalleryCategory(r.auto_category) ? r.auto_category : null,
+  };
+}
+
+export function parseCategoryAlbum(raw: unknown): CategoryAlbum | null {
+  const r = obj(raw);
+  const count = num(r.count);
+  if (!isGalleryCategory(r.category) || r.category === "photo" || count === null || count <= 0) return null;
+  return { category: r.category, count, cover: parseItem(r.cover) };
+}
+
+/** The automatic albums, only those with photos, in the apps' order. */
+export async function listCategories(): Promise<CategoryAlbum[]> {
+  const params = new URLSearchParams({ scope: "gallery", origin: "all", kind: "photo" });
+  const body = obj(await request<unknown>("GET", `/v1/media/categories?${params}`));
+  return (Array.isArray(body.categories) ? body.categories : []).map(parseCategoryAlbum).filter((c): c is CategoryAlbum => c !== null);
+}
+
+/** A page of one category's photos: the listing's own filters and paging, the category's route. */
+export async function listCategoryItems(category: GalleryCategory, q: GalleryQuery = {}): Promise<GalleryPage> {
+  const body = obj(await request<unknown>("GET", `/v1/media/categories/${enc(category)}/items?${galleryQueryString({ ...q, category: undefined })}`));
+  const items = (Array.isArray(body.items) ? body.items : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
+  return { items, nextCursor: str(body.next_cursor) };
+}
+
+/**
+ * The owner's word on what a photo is ("Not a receipt", "Move to Documents"); `null` takes it back and the server decides
+ * again. Answers the category now in force (null while the server has none).
+ */
+export async function setItemCategory(id: string, category: GalleryCategory | null): Promise<ItemCategory | null> {
+  const body = obj(await request<unknown>("PUT", `/v1/media/items/${enc(id)}/category`, { body: { category } }));
+  return parseItemCategory(body.category);
+}
+
+export async function getCategoryStatus(): Promise<CategoryStatus> {
+  const r = obj(await request<unknown>("GET", "/v1/media/categories/status"));
+  const decider = obj(r.decider);
+  const by = obj(r.by_decider);
+  return {
+    enabled: r.enabled === true,
+    model: str(r.model),
+    decided: num(r.decided) ?? 0,
+    pending: num(r.pending) ?? 0,
+    stale: num(r.stale) ?? 0,
+    running: r.running === true,
+    pausedHot: r.paused_hot === true,
+    pausedBusy: r.paused_busy === true,
+    decider: str(decider.kind) ? { kind: str(decider.kind)!, id: str(decider.id) ?? "" } : null,
+    byDecider: { rules: num(by.rules) ?? 0, jev: num(by.jev) ?? 0, owner: num(by.owner) ?? 0 },
+  };
 }

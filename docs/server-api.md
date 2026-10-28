@@ -191,6 +191,23 @@ Logs out: deletes the session and clears the cookie
 `X-Secretary-CSRF: 1` (else `403 csrf`). `200`
 `{"authenticated": false, "deviceId": null, "deviceName": null}`.
 
+### `GET|HEAD /v1/auth/owner` (forward_auth for the owner-only plugins)
+
+The target of p1 Caddy's `forward_auth` for `/v1/instagram`, `/v1/pixiv` and
+`/v1/nclient`. It answers with no body:
+
+| Status | When |
+|---|---|
+| `204` | A device session: Bearer `sec_…` token or the `sec_session` cookie. |
+| `401 unauthorized` | No or bad credentials, or a revoked device. |
+| `403 owner_only` | Lucina's service token (`svc_…`). She reaches the plugin services on loopback with their own gateway secret. |
+| `429 rate_limited` | More than `SECRETARY_OWNER_AUTH_PER_MINUTE` (default 600) checks a minute from one device. |
+
+It has its own per-device bucket, so one plugin call (Caddy asks once per API
+call, never for signed `/s/*` media) does not use up the 60 requests a minute
+the app's own routes share. No CSRF check here: Caddy turns the subrequest into
+a GET and gates the real method (`X-Secretary-CSRF: 1` for cookie writes).
+
 ## Health
 
 ### `GET /v1/health` (no auth)
@@ -1281,9 +1298,10 @@ Notification:
   "data": {}, "read": false, "readAt": null }
 ```
 
-`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
+`category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`, `agent`,
 `shopping`, `presence`, `system`, `approval` (always on: no switch, no per-device mute, and quiet
-hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clients title it by category.
+hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clients title it by category
+(`agent`: by `data.reason`, `finished`, `permission` or `error`).
 `route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
 
 | Route | |
@@ -1304,7 +1322,7 @@ Settings:
 
 ```json
 { "categories": {"lucina_message": true, "reminder": true, "calendar": true, "device_confirm": true,
-                 "shopping": true, "presence": false, "system": false},
+                 "agent": true, "shopping": true, "presence": false, "system": false},
   "quietHours": {"enabled": false, "start": "22:30", "end": "07:30"},
   "timeZone": "Europe/Rome", "dndUntil": null, "calendarLeadMinutes": 10,
   "remindersBypassQuiet": true, "digest": true, "previews": true, "language": "en",
@@ -2193,7 +2211,8 @@ requester (Lucina's secrets guard and root commands, the Infisical broker, agent
 Code: `crates/secretary-server/src/approvals.rs`. Pending requests live in memory (a restart drops
 them); settings and keys are JSON files (0600) in the data dir; every event is appended to
 `approvals-audit.jsonl` (`created`, `notified` main/escalated, `decided` with device and biometric
-yes/no, `expired`, `waited` when a grant is handed out). Names and ids only, no secret values.
+yes/no and `verifiedBy`, `expired`, `waited` when a grant is handed out, `key_registered`, `key_refused`,
+`pin_set`, `pin_removed`, `pin_wrong`, `pin_locked`). Names and ids only, no secret values.
 
 **Requester** routes take the service token (`svc_…`) or a device Bearer/cookie. A device that asks
 always shows as `kind: device` with its own name. Creation is limited to 20 per requester per minute (429).
@@ -2212,7 +2231,9 @@ always shows as `kind: device` with its own name. Creation is limited to 20 per 
 made on first start, a different key and context than the "Add secret" grants) is over the ASCII bytes
 `"secretary-approval-v1." + b64url(payload_json)`. Payload:
 `{v: 1, id, action, requester: {kind, name}, payloadHash, decision: "approved", decidedBy: <device id>,
-biometric, iat, exp: iat + 120}`. A verifier checks the signature with the pinned public key, `exp`,
+biometric, verifiedBy?, iat, exp: iat + 120}`. `biometric: true` means "the owner verified on the device",
+by `verifiedBy: "device_key"` (the Face ID key) or `"pin"` (the app PIN); both are absent/false for an
+approval that needed no verification. A verifier checks the signature with the pinned public key, `exp`,
 `action`, that `payloadHash` is the hash of what it is about to do, and single use (it remembers ids
 until `exp`).
 
@@ -2221,13 +2242,28 @@ gets 403 `service_cannot_decide` on all of them.
 
 | Route | |
 |---|---|
-| `GET /v1/approvals?status=pending\|all` | `{approvals: […]}`, newest first. `pending`: what this device may decide now (not its own requests; inside the first 30 s only the main device sees it). Item: `{id, status, requester, action, summary, details, risk, sensitive, payloadHash, createdAt, expiresAt, escalated, youAreMain, decidedAt?, decidedBy?, decidedById?, biometric?}`. |
+| `GET /v1/approvals?status=pending\|all` | `{approvals: […]}`, newest first. `pending`: what this device may decide now (not its own requests; inside the first 30 s only the main device sees it). Item: `{id, status, requester, action, summary, details, risk, sensitive, payloadHash, createdAt, expiresAt, escalated, youAreMain, decidedAt?, decidedBy?, decidedById?, biometric?, verifiedBy?}`. |
 | `GET /v1/approvals/{id}` | One item, also decided or expired (kept for an hour), for a deep link that says "already answered". |
-| `POST /v1/approvals/{id}/decide` | `{decision: approve\|deny, payloadHash, proof?: {keyId, signature}}` → `{status: approved\|denied}`. |
-| `GET /v1/approvals/settings` | `{mainDeviceId, escalateAfterSecs: 30, devices: [{id, name, isMain, hasBiometricKey, lastSeen?}], thisDeviceId}`. |
+| `POST /v1/approvals/{id}/decide` | `{decision: approve\|deny, payloadHash, proof?: {keyId, signature}, pin?: "123456"}` → `{status: approved\|denied}`. A sensitive approve needs `proof` or `pin`. |
+| `GET /v1/approvals/settings` | `{mainDeviceId, escalateAfterSecs: 30, devices: [{id, name, isMain, hasBiometricKey, lastSeen?}], thisDeviceId, hasPin}`. |
 | `PUT /v1/approvals/settings` | `{mainDeviceId: "<id>" \| null}` (the field is required; 404 `device_not_found`). Answers like `GET`. |
-| `POST /v1/approvals/keys` | `{publicKey: <base64 X9.63 uncompressed P-256>, label?, password: <owner password>}` → `{keyId}`. Replaces this device's key. A wrong password is 403 `invalid_credentials`. |
+| `POST /v1/approvals/keys` | `{publicKey: <base64 X9.63 uncompressed P-256>, label?, proof: {signature}}` → `{keyId}`. No password (a `password` field is ignored). Replaces this device's key. Missing or bad proof: 400 `proof_invalid`. |
 | `DELETE /v1/approvals/keys` | `{removed}`. |
+| `PUT /v1/approvals/pin` | `{pin: "123456", currentPin?, proof?: {signature}}` → `{hasPin: true}`. `pin` is exactly 6 ASCII digits (400 `bad_request`). When a PIN already exists, `currentPin` or a `proof` is required (403 `pin_auth_required`). |
+| `DELETE /v1/approvals/pin` | Optional body `{currentPin?, proof?}` (same rule) → `{hasPin: false}`. Without a PIN it is a no-op that answers the same. |
+
+**Key registration.** The device authorizes itself with its token; `proof.signature` is a base64 DER
+ECDSA P-256/SHA-256 signature made by the new key over the ASCII bytes
+`"secretary-approval-key-v1\n{thisDeviceId}\n{publicKey}"`, where `publicKey` is the exact string sent
+(on iOS, making it needs Face ID or the passcode). On success the audit logs `key_registered` and every
+device gets an `approval`-category notice (title "Approvals", no `approvalId`, so no Approve action):
+"Approvals set up on <device name>".
+
+**App PIN** (optional, the fallback when Face ID is not available). Stored only as an Argon2id hash in
+`approval-pin.json` (0600), with the wrong-attempt count and the lock time. Changing or removing an
+existing PIN takes the current PIN, or `proof.signature` over `"secretary-approval-pin-v1\n{thisDeviceId}"`
+from this device's registered key. Every change notifies all devices: "Approval PIN changed on <device name>".
+A wrong `currentPin` counts like a wrong PIN when deciding.
 
 `proof.signature` is a base64 DER ECDSA P-256/SHA-256 signature over the ASCII bytes
 `"secretary-approval-v1\n{id}\n{payloadHash}\n{decision}"`, made with the key registered to the
@@ -2235,10 +2271,21 @@ deciding device (a Secure Enclave key usable after Face ID). Approving a sensiti
 valid proof gives 403 `biometric_required`; denying never needs one. The web has no such key, so it can
 approve only requests that are not sensitive.
 
+A sensitive approve may carry `pin` instead of `proof`; a valid `proof` is used first (and then the PIN
+is not checked). The PIN is checked after every other check below, so it never helps with
+`self_approval`, `not_main_device`, `payload_mismatch`, `approval_decided` or `approval_expired`. A wrong
+PIN is 403 `pin_wrong` with the count next to `code` and `message`:
+`{"error": {"code": "pin_wrong", "message": "the PIN is wrong", "attemptsLeft": 4}}`. The fifth wrong
+PIN in a row locks it for 15 minutes: that answer and every PIN attempt until then is 429 `pin_locked`
+with `Retry-After` (seconds; the device-key proof still works). A correct PIN resets the count; the
+count and the lock survive a restart. A `pin` that is not 6 digits is 400 `bad_request` and costs no
+attempt. With no PIN set, a `pin` gives 403 `biometric_required`. A `pin` on a request that is not
+sensitive is ignored.
+
 Decide errors: 404 `approval_not_found`; 409 `approval_decided`; 410 `approval_expired`; 403
 `self_approval` (the approver is the requester device); 403 `not_main_device` (first 30 s, a main
 device is set and this is not it); 409 `payload_mismatch` (`payloadHash` differs from the request's);
-403 `biometric_required`; 403 `csrf` (cookie without the header).
+403 `biometric_required`; 403 `pin_wrong`; 429 `pin_locked`; 403 `csrf` (cookie without the header).
 
 **Delivery.** On create the server publishes a notification of category `approval` to the main
 device's subscriptions, and to every other device after 30 s if the request is still pending (at once
@@ -2289,7 +2336,9 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 400 | `due_in_past`, `unparseable_reminder`, `invalid_status` | Lucina | See the routes above. |
 | 401 | `unauthorized` | server | No/invalid/revoked device token or session. |
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
-| 403 | `self_approval`, `not_main_device`, `biometric_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 400 | `proof_invalid` | server | Approvals: key registration without a valid proof of possession. |
+| 403 | `self_approval`, `not_main_device`, `biometric_required`, `pin_wrong` (+ `attemptsLeft`), `pin_auth_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 429 | `pin_locked` | server | Approvals: 5 wrong PINs in a row; `Retry-After` is the seconds left of 15 min. |
 | 404 | `approval_not_found` | server | No such approval request (or not yours to wait on). |
 | 409 | `approval_decided`, `payload_mismatch` | server | Approvals. |
 | 410 | `approval_expired` | server | Deciding an approval request that ran out. |

@@ -14,7 +14,6 @@ import {
   formatDistance,
   formatMinutes,
   googleDirectionsUrl,
-  googleSearchUrl,
   hasPoint,
   placeFromQuery,
   placeTimeLabel,
@@ -208,22 +207,11 @@ export default function PlaceMapView() {
                 </ol>
               </Show>
             </Show>
-            <Show
-              when={point()}
-              fallback={
-                <Show when={notFound()}>
-                  <p>
-                    <a href={googleSearchUrl(p().address || p().title)} target="_blank" rel="noopener">
-                      {t("maps.searchInMaps")}
-                    </a>
-                  </p>
-                </Show>
-              }
-            >
+            <Show when={point()}>
               {(at) => (
                 <div class="place-directions">
                   <button type="button" aria-expanded={menu() ? "true" : "false"} aria-haspopup="menu" onClick={() => setMenu((v) => !v)}>
-                    {t("maps.directions")}
+                    {t("maps.openElsewhere")}
                   </button>
                   <Show when={menu()}>
                     <div class="place-directions-menu" role="menu">

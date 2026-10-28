@@ -17,6 +17,9 @@ pub enum Category {
     Calendar,
     /// A device command waits for the owner's tap.
     DeviceConfirm,
+    /// A coding agent finished, needs permission, or something asks the owner's OK
+    /// (lucina-agentd; pushed only while no app is in front).
+    Agent,
     /// A shopping list changed, by someone or something other than the owner.
     Shopping,
     /// Lucina went offline or came back (off by default).
@@ -29,11 +32,12 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 8] = [
+    pub const ALL: [Category; 9] = [
         Category::LucinaMessage,
         Category::Reminder,
         Category::Calendar,
         Category::DeviceConfirm,
+        Category::Agent,
         Category::Shopping,
         Category::Presence,
         Category::System,
@@ -46,6 +50,7 @@ impl Category {
             Category::Reminder => "reminder",
             Category::Calendar => "calendar",
             Category::DeviceConfirm => "device_confirm",
+            Category::Agent => "agent",
             Category::Shopping => "shopping",
             Category::Presence => "presence",
             Category::System => "system",
@@ -80,7 +85,7 @@ impl Category {
     pub fn urgent(self) -> bool {
         matches!(
             self,
-            Category::Reminder | Category::Calendar | Category::DeviceConfirm | Category::Approval
+            Category::Reminder | Category::Calendar | Category::DeviceConfirm | Category::Agent | Category::Approval
         )
     }
 

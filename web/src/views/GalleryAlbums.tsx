@@ -1,8 +1,9 @@
 import { A, useNavigate } from "@solidjs/router";
 import { createMemo, createResource, createSignal, For, Show } from "solid-js";
-import { listAlbumCards } from "../api/gallery";
+import { getCategoryStatus, listAlbumCards } from "../api/gallery";
 import { NewAlbumDialog } from "../components/gallery/albums/AlbumDialogs";
 import { AlbumTile } from "../components/gallery/albums/AlbumTile";
+import { ThingsSection } from "../components/gallery/categories/ThingsSection";
 import { BackIcon, PlusIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { albumPath, sectionAlbums } from "../lib/galleryAlbums";
@@ -18,8 +19,14 @@ export default function GalleryAlbumsView() {
   const [albums, { refetch }] = createResource(listAlbumCards);
   const [jxl] = createResource(supportsJxl);
   const [creating, setCreating] = createSignal(false);
+  // Things replaces the built-in Screenshots album once the server has decided categories; any failure keeps the old album.
+  const [things] = createResource(() =>
+    getCategoryStatus()
+      .then((s) => s.enabled && s.decided > 0)
+      .catch(() => false),
+  );
   // Reading a failed resource throws: the list is empty then, and the error shows below.
-  const sections = createMemo(() => sectionAlbums(albums.error ? [] : (albums() ?? [])));
+  const sections = createMemo(() => sectionAlbums(albums.error ? [] : (albums() ?? []), { things: things() === true }));
 
   return (
     <div class="al-page">
@@ -57,6 +64,7 @@ export default function GalleryAlbumsView() {
             </ul>
           </Show>
         </Show>
+        <ThingsSection />
       </Show>
 
       <Show when={creating()}>

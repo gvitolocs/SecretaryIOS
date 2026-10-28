@@ -16,6 +16,7 @@ import { chipLabel, personPath } from "../../lib/galleryPeople";
 import { placeRoute } from "../../lib/mapKit";
 import { LucinaMap } from "../LucinaMap";
 import { CopyInfo } from "./compare/CopyInfo";
+import { CategoryValue } from "./categories/CategoryValue";
 import "../../styles/gallery-viewer.css";
 import "../../styles/lucinaMap.css";
 
@@ -309,6 +310,13 @@ export function PhotoInfo(props: PhotoInfoProps) {
               </ul>
             </Show>
           </Row>
+          <Show when={loaded()?.category}>
+            {(category) => (
+              <Row label={t("galleryCategories.infoLabel")}>
+                <CategoryValue itemId={item().id} category={category()} />
+              </Row>
+            )}
+          </Show>
           <Show when={people().length}>
             <Row label={t("galleryInfo.people")}>
               <ul class="gv-chips">

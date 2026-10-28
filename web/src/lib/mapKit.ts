@@ -236,6 +236,11 @@ export function placeFromMapsLink(raw: string): Omit<PlaceInfo, "kind"> | null {
   return null;
 }
 
+/** In-app navigation to a place: the place screen with `navigate=1` (never another maps app). */
+export function navigateRoute(p: Omit<PlaceInfo, "kind"> & { kind?: PlaceInfo["kind"] }): string {
+  return placeRoute(p).replace("/map/place?", "/map/place?navigate=1&");
+}
+
 /** In-app path of the place screen for a place. */
 export function placeRoute(p: Omit<PlaceInfo, "kind"> & { kind?: PlaceInfo["kind"] }): string {
   const q = new URLSearchParams();

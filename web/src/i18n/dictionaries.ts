@@ -41,12 +41,13 @@ import { galleryLive } from "./dict/galleryLive";
 import { gallerySmart } from "./dict/gallerySmart";
 import { galleryPeople } from "./dict/galleryPeople";
 import { galleryDedup } from "./dict/galleryDedup";
+import { galleryCategories } from "./dict/galleryCategories";
 import { weight } from "./dict/weight";
 import { nclient } from "./dict/nclient";
 import { pixiv } from "./dict/pixiv";
 import { instagram } from "./dict/instagram";
 import { agents } from "./dict/agents";
 
-export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup };
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup, galleryCategories };
 
 export type Dictionaries = typeof dictionaries;

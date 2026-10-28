@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 /// - `computer`: drive Lucina's own sandboxed computers (her Linux desktop and
 ///   Android sandbox): tasks, commands, clicks, screenshots. Owner tokens only:
 ///   it is granted on the consent page or with `add-scope`, never implied.
+/// - `agents`: Lucina Agents, the owner's coding agents on nezopt (`crate::agents`):
+///   run, steer, read logs and diffs, stop and archive. Separate from `write`
+///   and never implied: not in an OAuth grant unless the client asks for it and
+///   the owner ticks it, and off by default on the consent page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
@@ -22,10 +26,11 @@ pub enum Scope {
     Chat,
     Write,
     Computer,
+    Agents,
 }
 
 impl Scope {
-    pub const ALL: [Scope; 4] = [Scope::Read, Scope::Chat, Scope::Write, Scope::Computer];
+    pub const ALL: [Scope; 5] = [Scope::Read, Scope::Chat, Scope::Write, Scope::Computer, Scope::Agents];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -33,6 +38,7 @@ impl Scope {
             Scope::Chat => "chat",
             Scope::Write => "write",
             Scope::Computer => "computer",
+            Scope::Agents => "agents",
         }
     }
 
@@ -42,8 +48,14 @@ impl Scope {
             "chat" => Some(Scope::Chat),
             "write" => Some(Scope::Write),
             "computer" => Some(Scope::Computer),
+            "agents" => Some(Scope::Agents),
             _ => None,
         }
+    }
+
+    /// Granted only when asked for by name (OAuth `scope`, `--scopes`, `add-scope`).
+    pub fn explicit_only(self) -> bool {
+        self == Scope::Agents
     }
 
     pub fn describe(self) -> &'static str {
@@ -54,6 +66,7 @@ impl Scope {
             Scope::Chat => "Talk to Lucina (she may act through her own confirmation flow)",
             Scope::Computer => "Use Lucina's own sandboxed computers (her Linux desktop and Android sandbox): run tasks and commands, click and type, take screenshots",
             Scope::Write => "Add to / tick off the shopping list, create and cancel reminders, propose calendar events (you confirm them in the app), save notes, generate library briefs, add and complete tasks",
+            Scope::Agents => "Run and steer your coding agents (Lucina Agents on nezopt) in worktrees: start runs, send follow-ups, read logs, diffs and files, stop and archive. It can never answer their permission requests, push or open PRs",
         }
     }
 }
@@ -72,6 +85,12 @@ pub struct Scopes(Vec<Scope>);
 impl Scopes {
     pub fn all() -> Self {
         Self(Scope::ALL.to_vec())
+    }
+
+    /// What an OAuth client gets when it asks for nothing in particular:
+    /// every scope except the explicit-only ones (`agents`).
+    pub fn default_grant() -> Self {
+        Self::of(Scope::ALL.into_iter().filter(|s| !s.explicit_only()))
     }
 
     pub fn of(it: impl IntoIterator<Item = Scope>) -> Self {
@@ -148,6 +167,10 @@ pub struct Caller {
     pub scopes: Scopes,
     /// Token id (service token) or grant id (OAuth): for the logs.
     pub id: String,
+    /// Delegation depth: 0 for the owner's clients (Hermes, Claude Code,
+    /// ChatGPT), 1 for a token handed to an agent run. A caller at
+    /// [`crate::agents::MAX_DEPTH`] cannot start agents (as in lucina-delegate).
+    pub depth: u8,
 }
 
 impl Caller {
@@ -184,6 +207,18 @@ mod tests {
             .unwrap()
             .is_subset_of(&Scopes::all()));
         assert!(!Scopes::all().is_subset_of(&Scopes::parse_list("read").unwrap()));
+    }
+
+    #[test]
+    fn agents_is_its_own_explicit_scope() {
+        let s = Scopes::parse_list("read,agents").unwrap();
+        assert!(s.contains(Scope::Agents) && !s.contains(Scope::Write));
+        assert_eq!(s.to_string(), "read,agents");
+        assert!(!Scopes::parse_list("read,write,chat,computer").unwrap().contains(Scope::Agents));
+        assert!(!Scopes::default_grant().contains(Scope::Agents));
+        assert_eq!(Scopes::default_grant().to_oauth(), "read chat write computer");
+        assert!(Scopes::all().contains(Scope::Agents));
+        assert_eq!(Scopes::parse_lenient("openid agents").to_oauth(), "agents");
     }
 
     #[test]
