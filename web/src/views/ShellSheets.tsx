@@ -36,7 +36,7 @@ export function AccountView() {
       <ChatView />
       <AccountDialog
         open
-        section={params.section === "notifications" ? "notifications" : null}
+        section={params.section === "notifications" || params.section === "approvals" ? params.section : null}
         onClose={() => navigate("/", { replace: true })}
         signingOut={signingOut()}
         onSignOut={async () => {

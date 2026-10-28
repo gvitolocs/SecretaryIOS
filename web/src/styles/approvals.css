@@ -280,3 +280,46 @@
     animation: none;
   }
 }
+
+.apv-setup {
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* Account section: this Mac's Touch ID block and the approver devices. */
+.apv-mac {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.apv-devices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.apv-device {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.apv-device-main {
+  display: grid;
+}
+
+.apv-device-name {
+  font-weight: 600;
+}
+
+.apv-device-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
