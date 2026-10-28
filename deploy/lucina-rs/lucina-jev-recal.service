@@ -1,0 +1,12 @@
+[Unit]
+Description=JEV routing drift report with a per-intent threshold suggestion
+After=lucina-rs.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/lucina-rs/lucina.env
+EnvironmentFile=%h/.config/lucina-rs/mode.env
+ExecStart=%h/.local/bin/lucina-rs jev drift-report --recalibrate --days 7
+Nice=10
+CPUQuota=50%
+MemoryMax=256M

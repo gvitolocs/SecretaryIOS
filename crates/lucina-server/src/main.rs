@@ -13,6 +13,9 @@
 //! - `lucina deals list|cheapest <q>|lunch|map|digest|alerts [--dry-run|--send]`:
 //!   the grocery deals checks of Node's `scripts/grocery-deals.mjs` (dry run
 //!   unless `--send`; logs go to stderr).
+//! - `lucina jev drift-report [--days 7] [--labels-dir DIR] [--dry-run] [--recalibrate]`:
+//!   the weekly JEV-first drift report (docs/lucina-rust/JEV-ROUTING.md). Logs go
+//!   to stderr; `--dry-run` prints the ops record and writes nothing.
 //! - `lucina google-auth drive [--code <redirect URL or code>]`: Lucina's own
 //!   Google Drive grant (read-only, `mylucina20@gmail.com` only).
 //! - `lucina drive ls [--query Q] [--folder ID] [--search TEXT]`,
@@ -214,6 +217,11 @@ enum Cmd {
         #[arg(long, global = true)]
         tz: Option<String>,
     },
+    /// JEV-first routing: the weekly drift report (docs/lucina-rust/JEV-ROUTING.md).
+    Jev {
+        #[command(subcommand)]
+        cmd: JevCmd,
+    },
     /// Ask Lucina for a go-ahead through the running server (docs/design/decisions-api.md): she
     /// decides, or pushes the question to the owner's phone and answers `pending`. Prints the
     /// decision as JSON. `decide status <id> [--wait N]` and `decide list` read them back.
@@ -277,6 +285,26 @@ struct DecideArgs {
     /// Seconds to wait (polling every 3 s) while the owner has not answered (0-600).
     #[arg(long, default_value_t = 0)]
     wait: u64,
+}
+
+#[derive(Subcommand)]
+enum JevCmd {
+    /// Journal, labelled replay, drift against the previous report, one ops record.
+    DriftReport {
+        /// How many days of `lucina-rs.service` journal to read.
+        #[arg(long, default_value_t = 7)]
+        days: u32,
+        /// `cal-in.jsonl`, `labels.txt`, `extras.jsonl`. Default `LUCINA_JEV_CAL_DIR`, else
+        /// `/home/nez/Projects/Lucina/data/jev-cal`. A missing directory skips the replay.
+        #[arg(long)]
+        labels_dir: Option<PathBuf>,
+        /// Print the ops record. Do not write it or the summary.
+        #[arg(long)]
+        dry_run: bool,
+        /// Add suggested `LUCINA_JEV_FIRST_INTENT_MIN` values. Does not edit mode.env.
+        #[arg(long)]
+        recalibrate: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -470,6 +498,27 @@ async fn google_auth(service: &str, code: Option<String>, read_only: bool) -> an
     Ok(())
 }
 
+/// `lucina-rs jev drift-report`: journal, labelled replay, one ops record. The API token comes
+/// from the same env files as `decide` and is never printed.
+async fn jev_cmd(cmd: JevCmd) -> anyhow::Result<()> {
+    match cmd {
+        JevCmd::DriftReport {
+            days,
+            labels_dir,
+            dry_run,
+            recalibrate,
+        } => {
+            lucina_server::jev_drift::run(lucina_server::jev_drift::Args {
+                days,
+                labels_dir,
+                dry_run,
+                recalibrate,
+            })
+            .await
+        }
+    }
+}
+
 /// `lucina-rs decide …`: a client of the running server (`/api/secretary/decisions`), so the
 /// decision goes through the same path as `lucina_decide`: evidence, Jev, the owner's push, the
 /// ops record. The API token comes from the unit's env files and is never printed.
@@ -481,9 +530,9 @@ async fn decide_cmd(cmd: Option<DecideCmd>, a: DecideArgs) -> anyhow::Result<()>
         Some(DecideCmd::Withdraw { id, reason }) => c.withdraw(&id, &reason).await?,
         Some(DecideCmd::List { status, limit }) => c.list(status.as_deref(), limit).await?,
         None => {
-            let question = a
-                .question
-                .ok_or_else(|| anyhow::anyhow!("--question is required (or use `decide status <id>`)"))?;
+            let question = a.question.ok_or_else(|| {
+                anyhow::anyhow!("--question is required (or use `decide status <id>`)")
+            })?;
             let body = serde_json::json!({
                 "question": question,
                 "options": a.options,
@@ -806,8 +855,11 @@ fn main() -> anyhow::Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
     };
     // Logs are a sink: every formatted line goes through the redactor.
-    // `deals` prints its results on stdout, so its logs go to stderr.
-    if matches!(cmd, Cmd::Deals { .. } | Cmd::Decide { .. }) {
+    // `deals`, `decide` and `jev` print their results on stdout, so their logs go to stderr.
+    if matches!(
+        cmd,
+        Cmd::Deals { .. } | Cmd::Decide { .. } | Cmd::Jev { .. }
+    ) {
         tracing_subscriber::fmt()
             .with_env_filter(filter("warn"))
             .with_writer(lucina_secrets::log::RedactingMakeWriter::new(
@@ -853,6 +905,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         } => google_auth(&service, code, read_only).await?,
         Cmd::Drive { cmd } => drive_cmd(cmd).await?,
         Cmd::Decide { cmd, ask } => decide_cmd(cmd, ask).await?,
+        Cmd::Jev { cmd } => jev_cmd(cmd).await?,
         Cmd::Ops {
             cmd,
             vault,

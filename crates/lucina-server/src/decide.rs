@@ -1663,7 +1663,7 @@ pub mod cli {
     const ENV_FILES: &[&str] = &[".config/lucina-rs/lucina.env", ".config/lucina-rs/mode.env"];
 
     /// `KEY=value` from the environment, else from the unit's env files.
-    fn setting(key: &str) -> Option<String> {
+    pub fn setting(key: &str) -> Option<String> {
         if let Ok(v) = std::env::var(key) {
             return Some(v);
         }
@@ -1684,6 +1684,8 @@ pub mod cli {
 
     pub struct Client {
         http: reqwest::Client,
+        /// `<bind>/api/secretary`.
+        api: String,
         base: String,
         token: String,
     }
@@ -1701,9 +1703,11 @@ pub mod cli {
                 let first = first.split(',').next().unwrap_or("").trim().to_owned();
                 format!("http://{}", if first.is_empty() { "127.0.0.1:8790" } else { &first })
             });
+            let api = format!("{}/api/secretary", bind.trim_end_matches('/'));
             Ok(Self {
                 http: reqwest::Client::builder().timeout(Duration::from_secs(90)).build()?,
-                base: format!("{}/api/secretary/decisions", bind.trim_end_matches('/')),
+                base: format!("{api}/decisions"),
+                api,
                 token,
             })
         }
@@ -1719,6 +1723,11 @@ pub mod cli {
                 );
             }
             Ok(v.get("data").cloned().unwrap_or(v))
+        }
+
+        /// `POST <bind>/api/secretary/<path>` (the drift report's `jev/route`).
+        pub async fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
+            self.send(self.http.post(format!("{}/{path}", self.api)).json(body)).await
         }
 
         pub async fn create(&self, body: &Value) -> anyhow::Result<Value> {
