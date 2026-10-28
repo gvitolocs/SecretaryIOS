@@ -65,6 +65,13 @@ const ITEM_COLUMNS: &str = "i.id, i.list_id, i.raw_name, i.status, i.item_id, i.
     i.quantity::float8 AS quantity, i.unit, i.section_override, i.icon_key, i.position, i.purchased_at, \
     i.modified_by, i.rev, i.created_at, i.updated_at";
 
+/// A row's own icon as clients get it. An `svg:<key>` icon_key is never sent:
+/// installed app builds show the raw string (2026-10-28 regression), so such a
+/// row shows its catalog item's emoji, and clients find the art by `catalogId`.
+fn client_icon(icon_key: &Option<String>) -> Option<String> {
+    icon_key.clone().filter(|i| !i.starts_with("svg:"))
+}
+
 fn name_key_sql(param: &str) -> String {
     format!("lower(btrim(regexp_replace({param}, '\\s+', ' ', 'g')))")
 }
@@ -500,7 +507,7 @@ impl GroceryRepo {
         (
             (o.kind == "catalog").then(|| o.id.clone()).flatten(),
             pick(section_override, o.section.clone()),
-            pick(icon_key, o.icon.clone()),
+            pick(&client_icon(icon_key), o.icon.clone()),
         )
     }
 
@@ -531,7 +538,7 @@ impl GroceryRepo {
             "quantity": row.quantity.map(js_number).unwrap_or(Value::Null),
             "unit": opt_str(&row.unit),
             "section": pick(&row.section_override, &o.section),
-            "icon": pick(&row.icon_key, &o.icon),
+            "icon": pick(&client_icon(&row.icon_key), &o.icon),
             "status": row.status,
             "position": row.position,
             "purchasedAt": row.purchased_at.map(iso),
@@ -2198,4 +2205,14 @@ where
     })
     .await;
     out.into_iter().flatten().collect()
+}
+
+#[cfg(test)]
+mod client_icon_tests {
+    #[test]
+    fn svg_icon_keys_never_reach_clients() {
+        assert_eq!(super::client_icon(&Some("svg:ham".into())), None);
+        assert_eq!(super::client_icon(&Some("🍖".into())), Some("🍖".into()));
+        assert_eq!(super::client_icon(&None), None);
+    }
 }

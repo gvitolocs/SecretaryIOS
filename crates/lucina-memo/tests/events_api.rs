@@ -65,6 +65,7 @@ async fn app(dir: &std::path::Path, calendar_url: &str) -> Arc<App> {
         "LUCINA_MEMO_DIR" => Some(data.clone()),
         "LUCINA_SECRETARY_SERVER_URL" => Some(url.clone()),
         "LUCINA_SECRETARY_SERVICE_TOKEN_FILE" => Some(token.clone()),
+        "LUCINA_MEMO_OBSIDIAN_VAULT" => Some("off".into()),
         "LUCINA_MEMO_TIMEZONE" => Some("Europe/Copenhagen".into()),
         _ => None,
     });
@@ -235,4 +236,90 @@ async fn calendar_down_is_a_bad_gateway() {
     let id = created["memo"]["id"].as_str().unwrap().to_owned();
     let (status, _) = call(&app, "GET", &format!("/v1/memos/{id}/events"), None).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn pending_memo_relinks_quietly_and_cache_survives_outage() {
+    use lucina_memo::{calendar, events, model::Status, worker};
+    let state = Arc::new(std::sync::Mutex::new(json!({"events": []})));
+    let shared = state.clone();
+    let router = Router::new().route(
+        "/v1/calendar/events",
+        get(move || {
+            let shared = shared.clone();
+            async move { Json(shared.lock().unwrap().clone()) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let dir = tempfile::tempdir().unwrap();
+    let app = app(dir.path(), &url).await;
+    let (_, created) = call(&app, "POST", "/v1/memos", Some(create_body("pending"))).await;
+    let id = created["memo"]["id"].as_str().unwrap();
+    let notified = chrono::Utc::now();
+    app.store
+        .update(id, |m| {
+            m.status = Status::Queued;
+            m.ext = "m4a".into();
+        })
+        .unwrap();
+    // Resume an already summarized/rendered generic memo through the real pipeline.
+    let transcript = json!({"language":"en","engine":"test","durationSec":1800,"segments":[],"createdAt":notified});
+    let summary = json!({"title":"Generic", "overview":"Unlinked memo", "keyPoints":[], "decisions":[], "actionItems":[], "tags":[], "language":"en", "model":"test", "createdAt":notified});
+    std::fs::write(app.store.transcript_path(id), transcript.to_string()).unwrap();
+    std::fs::write(app.store.summary_path(id), summary.to_string()).unwrap();
+    std::fs::write(app.store.pdf_path(id), b"pdf").unwrap();
+    app.store
+        .update(id, |m| {
+            m.steps.transcribed_at = Some(notified);
+            m.steps.summarized_at = Some(notified);
+            m.steps.rendered_at = Some(notified);
+            m.steps.notified_at = Some(notified);
+        })
+        .unwrap();
+    worker::process(&app, id).await.unwrap();
+    assert_eq!(app.store.get(id).unwrap().status, Status::Done);
+    assert!(app.store.get(id).unwrap().event.is_none());
+    assert!(!worker::relink_one(&app).await);
+    let checked = app.store.get(id).unwrap();
+    assert_eq!(checked.link_checked_gen, Some(0));
+    assert!(!worker::relink_one(&app).await);
+    assert_eq!(checked.updated_at, app.store.get(id).unwrap().updated_at);
+
+    let (_, owner) = call(&app, "POST", "/v1/memos", Some(create_body("owner-none"))).await;
+    let owner_id = owner["memo"]["id"].as_str().unwrap();
+    call(
+        &app,
+        "PUT",
+        &format!("/v1/memos/{owner_id}/event"),
+        Some(json!({"eventId":null})),
+    )
+    .await;
+    app.store
+        .update(owner_id, |m| m.status = Status::Queued)
+        .unwrap();
+    *state.lock().unwrap() = calendar();
+    calendar::refresh(&app).await.unwrap();
+    assert!(worker::relink_one(&app).await);
+    let linked = app.store.get(id).unwrap();
+    assert_eq!(linked.event_source.as_deref(), Some("auto"));
+    assert_eq!(
+        linked.event.as_ref().unwrap().kind,
+        lucina_memo::model::EventKind::Lecture
+    );
+    assert_eq!(linked.title, "Algorithms – Lecture 5 · 27 Oct 2026");
+    assert_eq!(linked.revision, checked.revision + 1);
+    assert_eq!(linked.status, Status::Queued);
+    assert_eq!(linked.steps.notified_at, Some(notified));
+    assert!(linked.steps.summarized_at.is_none());
+    assert!(!worker::relink_one(&app).await);
+    assert!(app.store.get(owner_id).unwrap().event.is_none());
+    server.abort();
+    let _ = server.await;
+    let (status, response) = call(&app, "GET", &format!("/v1/memos/{id}/events"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(response["stale"], true);
+    assert_eq!(response["candidates"].as_array().unwrap().len(), 3);
+    assert!(events::candidates(&app, &linked, 30).await.unwrap().stale);
 }

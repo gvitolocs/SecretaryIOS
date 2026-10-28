@@ -52,6 +52,9 @@ const RISKY: &[&str] = &[
     "esci", "log ud", "unsubscribe", "transfer", "trasferisci", "post", "pubblica", "publish",
     "submit", "invio", "archive", "archivia", "arkivér", "report spam", "block", "blocca",
     "install", "installa", "uninstall", "factory reset", "erase", "format",
+    // Switching the signed-in account (seen on Google Takeout, 2026-10-28).
+    "switch account", "cambia account", "skift konto", "add account", "aggiungi account",
+    "tilføj konto", "add another account", "use another account",
 ];
 
 /// The text model for typing and answering (set by the server at start).
@@ -534,6 +537,22 @@ fn step_questions(
     qs
 }
 
+/// E-mail addresses visible on the screen (the signed-in account chip, mail headers).
+pub fn accounts(screen: &Screen) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let labels = screen.elements.iter().map(|e| e.label.as_str());
+    for text in labels.chain(std::iter::once(screen.text.as_str())) {
+        for word in text.split(|c: char| c.is_whitespace() || "()<>[],;:\"'«»“”".contains(c)) {
+            let w = word.trim_matches(|c: char| !c.is_alphanumeric());
+            let Some((user, host)) = w.split_once('@') else { continue };
+            if !user.is_empty() && host.contains('.') && !out.iter().any(|o| o == w) && out.len() < 5 {
+                out.push(w.to_owned());
+            }
+        }
+    }
+    out
+}
+
 fn state(task: &str, target: Where, screen: &Screen, history: &[String]) -> Value {
     let elements: Vec<String> = screen
         .elements
@@ -543,6 +562,8 @@ fn state(task: &str, target: Where, screen: &Screen, history: &[String]) -> Valu
     json!({
         "task": task,
         "device": match target { Where::Desktop => "desktop Chromium browser", _ => "Android phone" },
+        // Google may switch the signed-in account after a navigation: name the one on screen.
+        "accounts_on_screen": accounts(screen),
         "screen_title": screen.title,
         "current_app": if target == Where::Android { screen.title.as_str() } else { "" },
         "steps_taken": history,
@@ -613,11 +634,12 @@ impl Device {
     }
 
     async fn bash(&self, cmd: &str) -> Result<String, String> {
-        let v = self
-            .sandbox
-            .bash(cmd, Some(40))
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut r = self.sandbox.bash(cmd, Some(40)).await;
+        if r.as_ref().err().is_some_and(transient) {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            r = self.sandbox.bash(cmd, Some(40)).await;
+        }
+        let v = r.map_err(|e| e.to_string())?;
         let t = text_of(&v);
         if v["isError"] == true {
             return Err(lucina_jev::clip(&t, 300));
@@ -632,11 +654,12 @@ impl Device {
                 args["window_id"] = json!(wid);
             }
         }
-        let v = self
-            .sandbox
-            .call_tool(tool, args.clone())
-            .await
-            .map_err(|e| e.to_string());
+        let mut r = self.sandbox.call_tool(tool, args.clone()).await;
+        if r.as_ref().err().is_some_and(transient) {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            r = self.sandbox.call_tool(tool, args.clone()).await;
+        }
+        let v = r.map_err(|e| e.to_string());
         // Chromium takes no background keyboard input: the driver asks for
         // foreground delivery on Lucina's own desktop, and gets it.
         let needs_front = match &v {
@@ -675,7 +698,7 @@ impl Device {
                 // uiautomator fails on screens that never go idle ("could not
                 // get idle state"): one retry, then the screen is unreadable
                 // and the task goes to Hermes, which can look at screenshots.
-                for attempt in 0..3 {
+                for attempt in 0..2 {
                     if attempt > 0 {
                         tokio::time::sleep(Duration::from_millis(2000)).await;
                     }
@@ -733,6 +756,9 @@ impl Device {
         self.tool("hotkey", json!({"keys": ["ctrl", "t"]})).await?;
         self.opened_tab_active = true;
         tokio::time::sleep(Duration::from_millis(400)).await;
+        // Focus the address bar and select what is there, or the text is appended.
+        self.tool("hotkey", json!({"keys": ["ctrl", "l"]})).await?;
+        self.tool("hotkey", json!({"keys": ["ctrl", "a"]})).await?;
         self.tool("type_text", json!({"text": url})).await?;
         self.tool("press_key", json!({"key": "Return"})).await?;
         Ok(())
@@ -819,6 +845,13 @@ fn gunzip_base64(b64: &str) -> String {
     xml
 }
 
+/// A sandbox hiccup worth one retry (the daemon answered 503 or dropped the call).
+fn transient(e: &Error) -> bool {
+    // Not `background_unavailable`: that one is answered with foreground delivery.
+    matches!(e, Error::Sandbox(m) if !m.contains("background_unavailable")
+        && (m.contains("503") || m.contains("sandbox_unavailable") || m.contains("timed out") || m.contains("connection reset")))
+}
+
 /// `adb shell input text` takes `%s` for spaces; everything else is quoted for the device shell.
 fn android_text(text: &str) -> String {
     let t: String = text
@@ -894,9 +927,10 @@ async fn answer(task: &str, screen: &Screen, history: &[String]) -> String {
         "computer-answer",
         &format!("You are Lucina. You did a task on your own computer or phone. Answer the owner briefly in the task's language with what the screen actually shows; say plainly when it does not show the answer. Never invent. {UNTRUSTED}"),
         format!(
-            "Task: {task}\nSteps taken: {}\nScreen: {}\nVisible text:\n{}",
+            "Task: {task}\nSteps taken: {}\nScreen: {}\nAccounts on screen (say which one, if the task is about an account): {}\nVisible text:\n{}",
             history.join("; "),
             screen.title,
+            accounts(screen).join(", "),
             lucina_jev::clip(&screen.text, 5000)
         ),
     )

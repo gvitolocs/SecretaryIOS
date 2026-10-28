@@ -52,6 +52,13 @@ enum Cmd {
     List,
     /// Register every finished memo in the media library again (idempotent).
     LibrarySync,
+    /// Copy pending memos, or all memos including trash, to the verified archive.
+    Archive {
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        verify: bool,
+    },
 }
 
 fn app(cfg: Config) -> anyhow::Result<Arc<App>> {
@@ -74,6 +81,14 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = Config::from_env();
     match cli.cmd {
+        Cmd::Archive { all, verify } => {
+            let app = App::new(
+                cfg,
+                Arc::new(lucina_llm::ScriptedModel::new()),
+                "archive".into(),
+            )?;
+            lucina_memo::archive::run_cli(&app, all, verify)
+        }
         Cmd::Serve => {
             anyhow::ensure!(
                 cfg.gateway_token_file.is_some() || cfg.service_token_file.is_some(),

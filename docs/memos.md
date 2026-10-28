@@ -64,7 +64,7 @@ Other routes: `GET /v1/memos?limit&before`, `GET /v1/memos/{id}` (`{memo, summar
 `POST …/resummarize {instructions?}`, `POST …/reprocess {fromTranscript?}`,
 `GET /v1/memos/search?q&from&to&days&limit` (dates `YYYY-MM-DD` in the owner's zone; words also match the linked
 event's title, course, place, attendees and calendar), `GET …/events` (`{current, eventSource, candidates:
-[{event, overlapMs, locMatch}]}` for the recording ± 2 h, best first; 502 when the calendar is unreachable),
+[{event, overlapMs, locMatch}]}` for the recording ± 2 h, best first; `stale: true` when using the cache after a live failure; 502 only when the live query fails and the cache has no events in the window),
 `PUT …/event {eventId | null}` (the owner's choice, `null` = no event; re-summarises a finished memo; 409 while a
 summary runs; 404 for an event not around the recording).
 Auth: `X-Memo-Gateway` from Caddy (after secretary-server accepted the device), or `Authorization: Bearer <service.token>`
@@ -90,7 +90,20 @@ One memo at a time, oldest first; each step writes its output before recording i
    earlier one. Kind (`events::kind`): lecture (lecture/lezione/forelæsning/… or a university calendar), meeting
    (meeting/riunione/møde/sync/… or 2+ attendees), other. Series: the recurring master id, else the title without
    "Lecture 5"-style suffixes. Title = `<event> · <date>` (`title_source: event`) unless the owner named the memo
-   (K10). The owner's choice on the memo screen is never replaced (K9). Calendar down: logged, retried on reprocess.
+   (K10). The owner's choice on the memo screen is never replaced (K9). Calendar replies are merged into `<data_dir>/calendar-cache.json`, keyed by event id, with first/last seen times.
+   Changed events replace their previous copy; missing events remain until their end is over 180 days old.
+   A persistent generation advances only on additions or changes. The worker refreshes the calendar at startup
+   and every 15 idle minutes for now −14 days through +30 days; candidate queries also merge their replies.
+   Candidates always use this history, so a later phone report cannot erase a known event. A live failure is
+   logged and the cache alone answers when it has events in the requested window.
+
+   A memo without an event stays **link-pending** for 90 days after recording unless the owner chose an event
+   or explicitly chose “no event”. Uploading memos are excluded. The pipeline continues with the generic summary
+   and publishes normally. After the Whisper upgrade pass, the idle re-link job checks the oldest pending memo
+   whose `link_checked_gen` is behind the cache generation, using cached events only (no network requests).
+   A miss records the generation; an event learned later triggers another check. A match atomically re-checks
+   the owner's choice, links and names the memo, and queues a **quiet re-summary**: summary, PDF and publication
+   markers reset, revision increases, and `notified_at` stays so the owner receives no second notification.
 2. **Summary**: Lucina's DeepSeek model (text only, never audio), JSON: title, overview, key points,
    decisions, action items (owner, due date resolved from the recording date), tags, with seconds into the audio.
    Long transcripts are summarised in parts and merged. Linked to a **lecture**: lecture notes, key concepts,
@@ -106,6 +119,8 @@ One memo at a time, oldest first; each step writes its output before recording i
    `attendees`, `course`/`meeting`, `series`), a "Previous" section linking the series' earlier notes and a series
    index `<folder>/<course>.md`. When the event changes the note moves: the new path and every old one
    (`obsidian_old_notes`) are recorded before the push, the old copies deleted after it (rsync itself never deletes).
+   The exact published Markdown is also saved atomically as `<memo dir>/note.md`; a series index written
+   for that memo is saved as `series-index.md`. Existing memos acquire these on their next publish.
 5. **Notify**: app inbox (`/v1/notify`, route `/memos/<id>`) and Telegram from Lucina's bot.
 6. **Media library**: `PUT 127.0.0.1:8830/internal/v1/external/voice-memo/{id}` (lucina-media; best effort).
 
@@ -139,3 +154,37 @@ deploy/lucina-memo/install.sh          # build, install, restart
 
 Data: `~/Projects/Lucina/data/memos/memos/<id>/` (`meta.json`, `audio.<ext>`, `device-transcript.json`,
 `transcript.json`, `summary.json`, `memo.html`, `memo.pdf`); deleted memos in `…/trash/`.
+
+
+## Memo archives and snapshots
+
+Set `LUCINA_MEMO_ARCHIVE_DIR=/home/nez/mnt/mybook/lucina-memos` in `memo.env` to enable the archive (unset = off).
+`LUCINA_MEMO_ARCHIVE_REQUIRE_MOUNT` defaults to `/home/nez/mnt/mybook`: before writing, its device id must
+differ from its parent's. An empty value disables this check, useful for a local test archive. An absent mount
+is logged and retried; the worker never creates an archive on the bare mount directory.
+
+After pipeline work, Whisper upgrades and re-linking, the idle worker archives one oldest done/failed memo
+whose `archived_rev` differs from its revision. Every regular top-level file is copied to `<archive>/<recorded year>/<id>/`,
+including original audio, device/server transcripts, summary, HTML, PDF, saved Markdown and metadata.
+`work/`, temporary files and partial uploads are excluded. Each file is hashed with SHA-256: matching files
+are skipped, changed files use a same-directory temporary file, fsync, rename and a verified re-read.
+Sorted `SHA256SUMS` covers every retained archive file; files missing from the source are never deleted.
+Success records `archived_rev` and `archived_at`. Three consecutive failures for a memo defer it for an hour
+(the retry counters are in memory); other memos can still proceed. Trash is archived once at `<archive>/trash/<id>/`.
+
+```bash
+lucina-memo archive                 # pending done/failed memos and trash
+lucina-memo archive --all --verify  # backfill all memos, including trash; verify before and after copying
+```
+
+Verification hashes archived files against `SHA256SUMS` and available source files, reports one line per memo
+and totals (memos, copied/unchanged files, bytes, verified files, mismatches), and exits 1 on any mismatch/error.
+Pre-copy verification detects corruption even if copying subsequently repairs it. Backfill saves the files already
+on disk; it does not reconstruct old vault notes absent from the memo directory. The archive CLI needs no LLM key.
+
+`deploy/lucina-memo/install.sh` installs `lucina-memo-backup` and enables `lucina-memo-backup.timer`.
+Daily at 04:30 (`Persistent=true`), the service runs `archive --all --verify`, then creates
+`/home/nez/mnt/mybook/backups/lucina-memos/YYYY-MM-DD/` with `rsync -a --link-dest=<yesterday>`.
+Dated snapshots older than 60 days are removed. The job checks the mount before starting, uses `Nice=10` and
+idle I/O priority, and reports failures through `pokoin-notify@%n.service`. This repository change does not
+install units or start the timer until the installer is explicitly run.
