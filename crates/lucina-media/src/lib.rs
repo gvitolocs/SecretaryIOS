@@ -19,6 +19,8 @@ pub mod archive_manifest;
 pub mod archive_png;
 pub mod batch;
 pub mod browse;
+pub mod categories;
+pub mod categories_http;
 pub mod config;
 pub mod db;
 pub mod dedup;

@@ -2559,6 +2559,8 @@ dependencies = [
  "image",
  "ort",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokenizers",

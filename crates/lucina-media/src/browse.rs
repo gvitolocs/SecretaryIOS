@@ -165,7 +165,7 @@ struct ZoomQuery {
 }
 
 /// The listing filters every browse route takes: the origin defaults to the whole Gallery.
-fn gallery_query(lib: &Library, mut q: ListQuery) -> ApiResult<ListQuery> {
+pub(crate) fn gallery_query(lib: &Library, mut q: ListQuery) -> ApiResult<ListQuery> {
     q.film_folders = lib.cfg.film_folders.clone();
     q.origin = q
         .origin
@@ -191,6 +191,7 @@ fn gallery_query(lib: &Library, mut q: ListQuery) -> ApiResult<ListQuery> {
 fn points(c: &Connection, q: &ListQuery) -> rusqlite::Result<Vec<Point>> {
     let (mut wh, args) = db::list_filters(q);
     wh.push("i.lat IS NOT NULL AND i.lon IS NOT NULL".into());
+    wh.push(crate::categories::NOT_SENSITIVE_SQL.into());
     let mut st = c.prepare(&format!(
         "SELECT i.id, i.lat, i.lon, i.favorite, i.sort_at FROM items i WHERE {}",
         wh.join(" AND ")
@@ -344,6 +345,7 @@ fn day_rows(
 ) -> rusqlite::Result<Vec<(i32, Candidate)>> {
     let (mut wh, mut args) = db::list_filters(q);
     wh.push("i.taken_at IS NOT NULL".into());
+    wh.push(crate::categories::REAL_PHOTOS_SQL.into());
     args.push(month_day.to_string().into());
     wh.push(format!("substr(i.taken_at, 6, 5) = ?{}", args.len()));
     args.push(format!("{before_year:04}").into());
@@ -477,6 +479,7 @@ async fn recent(
         .db
         .call(move |c| {
             let (mut wh, mut args) = db::list_filters(&q);
+            wh.push(crate::categories::NOT_SENSITIVE_SQL.into());
             if let Some(s) = since {
                 args.push(s.into());
                 wh.push(format!("i.added_at >= ?{}", args.len()));

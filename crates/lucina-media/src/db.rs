@@ -270,6 +270,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::dedup_review::migrate(conn)?;
     // Faces and people (2026-10-28): opt-in face recognition (`faces.rs`).
     crate::faces::migrate(conn)?;
+    // Automatic photo categories (2026-10-28): `categories.rs`.
+    crate::categories::migrate(conn)?;
     Ok(())
 }
 
@@ -634,6 +636,10 @@ pub struct ListQuery {
     /// smart search's `person=`), not a parameter of `GET items`.
     #[serde(skip)]
     pub person: Option<String>,
+    /// Only photos in this automatic category (`categories.rs`; `photo` is what no other category claims).
+    /// Set by the server (`categories/{cat}/items`), not a parameter of `GET items`.
+    #[serde(skip)]
+    pub category: Option<lucina_media_ml::categories::Category>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -735,6 +741,8 @@ pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::
         );
     }
     if let Some((w, s, e, n)) = q.bbox.as_deref().and_then(crate::browse::parse_bbox) {
+        // A map cluster lists its pictures through this box: the sensitive categories stay off the map.
+        wh.push(crate::categories::NOT_SENSITIVE_SQL.into());
         add(&mut wh, &mut args, "i.lat >= ?", s.into());
         add(&mut wh, &mut args, "i.lat <= ?", n.into());
         if w <= e {
@@ -773,6 +781,9 @@ pub(crate) fn list_filters(q: &ListQuery) -> (Vec<String>, Vec<rusqlite::types::
     }
     if q.favorite == Some(true) {
         wh.push("i.favorite = 1".into());
+    }
+    if let Some(cat) = q.category {
+        wh.push(crate::categories::filter_sql(cat, &mut args));
     }
     if let Some(p) = &q.person {
         add(

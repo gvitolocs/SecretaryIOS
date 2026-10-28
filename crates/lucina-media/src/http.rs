@@ -133,6 +133,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(crate::lab_http::routes())
         .merge(crate::smart::routes())
         .merge(crate::faces_http::routes())
+        .merge(crate::categories_http::routes())
         .with_state(lib.clone())
         .merge(extra.unwrap_or_default())
         .layer(middleware::from_fn_with_state(lib, upstream_guard))
@@ -2032,7 +2033,7 @@ async fn item_details(
         return Err(not_found());
     }
     let iid = id.clone();
-    let (it, album, info, people) = lib
+    let (it, album, info, people, category) = lib
         .db
         .call(move |c| {
             let Some(it) = db::get_item(c, &iid)? else {
@@ -2043,7 +2044,8 @@ async fn item_details(
                 .flatten();
             let info = drive::info_for(c, &iid)?;
             let people = crate::faces_http::people_of_item(c, &iid)?;
-            Ok(Some((it, a, info, people)))
+            let category = crate::categories::of_item(c, &iid)?;
+            Ok(Some((it, a, info, people, category)))
         })
         .await?
         .ok_or_else(not_found)?;
@@ -2061,6 +2063,8 @@ async fn item_details(
         "exif": exif,
         // The people with a face in this photo (`faces.rs`); empty while face recognition is off.
         "people": people,
+        // The automatic category (`categories.rs`): `{category, confidence, decided_by, auto_category}`, or `null` while undecided.
+        "category": category,
     })))
 }
 

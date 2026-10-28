@@ -20,8 +20,10 @@
 //! The same thread also keeps the perceptual hashes of new photos current (`dedup_hash.rs`, first
 //! in each round) and, when the owner turned it on, scans faces (`faces.rs`, last).
 //!
-//! The same thread runs the face scan (`faces::step`) whenever there is nothing left to embed, so
-//! one background worker, with these pauses, does all the machine learning.
+//! When there is nothing left to embed the same thread decides the category of new photos from the
+//! stored vectors and the catalog (`categories::step`: screenshot, receipt, document...), and then
+//! runs the face scan (`faces::step`), so one background worker, with these pauses, does all the
+//! machine learning.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
@@ -305,6 +307,7 @@ fn embed_loop(
     let mut paused = false;
     let mut last_prune = Instant::now() - Duration::from_secs(3600);
     let mut hash_skip = std::collections::HashSet::new();
+    let mut category_skip = std::collections::HashSet::new();
     loop {
         if let Some(s) = &siglip {
             s.release_idle(Duration::from_secs(600), false);
@@ -330,7 +333,21 @@ fn embed_loop(
         }
         match embed_pending(&lib, &smart) {
             Ok(0) => {
-                // Nothing to embed: the face scan, when the owner turned it on.
+                // Nothing to embed: decide the category of new photos (`categories.rs`, catalog and
+                // vectors only), then the face scan, when the owner turned it on.
+                match crate::categories::step(&lib, &smart, &mut category_skip) {
+                    Ok(n) if n > 0 => {
+                        set_progress(&smart, |p| p.running = true);
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "categories step failed");
+                        std::thread::sleep(Duration::from_secs(30));
+                        continue;
+                    }
+                }
                 match crate::faces::step(&lib) {
                     Ok(n) if n > 0 => {
                         set_progress(&smart, |p| p.running = true);
@@ -359,6 +376,9 @@ fn embed_loop(
                     }
                     if let Err(e) = crate::faces::prune(&lib) {
                         tracing::warn!(error = %e, "faces: prune failed");
+                    }
+                    if let Err(e) = crate::categories::prune(&lib) {
+                        tracing::warn!(error = %e, "categories: prune failed");
                     }
                     last_prune = Instant::now();
                 }
@@ -569,6 +589,11 @@ async fn page(
 }
 
 impl Smart {
+    /// The model that embeds pictures and text for this catalog.
+    pub fn embedder(&self) -> &Arc<dyn Embedder> {
+        &self.embedder
+    }
+
     /// A query's vector, from the cache when it was asked lately.
     fn query_vector(&self, text: &str) -> Result<Vec<f32>, lucina_media_ml::MlError> {
         let key = text.trim().to_lowercase();
