@@ -265,6 +265,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::archive_jxl::migrate(conn)?;
     // Smart search (2026-10-28): image vectors for search by content (`smart.rs`).
     crate::smart::migrate(conn)?;
+    // Stacks and the duplicate review's decisions (2026-10-28): `stacks.rs`, `dedup_review.rs`.
+    crate::stacks::migrate(conn)?;
+    crate::dedup_review::migrate(conn)?;
     Ok(())
 }
 
@@ -329,6 +332,9 @@ pub struct Item {
     /// 0, 90, 180 or 270 degrees clockwise: drawn by the client, the renditions are not re-rendered.
     #[serde(default)]
     pub rotation: i64,
+    /// The stack this item belongs to (`stacks.rs`); filled by [`get_item`] and [`list_items`].
+    #[serde(default)]
+    pub stack: Option<crate::stacks::StackRef>,
     /// The stored provenance, for [`crate::gallery::origin_of`] (not part of the item JSON).
     #[serde(skip)]
     pub origin_cols: crate::gallery::OriginCols,
@@ -393,6 +399,7 @@ pub fn item_from_row(r: &Row) -> rusqlite::Result<Item> {
         device: r.get(29)?,
         device_name: None,
         rotation: r.get(30)?,
+        stack: None,
         origin_cols: crate::gallery::OriginCols {
             name: r.get(31)?,
             folder: r.get(32)?,
@@ -412,6 +419,7 @@ pub fn get_item(c: &Connection, id: &str) -> rusqlite::Result<Option<Item>> {
     if let Some(it) = item.as_mut() {
         it.albums = item_albums(c, id)?;
         fill_device_names(c, std::slice::from_mut(it))?;
+        crate::stacks::fill(c, std::slice::from_mut(it))?;
     }
     Ok(item)
 }
@@ -867,6 +875,7 @@ pub fn list_items(c: &Connection, q: &ListQuery) -> rusqlite::Result<ItemPage> {
         it.albums = item_albums(c, &it.id)?;
     }
     fill_device_names(c, &mut items)?;
+    crate::stacks::fill(c, &mut items)?;
     Ok(ItemPage {
         items,
         next_cursor: if more { last_key } else { None },

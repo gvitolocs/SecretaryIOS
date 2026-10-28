@@ -85,6 +85,13 @@ kernel DK3).
 - `GET items/{id}/duplicates` → `{item_id, merged_from?, duplicates: [{id, kind, score, decided_by, merged_at, size, mime, width,
   height, source, device, device_name, hash, urls}]}`: the copies merged under a photo (see "Identity"); the id of a
   hidden copy works too. `GET items/{id}` of a hidden copy answers with the survivor and `merged_from`.
+- Duplicate review and stacks (`dedup_review.rs`, `stacks.rs`; "Duplicate review and stacks" below):
+  - `GET duplicates?status=open&limit&offset` → `{hashes: {photos, hashed, pending}, total, applicable, min_score,
+    reclaimable_bytes, stack_suggestions, groups: [{id, class, score, applicable, keep, reason, members: [item JSON +
+    review {metadata, keep}]}]}`; `POST duplicates/resolve {keep, drop}`, `POST duplicates/dismiss {ids, undo?}`,
+    `POST duplicates/undo {ids}`, `POST duplicates/resolve-all {min_score?}`;
+  - `POST stacks {ids, primary?, kind?}`, `GET|PUT|DELETE stacks/{id}`, `GET stacks/suggestions`,
+    `POST stacks/suggestions/dismiss {ids}`; every item JSON has `stack: null | {id, count, primary}`.
 - `GET items/{id}/original` serves HTTP Range with ETag = blake3. `GET items/{id}/thumb?size=256|1024` and `GET items/{id}/poster` also exist.
 - Albums:
   - `GET|POST albums`, `GET|PATCH|DELETE albums/{id}` (system albums can't be deleted);
@@ -428,6 +435,41 @@ are the same item.
     pictures of the same size taken more than a day apart reach 4 only 4 times among 4.1 million pairs; different
     assets of one iPhone taken together span 0 to 22, which is why they are excluded by identity, not by distance.
 
+## Duplicate review and stacks (2026-10-28)
+
+- **Groups** (`dedup_review.rs`): `GET duplicates` runs the detector over the stored hashes (`find_pairs`, then
+  `plan_merges`, grouped by surviving photo) minus the pairs the owner dismissed or split. A request never hashes
+  pictures: photos without a row in `item_hashes` are reported as `hashes.pending` (run `dedup-hash`; nothing hashes
+  new uploads yet). Stacked photos are left out of the candidates. The pair search is a few tens of milliseconds
+  per thousand photos squared; it runs outside the catalog lock.
+- **Keeper suggestion**: clearly more pixels (5 %), else the larger file, else more metadata (capture time, place,
+  camera, caption, size, favourite, a user album, original name), else the device's own asset, else the earlier
+  arrival. `reason` names the rule that beat the runner-up (`highest_resolution`, `largest_file`, `most_metadata`,
+  `device_original`, `first_added`). A group's `score` and `class` are those of its weakest merge; `applicable` means
+  the score reaches the `dedup-apply` threshold (0.7).
+- **Resolving** hides the `drop` photos under `keep[0]` with the undoable merge (the link records the detector's class
+  and score, or `manual`). Further `keep` ids stay, and each pair of them is recorded in `dedup_dismissed`. Besides
+  what the merge carries (albums, favourite, cover, device asset, Live Photo part), the keeper gets: the copies'
+  captions joined (each text once), the location of the copies when it has none and they all agree within 100 m,
+  and a capture time when it has none and the copies agree within 2 s. `dedup_meta_undo` records this per copy;
+  `dedup_merge::undo` (the CLI's `dedup-undo` and `POST duplicates/undo`) reverts each field unless the owner has
+  changed it since. Skips: `missing`, `same_item`, `not_photo`, `trashed`, `hidden`, `stacked`, `undone_before`,
+  `drive_file`, and `keep_*` when the keeper itself cannot be used.
+- **Stacks**: tables `stacks` and `stack_items` (not `item_links`: a link makes `GET items/{copy}` answer with the
+  survivor, and a stack member must stay readable). The primary stays visible; the other members have
+  `items.hidden = 3`, so every listing, count, month, source total and search skips them. A trigger on
+  `items.trashed_at` keeps stacks whole for every trashing code path: the next member becomes primary, the trashed
+  photo leaves the stack (and shows in the Trash), a stack of one dissolves. A restored photo does not rejoin.
+  Batch ops on a stack tile act on the primary only. A photo is in at most one stack; videos and Drive files are not
+  stackable.
+- **Suggestions** (never applied by themselves): bursts are shots of one device, each within 1.5 s of the one before,
+  and, when both have a hash, within the "similar" distance (22) and the same shape (`evidence: time_and_look`;
+  `time` when a hash is missing). RAW+JPEG pairs share device, source and file name, differ in extension (a RAW
+  such as `.dng` and a picture) and were taken together (`evidence: name`); the picture is the suggested primary.
+  `stack_dismissed` keeps the sets the owner turned down. **No burst identifier is available**: the iPhone upload
+  sends `taken_at` (milliseconds) but not PhotoKit's `burstIdentifier`, `meta.rs` does not read Apple's BurstUUID, and
+  the scan does not set `includeAllBurstAssets`, so PhotoKit hands over only each burst's key photo.
+
 ## Renditions and the Rust viewer (2026-10-25)
 
 | What | Where | Size (owner's photos) |
@@ -506,8 +548,9 @@ An upload whose bytes are gone answers 410 on finish, and the phone starts that 
 
 ## Not done yet
 
-- Duplicates: the compare view over `items/{id}/duplicates`, a lazy hash worker in `serve` (today `dedup-hash`), and
-  queuing the hidden copies' device assets for deletion with the survivor.
+- Duplicates: a lazy hash worker in `serve` (today `dedup-hash`), and queuing the hidden copies' device assets for
+  deletion with the survivor.
+- Bursts: the iPhone upload sending `burstIdentifier` (and fetching every burst frame), to replace the time-and-look guess.
 - Web gallery tab.
 - The iOS consumer of the device deletion queue; face recognition (`people`).
 - Android upload: the Rust module for the Android app.

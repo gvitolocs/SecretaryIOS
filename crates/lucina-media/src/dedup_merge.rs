@@ -111,6 +111,8 @@ pub enum Skip {
     UndoneBefore,
     /// A file of a Drive folder: it stays where the owner put it.
     DriveFile,
+    /// A member of a stack (`stacks.rs`) is not hidden under another photo; unstack it first.
+    Stacked,
 }
 
 impl Skip {
@@ -123,6 +125,7 @@ impl Skip {
             Skip::Hidden => "hidden",
             Skip::UndoneBefore => "undone_before",
             Skip::DriveFile => "drive_file",
+            Skip::Stacked => "stacked",
         }
     }
 }
@@ -159,12 +162,14 @@ struct Row {
     hash: String,
     live_pair: Option<String>,
     drive: bool,
+    stacked: bool,
 }
 
 fn load(c: &Connection, id: &str) -> rusqlite::Result<Option<Row>> {
     c.query_row(
         "SELECT kind, trashed_at IS NOT NULL, hidden, favorite, device, asset_id, hash, live_pair,
-                EXISTS (SELECT 1 FROM drive_files df WHERE df.item_id = items.id)
+                EXISTS (SELECT 1 FROM drive_files df WHERE df.item_id = items.id),
+                EXISTS (SELECT 1 FROM stack_items si WHERE si.item_id = items.id)
          FROM items WHERE id = ?1",
         [id],
         |r| {
@@ -178,6 +183,7 @@ fn load(c: &Connection, id: &str) -> rusqlite::Result<Option<Row>> {
                 hash: r.get(6)?,
                 live_pair: r.get(7)?,
                 drive: r.get(8)?,
+                stacked: r.get(9)?,
             })
         },
     )
@@ -209,6 +215,9 @@ pub fn merge(
     }
     if s.drive || d.drive {
         return Ok(Err(Skip::DriveFile));
+    }
+    if d.stacked {
+        return Ok(Err(Skip::Stacked));
     }
     if s.hidden != 0 || d.hidden != 0 {
         return Ok(Err(Skip::Hidden));
@@ -361,6 +370,8 @@ pub fn undo(c: &mut Connection, dup: &str) -> rusqlite::Result<bool> {
         return Ok(false);
     };
     let info: UndoInfo = serde_json::from_str(&raw).unwrap_or_default();
+    // What keeping the survivor copied from this duplicate (`dedup_review`) goes back too.
+    crate::dedup_review::revert_metadata(&tx, dup, &survivor)?;
     let now = now_str();
 
     for id in &info.repointed_links {
@@ -505,6 +516,7 @@ pub fn forget(c: &Connection, id: &str) -> rusqlite::Result<()> {
         [id],
     )?;
     c.execute("DELETE FROM item_hashes WHERE item_id = ?1", [id])?;
+    crate::dedup_review::forget(c, id)?;
     Ok(())
 }
 

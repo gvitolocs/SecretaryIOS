@@ -124,6 +124,8 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .merge(uploads)
         .merge(crate::edits::routes())
         .merge(crate::dedup_merge::routes())
+        .merge(crate::dedup_review::routes())
+        .merge(crate::stacks::routes())
         .merge(crate::share_http::owner_routes())
         .merge(crate::share_http::public_routes())
         .merge(crate::share_sel::routes())
