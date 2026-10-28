@@ -5,7 +5,7 @@ import { setLocale } from "../i18n";
 import { prefill } from "../state/chat";
 import { stubFetch } from "../test/fetch";
 import { chartLabel } from "../components/server/Chart";
-import { ago, overview } from "../test/serverFixtures";
+import { ago, overview, item, event } from "../test/serverFixtures";
 import ServerHealthView, { REFRESH_MS } from "./ServerHealth";
 
 function Where() {
@@ -42,9 +42,9 @@ describe("Server page", () => {
     const nezopt = (await screen.findByText("nezopt", { selector: ".sh-host-name" })).closest("a")!;
     expect(calls[0]!.url).toMatch(/\/v1\/system\/overview$/);
 
-    // Header: 2 items + the two unhealthy hosts, neither already listed as an item.
-    expect(screen.getByText("4 need attention")).toBeInTheDocument();
-    expect(screen.getByText(/· updated/)).toBeInTheDocument();
+    // Header uses the server attention count, without adding hosts.
+    expect(screen.getByText("2 need attention")).toBeInTheDocument();
+    expect(screen.getByText(/^updated/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
 
     // Host cards.
@@ -57,7 +57,8 @@ describe("Server page", () => {
     expect(within(nezopt).getByRole("img", { name: /^Load \(1 min\), last 24 hours: now 9\.58/ })).toBeInTheDocument();
     expect(within(nezopt).getByRole("img", { name: /^Memory, last 24 hours: now 33%/ })).toBeInTheDocument();
     expect(within(nezopt).getByLabelText("/data: 93% used, 70 GB free")).toHaveAttribute("data-level", "crit");
-    expect(within(nezopt).getByLabelText("/: 78% used, 422 GB free")).toHaveAttribute("data-level", "ok");
+    expect(within(nezopt).queryByLabelText("/: 78% used, 422 GB free")).toBeNull();
+    expect(within(nezopt).getByText(/\+1 more/)).toBeInTheDocument();
 
     const nespc = screen.getByText("nespc", { selector: ".sh-host-name" }).closest("a")!;
     expect(within(nespc).getByText("Reachable · limited data")).toBeInTheDocument();
@@ -72,7 +73,7 @@ describe("Server page", () => {
     expect(within(rows[0]!).getByRole("link", { name: "gmaps-server" })).toHaveAttribute("href", "/server-health?item=catalog%3Agmaps-server");
     expect(within(rows[0]!).getByText("Critical")).toBeInTheDocument();
     expect(within(rows[0]!).getByText("Not running; port 18210 not listening")).toBeInTheDocument();
-    expect(within(rows[0]!).getByText("breaks 1")).toBeInTheDocument();
+    expect(within(rows[0]!).getByText("Breaks 1")).toBeInTheDocument();
     expect(within(rows[0]!).getByText(/^for 2 hr/)).toBeInTheDocument();
     expect(within(rows[1]!).getByText("homelab")).toBeInTheDocument();
 
@@ -84,6 +85,73 @@ describe("Server page", () => {
     // Recent: the latest events of any kind.
     const recent = within(screen.getByRole("list", { name: "Recent" })).getAllByRole("listitem");
     expect(recent.map((li) => li.getAttribute("data-kind"))).toEqual(["change", "deploy", "incident", "decision"]);
+  });
+
+  it("separates recovered flapping items and keeps the header normal", async () => {
+    const recovered = item({ key: "restarted", title: "Recovered worker", flapping: true, failures_24h: 18 });
+    stubFetch(() => ({ body: overview({ attention_count: 0, attention: [recovered] }) }));
+    const { container } = show();
+    expect(await screen.findByText("All systems normal")).toBeInTheDocument();
+    expect(screen.getByText("Nothing needs attention")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Needs attention" })).toBeNull();
+    const restarted = screen.getByText("Restarted recently · 1").closest("details")!;
+    expect(restarted.open).toBe(false);
+    expect(within(restarted).getByText("failed 18 times in 24 h")).toBeInTheDocument();
+    expect([...container.querySelector(".sh-overview")!.children].map((e) => e.className)).toEqual([
+      expect.stringContaining("sh-calm"), "sh-hosts-section", expect.stringContaining("sh-restarted"), expect.stringContaining("sh-healthy"), expect.stringContaining("sh-recent"),
+    ]);
+  });
+
+  it("shows hypothetical impact for warnings", async () => {
+    const warning = { ...overview().attention[0]!, severity: "warn" as const };
+    stubFetch(() => ({ body: overview({ attention: [warning] }) }));
+    show("/server-health?item=catalog%3Agmaps-server");
+    const dialog = await screen.findByRole("dialog", { name: "gmaps-server" });
+    expect(screen.getByText("affects 1")).toBeInTheDocument();
+    expect(within(dialog).getByText("If it goes down")).toBeInTheDocument();
+    expect(within(dialog).getByText("Would break")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/criticality/)).toBeNull();
+  });
+
+  it("shows collecting instead of a line or dot for sparse history", async () => {
+    const o = overview();
+    o.hosts[0]!.history!.tctl = [null, 95, null];
+    stubFetch(() => ({ body: o }));
+    show();
+    const card = (await screen.findByText("nezopt", { selector: ".sh-host-name" })).closest("a")!;
+    const chart = within(card).getByRole("img", { name: /^CPU temperature/ });
+    expect(within(chart).getByText("collecting…")).toBeInTheDocument();
+    expect(chart.querySelector("svg, .sh-chart-dot")).toBeNull();
+  });
+
+  it("hides repos until toggled and counts only visible services", async () => {
+    const o = overview();
+    o.services[0]!.projects[0]!.components.push({ id: "source", name: "Source repo", kind: "repo", state: "ok", host: null, criticality: "low", description: null });
+    stubFetch(() => ({ body: o }));
+    show("/server-health/services");
+    const toggle = await screen.findByRole("button", { name: "Show repos (1)" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("link", { name: /Source repo/ })).toBeNull();
+    expect(screen.getAllByText("3 services")).toHaveLength(2);
+    fireEvent.click(toggle);
+    expect(screen.getByRole("link", { name: /Source repo/ })).toBeInTheDocument();
+    expect(screen.getAllByText("4 services")).toHaveLength(2);
+    expect(screen.queryByText("Low", { selector: ".sh-crit" })).toBeNull();
+  });
+
+  it("keeps Recent to five compact rows and expands details only in timeline tabs", async () => {
+    const events = Array.from({ length: 7 }, (_, n) => event({ title: `Event ${n}`, kind: "incident", at: ago(n), detail: `Detail ${n}`, host: "nezopt", project: "secretary" }));
+    stubFetch(() => ({ body: overview({ timeline: events }) }));
+    show();
+    const recent = await screen.findByRole("list", { name: "Recent" });
+    expect(within(recent).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(recent).queryByText("Detail 0")).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "Incidents" }));
+    const detail = await screen.findByText("Detail 0");
+    const row = detail.closest("li")!;
+    fireEvent.click(within(row).getByRole("button", { name: "more" }));
+    expect(detail).toHaveClass("sh-tl-detail--expanded");
+    expect(within(row).getByRole("button", { name: "less" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("opens an attention item from ?item= with its impact, runbook and actions", async () => {

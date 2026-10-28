@@ -1,6 +1,6 @@
 import { A } from "@solidjs/router";
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { filterServices, isUnhealthy, type ServiceGroup } from "../../api/systemOverview";
+import { allComponents, filterServices, isUnhealthy, type ServiceGroup } from "../../api/systemOverview";
 import { t } from "../../i18n";
 import { Card, EmptyState } from "../page";
 import { componentHref, type Links } from "./links";
@@ -11,7 +11,11 @@ import { Chip, Dot, levelLabel, StateWord } from "./parts";
 
 export function ServicesTab(props: { services: ServiceGroup[]; links: Links }) {
   const [query, setQuery] = createSignal("");
-  const groups = createMemo(() => filterServices(props.services, query()));
+  const [showRepos, setShowRepos] = createSignal(false);
+  const repoCount = () => allComponents(props.services).filter((c) => c.kind === "repo").length;
+  const groups = createMemo(() => filterServices(props.services.map((g) => ({ ...g,
+    projects: g.projects.map((p) => ({ ...p, components: p.components.filter((c) => showRepos() || c.kind !== "repo") })).filter((p) => p.components.length),
+  })).filter((g) => g.projects.length), query()));
   const searching = () => query().trim().length > 0;
   let input: HTMLInputElement | undefined;
 
@@ -42,6 +46,9 @@ export function ServicesTab(props: { services: ServiceGroup[]; links: Links }) {
           value={query()}
           onInput={(e) => setQuery(e.currentTarget.value)}
         />
+        <button type="button" class="pg-btn" aria-pressed={showRepos()} onClick={() => setShowRepos(!showRepos())}>
+          {t("serverHealth.showRepos", { count: repoCount() })}
+        </button>
       </div>
       <Show
         when={groups().length}
@@ -58,7 +65,7 @@ export function ServicesTab(props: { services: ServiceGroup[]; links: Links }) {
                 <Dot state={g.state} />
                 <span class="sh-group-name">{g.name}</span>
                 <StateWord state={g.state} />
-                <span class="pg-muted sh-group-count">{t("serverHealth.componentCount", { count: g.projects.reduce((n, p) => n + p.components.length, 0) })}</span>
+                <span class="pg-muted sh-group-count">{t("serverHealth.serviceCount", { count: g.projects.reduce((n, p) => n + p.components.length, 0) })}</span>
               </summary>
               <For each={g.projects}>
                 {(p) => (
@@ -67,7 +74,7 @@ export function ServicesTab(props: { services: ServiceGroup[]; links: Links }) {
                       <Dot state={p.state} />
                       <span class="sh-project-name">{p.id}</span>
                       <StateWord state={p.state} />
-                      <span class="pg-muted sh-group-count">{t("serverHealth.componentCount", { count: p.components.length })}</span>
+                      <span class="pg-muted sh-group-count">{t("serverHealth.serviceCount", { count: p.components.length })}</span>
                     </summary>
                     <ul class="sh-comps" aria-label={p.id}>
                       <For each={p.components}>
@@ -77,13 +84,13 @@ export function ServicesTab(props: { services: ServiceGroup[]; links: Links }) {
                               <Dot state={c.state} />
                               <span class="sh-comp-main">
                                 <span class="sh-comp-name">{c.name}</span>
-                                <StateWord state={c.state} />
+                                <Show when={isUnhealthy(c.state)}><StateWord state={c.state} /></Show>
                               </span>
                               <span class="sh-comp-tags">
                                 <Show when={c.host}>
                                   <Chip>{c.host}</Chip>
                                 </Show>
-                                <Show when={c.criticality}>
+                                <Show when={c.criticality === "high" || c.criticality === "critical"}>
                                   <span class="sh-crit" data-level={c.criticality}>
                                     {levelLabel(c.criticality!)}
                                   </span>

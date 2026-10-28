@@ -148,7 +148,7 @@
 
 .sh-hosts {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
   margin: 0;
   padding: 0;
@@ -164,8 +164,8 @@
 @container pg (max-width: 599px) {
   .sh-page .sh-hosts {
     display: flex;
-    margin-inline: calc(-1 * var(--pad-left, 16px)) calc(-1 * var(--pad-right, 16px));
-    padding: 0 var(--pad-right, 16px) 4px var(--pad-left, 16px);
+    max-width: 100%;
+    padding: 0 0 4px;
     overflow-x: auto;
     scroll-snap-type: x mandatory;
     scroll-padding-inline: var(--pad-left, 16px);
@@ -173,14 +173,8 @@
   }
 
   .sh-hosts > li {
-    flex: 0 0 min(84%, 320px);
+    flex: 0 0 280px;
     scroll-snap-align: start;
-  }
-}
-
-@container pg (min-width: 600px) and (max-width: 879px) {
-  .sh-hosts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1167,4 +1161,54 @@
 
 .sh-refresh:disabled {
   cursor: default;
+}
+
+/* Compact overview cards; full metrics and reports live in the host sheet. */
+.sh-host { padding: 12px; gap: 6px; min-height: 128px; box-sizing: border-box; }
+.sh-host-head { gap: 5px; }
+.sh-host-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.sh-host-role { flex: 1; font-size: 11px; }
+.sh-host-uptime { margin-left: auto; color: var(--pg-muted); font-size: 11px; white-space: nowrap; }
+.sh-host .sh-host-os { margin: 0; }
+.sh-host .sh-sparks { gap: 8px; margin-top: 0; }
+.sh-spark { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; }
+.sh-spark-head { flex: none; flex-direction: row; gap: 3px; align-items: baseline; margin: 0; }
+.sh-spark-name { max-width: 62px; font-size: 10px; }
+.sh-spark-value { font-size: 11px; }
+.sh-spark .sh-chart { flex: 1 0 48px; max-width: 64px; min-width: 0; }
+.sh-spark .sh-chart-plot { height: 18px; }
+.sh-collecting { display: block; color: var(--pg-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-chart--large .sh-collecting { padding-block: 48px; text-align: center; font-size: 13px; }
+.sh-host .sh-disks { margin-top: 0 !important; }
+.sh-host .sh-disk-text { justify-content: flex-start; gap: 4px; font-size: 11px; }
+.sh-host .sh-disk-free { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-host .sh-disk-pct { color: inherit; font-weight: 400; }
+.sh-host .sh-host-note { margin-top: 0 !important; padding: 8px; }
+.sh-restarted-list { list-style: none; padding: 0 16px 12px; margin: 0; }
+.sh-restarted-list a { display: flex; align-items: center; gap: 8px; padding: 6px 0; color: var(--pg-muted); text-decoration: none; font-size: 12px; }
+.sh-restarted-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sh-tl-main { min-width: 0; }
+.sh-tl-row, .sh-recent .sh-tl-row { grid-template-columns: 24px minmax(0, 1fr); gap: 10px; }
+.sh-recent .sh-kind { grid-row: auto; }
+.sh-tl-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.sh-tl-meta { color: var(--pg-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-tl-detail { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sh-tl-detail--expanded { display: block; }
+.sh-more { border: 0; padding: 0; background: none; color: var(--pg-muted); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+.sh-search { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.sh-page .pg-inner > *, .sh-overview > *, .sh-services > * { min-width: 0; }
+@container pg (max-width: 879px) {
+  .sh-page .pg-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .sh-page .pg-titles { grid-column: 1; grid-row: 1; }
+  .sh-page .pg-head-actions { display: contents; }
+  .sh-page .sh-refresh { grid-column: 2; grid-row: 1; align-self: start; }
+  .sh-page .pg-seg { grid-column: 1 / -1; grid-row: 2; min-width: 0; max-width: 100%; overflow-x: auto; }
+  .sh-page .pg-seg-item { overflow: visible; text-overflow: clip; }
+}
+@container pg (max-width: 599px) {
+  .sh-status { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+  .sh-updated { grid-column: 2; }
+  .sh-updated-dot { display: none; }
+  .sh-restarted-list a { flex-wrap: wrap; }
+  .sh-group-head, .sh-project-head { flex-wrap: wrap; }
 }

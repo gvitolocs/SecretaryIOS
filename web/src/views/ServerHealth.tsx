@@ -1,11 +1,11 @@
 import { A, useLocation, useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { toApiError } from "../api/client";
-import { allComponents, attentionTotal, systemOverviewApi, type SourceName, type SystemOverview } from "../api/systemOverview";
+import { allComponents, attentionTotal, flappingTotal, systemOverviewApi, type SourceName, type SystemOverview } from "../api/systemOverview";
 import { BackIcon, RefreshIcon } from "../components/Icons";
 import { relativeTime } from "../components/NotificationBell";
 import { Card, EmptyState, ErrorState, LoadingState, Page, PageHeader, SectionNav, Sheet } from "../components/page";
-import { AttentionDetail, AttentionRows, ComponentDetail, HealthyChecks } from "../components/server/Attention";
+import { AttentionDetail, AttentionRows, RestartedRecently, ComponentDetail, HealthyChecks } from "../components/server/Attention";
 import { HostCard, HostDetail } from "../components/server/Hosts";
 import { hostHref, type Links } from "../components/server/links";
 import { Dot } from "../components/server/parts";
@@ -125,8 +125,8 @@ export default function ServerHealthView() {
     const d = data();
     if (!d) return null;
     const n = attentionTotal(d);
-    if (n === 0 && d.overall === "ok") return { state: "ok", text: t("serverHealth.allNormal") } as const;
-    return { state: d.overall === "crit" ? "crit" : "warn", text: t("serverHealth.needAttentionCount", { count: Math.max(1, n) }) } as const;
+    if (n === 0) return { state: "ok", text: t("serverHealth.allNormal") } as const;
+    return { state: d.overall === "crit" ? "crit" : "warn", text: t("serverHealth.needAttentionCount", { count: n }) } as const;
   };
   const updated = () => {
     const d = data();
@@ -159,7 +159,7 @@ export default function ServerHealthView() {
                 <Dot state={s().state} />
                 <span class="sh-status-text">{s().text}</span>
                 <Show when={updated()}>
-                  <span> · {updated()}</span>
+                  <span class="sh-updated"><span class="sh-updated-dot"> · </span>{updated()}</span>
                 </Show>
               </span>
             )}
@@ -236,6 +236,15 @@ function Overview(props: { data: SystemOverview; links: Links }) {
   const d = () => props.data;
   return (
     <div class="sh-overview">
+      <Show when={d().attention.some((a) => !a.flapping)} fallback={
+        <Card class="sh-calm" label={t("serverHealth.needsAttention")}>
+          <EmptyState title={t("serverHealth.nothingNeeds")} text={t("serverHealth.nothingNeedsText")} />
+        </Card>
+      }>
+        <Card title={t("serverHealth.needsAttention")} list class="sh-attention">
+          <AttentionRows items={d().attention.filter((a) => !a.flapping)} links={props.links} />
+        </Card>
+      </Show>
       <section class="sh-hosts-section" aria-labelledby="sh-hosts-title">
         <h2 id="sh-hosts-title" class="sr-only">
           {t("serverHealth.hosts")}
@@ -253,28 +262,13 @@ function Overview(props: { data: SystemOverview; links: Links }) {
         </Show>
       </section>
 
-      <div class="sh-overview-grid">
-        <div class="sh-col">
-          <Show
-            when={d().attention.length}
-            fallback={
-              <Card class="sh-calm" label={t("serverHealth.needsAttention")}>
-                <EmptyState title={t("serverHealth.nothingNeeds")} text={t("serverHealth.nothingNeedsText")} />
-              </Card>
-            }
-          >
-            <Card title={t("serverHealth.needsAttention")} list class="sh-attention">
-              <AttentionRows items={d().attention} links={props.links} />
-            </Card>
-          </Show>
-          <Show when={d().checks_ok > 0}>
-            <HealthyChecks count={d().checks_ok} services={d().services} links={props.links} />
-          </Show>
-        </div>
-        <aside class="sh-col sh-col--side" aria-label={t("serverHealth.recent")}>
-          <RecentCard items={d().timeline} />
-        </aside>
-      </div>
+      <Show when={d().attention.some((a) => a.flapping)}>
+        <RestartedRecently items={d().attention.filter((a) => a.flapping)} count={flappingTotal(d())} links={props.links} />
+      </Show>
+      <Show when={d().checks_ok > 0}>
+        <HealthyChecks count={d().checks_ok} services={d().services} links={props.links} />
+      </Show>
+      <RecentCard items={d().timeline} />
     </div>
   );
 }

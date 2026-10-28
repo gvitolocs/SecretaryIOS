@@ -1,8 +1,8 @@
-import { createMemo, For, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { dayKey, dayRelation, groupByDay, type TimelineItem, type TimelineKind } from "../../api/systemOverview";
 import { locale, t } from "../../i18n";
 import { Card, EmptyState } from "../page";
-import { Chip, KindIcon, levelLabel, stateLabel } from "./parts";
+import { KindIcon, levelLabel, stateLabel } from "./parts";
 
 // The timeline: incidents and state changes, or deploys and decisions, grouped by day; and the
 // latest few items of any kind in the Overview's "Recent" column.
@@ -17,23 +17,30 @@ function dayLabel(day: string): string {
 
 const hhmm = (iso: string) => new Intl.DateTimeFormat(locale(), { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
 
-export function TimelineRow(props: { item: TimelineItem; withDay?: boolean }) {
+export function TimelineRow(props: { item: TimelineItem; withDay?: boolean; compact?: boolean }) {
   const i = () => props.item;
+  const [expanded, setExpanded] = createSignal(false);
   const when = () => {
     const day = dayKey(i().at);
     return props.withDay && dayRelation(day) !== "today" ? `${dayLabel(day)} ${hhmm(i().at)}` : hhmm(i().at);
   };
   return (
     <li class="sh-tl-row" data-kind={i().kind}>
-      <time class="sh-tl-time" dateTime={i().at}>
-        {when()}
-      </time>
       <KindIcon kind={i().kind} />
       <div class="sh-tl-main">
         <p class="sh-tl-title">{i().title}</p>
-        <Show when={i().detail}>
-          <p class="sh-tl-detail">{i().detail}</p>
+        <p class="sh-tl-meta">
+          {[i().project, i().host !== i().project ? i().host : null].filter(Boolean).join(" · ")}
+          <Show when={i().project || i().host}> · </Show>
+          <time dateTime={i().at}>{when()}</time>
+        </p>
+        <Show when={!props.compact && i().detail}>
+          <p class="sh-tl-detail" classList={{ "sh-tl-detail--expanded": expanded() }}>{i().detail}</p>
+          <button class="sh-more" type="button" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
+            {t(expanded() ? "serverHealth.less" : "serverHealth.more")}
+          </button>
         </Show>
+        <Show when={!props.compact}>
         <p class="sh-tl-tags">
           <Show when={i().severity}>
             <span class="sh-sev" data-level={i().severity}>
@@ -47,13 +54,8 @@ export function TimelineRow(props: { item: TimelineItem; withDay?: boolean }) {
               <span data-state={i().to}>{stateLabel(i().to!)}</span>
             </span>
           </Show>
-          <Show when={i().project}>
-            <Chip>{i().project}</Chip>
-          </Show>
-          <Show when={i().host && i().host !== i().project}>
-            <Chip>{i().host}</Chip>
-          </Show>
         </p>
+        </Show>
       </div>
     </li>
   );
@@ -91,7 +93,7 @@ export function RecentCard(props: { items: TimelineItem[] }) {
     <Card title={t("serverHealth.recent")} list class="sh-recent">
       <Show when={latest().length} fallback={<EmptyState text={t("serverHealth.noRecent")} />}>
         <ol class="sh-tl" aria-label={t("serverHealth.recent")}>
-          <For each={latest()}>{(item) => <TimelineRow item={item} withDay />}</For>
+          <For each={latest()}>{(item) => <TimelineRow item={item} withDay compact />}</For>
         </ol>
       </Show>
     </Card>

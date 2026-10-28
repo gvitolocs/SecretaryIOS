@@ -82,6 +82,7 @@ export interface AttentionItem {
   details: string[];
   since: string;
   failures_24h: number | null;
+  flapping?: boolean;
   impact: Impact | null;
   caused: string[];
   logs: string | null;
@@ -128,6 +129,7 @@ export interface SystemOverview {
   generated_at: string;
   overall: Overall;
   attention_count: number;
+  flapping_count?: number;
   checks_ok: number;
   checks_total: number;
   sources: Record<SourceName, SourceStatus>;
@@ -160,14 +162,13 @@ export function diskLevel(usedPct: number): "ok" | "warn" | "crit" {
   return usedPct >= 90 ? "crit" : usedPct >= 80 ? "warn" : "ok";
 }
 
-/**
- * How many things the header counts as needing attention: the attention items plus unhealthy hosts
- * that are not already an item themselves (a host's catalog component is usually in the list).
- */
+/** The server's count excludes recovered, flapping items and extra host counts. */
 export function attentionTotal(o: SystemOverview): number {
-  const listed = new Set(o.attention.map((a) => a.component_id).filter(Boolean));
-  const hosts = o.hosts.filter((h) => (h.state === "warn" || h.state === "crit") && !(h.component_id && listed.has(h.component_id)));
-  return o.attention.length + hosts.length;
+  return o.attention_count;
+}
+
+export function flappingTotal(o: SystemOverview): number {
+  return o.flapping_count ?? o.attention.filter((a) => a.flapping).length;
 }
 
 /** The local calendar day of `iso` as "YYYY-MM-DD". */
@@ -285,10 +286,11 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 
 /**
  * SVG paths for a series in a `w` × `h` box (y from `lo` at the bottom to `hi` at the top, values
- * clamped). Nulls break the line; a lone point between gaps becomes a short flat stroke.
+ * clamped). Nulls break the line; fewer than two samples produce no paths.
  */
 export function chartPaths(values: (number | null)[], w: number, h: number, [lo, hi]: [number, number]): ChartPaths {
   const n = values.length;
+  if (values.filter((v) => v != null && Number.isFinite(v)).length < 2) return { line: "", area: "", last: null };
   const xAt = (i: number) => (n <= 1 ? w : (i / (n - 1)) * w);
   const yAt = (v: number) => {
     const f = hi > lo ? (Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo) : 0.5;
@@ -303,11 +305,10 @@ export function chartPaths(values: (number | null)[], w: number, h: number, [lo,
     } else run.push([xAt(i), yAt(v)]);
   });
   if (run.length) runs.push(run);
-  const half = n > 1 ? w / (n - 1) / 2 : 1;
   const line = runs
+    .filter((pts) => pts.length > 1)
     .map((pts) => {
-      const p = pts.length === 1 ? [[Math.max(0, pts[0]![0] - half), pts[0]![1]] as [number, number], [Math.min(w, pts[0]![0] + half), pts[0]![1]] as [number, number]] : pts;
-      return p.map(([x, y], i) => `${i ? "L" : "M"}${r2(x)} ${r2(y)}`).join(" ");
+      return pts.map(([x, y], i) => `${i ? "L" : "M"}${r2(x)} ${r2(y)}`).join(" ");
     })
     .join(" ");
   const area = runs

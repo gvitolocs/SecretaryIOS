@@ -3,6 +3,7 @@ import { event, overview } from "../test/serverFixtures";
 import {
   attentionFor,
   attentionTotal,
+  flappingTotal,
   chartPaths,
   chartScale,
   dayKey,
@@ -66,11 +67,14 @@ describe("system overview helpers", () => {
     expect(attentionFor(o.attention, "secretary-server")).toBeUndefined();
   });
 
-  it("counts unhealthy hosts once when their component is already in attention", () => {
+  it("uses the server attention count and falls back for missing flapping counts", () => {
     const o = overview();
-    expect(attentionTotal(o)).toBe(4);
-    o.attention.push({ ...o.attention[0]!, key: "catalog:nezopt", component_id: "nezopt" });
-    expect(attentionTotal(o)).toBe(4);
+    expect(attentionTotal(o)).toBe(2);
+    o.attention.push({ ...o.attention[0]!, key: "catalog:nezopt", component_id: "nezopt", flapping: true });
+    expect(flappingTotal(o)).toBe(1);
+    o.flapping_count = 18;
+    expect(flappingTotal(o)).toBe(18);
+    expect(attentionTotal(o)).toBe(2);
   });
 
   it("computes stats and scales", () => {
@@ -87,9 +91,11 @@ describe("system overview helpers", () => {
     expect(p.line).toBe("M0 10 L25 0 M75 0 L100 10");
     expect(p.area).toBe("M0 10 L0 10 L25 0 L25 10 Z M75 10 L75 0 L100 10 L100 10 Z");
     expect(p.last).toEqual({ x: 1, y: 1 });
-    // A lone point between gaps is drawn as a short flat stroke, without an area.
+    // Insufficient history never draws a tick, line, area or dot.
     const lone = chartPaths([null, 5, null], 100, 10, [0, 10]);
-    expect(lone.line).toBe("M25 5 L75 5");
+    expect(lone.line).toBe("");
+    expect(lone.last).toBeNull();
+    expect(chartPaths([5], 100, 10, [0, 10])).toEqual({ line: "", area: "", last: null });
     expect(lone.area).toBe("");
     expect(chartPaths([null], 100, 10, [0, 10]).last).toBeNull();
   });

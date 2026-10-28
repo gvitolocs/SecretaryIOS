@@ -43,6 +43,7 @@ export function Chart(props: { metric: Metric; values: (number | null)[]; curren
   const hour = (ms: number) => new Intl.DateTimeFormat(locale(), { hour: "2-digit", minute: "2-digit" }).format(ms);
   return (
     <div class="sh-chart" classList={{ "sh-chart--large": !!props.large }} role="img" aria-label={chartLabel(props.metric, props.values, props.current)}>
+      <Show when={props.values.filter((v) => v != null && Number.isFinite(v)).length >= 2} fallback={<span class="sh-collecting">{t("serverHealth.collecting")}</span>}>
       <div class="sh-chart-plot">
         <svg viewBox={`0 0 ${W} ${H()}`} preserveAspectRatio="none" aria-hidden="true">
           <For each={ticks()}>{(tk) => <line class="sh-chart-grid" x1={tk.x * W} x2={tk.x * W} y1="0" y2={H()} vector-effect="non-scaling-stroke" />}</For>
@@ -69,6 +70,7 @@ export function Chart(props: { metric: Metric; values: (number | null)[]; curren
             )}
           </For>
         </div>
+      </Show>
       </Show>
     </div>
   );

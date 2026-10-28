@@ -9,8 +9,6 @@ import { componentHref, type Links } from "./links";
 
 // The hosts row on the Overview (compact cards) and a host's detail in the sheet.
 
-const CARD_DISKS = 3;
-
 function osLine(h: Host): string {
   return [h.os, h.kernel].filter(Boolean).join(" · ");
 }
@@ -34,7 +32,7 @@ function hostNote(h: Host): string | null {
   return null;
 }
 
-export function DiskBars(props: { disks: Disk[] }) {
+export function DiskBars(props: { disks: Disk[]; more?: number }) {
   return (
     <ul class="sh-disks">
       <For each={props.disks}>
@@ -43,10 +41,9 @@ export function DiskBars(props: { disks: Disk[] }) {
             <div class="sh-disk-text" aria-hidden="true">
               <span class="sh-disk-mount">{d.mount}</span>
               <span class="sh-disk-free">
-                <Show when={diskLevel(d.used_pct) !== "ok"}>
-                  <span class="sh-disk-pct">{num(d.used_pct)}% · </span>
-                </Show>
+                <span class="sh-disk-pct">{num(d.used_pct)}% · </span>
                 {t("serverHealth.diskFree", { free: gb(d.free_gb) })}
+                <Show when={props.more}> · {t("serverHealth.moreDisks", { count: props.more! })}</Show>
               </span>
             </div>
             <div class="sh-bar" aria-hidden="true">
@@ -70,9 +67,9 @@ export function HostCard(props: { host: Host; href: string }) {
         <Show when={h().role}>
           <span class="sh-host-role">{h().role}</span>
         </Show>
-        <StateWord state={h().state} class="sh-host-state" />
+        <span class="sr-only">{stateLabel(h().state)}</span>
+        <Show when={h().uptime}><span class="sh-host-uptime">{t("serverHealth.uptime", { time: h().uptime! })}</span></Show>
       </div>
-      <HostMeta host={h()} />
       <Show when={osLine(h())}>
         <p class="sh-host-os" title={osLine(h())}>
           {osLine(h())}
@@ -92,7 +89,7 @@ export function HostCard(props: { host: Host; href: string }) {
           <Spark metric="mem" values={h().history?.mem ?? []} current={h().mem_used_pct} />
         </div>
         <Show when={h().disks.length}>
-          <DiskBars disks={h().disks.slice(0, CARD_DISKS)} />
+          <DiskBars disks={[...h().disks].sort((a, b) => b.used_pct - a.used_pct).slice(0, 1)} more={h().disks.length - 1} />
         </Show>
       </Show>
     </A>
@@ -102,7 +99,7 @@ export function HostCard(props: { host: Host; href: string }) {
 export function HostDetail(props: { host: Host; services: ServiceGroup[]; attention: AttentionItem[]; links: Links }) {
   const h = () => props.host;
   const components = createMemo(() => allComponents(props.services).filter((c) => c.host === h().id));
-  const attention = createMemo(() => props.attention.filter((a) => a.host === h().id));
+  const attention = createMemo(() => props.attention.filter((a) => a.host === h().id && !a.flapping));
   return (
     <div class="sh-detail">
       <div class="sh-detail-status">

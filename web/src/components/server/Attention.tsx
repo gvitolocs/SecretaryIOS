@@ -27,8 +27,8 @@ export function AttentionRows(props: { items: AttentionItem[]; links: Links; hid
             meta={
               <>
                 <span class="sh-meta-line">{forTime(a.since)}</span>
-                <Show when={a.impact?.broken.length}>
-                  <span class="sh-meta-line sh-breaks">{t("serverHealth.breaks", { count: a.impact!.broken.length })}</span>
+                <Show when={a.impact && (a.impact.broken.length + (a.severity === "warn" ? a.impact.degraded.length : 0))}>
+                  <span class="sh-meta-line sh-breaks">{t(a.severity === "warn" ? "serverHealth.affects" : "serverHealth.breaks", { count: a.impact!.broken.length + (a.severity === "warn" ? a.impact!.degraded.length : 0) })}</span>
                 </Show>
               </>
             }
@@ -99,7 +99,7 @@ export function AttentionDetail(props: { item: AttentionItem; links: Links }) {
           <Chip>{a().project}</Chip>
         </Show>
         <Show when={a().criticality}>
-          <span class="pg-muted">· {t("serverHealth.criticality", { level: levelLabel(a().criticality!) })}</span>
+          <Chip>{levelLabel(a().criticality!)}</Chip>
         </Show>
       </div>
       <p class="sh-summary">{a().summary}</p>
@@ -137,16 +137,16 @@ export function AttentionDetail(props: { item: AttentionItem; links: Links }) {
 
       <Show when={hasImpact()}>
         <section class="sh-section">
-          <h3>{t("serverHealth.impact")}</h3>
+          <h3>{t(a().severity === "warn" ? "serverHealth.ifDown" : "serverHealth.impact")}</h3>
           <dl class="sh-impact">
             <Show when={impact()!.broken.length}>
-              <dt>{t("serverHealth.impactBreaks")}</dt>
+              <dt>{t(a().severity === "warn" ? "serverHealth.wouldBreak" : "serverHealth.impactBreaks")}</dt>
               <dd>
                 <RefLinks refs={impact()!.broken} links={props.links} />
               </dd>
             </Show>
             <Show when={impact()!.degraded.length}>
-              <dt>{t("serverHealth.impactDegrades")}</dt>
+              <dt>{t(a().severity === "warn" ? "serverHealth.wouldDegrade" : "serverHealth.impactDegrades")}</dt>
               <dd>
                 <RefLinks refs={impact()!.degraded} links={props.links} />
               </dd>
@@ -259,6 +259,23 @@ export function HealthyChecks(props: { count: number; services: ServiceGroup[]; 
           )}
         </For>
       </div>
+    </details>
+  );
+}
+
+export function RestartedRecently(props: { items: AttentionItem[]; count: number; links: Links }) {
+  return (
+    <details class="pg-card sh-healthy sh-restarted">
+      <summary>{t("serverHealth.restartedRecently", { count: props.count })}</summary>
+      <ul class="sh-restarted-list">
+        <For each={props.items}>{(a) => (
+          <li><A href={itemHref(props.links, a.key)}>
+            <span class="sh-restarted-title">{a.title}</span>
+            <span>{t("serverHealth.failedTimes", { count: a.failures_24h ?? 0 })}</span>
+            <Show when={a.host}><Chip>{a.host}</Chip></Show>
+          </A></li>
+        )}</For>
+      </ul>
     </details>
   );
 }
