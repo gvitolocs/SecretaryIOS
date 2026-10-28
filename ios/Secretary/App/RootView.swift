@@ -98,7 +98,13 @@ struct MainTabs: View {
 
     private var tabs: some View {
         @Bindable var app = app
-        return TabView(selection: $app.selectedTab) {
+        let selection = Binding(get: { app.selectedTab }, set: { tab in
+            if tab == .chat {
+                NotificationCenter.default.post(name: .chatScrollToLatest, object: nil)
+            }
+            app.selectedTab = tab
+        })
+        return TabView(selection: selection) {
             NavigationStack { ChatView().lucinaStatusToolbar() }
                 .onAppear { PerfLog.tabAppeared(.chat) }
                 .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }

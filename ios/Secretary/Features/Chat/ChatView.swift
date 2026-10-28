@@ -1,6 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+extension Notification.Name {
+    static let chatScrollToLatest = Notification.Name("chatScrollToLatest")
+}
+
 /// The Chat tab, built from parts so other surfaces can reuse them:
 /// `[stage] + ChatTranscript + ChatComposer`. The app passes no stage: Lucina's 3D avatar
 /// lives in her own tab (Features/Lucina/LucinaTab.swift), so the chat loads no web view or
@@ -140,6 +144,9 @@ struct ChatTranscript: View {
                 guard let request else { return }
                 Task { await showOriginal(request.id, proxy) }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .chatScrollToLatest).receive(on: DispatchQueue.main)) { _ in
+                scrollToEnd(proxy)
+            }
             .onAppear { scrollToEnd(proxy, animated: false) }
         }
     }
@@ -202,10 +209,15 @@ struct ChatTranscript: View {
 
     private func loadOlder(_ proxy: ScrollViewProxy) {
         let anchor = store.items.first?.id
+        let wasAtBottom = atBottom
         Task {
             await store.loadOlder()
-            // Keep the message that was on top in place instead of jumping.
-            if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+            if wasAtBottom {
+                scrollToEnd(proxy, animated: false)
+            } else if let anchor {
+                // Keep the message that was on top in place when reading history.
+                proxy.scrollTo(anchor, anchor: .top)
+            }
         }
     }
 
