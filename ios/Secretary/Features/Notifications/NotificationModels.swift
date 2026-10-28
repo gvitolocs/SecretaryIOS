@@ -67,6 +67,9 @@ struct AppNotification: Decodable, Identifiable, Equatable, Sendable {
     let timelineId: String?
     let dedupKey: String?
     var read: Bool
+    /// A decision Lucina asks the owner about (`data: {kind: "decision", decisionId, options}`).
+    var decisionId: String? = nil
+    var decisionOptions: [String] = []
 
     var displayTitle: String { title ?? category.title }
 
@@ -98,9 +101,19 @@ struct AppNotification: Decodable, Identifiable, Equatable, Sendable {
         timelineId = try? c.decodeIfPresent(String.self, forKey: .timelineId)
         dedupKey = try? c.decodeIfPresent(String.self, forKey: .dedupKey)
         read = (try? c.decodeIfPresent(Bool.self, forKey: .read)) ?? false
+        if let d = try? c.decodeIfPresent(DecisionData.self, forKey: .data), d.kind == "decision", DecisionAnswer.isId(d.decisionId) {
+            decisionId = d.decisionId
+            decisionOptions = d.options ?? []
+        }
     }
 
-    private enum CodingKeys: String, CodingKey { case id, ts, category, title, body, route, channel, timelineId, dedupKey, read }
+    private struct DecisionData: Decodable {
+        let kind: String
+        let decisionId: String
+        let options: [String]?
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, ts, category, title, body, route, channel, timelineId, dedupKey, read, data }
 }
 
 /// Decodes an array, dropping elements that fail (unknown category, ...).
@@ -326,6 +339,16 @@ enum NotificationRoute {
         case "plugins", "notes", "tasks", "memos", "media", "films", "gallery", "drive": return .plugins
         default: return .chat
         }
+    }
+
+    /// `/decisions` or `/decisions/<id>`: the Decisions sheet. Returns the id ("" for the list).
+    static func decision(_ route: String) -> String? {
+        guard isSafe(route) else { return nil }
+        let path = route.split(separator: "?", maxSplits: 1).first.map(String.init) ?? route
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.first == "decisions" else { return nil }
+        if parts.count >= 2 { return DecisionAnswer.isId(parts[1]) ? parts[1] : nil }
+        return ""
     }
 
     /// `/memos` or `/memos/<id>` (a memo is ready): the memo screen. Returns the id ("" for the list).

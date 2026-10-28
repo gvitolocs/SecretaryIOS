@@ -113,6 +113,8 @@ final class AppModel {
     let notifications: NotificationCenterStore
     /// The owner's approvals: the prompt, its local notifications and the Face ID proof (/v1/approvals).
     let approvals: ApprovalsStore
+    /// Decisions Lucina asks the owner about (/v1/decisions): the sheet and the notification buttons.
+    let decisions: DecisionsStore
     /// Videos, audio and photos on the server (/v1/media), played with AVPlayer.
     let media: MediaPlayer
     /// The photo library on the server (/v1/media), shown by the Gallery plugin.
@@ -186,6 +188,12 @@ final class AppModel {
                            previews: { notificationStore.rules.settings.previews },
                            deviceLabel: { UIDevice.current.name })
         }
+        decisions = DecisionsStore(api: { DecisionsAPI(client: client) }, send: { text in
+            let request = ChatRequest(message: text, sessionId: chat.sessionId, clientMessageId: UUID().uuidString)
+            return try await SecretaryAPI(client: client).chat(request).reply
+        })
+        let decisionStore = decisions
+        notifications.decisionLookup = { id in await decisionStore.lookup(id) }
         var mediaBase = client.primaryURL
         #if DEBUG || SCREENSHOTS
         let selftest = Logger(subsystem: "tech.getsecretary.app", category: "GalleryImages")
@@ -476,6 +484,11 @@ final class AppModel {
     }
 
     /// `/memos/<id>` (the "memo ready" notification): the memo's detail screen.
+    /// A decision ("" or nil: the pending list).
+    func openDecision(_ id: String?) {
+        decisions.open(id?.isEmpty == true ? nil : id)
+    }
+
     func openMemo(_ id: String?) {
         selectedTab = .plugins
         showMemos = true

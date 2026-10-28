@@ -165,6 +165,8 @@ struct TimelineMeta: Codable, Equatable, Hashable, Sendable {
     var place: Place?
     /// With `kind == "share"`: the share (files from the share sheet or the chat composer) behind the item.
     var shareId: String?
+    /// With `kind == "decision"`: the decision (`dc-…`) Lucina asks about.
+    var decisionId: String?
     /// On Lucina's reply to a voice note: what she heard, and whether she wants it read aloud.
     var transcript: String?
     var voiceReply: Bool?

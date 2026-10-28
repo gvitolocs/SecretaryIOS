@@ -110,6 +110,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             await AppModel.shared.approvals.handleNotification(actionIdentifier: action, approvalId: approvalId, sensitive: sensitive)
             return
         }
+        // A decision: an option or the owner's words from the notification, or its tap opens it.
+        if let decisionId = info[DecisionNotifier.idKey] as? String {
+            let options = info[DecisionNotifier.optionsKey] as? [String] ?? []
+            let text = (response as? UNTextInputNotificationResponse)?.userText
+            guard let r = DecisionNotifier.response(actionIdentifier: response.actionIdentifier, userText: text) else { return }
+            await Task { @MainActor in
+                let app = AppModel.shared
+                switch r {
+                case .open: app.openDecision(decisionId)
+                case .option(let i) where options.indices.contains(i):
+                    await app.decisions.answer(id: decisionId, index: i, option: options[i])
+                case .option: app.openDecision(decisionId)
+                case .words(let w): await app.decisions.answer(id: decisionId, words: w)
+                }
+            }.value
+            return
+        }
         let route = info[LocalNotifier.routeKey] as? String
         let id = info[LocalNotifier.idKey] as? String
         await MainActor.run {
@@ -122,6 +139,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 if let route, NotificationRoute.isSafe(route), Place.fromRoute(route) != nil { app.open(route: route) }
                 if let route, NotificationRoute.opensDealsMap(route) { app.showDealsMap = true }
                 if let route, let memo = NotificationRoute.memo(route) { app.openMemo(memo.isEmpty ? nil : memo) }
+                if let route, let decision = NotificationRoute.decision(route) { app.openDecision(decision) }
             }
         }
     }

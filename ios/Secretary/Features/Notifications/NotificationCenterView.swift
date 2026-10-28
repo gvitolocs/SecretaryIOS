@@ -64,6 +64,12 @@ struct NotificationCenterView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Decisions", systemImage: "checklist") {
+                        dismiss()
+                        app.openDecision(nil)
+                    }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Mark all read") { Task { await store.markAllRead() } }
                         .disabled(store.unread == 0)
@@ -88,6 +94,7 @@ struct NotificationCenterView: View {
                     if NotificationRoute.opensDealsMap(n.route) { app.showDealsMap = true }
                     if let memo = NotificationRoute.memo(n.route) { app.openMemo(memo.isEmpty ? nil : memo) }
                     dismiss()
+                    if let decision = n.decisionId ?? NotificationRoute.decision(n.route) { app.openDecision(decision) }
                 }
             } label: {
                 NotificationRow(notification: n)

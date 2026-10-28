@@ -124,6 +124,10 @@ struct MainTabs: View {
         // sets the others' secondary colour at launch).
         .tint(LucinaTokens.TabBar.active)
         // Settings: a sheet from the gear button in every tab's toolbar.
+        // A decision Lucina asks about (her push, the bell's Decisions button, a `/decisions` route).
+        .sheet(isPresented: Binding(get: { app.decisions.presented }, set: { app.decisions.presented = $0 })) {
+            DecisionsSheet()
+        }
         .sheet(isPresented: $app.showSettings) {
             NavigationStack {
                 SettingsView()

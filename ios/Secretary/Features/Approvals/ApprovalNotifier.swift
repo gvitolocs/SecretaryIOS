@@ -67,10 +67,14 @@ final class ApprovalNotifier: ApprovalNotifying {
         let approve = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"), options: [.authenticationRequired])
         let approveInApp = UNNotificationAction(identifier: approveAction, title: String(localized: "Approve"), options: [.authenticationRequired, .foreground])
         let deny = UNNotificationAction(identifier: denyAction, title: String(localized: "Deny"), options: [.destructive])
-        center.setNotificationCategories([
+        let mine: Set<UNNotificationCategory> = [
             UNNotificationCategory(identifier: category, actions: [approve, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: sensitiveCategory, actions: [approveInApp, deny], intentIdentifiers: [], options: []),
-        ])
+        ]
+        // Decision categories (DecisionNotifier) registered earlier keep their buttons.
+        center.getNotificationCategories { existing in
+            center.setNotificationCategories(mine.union(existing.filter { $0.identifier.hasPrefix(DecisionNotifier.prefix) }))
+        }
     }
 
     static func content(for item: ApprovalItem, previews: Bool) -> UNMutableNotificationContent {

@@ -77,6 +77,11 @@ final class LocalNotifier {
 
     /// An inbox notification, now.
     func post(_ n: AppNotification, previews: Bool = true) async {
+        if let id = n.decisionId {
+            // Its own category: long-press shows one button per option; a tap opens the decision.
+            await DecisionNotifier.post(id: id, title: n.displayTitle, body: n.body, options: n.decisionOptions, previews: previews)
+            return
+        }
         let body = previews ? n.body : String(localized: "Open Secretary to read it.")
         let request = UNNotificationRequest(identifier: "inbox.\(n.id)",
                                             content: content(title: n.displayTitle, body: body, category: n.category, route: n.route, id: n.id),
