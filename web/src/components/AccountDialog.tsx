@@ -44,7 +44,8 @@ export function AccountDialog(props: {
   onSignOut?: () => void;
   signingOut?: boolean;
 }) {
-  const part = () => props.section ?? "account";
+  // Desktop sections: approvals (and this Mac's Touch ID) live under Notification settings.
+  const part = () => (props.section === "approvals" ? "notifications" : (props.section ?? "account"));
   const deviceName = () => { const s = session(); return s.status === "authed" ? s.deviceName : null; };
   const [current, setCurrent] = createSignal("");
   const [next, setNext] = createSignal("");
