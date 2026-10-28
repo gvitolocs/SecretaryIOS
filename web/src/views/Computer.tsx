@@ -380,9 +380,14 @@ export default function ComputerView() {
     }
   };
 
+  /** The page is gone: a give-back, renewal or retry still in flight must not open a view. */
+  let disposed = false;
+  onCleanup(() => (disposed = true));
+
   /** Mint a view for the current sandbox and mode; renew it a couple of minutes before it expires. */
   const openView = async (kind: "watch" | "control") => {
     window.clearTimeout(renewTimer);
+    if (disposed) return;
     if (mode() !== "live" || desk()) {
       setView(null);
       return;
@@ -413,6 +418,7 @@ export default function ComputerView() {
   /** The viewer is down (an error page in the frame, a failed stream, Lucina away): retry with backoff. */
   const reconnect = () => {
     window.clearTimeout(readyTimer);
+    if (disposed) return;
     if (retryTimer !== undefined || mode() !== "live" || desk()) return;
     setReconnecting(true);
     const delay = (RECONNECT_SECS[Math.min(retries, RECONNECT_SECS.length - 1)] ?? 8) * 1000;
