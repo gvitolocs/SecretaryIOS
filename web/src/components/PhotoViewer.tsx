@@ -55,7 +55,7 @@ export interface PhotoViewerProps {
   actions?: ViewerActions;
   /** The picture at `index` failed to load (e.g. HEIC in a browser without HEIC). */
   onImageError?: (index: number) => void;
-  /** A floating pill of extra buttons at the bottom (`.pv-btn`s); hidden with the other controls. */
+  /** The top bar's extra buttons (`.pv-btn`s); hidden with the other controls. */
   toolbar?: JSX.Element;
   /** A panel beside the picture (a bottom sheet on phones); the stage shrinks to make room for it. */
   panel?: JSX.Element;
@@ -88,6 +88,8 @@ const TAP_SLOP = 6;
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 280;
 const SETTLE_MS = 220;
+/** A finger that rests this long before lifting has no throw left. */
+const RELEASE_PAUSE_MS = 50;
 
 type SaveState = { phase: "idle" } | { phase: "saving"; percent: number } | { phase: "saved"; duplicate: boolean } | { phase: "error" };
 
@@ -191,19 +193,30 @@ export function PhotoViewer(props: PhotoViewerProps) {
 
   // ---- moving and closing -------------------------------------------------------------------
 
+  let settleTimer: number | undefined;
+  let settled: (() => void) | undefined;
+  const finishSettle = () => {
+    window.clearTimeout(settleTimer);
+    const done = settled;
+    settled = undefined;
+    done?.();
+    setAnimating(false);
+  };
   const settle = (then: () => void) => {
+    finishSettle();
+    settled = then;
     setAnimating(true);
-    window.setTimeout(() => {
-      then();
-      setAnimating(false);
-    }, SETTLE_MS);
+    settleTimer = window.setTimeout(finishSettle, SETTLE_MS);
   };
 
   /** To the next (1) or previous (-1) item, sliding when `animate`. */
   const move = (delta: number, animate = false) => {
     const next = neighbour(delta);
     if (next === null) {
-      if (animate) settle(() => setPagerDx(0));
+      if (animate) {
+        settle(() => {});
+        setPagerDx(0);
+      }
       return;
     }
     if (!animate) {
@@ -211,13 +224,11 @@ export function PhotoViewer(props: PhotoViewerProps) {
       props.onIndex(next);
       return;
     }
-    setAnimating(true);
-    setPagerDx(-delta * (size().w + PAGE_GAP));
-    window.setTimeout(() => {
-      setAnimating(false);
+    settle(() => {
       setPagerDx(0);
       props.onIndex(next);
-    }, SETTLE_MS);
+    });
+    setPagerDx(-delta * (size().w + PAGE_GAP));
   };
 
   const dismiss = () => {
@@ -255,7 +266,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
 
   const onPointerDown = (e: PointerEvent) => {
     const target = e.target as Element | null;
-    if (target?.closest?.("button")) return;
+    if (target?.closest?.("button, .pv-top, [role=menu]")) return;
     const video = target?.closest?.("video");
     onVideo = false;
     if (video) {
@@ -263,7 +274,8 @@ export function PhotoViewer(props: PhotoViewerProps) {
       if (e.clientY > video.getBoundingClientRect().bottom - CONTROL_STRIP) return;
       onVideo = true;
     }
-    if (animating() || closing()) return;
+    if (closing()) return;
+    if (animating()) finishSettle();
     captured = !onVideo;
     if (captured) stage?.setPointerCapture?.(e.pointerId);
     pointers.set(e.pointerId, local(e));
@@ -299,14 +311,11 @@ export function PhotoViewer(props: PhotoViewerProps) {
     if (!start) return;
     const now = performance.now();
     samples.push({ ...p, t: now });
-    if (samples.length > 6) samples.shift();
+    while (samples.length > 1 && samples[0]!.t < now - 100) samples.shift();
     const dx = p.x - start.x;
     const dy = p.y - start.y;
     if (axis === "undecided") {
-      const v = view();
-      const decided = v ? ask({ view: v, drag: { dx, dy } })?.drag?.axis : undefined;
-      // Without the core (still loading): horizontal drags page, the rest waits.
-      axis = decided ?? (Math.abs(dx) >= 10 && Math.abs(dx) > Math.abs(dy) ? "pager" : "undecided");
+      axis = dragAnswer(dx, dy)?.axis ?? "undecided";
       if (isVideo(current()) && axis === "pan") axis = "pager";
       if (axis === "pager" && !captured) {
         captured = true;
@@ -319,9 +328,8 @@ export function PhotoViewer(props: PhotoViewerProps) {
       const edge = neighbour(dx < 0 ? 1 : -1) === null;
       setPagerDx(edge ? dx * 0.35 : dx);
     } else if (axis === "out") {
-      const v = view();
-      const answer = v ? ask({ view: v, drag: { dx, dy } }) : null;
-      if (answer?.drag) setOut(answer.drag.out);
+      const answer = dragAnswer(dx, dy);
+      if (answer) setOut(answer.out);
     }
     last = p;
   };
@@ -331,6 +339,23 @@ export function PhotoViewer(props: PhotoViewerProps) {
     const end = samples[samples.length - 1];
     if (!first || !end || end.t - first.t < 1) return { vx: 0, vy: 0 };
     return { vx: (end.x - first.x) / (end.t - first.t), vy: (end.y - first.y) / (end.t - first.t) };
+  };
+
+  const dragAnswer = (dx: number, dy: number, ended = false) => {
+    const { vx, vy } = velocity();
+    const drag = { dx, dy, vx: vx * 1000, vy: vy * 1000, predicted_dy: dy + vy * 250, ended };
+    const v = view();
+    const answer = ask(v ? { view: v, drag } : { new: [1, 1, size().w, size().h], drag });
+    if (answer?.drag) return answer.drag;
+    const angle = Math.atan2(Math.abs(dx), Math.abs(dy)) * 180 / Math.PI;
+    const axis = Math.hypot(dx, dy) < 10 ? "undecided" :
+      angle <= 40 || (dy > 0 && angle <= 50 && Math.abs(vy) >= Math.abs(vx)) ? "out" : "pager";
+    const p = dy > 0 ? Math.min(1, dy / (0.5 * (size().h || 1))) : 0;
+    return {
+      axis,
+      out: { offset_x: dx, offset_y: dy > 0 ? dy : dy * 0.5, scale: 1 - 0.25 * p, backdrop: 1 - p },
+      end: ended && (dy > size().h * 0.12 || (dy >= 16 && vy * 1000 >= 500)) ? "dismiss" : "back",
+    } as const;
   };
 
   const tap = (p: Pointer) => {
@@ -359,19 +384,32 @@ export function PhotoViewer(props: PhotoViewerProps) {
     if (!start) return;
     const dx = p.x - start.x;
     const dy = p.y - start.y;
-    const quick = performance.now() - start.t < TAP_MS;
+    const now = performance.now();
+    const quick = now - start.t < TAP_MS;
+    // A finger lifted right after its last move keeps that move's speed (the up event can come late
+    // on a busy page); one that rested first has stopped.
+    const end = samples[samples.length - 1];
+    if (!end || end.x !== p.x || end.y !== p.y || now - end.t > RELEASE_PAUSE_MS) {
+      samples.push({ ...p, t: now });
+      while (samples.length > 1 && samples[0]!.t < now - 100) samples.shift();
+    }
     start = null;
-    const { vx, vy } = velocity();
+    const { vx } = velocity();
     if (axis === "pager") {
       const w = size().w || 1;
       const flung = Math.abs(vx) > 0.5 && Math.sign(vx) === Math.sign(dx);
       if (Math.abs(dx) > w * 0.2 || flung) move(dx < 0 ? 1 : -1, true);
-      else settle(() => setPagerDx(0));
+      else {
+        settle(() => {});
+        setPagerDx(0);
+      }
     } else if (axis === "out") {
-      const v = view();
-      const answer = v ? ask({ view: v, drag: { dx, dy, predicted_dy: dy + vy * 250, ended: true } }) : null;
-      if (answer?.drag?.end === "dismiss") dismiss();
-      else settle(() => setOut(null));
+      const answer = dragAnswer(dx, dy, true);
+      if (answer?.end === "dismiss") dismiss();
+      else {
+        settle(() => {});
+        setOut(null);
+      }
     } else if (axis === "undecided" && quick && Math.hypot(dx, dy) < TAP_SLOP && !onVideo) {
       tap(p);
     }
@@ -474,6 +512,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
       stage?.removeEventListener("gesturestart", onGestureStart);
       stage?.removeEventListener("gesturechange", onGestureChange);
       window.clearTimeout(tapTimer);
+      window.clearTimeout(settleTimer);
       window.clearTimeout(wheelReset);
       previous?.focus();
     });
@@ -631,15 +670,16 @@ export function PhotoViewer(props: PhotoViewerProps) {
           </For>
         </div>
         <div class="pv-top">
-          <button type="button" class="pv-btn pv-close" aria-label={t("common.close")} onClick={() => props.onClose()}>×</button>
+          <button type="button" class="pv-btn pv-close" aria-label={t("common.close")} onClick={() => props.onClose()}>←</button>
           <span class="pv-title">
             <span class="pv-name">{current()?.name}</span>
             <Show when={count() > 1}><span class="pv-count">{props.index + 1} / {count()}</span></Show>
           </span>
-          <span class="pv-actions">
+          <div class="pv-actions" role="toolbar" aria-label={t("galleryInfo.toolbarLabel")}>
             <Show when={props.actions?.share}>
-              <button type="button" class="pv-btn pv-text" onClick={() => void share()}>{t("viewer.share")}</button>
+              <button type="button" class="pv-btn" aria-label={t("viewer.share")} onClick={() => void share()}><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V3m-5 5 5-5 5 5M5 13v8h14v-8" /></svg></button>
             </Show>
+            {toolbar()}
             <Show when={props.actions?.saveToLucina}>
               <button
                 type="button"
@@ -651,11 +691,8 @@ export function PhotoViewer(props: PhotoViewerProps) {
                 {saveLabel()}
               </button>
             </Show>
-          </span>
+          </div>
         </div>
-        <Show when={toolbar()}>
-          <div class="pv-toolbar" role="toolbar" aria-label={t("galleryInfo.toolbarLabel")}>{toolbar()}</div>
-        </Show>
         <Show when={sidePanel()}>
           <aside class="pv-panel">{sidePanel()}</aside>
         </Show>

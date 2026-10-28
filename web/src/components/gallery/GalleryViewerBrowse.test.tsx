@@ -53,7 +53,8 @@ describe("archive in the viewer", () => {
   it("archives the current item from the toolbar and lets it leave the list", async () => {
     batch.mockResolvedValue({ done: ["a"], failed: [] });
     const { onRemoved } = open();
-    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     await waitFor(() => expect(onRemoved).toHaveBeenCalledWith("a"));
     expect(batch).toHaveBeenCalledWith("archive", ["a"]);
   });
@@ -72,7 +73,8 @@ describe("archive in the viewer", () => {
     batch.mockResolvedValue({ done: ["a"], failed: [] });
     const { onRemoved } = open({ archive: true });
     expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unarchive" }));
     await waitFor(() => expect(onRemoved).toHaveBeenCalledWith("a"));
     expect(batch).toHaveBeenCalledWith("unarchive", ["a"]);
   });
@@ -80,7 +82,8 @@ describe("archive in the viewer", () => {
   it("keeps the item and says so when the server refuses", async () => {
     batch.mockResolvedValue({ done: [], failed: [{ id: "a", error: "trashed" }] });
     const { onRemoved } = open();
-    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't change the archive. Try again.");
     expect(onRemoved).not.toHaveBeenCalled();
   });

@@ -49,7 +49,7 @@ export interface ViewRequest {
   view?: CoreView;
   new?: [number, number, number, number];
   gesture?: Gesture;
-  drag?: { dx: number; dy: number; predicted_dy?: number; ended?: boolean };
+  drag?: { dx: number; dy: number; vx?: number; vy?: number; predicted_dy?: number; ended?: boolean };
   preview_px?: number;
   screen_scale?: number;
 }

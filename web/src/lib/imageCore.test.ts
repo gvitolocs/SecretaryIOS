@@ -38,6 +38,18 @@ describe("photo viewer core (wasm)", () => {
     expect(core.view({ view, drag: { dx: 0, dy: 60, predicted_dy: 70, ended: true } }).drag?.end).toBe("back");
   });
 
+  it("accepts diagonal drags, velocity, and an unloaded picture", async () => {
+    const core = await imageCoreFromBytes(bytes);
+    const view = core.view({ new: [1440, 960, 390, 844] }).view;
+    for (const degrees of [0, 35, 45]) {
+      expect(core.view({ view, drag: { dx: Math.tan(degrees * Math.PI / 180) * 100, dy: 100, vx: 0, vy: 100 } }).drag?.axis).toBe("out");
+    }
+    expect(core.view({ view, drag: { dx: 200, dy: 20, vx: 900, vy: 50 } }).drag?.axis).toBe("pager");
+    expect(core.view({ view, drag: { dx: 0, dy: 24, vy: 900, ended: true } }).drag?.end).toBe("dismiss");
+    expect(core.view({ view, drag: { dx: 0, dy: 60, vy: 40, ended: true } }).drag?.end).toBe("back");
+    expect(core.view({ new: [1, 1, 390, 844], drag: { dx: 20, dy: 100 } }).drag?.axis).toBe("out");
+  });
+
   it("answers bad requests without breaking, and keeps working after many calls", async () => {
     const core = await imageCoreFromBytes(bytes);
     expect(core.view({}).ok).toBe(false);

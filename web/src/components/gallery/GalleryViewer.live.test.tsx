@@ -181,7 +181,8 @@ describe("Similar photos button", () => {
   it("is in the toolbar only when the Gallery can search by meaning, and hands over the photo", () => {
     const onSimilar = vi.fn();
     open([galleryItem("a")], { onSimilar });
-    fireEvent.click(within(toolbar()).getByRole("button", { name: "Similar photos" }));
+    fireEvent.click(within(toolbar()).getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Similar photos" }));
     expect(onSimilar).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
     cleanup();
     open([galleryItem("a")]);

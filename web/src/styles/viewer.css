@@ -67,8 +67,8 @@
   inset: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: max(10px, env(safe-area-inset-top)) 16px 28px;
+  gap: 4px;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 28px max(8px, env(safe-area-inset-left));
   background: linear-gradient(to bottom, rgb(0 0 0 / 55%), rgb(0 0 0 / 0%));
   transition: opacity 180ms ease-out;
 }
@@ -95,13 +95,17 @@
 
 .pv-actions {
   display: flex;
-  gap: 8px;
+  gap: 4px;
+  flex: none;
 }
 
 .pv-btn {
   display: grid;
   place-items: center;
+  width: 40px;
   min-width: 40px;
+  flex: none;
+  padding: 0;
   height: 40px;
   border: 0;
   border-radius: 20px;
@@ -119,6 +123,7 @@
 .pv-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 
 .pv-text {
+  width: auto;
   padding: 0 14px;
   font-size: var(--lu-type-body, 14px);
   white-space: nowrap;
@@ -143,41 +148,11 @@
 .pv-next { right: 16px; }
 
 .pv:not(.pv--chrome) .pv-top,
-.pv:not(.pv--chrome) .pv-toolbar,
 .pv:not(.pv--chrome) .pv-prev,
 .pv:not(.pv--chrome) .pv-next {
   opacity: 0;
   pointer-events: none;
 }
-
-/* A floating pill of extra buttons (PhotoViewer `toolbar`), centred under the picture. */
-.pv-toolbar {
-  position: absolute;
-  left: calc((100% - var(--pv-panel-w, 0px)) / 2);
-  bottom: calc(var(--pv-sheet-h, 0px) + max(14px, env(safe-area-inset-bottom)));
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  max-width: calc(100% - var(--pv-panel-w, 0px) - 16px);
-  padding: 4px;
-  border-radius: 28px;
-  background: rgb(28 28 30 / 72%);
-  transform: translateX(-50%);
-  transition: opacity 180ms ease-out;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.pv-toolbar .pv-btn {
-  flex: none;
-  background: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.pv-toolbar .pv-btn:hover:not(:disabled) { background: rgb(255 255 255 / 18%); }
 
 /* A panel beside the picture (PhotoViewer `panel`): the stage shrinks to leave room for it. */
 .pv--panel { --pv-panel-w: min(360px, 40vw); }
@@ -213,7 +188,7 @@
 }
 
 @media (max-width: 600px) {
-  .pv-top { padding-inline: 8px; gap: 8px; }
+  .pv-name { display: none; }
   .pv-text { padding: 0 10px; }
 }
 

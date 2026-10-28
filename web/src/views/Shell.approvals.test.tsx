@@ -1,5 +1,5 @@
 import { Route, type RouteSectionProps } from "@solidjs/router";
-import { screen } from "@solidjs/testing-library";
+import { fireEvent, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalJson } from "../test/approvals";
 import { MockEventSource } from "../test/eventsource";
@@ -14,6 +14,21 @@ describe("Shell: approval pop-up", () => {
     stubFetch((c) =>
       c.url === "/v1/approvals?status=pending" ? { body: [approvalJson("apr_1")] } : { status: 404, body: {} },
     );
+  });
+
+  it("tapping the active Chat tab dispatches latest without navigating", () => {
+    const latest = vi.fn();
+    window.addEventListener("secretary:chat-latest", latest);
+    try {
+      renderAt("/", () => <Route path="*" component={(p: RouteSectionProps) => <Shell>{p.children}</Shell>} />);
+      const link = document.querySelector<HTMLAnchorElement>('.tabbar a[href="/"]')!;
+      expect(fireEvent.click(link)).toBe(false);
+      expect(fireEvent.click(link)).toBe(false);
+      expect(latest).toHaveBeenCalledTimes(2);
+      expect(link).toHaveAttribute("aria-current", "page");
+    } finally {
+      window.removeEventListener("secretary:chat-latest", latest);
+    }
   });
 
   it("shows in the browser shell", async () => {

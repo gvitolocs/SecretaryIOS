@@ -21,8 +21,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  width: auto;
-  padding-inline: 10px;
+  width: 40px;
+  padding: 0;
 }
 
 .gl-btn__label {
@@ -36,7 +36,7 @@
   height: 20px;
 }
 
-.pv-toolbar .pv-btn.gl-btn--on {
+.pv-actions .pv-btn.gl-btn--on {
   background: rgb(255 255 255 / 24%);
 }
 

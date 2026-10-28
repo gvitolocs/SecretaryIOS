@@ -35,7 +35,8 @@ function open(items = [galleryItem("a"), galleryItem("b", { kind: "video", mime:
 describe("Edit with Lucina… in the viewer", () => {
   it("has a toolbar button that opens the sheet for the photo on screen", async () => {
     open();
-    fireEvent.click(screen.getByRole("button", { name: "Edit with Lucina…" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit with Lucina…" }));
     expect(screen.getByRole("dialog", { name: "Edit with Lucina" })).toBeInTheDocument();
     fireEvent.input(screen.getByLabelText("What should change?"), { target: { value: "make it snow" } });
     fireEvent.click(screen.getByRole("button", { name: "Send to the Lab" }));
@@ -45,7 +46,8 @@ describe("Edit with Lucina… in the viewer", () => {
 
   it("keeps the viewer's shortcuts out of the sheet, so Delete on a focused idea cannot open the delete dialog", () => {
     open();
-    fireEvent.click(screen.getByRole("button", { name: "Edit with Lucina…" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit with Lucina…" }));
     const idea = screen.getByRole("button", { name: "Make it a black and white photo" });
     idea.focus();
     fireEvent.keyDown(idea, { key: "Delete" });

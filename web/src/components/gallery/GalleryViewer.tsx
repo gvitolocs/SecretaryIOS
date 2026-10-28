@@ -276,6 +276,16 @@ function ViewerBody(props: GalleryViewerProps & { onStackPick?: (stack: Stack, i
   // ---- keys ------------------------------------------------------------------------------------------------------
 
   const onKeyDown = (e: KeyboardEvent): boolean => {
+    if (moreOpen() && (e.key === "Escape" || e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      if (e.key === "Escape") closeMore();
+      else {
+        const rows = menuRows();
+        const i = rows.indexOf(document.activeElement as HTMLElement);
+        rows[(i + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length]?.focus();
+      }
+      return true;
+    }
     // A dialog owns the keyboard; so does a text field, and the editor over the viewer.
     if (editing() || dialog() || faces.picking() || typing(e.target)) return true;
     if (e.metaKey || e.ctrlKey || e.altKey) return false;
@@ -348,118 +358,65 @@ function ViewerBody(props: GalleryViewerProps & { onStackPick?: (stack: Stack, i
     }),
   );
 
-  // Built once: the buttons read the current item as it changes, so a click never replaces the button that has focus.
+  const [moreOpen, setMoreOpen] = createSignal(false);
+  let moreButton: HTMLButtonElement | undefined;
+  let moreWrap: HTMLDivElement | undefined;
+  const closeMore = () => {
+    if (!moreOpen()) return;
+    setMoreOpen(false);
+    moreButton?.focus();
+  };
+  const menuRows = () => [...(moreWrap?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+  const openMore = (last = false) => {
+    setMoreOpen(true);
+    queueMicrotask(() => (last ? menuRows().at(-1) : menuRows()[0])?.focus());
+  };
+  createEffect(on(() => current()?.id, closeMore, { defer: true }));
+  onMount(() => {
+    const outside = (e: PointerEvent) => {
+      if (!moreWrap?.contains(e.target as Node)) closeMore();
+    };
+    document.addEventListener("pointerdown", outside);
+    onCleanup(() => document.removeEventListener("pointerdown", outside));
+  });
+
   const Toolbar = () => (
-    <Show when={current()}>
-      {(item) => (
-        <>
-          <button
-            type="button"
-            class="pv-btn"
-            classList={{ "pv-btn--active": infoOpen() }}
-            aria-label={t("galleryInfo.info")}
-            aria-pressed={infoOpen()}
-            title={`${t("galleryInfo.info")} (I)`}
-            onClick={toggleInfo}
-          >
-            <InfoIcon />
-          </button>
-          <Show when={isLive(item())}>
-            <button
-              type="button"
-              class="pv-btn gl-btn"
-              classList={{ "gl-btn--on": live.state().phase !== "idle" }}
-              aria-label={t("galleryLive.play")}
-              aria-pressed={live.state().phase === "playing"}
-              title={t("galleryLive.playHint")}
-              onClick={() => live.press("button")}
-              onPointerEnter={(e) => e.pointerType === "mouse" && live.press("hover")}
-              onPointerLeave={(e) => e.pointerType === "mouse" && live.release("hover")}
-            >
-              <LiveIcon />
-              <span class="gl-btn__label">{t("galleryLive.label")}</span>
-            </button>
-          </Show>
-          <Show when={item().kind === "photo"}>{faces.button()}</Show>
-          <Show when={props.onSimilar && item().kind === "photo"}>
-            <button type="button" class="pv-btn" aria-label={t("gallerySmart.similar")} title={t("gallerySmart.similar")} onClick={() => props.onSimilar?.(item())}>
-              <SimilarIcon />
-            </button>
-          </Show>
-          <Show when={!props.trash}>
-            <button
-              type="button"
-              class="pv-btn"
-              classList={{ "pv-btn--on": item().favorite }}
-              aria-label={item().favorite ? t("galleryInfo.unfavorite") : t("galleryInfo.favorite")}
-              aria-pressed={item().favorite}
-              title={`${item().favorite ? t("galleryInfo.unfavorite") : t("galleryInfo.favorite")} (F)`}
-              onClick={favorite}
-            >
-              <HeartIcon filled={item().favorite} />
-            </button>
-            <Show when={item().kind === "photo"}>
-              <button type="button" class="pv-btn" aria-label={t("galleryInfo.rotate")} title={`${t("galleryInfo.rotate")} (R)`} onClick={rotate}>
-                <RotateIcon />
-              </button>
+    <Show when={current()}>{(item) => <>
+      <Show when={!props.trash && isLive(item())}>
+        <button type="button" class="pv-btn gl-btn" classList={{ "gl-btn--on": live.state().phase !== "idle" }}
+          aria-label={t("galleryLive.play")} aria-pressed={live.state().phase === "playing"} title={t("galleryLive.playHint")}
+          onClick={() => live.press("button")}
+          onPointerEnter={(e) => e.pointerType === "mouse" && live.press("hover")}
+          onPointerLeave={(e) => e.pointerType === "mouse" && live.release("hover")}><LiveIcon /></button>
+      </Show>
+      <button type="button" class="pv-btn" classList={{ "pv-btn--active": infoOpen() }} aria-label={t("galleryInfo.info")} aria-pressed={infoOpen()} onClick={toggleInfo}><InfoIcon /></button>
+      <Show when={!props.trash}>
+        <button type="button" class="pv-btn" classList={{ "pv-btn--on": item().favorite }} aria-label={item().favorite ? t("galleryInfo.unfavorite") : t("galleryInfo.favorite")} aria-pressed={item().favorite} onClick={favorite}><HeartIcon filled={item().favorite} /></button>
+        <Show when={item().kind === "photo"}><button type="button" class="pv-btn" aria-label={item().edited ? t("editor.editEdited") : t("editor.edit")} onClick={() => setEditing(true)}><EditIcon /></button></Show>
+      </Show>
+      <Show when={props.trash}><button type="button" class="pv-btn" aria-label={t("galleryInfo.restore")} onClick={() => void restore()}><RestoreIcon /></button></Show>
+      <button type="button" class="pv-btn pv-btn--danger" aria-label={props.trash ? t("galleryInfo.deleteForever") : t("galleryInfo.delete")} onClick={() => setDialog("delete")}><TrashIcon /></button>
+      <div class="gv-more" ref={moreWrap}>
+        <button type="button" class="pv-btn" ref={moreButton} aria-label={t("viewer.more")} aria-haspopup="menu" aria-expanded={moreOpen()}
+          onClick={() => moreOpen() ? closeMore() : openMore()}
+          onKeyDown={(e) => { if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); openMore(e.key === "ArrowUp"); } }}>⋮</button>
+        <Show when={moreOpen()}>
+          <div class="gv-menu" role="menu" aria-label={t("viewer.more")} onClick={closeMore}>
+            <Show when={!props.trash}>
+              <Show when={item().kind === "photo"}><button role="menuitem" onClick={rotate}><RotateIcon />{t("galleryInfo.rotate")}</button></Show>
+              <button role="menuitem" onClick={() => setDialog("rename")}><RenameIcon />{t("galleryInfo.rename")}</button>
+              <Show when={item().kind === "photo"}><button role="menuitem" onClick={() => setDialog("lab")}><LabIcon />{t("lab.editWithLucina")}</button></Show>
+              <button role="menuitem" onClick={() => setDialog("album")}><AlbumIcon />{t("galleryInfo.addToAlbum")}</button>
+              <button role="menuitem" onClick={() => void archiveToggle()}>{props.archive ? <UnarchiveIcon /> : <ArchiveIcon />}{props.archive ? t("browse.unarchive") : t("browse.archive")}</button>
             </Show>
-            <Show when={item().kind === "photo"}>
-              <button type="button" class="pv-btn" aria-label={item().edited ? t("editor.editEdited") : t("editor.edit")} title={`${item().edited ? t("editor.editEdited") : t("editor.edit")} (E)`} onClick={() => setEditing(true)}>
-                <EditIcon />
-              </button>
-            </Show>
-            <button type="button" class="pv-btn" aria-label={t("galleryInfo.rename")} title={t("galleryInfo.rename")} onClick={() => setDialog("rename")}>
-              <RenameIcon />
-            </button>
-            <Show when={item().kind === "photo"}>
-              <button type="button" class="pv-btn" aria-label={t("lab.editWithLucina")} title={t("lab.editWithLucina")} onClick={() => setDialog("lab")}>
-                <LabIcon />
-              </button>
-            </Show>
-            <button type="button" class="pv-btn" aria-label={t("galleryInfo.addToAlbum")} title={t("galleryInfo.addToAlbum")} onClick={() => setDialog("album")}>
-              <AlbumIcon />
-            </button>
-            <button
-              type="button"
-              class="pv-btn"
-              aria-label={props.archive ? t("browse.unarchive") : t("browse.archive")}
-              title={`${props.archive ? t("browse.unarchive") : t("browse.archive")} (Shift+A)`}
-              onClick={() => void archiveToggle()}
-            >
-              {props.archive ? <UnarchiveIcon /> : <ArchiveIcon />}
-            </button>
-          </Show>
-          <Show when={item().urls.download ?? item().urls.original}>
-            {(href) => (
-              <a class="pv-btn" href={href()} download={item().origin.filename ?? item().title ?? ""} aria-label={t("galleryInfo.download")} title={t("galleryInfo.download")}>
-                <DownloadIcon />
-              </a>
-            )}
-          </Show>
-          <Show when={item().urls.downloadEdited}>
-            {(href) => (
-              <a class="pv-btn" href={href()} download="" aria-label={t("editor.downloadEdited")} title={t("editor.downloadEdited")}>
-                <DownloadIcon />
-              </a>
-            )}
-          </Show>
-          <Show when={props.trash}>
-            <button type="button" class="pv-btn" aria-label={t("galleryInfo.restore")} title={t("galleryInfo.restore")} onClick={() => void restore()}>
-              <RestoreIcon />
-            </button>
-          </Show>
-          <button
-            type="button"
-            class="pv-btn pv-btn--danger"
-            aria-label={props.trash ? t("galleryInfo.deleteForever") : t("galleryInfo.delete")}
-            title={`${props.trash ? t("galleryInfo.deleteForever") : t("galleryInfo.delete")} (Delete)`}
-            onClick={() => setDialog("delete")}
-          >
-            <TrashIcon />
-          </button>
-        </>
-      )}
-    </Show>
+            <Show when={item().urls.download ?? item().urls.original}>{(href) => <a role="menuitem" href={href()} download={item().origin.filename ?? item().title ?? ""}><DownloadIcon />{t("galleryInfo.download")}</a>}</Show>
+            <Show when={!props.trash && item().urls.downloadEdited}>{(href) => <a role="menuitem" href={href()} download=""><DownloadIcon />{t("editor.downloadEdited")}</a>}</Show>
+            <Show when={!props.trash && props.onSimilar && item().kind === "photo"}><button role="menuitem" onClick={() => props.onSimilar?.(item())}><SimilarIcon />{t("gallerySmart.similar")}</button></Show>
+            <Show when={!props.trash && item().kind === "photo"}>{faces.button(true)}</Show>
+          </div>
+        </Show>
+      </div>
+    </>}</Show>
   );
 
   const Panel = () => (

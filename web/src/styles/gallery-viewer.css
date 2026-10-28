@@ -8,7 +8,7 @@
 }
 
 .pv-btn--on { color: #ff6b81; }
-.pv-toolbar .pv-btn--active { background: rgb(255 255 255 / 24%); }
+.pv-actions .pv-btn--active { background: rgb(255 255 255 / 24%); }
 .pv-btn--danger:hover:not(:disabled) { color: #ff6b6b; }
 
 /* ---- the info panel ---- */
@@ -191,7 +191,7 @@
 .gv-toast {
   position: fixed;
   left: 50%;
-  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 62px);
+  bottom: max(14px, env(safe-area-inset-bottom));
   z-index: 2050;
   display: flex;
   align-items: center;
@@ -211,7 +211,7 @@
 @media (max-width: 700px) {
   .gv-toast--panel {
     left: 50%;
-    bottom: calc(min(56dvh, 460px) + 62px);
+    bottom: calc(min(56dvh, 460px) + max(14px, env(safe-area-inset-bottom)));
   }
 }
 
@@ -391,3 +391,38 @@
 .gv-chip__link:focus-visible {
   text-decoration: underline;
 }
+
+.gv-more { position: relative; flex: none; }
+.gv-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(260px, calc(100vw - 16px));
+  max-height: calc(100dvh - max(8px, env(safe-area-inset-top)) - 72px);
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 12px;
+  background: #28282b;
+  box-shadow: 0 8px 32px #0008;
+  touch-action: pan-y;
+}
+.gv-menu [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.gv-menu [role="menuitem"]:hover,
+.gv-menu [role="menuitem"]:focus-visible { background: #ffffff24; outline: none; }
