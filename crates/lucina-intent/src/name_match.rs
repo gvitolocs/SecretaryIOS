@@ -356,7 +356,10 @@ mod tests {
         assert_eq!(fold("Jørgen"), "jorgen");
         assert_eq!(fold("CAFÉ è"), "cafe e");
         assert_eq!(fold("Åse Müller"), "ase muller");
-        assert_eq!(normalize("Hack Night: Rust-meets AI!"), "hack night rust meets ai");
+        assert_eq!(
+            normalize("Hack Night: Rust-meets AI!"),
+            "hack night rust meets ai"
+        );
     }
 
     #[test]
@@ -403,7 +406,10 @@ mod tests {
         );
         // The same name in two spellings of the letters is not two names.
         assert_eq!(pair("Jorgen = Jørgen"), None);
-        assert_eq!(pair("Teresa o Therese"), Some(("teresa".into(), "therese".into())));
+        assert_eq!(
+            pair("Teresa o Therese"),
+            Some(("teresa".into(), "therese".into()))
+        );
         // No statement: the question's own "is", more than one name on the right, no name left.
         assert_eq!(pair("what time is the meeting"), None);
         assert_eq!(pair("when is the Hack Night"), None);
@@ -419,15 +425,27 @@ mod tests {
     #[test]
     fn the_topic_matches_titles_through_spelling_accents_and_generic_words() {
         let none = PersonAliases::default();
-        assert!(topic_matches("meeting therese è teresa", "Therese zoom", &none));
+        assert!(topic_matches(
+            "meeting therese è teresa",
+            "Therese zoom",
+            &none
+        ));
         assert!(topic_matches("riunione con teresa", "Therese zoom", &none));
         assert!(topic_matches("theresa call", "Therese zoom", &none));
         assert!(topic_matches("café", "Cafe meetup", &none));
         assert!(topic_matches("Jørgen", "Jorgen", &none));
-        assert!(topic_matches("hack night", "Hack Night: Rust meets AI", &none));
+        assert!(topic_matches(
+            "hack night",
+            "Hack Night: Rust meets AI",
+            &none
+        ));
         assert!(!topic_matches("teresa", "Tessa party", &none));
         assert!(!topic_matches("teresa", "Theater", &none));
-        assert!(!topic_matches("cena da anna", "Hack Night: Rust meets AI", &none));
+        assert!(!topic_matches(
+            "cena da anna",
+            "Hack Night: Rust meets AI",
+            &none
+        ));
         assert!(!topic_matches("meeting", "Tessa party", &none));
     }
 
@@ -446,7 +464,11 @@ mod tests {
         assert_eq!(store.alternatives("teresa").len(), 2);
         // "gianni" alone now finds "Giovanni's birthday"; without the store it does not.
         assert!(topic_matches("gianni", "Giovanni birthday", &store));
-        assert!(!topic_matches("gianni", "Giovanni birthday", &PersonAliases::default()));
+        assert!(!topic_matches(
+            "gianni",
+            "Giovanni birthday",
+            &PersonAliases::default()
+        ));
         assert!(topic_matches("resa", "Therese zoom", &store));
         let _ = std::fs::remove_dir_all(&dir);
     }

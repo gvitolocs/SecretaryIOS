@@ -325,11 +325,7 @@ pub fn listing_sentence(
     tz: Tz,
 ) -> String {
     let when = if q.week {
-        match q.lang {
-            "it" => "questa settimana".to_owned(),
-            "da" => "i denne uge".to_owned(),
-            _ => "this week".to_owned(),
-        }
+        crate::calendar::range_words(q, now, tz)
     } else {
         day_words(&q.from, now, tz, q.lang)
     };
@@ -380,7 +376,10 @@ pub fn no_match_context_in(
         .iter()
         .take(LISTED)
         .map(|e| {
-            let when = match (e["allDay"].as_bool().unwrap_or(false), local(text(e, "start"), tz)) {
+            let when = match (
+                e["allDay"].as_bool().unwrap_or(false),
+                local(text(e, "start"), tz),
+            ) {
                 (false, Some(t)) => t.format("%a %d %b %H:%M").to_string(),
                 (_, Some(t)) => format!("{} all day", t.format("%a %d %b")),
                 _ => text(e, "start").chars().take(10).collect(),
@@ -638,7 +637,10 @@ mod tests {
         let text = "You know what time is the meeting therese è teresa";
         let q = parse_event_question(text, now, TZ).unwrap();
         assert_eq!(q.kind, EventKind::Named);
-        assert_eq!((q.from.as_str(), q.to.as_str()), ("2026-10-28", "2026-11-10"));
+        assert_eq!(
+            (q.from.as_str(), q.to.as_str()),
+            ("2026-10-28", "2026-11-10")
+        );
         assert_eq!(q.lang, "en");
         let events = [afternoon_lecture(), therese_zoom()];
         let hits = select(&q, &events, now, TZ);
@@ -695,7 +697,10 @@ mod tests {
             Some(("therese".into(), "resa".into()))
         );
         aliases.add("therese", "resa");
-        assert_eq!(select_with(&q, &[therese_zoom()], now, TZ, &aliases).len(), 1);
+        assert_eq!(
+            select_with(&q, &[therese_zoom()], now, TZ, &aliases).len(),
+            1
+        );
     }
 
     fn alias_to_remember_of(topic: &str) -> Option<(String, String)> {
@@ -720,10 +725,22 @@ mod tests {
         let q = parse_event_question("quando è la cena da Anna?", now, TZ).unwrap();
         let ctx = no_match_context_in(&q, &[therese_zoom(), afternoon_lecture()], now, TZ);
         assert!(ctx.contains("no event matches \"cena da anna\""), "{ctx}");
-        assert!(ctx.contains("Wed 28 Oct 12:00 Therese zoom @ Home"), "{ctx}");
-        assert!(ctx.contains("Wed 28 Oct 14:15 Security and Privacy @ 5789-003B Seminarrum"), "{ctx}");
-        assert!(ctx.contains("under another spelling or name, answer with it"), "{ctx}");
-        assert!(ctx.contains("otherwise say it is not in his calendar"), "{ctx}");
+        assert!(
+            ctx.contains("Wed 28 Oct 12:00 Therese zoom @ Home"),
+            "{ctx}"
+        );
+        assert!(
+            ctx.contains("Wed 28 Oct 14:15 Security and Privacy @ 5789-003B Seminarrum"),
+            "{ctx}"
+        );
+        assert!(
+            ctx.contains("under another spelling or name, answer with it"),
+            "{ctx}"
+        );
+        assert!(
+            ctx.contains("otherwise say it is not in his calendar"),
+            "{ctx}"
+        );
         assert!(!ctx.contains("11:00"), "{ctx}");
         // An event that is over is not offered; an empty range keeps the plain text.
         assert_eq!(no_match_context_in(&q, &[], now, TZ), no_match_context(&q));
@@ -736,7 +753,10 @@ mod tests {
     #[test]
     fn a_question_without_its_verb_is_still_a_question() {
         let q = parse_event_question("Dove la mia prossima lezione?", now(), TZ).unwrap();
-        assert_eq!((q.kind, q.lang, q.topic.as_str()), (EventKind::Lecture, "it", "lezione"));
+        assert_eq!(
+            (q.kind, q.lang, q.topic.as_str()),
+            (EventKind::Lecture, "it", "lezione")
+        );
         assert!(!q.day_named);
         let mut past = lecture();
         past["start"] = json!("2026-10-26T07:15:00.000Z");
@@ -749,7 +769,12 @@ mod tests {
         assert_eq!(q.kind, EventKind::Named);
         let q = parse_event_question("where my next lecture?", now(), TZ).unwrap();
         assert_eq!(q.kind, EventKind::Lecture);
-        for text in ["dove sei?", "where are you", "hvor er du", "dove vai domani"] {
+        for text in [
+            "dove sei?",
+            "where are you",
+            "hvor er du",
+            "dove vai domani",
+        ] {
             assert_eq!(parse_event_question(text, now(), TZ), None, "{text}");
         }
     }

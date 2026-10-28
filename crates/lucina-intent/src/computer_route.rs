@@ -156,7 +156,11 @@ pub fn task_text(text: &str, mode: Mode) -> String {
         (Mode::ReadOnly, App::Outlook) => READ_ONLY_SUFFIX,
         (Mode::ReadOnly, App::Gmail) => READ_ONLY_SUFFIX_GMAIL,
     };
-    let sent = re!(r"\b(?:sent|send|sending)\b|posta inviata|inviat|mandat|spedit", "i").test(fixed)
+    let sent = re!(
+        r"\b(?:sent|send|sending)\b|posta inviata|inviat|mandat|spedit",
+        "i"
+    )
+    .test(fixed)
         && mode == Mode::ReadOnly;
     if sent {
         format!("{fixed}\n\n{suffix} {SENT_HINT}")
@@ -195,7 +199,12 @@ fn lang_of(text: &str) -> &'static str {
     if re!(r"\b(?:controlla\w*|guarda\w*|apri\w*|leggi|esplora\w*|vedi|dai un.occhiata|nel tuo|sul tuo|il tuo|la tua|mia posta|ho gi[àa]|posta inviata|posta in arrivo)\b", "i").test(text) {
         return "it";
     }
-    if re!(r"\b(?:tjek\w*|[åa]bn\w*|kig\w*|din computer|min indbakke|indbakke|har giuseppe)\b|[æøå]", "i").test(text) {
+    if re!(
+        r"\b(?:tjek\w*|[åa]bn\w*|kig\w*|din computer|min indbakke|indbakke|har giuseppe)\b|[æøå]",
+        "i"
+    )
+    .test(text)
+    {
         return "da";
     }
     crate::lang::detect(text)
@@ -235,7 +244,10 @@ mod tests {
             fix_stt("Explorer the out look in your sandbox"),
             "Explore the Outlook in your sandbox"
         );
-        assert_eq!(fix_stt("check g mail on your computer"), "check Gmail on your computer");
+        assert_eq!(
+            fix_stt("check g mail on your computer"),
+            "check Gmail on your computer"
+        );
         // Not about mail: left alone.
         assert_eq!(
             fix_stt("the exploit in that game is fun"),
@@ -306,7 +318,10 @@ mod tests {
             classify("check Outlook and reply to Marianne"),
             Some(Mode::NeedsConfirmation)
         );
-        let t = task_text("check Outlook and reply to Marianne", Mode::NeedsConfirmation);
+        let t = task_text(
+            "check Outlook and reply to Marianne",
+            Mode::NeedsConfirmation,
+        );
         assert!(t.contains("ask for his explicit OK"));
         assert!(t.contains("Never click Send."));
         assert!(!t.contains("Read only"));
@@ -337,7 +352,10 @@ mod tests {
             "Ok, apro Outlook sul mio computer e do un'occhiata — solo lettura."
         );
         let p = plan("tjek Outlook på din computer").unwrap();
-        assert!(p["ack"].as_str().unwrap().starts_with("Ok, jeg åbner Outlook"));
+        assert!(p["ack"]
+            .as_str()
+            .unwrap()
+            .starts_with("Ok, jeg åbner Outlook"));
         let p = plan("open Gmail in your own browser").unwrap();
         assert!(p["task"].as_str().unwrap().contains(READ_ONLY_SUFFIX_GMAIL));
         assert!(plan("ciao").is_none());

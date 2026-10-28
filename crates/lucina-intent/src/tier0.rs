@@ -584,14 +584,22 @@ mod tests {
             let c = classify_tier0(text, ERRANDS, &settings).expect("routed");
             assert_eq!(c.intent, "computer_task");
             assert!(c.tier0());
-            assert!(!should_use_full_plan(&c, text, &settings), "a direct plan, no planner LLM");
+            assert!(
+                !should_use_full_plan(&c, text, &settings),
+                "a direct plan, no planner LLM"
+            );
             assert!(!is_misrouted(&c, text, ERRANDS));
             let p = direct_plan(&c, text, ERRANDS, &settings).expect("plan");
             assert_eq!(p["action"], "computer_task");
             let task = p["task"].as_str().unwrap();
-            assert!(task.starts_with("Explore Outlook in your sandbox"), "{task}");
+            assert!(
+                task.starts_with("Explore Outlook in your sandbox"),
+                "{task}"
+            );
             assert!(task.contains("givi@au.dk"));
-            assert!(task.contains("Read only: do not send, reply, forward, delete, move, archive or change anything."));
+            assert!(task.contains(
+                "Read only: do not send, reply, forward, delete, move, archive or change anything."
+            ));
             assert_eq!(
                 p["ack"],
                 "Ok, I'm opening Outlook on my computer and having a look — read-only."
@@ -618,8 +626,15 @@ mod tests {
             intent("ricordami alle 18:30 di controllare Outlook").as_deref(),
             Some("schedule_reminder")
         );
-        assert_ne!(intent("vado alla posta a ritirare il pacco").as_deref(), Some("computer_task"));
+        assert_ne!(
+            intent("vado alla posta a ritirare il pacco").as_deref(),
+            Some("computer_task")
+        );
         let c = classify_tier0("Explode outlook in your sandbox", "", &s()).unwrap();
-        assert!(is_misrouted(&Classification { ..c.clone() }, "che bella giornata", ""));
+        assert!(is_misrouted(
+            &Classification { ..c.clone() },
+            "che bella giornata",
+            ""
+        ));
     }
 }
