@@ -104,6 +104,8 @@ export function auditLine(e: AuditEntry): string {
       return t("computer.evSocketOpen");
     case "view_socket_closed":
       return t("computer.evSocketClosed", { why: e.why ?? "" });
+    case "jev_step":
+      return e.what ?? "";
     default:
       return t("computer.evOther", { event: e.event });
   }
@@ -611,6 +613,7 @@ export default function ComputerView() {
         <div class="computer-status-text">
           <strong role="status">{driverLabel(state(), mine())}</strong>
           <Show when={state()?.task}>{(task) => <span class="computer-muted">{t("computer.working", { what: task().what })}</span>}</Show>
+          <Show when={state()?.task?.progress?.line}>{(line) => <span class="computer-muted computer-progress">{line()}</span>}</Show>
           <Show when={!mine()}>
             <span class="computer-muted">{t("computer.watchOnly")}</span>
           </Show>

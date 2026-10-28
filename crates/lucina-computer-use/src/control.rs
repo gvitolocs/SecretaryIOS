@@ -98,6 +98,8 @@ struct Work {
     since_ms: u64,
     cancel: Cancel,
     preempted: bool,
+    /// What the engine is doing now (the Jev engine's last step), for the Computer view.
+    progress: Option<(String, u64)>,
 }
 
 #[derive(Debug, Default)]
@@ -264,6 +266,7 @@ impl Control {
             since_ms: now_ms(),
             cancel,
             preempted: false,
+            progress: None,
         });
         Ok(TaskGuard {
             control: self,
@@ -402,6 +405,18 @@ impl Control {
         Ok(())
     }
 
+    /// The running task's latest step, shown under "working on …" and in the
+    /// activity list. Ignored when no task runs.
+    pub fn task_progress(&self, sb: SandboxId, line: &str) {
+        let mut inner = self.lock();
+        let line = clip(line, 160);
+        let Some(work) = inner.slots[sb.index()].task.as_mut() else {
+            return;
+        };
+        work.progress = Some((line.clone(), now_ms()));
+        self.record(&mut inner, sb, "jev_step", json!({"what": line}));
+    }
+
     /// Records a live-view event that is not input (a view opened, closed or refused).
     pub fn note(&self, sb: SandboxId, event: &str, fields: Value) {
         let mut inner = self.lock();
@@ -441,6 +456,7 @@ impl Control {
                 "what": w.what,
                 "since": w.since_ms,
                 "stopping": w.preempted,
+                "progress": w.progress.as_ref().map(|(line, at)| json!({"line": line, "at": at})),
             })),
             "lastAgent": slot.last_agent.as_ref().map(|(who, _, at)| json!({"who": who, "at": at})),
             "leaseSecs": self.lease.as_secs(),
@@ -532,17 +548,21 @@ pub fn shared_client() -> &'static Client {
 ///
 /// The Jev engine ([`crate::jev_drive`]) tries first when the task is browsing
 /// or the Android phone; whatever it cannot finish goes to Hermes, told what
-/// was already done.
+/// was already done. A task that starts with `[engine:hermes]` goes straight
+/// to Hermes, and `[engine:jev]` skips the route question (comparisons, tests).
 pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<ComputerResult, Error> {
     let client = shared_client();
     if !client.ready() {
         return Err(Error::NotEnabled);
     }
+    let (engine, prompt) = engine_choice(prompt);
     let mut prompt = std::borrow::Cow::Borrowed(prompt);
-    if let Some(r) = jev_first(&prompt, cancel).await? {
-        match r {
-            Ok(done) => return Ok(done),
-            Err(handover) => prompt = std::borrow::Cow::Owned(handover),
+    if engine != Some("hermes") {
+        if let Some(r) = jev_first(&prompt, engine == Some("jev"), cancel).await? {
+            match r {
+                Ok(done) => return Ok(done),
+                Err(handover) => prompt = std::borrow::Cow::Owned(handover),
+            }
         }
     }
     let guard = control().begin_task(SandboxId::Workspace, who, &prompt, cancel.clone())?;
@@ -553,11 +573,24 @@ pub async fn run_task(who: &str, prompt: &str, cancel: &Cancel) -> Result<Comput
     }
 }
 
+/// `[engine:hermes] task` → (Some("hermes"), "task").
+pub fn engine_choice(prompt: &str) -> (Option<&'static str>, &str) {
+    let t = prompt.trim_start();
+    for (tag, engine) in [("[engine:hermes]", "hermes"), ("[engine:jev]", "jev")] {
+        if let Some(rest) = t.strip_prefix(tag) {
+            return (Some(engine), rest.trim_start());
+        }
+    }
+    (None, prompt)
+}
+
 /// The Jev engine's try: `None` when it does not apply (off, no quota, not a
-/// browsing or phone task), `Some(Ok(result))` when it finished, and
-/// `Some(Err(prompt))` with the task for Hermes, told what was already done.
+/// browsing or phone task), `Some(Ok(result))` when it finished (or stopped at
+/// a checkout for the owner), and `Some(Err(prompt))` with the task for
+/// Hermes, told what was already done.
 async fn jev_first(
     prompt: &str,
+    desktop: bool,
     cancel: &Cancel,
 ) -> Result<Option<Result<ComputerResult, String>>, Error> {
     use crate::jev_drive::{self, Outcome, Where};
@@ -565,25 +598,48 @@ async fn jev_first(
     if !jev_drive::enabled() || !jev.available() {
         return Ok(None);
     }
-    let target = match jev_drive::route(jev, prompt).await {
-        Some(t @ (Where::Desktop | Where::Android)) => t,
-        _ => return Ok(None),
+    let target = if desktop {
+        Where::Desktop
+    } else {
+        match jev_drive::route(jev, prompt).await {
+            Some(t @ (Where::Desktop | Where::Android)) => t,
+            _ => return Ok(None),
+        }
+    };
+    let jev_tools = |actions: &[String], stats: &jev_drive::DriveStats| {
+        let mut t: Vec<String> = actions.iter().map(|a| format!("jev: {a}")).collect();
+        t.push(format!("jev stats: {}", stats.to_json()));
+        t
     };
     match jev_drive::drive(jev, target, prompt, cancel).await {
-        Ok(Outcome::Done { reply, actions }) => {
+        Ok(Outcome::Done { reply, actions, stats }) => {
             tracing::info!(target: "lucina_jev::drive", ?target, steps = actions.len(), "jev engine finished the task");
             Ok(Some(Ok(ComputerResult {
                 status: crate::Status::Completed,
                 reply,
                 session_id: None,
-                executed_tools: actions.iter().map(|a| format!("jev: {a}")).collect(),
+                executed_tools: jev_tools(&actions, &stats),
                 tool_errors: 0,
+                handover: None,
+            })))
+        }
+        Ok(Outcome::NeedsOwner { handover, actions, stats }) => {
+            tracing::info!(target: "lucina_jev::drive", ?target, reason = %handover.reason, total = ?handover.total, "jev engine stopped for the owner");
+            jev_drive::hand_over(handover.clone());
+            Ok(Some(Ok(ComputerResult {
+                status: crate::Status::Completed,
+                reply: handover.reply.clone(),
+                session_id: None,
+                executed_tools: jev_tools(&actions, &stats),
+                tool_errors: 0,
+                handover: Some(handover),
             })))
         }
         Ok(Outcome::Escalate {
             reason,
             seen,
             actions,
+            ..
         }) => {
             tracing::info!(target: "lucina_jev::drive", ?target, %reason, steps = actions.len(), "jev engine hands the task to Hermes");
             if actions.is_empty() {
@@ -738,6 +794,30 @@ mod tests {
             .owner_input(SandboxId::Workspace, "mac", json!({"events": 2}))
             .is_ok());
         assert_eq!(c.recent(SandboxId::Workspace, 1)[0]["event"], "input");
+    }
+
+    #[test]
+    fn the_running_task_shows_its_latest_step() {
+        let c = ctl();
+        let sb = SandboxId::Workspace;
+        c.task_progress(sb, "step 1 · nothing runs");
+        assert!(c.recent(sb, 5).is_empty(), "no task, no progress");
+        let g = c.begin_task(sb, "lucina:jev", "find flights", Cancel::new()).unwrap();
+        c.task_progress(sb, "step 3 · clicked list item \"Billund BLL\" · 1.4 s");
+        let st = c.state(sb);
+        assert_eq!(st["task"]["progress"]["line"], "step 3 · clicked list item \"Billund BLL\" · 1.4 s");
+        let r = c.recent(sb, 1);
+        assert_eq!(r[0]["event"], "jev_step");
+        assert_eq!(r[0]["what"], "step 3 · clicked list item \"Billund BLL\" · 1.4 s");
+        drop(g);
+        assert!(c.state(sb)["task"].is_null());
+    }
+
+    #[test]
+    fn an_engine_tag_picks_the_engine_and_is_removed() {
+        assert_eq!(engine_choice("[engine:hermes] find flights"), (Some("hermes"), "find flights"));
+        assert_eq!(engine_choice("  [engine:jev]open wolt"), (Some("jev"), "open wolt"));
+        assert_eq!(engine_choice("find [engine:hermes] flights"), (None, "find [engine:hermes] flights"));
     }
 
     #[test]

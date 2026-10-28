@@ -56,7 +56,7 @@ pub const INTENT_OPTIONS: &[(&str, &str)] = &[
     ("graph_task", "The user asks for a graph or chart."),
     ("spreadsheet_update", "Log weight, a receipt or patrimony to the Google Sheet or Drive."),
     ("web_crawl", "A supplied URL or web page must be read to answer or act: bare links, this page, summarise or compare a page, or look something up on the web."),
-    ("computer_task", "The user wants Lucina to do something on her own computer (Linux desktop with Chromium) or her Android phone: open a site or app, check the owner's Outlook or Gmail, click through pages, use an Android app."),
+    ("computer_task", "The user wants Lucina to do something on her own computer (Linux desktop with Chromium) or her Android phone: open a site or app, check the owner's Outlook or Gmail, click through pages, use an Android app, find flights or trains on a booking site, or order food on Wolt or Just Eat (she stops at the checkout)."),
     ("oracle_monitor", "CPU, RAM or status of the Oracle peer server (SSH)."),
     ("model_status", "The user asks which model or LLM Lucina is using."),
     ("revive_qwen", "The user asks to load or wake Qwen back onto the GPU."),

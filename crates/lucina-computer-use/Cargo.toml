@@ -10,6 +10,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 lucina-jev = { path = "../lucina-jev" }
 lucina-llm = { path = "../lucina-llm" }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
 base64 = "=0.22.1"
 flate2 = "1"
 thiserror = { workspace = true }
