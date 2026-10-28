@@ -159,16 +159,6 @@ h3 {
   text-transform: uppercase;
 }
 
-/* ---------- Glass ---------- */
-
-.glass {
-  background: var(--glass);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
-  backdrop-filter: blur(var(--blur)) saturate(1.4);
-}
-
 /* ---------- Buttons and inputs ---------- */
 
 .btn {
