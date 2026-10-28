@@ -14,12 +14,14 @@ private let log = Logger(subsystem: "tech.getsecretary.app", category: "MapSelfT
 /// - `deals`: the deals map, its pin count once loaded;
 /// - `timeline`: the newest real chat message with a place (a `place` block or a proactive `meta.place`)
 ///   from the server's timeline, its card opened like a tap, then the same checks as `card`;
-/// - `navigate`: the route with `navigate=1` (a Navigate action): the in-app map navigating.
+/// - `navigate`: the route with `navigate=1` (a Navigate action): the in-app map navigating;
+/// - `naviga`: an agenda question to Lucina in the self-test conversation (never the owner's
+///   chat), her first "Naviga" button performed like a tap: the in-app map navigating.
 /// Every mode also checks that nothing opened another maps app (Apple Maps, Google Maps).
 /// Each step writes `PASS …` or `FAIL <step> <reason>` to the log and to Documents/map-selftest.txt.
 enum MapSelfTest {
     static var mode: String? {
-        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route", "timeline", "navigate"].contains($0) ? $0 : nil }
+        UserDefaults.standard.string(forKey: "SecretaryMapSelfTest").flatMap { ["place", "card", "deals", "route", "timeline", "navigate", "naviga"].contains($0) ? $0 : nil }
     }
 
     /// A proactive message's meta (a calendar reminder with the event's place).
@@ -47,7 +49,7 @@ enum MapSelfTest {
 
     @MainActor
     static func run(mode: String, openRoute: (String) -> Void, timeline: (() async throws -> TimelinePage)? = nil,
-                    show: (Place) -> Void) async {
+                    chat: ((ChatRequest) async throws -> ChatResponse)? = nil, show: (Place) -> Void) async {
         let report = Report()
         report.line("START \(mode)")
         switch mode {
@@ -59,6 +61,44 @@ enum MapSelfTest {
                 report.pass("route opened")
             } else {
                 report.fail("route", "the routed place screen did not appear")
+            }
+        case "naviga":
+            guard let chat else {
+                report.fail("naviga", "no chat API")
+                break
+            }
+            let request = ChatRequest(message: "Cosa ho in calendario nei prossimi 7 giorni?", sessionId: "selftest-maps",
+                                      clientMessageId: "selftest-maps-\(Int(Date().timeIntervalSince1970))")
+            let reply: ChatResponse
+            do {
+                reply = try await chat(request)
+            } catch {
+                report.fail("naviga", "chat: \(error.localizedDescription)")
+                break
+            }
+            guard let rich = reply.rich else {
+                report.fail("naviga", "the agenda reply has no cards")
+                break
+            }
+            report.pass("agenda \(rich.bubbles.count) bubble(s), \(rich.blocks.count) card(s): \(rich.bubbles.first ?? "")")
+            guard let naviga = rich.actions.first(where: { $0.kind == .route && $0.path.map(PlaceLinks.navigates) == true }),
+                  let path = naviga.path else {
+                report.fail("naviga", "no Naviga button among \(rich.actions.map(\.label))")
+                break
+            }
+            report.pass("button \(naviga.label) -> \(Place.fromRoute(path)?.title ?? "?")")
+            openRoute(path)
+            guard await wait(45, until: { MapSelfTestProbe.shared.mapShown }) else {
+                report.fail("naviga", "the in-app map did not appear")
+                break
+            }
+            if await wait(15, until: { MapSelfTestProbe.shared.navigating }) {
+                report.pass("navigating in the app")
+            } else {
+                report.fail("naviga", "the map did not start navigating")
+            }
+            if await wait(30, until: { MapSelfTestProbe.shared.navigationSteps != nil }) {
+                report.line("INFO turn-by-turn steps \(MapSelfTestProbe.shared.navigationSteps ?? 0)")
             }
         case "navigate":
             openRoute(sampleRoute + "&navigate=1")
@@ -275,8 +315,11 @@ struct MapSelfTestHost: ViewModifier {
     @State private var mode = MapSelfTest.mode
 
     func body(content: Content) -> some View {
-        if mode == "route" || mode == "navigate" {
-            content.task { await MapSelfTest.run(mode: mode ?? "route", openRoute: { app.open(route: $0) }) { _ in } }
+        if mode == "route" || mode == "navigate" || mode == "naviga" {
+            content.task {
+                let api = app.api
+                await MapSelfTest.run(mode: mode ?? "route", openRoute: { app.open(route: $0) }, chat: { try await api.chat($0) }) { _ in }
+            }
         } else {
             content.fullScreenCover(isPresented: Binding(get: { mode != nil }, set: { if !$0 { mode = nil } })) {
                 if let mode { MapSelfTestScreen(mode: mode) }

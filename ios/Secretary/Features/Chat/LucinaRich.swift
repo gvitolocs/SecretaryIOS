@@ -143,6 +143,25 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
         }
     }
 
+    /// The server's limit for an in-app map route (lucina-store `MAX_MAP_ROUTE`).
+    static let mapRouteMax = 600
+
+    /// A plain app path such as `/shopping` or `/notes/<slug>`.
+    static func isAppRoute(_ path: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-.%")
+        return path.hasPrefix("/") && !path.hasPrefix("//") && !path.contains("..") && path.count <= 121
+            && path.unicodeScalars.allSatisfy(allowed.contains)
+    }
+
+    /// Lucina's in-app map or navigation for a place (`/map/place?…[&navigate=1]`, the "Naviga"
+    /// buttons): the server's `valid_map_route` rule, and the query must describe a place.
+    static func isMapRoute(_ path: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789%=&_.~-")
+        guard path.count <= mapRouteMax, path.hasPrefix("/map/place?") else { return false }
+        let query = path.dropFirst("/map/place?".count)
+        return !query.isEmpty && query.unicodeScalars.allSatisfy(allowed.contains) && Place.fromRoute(path) != nil
+    }
+
     static func action(_ v: JSONValue, index: Int) -> RichAction? {
         guard let kind = v["kind"]?.stringValue.flatMap(RichAction.Kind.init(rawValue:)) else { return nil }
         let label = line(v["label"], 40)
@@ -159,10 +178,8 @@ struct RichMessage: Codable, Equatable, Hashable, Sendable {
             guard let t else { return nil }
             return RichAction(id: id, label: label, emoji: emoji(v["emoji"]), kind: kind, text: t, prefill: p["prefill"] == .bool(true), path: nil, answer: nil)
         case .route:
-            let path = line(p["path"], 128)
-            let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/_-.%")
-            guard path.hasPrefix("/"), !path.hasPrefix("//"), !path.contains(".."), path.count <= 121,
-                  path.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
+            let path = line(p["path"], mapRouteMax)
+            guard isAppRoute(path) || isMapRoute(path) else { return nil }
             return RichAction(id: id, label: label, emoji: emoji(v["emoji"]), kind: kind, text: nil, prefill: false, path: path, answer: nil)
         case .confirm:
             guard let answer = p["answer"]?.stringValue, ["yes", "no", "edit"].contains(answer), answer == "edit" || t != nil else { return nil }
