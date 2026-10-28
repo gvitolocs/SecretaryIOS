@@ -238,12 +238,17 @@ async fn control(
         ));
     }
     let who = caller(&headers);
-    let call = Call::computer_control(json!({
+    let mut body_out = json!({
         "sandbox": sandbox,
         "action": action,
         "device": device_label(&ident, &who),
-    }));
-    forward(&st, call.with_caller(&who)).await
+    });
+    // A heartbeat says whether the owner gave real input since the last one: Lucina gives
+    // the desktop back after two idle minutes (an open page alone never keeps it).
+    if let Some(active) = body.get("active").and_then(Value::as_bool) {
+        body_out["active"] = json!(active);
+    }
+    forward(&st, Call::computer_control(body_out).with_caller(&who)).await
 }
 
 async fn input(
