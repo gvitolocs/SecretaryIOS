@@ -147,18 +147,38 @@ fn items(raw: Vec<RawItem>, duration: f64, keep_owner: bool) -> Vec<Item> {
         .collect()
 }
 
-/// Pulls the first `{...}` object out of a reply (models sometimes wrap it).
+/// Pulls the first balanced `{...}` object out of a reply (models sometimes wrap it in
+/// prose or ``` fences); braces inside JSON strings don't count.
 pub fn json_object(s: &str) -> &str {
     let s = s.trim();
-    let s = s
-        .strip_prefix("```json")
-        .or_else(|| s.strip_prefix("```"))
-        .unwrap_or(s);
-    let s = s.strip_suffix("```").unwrap_or(s).trim();
-    match (s.find('{'), s.rfind('}')) {
-        (Some(a), Some(b)) if b > a => &s[a..=b],
-        _ => s,
+    let Some(a) = s.find('{') else {
+        return s;
+    };
+    let (mut depth, mut in_str, mut escaped) = (0usize, false, false);
+    for (i, c) in s[a..].char_indices() {
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &s[a..=a + i];
+                }
+            }
+            _ => {}
+        }
     }
+    // Cut off: hand the parser what there is, so the error says where it ends.
+    &s[a..]
 }
 
 pub fn parse(
@@ -285,6 +305,85 @@ pub fn event_brief(m: &Memo, tz: Tz, previous: &[String]) -> String {
     o
 }
 
+/// Transcripts up to this length are retried whole (with [`COMPACT`]); longer ones are
+/// retried from notes on parts of [`RETRY_CHUNK_CHARS`], so the final prompt is much shorter.
+const SHORT_CHARS: usize = 12_000;
+const RETRY_CHUNK_CHARS: usize = 10_000;
+
+/// Added to the prompt of the second attempt, after a reply that was cut off or not JSON.
+const COMPACT: &str = "Keep this version short: \"overview\" at most 3 sentences; at most 8 key points, 8 decisions and 8 action items (for a lecture at most 6 definitions and 4 questions). Answer with the JSON object only, no other text.";
+
+/// Completion budget for the JSON summary: a base plus a share of the prompt (about a
+/// token per 8 characters), clamped. Good replies use 400 to 3800 tokens; an hour-long
+/// lecture's notes overran a flat 4000 (2026-10-27).
+fn summary_max_tokens(prompt_chars: usize) -> u32 {
+    (3000 + prompt_chars / 8).clamp(3000, 8000) as u32
+}
+
+/// The transcript itself, or (when longer than `chunk`) the model's notes on each part.
+async fn body(
+    llm: &dyn ChatModel,
+    m: &Memo,
+    t: &Transcript,
+    tz: Tz,
+    lines: &[String],
+    chunk: usize,
+    compact: bool,
+) -> Result<String, SummaryError> {
+    let joined = lines.join("\n");
+    if joined.chars().count() <= chunk {
+        return Ok(format!("Transcript:\n{joined}"));
+    }
+    let mut notes = Vec::new();
+    let mut part = String::new();
+    let mut parts: Vec<String> = Vec::new();
+    for l in lines {
+        if part.chars().count() + l.chars().count() > chunk && !part.is_empty() {
+            parts.push(std::mem::take(&mut part));
+        }
+        let mut rest = l.as_str();
+        while let Some((end, _)) = rest.char_indices().nth(chunk) {
+            parts.push(rest[..end].to_owned());
+            rest = &rest[end..];
+        }
+        part.push_str(rest);
+        part.push('\n');
+    }
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    let n = parts.len();
+    for (i, p) in parts.into_iter().enumerate() {
+        let req = ChatRequest {
+            messages: vec![
+                Message::system(PART_SYSTEM),
+                Message::user(format!(
+                    "{}Part {} of {n}:\n{p}{}",
+                    header(m, t, tz),
+                    i + 1,
+                    if compact {
+                        "\nKeep these notes to at most 8 short lines."
+                    } else {
+                        ""
+                    }
+                )),
+            ],
+            temperature: Some(0.2),
+            max_tokens: Some(if compact { 500 } else { 2000 }),
+            purpose: "memo_summary_part",
+            thinking: Some(false),
+            ..Default::default()
+        };
+        let r = llm.complete(req).await?;
+        notes.push(format!(
+            "Notes on part {} of {n}:\n{}",
+            i + 1,
+            r.message.text().trim()
+        ));
+    }
+    Ok(format!("The memo is long, so here are your notes on each part instead of the full transcript.\n\n{}", notes.join("\n\n")))
+}
+
 /// Asks the model for the summary. `instructions` = the owner's wishes for a re-summary.
 pub async fn summarize(
     llm: &dyn ChatModel,
@@ -296,62 +395,47 @@ pub async fn summarize(
     previous: &[String],
 ) -> Result<Summary, SummaryError> {
     let lines = timed_lines(t);
-    let joined = lines.join("\n");
-    let body = if joined.chars().count() <= CHUNK_CHARS {
-        format!("Transcript:\n{joined}")
-    } else {
-        let mut notes = Vec::new();
-        let mut part = String::new();
-        let mut parts: Vec<String> = Vec::new();
-        for l in &lines {
-            if part.chars().count() + l.chars().count() > CHUNK_CHARS && !part.is_empty() {
-                parts.push(std::mem::take(&mut part));
-            }
-            part.push_str(l);
-            part.push('\n');
-        }
-        if !part.is_empty() {
-            parts.push(part);
-        }
-        let n = parts.len();
-        for (i, p) in parts.into_iter().enumerate() {
-            let req = ChatRequest {
-                messages: vec![
-                    Message::system(PART_SYSTEM),
-                    Message::user(format!("{}Part {} of {n}:\n{p}", header(m, t, tz), i + 1)),
-                ],
-                temperature: Some(0.2),
-                max_tokens: Some(2000),
-                purpose: "memo_summary_part",
-                ..Default::default()
-            };
-            let r = llm.complete(req).await?;
-            notes.push(format!(
-                "Notes on part {} of {n}:\n{}",
-                i + 1,
-                r.message.text().trim()
+    let chars = lines.join("\n").chars().count();
+    let prompt = |body: &str, compact: bool| {
+        let mut user = format!("{}\n{body}", header(m, t, tz));
+        user.push_str(&event_brief(m, tz, previous));
+        if let Some(extra) = instructions.filter(|s| !s.trim().is_empty()) {
+            user.push_str(&format!(
+                "\n\nGiuseppe asked for this version: {}",
+                extra.trim()
             ));
         }
-        format!("The memo is long, so here are your notes on each part instead of the full transcript.\n\n{}", notes.join("\n\n"))
+        if compact {
+            user.push_str(&format!("\n\n{COMPACT}"));
+        }
+        user
     };
-    let mut user = format!("{}\n{body}", header(m, t, tz));
-    user.push_str(&event_brief(m, tz, previous));
-    if let Some(extra) = instructions.filter(|s| !s.trim().is_empty()) {
-        user.push_str(&format!(
-            "\n\nGiuseppe asked for this version: {}",
-            extra.trim()
-        ));
-    }
+    let first = body(llm, m, t, tz, &lines, CHUNK_CHARS, false).await?;
     let mut last_err = None;
     for attempt in 0..2 {
+        // The retry is a different, shorter request: the same one fails the same way.
+        let user = if attempt == 0 {
+            prompt(&first, false)
+        } else if chars <= SHORT_CHARS {
+            prompt(&first, true)
+        } else {
+            prompt(
+                &body(llm, m, t, tz, &lines, RETRY_CHUNK_CHARS, true).await?,
+                true,
+            )
+        };
+        let max_tokens = summary_max_tokens(user.chars().count());
         let req = ChatRequest {
-            messages: vec![Message::system(SYSTEM), Message::user(user.clone())],
+            messages: vec![Message::system(SYSTEM), Message::user(user)],
             temperature: Some(0.3),
-            // An hour-long lecture's notes, definitions and questions overran 4000 tokens: the
-            // JSON came back cut off (2026-10-27).
-            max_tokens: Some(8000),
+            max_tokens: Some(max_tokens),
             purpose: "memo_summary",
             json_object: true,
+            // DeepSeek defaults to thinking; the client previously omitted this flag.
+            // Reasoning can exhaust max_tokens while text() reads only content, leaving
+            // empty JSON input. Disable thinking and log both lengths to distinguish
+            // that failure from JSON mode producing whitespace.
+            thinking: Some(false),
             ..Default::default()
         };
         let r = llm.complete(req).await?;
@@ -360,14 +444,30 @@ pub async fn summarize(
         } else {
             &r.model
         };
-        match parse(r.message.text(), t, label, instructions) {
+        let text = r.message.text();
+        let result = if r.finish_reason.as_deref() == Some("length") {
+            Err(SummaryError::Json("reply cut off at max_tokens".into()))
+        } else if text.trim().is_empty() {
+            Err(SummaryError::Json("empty reply".into()))
+        } else {
+            parse(text, t, label, instructions)
+        };
+        match result {
             Ok(mut s) => {
                 // The template follows the linked event, not what the model echoes back.
                 s.template = template(m).map(str::to_owned);
                 return Ok(s);
             }
             Err(e) => {
-                tracing::warn!(attempt, error = %e, "memo summary was not valid JSON");
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    finish_reason = r.finish_reason.as_deref().unwrap_or(""),
+                    completion_tokens = r.usage.as_ref().map_or(0, |u| u.completion_tokens),
+                    text_chars = text.chars().count(),
+                    reasoning_chars = r.message.reasoning_content.as_deref().map_or(0, |s| s.chars().count()),
+                    "memo summary was not valid JSON"
+                );
                 last_err = Some(e);
             }
         }
@@ -481,5 +581,215 @@ mod tests {
         // Old summaries without the new fields still load.
         let old: Summary = serde_json::from_str(r#"{"title":"t","language":"it","overview":"o","model":"m","createdAt":"2026-10-26T00:00:00Z"}"#).unwrap();
         assert!(old.definitions.is_empty() && old.template.is_none());
+    }
+
+    /// Returns the scripted replies in order and keeps every request.
+    struct Fake {
+        replies: std::sync::Mutex<Vec<lucina_llm::ChatResponse>>,
+        requests: std::sync::Mutex<Vec<ChatRequest>>,
+    }
+
+    impl Fake {
+        fn new(replies: Vec<(&str, &str)>) -> Self {
+            Self {
+                replies: std::sync::Mutex::new(
+                    replies
+                        .into_iter()
+                        .rev()
+                        .map(|(text, finish)| lucina_llm::ChatResponse {
+                            message: Message::assistant(text),
+                            finish_reason: Some(finish.into()),
+                            usage: None,
+                            model: "fake".into(),
+                        })
+                        .collect(),
+                ),
+                requests: Default::default(),
+            }
+        }
+
+        fn user(&self, i: usize) -> String {
+            self.requests.lock().unwrap()[i].messages[1]
+                .text()
+                .to_owned()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChatModel for Fake {
+        async fn complete(
+            &self,
+            request: ChatRequest,
+        ) -> Result<lucina_llm::ChatResponse, LlmError> {
+            self.requests.lock().unwrap().push(request);
+            self.replies
+                .lock()
+                .unwrap()
+                .pop()
+                .ok_or_else(|| LlmError::Decode("no more replies".into()))
+        }
+    }
+
+    const GOOD: &str = r#"{"title":"Spesa per la cena","overview":"Parli della spesa.","keyPoints":[{"text":"Comprare il pane","at":2}],"tags":["spesa"]}"#;
+
+    async fn run(llm: &Fake, t: &Transcript) -> Result<Summary, SummaryError> {
+        let m = crate::obsidian::tests::memo();
+        summarize(llm, "deepseek", &m, t, chrono_tz::Europe::Rome, None, &[]).await
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_reply_is_retried_with_a_compact_prompt() {
+        let llm = Fake::new(vec![("", "length"), (GOOD, "stop")]);
+        let s = run(&llm, &transcript()).await.unwrap();
+        assert_eq!(s.title, "Spesa per la cena");
+        assert_eq!(s.key_points.len(), 1);
+        let reqs = llm.requests.lock().unwrap().len();
+        assert_eq!(reqs, 2);
+        assert!(!llm.user(0).contains(COMPACT) && llm.user(1).contains(COMPACT));
+        assert!(llm
+            .user(1)
+            .contains(&format!("Transcript:\n{}", timed_lines(&transcript())[0])));
+        let first = &llm.requests.lock().unwrap()[0];
+        assert_eq!(first.thinking, Some(false));
+        assert!(first.json_object);
+    }
+
+    #[tokio::test]
+    async fn a_long_transcript_is_retried_from_part_notes() {
+        let mut t = transcript();
+        t.duration_sec = 3100.0;
+        t.segments = (0..170)
+            .map(|i| Segment {
+                start: i as f64 * 10.0,
+                end: i as f64 * 10.0 + 9.0,
+                text: "parole ".repeat(10),
+                speaker: None,
+                words: vec![],
+            })
+            .collect();
+        let llm = Fake::new(vec![
+            ("   ", "stop"),
+            ("note 1", "stop"),
+            ("note 2", "stop"),
+            (GOOD, "stop"),
+        ]);
+        run(&llm, &t).await.unwrap();
+        assert_eq!(llm.requests.lock().unwrap().len(), 4);
+        assert_eq!(llm.requests.lock().unwrap()[1].purpose, "memo_summary_part");
+        let (first, last) = (llm.user(0), llm.user(3));
+        assert!(last.contains("Notes on part 2 of 2:\nnote 2") && last.contains(COMPACT));
+        assert!(
+            last.len() * 10 < first.len(),
+            "{} vs {}",
+            last.len(),
+            first.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fenced_reply_is_parsed_in_one_call() {
+        let llm = Fake::new(vec![(
+            &format!("Ecco:\n```json\n{GOOD}\n```\nFatto {{ok}}."),
+            "stop",
+        )]);
+        let s = run(&llm, &transcript()).await.unwrap();
+        assert_eq!(s.title, "Spesa per la cena");
+        assert_eq!(llm.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn two_bad_replies_are_an_error() {
+        let llm = Fake::new(vec![("", "length"), ("{\"title\": \"Spe", "stop")]);
+        assert!(matches!(
+            run(&llm, &transcript()).await,
+            Err(SummaryError::Json(_))
+        ));
+        assert_eq!(llm.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_very_long_segment_gets_smaller_parts_on_retry() {
+        let mut t = transcript();
+        t.segments[0].text = "è".repeat(CHUNK_CHARS + 1);
+        let llm = Fake::new(vec![
+            ("first notes", "stop"),
+            ("second notes", "stop"),
+            (GOOD, "length"),
+            ("retry notes", "stop"),
+            ("retry notes", "stop"),
+            ("retry notes", "stop"),
+            ("retry notes", "stop"),
+            ("retry notes", "stop"),
+            ("retry notes", "stop"),
+            ("retry notes", "stop"),
+            (GOOD, "stop"),
+        ]);
+        run(&llm, &t).await.unwrap();
+        let requests = llm.requests.lock().unwrap();
+        assert_eq!(requests.len(), 11);
+        assert_eq!(requests[2].purpose, "memo_summary");
+        assert_eq!(requests[10].purpose, "memo_summary");
+        for r in &requests[3..10] {
+            assert_eq!(r.purpose, "memo_summary_part");
+            assert_eq!(r.max_tokens, Some(500));
+            assert!(r.messages[1].text().chars().count() < RETRY_CHUNK_CHARS + 300);
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_preserves_event_instructions_and_previous_lectures() {
+        let llm = Fake::new(vec![("invalid JSON", "stop"), (GOOD, "stop")]);
+        let s = summarize(
+            &llm,
+            "deepseek",
+            &linked(EventKind::Lecture),
+            &transcript(),
+            chrono_tz::Europe::Rome,
+            Some("Focus on definitions"),
+            &["Previous sorting lecture".into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.template.as_deref(), Some("lecture"));
+        assert_eq!(s.instructions.as_deref(), Some("Focus on definitions"));
+        for i in 0..2 {
+            let user = llm.user(i);
+            assert!(user.contains("Focus on definitions"));
+            assert!(user.contains("Previous sorting lecture"));
+            assert!(user.contains("Algorithms – Lecture 5"));
+        }
+    }
+
+    #[tokio::test]
+    async fn budget_grows_with_the_transcript() {
+        let llm = Fake::new(vec![(GOOD, "stop"), (GOOD, "stop")]);
+        let mut t = transcript();
+        run(&llm, &t).await.unwrap();
+        t.segments[0].text = "parole ".repeat(4000);
+        run(&llm, &t).await.unwrap();
+        let requests = llm.requests.lock().unwrap();
+        let (short, long) = (
+            requests[0].max_tokens.unwrap(),
+            requests[1].max_tokens.unwrap(),
+        );
+        assert!(short < long, "{short} {long}");
+        for b in [
+            short,
+            long,
+            summary_max_tokens(0),
+            summary_max_tokens(500_000),
+        ] {
+            assert!((3000..=8000).contains(&b), "{b}");
+        }
+    }
+
+    #[test]
+    fn finds_the_first_balanced_object() {
+        assert_eq!(
+            json_object("Sure: {\"a\": {\"b\": \"}\"}} and {\"c\": 1}"),
+            "{\"a\": {\"b\": \"}\"}}"
+        );
+        assert_eq!(json_object("{\"a\": \"x"), "{\"a\": \"x");
+        assert_eq!(json_object("  none "), "none");
     }
 }

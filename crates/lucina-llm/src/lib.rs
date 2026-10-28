@@ -163,6 +163,9 @@ pub struct ChatRequest {
     /// JSON output mode (`response_format: {type: "json_object"}`); the
     /// prompt must ask for JSON and show the shape.
     pub json_object: bool,
+    /// DeepSeek thinking (`thinking: {type: enabled|disabled}`); `None` leaves
+    /// the model's default. Reasoning tokens count against `max_tokens`.
+    pub thinking: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -427,6 +430,8 @@ struct WireRequest<'a> {
     stream_options: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -516,6 +521,9 @@ impl DeepSeek {
             response_format: req
                 .json_object
                 .then(|| serde_json::json!({"type": "json_object"})),
+            thinking: req
+                .thinking
+                .map(|on| serde_json::json!({"type": if on { "enabled" } else { "disabled" }})),
         }
     }
 
@@ -961,8 +969,12 @@ mod dsml_tests {
     #[test]
     fn tool_markup_is_detected() {
         assert!(has_tool_markup("<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} calls>\n<\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c} invoke name=\"drive\">"));
-        assert!(has_tool_markup("<\u{ff5c}tool\u{2581}calls\u{2581}begin\u{ff5c}>"));
-        assert!(has_tool_markup("ok <tool_call>{\"name\":\"drive\"}</tool_call>"));
+        assert!(has_tool_markup(
+            "<\u{ff5c}tool\u{2581}calls\u{2581}begin\u{ff5c}>"
+        ));
+        assert!(has_tool_markup(
+            "ok <tool_call>{\"name\":\"drive\"}</tool_call>"
+        ));
         assert!(has_tool_markup("<function_calls><invoke name=\"x\">"));
         assert!(!has_tool_markup("Ho trovato la cartella Lucina."));
         assert!(!has_tool_markup("I called a tool and it worked."));

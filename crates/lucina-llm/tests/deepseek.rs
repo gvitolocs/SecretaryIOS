@@ -169,3 +169,28 @@ async fn streams_content_and_tool_calls() {
     assert_eq!(r.finish_reason.as_deref(), Some("tool_calls"));
     assert_eq!(r.usage.unwrap().completion_tokens, 7);
 }
+
+#[tokio::test]
+async fn thinking_off_is_sent_and_reasoning_is_kept() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(json!({"thinking": {"type": "disabled"}, "max_tokens": 3000})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": "", "reasoning_content": "hmm"}}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ds = client(&server, KeySource::Inline("k".into()));
+    let r = ds
+        .complete(ChatRequest {
+            messages: vec![Message::user("x")],
+            max_tokens: Some(3000),
+            thinking: Some(false),
+            ..ChatRequest::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(r.finish_reason.as_deref(), Some("length"));
+    assert_eq!(r.message.reasoning_content.as_deref(), Some("hmm"));
+}

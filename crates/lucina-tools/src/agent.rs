@@ -285,6 +285,7 @@ async fn reask_plain(
         max_tokens: None,
         purpose: "agent",
         json_object: false,
+        thinking: None,
     };
     match tokio::time::timeout(remaining, model.complete(request)).await {
         Ok(Ok(r)) => {
@@ -348,6 +349,7 @@ pub async fn run(
             max_tokens: None,
             purpose: "agent",
             json_object: false,
+            thinking: None,
         };
         let response = match tokio::time::timeout(remaining, model.complete(request)).await {
             Ok(r) => r?,
@@ -368,7 +370,10 @@ pub async fn run(
                 // Raw tool-call markup (DeepSeek DSML …) is never an answer
                 // for the owner: ask once more for plain text, else no text
                 // (the caller then falls back to its normal path).
-                tracing::warn!(round, "model answered with tool-call markup; re-asking once");
+                tracing::warn!(
+                    round,
+                    "model answered with tool-call markup; re-asking once"
+                );
                 text = reask_plain(model, &messages, cfg, deadline).await;
             }
             messages.push(response.message);
