@@ -17,7 +17,7 @@
 //!   [`OPS_DAYS`] days ([`OPS_LIMIT`] of each); [`OPS_TIMEOUT`].
 //!
 //! [`build`] merges them (pure): `hosts` in a fixed order (catalog hosts, host
-//! components and the sentinel's hosts); `attention` = catalog problems that are
+//! components and the sentinel's hosts); `attention` = catalog problems (not repos) that are
 //! down/broken (crit) or warn/degraded (warn) plus the sentinel's warn/crit checks,
 //! one item per catalog component when a check matches one of its units or
 //! containers, and a component that is broken only because of other listed ones
@@ -1114,6 +1114,8 @@ pub fn build(
         .filter(|p| {
             matches!(state_of(p.effective()), "crit" | "warn")
                 && !p.id().is_empty()
+                // A checkout's state (missing, dirty, unpushed) is not an outage: Services lists it.
+                && p.str("kind") != Some("repo")
                 && !(p.str("kind") == Some("host")
                     && state_of(p.effective()) == "crit"
                     && p.get("optional").and_then(Value::as_bool) == Some(true))
@@ -2128,6 +2130,21 @@ mod tests {
             now(),
         );
         assert_eq!(v["overall"], "warn");
+    }
+
+    #[test]
+    fn repos_are_services_not_attention() {
+        let repo = comp("repo-pokoin-web", "repo", "nezopt", "warn", json!({}));
+        let v = build(
+            &json!({}),
+            &Err("down".into()),
+            &Ok(tree(vec![repo])),
+            &Ok(vec![]),
+            now(),
+        );
+        assert_eq!(v["attention_count"], 0);
+        assert_eq!(v["attention"].as_array().map(Vec::len), Some(0));
+        assert_eq!(v["services"][0]["projects"][0]["components"][0]["id"], "repo-pokoin-web");
     }
 
     #[test]
