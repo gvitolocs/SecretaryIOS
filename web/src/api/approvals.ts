@@ -95,9 +95,11 @@ export function parseApproval(v: unknown): Approval | null {
   return a;
 }
 
-/** The list is an array; tolerate `{items: [...]}`. */
+/** The pending list (server shape: `{approvals: [...]}`). */
 export function parseApprovals(v: unknown): Approval[] {
-  const list = Array.isArray(v) ? v : v && typeof v === "object" && Array.isArray((v as { items?: unknown }).items) ? (v as { items: unknown[] }).items : [];
+  // The server answers {approvals: [...]}; a bare array and {items: [...]} are accepted too.
+  const o = v && typeof v === "object" ? (v as { approvals?: unknown; items?: unknown }) : null;
+  const list = Array.isArray(v) ? v : Array.isArray(o?.approvals) ? o.approvals : Array.isArray(o?.items) ? o.items : [];
   return list.map(parseApproval).filter((a): a is Approval => a !== null);
 }
 

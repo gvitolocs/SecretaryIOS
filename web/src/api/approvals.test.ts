@@ -21,6 +21,8 @@ describe("approvals API parsing", () => {
       expect.objectContaining({ id: "apr_2", requester: { kind: "", name: "Broker" } }),
     ]);
     expect(parseApprovals({ items: [approvalJson("apr_3")] })).toHaveLength(1);
+    // The server sends {approvals: [...]}.
+    expect(parseApprovals({ approvals: [approvalJson("apr_4"), approvalJson("apr_5")] }).map((a) => a.id)).toEqual(["apr_4", "apr_5"]);
     expect(parseApprovals("nope")).toEqual([]);
   });
 
