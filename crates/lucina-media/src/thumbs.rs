@@ -28,10 +28,13 @@ pub const SMALL_SHORT_SIDE: u32 = 360;
 pub const LARGE_LONG_SIDE: u32 = 1600;
 
 pub fn dir_for(cfg: &Config, item_id: &str) -> PathBuf {
+    dir_in(&cfg.thumbs_dir(), item_id)
+}
+
+/// [`dir_for`] for a thumbnail root (`<data_dir>/thumbs`), when there is no [`Config`].
+pub fn dir_in(thumbs_root: &Path, item_id: &str) -> PathBuf {
     let shard = item_id.rsplit('_').next().unwrap_or(item_id);
-    cfg.thumbs_dir()
-        .join(&shard[..2.min(shard.len())])
-        .join(item_id)
+    thumbs_root.join(&shard[..2.min(shard.len())]).join(item_id)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

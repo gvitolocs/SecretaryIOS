@@ -64,6 +64,8 @@ pub struct PurgeReport {
 pub fn purge_in(c: &Connection, ids: &[String]) -> rusqlite::Result<PurgeReport> {
     let mut report = PurgeReport::default();
     let mut hashes: BTreeSet<String> = BTreeSet::new();
+    // The copies merged under a purged photo are the same photo (`dedup_merge`).
+    let ids = &crate::dedup_merge::expand_purge(c, ids)?;
     for id in ids {
         let row: Option<(String, Option<String>)> = c
             .query_row(
@@ -113,6 +115,7 @@ pub fn purge_in(c: &Connection, ids: &[String]) -> rusqlite::Result<PurgeReport>
             [id],
         )?;
         c.execute("DELETE FROM items WHERE id = ?1", [id])?;
+        crate::dedup_merge::forget(c, id)?;
         report.done.push(id.clone());
     }
     // A blob goes when nothing references its hash any more (the same bytes may be another item,

@@ -82,6 +82,9 @@ kernel DK3).
   - `album` takes an id or a title.
 - `GET|PATCH|DELETE items/{id}`, `POST items/{id}/restore`.
   - DELETE is a soft delete (trash). The original stays, and phones are never touched.
+- `GET items/{id}/duplicates` → `{item_id, merged_from?, duplicates: [{id, kind, score, decided_by, merged_at, size, mime, width,
+  height, source, device, device_name, hash, urls}]}`: the copies merged under a photo (see "Identity"); the id of a
+  hidden copy works too. `GET items/{id}` of a hidden copy answers with the survivor and `merged_from`.
 - `GET items/{id}/original` serves HTTP Range with ETag = blake3. `GET items/{id}/thumb?size=256|1024` and `GET items/{id}/poster` also exist.
 - Albums:
   - `GET|POST albums`, `GET|PATCH|DELETE albums/{id}` (system albums can't be deleted);
@@ -348,6 +351,83 @@ could not be made", route `/gallery/lab`, `dedupKey lab:<job>`), the same path t
   - Results go to "Lucina's picks", and the reply gets a "Show in Gallery" route button (`/gallery/album/<id>`).
 - **Imports:** `lucina-media import <dir|takeout.zip> --source takeout|nextcloud --album …` copies files and never moves them. Takeout JSON sidecars supply dates and places. `lucina-media index-folder <label> <dir>` indexes in place.
 
+## Identity: one photo, one item (2026-10-28)
+
+The owner's rule: never duplicate. Each picture has its own id, so a HEIC on the iPhone and a JPEG XL on the server
+are the same item.
+
+- **The item is the photo.** `items.id` (`itm_…`) names the picture, not a file. Everything that is a way of
+  holding that picture hangs off it:
+  - the **original** (`items.hash`, the current bytes) and its older **versions** (`item_versions`, an edited phone
+    asset);
+  - the **renditions** made from it: ThumbHash, grid tile, preview, `s.jpg`/`l.jpg` (see "Renditions"); the planned
+    archive JPEG XL is one more rendition of the same item, never a second item;
+  - the **alternates**: other encodings of the same photo that reached the library through another path, kept as
+    hidden items under it (below). `GET items/{id}/duplicates` lists them.
+- **Two keys resolve to an item**, and both must keep resolving after a merge:
+  - the **content hash** (blake3 of the stored bytes): the same bytes are the same item (`ingest::known_for`,
+    `insert_new_or_duplicate`);
+  - the **device asset** `(device, asset_id)`: the same phone asset is the same item; new bytes under it are a new
+    version of that item. A web upload with no asset id uses the SHA-256 of its content as asset id
+    (`web/src/api/mediaUpload.ts`).
+- **How a device's HEIC and the server's JXL map to one item.** The phone sends its original (HEIC) once; the item is
+  `(iphone, A1)` with `hash = blake3(HEIC)`. The archive JPEG XL is stored as a rendition of that item and the
+  device asset never changes. If the same picture arrives some other way (an old backup's JPEG, a chat share, a
+  resized copy), it is first its own item; the duplicate detector (below) links it to the phone's item. A
+  re-upload of `(iphone, A1)` or of any of those bytes then lands on the survivor, not on a new item.
+- **Near-duplicate detection** (`dedup.rs`, `phash.rs`): exact duplicates are already folded at ingest. The rest
+  are found by a perceptual hash of the 360 px thumbnail (a 64-bit DCT pHash and a 64-bit dHash, computed lazily into
+  `item_hashes`), among pairs that agree on the moment (taken within 2 s), on file name and size, or look the same.
+  `dedup::classify` is a pure function with four answers:
+  - `exact`: the same bytes (should not exist);
+  - `same_photo_reencoded`: the same picture, same size, another encoding;
+  - `resized_copy`: the same picture at another size;
+  - `burst_neighbor`: alike but different frames. **Not a duplicate.** Two assets of one device, or two differently
+    named files of one collection, are never duplicates of each other however alike they look.
+- **Merging** (`dedup_merge.rs`) hides, never deletes. `lucina-media dedup-apply --report <file>
+  --i-have-a-backup` merges what a `dedup-report` found; `dedup-undo <item>` reverses one merge.
+  - The duplicate gets `items.hidden = 2` (every listing, count, share and search already skips hidden items; 1 is a
+    Live Photo's motion part) and a row in `item_links(item_id, duplicate_of, kind, score, decided_by, created_at,
+    undone_at, undo)`. Its bytes and row stay: they are the survivor's alternate rendition, still served by
+    `items/{dup}/original`.
+  - Survivor rule: the device's original. A picture with 5% more pixels wins; otherwise the one that is a device's
+    own asset (not a chat copy); otherwise the earlier arrival. A survivor outside the Gallery (an old backup) takes
+    the duplicate's `device`, so the photo stays in the Gallery.
+  - Album memberships (system albums, Favourites too), the favourite flag, album covers and a Live Photo's motion
+    part move to the survivor. `undo` puts them back.
+  - The duplicate's `(device, asset_id)` becomes a row of `item_aliases(device, asset_id, item_id = survivor,
+    from_item, hash)`; `asset_id` is cleared on the hidden row. Ingest looks aliases up first: the same bytes are a
+    duplicate of the survivor, other bytes under that asset are a new version of the survivor, and a content hash
+    that matches a hidden duplicate resolves to the survivor (`dedup_merge::asset_lookup`, `resolve`).
+    `GET devices/{id}/assets` still lists the asset, with the survivor's id.
+  - `GET items/{id}` of a hidden duplicate answers with the survivor and adds `merged_from: <id asked>`.
+  - Purging a survivor (it must be trashed) purges the copies hidden under it, and drops the links, aliases and
+    hashes of everything purged. Trashing and restoring a survivor leave the hidden copies alone.
+  - `item_links` rows stay after an undo (`undone_at`), so a pair the owner split is not proposed again
+    (`dedup-apply --redo-undone` overrides).
+  - Drive files are never candidates or survivors: a file of a Drive folder stays where the owner put it, copies
+    included (the live Drive holds 634 byte-identical photo copies on purpose).
+- **Commands.**
+  - `lucina-media dedup-report [--report path] [--hashes path] [--data-dir dir]` opens the catalog read-only,
+    keeps its perceptual hashes in a scratch database (never in the catalog; it refuses a path inside the data
+    directory), pauses while the CPU is at 90 °C or more, and writes the full report (counts per class and per
+    pair of sources, the bytes a merge would hide, 20 sample pairs, the calibration histograms, every pair and the
+    merge plan; opaque ids only). Run it under `systemd-run --user --scope -p CPUQuota=300% nice -n 19`.
+  - `lucina-media dedup-hash [--limit n]` computes the hashes into the library's own `item_hashes` table.
+  - `lucina-media dedup-apply --report <file> [--min-score 0.7] [--classes …] [--limit n] [--dry-run]
+    --i-have-a-backup`: hides what the report found. A dry run reads only the report.
+  - `lucina-media dedup-undo <item>`.
+- **Thresholds** (`dedup::Thresholds`, distance = the mean of the two 64-bit Hamming distances):
+  - a duplicate that agrees on the moment (within 2 s, or a time zone read differently) or on file name and
+    size: distance up to 10 (12 when the sizes differ);
+  - a duplicate with no such evidence (a chat copy without EXIF): distance up to 4 (6 scaled), and a score below
+    the 0.7 that `dedup-apply` asks for, so it is proposed, not applied;
+  - similar but not duplicate (burst neighbour): up to 22.
+  - Chosen on the live library (docs and `~/scratch/gallery/dedup/REPORT.md`): known copies (the library's own
+    thumbnails re-encoded at JPEG quality 30/60/90, or scaled to 50% and 25%) all fall under 8; unrelated
+    pictures of the same size taken more than a day apart reach 4 only 4 times among 4.1 million pairs; different
+    assets of one iPhone taken together span 0 to 22, which is why they are excluded by identity, not by distance.
+
 ## Renditions and the Rust viewer (2026-10-25)
 
 | What | Where | Size (owner's photos) |
@@ -398,6 +478,8 @@ An upload whose bytes are gone answers 410 on finish, and the phone starts that 
 
 ## Not done yet
 
+- Duplicates: the compare view over `items/{id}/duplicates`, a lazy hash worker in `serve` (today `dedup-hash`), and
+  queuing the hidden copies' device assets for deletion with the survivor.
 - Web gallery tab.
 - The iOS consumer of the device deletion queue; face recognition (`people`).
 - Android upload: the Rust module for the Android app.

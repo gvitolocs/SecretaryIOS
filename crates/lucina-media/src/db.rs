@@ -259,6 +259,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::edits::init_schema(conn)?;
     crate::browse::migrate(conn)?;
     crate::renditions::migrate(conn)?;
+    // Duplicates (2026-10-28): links, device-asset aliases and perceptual hashes (`dedup_merge.rs`).
+    crate::dedup_merge::migrate(conn)?;
     Ok(())
 }
 
