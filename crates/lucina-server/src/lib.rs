@@ -43,6 +43,7 @@ pub mod rich;
 pub mod secrets;
 pub mod selftest;
 pub mod share;
+pub mod shopping_mcp_gate;
 pub mod surface;
 pub mod telegram;
 pub mod video;

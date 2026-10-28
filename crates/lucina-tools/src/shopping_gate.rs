@@ -46,15 +46,22 @@ pub enum Gate {
 impl Gate {
     /// The `add` op of `lucina_grocery` for `text` (the owner's words stay the typed name).
     pub fn add_op(&self, text: &str) -> Option<Value> {
+        let mut op = json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "text": text});
+        self.apply_to(&mut op).then_some(op)
+    }
+
+    /// Put this decision on an existing `add` op: a bound item sets `catalogId`
+    /// and its `svg:` icon, a section alone sets `section` when the op has none.
+    /// The op's own text, spec, quantity and unit stay. `false` for [`Gate::Ask`].
+    pub fn apply_to(&self, op: &mut Value) -> bool {
         let Gate::Add {
             catalog_id,
             section,
             ..
         } = self
         else {
-            return None;
+            return false;
         };
-        let mut op = json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "text": text});
         if let Some(id) = catalog_id {
             op["catalogId"] = json!(id);
             // The catalog id is also the illustration key; an explicit `svg:` icon
@@ -62,9 +69,11 @@ impl Gate {
             op["icon"] = json!(format!("svg:{id}"));
         }
         if let (None, Some(s)) = (catalog_id, section) {
-            op["section"] = json!(s);
+            if op.get("section").is_none_or(Value::is_null) {
+                op["section"] = json!(s);
+            }
         }
-        Some(op)
+        true
     }
 }
 
@@ -313,6 +322,51 @@ mod tests {
         let op = g.add_op("Panni microfibra").unwrap();
         assert!(op.get("catalogId").is_none());
         assert_eq!(op["section"], "household");
+    }
+
+    #[test]
+    fn apply_to_keeps_the_ops_own_fields_and_section() {
+        let bound = Gate::Add {
+            catalog_id: Some("laundry-detergent".into()),
+            section: Some("household".into()),
+            by: "jev",
+        };
+        let mut op = json!({"opId": "x", "type": "add", "name": "Pastiglie", "spec": "60", "quantity": 2, "unit": "pz"});
+        assert!(bound.apply_to(&mut op));
+        assert_eq!(
+            op,
+            json!({"opId": "x", "type": "add", "name": "Pastiglie", "spec": "60", "quantity": 2, "unit": "pz",
+                   "catalogId": "laundry-detergent", "icon": "svg:laundry-detergent"})
+        );
+
+        let section_only = Gate::Add {
+            catalog_id: None,
+            section: Some("household".into()),
+            by: "jev",
+        };
+        let mut op = json!({"type": "add", "name": "Panni"});
+        assert!(section_only.apply_to(&mut op));
+        assert_eq!(op["section"], "household");
+        let mut op = json!({"type": "add", "name": "Panni", "section": "deli"});
+        assert!(section_only.apply_to(&mut op));
+        assert_eq!(op["section"], "deli", "the op's own section wins");
+
+        let fallback = Gate::Add {
+            catalog_id: None,
+            section: None,
+            by: "fallback",
+        };
+        let mut op = json!({"type": "add", "name": "Panni"});
+        assert!(fallback.apply_to(&mut op));
+        assert_eq!(op, json!({"type": "add", "name": "Panni"}));
+
+        let ask = Gate::Ask {
+            question: "?".into(),
+            suggestion: None,
+        };
+        let mut op = json!({"type": "add", "name": "Lavatrici"});
+        assert!(!ask.apply_to(&mut op));
+        assert_eq!(op, json!({"type": "add", "name": "Lavatrici"}));
     }
 
     #[test]
