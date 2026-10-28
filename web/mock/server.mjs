@@ -56,6 +56,8 @@
 //   fixed table: "Folkehuset Møllestien", "Skejbygårdsvej 3"), and /v1/maps/routes (four modes).
 // Tasks: /v1/tasks/* is proxied to a real secretary-server (MOCK_TASKS_URL + MOCK_TASKS_TOKEN);
 //   Links shows a Todoist card (paste any 20+ character token; "bad…" is refused).
+// NClient (docs/nclient.md; mock/nclient.mjs): /v1/nclient/* over neutral placeholder galleries and generated SVG images;
+//   POST /v1/_mock/nclient {enabled, media:"down", slow} switches the plugin off or fails/slows its saves.
 // Notes (docs/server-api.md, "Notes"; mock/notes.mjs): /v1/notes, /v1/notes/{id|slug},
 //   /append, /trash, /trash/{id}/restore. Seeded from deploy/seed/notes plus samples.
 // MOCK_STRICT=1 emulates the older lucina-gym-core view (no estimated_1rm, exercise_charts,
@@ -1919,6 +1921,8 @@ async function route(req, res) {
 
   // Play URLs carry their own token (on p1 they skip the gateway's auth too).
   if (path.startsWith("/v1/media/s/")) return (await import("./media.mjs")).proxyMedia(req, res, url, fail);
+  // NClient's signed image URLs likewise carry their own HMAC (mock/nclient.mjs).
+  if (path.startsWith("/v1/nclient/s/")) return (await import("./nclient.mjs")).serveImage(req, res, path);
   if (!currentSession(req)) {
     return fail(res, 401, "unauthorized", "session expired or invalid", { "WWW-Authenticate": "Bearer" });
   }
@@ -1933,6 +1937,7 @@ async function route(req, res) {
   if (path.startsWith("/v1/tasks")) return proxyTasks(req, res, url);
   if (await (await import("./links.mjs")).handleLinks(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./notes.mjs")).handleNotes(req, res, { path, method, url, send, fail, readJson })) return;
+  if (await (await import("./nclient.mjs")).handleNClient(req, res, { path, method, url, send, fail, readJson })) return;
   if (await (await import("./systemHealth.mjs")).handleSystemHealth(req, res, { path, method, send })) return;
 
   if (mockServerDown && (path.startsWith("/v1/gym/") || path.startsWith("/v1/body/"))) {

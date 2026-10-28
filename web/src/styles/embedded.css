@@ -4,7 +4,7 @@ html[data-shell="desktop"] .content a[href="/plugins"]:is(.media-back, .computer
   display: none;
 }
 html[data-shell="desktop"]
-  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title) {
+  :is(#drive-title, #computer-title, #pokemon-title, #media-title, #sh-title, #films-title, #chats-title, #secrets-title, #nclient-title) {
   position: absolute;
   width: 1px;
   height: 1px;

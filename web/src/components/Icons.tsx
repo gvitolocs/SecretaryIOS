@@ -563,6 +563,15 @@ export function BookIcon() {
   );
 }
 
+export function PagesIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="6.5" y="3.5" width="13" height="17" rx="2" />
+      <path d="M3.5 7v12a2 2 0 002 2H16M10 14l2.5-3 2 2.4 1.5-1.4 2 2.5" />
+    </svg>
+  );
+}
+
 export function FilmIcon() {
   return (
     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
