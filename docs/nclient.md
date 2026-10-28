@@ -65,7 +65,36 @@ cache.
 | `GET /tags?type=tag&q=&limit=` | known tags, most used first (blocked ones never listed) |
 | `GET /favorites`, `PUT/DELETE /favorites/{id}` | |
 | `GET /progress`, `PUT /progress/{id} {page, pages}` | |
+| `POST /galleries/{id}/save {target:"gallery"}` | Save to Lucina: `202 {job, state, total, done, saved, failed}` (see below). `target:"library"` answers `400 library_not_supported`. A blocked or missing gallery answers 404 and nothing is fetched or ingested. |
+| `GET /saves/{job}` | progress: `{job, state: queued\|running\|done\|failed\|cancelled, total, done, saved:[{index,itemId,duplicate}], failed:[{index,error}], error?}` |
+| `DELETE /saves/{job}` | stop after the current page |
 | `GET /s/{id}/{kind}/{index}/{exp}/{sig}` | image proxy (signed, 6 h; no header needed) |
+
+Errors answer `{ok:false, error}`. When the site rate-limits us the answer is `429 {error:"rate_limited", retryAfter}`
+with a `Retry-After` header.
+
+## Save to Lucina
+
+`POST /galleries/{id}/save` re-vets the gallery (`safety::vet`; blocked → 404), then starts a background job
+that fetches every page through the same spaced image fetcher and cache as the reader (one image per second at
+most; a 200-page gallery takes a few minutes), writes each page to `$NCLIENT_SPOOL_DIR` (0600) and hands it to
+lucina-media's loopback `POST /internal/v1/ingest` with `{path, name: "001.jpg", mime, source: "nclient",
+album: <gallery title>, move: true}`. Duplicates are recognised by lucina-media (`duplicate: true`). The job
+vets the gallery again before every page, so a gallery blocked meanwhile stops it. Jobs run one at a time (up to
+8 queued); saving a gallery that is already being saved returns the running job. The job id is random and the
+logs carry no ids, titles or page numbers. If lucina-media is unreachable for three pages in a row the job fails
+with `media_unavailable`.
+
+**Library: not supported.** The Library (`ink-library`) reads Kindle formats only (azw3, azw, mobi, kfx, prc,
+pobi, pdf, epub, txt, md); it has no CBZ or comic format. Pages go to the Gallery only.
+
+## Upstream limits and the cache
+
+Requests to the site are spaced (`NCLIENT_API_INTERVAL_MS` / `NCLIENT_IMAGE_INTERVAL_MS`, at least 1000). A 429 or
+5xx is retried twice with exponential backoff (2 s, 4 s, with jitter), and a `Retry-After` is honoured; one longer
+than 20 s is not waited for and goes to the client as `rate_limited`. Everything behind a 429 waits for what the
+site asked. The cache directory is capped by `NCLIENT_CACHE_MAX_BYTES` (default 2 GiB); the oldest files are
+removed first, down to 90 % of the cap. The service stops cleanly on SIGTERM.
 
 ## Deploy (nezopt + p1)
 

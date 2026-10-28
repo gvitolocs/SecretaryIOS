@@ -6,6 +6,7 @@
 pub mod cache;
 pub mod http;
 pub mod safety;
+pub mod saves;
 pub mod service;
 pub mod store;
 pub mod tags;
