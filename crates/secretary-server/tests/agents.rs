@@ -2,7 +2,7 @@
 //! end: this server → a mock Lucina that forwards `/api/secretary/agentd/*` to a real
 //! lucina-agentd router on a unix socket (as lucina-server's `agentd` module does).
 //! Auth and ownership negatives, the MCP and broker limits, external agents and their
-//! commands, and stream resume.
+//! commands, stream resume, and phase 5's terminals, scripts and service proxy.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,7 +57,7 @@ async fn lucina(State(l): State<Arc<Lucina>>, method: Method, uri: Uri, headers:
         None => path.to_owned(),
     };
     let mut req = axum::http::Request::builder().method(method).uri(target).header("host", "lucina-agentd");
-    for name in ["x-lucina-origin", "content-type", "accept", "last-event-id"] {
+    for name in ["x-lucina-origin", "content-type", "accept", "last-event-id", "if-none-match", "range"] {
         if let Some(v) = headers.get(name) {
             req = req.header(name, v);
         }
@@ -70,8 +70,10 @@ async fn lucina(State(l): State<Arc<Lucina>>, method: Method, uri: Uri, headers:
     let (parts, incoming) = resp.into_parts();
     let mut out = Response::new(Body::new(incoming));
     *out.status_mut() = parts.status;
-    if let Some(ct) = parts.headers.get("content-type") {
-        out.headers_mut().insert("content-type", ct.clone());
+    for name in ["content-type", "content-encoding", "location", "etag", "last-modified", "content-security-policy"] {
+        if let Some(v) = parts.headers.get(name) {
+            out.headers_mut().insert(name, v.clone());
+        }
     }
     out
 }
@@ -424,4 +426,82 @@ async fn the_stream_resumes_and_keeps_commands_to_their_device() {
     let reset = h.req(Method::GET, "/v1/agents/stream", Some(&h.mac)).header("last-event-id", "12").send().await.unwrap();
     let r = frames(reset, |f| !f.is_empty()).await;
     assert_eq!((r[0].1.as_deref(), r[0].2["type"].as_str()), (Some("stream.reset"), Some("stream.reset")));
+}
+
+/// Phase 5 end to end: a terminal from the phone, its output stream, a script's
+/// service through the owner-only proxy, and what the MCP may not do.
+#[tokio::test]
+async fn terminals_scripts_and_services_through_the_server() {
+    let h = harness().await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    std::fs::write(root.join("index.html"), "<p>dev page</p>").unwrap();
+    std::fs::write(
+        root.join("paseo.json"),
+        json!({"scripts": {"web": {"command": "exec python3 -m http.server \"$PASEO_PORT\" --bind 127.0.0.1", "type": "service"}}}).to_string(),
+    )
+    .unwrap();
+    let (s, w) = h.call(Method::POST, "/v1/agents/workspaces", &h.phone, Some(json!({"isolation": "local", "path": root}))).await;
+    assert_eq!(s, 200, "{w}");
+    let ws = w["workspace"]["workspaceId"].as_str().unwrap().to_owned();
+
+    let (s, t) = h.call(Method::POST, "/v1/agents/terminals", &h.phone, Some(json!({"workspaceId": ws, "command": "/bin/sh"}))).await;
+    assert_eq!(s, 200, "{t}");
+    assert_eq!(t["owner"], "owner");
+    let tid = t["id"].as_str().unwrap().to_owned();
+    let stream = h.req(Method::GET, &format!("/v1/agents/terminals/{tid}/stream"), Some(&h.phone)).send().await.unwrap();
+    assert!(stream.headers()["content-type"].to_str().unwrap().starts_with("text/event-stream"));
+    let mut body = stream.bytes_stream();
+    let first = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&first).contains("event: snapshot"));
+    let (s, _) = h.call(Method::POST, &format!("/v1/agents/terminals/{tid}/input"), &h.phone, Some(json!({"keys": ["echo through-p1", "Enter"]}))).await;
+    assert_eq!(s, 200);
+    let mut seen = String::new();
+    while !seen.contains("event: output") {
+        let c = tokio::time::timeout(Duration::from_secs(5), body.next()).await.unwrap().unwrap().unwrap();
+        seen.push_str(&String::from_utf8_lossy(&c));
+    }
+    drop(body);
+    let mut lines = Value::Null;
+    for _ in 0..100 {
+        lines = h.call(Method::GET, &format!("/v1/agents/terminals/{tid}/capture"), &h.phone, None).await.1;
+        if lines["lines"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().ends_with("through-p1") && !l.as_str().unwrap().contains("echo")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(lines["lines"].as_array().unwrap().iter().any(|l| l == "through-p1"), "{lines}");
+
+    // The MCP sees none of the owner's terminals and can't use this workspace's scripts.
+    let mcp = |rb: reqwest::RequestBuilder| rb.header("x-lucina-mcp-caller", "tok_1:hermes");
+    let (_, list) = h.json(mcp(h.req(Method::GET, "/v1/agents/terminals", Some(MCP_TOKEN)))).await;
+    assert_eq!(list["terminals"], json!([]));
+    let (s, v) = h.json(mcp(h.req(Method::POST, &format!("/v1/agents/workspaces/{ws}/scripts/web/start"), Some(MCP_TOKEN)).json(&json!({})))).await;
+    assert_eq!((s, code(&v)), (403, "TERMINAL_FORBIDDEN"));
+
+    let (s, web) = h.call(Method::POST, &format!("/v1/agents/workspaces/{ws}/scripts/web/start"), &h.phone, Some(json!({}))).await;
+    assert_eq!(s, 200, "{web}");
+    let port = web["port"].as_u64().unwrap();
+    assert!((4100..=4999).contains(&port));
+    let path = format!("/v1/agents/workspaces/{ws}/services/web/index.html");
+    let mut page = None;
+    for _ in 0..100 {
+        let r = h.req(Method::GET, &path, Some(&h.phone)).send().await.unwrap();
+        if r.status() == 200 {
+            page = Some(r);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let page = page.expect("the service answers through the proxy");
+    assert!(page.headers()["content-security-policy"].to_str().unwrap().starts_with("sandbox"));
+    assert!(page.text().await.unwrap().contains("dev page"));
+    let (s, _) = h.json(mcp(h.req(Method::GET, &path, Some(MCP_TOKEN)))).await;
+    assert_eq!(s, 403, "services are the owner's");
+    let (_, svc) = h.call(Method::GET, &format!("/v1/agents/workspaces/{ws}/services"), &h.phone, None).await;
+    assert_eq!(svc["services"][0]["port"], port);
+    let (s, stopped) = h.call(Method::POST, &format!("/v1/agents/workspaces/{ws}/scripts/web/stop"), &h.phone, Some(json!({}))).await;
+    assert_eq!((s, stopped["lifecycle"].as_str()), (200, Some("stopped")));
+    let (s, _) = h.call(Method::DELETE, &format!("/v1/agents/terminals/{tid}"), &h.phone, None).await;
+    assert_eq!(s, 200);
 }

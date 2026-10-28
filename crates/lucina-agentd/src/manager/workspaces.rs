@@ -140,6 +140,10 @@ impl Manager {
             };
             self.finish_effects(&effects, session).await;
         }
+        let stopped = self.inner.terminals.stop_workspace(id).await;
+        if stopped > 0 {
+            tracing::info!(workspace = %id, terminals = stopped, "stopped the workspace's scripts and terminals");
+        }
         let busy = self
             .agents_in(&w)
             .iter()
@@ -179,6 +183,18 @@ impl Manager {
             loop {
                 every.tick().await;
                 manager.sweep().await;
+            }
+        });
+    }
+
+    /// Refresh terminal ports and script health every few seconds.
+    pub fn spawn_terminal_ticker(&self) {
+        let hub = self.inner.terminals.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(crate::terminals::TICK);
+            loop {
+                every.tick().await;
+                hub.tick().await;
             }
         });
     }

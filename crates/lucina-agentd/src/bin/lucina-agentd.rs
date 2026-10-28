@@ -80,10 +80,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         permission_ttl: Duration::from_secs(permission_ttl),
         gate: GateConfig::from_env(),
         workspaces: lucina_agentd::workspaces::Config::from_env(),
+        terminals: lucina_agentd::terminals::Config::from_env(&state_dir),
     };
     let manager = Manager::open_with(Store::open(&state_dir)?, providers, lanes, options)?;
     manager.spawn_sweeper();
     manager.spawn_command_sweeper();
+    manager.spawn_terminal_ticker();
+    manager.terminals().configure(|c| {
+        c.socket = Some(socket.clone());
+        c.listen_port = args.listen.map(|a| a.port());
+    });
     manager.spawn_scheduler();
     manager.spawn_finish_watcher();
     manager.spawn_indexer();

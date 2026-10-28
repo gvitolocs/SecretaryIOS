@@ -59,6 +59,7 @@ pub struct Options {
     pub permission_ttl: Duration,
     pub gate: GateConfig,
     pub workspaces: crate::workspaces::Config,
+    pub terminals: crate::terminals::Config,
 }
 
 impl Default for Options {
@@ -69,6 +70,7 @@ impl Default for Options {
             permission_ttl: Duration::from_secs(3600),
             gate: GateConfig::default(),
             workspaces: crate::workspaces::Config::from_env(),
+            terminals: crate::terminals::Config::default(),
         }
     }
 }
@@ -189,6 +191,28 @@ pub enum BusEvent {
     },
     /// Lucina only: a command for an external agent's owner device. Streams send it
     /// to that device only.
+    /// Lucina only: a terminal was created or changed (exit, title, size, activity, ports).
+    Terminal {
+        terminal: Box<crate::terminals::TerminalView>,
+    },
+    /// Lucina only: a terminal was killed and forgotten.
+    TerminalRemoved {
+        terminal_id: String,
+        workspace_id: String,
+    },
+    /// Lucina only: a workspace's scripts changed (Paseo `script_status_update`).
+    ScriptStatus {
+        workspace_id: String,
+        scripts: Vec<Value>,
+    },
+    /// Lucina only: an agent CLI in a terminal waits for input (Paseo `terminal_attention_required`).
+    TerminalAttention {
+        terminal_id: String,
+        workspace_id: String,
+        reason: String,
+        title: String,
+        body: String,
+    },
     AgentCommand {
         agent_id: String,
         command_id: String,
@@ -345,6 +369,7 @@ struct Inner {
     book: Mutex<HashMap<String, permissions::Entry>>,
     options: Options,
     workspaces: Workspaces,
+    terminals: crate::terminals::Hub,
     /// Schedules, subagents and agent messages (phase 6).
     orch: orch::Orch,
 }
@@ -389,15 +414,45 @@ impl Manager {
         let store = Arc::new(store);
         let commands = Arc::new(Commands::new(store.clone(), bus.clone()));
         providers.insert(ext::PROVIDER.to_string(), Arc::new(ExternalProvider::new(commands.clone())));
+        let term_bus = bus.clone();
+        let terminals = crate::terminals::Hub::new(
+            options.terminals.clone(),
+            options.registry.clone(),
+            Arc::new(move |e| {
+                use crate::terminals::HubEvent;
+                let _ = term_bus.send(match e {
+                    HubEvent::Terminal(terminal) => BusEvent::Terminal { terminal },
+                    HubEvent::Removed { terminal_id, workspace_id } => BusEvent::TerminalRemoved { terminal_id, workspace_id },
+                    HubEvent::Scripts { workspace_id, scripts } => BusEvent::ScriptStatus { workspace_id, scripts },
+                    HubEvent::Attention { terminal_id, workspace_id, reason, title, body } => BusEvent::TerminalAttention { terminal_id, workspace_id, reason, title, body },
+                });
+            }),
+        );
         let ws_bus = bus.clone();
+        let auto_terms = terminals.clone();
+        let setup_seen: Mutex<HashMap<String, Option<String>>> = Mutex::new(HashMap::new());
         let publish: crate::workspaces::Publish = Arc::new(move |w: &WorkspaceRecord| {
             let _ = ws_bus.send(BusEvent::Workspace { workspace: Box::new(w.clone()) });
+            // paseo.json `worktree.terminals` open once setup ends in this run (not on
+            // later updates, nor for workspaces loaded at start).
+            let now = w.setup.as_ref().map(|x| x.status.clone());
+            let before = setup_seen.lock().unwrap_or_else(|p| p.into_inner()).insert(w.workspace_id.clone(), now.clone());
+            let finished = matches!(now.as_deref(), Some("completed" | "none"));
+            let was_pending = match &before {
+                Some(None) => true,
+                Some(Some(s)) => matches!(s.as_str(), "running" | "pending"),
+                None => false,
+            };
+            if finished && was_pending && w.archived_at.is_none() && w.untrusted_source.is_none() {
+                auto_terms.open_configured(&w.workspace_id, std::path::Path::new(&w.cwd));
+            }
         });
         let workspaces = Workspaces::open(store.clone(), options.workspaces.clone(), publish)?;
         let orch = orch::Orch::open(&store)?;
         let manager = Manager {
             inner: Arc::new(Inner {
                 workspaces,
+                terminals,
                 orch,
                 store,
                 providers,
@@ -1186,7 +1241,14 @@ impl Manager {
     }
 
     /// Interrupt a running agent; `false` when it wasn't running.
+    /// Interrupt the agent's turn, then kill its terminals (also when it was idle).
     pub async fn stop(&self, id: &str) -> Result<bool, ManagerError> {
+        let stopped = self.stop_turn(id).await?;
+        self.kill_agent_terminals(id).await;
+        Ok(stopped)
+    }
+
+    async fn stop_turn(&self, id: &str) -> Result<bool, ManagerError> {
         if let Some((owner, running)) = self.external_of(id)? {
             if running {
                 self.inner.commands.enqueue(id, &owner, CommandBody::Stop {})?;
@@ -1214,6 +1276,18 @@ impl Manager {
         }
         self.wait_not_running(id, Duration::from_secs(10)).await;
         Ok(true)
+    }
+
+    /// The agent's terminals and scripts go when it stops, is archived or deleted.
+    async fn kill_agent_terminals(&self, id: &str) {
+        let n = self.inner.terminals.kill_where(|t| t.agent_id.as_deref() == Some(id)).await;
+        if n > 0 {
+            tracing::info!(agent = %id, terminals = n, "killed the agent's terminals");
+        }
+    }
+
+    pub fn terminals(&self) -> &crate::terminals::Hub {
+        &self.inner.terminals
     }
 
     async fn finish_effects(&self, effects: &[Effect], session: Option<Arc<dyn Session>>) {
@@ -1246,6 +1320,7 @@ impl Manager {
             (effects, session, children, archived_at)
         };
         self.finish_effects(&effects, session).await;
+        self.kill_agent_terminals(id).await;
         if effects.contains(&Effect::CascadeArchiveChildren) {
             for child in children {
                 if let Err(e) = Box::pin(self.archive(&child)).await {
@@ -1280,6 +1355,7 @@ impl Manager {
             (effects, session)
         };
         self.finish_effects(&effects, session).await;
+        self.kill_agent_terminals(id).await;
         self.inner.store.delete(id)?;
         let _ = self.inner.bus.send(BusEvent::AgentDeleted { agent_id: id.to_string() });
         self.bump();
@@ -1473,6 +1549,7 @@ impl Manager {
             set.spawn(async move { s.close().await });
         }
         while set.join_next().await.is_some() {}
+        self.inner.terminals.shutdown().await;
     }
 }
 

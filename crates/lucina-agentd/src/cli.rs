@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
+mod term;
 mod orch;
 mod ws;
 
@@ -71,6 +72,14 @@ pub enum Command {
     Workspace(WorkspaceCommand),
     /// Clone a GitHub repo (owner/repo or URL) and register it as a workspace
     Clone(CloneArgs),
+    /// Manage workspace terminals
+    #[command(subcommand)]
+    Terminal(term::TerminalCommand),
+    /// Manage configured workspace scripts
+    #[command(subcommand)]
+    Script(term::ScriptCommand),
+    /// Record agent hook activity (called by agent CLIs running in terminals)
+    Hooks { agent: String, event: String },
     /// Manage schedules (recurring agent runs)
     #[command(subcommand)]
     Schedule(orch::ScheduleCommand),
@@ -1070,6 +1079,9 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Project(cmd) => ws::project(&client, cmd).await,
         Command::Workspace(cmd) => ws::workspace(&client, cmd).await,
         Command::Clone(a) => ws::clone(&client, a).await,
+        Command::Terminal(cmd) => term::terminal(&client, cmd).await,
+        Command::Script(cmd) => term::script(&client, cmd).await,
+        Command::Hooks { agent, event } => Ok(term::hooks(&client, agent, event).await),
         Command::Schedule(cmd) => orch::schedule(&client, cmd).await,
         Command::Heartbeat(cmd) => orch::heartbeat(&client, cmd).await,
         Command::Search(a) => orch::search(&client, a).await,

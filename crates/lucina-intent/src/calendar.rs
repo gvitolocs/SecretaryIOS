@@ -228,6 +228,39 @@ fn ask_day(t: &str) -> bool {
         .test(t)
 }
 const WEEK_WORDS: &str = r"settimana|questa settimana|prossimi giorni|this week|the week|next few days|denne uge|ugen|i denne uge";
+/// "nei prossimi 7 giorni", "in the next 10 days", "de næste 5 dage": today and the N - 1 days after.
+const NEXT_DAYS: &str = r"(?:prossimi|next|næste)\s+(\d{1,2})\s+(?:giorni|days|dage)";
+/// Next week, Monday to Sunday (checked before WEEK_WORDS, whose bare "settimana" would take it).
+const NEXT_WEEK: &str =
+    r"(?:la\s+)?prossima\s+settimana|settimana\s+prossima|next\s+week|næste\s+uge";
+
+/// The days an agenda covers, in words ("questa settimana", "nei prossimi 10 giorni", "next
+/// week"); a single day uses the day's own words.
+pub fn range_words(q: &Question, now: DateTime<Utc>, tz: Tz) -> String {
+    let today = local_date(now, tz);
+    let from = NaiveDate::parse_from_str(&q.from, "%Y-%m-%d").unwrap_or(today);
+    let to = NaiveDate::parse_from_str(&q.to, "%Y-%m-%d").unwrap_or(from);
+    let span = (to - from).num_days() + 1;
+    if from > today {
+        return match q.lang {
+            "it" => "la prossima settimana".into(),
+            "da" => "i næste uge".into(),
+            _ => "next week".into(),
+        };
+    }
+    if span == 7 {
+        return match q.lang {
+            "it" => "questa settimana".into(),
+            "da" => "i denne uge".into(),
+            _ => "this week".into(),
+        };
+    }
+    match q.lang {
+        "it" => format!("nei prossimi {span} giorni"),
+        "da" => format!("de næste {span} dage"),
+        _ => format!("in the next {span} days"),
+    }
+}
 const CREATE: [&str; 3] = [
     r"(?:aggiungi|aggiungere|metti|mettere|segna|segnami|inserisci|crea|fissa)(?:mi)?\b.*?\b(?:in|al|nel|sul|nell')\s*(?:mio\s+)?(?:calendario|agenda)",
     r"(?:add|put|schedule|create|book)\b.*?\b(?:to|in|on|into)\s+(?:my\s+)?calendar",
@@ -276,6 +309,25 @@ pub fn parse_question(text: &str, now: DateTime<Utc>, tz: Tz) -> Option<Question
         return None;
     }
     let lang = guess_lang(t);
+    if let Some(c) = w(NEXT_DAYS).exec(t) {
+        if let Ok(n @ 2..=31) = group(&c, 1).parse::<i64>() {
+            return Some(Question {
+                from: ymd_plus(now, tz, 0),
+                to: ymd_plus(now, tz, n - 1),
+                week: true,
+                lang,
+            });
+        }
+    }
+    if w(NEXT_WEEK).test(t) {
+        let monday = 7 - i64::from(local_date(now, tz).weekday().num_days_from_monday());
+        return Some(Question {
+            from: ymd_plus(now, tz, monday),
+            to: ymd_plus(now, tz, monday + 6),
+            week: true,
+            lang,
+        });
+    }
     if w(WEEK_WORDS).test(t) {
         return Some(Question {
             from: ymd_plus(now, tz, 0),
@@ -552,13 +604,13 @@ fn relative_day(q: &Question, now: DateTime<Utc>, tz: Tz) -> String {
 pub fn format_answer(q: &Question, events: &[Value], now: DateTime<Utc>, tz: Tz) -> String {
     let lang = q.lang;
     if q.week {
+        let range = range_words(q, now, tz);
         if events.is_empty() {
             return match lang {
-                "it" => "Questa settimana non hai niente in calendario.",
-                "da" => "Du har intet i kalenderen i denne uge.",
-                _ => "Nothing on your calendar this week.",
-            }
-            .into();
+                "it" => format!("{} non hai niente in calendario.", capitalize(&range)),
+                "da" => format!("Du har intet i kalenderen {range}."),
+                _ => format!("Nothing on your calendar {range}."),
+            };
         }
         let mut by_day: Vec<(String, Vec<Value>)> = Vec::new();
         for e in events {
@@ -574,11 +626,7 @@ pub fn format_answer(q: &Question, events: &[Value], now: DateTime<Utc>, tz: Tz)
                 None => by_day.push((ymd, vec![e.clone()])),
             }
         }
-        let head = match lang {
-            "it" => "Questa settimana:",
-            "da" => "I denne uge:",
-            _ => "This week:",
-        };
+        let head = format!("{}:", capitalize(&range));
         let parts: Vec<String> = by_day
             .iter()
             .map(|(ymd, l)| {
@@ -714,6 +762,28 @@ mod tests {
             (q.from.as_str(), q.to.as_str(), q.week),
             ("2026-10-22", "2026-10-28", true)
         );
+        // "the next N days" and "next week" (not this week: the bare "settimana" used to take it).
+        let q = parse_question("Cosa ho in calendario nei prossimi 7 giorni?", now(), TZ).unwrap();
+        assert_eq!(
+            (q.from.as_str(), q.to.as_str(), q.week),
+            ("2026-10-22", "2026-10-28", true)
+        );
+        assert_eq!(range_words(&q, now(), TZ), "questa settimana");
+        let q = parse_question("What is on my calendar in the next 10 days?", now(), TZ).unwrap();
+        assert_eq!(
+            (q.from.as_str(), q.to.as_str()),
+            ("2026-10-22", "2026-10-31")
+        );
+        assert_eq!(range_words(&q, now(), TZ), "in the next 10 days");
+        let q = parse_question("cosa ho in calendario la prossima settimana?", now(), TZ).unwrap();
+        assert_eq!(
+            (q.from.as_str(), q.to.as_str()),
+            ("2026-10-26", "2026-11-01")
+        );
+        assert_eq!(range_words(&q, now(), TZ), "la prossima settimana");
+        let q = parse_question("hvad har jeg i kalenderen de næste 3 dage?", now(), TZ).unwrap();
+        assert_eq!((q.to.as_str(), q.lang), ("2026-10-24", "da"));
+        assert_eq!(range_words(&q, now(), TZ), "de næste 3 dage");
         let q = parse_question("hvad har jeg i kalenderen i morgen", now(), TZ).unwrap();
         assert_eq!((q.from.as_str(), q.lang), ("2026-10-23", "da"));
         assert!(parse_question("ciao come stai", now(), TZ).is_none());

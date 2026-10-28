@@ -13,7 +13,9 @@
 //!   (`device:<id>`, `mcp:<id>`, `service:<name>`). It is never empty or `local`, so a
 //!   request through here never gets the host owner's (`lagent`'s) rights.
 //! - Only `Content-Type`, `Accept`, `Last-Event-ID`, `X-Lucina-Delegation-Depth` and the
-//!   origin are passed on.
+//!   origin are passed on; for a workspace service (`/workspaces/<id>/services/<name>/…`,
+//!   phase 5) also the conditional, range and language headers a dev server needs.
+//!   Cookies and credentials never are.
 //! - Its own errors use the daemon's shape, `{"error": {"code", "message"}}`, not the
 //!   `/api/secretary` envelope.
 //! - The socket: `LUCINA_AGENTD_SOCKET`, else `$XDG_RUNTIME_DIR/lucina-agentd/agentd.sock`
@@ -37,6 +39,27 @@ const PASS: [&str; 4] = [
     "accept",
     "last-event-id",
     "x-lucina-delegation-depth",
+];
+/// Also passed on for a workspace service (the proxied dev server).
+const PASS_SERVICE: [&str; 5] = [
+    "accept-language",
+    "if-none-match",
+    "if-modified-since",
+    "range",
+    "x-requested-with",
+];
+/// Response headers passed back (the daemon's, and a proxied service's).
+const PASS_BACK: [header::HeaderName; 10] = [
+    header::CONTENT_TYPE,
+    header::CACHE_CONTROL,
+    header::CONTENT_ENCODING,
+    header::LOCATION,
+    header::ETAG,
+    header::LAST_MODIFIED,
+    header::CONTENT_DISPOSITION,
+    header::CONTENT_SECURITY_POLICY,
+    header::CONTENT_RANGE,
+    header::ACCEPT_RANGES,
 ];
 
 /// `LUCINA_AGENTD_SOCKET`, else the daemon's default under `$XDG_RUNTIME_DIR` (or
@@ -76,10 +99,45 @@ pub fn valid_origin(v: &str) -> bool {
     false
 }
 
+/// A workspace service path (`/workspaces/<id>/services/<name>[/<path>]`, phase 5):
+/// the service's own part may end in `/` and use any URL path character
+/// (RFC 3986 `pchar`), still without `.` or `..` segments.
+pub fn service_path(rest: &str) -> bool {
+    let mut segs = rest.strip_prefix('/').unwrap_or("").splitn(5, '/');
+    let (Some("workspaces"), Some(id), Some("services"), Some(name)) =
+        (segs.next(), segs.next(), segs.next(), segs.next())
+    else {
+        return false;
+    };
+    let strict = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 128
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+            && s != "."
+            && s != ".."
+    };
+    if !strict(id) || !strict(name) {
+        return false;
+    }
+    let tail = segs.next().unwrap_or("");
+    rest.len() <= 2048
+        && tail.split('/').all(|seg| {
+            seg != "."
+                && seg != ".."
+                && seg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~%!$&'()*+,;=:@".contains(&b))
+        })
+}
+
 /// The daemon path for a request path under [`PREFIX`]: segments of URL-safe
-/// characters, no `.` or `..`, no empty segment.
+/// characters, no `.` or `..`, no empty segment ([`service_path`] is looser).
 pub fn daemon_path(path: &str) -> Option<&str> {
     let rest = path.strip_prefix(PREFIX)?;
+    if service_path(rest) {
+        return Some(rest);
+    }
     let segs = rest.strip_prefix('/')?;
     let ok = !segs.is_empty()
         && rest.len() <= 512
@@ -151,9 +209,14 @@ pub async fn forward_to(
         .uri(&target)
         .header(header::HOST, "lucina-agentd")
         .header(ORIGIN_HEADER, origin);
-    for name in PASS {
-        if let Some(v) = headers.get(name) {
-            req = req.header(name, v);
+    let service = service_path(path);
+    for name in PASS.iter().chain(if service {
+        PASS_SERVICE.as_slice()
+    } else {
+        &[]
+    }) {
+        if let Some(v) = headers.get(*name) {
+            req = req.header(*name, v);
         }
     }
     let req = match req
@@ -200,12 +263,12 @@ pub async fn forward_to(
     };
     let (parts, incoming) = resp.into_parts();
     if parts.status == StatusCode::SWITCHING_PROTOCOLS {
-        // No upgrades through here (terminals come with phase 5).
+        // No upgrades through here: terminal output streams as SSE, and the service proxy is HTTP only.
         return error(502, "agentd_error", "");
     }
     let mut out = Response::new(Body::new(incoming));
     *out.status_mut() = parts.status;
-    for name in [header::CONTENT_TYPE, header::CACHE_CONTROL] {
+    for name in PASS_BACK {
         if let Some(v) = parts.headers.get(&name) {
             out.headers_mut().insert(name, v.clone());
         }
@@ -276,5 +339,31 @@ mod tests {
         ] {
             assert_eq!(daemon_path(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn service_paths_are_looser() {
+        for ok in [
+            "/api/secretary/agentd/workspaces/wks_1/services/web/",
+            "/api/secretary/agentd/workspaces/wks_1/services/web",
+            "/api/secretary/agentd/workspaces/wks_1/services/port-4173/assets/index-a1+b=.js",
+            "/api/secretary/agentd/workspaces/wks_1/services/web/@vite/client",
+        ] {
+            assert!(daemon_path(ok).is_some(), "{ok}");
+        }
+        for bad in [
+            "/api/secretary/agentd/workspaces/wks_1/services/web/../../agents",
+            "/api/secretary/agentd/workspaces/wks_1/services/web/./x",
+            "/api/secretary/agentd/workspaces/wks 1/services/web/",
+            "/api/secretary/agentd/workspaces/wks_1/services/../x",
+            "/api/secretary/agentd/workspaces/wks_1/services/web/a b",
+            "/api/secretary/agentd/workspaces/wks_1/services/web/a\\b",
+        ] {
+            assert_eq!(daemon_path(bad), None, "{bad}");
+        }
+        assert_eq!(
+            daemon_path("/api/secretary/agentd/terminals/term_1/stream"),
+            Some("/terminals/term_1/stream")
+        );
     }
 }
