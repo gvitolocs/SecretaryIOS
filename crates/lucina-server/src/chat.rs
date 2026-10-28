@@ -1331,7 +1331,11 @@ fn queue_job(t: &Turn<'_>, plan: &Value, action: &str, cmid: Option<&str>) -> Fi
 /// one Chromium window. The ack is the planner's when it gave one.
 fn web_crawl_as_computer_task(plan: &Value, message: &str) -> Value {
     let s = |k: &str| plan[k].as_str().map(str::trim).unwrap_or_default();
-    let goal = if s("query").is_empty() { message.trim() } else { s("query") };
+    let goal = if s("query").is_empty() {
+        message.trim()
+    } else {
+        s("query")
+    };
     let what = if s("url").is_empty() {
         format!("Search the web for this in a new tab (Google): {goal}")
     } else {

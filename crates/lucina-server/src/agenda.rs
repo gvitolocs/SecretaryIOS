@@ -140,15 +140,27 @@ fn encode(s: &str) -> String {
 /// The in-app place map of a place block (`/map/place?…`); an over-long query drops its
 /// optional parts (event id, end, address) before giving up.
 pub fn map_route(place: &Value) -> Option<String> {
+    route_with(place, false)
+}
+
+/// The in-app navigation to a place (`/map/place?navigate=1&…`): the app opens its map already
+/// navigating, never another maps app.
+pub fn navigate_route(place: &Value) -> Option<String> {
+    route_with(place, true)
+}
+
+fn route_with(place: &Value, navigate: bool) -> Option<String> {
     let mut keys = vec!["lat", "lng", "title", "when", "address", "end", "eventId"];
     loop {
-        let query: Vec<String> = keys
-            .iter()
-            .filter_map(|k| match &place[*k] {
+        // `navigate=1` leads, so trimming an over-long query never drops it.
+        let query: Vec<String> = navigate
+            .then(|| "navigate=1".to_owned())
+            .into_iter()
+            .chain(keys.iter().filter_map(|k| match &place[*k] {
                 Value::Number(n) => Some(format!("{k}={n}")),
                 Value::String(s) if !s.trim().is_empty() => Some(format!("{k}={}", encode(s))),
                 _ => None,
-            })
+            }))
             .collect();
         let path = format!("/map/place?{}", query.join("&"));
         if valid_map_route(&path) {
@@ -172,7 +184,7 @@ fn clip(s: &str, max: usize) -> String {
     }
 }
 
-/// One "Naviga" button per place card (the in-app map, never Apple or Google Maps).
+/// One "Naviga" button per place card: the in-app navigation, never Apple or Google Maps.
 pub fn navigate_actions(blocks: &[Value], lang: &str) -> Vec<Value> {
     let label = match lang {
         "en" => "Navigate",
@@ -190,7 +202,7 @@ pub fn navigate_actions(blocks: &[Value], lang: &str) -> Vec<Value> {
             } else {
                 clip(&format!("{label} · {}", text(b, "title")), 40)
             };
-            let path = map_route(b)?;
+            let path = navigate_route(b)?;
             normalize_action(
                 &json!({"id": format!("nav-{}", i + 1), "label": label, "emoji": "🧭",
                         "kind": "route", "payload": {"path": path}}),
@@ -312,8 +324,8 @@ mod tests {
         assert_eq!(
             paths,
             [
-                "/map/place?lat=56.1685&lng=10.2034&title=Security%20and%20Privacy&when=2026-10-27T07%3A15%3A00.000Z&address=5789-003B%20Seminarrum&end=2026-10-27T09%3A00%3A00.000Z&eventId=ics%3Aau%3A1",
-                "/map/place?title=Hack%20Night%3A%20Rust%20meets%20AI&when=2026-10-27T16%3A00%3A00.000Z&address=Folkehuset%20M%C3%B8llestien&end=2026-10-27T19%3A00%3A00.000Z&eventId=iphone%3A42",
+                "/map/place?navigate=1&lat=56.1685&lng=10.2034&title=Security%20and%20Privacy&when=2026-10-27T07%3A15%3A00.000Z&address=5789-003B%20Seminarrum&end=2026-10-27T09%3A00%3A00.000Z&eventId=ics%3Aau%3A1",
+                "/map/place?navigate=1&title=Hack%20Night%3A%20Rust%20meets%20AI&when=2026-10-27T16%3A00%3A00.000Z&address=Folkehuset%20M%C3%B8llestien&end=2026-10-27T19%3A00%3A00.000Z&eventId=iphone%3A42",
             ]
         );
         assert_eq!(m.actions[0]["label"], "Naviga · Security and Privacy");
@@ -391,5 +403,32 @@ mod tests {
         let path = map_route(&place).unwrap();
         assert!(path.len() <= lucina_store::rich::MAX_MAP_ROUTE);
         assert!(path.contains("title=") && path.contains("when=") && !path.contains("eventId="));
+        let nav = navigate_route(&place).unwrap();
+        assert!(
+            nav.starts_with("/map/place?navigate=1&title=")
+                && nav.len() <= lucina_store::rich::MAX_MAP_ROUTE
+        );
+    }
+
+    #[test]
+    fn naviga_starts_the_in_app_navigation() {
+        let b = vec![
+            json!({"type": "place", "kind": "event", "title": "Security and Privacy",
+                            "address": "5789-003B Seminarrum", "lat": 56.172282, "lng": 10.192006,
+                            "when": "2026-11-02T07:00:00.000Z"}),
+        ];
+        let actions = navigate_actions(&b, "it");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["label"], "Naviga");
+        let path = actions[0]["payload"]["path"].as_str().unwrap();
+        assert!(path.starts_with(
+            "/map/place?navigate=1&lat=56.172282&lng=10.192006&title=Security%20and%20Privacy"
+        ));
+        assert!(!path.contains("maps.apple") && !path.contains("google"));
+        assert_eq!(
+            map_route(&b[0]).unwrap().contains("navigate"),
+            false,
+            "the card itself only opens the map"
+        );
     }
 }

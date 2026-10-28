@@ -525,7 +525,8 @@ impl Config {
             ),
             plugins: PluginsConfig {
                 instagram_url: get("LUCINA_INSTAGRAM_URL"),
-                instagram_secret_file: get("LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE").map(PathBuf::from),
+                instagram_secret_file: get("LUCINA_INSTAGRAM_GATEWAY_SECRET_FILE")
+                    .map(PathBuf::from),
                 pixiv_url: get("LUCINA_PIXIV_URL"),
                 pixiv_secret_file: get("LUCINA_PIXIV_GATEWAY_SECRET_FILE").map(PathBuf::from),
                 public_url: get("LUCINA_PUBLIC_URL"),

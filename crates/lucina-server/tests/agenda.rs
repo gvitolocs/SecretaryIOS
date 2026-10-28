@@ -169,7 +169,7 @@ async fn an_agenda_is_one_sentence_and_one_card_per_event() {
         assert!(a["payload"]["path"]
             .as_str()
             .unwrap()
-            .starts_with("/map/place?lat="));
+            .starts_with("/map/place?navigate=1&lat="));
     }
     assert!(actions[1]["payload"]["path"]
         .as_str()
