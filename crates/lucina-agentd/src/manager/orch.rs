@@ -172,7 +172,11 @@ impl Manager {
     /// The agent behind a process agentd launched (`None`: not an agent's).
     pub fn calling_agent(&self, pid: Option<i32>) -> Option<String> {
         let provider = crate::peer::provider_of(pid?, &self.provider_pids())?;
-        let id = crate::peer::agent_of(provider)?;
+        // A terminal acts for the agent it serves (phase 5); one no agent owns acts for none.
+        let id = match self.terminals().by_pid(provider) {
+            Some(t) => t.agent_id.clone()?,
+            None => crate::peer::agent_of(provider)?,
+        };
         self.lock().contains_key(&id).then_some(id)
     }
 

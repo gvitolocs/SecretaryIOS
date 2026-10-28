@@ -34,6 +34,7 @@
 //! gets its waiting commands (without ids).
 //!
 //! Projects, workspaces, diffs, files and checkout operations: [`workspaces`].
+//! Terminals, scripts and the service proxy: [`terminals`].
 //! Schedules, heartbeats, search, prompts, detach and usage: [`orch`].
 //!
 //! A process an agent started acts as that agent ([`Caller::Agent`]): its `create`
@@ -68,6 +69,7 @@ use crate::journal::{Sequenced, Subscription};
 use crate::peer::{self, origin, Peer};
 use crate::workspaces::WsError;
 
+pub mod terminals;
 mod orch;
 mod workspaces;
 
@@ -137,7 +139,10 @@ pub fn router(manager: Manager) -> Router {
         .route("/permissions/{id}", get(permission).post(answer_permission))
         .route("/stream", get(stream))
         .merge(workspaces::routes())
+        .merge(terminals::routes())
         .merge(orch::routes())
+        // Last, so it sees every request (`Host: <label>.localhost` goes to that service).
+        .layer(axum::middleware::from_fn_with_state(manager.clone(), terminals::host_proxy))
         .with_state(manager)
 }
 

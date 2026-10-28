@@ -74,6 +74,16 @@ impl Registry {
         let _ = std::fs::remove_file(self.dir.join(format!("{pid}.json")));
     }
 
+    /// Record a process agentd started some other way (a terminal's session leader):
+    /// it counts as an agent process, and the next start reaps it if it survived.
+    pub fn track(&self, pid: u32, program: &str) {
+        self.record(pid, program);
+    }
+
+    pub fn untrack(&self, pid: u32) {
+        self.forget(pid);
+    }
+
     /// The pids of the provider processes alive now (a record whose pid was reused
     /// by another process doesn't count).
     pub fn live_pids(&self) -> std::collections::HashSet<u32> {

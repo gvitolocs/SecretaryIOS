@@ -62,8 +62,8 @@ pub fn descends_from(pid: i32, providers: &HashSet<u32>) -> bool {
     provider_of(pid, providers).is_some()
 }
 
-/// The provider process `pid` runs under (the nearest one: the process itself, then
-/// its group or session, then its ancestors').
+/// The provider (or terminal) process `pid` runs under (the nearest one: the process
+/// itself, then its group or session, then its ancestors').
 pub fn provider_of(pid: i32, providers: &HashSet<u32>) -> Option<u32> {
     if providers.is_empty() {
         return None;

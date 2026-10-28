@@ -190,7 +190,10 @@ impl Manager {
 
     /// The provider pids an agent-origin caller would descend from.
     pub fn provider_pids(&self) -> HashSet<u32> {
-        self.inner.options.registry.as_ref().map(|r| r.live_pids()).unwrap_or_default()
+        let mut pids = self.inner.options.registry.as_ref().map(|r| r.live_pids()).unwrap_or_default();
+        // Whatever runs in a terminal counts as an agent's process, whoever opened it.
+        pids.extend(self.inner.terminals.session_pids());
+        pids
     }
 
     /// A provider raised `request` (called from `on_event`, under the agents lock,

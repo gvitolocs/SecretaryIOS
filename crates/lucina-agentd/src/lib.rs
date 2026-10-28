@@ -22,6 +22,7 @@
 //! - [`providers`]: Claude (stream-json), Codex (app-server), the ACP agents
 //!   (Cursor, OpenCode, Copilot, custom), Pi (rpc) and ZCode, launched through
 //!   [`process`] and [`jsonrpc`]; defaults come from the owner's [`lane`] config.
+//! - [`terminals`]: PTY terminals, workspace scripts and services (phase 5).
 //! - Phase 6: [`schedules`] (cron and run bookkeeping; the scheduler is in
 //!   [`manager`]), and [`mcp`]: `lagent mcp`, the tools agents use to start subagents,
 //!   message them, set heartbeats and search.
@@ -47,6 +48,7 @@ pub mod provider;
 pub mod providers;
 pub mod schedules;
 pub mod store;
+pub mod terminals;
 pub mod workspaces;
 
 /// RFC 3339 with milliseconds and `Z`, as JavaScript's `Date.toISOString()`.

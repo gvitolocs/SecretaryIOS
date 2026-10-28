@@ -23,8 +23,15 @@
 //! keeps from MCP callers. Lucina's own service token is refused here.
 //!
 //! Paths: `/v1/agents` and `/v1/agents/{id}…` are the daemon's `/agents…`;
-//! `/v1/agents/{permissions,workspaces,projects,clone,providers,stream,commands,files,health}…`
+//! `/v1/agents/{permissions,workspaces,projects,clone,providers,stream,commands,files,health,terminals}…`
 //! are the daemon's top-level routes; `/v1/agents/items` is `/agents/items`.
+//!
+//! Phase 5: `/v1/agents/terminals/{id}/stream` streams like `/v1/agents/stream`.
+//! `/v1/agents/workspaces/{id}/services/{name}/…` proxies the dev server an agent
+//! started: owner devices only, with a looser path check for the service's own part,
+//! a few more headers both ways (conditional and range requests, `Location`, `ETag`),
+//! never cookies, and `Content-Security-Policy: sandbox …` on the response, so the app
+//! runs with an opaque origin and can't use the owner's session.
 //!
 //! Streams: at most [`STREAMS_PER_CALLER`] open `/v1/agents/stream`s per caller and
 //! [`STREAMS_TOTAL`] in all; each ends on shutdown, when Lucina goes quiet for
@@ -68,8 +75,23 @@ pub const STREAM_IDLE: Duration = Duration::from_secs(90);
 const LONG_POLL: Duration = Duration::from_secs(15 * 60);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The daemon's top-level routes.
-const TOP: [&str; 9] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health"];
+const TOP: [&str; 10] = ["permissions", "workspaces", "projects", "clone", "providers", "stream", "commands", "files", "health", "terminals"];
 const PASS: [HeaderName; 3] = [header::CONTENT_TYPE, header::ACCEPT, HeaderName::from_static("last-event-id")];
+/// Also passed on to a workspace service (the dev server an agent started).
+const PASS_SERVICE: [&str; 5] = ["accept-language", "if-none-match", "if-modified-since", "range", "x-requested-with"];
+/// Response headers passed back besides `Content-Type` (a service's, mostly).
+const PASS_BACK: [HeaderName; 7] = [
+    header::CONTENT_ENCODING,
+    header::LOCATION,
+    header::ETAG,
+    header::LAST_MODIFIED,
+    header::CONTENT_DISPOSITION,
+    header::CONTENT_RANGE,
+    header::ACCEPT_RANGES,
+];
+/// A proxied service runs with an opaque origin, so its scripts can't use the owner's
+/// Secretary session (same value as the daemon sets).
+pub const SERVICE_CSP: &str = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
 
 /// Credentials for the callers that are not devices.
 #[derive(Clone, Debug, Default)]
@@ -204,11 +226,34 @@ pub fn authenticate(st: &AppState, cfg: &AgentsConfig, method: &Method, headers:
     Ok(Caller::Device(ident.device_id))
 }
 
+/// A workspace service path, `/workspaces/<id>/services/<name>[/<path>]`: the
+/// service's own part may end in `/` and use any URL path character (RFC 3986
+/// `pchar`), never a `.` or `..` segment.
+pub fn service_path(rest: &str) -> bool {
+    let mut segs = rest.strip_prefix('/').unwrap_or("").splitn(5, '/');
+    let (Some("workspaces"), Some(id), Some("services"), Some(name)) = (segs.next(), segs.next(), segs.next(), segs.next()) else { return false };
+    let strict = |s: &str| !s.is_empty() && s.len() <= 128 && s != "." && s != ".." && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b));
+    if !strict(id) || !strict(name) {
+        return false;
+    }
+    let tail = segs.next().unwrap_or("");
+    rest.len() <= 2048
+        && tail.split('/').all(|seg| seg != "." && seg != ".." && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~%!$&'()*+,;=:@".contains(&b)))
+}
+
+/// `/terminals/<id>/stream`: a terminal's output (SSE).
+fn terminal_stream(daemon_path: &str) -> bool {
+    matches!(daemon_path.trim_start_matches('/').split('/').collect::<Vec<_>>().as_slice(), ["terminals", _, "stream"])
+}
+
 /// The daemon path for a `/v1/agents…` path (module docs), or `None` for a bad one.
 pub fn daemon_path(path: &str) -> Option<String> {
     let rest = path.strip_prefix("/v1/agents")?;
     if rest.is_empty() || rest == "/" {
         return Some("/agents".into());
+    }
+    if service_path(rest) {
+        return Some(rest.to_owned());
     }
     let segs = rest.strip_prefix('/')?;
     let ok = rest.len() <= 512
@@ -239,6 +284,8 @@ pub fn allowed(caller: &Caller, method: &Method, daemon_path: &str) -> Result<()
                 && matches!(segs.as_slice(), ["permissions", _] | ["agents", _, "permissions", _]);
             if answer {
                 Err(forbidden("only the owner's devices answer permission requests"))
+            } else if service_path(daemon_path) {
+                Err(forbidden("only the owner's devices open workspace services"))
             } else {
                 Ok(())
             }
@@ -248,7 +295,7 @@ pub fn allowed(caller: &Caller, method: &Method, daemon_path: &str) -> Result<()
 }
 
 fn timeout_for(method: &Method, daemon_path: &str, query: Option<&str>) -> Option<Duration> {
-    if daemon_path == "/stream" {
+    if daemon_path == "/stream" || terminal_stream(daemon_path) {
         return None;
     }
     let long = (*method == Method::POST && daemon_path.ends_with("/wait"))
@@ -280,7 +327,8 @@ async fn handle(State(st): State<AppState>, method: Method, uri: Uri, headers: H
     let limiter = if path.ends_with("/events") { &st.device_limiter } else { &st.limiter };
     limiter.check(&caller.key()).map_err(ApiError::rate_limited)?;
 
-    let stream = path == "/stream";
+    let stream = path == "/stream" || terminal_stream(&path);
+    let service = service_path(&path);
     let slot = match stream {
         true => Some(agents.streams.try_acquire(&caller.key()).ok_or_else(|| {
             let mut e = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too_many_streams", "too many open agents streams; close one first");
@@ -306,6 +354,13 @@ async fn handle(State(st): State<AppState>, method: Method, uri: Uri, headers: H
             req = req.header(name, v);
         }
     }
+    if service {
+        for name in PASS_SERVICE {
+            if let Some(v) = headers.get(name) {
+                req = req.header(name, v);
+            }
+        }
+    }
     if let Some(d) = headers.get(DEPTH_HEADER).filter(|v| matches!(v.as_bytes(), b"0" | b"1")) {
         req = req.header(DEPTH_HEADER, d);
     }
@@ -323,6 +378,7 @@ async fn handle(State(st): State<AppState>, method: Method, uri: Uri, headers: H
         return Err(ApiError::new(StatusCode::BAD_GATEWAY, "lucina_auth", "Lucina refused the server's credentials"));
     }
     let content_type = up.headers().get(header::CONTENT_TYPE).cloned();
+    let back: Vec<(HeaderName, HeaderValue)> = PASS_BACK.iter().filter_map(|n| Some((n.clone(), up.headers().get(n)?.clone()))).collect();
     let mut resp = if stream && status.is_success() {
         let mut shutdown = st.shutdown.subscribe();
         let body = up
@@ -346,6 +402,12 @@ async fn handle(State(st): State<AppState>, method: Method, uri: Uri, headers: H
         resp.headers_mut().insert(header::CONTENT_TYPE, ct);
     }
     resp.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    for (n, v) in back {
+        resp.headers_mut().insert(n, v);
+    }
+    if service {
+        resp.headers_mut().insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(SERVICE_CSP));
+    }
     resp.extensions_mut().insert(DeviceId(caller.key()));
     Ok(resp)
 }
@@ -381,10 +443,24 @@ mod tests {
             ("/v1/agents/stream", "/stream"),
             ("/v1/agents/commands", "/commands"),
             ("/v1/agents/files/download", "/files/download"),
+            ("/v1/agents/terminals", "/terminals"),
+            ("/v1/agents/terminals/term_1/stream", "/terminals/term_1/stream"),
+            ("/v1/agents/workspaces/wks_1/scripts/web/start", "/workspaces/wks_1/scripts/web/start"),
+            ("/v1/agents/workspaces/wks_1/services/web/", "/workspaces/wks_1/services/web/"),
+            ("/v1/agents/workspaces/wks_1/services/web/assets/i-a+b=.js", "/workspaces/wks_1/services/web/assets/i-a+b=.js"),
         ] {
             assert_eq!(daemon_path(public).as_deref(), Some(daemon), "{public}");
         }
-        for bad in ["/v1/agentsx", "/v1/agents//x", "/v1/agents/../x", "/v1/agents/a b", "/v1/agents/./x"] {
+        for bad in [
+            "/v1/agentsx",
+            "/v1/agents//x",
+            "/v1/agents/../x",
+            "/v1/agents/a b",
+            "/v1/agents/./x",
+            "/v1/agents/workspaces/wks_1/services/web/../../agents",
+            "/v1/agents/workspaces/wks_1/services/../x/",
+            "/v1/agents/workspaces/wks_1/services/web/a b",
+        ] {
             assert_eq!(daemon_path(bad), None, "{bad}");
         }
     }
@@ -409,6 +485,9 @@ mod tests {
         assert!(allowed(&mcp, &Method::GET, "/permissions").is_ok());
         assert!(allowed(&mcp, &Method::POST, "/agents/a/send").is_ok());
         assert!(allowed(&Caller::Device("d".into()), &Method::POST, "/permissions/ext_1").is_ok());
+        assert!(allowed(&mcp, &Method::GET, "/workspaces/w/services/web/").is_err(), "services are the owner's");
+        assert!(allowed(&mcp, &Method::GET, "/terminals/t/capture").is_ok());
+        assert!(allowed(&Caller::Device("d".into()), &Method::GET, "/workspaces/w/services/web/").is_ok());
     }
 
     #[test]
@@ -436,6 +515,7 @@ mod tests {
     #[test]
     fn long_polls_get_long_timeouts() {
         assert_eq!(timeout_for(&Method::GET, "/stream", None), None);
+        assert_eq!(timeout_for(&Method::GET, "/terminals/t/stream", None), None);
         assert_eq!(timeout_for(&Method::POST, "/agents/a/wait", None), Some(LONG_POLL));
         assert_eq!(timeout_for(&Method::GET, "/permissions/ext_1", Some("waitMs=60000")), Some(LONG_POLL));
         assert_eq!(timeout_for(&Method::GET, "/permissions/ext_1", None), Some(DEFAULT_TIMEOUT));

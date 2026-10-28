@@ -110,6 +110,91 @@ the permission book like any agent, survive a daemon restart, and the queue surv
   createdAt, expiresAt}`, the shape Secretary Code's mirror reads (`agents/wire.ts`). It is `agent_command`, not
   `agent.command`, like the other event types.
 
+## Terminals, scripts and services (phase 5)
+
+Daemon routes in `crates/lucina-agentd/src/api/terminals.rs`, PTYs and scripts in `src/terminals/`. The p1→nezopt hop is plain TCP over Tailscale (`SECRETARY_LUCINA_URL`), which would carry an upgrade. The two
+forwarders do not: secretary-server proxies with reqwest, and lucina-server's agentd forwarder refuses `101`. So
+terminal output is SSE and input is a POST. A WebSocket would need upgrade support in both forwarders and in agentd
+(a follow-up if the apps need it).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/v1/agents/terminals` | list (`?workspaceId=`, `?cwd=`) / create `{workspaceId, cwd?, name?, command?, args?, rows?, cols?, agentId?}` |
+| GET/PATCH/DELETE | `/v1/agents/terminals/{id}` | id, unique prefix or name / `{title}` / kill (`{terminalId, success}`) |
+| GET | `/v1/agents/terminals/{id}/capture` | `?start=&end=&scrollback=true&stripAnsi=false` → `{terminalId, lines, totalLines}` |
+| POST | `/v1/agents/terminals/{id}/input` | `{data}` raw, or `{keys: "C-c" \| ["echo hi","Enter"], literal?}` (tmux-style tokens) → `{terminalId, keysSent}` |
+| POST | `/v1/agents/terminals/{id}/resize` | `{rows, cols}` |
+| POST | `/v1/agents/terminals/{id}/paste` | `{name, dataBase64}`: saved on nezopt, and its quoted path is typed in (≤ 700 KB through p1) |
+| GET | `/v1/agents/terminals/{id}/stream` | SSE (below) |
+| GET | `/v1/agents/workspaces/{id}/scripts` | `{workspaceId, scripts: [Script]}`: Paseo's `script_status_update` payloads plus `command`, `source`, `servicePath` |
+| POST | `/v1/agents/workspaces/{id}/scripts/{name}/{start,stop}` | → `Script` |
+| GET | `/v1/agents/workspaces/{id}/scripts/{name}/logs` | `?lines=` → the last lines of the script's terminal |
+| GET | `/v1/agents/workspaces/{id}/services` | running script services and **detected** ports, named `port-<n>` |
+| any | `/v1/agents/workspaces/{id}/services/{name}/{path}` | HTTP proxy to `127.0.0.1:<port>`; **owner devices only** |
+
+### Terminal stream
+
+- The first event is `event: snapshot`, with `{rows, cols, data, offset}`.
+- Then `event: output`, with `id: <byte offset>` and `{b64}`.
+- Last, `event: exit`, with `{exitCode}`.
+- To resume, send `Last-Event-ID` or `?offset=`. The daemon keeps the last 1 MiB; an older offset gets a new snapshot.
+
+### Scripts
+
+- **Where they come from:** `paseo.json` `scripts`, read unchanged, plus `.lucina/agents.toml` `[scripts.<name>]`
+  (`cmd`, `port = "auto" | n`, `health = "/path"`).
+- **Ports:** the script's own; else `worktree.servicePorts` (`range` or `portScript`); else 4100-4999. A port that
+  another running script holds is never handed out.
+- **How they run:** as `/bin/sh -c` in a terminal of their own, inside
+  `systemd-run --user --scope -p CPUQuota=200%`. `LUCINA_AGENTD_SCRIPT_CPU_QUOTA` changes the quota, and
+  `LUCINA_AGENTD_SCRIPT_SCOPE=off` turns the scope off.
+- **Env:**
+  - Paseo's: `PASEO_PORT`, `HOST`, `PASEO_URL`, `PASEO_SERVICE_<NAME>_{PORT,URL}`, …, with `LUCINA_*` aliases;
+  - `PORT`;
+  - `LUCINA_SERVICE_PATH`: the base path to give the dev server.
+- **Health:** every 5 s, a GET of the `health` path, else a TCP connect.
+- **`proxyUrl`:**
+  - the Secretary URL (`$LUCINA_AGENTD_PUBLIC_URL`) plus the service path, when that variable is set;
+  - else `<label>.localhost:<port>`, when agentd runs with `--listen`;
+  - else the bare path.
+
+### The proxy
+
+- Requests to the service lose cookies, credentials, `X-Lucina-*` and `X-Secretary-*`.
+- Responses lose `Set-Cookie` and get
+  `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads`. The dev app
+  runs with an opaque origin, so it can't use the owner's session.
+- An absolute `Location` is moved under the service path.
+- **Limit:** cookie-authenticated writes still need `X-Secretary-CSRF: 1`. A dev app's own POSTs from the browser are
+  refused; GET and HEAD work.
+- **Limit:** no WebSocket or HMR through p1.
+- On agentd's loopback `--listen` port, `Host: <label>.localhost` reaches the same service (Paseo's hostname
+  routing, HTTP only).
+
+### Who may do what
+
+- **Owner devices and `lagent`:** everything.
+- **An agent** (a process under its provider):
+  - the terminals it serves or opened;
+  - new terminals in its own workspace, inside the workspace directory (symlinks resolved);
+  - that workspace's scripts.
+- **An MCP token:**
+  - lists and reads the terminals of the agents it started (label `lucina.mcp-token`) and of the scripts it ran;
+  - types only into the terminals that it or its agents opened, never one the owner opened for its agent;
+  - uses the scripts of workspaces it made or runs agents in. agentd labels the workspaces it makes `mcp:<hash>`,
+    and only the owner can set that label by hand;
+  - never creates or kills a terminal, and never opens a service.
+- **A process in a terminal that no agent owns:** only that terminal.
+- Every terminal process counts as an agent process for permission answers: `lagent permit` inside a terminal is
+  refused.
+
+### Cleanup
+
+- An agent's terminals are killed when it is stopped, archived or deleted.
+- Archiving a workspace stops its scripts and terminals before teardown.
+- agentd's shutdown kills every terminal.
+- Terminal pids are in the process registry, so the next start reaps the ones a crashed daemon left behind.
+
 ## Schedules, subagents, search (phase 6)
 
 - **Schedules** live in agentd's SQLite (`schedules`), wire type `lucina-agents::schedule::Schedule` (Paseo's
@@ -153,6 +238,8 @@ the permission book like any agent, survive a daemon restart, and the queue surv
 - `{"type":"permission","permission":{…PermissionView}}`
 - `{"type":"workspace","workspace":{…WorkspaceRecord}}`
 - phase 7: `{"type":"agent_command","agentId","commandId","command":{…},"createdAt","expiresAt"}`, only to the owning device
+- phase 5: `{"type":"terminal","terminal":{…}}`, `{"type":"terminal_removed","terminalId","workspaceId"}`,
+  `{"type":"script_status","workspaceId","scripts":[…]}`, `{"type":"terminal_attention","terminalId","workspaceId","reason","title","body"}`
 - `{"type":"stream.reset"}`, sent as `event: stream.reset` with that data
 
 Replay: a client reconnecting with `Last-Event-ID` gets what it missed. Events are kept for 24 h or 10,000 entries;
@@ -167,7 +254,7 @@ past that the client gets `stream.reset` and refetches.
 - `Last-Event-ID` header, or `?lastEventId=` for a new EventSource.
 - A device that connects without `Last-Event-ID` first gets its waiting commands (frames without an id).
 - A client that lags behind the bus catches up from the buffer, or gets a reset.
-- secretary-server: at most 4 open streams per caller and 40 in all (429 `too_many_streams`); a stream ends on
+- secretary-server: at most 4 open streams per caller and 40 in all, terminal streams included (429 `too_many_streams`); a stream ends on
   shutdown, when Lucina is quiet for 90 s (the daemon sends a keep-alive comment every 15 s), or when it ends.
 
 ## Pushes
@@ -201,7 +288,8 @@ The tools are thin wrappers over these routes, with the caller's `mcp:<tokenId>`
 - agents: `agents_list`, `agent_run`, `agent_send`, `agent_logs`, `agent_wait`, `agent_stop`, `agent_archive`,
   `agent_inspect`, `agents_search` (phase 6: agentd's `/search`, names-only against an older daemon);
 - workspaces: `workspaces_list`, `workspace_create`, `workspace_diff`, `files_list`, `file_read`;
-- terminals: `terminal_*` (phase 5);
+- terminals and scripts (phase 5): `terminal_list`, `terminal_read`, `terminal_send` (text or one key token),
+  `scripts_list`, `script_start`, `script_stop`. They can't create or kill a terminal or open a service;
 - schedules: `schedules_list`, `schedule_add` (a new agent per run, in a safe mode), `schedule_remove` (own only)
   (phase 6);
 - `permissions_list` (read only), `agents_usage`.
@@ -219,3 +307,13 @@ Scope: `agents`, plus `read` for reads. Hermes gets a token with `read` + `agent
   Without them, only owner devices reach `/v1/agents`.
 - Caddy: nothing new; `/v1/*` already goes to secretary-server, and responses set `X-Accel-Buffering: no` and
   `Cache-Control: no-store`.
+
+## Deploying phase 5 (for the coordinator)
+
+- **nezopt:** lucina-rs and lucina-agentd from the `agents-p5` line. Its forwarder passes the service paths and
+  headers.
+  - Optional in the agentd unit: `LUCINA_AGENTD_PUBLIC_URL=https://getsecretary.tech` (`proxyUrl` and `PASEO_URL`
+    become the public service paths) and `LUCINA_AGENTD_SCRIPT_CPU_QUOTA` (default `200%`).
+  - systemd-run must reach the user manager, which it does from a user unit.
+- **p1:** secretary-server and secretary-mcp from `agents-p5-server`.
+- **Caddy:** nothing new; `/v1/*` already goes to secretary-server.

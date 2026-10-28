@@ -144,8 +144,12 @@ async fn list(State(m): State<Manager>, Query(q): Query<ListQuery>) -> ApiResult
     to_json(json!({"workspaces": out}))
 }
 
-async fn create(State(m): State<Manager>, Json(req): Json<CreateWorkspace>) -> ApiResult {
-    let (w, skipped) = m.create_workspace(req).await?;
+async fn create(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Json(req): Json<CreateWorkspace>) -> ApiResult {
+    let (mut w, skipped) = m.create_workspace(req).await?;
+    // An MCP token's workspaces carry `mcp:<token>`: its scripts may run there.
+    if let super::terminals::Principal::Mcp(token) = super::terminals::principal(&m, &peer, &headers) {
+        w = m.workspaces().set_label(&w.workspace_id, &super::terminals::mcp_label(&token), true).map_err(ManagerError::from)?;
+    }
     to_json(json!({"workspace": view(&m, &w), "setupSkippedReason": skipped}))
 }
 
@@ -188,8 +192,12 @@ struct LabelBody {
     assigned: bool,
 }
 
-async fn label(State(m): State<Manager>, Path(id): Path<String>, Json(b): Json<LabelBody>) -> ApiResult {
+async fn label(State(m): State<Manager>, ConnectInfo(peer): ConnectInfo<Peer>, headers: HeaderMap, Path(id): Path<String>, Json(b): Json<LabelBody>) -> ApiResult {
     workspace(&m, &id)?;
+    // `mcp:<token>` gives a token the workspace's scripts: only the owner sets it by hand.
+    if b.label.trim().to_lowercase().starts_with("mcp:") {
+        owner_only(&m, &peer, &headers, "set mcp: labels")?;
+    }
     let w = m.workspaces().set_label(&id, &b.label, b.assigned).map_err(ManagerError::from)?;
     to_json(view(&m, &w))
 }
