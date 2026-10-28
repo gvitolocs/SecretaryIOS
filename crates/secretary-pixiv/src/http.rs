@@ -1,7 +1,7 @@
 //! `/v1/pixiv/*`. p1's Caddy authenticates the owner (forward_auth `/v1/auth/owner`) and adds
 //! `X-Lucina-Gateway: <secret>`; every route but the signed image URLs refuses a request without
 //! it. Image URLs are `/v1/pixiv/s/<expiry>/<token>/<sig>` (HMAC, six hours; the token is the
-//! i.pximg.net URL itself), so the apps' image loaders need no header and never contact pixiv.
+//! i.pximg.net URL itself, in lowercase hex), so the apps' image loaders need no header and never contact pixiv.
 //!
 //! Adult content: `adult=1` (query) switches R-18 on for that request; without it R-18 modes and
 //! works answer 403 `adult_off` and R-18 items never appear in a list.
@@ -17,8 +17,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -108,7 +106,9 @@ impl Http {
 
     /// Same, with an explicit expiry (tests use a past one).
     pub fn sign_at(&self, upstream: &str, exp: i64) -> String {
-        let token = URL_SAFE_NO_PAD.encode(upstream.as_bytes());
+        // Lowercase hex, not base64: mixed-case base64 reads as a random secret to Lucina's
+        // redactor, which would mask the link when she shows it in chat.
+        let token = hex::encode(upstream.as_bytes());
         let msg = format!("{exp}/{token}");
         format!("{PREFIX}/s/{msg}/{}", sign(&self.signing_key, &msg))
     }
@@ -383,8 +383,7 @@ async fn image(
     if !valid || exp < chrono::Utc::now().timestamp() {
         return err(StatusCode::FORBIDDEN, "forbidden");
     }
-    let Some(url) = URL_SAFE_NO_PAD
-        .decode(token.as_bytes())
+    let Some(url) = hex::decode(token.as_bytes())
         .ok()
         .and_then(|b| String::from_utf8(b).ok())
     else {
