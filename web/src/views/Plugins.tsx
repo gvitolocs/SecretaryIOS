@@ -1,9 +1,10 @@
 import { useNavigate } from "@solidjs/router";
-import { For, type JSX } from "solid-js";
-import { BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, LinkIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
+import { For, Show, type JSX } from "solid-js";
+import { BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
 import { setShowAdult, showAdult } from "../lib/adult";
+import { instagramBadges } from "../state/instagramBadge";
 import { openWardrobe } from "../state/wardrobe";
 
 // The Plugins page (owner, 2026-10-24): every feature that is not Chat, Shopping or
@@ -22,6 +23,8 @@ export type Plugin = {
   visible?: () => boolean;
   /** Adult content: owner-only on the server, hidden here when "Show adult plugins" is off. */
   adult?: boolean;
+  /** A count shown as a red dot on the card (0 or undefined: none). */
+  badge?: () => number;
 };
 
 /** The cards this device shows. */
@@ -79,6 +82,7 @@ export const PLUGINS: Plugin[] = [
     },
   },
   { id: "server", icon: PulseIcon, title: () => t("plugins.server"), detail: () => t("plugins.serverDetail"), href: "/server-health" },
+  { id: "instagram", icon: InstagramIcon, title: () => t("instagram.title"), detail: () => t("instagram.detail"), href: "/instagram", badge: () => instagramBadges().total },
   { id: "models", icon: GridIcon, title: () => t("plugins.models"), detail: () => t("plugins.modelsDetail"), href: "/models" },
   { id: "pixiv", icon: PixivIcon, title: () => t("pixiv.title"), detail: () => t("pixiv.detail"), href: "/pixiv" },
 ];
@@ -98,6 +102,11 @@ export default function PluginsView() {
               onClick={() => (plugin.href ? navigate(plugin.href) : plugin.run?.(navigate))}
             >
               <span class="plugin-icon">{plugin.icon()}</span>
+              <Show when={(plugin.badge?.() ?? 0) > 0}>
+                <span class="plugin-badge" role="img" aria-label={t("instagram.newCount", { count: plugin.badge?.() ?? 0 })}>
+                  {plugin.badge?.()}
+                </span>
+              </Show>
               <span class="plugin-title">{plugin.title()}</span>
               <span class="plugin-detail">{plugin.detail?.() ?? ""}</span>
             </button>

@@ -250,3 +250,22 @@ samp {
   font-weight: 600;
   text-decoration: none;
 }
+
+/* A count on a plugin card (Instagram: new stories and posts of watched accounts). */
+.plugin-card { position: relative; }
+.plugin-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+}

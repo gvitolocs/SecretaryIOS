@@ -2,6 +2,7 @@ import { Route, Router } from "@solidjs/router";
 import { render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setShowAdult } from "../lib/adult";
+import { resetInstagramBadges, setInstagramBadges } from "../state/instagramBadge";
 import PluginsView, { PLUGINS, visiblePlugins } from "./Plugins";
 
 function renderPlugins() {
@@ -26,6 +27,24 @@ describe("Plugins", () => {
     renderPlugins();
     expect(screen.getByRole("button", { name: /^Keep/ })).toBeInTheDocument();
     expect(PLUGINS.find((p) => p.id === "keep")?.href).toBe("/keep");
+  });
+
+  it("has an Instagram card that opens /instagram", () => {
+    renderPlugins();
+    expect(PLUGINS.find((p) => p.id === "instagram")?.href).toBe("/instagram");
+    expect(PLUGINS.find((p) => p.id === "instagram")?.adult).toBeUndefined();
+    expect(screen.getByRole("button", { name: /^Instagram/ })).toHaveAttribute("data-plugin", "instagram");
+  });
+
+  it("shows a red count on the Instagram card when watched accounts have news", () => {
+    renderPlugins();
+    expect(document.querySelector('[data-plugin="instagram"] .plugin-badge')).toBeNull();
+    setInstagramBadges({ total: 3, accounts: { natgeo: 3 } });
+    const badge = document.querySelector('[data-plugin="instagram"] .plugin-badge');
+    expect(badge).toHaveTextContent("3");
+    expect(badge).toHaveAttribute("aria-label", "3 new");
+    resetInstagramBadges();
+    expect(document.querySelector('[data-plugin="instagram"] .plugin-badge')).toBeNull();
   });
 
   it("opens Films from its card and has no Media card", () => {

@@ -30,6 +30,8 @@ export interface SecretaryShell {
   signOut?(): void | Promise<void>;
   /** "Show adult plugins" changed on this device: the rail shows or hides NClient at once. */
   setAdultPlugins?(on: boolean): void;
+  /** Show a red dot with a count on a plugin's rail icon (0 clears it). The rail implements it. */
+  setBadge?(plugin: string, count: number): void;
 }
 
 declare global {

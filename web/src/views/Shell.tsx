@@ -14,6 +14,7 @@ import "../styles/embedded.css";
 import { connectTimeline, resumeJobPolling } from "../state/chat";
 import { checkHealth, HEALTH_POLL_MS } from "../state/health";
 import { lucinaNotice, markLucinaOnline } from "../state/lucina";
+import { startInstagramBadges } from "../state/instagramBadge";
 import { startNotifications } from "../state/notifications";
 import { signOut } from "../state/session";
 import { setStageHidden, stageHidden } from "../state/stage";
@@ -26,7 +27,7 @@ const Wardrobe = lazy(() => import("../components/Wardrobe"));
 // The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
 // Training + Weight, Plugins. Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const PLUGIN_PATHS = ["/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv"];
+const PLUGIN_PATHS = ["/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram"];
 
 function NavLinks(props: { class: string }) {
   const location = useLocation();
@@ -103,6 +104,7 @@ export default function Shell(props: { children?: JSX.Element }) {
       if (entries.length && location.pathname !== "/") navigate("/" + location.search);
     }).catch(() => undefined);
     onCleanup(startNotifications((route) => navigate(route)));
+    onCleanup(startInstagramBadges());
     void checkHealth();
     resumeJobPolling();
     // The timeline stream stays open on every page, so Lucina's outfit changes arrive live.
