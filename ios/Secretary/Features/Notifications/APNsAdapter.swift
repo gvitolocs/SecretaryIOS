@@ -88,6 +88,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// An approval push woke the app (`content-available`): refresh the approvals and the widget. The push's own
     /// banner is already showing, so the request is not posted again.
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
+        // A decision push: swap in the notification with the options' own buttons.
+        if let decisionId = userInfo[DecisionNotifier.idKey] as? String {
+            let options = userInfo[DecisionNotifier.optionsKey] as? [String] ?? []
+            let alert = (userInfo["aps"] as? [String: Any])?["alert"] as? [String: Any]
+            let title = alert?["title"] as? String ?? String(localized: "Lucina needs your decision")
+            // The push's text is the question plus the numbered options; the labelled buttons make the list redundant.
+            let body = (alert?["body"] as? String ?? "").components(separatedBy: "\n1. ").first ?? ""
+            guard !options.isEmpty else { return .noData }
+            await DecisionNotifier.replacePush(id: decisionId, title: title, body: body, options: options, previews: true)
+            return .newData
+        }
         guard let approvalId = userInfo[ApprovalNotifier.idKey] as? String else { return .noData }
         return await Task { @MainActor in
             let app = AppModel.shared

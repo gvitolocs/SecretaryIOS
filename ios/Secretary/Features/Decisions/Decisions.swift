@@ -171,6 +171,38 @@ enum DecisionNotifier {
 
     static func category(_ id: String) -> String { prefix + id }
 
+    /// The server's APNs push for a decision uses this static category (its buttons can't know the options in
+    /// advance: "Option 1", "Option 2", the owner's own words; the text lists the options). When the push wakes the
+    /// app, `replacePush` swaps in the notification with one button per option.
+    static let pushCategory = "DECISION"
+
+    static func pushCategoryDefinition() -> UNNotificationCategory {
+        let options = (0..<2).map { i in
+            UNNotificationAction(identifier: optionPrefix + String(i), title: String(localized: "Option \(i + 1)"), options: [.authenticationRequired])
+        }
+        let words = UNTextInputNotificationAction(identifier: wordsAction, title: String(localized: "Answer in my words"),
+                                                  options: [.authenticationRequired],
+                                                  textInputButtonTitle: String(localized: "Send"),
+                                                  textInputPlaceholder: String(localized: "Your answer to Lucina"))
+        return UNNotificationCategory(identifier: pushCategory, actions: options + [words], intentIdentifiers: [], options: [])
+    }
+
+    /// Delivered notifications (local or APNs) about decision `id`.
+    static func delivered(id: String, center: UNUserNotificationCenter = .current()) async -> [String] {
+        await center.deliveredNotifications().compactMap { n in
+            n.request.content.userInfo[idKey] as? String == id ? n.request.identifier : nil
+        }
+    }
+
+    /// A decision push woke the app: post the notification with the options' own buttons, quietly (the push
+    /// already made its sound), and take the push's copy off.
+    static func replacePush(id: String, title: String, body: String, options: [String], previews: Bool,
+                            center: UNUserNotificationCenter = .current()) async {
+        let pushed = await delivered(id: id, center: center).filter { $0 != "decision.\(id)" }
+        await post(id: id, title: title, body: body, options: options, previews: previews, sound: false, center: center)
+        if !pushed.isEmpty { center.removeDeliveredNotifications(withIdentifiers: pushed) }
+    }
+
     static func register(id: String, options: [String], center: UNUserNotificationCenter = .current()) async {
         var actions: [UNNotificationAction] = options.prefix(4).enumerated().map { i, o in
             let title = o.count > 40 ? String(o.prefix(39)) + "…" : o
@@ -190,13 +222,14 @@ enum DecisionNotifier {
     }
 
     /// The notification (identifier `decision.<id>`): tap opens the decision, long-press shows the options.
-    static func post(id: String, title: String, body: String, options: [String], previews: Bool,
+    static func post(id: String, title: String, body: String, options: [String], previews: Bool, sound: Bool = true,
                      center: UNUserNotificationCenter = .current()) async {
         await register(id: id, options: options, center: center)
         let c = UNMutableNotificationContent()
         c.title = title
         c.body = previews ? body : String(localized: "Lucina needs your decision. Open Secretary to see it.")
-        c.sound = .default
+        c.sound = sound ? .default : nil
+        c.interruptionLevel = .timeSensitive
         c.threadIdentifier = "decision"
         c.categoryIdentifier = category(id)
         c.userInfo = [idKey: id, optionsKey: Array(options.prefix(6)), LocalNotifier.routeKey: "/decisions/\(id)"]
@@ -204,7 +237,7 @@ enum DecisionNotifier {
     }
 
     static func remove(id: String, center: UNUserNotificationCenter = .current()) async {
-        center.removeDeliveredNotifications(withIdentifiers: ["decision.\(id)"])
+        center.removeDeliveredNotifications(withIdentifiers: ["decision.\(id)"] + (await delivered(id: id, center: center)))
     }
 
     /// What a notification response asks for: open, an option (0-based), or the owner's own words.

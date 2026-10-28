@@ -80,6 +80,7 @@ final class ApprovalNotifier: ApprovalNotifying {
         let mine: Set<UNNotificationCategory> = [
             UNNotificationCategory(identifier: category, actions: [approve, deny], intentIdentifiers: [], options: []),
             UNNotificationCategory(identifier: sensitiveCategory, actions: [approve, deny], intentIdentifiers: [], options: []),
+            DecisionNotifier.pushCategoryDefinition(),
         ]
         // Decision categories (DecisionNotifier) registered earlier keep their buttons.
         center.getNotificationCategories { existing in

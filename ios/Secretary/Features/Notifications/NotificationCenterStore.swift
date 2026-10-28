@@ -142,6 +142,7 @@ final class NotificationCenterStore {
             if item.meta?.kind == "decision", item.meta?.via == nil, let id = item.meta?.decisionId,
                let d = await decisionLookup?(id), d.isPending {
                 guard rules.shouldAlert(.lucinaMessage, at: now) else { continue }
+                if await !DecisionNotifier.delivered(id: id).isEmpty { continue }
                 await DecisionNotifier.post(id: id, title: String(localized: "Decision needed: \(d.asker)"), body: d.question,
                                             options: d.options, previews: rules.settings.previews)
                 continue

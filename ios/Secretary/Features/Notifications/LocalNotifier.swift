@@ -89,6 +89,8 @@ final class LocalNotifier {
     /// An inbox notification, now.
     func post(_ n: AppNotification, previews: Bool = true) async {
         if let id = n.decisionId {
+            // Already on the lock screen from the server's push: the push's wake-up replaces it with the labelled one.
+            if await !DecisionNotifier.delivered(id: id).isEmpty { return }
             // Its own category: long-press shows one button per option; a tap opens the decision.
             await DecisionNotifier.post(id: id, title: n.displayTitle, body: n.body, options: n.decisionOptions, previews: previews)
             return
