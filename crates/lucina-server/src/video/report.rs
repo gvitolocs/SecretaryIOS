@@ -92,8 +92,19 @@ fn stamp(meta: &VideoMeta, t: f64) -> String {
     )
 }
 
+/// The note store's slugs are lower-case letters, digits and single dashes: `FBs--2nSPLQ`
+/// becomes `youtube-fbs-2nsplq`.
 pub fn note_slug(id: &str) -> String {
-    format!("youtube-{}", id.to_ascii_lowercase())
+    let mut s = String::from("youtube");
+    for part in id
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|p| !p.is_empty())
+    {
+        s.push('-');
+        s.push_str(part);
+    }
+    s
 }
 
 /// The answer when this video already has a report.
@@ -471,7 +482,8 @@ mod tests {
             stamp(&meta(), 36.7),
             "[0:37](https://www.youtube.com/watch?v=FBs--2nSPLQ&t=36s)"
         );
-        assert_eq!(note_slug("FBs--2nSPLQ"), "youtube-fbs--2nsplq");
+        assert_eq!(note_slug("FBs--2nSPLQ"), "youtube-fbs-2nsplq");
+        assert_eq!(note_slug("_a-B_c"), "youtube-a-b-c");
     }
 
     #[test]
