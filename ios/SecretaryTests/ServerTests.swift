@@ -375,4 +375,32 @@ final class ServerTests: XCTestCase {
         let partialApp = ServerSection(try Fixtures.decode(ServerOverview.self, Self.partialJSON), fetchedAt: partialSection.fetchedAt)
         XCTAssertEqual(partialSection, partialApp)
     }
+
+    func testFlappingItemsAreApartFromWhatNeedsAttention() throws {
+        let json = """
+        {"overall": "warn", "attention_count": 1, "flapping_count": 1, "attention": [
+          {"key": "catalog:a", "severity": "warn", "title": "A", "flapping": false},
+          {"key": "catalog:b", "severity": "warn", "title": "B", "summary": "Running; failed 9 times in 24 h", "flapping": true}
+        ]}
+        """
+        let o = try Fixtures.decode(ServerOverview.self, json)
+        XCTAssertEqual(o.needItems.map(\.key), ["catalog:a"])
+        XCTAssertEqual(o.flappingItems.map(\.key), ["catalog:b"])
+        XCTAssertEqual(o.needCount, 1)
+        XCTAssertEqual(o.flappingCount, 1)
+        // Without the counts (an older server), they come from the items.
+        let older = try Fixtures.decode(ServerOverview.self, json.replacingOccurrences(of: "\"attention_count\": 1, \"flapping_count\": 1, ", with: ""))
+        XCTAssertEqual(older.attentionCount, 1)
+        XCTAssertEqual(older.flappingCount, 1)
+    }
+
+    func testHistoryPointsBreakAtGapsAndKeepTheWindow() throws {
+        let h = try Fixtures.decode(ServerHistory.self, """
+        {"step_s": 900, "end": "2026-10-28T22:00:00Z", "tctl": [null, 60, 61, null, null, 70], "load1": [], "mem": []}
+        """)
+        let points = h.points(h.tctl)
+        XCTAssertEqual(points.map(\.segment), [0, 0, 1])
+        XCTAssertEqual(h.range().upperBound, ServerDates.parse("2026-10-28T22:00:00Z"))
+        XCTAssertEqual(h.range().lowerBound, ServerDates.parse("2026-10-28T20:30:00Z"))
+    }
 }

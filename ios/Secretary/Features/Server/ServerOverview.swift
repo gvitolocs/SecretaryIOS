@@ -76,6 +76,8 @@ struct ServerOverview: Codable, Equatable, Sendable {
     var generatedAt: String?
     var overall: ServerHealth
     var attentionCount: Int
+    /// Running now, but failed or restarted in the last 24 h: shown apart, never counted as needing attention.
+    var flappingCount: Int
     var checksOk: Int?
     var checksTotal: Int?
     var sources: [String: ServerSource]
@@ -90,7 +92,8 @@ struct ServerOverview: Codable, Equatable, Sendable {
         overall = ServerHealth(raw: c.lenientOptional(String.self, .overall))
         hosts = c.serverList(ServerHost.self, .hosts)
         attention = c.serverList(ServerAttention.self, .attention)
-        attentionCount = c.serverInt(.attentionCount) ?? attention.count
+        attentionCount = c.serverInt(.attentionCount) ?? attention.filter { !$0.flapping }.count
+        flappingCount = c.serverInt(.flappingCount) ?? attention.filter(\.flapping).count
         checksOk = c.serverInt(.checksOk)
         checksTotal = c.serverInt(.checksTotal)
         sources = c.lenientOptional([String: ServerFailable<ServerSource>].self, .sources)?.compactMapValues(\.value) ?? [:]
@@ -99,15 +102,21 @@ struct ServerOverview: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case generatedAt = "generated_at", overall, attentionCount = "attention_count", checksOk = "checks_ok"
+        case generatedAt = "generated_at", overall, attentionCount = "attention_count", flappingCount = "flapping_count", checksOk = "checks_ok"
         case checksTotal = "checks_total", sources, hosts, attention, services, timeline
     }
 
     var generatedDate: Date? { ServerDates.parse(generatedAt) }
 
+    /// The items that need the owner (not the ones that only restarted earlier).
+    var needItems: [ServerAttention] { attention.filter { !$0.flapping } }
+
+    /// Running, but restarted in the last 24 h.
+    var flappingItems: [ServerAttention] { attention.filter(\.flapping) }
+
     /// What needs the owner: the attention items, else (no item but a host is down or hot) those hosts.
     var needCount: Int {
-        let items = max(attentionCount, attention.count)
+        let items = max(attentionCount, needItems.count)
         if items > 0 { return items }
         return overall == .ok ? 0 : hosts.filter { $0.state.isProblem }.count
     }
@@ -273,6 +282,8 @@ struct ServerPoint: Identifiable, Equatable, Sendable {
     let id: Int
     let date: Date
     let value: Double
+    /// Points with a gap (empty buckets) between them are in different segments, so the line breaks.
+    var segment = 0
 }
 
 /// The last 24 h in 15-minute buckets, oldest first; nil = no sample.
@@ -294,13 +305,25 @@ struct ServerHistory: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case stepS = "step_s", end, tctl, load1, mem }
 
-    /// The samples with their times (the last bucket ends at `end`); empty buckets are left out.
+    /// The 24 h the buckets cover, ending at `end`.
+    func range(now: Date = Date()) -> ClosedRange<Date> {
+        let last = ServerDates.parse(end) ?? now
+        let span = Double(max(tctl.count, load1.count, mem.count, 1)) * Double(stepS)
+        return last.addingTimeInterval(-span)...last
+    }
+
+    /// The samples with their times (the last bucket ends at `end`); empty buckets are left out
+    /// and start a new segment.
     func points(_ values: [Double?], now: Date = Date()) -> [ServerPoint] {
         let last = ServerDates.parse(end) ?? now
         let count = values.count
+        var segment = 0
+        var previous: Int?
         return values.enumerated().compactMap { index, value in
             guard let value, value.isFinite else { return nil }
-            return ServerPoint(id: index, date: last.addingTimeInterval(-Double(count - 1 - index) * Double(stepS)), value: value)
+            if let previous, index - previous > 1 { segment += 1 }
+            previous = index
+            return ServerPoint(id: index, date: last.addingTimeInterval(-Double(count - 1 - index) * Double(stepS)), value: value, segment: segment)
         }
     }
 }
@@ -322,6 +345,8 @@ struct ServerAttention: Codable, Equatable, Identifiable, Sendable {
     var details: [String]
     var since: String?
     var failures24h: Int?
+    /// Running now; only failed or restarted earlier.
+    var flapping: Bool
     var impact: ServerImpact?
     var caused: [String]
     var logs: String?
@@ -347,6 +372,7 @@ struct ServerAttention: Codable, Equatable, Identifiable, Sendable {
         details = c.lenientOptional([String].self, .details) ?? []
         since = c.lenientOptional(String.self, .since)
         failures24h = c.serverInt(.failures24h)
+        flapping = c.lenientOptional(Bool.self, .flapping) ?? false
         impact = c.lenientOptional(ServerImpact.self, .impact)
         caused = c.lenientOptional([String].self, .caused) ?? []
         logs = c.lenientOptional(String.self, .logs)
@@ -356,7 +382,7 @@ struct ServerAttention: Codable, Equatable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case key, sources, severity, title, componentId = "component_id", host, group, project, kind, criticality, summary
-        case details, since, failures24h = "failures_24h", impact, caused, logs, restart, runbook
+        case details, since, failures24h = "failures_24h", flapping, impact, caused, logs, restart, runbook
     }
 
     var sinceDate: Date? { ServerDates.parse(since) }

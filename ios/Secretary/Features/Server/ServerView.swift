@@ -241,6 +241,24 @@ struct ServerOverviewTab: View {
     }
 
     @ViewBuilder private func content(_ overview: ServerOverview) -> some View {
+        SectionHeader("Needs attention")
+        if overview.needItems.isEmpty {
+            Card(cornerRadius: 16) {
+                Label("Nothing needs attention", systemImage: "checkmark.seal")
+                    .font(LucinaTokens.Fonts.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+        } else {
+            Card(spacing: 0, cornerRadius: 16) {
+                ForEach(Array(overview.needItems.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { Divider() }
+                    Button { store.sheet = .item(item.key) } label: {
+                        ServerAttentionRow(item: item, hostName: item.host.flatMap { overview.host($0)?.name })
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
         if !overview.hosts.isEmpty {
             SectionHeader("Hosts")
             ScrollView(.horizontal, showsIndicators: false) {
@@ -254,24 +272,7 @@ struct ServerOverviewTab: View {
             }
             .scrollClipDisabled()
         }
-        SectionHeader("Needs attention")
-        if overview.attention.isEmpty {
-            Card(cornerRadius: 16) {
-                Label("Nothing needs attention", systemImage: "checkmark.seal")
-                    .font(LucinaTokens.Fonts.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-            }
-        } else {
-            Card(spacing: 0, cornerRadius: 16) {
-                ForEach(Array(overview.attention.enumerated()), id: \.element.id) { index, item in
-                    if index > 0 { Divider() }
-                    Button { store.sheet = .item(item.key) } label: {
-                        ServerAttentionRow(item: item, hostName: item.host.flatMap { overview.host($0)?.name })
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
+        ServerRestarted(overview: overview)
         ServerAllGood(overview: overview)
     }
 }
@@ -305,7 +306,8 @@ struct ServerHostCard: View {
             ServerHostNotes(host: host)
             ForEach(ServerMetric.allCases) { metric in
                 if metric.current(host) != nil || !(host.history.map { metric.points($0) } ?? []).isEmpty {
-                    ServerSparkline(metric: metric, points: host.history.map { metric.points($0) } ?? [], current: metric.current(host))
+                    ServerSparkline(metric: metric, points: host.history.map { metric.points($0) } ?? [], current: metric.current(host),
+                                    range: host.history?.range())
                 }
             }
             ForEach(host.disks) { disk in ServerDiskBar(disk: disk) }
@@ -414,6 +416,8 @@ struct ServerSparkline: View {
     let metric: ServerMetric
     let points: [ServerPoint]
     let current: Double?
+    /// The 24 h window, so an hour of samples sits at the right end instead of filling the width.
+    var range: ClosedRange<Date>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -426,11 +430,13 @@ struct ServerSparkline: View {
             }
             if points.count >= 2 {
                 Chart(points) { point in
-                    LineMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value))
+                    LineMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value),
+                             series: .value(String(localized: "Segment"), point.segment))
                         .foregroundStyle(Theme.accent)
                         .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                 }
+                .chartXScale(domain: range ?? (points.first!.date...points.last!.date))
                 .chartXAxis(.hidden)
                 .chartYAxis(.hidden)
                 .chartLegend(.hidden)
@@ -509,7 +515,9 @@ struct ServerAttentionRow: View {
                         ServerChip(text: host, icon: "server.rack")
                     }
                     if item.impactCount > 0 {
-                        ServerChip(text: String(localized: "breaks \(item.impactCount)"), icon: "bolt.horizontal", tint: Theme.warning)
+                        // Crit: it is breaking them now; warn: they would break if it went down.
+                        ServerChip(text: item.severity == .crit ? String(localized: "breaks \(item.impactCount)") : String(localized: "affects \(item.impactCount)"),
+                                   icon: "bolt.horizontal", tint: item.severity == .crit ? Theme.negative : Theme.warning)
                     }
                 }
             }
@@ -524,6 +532,57 @@ struct ServerAttentionRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("serverItem-\(item.key)")
+    }
+}
+
+/// "Restarted recently · N", collapsed: running now, but failed or restarted in the last 24 h.
+struct ServerRestarted: View {
+    @Environment(ServerStore.self) private var store
+    let overview: ServerOverview
+    @State private var expanded = false
+
+    var body: some View {
+        let items = overview.flappingItems
+        if !items.isEmpty {
+            Card(cornerRadius: 16) {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(items) { item in
+                            Button { store.sheet = .item(item.key) } label: {
+                                HStack(spacing: 8) {
+                                    ServerDot(state: .warn, size: 6)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(verbatim: item.title)
+                                            .font(LucinaTokens.Fonts.footnote)
+                                            .foregroundStyle(Theme.text)
+                                            .multilineTextAlignment(.leading)
+                                        if let summary = item.summary {
+                                            Text(verbatim: summary).font(LucinaTokens.Fonts.caption2).foregroundStyle(Theme.textSecondary)
+                                        }
+                                    }
+                                    Spacer(minLength: 4)
+                                    if let host = item.host {
+                                        Text(verbatim: overview.host(host)?.name ?? host).font(LucinaTokens.Fonts.caption2).foregroundStyle(Theme.textTertiary)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    .padding(.top, LucinaTokens.Space.sm)
+                } label: {
+                    Label {
+                        Text("Restarted recently · \(max(overview.flappingCount, items.count))")
+                    } icon: {
+                        Image(systemName: "arrow.clockwise.circle")
+                    }
+                    .font(LucinaTokens.Fonts.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                }
+            }
+        }
     }
 }
 

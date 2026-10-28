@@ -20419,6 +20419,86 @@
           }
         }
       }
+    },
+    "Restarted recently · %lld" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Riavviati di recente · %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Genstartet for nylig · %lld"
+          }
+        }
+      }
+    },
+    "affects %lld" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "riguarda %lld"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "påvirker %lld"
+          }
+        }
+      }
+    },
+    "If it goes down" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Se si ferma"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hvis den går ned"
+          }
+        }
+      }
+    },
+    "Would break" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Smetterebbe di funzionare"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ville holde op med at virke"
+          }
+        }
+      }
+    },
+    "Would degrade" : {
+      "localizations" : {
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Funzionerebbe peggio"
+          }
+        },
+        "da" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ville virke dårligere"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

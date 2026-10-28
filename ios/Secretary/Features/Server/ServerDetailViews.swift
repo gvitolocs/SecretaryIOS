@@ -145,13 +145,15 @@ struct ServerHistoryChart: View {
             }
             Chart {
                 ForEach(points) { point in
-                    AreaMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value))
+                    AreaMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value),
+                             series: .value(String(localized: "Segment"), point.segment))
                         .foregroundStyle(LucinaChartStyle.area)
-                        .interpolationMethod(.monotone)
-                    LineMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value))
+                        .interpolationMethod(.linear)
+                    LineMark(x: .value(String(localized: "Time"), point.date), y: .value(String(localized: "Value"), point.value),
+                             series: .value(String(localized: "Segment"), point.segment))
                         .foregroundStyle(Theme.accent)
                         .lineStyle(LucinaChartStyle.line)
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                 }
                 if metric == .temperature {
                     RuleMark(y: .value(String(localized: "Limit"), ServerMetric.hotLimit))
@@ -285,7 +287,7 @@ struct ServerItemView: View {
                         }
                     }
                 }
-                if let impact = item.impact, !impact.isEmpty { ServerImpactCard(impact: impact) }
+                if let impact = item.impact, !impact.isEmpty { ServerImpactCard(impact: impact, down: item.severity == .crit) }
                 if !item.caused.isEmpty {
                     Card(spacing: 6, cornerRadius: 16) {
                         Text("Also down because of this").font(LucinaTokens.Fonts.headline)
@@ -326,15 +328,17 @@ struct ServerItemView: View {
 /// What breaks or degrades while the item is down, and the public hostnames that stop answering.
 struct ServerImpactCard: View {
     let impact: ServerImpact
+    /// Down now (crit): what it breaks; otherwise what it would break if it went down.
+    var down = true
 
     var body: some View {
         Card(spacing: LucinaTokens.Space.sm, cornerRadius: 16) {
-            Text("Impact").font(LucinaTokens.Fonts.headline)
+            Text(down ? "Impact" : "If it goes down").font(LucinaTokens.Fonts.headline)
             if !impact.broken.isEmpty {
-                line("Broken", impact.broken.map(\.name), color: Theme.negative)
+                line(down ? "Broken" : "Would break", impact.broken.map(\.name), color: Theme.negative)
             }
             if !impact.degraded.isEmpty {
-                line("Degraded", impact.degraded.map(\.name), color: Theme.warning)
+                line(down ? "Degraded" : "Would degrade", impact.degraded.map(\.name), color: Theme.warning)
             }
             if !impact.publicHostnamesBroken.isEmpty {
                 line("Public hostnames", impact.publicHostnamesBroken, color: Theme.negative)
@@ -482,7 +486,7 @@ struct ServerComponentView: View {
                     if let summary = item.summary, !summary.isEmpty {
                         Text(verbatim: summary).font(LucinaTokens.Fonts.body).foregroundStyle(Theme.text)
                     }
-                    if let impact = item.impact, !impact.isEmpty { ServerImpactCard(impact: impact) }
+                    if let impact = item.impact, !impact.isEmpty { ServerImpactCard(impact: impact, down: item.severity == .crit) }
                     ServerItemActions(item: item, hostName: hostName, toast: $toast)
                 }
             }

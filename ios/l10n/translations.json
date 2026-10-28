@@ -1242,5 +1242,10 @@
   "Hosts and services at a glance, and what needs attention.": ["Host e servizi a colpo d'occhio, e cosa richiede attenzione.", "Værter og tjenester på et øjeblik, og hvad der kræver opmærksomhed."],
   "Server section": ["Sezione del server", "Serversektion"],
   "Waiting": ["In attesa", "Venter"],
-  "Limit": ["Limite", "Grænse"]
+  "Limit": ["Limite", "Grænse"],
+  "Restarted recently · %lld": ["Riavviati di recente · %lld", "Genstartet for nylig · %lld"],
+  "affects %lld": ["riguarda %lld", "påvirker %lld"],
+  "If it goes down": ["Se si ferma", "Hvis den går ned"],
+  "Would break": ["Smetterebbe di funzionare", "Ville holde op med at virke"],
+  "Would degrade": ["Funzionerebbe peggio", "Ville virke dårligere"]
 }
