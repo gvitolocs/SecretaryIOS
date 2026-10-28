@@ -271,8 +271,10 @@ final class DeviceExecutors: DeviceCommandExecuting {
             }
         }
         if access.isOn(.calendar), EKEventStore.authorizationStatus(for: .event) == .fullAccess {
-            let predicate = eventStore.predicateForEvents(withStart: Date().addingTimeInterval(-3600), end: Date().addingTimeInterval(7 * 86_400), calendars: nil)
-            state.events = eventStore.events(matching: predicate).prefix(200).map { event in
+            // From three days back: a memo can reach the server hours or days after the lecture it was
+            // recorded in, and lucina-memo links it to the event it overlaps (docs/memos.md, step 1b).
+            let predicate = eventStore.predicateForEvents(withStart: Date().addingTimeInterval(-3 * 86_400), end: Date().addingTimeInterval(7 * 86_400), calendars: nil)
+            state.events = eventStore.events(matching: predicate).sorted { $0.startDate < $1.startDate }.prefix(300).map { event in
                 .object([
                     "id": .string(event.eventIdentifier ?? ""),
                     "title": .string(event.title ?? ""),
