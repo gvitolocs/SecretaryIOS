@@ -23,10 +23,12 @@ export function ItemIcon(props: {
   /** The row's name, to find art for free text and custom items. */
   name?: string | undefined;
   section?: string | null | undefined;
+  /** The row's emoji was hand-picked (it then beats the catalog art). */
+  iconPicked?: boolean | undefined;
 }) {
   const visual = createMemo(() =>
     itemVisual(
-      { icon: props.icon, catalogId: props.catalogId, name: props.name ?? "", section: props.section },
+      { icon: props.icon, catalogId: props.catalogId, name: props.name ?? "", section: props.section, iconPicked: props.iconPicked },
       catalogIndex(),
       shop.catalog.sections,
     ),

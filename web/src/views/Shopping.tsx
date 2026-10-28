@@ -243,6 +243,7 @@ export default function ShoppingView() {
         flipId={p.item.id}
         kind={p.item.status === "needed" ? "need" : "recent"}
         icon={itemIcon(p.item)}
+        iconPicked={p.item.iconPicked}
         catalogId={p.item.catalogId}
         section={p.item.section}
         name={p.item.name}

@@ -118,7 +118,7 @@ export function DetailsSheet(props: { itemId: string | null; onClose: () => void
             <div class="bring-sheet-grip" aria-hidden="true" />
             <header class="bring-details-head">
               <span class="bring-details-icon" aria-hidden="true">
-                <ItemIcon icon={itemIcon(it())} catalogId={it().catalogId} name={it().name} section={it().section} />
+                <ItemIcon icon={itemIcon(it())} catalogId={it().catalogId} name={it().name} section={it().section} iconPicked={it().iconPicked} />
               </span>
               <h2 id="bring-details-title" class="bring-details-name">
                 {form.name || it().name}
