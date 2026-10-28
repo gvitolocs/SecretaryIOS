@@ -100,12 +100,12 @@ samp {
   }
 }
 
-/* ---------- Shopping: accent tiles to buy, card tiles for the rest (as on iOS) ---------- */
+/* ---------- Shopping: accent tiles to buy, muted cards for the rest ---------- */
 
 :root .bring {
   --b-red: var(--lu-accent-fill);
-  --b-red-hi: var(--lu-accent-fill);
-  --b-red-lo: var(--lu-accent-fill);
+  --b-red-hi: color-mix(in srgb, var(--lu-accent) 78%, var(--lu-accent-fill));
+  --b-red-lo: color-mix(in srgb, var(--lu-accent-fill) 82%, #000000);
   --b-teal: var(--lu-accent);
   --b-teal-hi: var(--lu-accent);
   --b-teal-lo: var(--lu-accent);
@@ -114,37 +114,20 @@ samp {
   --b-slate-lo: var(--lu-card-raised);
   --b-green-700: var(--lu-accent);
   --b-red-600: var(--lu-negative);
-  --b-section: var(--lu-card);
+  --b-section: var(--lu-card-raised);
+  --b-recent: var(--lu-card);
   --b-action: var(--lu-card);
   --b-field: var(--lu-card);
   --b-sheet: var(--lu-bg);
   --b-popup: var(--lu-card-raised);
   --b-snackbar: var(--lu-card-raised);
+  --b-text-2: var(--lu-text-secondary);
+  --b-hint: var(--lu-text-tertiary);
   --b-gap: 4px;
-}
-
-:root .bring .tile-main {
-  --b-tile-text: var(--lu-text);
-  border-radius: var(--lu-radius-tile);
-  background: var(--lu-card);
-  box-shadow: none;
-  text-shadow: none;
-  color: var(--lu-text);
 }
 
 :root .bring .tile--need .tile-main {
   --b-tile-text: var(--lu-on-accent);
-  background: var(--lu-accent-fill);
-  color: var(--lu-on-accent);
-}
-
-:root .bring .tile--custom .tile-main {
-  background: var(--lu-card-raised);
-}
-
-:root .bring .tile--need .tile-main::before,
-:root .bring .bring-appbar::before {
-  display: none;
 }
 
 :root .bring .bring-chip--on {

@@ -2,9 +2,9 @@ import { onCleanup, Show } from "solid-js";
 import { ItemIcon } from "./ItemIcon";
 
 /**
- * Tile colours follow the Bring! roles: `need` red (to buy), `recent` and
- * `catalog` teal, `custom` grey-blue (a suggestion for free text). A catalog
- * tile that is already on the list shows red (`selected`).
+ * Tile roles as in Bring!: `need` (to buy) in Lucina's accent, `recent` muted,
+ * `catalog` a plain card, `custom` an outlined suggestion for free text. A
+ * catalog tile that is already on the list shows as to buy (`selected`).
  */
 export type TileKind = "need" | "recent" | "catalog" | "custom";
 
