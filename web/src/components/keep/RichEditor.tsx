@@ -1,4 +1,5 @@
 import { createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
+import { pastedImages } from "../../lib/keepPaste";
 import { domToMd, mdToDom, type FormatCommand } from "../../lib/keepText";
 
 // Active formats of the focused editor, for the formatting bar's pressed states.
@@ -131,6 +132,12 @@ export function RichEditor(props: {
         props.onChange(md);
       }}
       onPaste={(e) => {
+        // An image paste is the note's (it attaches the image): insert nothing here and let it bubble up.
+        const img = pastedImages(e.clipboardData);
+        if (img.files.length || img.rejected) {
+          e.preventDefault();
+          return;
+        }
         // Plain text only: pasted HTML would bring styles the markdown cannot keep.
         const text = e.clipboardData?.getData("text/plain");
         if (text === undefined) return;
