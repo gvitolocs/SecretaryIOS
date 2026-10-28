@@ -814,7 +814,9 @@ impl Device {
         if !self.opened_tab_active {
             self.tool("hotkey", json!({"keys": ["ctrl", "t"]})).await?;
             self.opened_tab_active = true;
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            // The new-tab page (DuckDuckGo here) takes focus as it loads: let it,
+            // then take the address bar back.
+            tokio::time::sleep(Duration::from_millis(800)).await;
         }
         // Focus the address bar; Ctrl+L also selects what is there, so the text replaces it.
         self.tool("hotkey", json!({"keys": ["ctrl", "l"]})).await?;
@@ -1097,6 +1099,24 @@ async fn answer(task: &str, screen: &Screen, history: &[String], stats: &mut Dri
     }
 }
 
+/// The page after `open_url` is not `host`: the address bar says another
+/// host, or (it shows no value) the tab is still the new-tab page.
+pub fn missed(host: &str, s: &Screen) -> bool {
+    if !s.url.is_empty() {
+        return !s.url.contains(host);
+    }
+    let t = s.title.to_lowercase();
+    !host.contains("duckduckgo") && (t.starts_with("new tab") || t.starts_with("duckduckgo private search"))
+}
+
+/// `https://wolt.com/en/…` → `wolt.com`; a search query (no scheme) → None.
+pub fn host_of(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    (!host.is_empty()).then_some(host)
+}
+
 /// Enter submits a plain field; a place, date or combo field waits for its
 /// suggestion to be picked.
 pub fn submits_on_enter(e: &Element) -> bool {
@@ -1369,6 +1389,17 @@ pub async fn drive(jev: &Jev, target: Where, task: &str, cancel: &Cancel) -> Res
                 dev.tidy().await;
                 return Ok(escalate(format!("could not read the screen: {e}"), &screen.title, &mem, stats));
             }
+        };
+        // The address did not arrive (the new-tab page took the keys): once more.
+        let (next_screen, reads) = match (act.op.as_str(), value.as_deref().and_then(host_of)) {
+            ("open_url", Some(host)) if missed(host, &next_screen) => {
+                tracing::info!(target: "lucina_jev::drive", host, url = %next_screen.url, "jev open_url retry");
+                match dev.open_url(value.as_deref().unwrap_or("")).await {
+                    Ok(()) => dev.settle(kind, &screen, true, false).await.unwrap_or((next_screen, reads)),
+                    Err(_) => (next_screen, reads),
+                }
+            }
+            _ => (next_screen, reads),
         };
         let settle_ms = t_read.elapsed().as_millis() as u64;
         stats.read_ms += settle_ms;
