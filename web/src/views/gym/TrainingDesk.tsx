@@ -109,8 +109,10 @@ function WeekCard(props: { view: GymView; days: WeekDay[]; next: Routine | null 
   );
 }
 
-/** The ⋯ menu of a routine row: delete, with a confirm step. */
-function RoutineMenu(props: { routine: Routine }) {
+type RoutineEdit = { routine: Routine; focus: "name" | "exercises" };
+
+/** The ⋯ menu of a routine row: rename, edit exercises (the routine builder), delete with a confirm step. */
+function RoutineMenu(props: { routine: Routine; onEdit: (edit: RoutineEdit) => void }) {
   const [open, setOpen] = createSignal(false);
   const [confirming, setConfirming] = createSignal(false);
   const [pending, setPending] = createSignal(false);
@@ -167,9 +169,33 @@ function RoutineMenu(props: { routine: Routine }) {
           <Show
             when={confirming()}
             fallback={
-              <button type="button" role="menuitem" class="trd-menu-item trd-menu-item--danger" onClick={() => setConfirming(true)}>
-                {gt("deleteRoutine")}
-              </button>
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="trd-menu-item"
+                  onClick={() => {
+                    close();
+                    props.onEdit({ routine: props.routine, focus: "name" });
+                  }}
+                >
+                  {gt("renameRoutine")}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="trd-menu-item"
+                  onClick={() => {
+                    close();
+                    props.onEdit({ routine: props.routine, focus: "exercises" });
+                  }}
+                >
+                  {gt("editExercises")}
+                </button>
+                <button type="button" role="menuitem" class="trd-menu-item trd-menu-item--danger" onClick={() => setConfirming(true)}>
+                  {gt("deleteRoutine")}
+                </button>
+              </>
             }
           >
             <p class="trd-menu-prompt">{gt("deleteConfirm", { name: props.routine.name })}</p>
@@ -196,6 +222,7 @@ function RoutineRow(props: {
   now: number;
   disabled: boolean;
   onStart: (r: Routine) => void;
+  onEdit: (edit: RoutineEdit) => void;
 }) {
   const summary = createMemo(() => exerciseSummary(props.view, props.routine));
   return (
@@ -222,7 +249,7 @@ function RoutineRow(props: {
         </>
       }
       meta={props.lastDone !== undefined ? gt("lastDone", { when: relativeDays(props.lastDone, props.now) }) : gt("notDoneYet")}
-      trailing={<RoutineMenu routine={props.routine} />}
+      trailing={<RoutineMenu routine={props.routine} onEdit={props.onEdit} />}
     />
   );
 }
@@ -322,6 +349,7 @@ export default function TrainingDesk(props: { view: GymView }) {
   const navigate = useNavigate();
   const [starting, setStarting] = createSignal(false);
   const [building, setBuilding] = createSignal(false);
+  const [editing, setEditing] = createSignal<RoutineEdit | null>(null);
   let createButton: HTMLButtonElement | undefined;
 
   // The day changes rarely; a minute tick keeps "today" and "N days ago" right on a page left open.
@@ -402,6 +430,7 @@ export default function TrainingDesk(props: { view: GymView }) {
                     now={now()}
                     disabled={busy()}
                     onStart={startRoutine}
+                    onEdit={setEditing}
                   />
                 )}
               </For>
@@ -466,6 +495,12 @@ export default function TrainingDesk(props: { view: GymView }) {
           setBuilding(false);
           createButton?.focus();
         }}
+      />
+      <RoutineBuilder
+        open={editing() !== null}
+        routine={editing()?.routine}
+        focus={editing()?.focus}
+        onClose={() => setEditing(null)}
       />
     </div>
   );

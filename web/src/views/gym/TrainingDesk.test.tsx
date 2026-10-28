@@ -243,6 +243,38 @@ describe("desktop Training page", () => {
     expect(posts(calls)[0]?.command).toEqual({ type: "delete_routine", routine_id: "r-pull" });
   });
 
+  it("renames a routine from its ⋯ menu in the routine builder", async () => {
+    const calls = engine(() => trainedView());
+    renderDesk();
+    fireEvent.click(await screen.findByRole("button", { name: "More for Push" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit routine" });
+    const nameField = within(dialog).getByLabelText("Routine name");
+    expect(nameField).toHaveValue("Push");
+    await waitFor(() => expect(document.activeElement).toBe(nameField));
+    fireEvent.input(nameField, { target: { value: "Push day" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save routine" }));
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    expect(posts(calls)[0]?.command).toEqual({
+      type: "update_routine",
+      routine_id: "r-push",
+      name: "Push day",
+      exercise_ids: ["bench-press", "incline-press", "overhead-press", "push-up"],
+    });
+  });
+
+  it("edits a routine's exercises from its ⋯ menu, keeping their order", async () => {
+    const calls = engine(() => trainedView());
+    renderDesk();
+    fireEvent.click(await screen.findByRole("button", { name: "More for Legs" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit exercises" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit routine" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Back Squat" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save routine" }));
+    await waitFor(() => expect(posts(calls)).toHaveLength(1));
+    expect(posts(calls)[0]?.command).toEqual({ type: "update_routine", routine_id: "r-legs", name: "Legs", exercise_ids: ["plank"] });
+  });
+
   it("starts a routine from its play button", async () => {
     const calls = engine(() => trainedView());
     renderDesk();

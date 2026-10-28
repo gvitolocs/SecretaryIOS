@@ -607,6 +607,19 @@ function gymApply(state, command, now) {
       state.routines.push({ id: randomUUID(), name, exercises });
       return;
     }
+    case "update_routine": {
+      const routine = state.routines.find((r) => r.id === command.routine_id);
+      if (!routine) throw new Error("Routine not found");
+      if (command.name === undefined && command.exercise_ids === undefined) throw new Error("Nothing to change");
+      if (command.name !== undefined) routine.name = gymName(command.name);
+      if (Array.isArray(command.exercise_ids)) {
+        const old = routine.exercises;
+        routine.exercises = command.exercise_ids.map(
+          (exercise_id) => old.find((e) => e.exercise_id === exercise_id) ?? { exercise_id, sets: 3, reps: 8, weight_grams: 0 },
+        );
+      }
+      return;
+    }
     case "delete_routine": {
       const index = state.routines.findIndex((r) => r.id === command.routine_id);
       if (index < 0) throw new Error("Routine not found");
