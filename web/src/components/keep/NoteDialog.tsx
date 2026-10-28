@@ -9,6 +9,7 @@ import { useKeep } from "./ctx";
 import { EditorImages, NoteFields } from "./Editors";
 import { CloseIcon, ClockIcon, DeleteForeverIcon, LinkIcon, PinFilledIcon, PinOutlineIcon, RestoreIcon, TextFormatIcon } from "./icons";
 import { labelsConfig } from "./NoteCard";
+import { imageTarget } from "./imageTarget";
 import { NoteToolbar } from "./NoteToolbar";
 import { hostOf, splitTitleHeading } from "../../lib/keepText";
 
@@ -29,6 +30,7 @@ function DialogBody(props: { id: string; onClose: () => void }) {
   let dirty: { title?: true; body?: true } = {};
   let timer: ReturnType<typeof setTimeout> | undefined;
   let scrim: HTMLDivElement | undefined;
+  const drop = imageTarget((files) => void keep.uploadImages(props.id, files), () => !readOnly());
 
   function flush() {
     clearTimeout(timer);
@@ -101,6 +103,8 @@ function DialogBody(props: { id: string; onClose: () => void }) {
     >
       <div
         class="kp-dialog kp-editor"
+        classList={{ "kp-dropping": drop.over() }}
+        {...drop.handlers}
         role="dialog"
         aria-modal="true"
         aria-label={n().title || t("keep.openNote")}

@@ -913,6 +913,24 @@
   height: 18px;
 }
 
+/* A file dragged over a note that takes images: a dashed frame above the note's images. */
+.kp-composer.kp-dropping,
+.kp-dialog.kp-dropping {
+  position: relative;
+}
+
+.kp-composer.kp-dropping::after,
+.kp-dialog.kp-dropping::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border: 2px dashed var(--kp-accent);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--kp-accent) 8%, transparent);
+  pointer-events: none;
+}
+
 .kp-editor-audio {
   padding: 8px 16px 0;
 }
