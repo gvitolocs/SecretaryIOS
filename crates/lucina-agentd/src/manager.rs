@@ -38,7 +38,7 @@ mod permissions;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
-pub use permissions::{ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
 
 use crate::workspaces::{Registry as Workspaces, WsError};
