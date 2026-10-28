@@ -133,14 +133,120 @@ pub fn open_store(cfg: &Config) -> Option<Arc<SecretStore>> {
     }
 }
 
+/// An MCP caller that may ask the owner for permission instead of being refused.
+pub struct McpApproval<'a> {
+    pub approvals: &'a lucina_approvals::Approvals,
+    /// The Lucina MCP client (`claude_code`, `chatgpt`, ...).
+    pub caller: &'a str,
+}
+
+fn denied_text(lang: reveal::Lang) -> &'static str {
+    match lang {
+        reveal::Lang::It => {
+            "Giuseppe ha negato il permesso: non condivido informazioni sui segreti tramite MCP."
+        }
+        reveal::Lang::En => {
+            "Giuseppe denied the request, so I'm not sharing information about secrets over MCP."
+        }
+        reveal::Lang::Da => {
+            "Giuseppe afviste anmodningen, så jeg deler ikke oplysninger om hemmeligheder via MCP."
+        }
+    }
+}
+
+fn expired_text(lang: reveal::Lang) -> &'static str {
+    match lang {
+        reveal::Lang::It => "Giuseppe non ha risposto in tempo: la richiesta è scaduta e non condivido nulla sui segreti tramite MCP.",
+        reveal::Lang::En => "Giuseppe didn't answer in time: the request expired and I'm not sharing anything about secrets over MCP.",
+        reveal::Lang::Da => "Giuseppe svarede ikke i tide: anmodningen udløb, og jeg deler ikke noget om hemmeligheder via MCP.",
+    }
+}
+
+fn pending_text(lang: reveal::Lang, id: &str) -> String {
+    match lang {
+        reveal::Lang::It => format!("Ho chiesto il permesso a Giuseppe (richiesta {id}) ma non ha ancora risposto. Chiedi di nuovo tra poco: se approva, ti rispondo."),
+        reveal::Lang::En => format!("I asked Giuseppe for permission (request {id}) but he hasn't answered yet. Ask again in a moment: if he approves, I'll answer."),
+        reveal::Lang::Da => format!("Jeg har bedt Giuseppe om tilladelse (anmodning {id}), men han har ikke svaret endnu. Spørg igen om lidt: godkender han, svarer jeg."),
+    }
+}
+
+/// `Ok(())`: the owner approved (grant verified and spent). `Err`: the reply to give instead.
+async fn owner_approval(
+    store: &SecretStore,
+    gate: &McpApproval<'_>,
+    ask: Ask,
+    text: &str,
+    lang: reveal::Lang,
+) -> Result<(), (String, &'static str)> {
+    use lucina_approvals::{client::clip, NewApproval, Outcome, RequesterInfo};
+    let kind = if ask == Ask::Audit { "audit" } else { "status" };
+    let scope = &store.config().scope;
+    let folder = format!("{}/{}{}", scope.project, scope.environment, scope.path);
+    // The question is the "why"; it is redacted like every sink, one line, short.
+    let mut why = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    redactor().redact_string(&mut why);
+    let why = clip(&why, 200);
+    let hash = lucina_approvals::payload_hash(&serde_json::json!({
+        "action": "secret.reveal", "client": gate.caller, "folder": folder, "kind": kind,
+    }));
+    let cfg = gate.approvals.config();
+    let req = NewApproval {
+        requester: RequesterInfo {
+            kind: "lucina".into(),
+            name: "Lucina".into(),
+            detail: clip(&format!("{} via Lucina MCP", gate.caller), 200),
+        },
+        action: "secret.reveal".into(),
+        summary: clip(
+            &format!("{} asks for Lucina's secrets {kind} (names only, no values)", gate.caller),
+            200,
+        ),
+        details: format!(
+            "client: {}\nasks: secrets {kind} (names and metadata, never a value)\nfolder: {folder}\nwhy: {why}",
+            gate.caller
+        ),
+        risk: "medium".into(),
+        sensitive: true,
+        payload_hash: hash,
+        ttl_secs: cfg.ttl_secs,
+    };
+    match gate.approvals.ask(&req, cfg.guard_wait).await {
+        Ok(Outcome::Approved(claims)) => {
+            tracing::info!(client = gate.caller, approval = %claims.id, "secrets over MCP: the owner approved");
+            Ok(())
+        }
+        Ok(Outcome::Denied { id, .. }) => {
+            tracing::warn!(client = gate.caller, approval = %id, "secrets over MCP: the owner denied");
+            Err((denied_text(lang).to_owned(), "secrets_refused"))
+        }
+        Ok(Outcome::Expired { id }) => {
+            tracing::warn!(client = gate.caller, approval = %id, "secrets over MCP: the request expired");
+            Err((expired_text(lang).to_owned(), "secrets_refused"))
+        }
+        Ok(Outcome::Pending { id, .. }) => {
+            tracing::info!(client = gate.caller, approval = %id, "secrets over MCP: the owner was asked, no answer yet");
+            Err((pending_text(lang, &id), "secrets_approval_pending"))
+        }
+        Err(e) => {
+            // Fail closed: the old refusal.
+            tracing::warn!(client = gate.caller, error = %e, "secrets over MCP: approval unavailable, refused");
+            Err((reveal::mcp_refusal(lang).to_owned(), "secrets_refused"))
+        }
+    }
+}
+
 /// A secrets turn decided without the model: the fixed refusal for reveal
-/// requests (also on MCP), status and audit for the owner, a refusal for
-/// MCP callers asking about secrets at all. `None`: not about secrets.
-/// Returns `(reply, action)`.
+/// requests (also on MCP: Lucina has no way to read a value), status and
+/// audit for the owner. For MCP callers those two are the owner's alone
+/// unless `gate` is given (owner approvals configured): Lucina then asks
+/// Giuseppe (`secret.reveal`) and answers as for the owner only with a
+/// verified grant; deny, expiry and any error refuse. `None`: not about
+/// secrets. Returns `(reply, action)`.
 pub async fn secrets_turn(
     store: Option<&SecretStore>,
     text: &str,
     mcp: bool,
+    gate: Option<McpApproval<'_>>,
 ) -> Option<(String, &'static str)> {
     let ask = reveal::classify(text)?;
     let lang = reveal::detect_lang(text);
@@ -149,8 +255,17 @@ pub async fn secrets_turn(
         return Some((reveal::refusal(lang).to_owned(), "secrets_refused"));
     }
     if mcp {
-        tracing::warn!("secrets question over MCP refused");
-        return Some((reveal::mcp_refusal(lang).to_owned(), "secrets_refused"));
+        match (gate, store) {
+            (Some(gate), Some(store)) => {
+                if let Err(reply) = owner_approval(store, &gate, ask, text, lang).await {
+                    return Some(reply);
+                }
+            }
+            _ => {
+                tracing::warn!("secrets question over MCP refused");
+                return Some((reveal::mcp_refusal(lang).to_owned(), "secrets_refused"));
+            }
+        }
     }
     let Some(store) = store else {
         return Some((

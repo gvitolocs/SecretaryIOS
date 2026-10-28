@@ -15,6 +15,7 @@ pub mod notify;
 pub mod places;
 pub mod presence;
 pub mod reminders;
+pub mod root_exec;
 pub mod secrets;
 pub mod shopping;
 pub mod tasks;

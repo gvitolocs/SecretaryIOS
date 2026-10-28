@@ -15,6 +15,7 @@ members = [
     "crates/secretary-body",
     "crates/secretary-ffi",
     "crates/lucina-secrets",
+    "crates/lucina-approvals",
     "crates/lucina-llm",
     "crates/lucina-store",
     "crates/lucina-memory",

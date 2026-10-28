@@ -230,6 +230,8 @@ pub struct ToolEnv {
     pub diagnostics_token_file: Option<PathBuf>,
     /// Lucina's own Google Drive (`LUCINA_DRIVE`).
     pub drive: Option<Arc<google::Drive>>,
+    /// Owner approvals (pinned grant key present): the `root_exec` tool.
+    pub approvals: Option<Arc<lucina_approvals::Approvals>>,
 }
 
 impl ToolEnv {
@@ -278,6 +280,7 @@ impl ToolEnv {
             diagnostics_url: None,
             diagnostics_token_file: None,
             drive: None,
+            approvals: None,
         }
     }
 }
@@ -469,6 +472,8 @@ pub const NO_MCP_TOOLS: &[&str] = &[
     "ask_grok",
     "ask_chatgpt",
     "delegate",
+    // Root commands (owner approval): never for a guarded MCP caller.
+    "root_exec",
 ];
 
 /// Which tools are enabled.
