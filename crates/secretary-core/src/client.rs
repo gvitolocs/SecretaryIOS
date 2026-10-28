@@ -405,10 +405,10 @@ impl Call {
     pub fn decisions(status: Option<&str>, limit: Option<&str>) -> Result<Self> {
         let mut call = Self::new(Method::GET, &["decisions"]);
         if let Some(status) = status {
-            if !matches!(status, "pending" | "decided" | "expired") {
+            if !matches!(status, "pending" | "decided" | "expired" | "withdrawn") {
                 return Err(Error::Invalid {
                     field: "status",
-                    message: "must be pending, decided or expired".into(),
+                    message: "must be pending, decided, expired or withdrawn".into(),
                 });
             }
             call.query.push(("status", status.to_owned()));
@@ -1594,5 +1594,16 @@ mod tests {
     fn debug_redacts_token() {
         let c = LucinaClient::new("http://h", "supersecret", Timeouts::default()).unwrap();
         assert!(!format!("{c:?}").contains("supersecret"));
+    }
+
+    #[test]
+    fn decisions_list_takes_every_status_lucina_has() {
+        // The web's Decisions page asks for all four; one refused status failed the whole page.
+        for status in ["pending", "decided", "expired", "withdrawn"] {
+            let call = Call::decisions(Some(status), Some("20")).unwrap();
+            assert!(call.query.contains(&("status", status.to_owned())), "{status}");
+        }
+        assert!(Call::decisions(Some("all"), None).is_err());
+        assert!(Call::decisions(None, Some("101")).is_err());
     }
 }
