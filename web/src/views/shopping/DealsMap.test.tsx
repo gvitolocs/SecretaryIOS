@@ -219,10 +219,10 @@ describe("Deals map view", () => {
     expect(txt).toContain("−32%");
     expect(txt).toContain("Scorta 3 stk");
     expect(txt).toContain("valido fino al 26 ott");
-    expect(within(panel).getByRole("link", { name: /Indicazioni/ })).toHaveAttribute(
-      "href",
-      "https://www.google.com/maps/dir/?api=1&destination=56.193657,10.193406",
-    );
+    // the store's directions are Lucina's own navigation, never another maps app
+    const nav = within(panel).getByRole("link", { name: /Indicazioni/ });
+    expect(nav.getAttribute("href")).toMatch(/^\/map\/place\?navigate=1&lat=56\.193657&lng=10\.193406&title=f%C3%B8tex\+Skejby/);
+    expect(nav).not.toHaveAttribute("target");
     fireEvent.click(within(panel).getByRole("button", { name: "Chiudi føtex Skejby" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "føtex Skejby" })).toBeNull());
   });
