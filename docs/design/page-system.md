@@ -189,6 +189,7 @@ Every other page (release b). Screenshots are named after the route in `page-sys
 | Weight (`/weight`) | All weigh-ins | latest weigh-in, link back to Training · — · — | rail: trend, weigh-ins · log, stats, settings | ![](page-system/weight.jpg) |
 | My desk (`/desk`) | Lucina's work and tools | subtitle · — · Refresh (quiet) | single | ![](page-system/desk.jpg) |
 | Voice memos (`/memos/:id?`) | Recorded, transcribed, summarised | — · — · — | split: memos · the memo | ![](page-system/memos.jpg) |
+| Prompter (`/prompter/:id?`) | Talking points Lucina crosses out while he speaks | script · points · **Start take** | split: scripts · the script (points, take settings, take log); the live take is a focused full-screen flow (like the live workout) | ![](page-system/prompter.jpg) ![](page-system/prompter-live.jpg) |
 | 3D models (`/models/:id?`) | Lucina's studio | — · — · — | full grid, detail with a back link | ![](page-system/models.jpg) |
 | Scan QR code (`/scan`) | Sign in another device | — · — · — | single: camera card, code field | ![](page-system/scan.jpg) |
 | Pokémon (`/pokemon`) | Lucina's game | — · — · **Play** | single | ![](page-system/pokemon.jpg) |
