@@ -51,7 +51,7 @@ impl Gate {
     }
 
     /// Put this decision on an existing `add` op: a bound item sets `catalogId`
-    /// and its `svg:` icon, a section alone sets `section` when the op has none.
+    /// (its illustration key), a section alone sets `section` when the op has none.
     /// The op's own text, spec, quantity and unit stay. `false` for [`Gate::Ask`].
     pub fn apply_to(&self, op: &mut Value) -> bool {
         let Gate::Add {
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(
             op,
             json!({"opId": "x", "type": "add", "name": "Pastiglie", "spec": "60", "quantity": 2, "unit": "pz",
-                   "catalogId": "laundry-detergent", "icon": "svg:laundry-detergent"})
+                   "catalogId": "laundry-detergent"})
         );
 
         let section_only = Gate::Add {

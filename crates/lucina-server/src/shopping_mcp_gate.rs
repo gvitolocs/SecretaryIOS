@@ -4,7 +4,7 @@
 //! add that names no object goes through [`shopping_gate::check`] first: an
 //! implausible item is not added and comes back as a rejected
 //! `needs_confirmation` entry with Lucina's question; a bound one gets its
-//! catalog id and illustration. App batches (no `via`) are never gated.
+//! catalog id (clients draw its illustration from it). App batches (no `via`) are never gated.
 
 use futures_util::future::join_all;
 use lucina_grocery::{is_uuid, CatalogIndex, MAX_OPS_PER_BATCH};
@@ -230,7 +230,7 @@ mod tests {
         assert_eq!(
             kept[0],
             json!({"opId": BOUND, "type": "add", "name": "latte", "spec": "intero", "quantity": 2, "unit": "l",
-                   "catalogId": "milk", "icon": "svg:milk"})
+                   "catalogId": "milk"})
         );
         assert_eq!(kept[1], ops[2]);
         assert_eq!(kept[2], ops[3]);
@@ -281,7 +281,7 @@ mod tests {
         let kept = kept.as_array().unwrap();
         assert_eq!(kept.len(), 3);
         assert_eq!(kept[0]["catalogId"], "milk");
-        assert_eq!(kept[0]["icon"], "svg:milk");
+        assert!(kept[0].get("icon").is_none(), "no svg: icon is written");
         assert_eq!(kept[1], ops[1]);
         assert_eq!(kept[2], ops[2]);
 
