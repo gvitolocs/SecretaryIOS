@@ -5,6 +5,7 @@ import { setLocale } from "../i18n";
 import { type Call, stubFetch } from "../test/fetch";
 import { rawItem, sizeTheBox } from "../test/galleryGrid";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryAlbumsView from "./GalleryAlbums";
 import GalleryCategoryView from "./GalleryCategory";
 
@@ -197,5 +198,32 @@ describe("a category's page (/gallery/category/:cat)", () => {
     expect(await screen.findByText("There is no such automatic album.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Albums" })).toHaveAttribute("href", "/gallery/albums");
     expect(listCalls(calls)).toHaveLength(0);
+  });
+});
+
+describe("a category's page on the page system (desktop)", () => {
+  it("keeps the Gallery header (Photos current), a back link to the albums and the category name as the heading", async () => {
+    stubWide();
+    backend();
+    mountCategory("/gallery/category/receipt");
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { level: 2, name: "Receipts" })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery/albums");
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    await waitFor(() => expect(document.querySelector(".pg-grid--full > .pg-main > .g-main .g-scroll")).not.toBeNull());
+    // An automatic album cannot be renamed, deleted or shared: no album tools.
+    expect(screen.queryByRole("button", { name: "Rename album" })).toBeNull();
+  });
+
+  it("says so in a card when there is no such automatic album", async () => {
+    stubWide();
+    backend();
+    mountCategory("/gallery/category/dragons");
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("There is no such automatic album."));
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery/albums");
   });
 });
