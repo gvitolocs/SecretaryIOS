@@ -205,7 +205,8 @@ describe("desktop Training page", () => {
       "Settings",
     ]);
     expect(within(nav).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getAllByRole("button", { name: /^Start workout$/ })).toHaveLength(1);
+    // The header row shows before the view arrives; its button comes with the view.
+    expect(await screen.findAllByRole("button", { name: /^Start workout$/ })).toHaveLength(1);
     // No eyebrow, no all-zero totals strip, no filler line.
     expect(screen.queryByText("Lucina / Gym")).toBeNull();
     expect(screen.queryByText("Sets logged")).toBeNull();
@@ -219,7 +220,7 @@ describe("desktop Training page", () => {
     expect(screen.getByText("Next up:").parentElement).toHaveTextContent("Next up: Legs");
     const routines = screen.getByRole("region", { name: "Routines" });
     const rows = within(routines).getAllByRole("listitem");
-    expect(rows.map((r) => r.querySelector(".trd-row-name")?.textContent)).toEqual(["Push", "Pull", "Legs"]);
+    expect(rows.map((r) => r.querySelector(".pg-row-name")?.textContent)).toEqual(["Push", "Pull", "Legs"]);
     expect(within(rows[0]!).getByText("+1")).toBeInTheDocument();
     expect(rows[0]).toHaveTextContent("Last done 2 days ago");
     expect(rows[1]).toHaveTextContent("Last done 9 days ago");

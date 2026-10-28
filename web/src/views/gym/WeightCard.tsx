@@ -180,7 +180,7 @@ export default function WeightCard() {
         </label>
         <input
           id="trd-weight"
-          class="trd-input"
+          class="pg-input"
           type="text"
           inputmode="decimal"
           placeholder={t("weight.weightIn", { unit: unit() })}
@@ -189,7 +189,7 @@ export default function WeightCard() {
           autocomplete="off"
           disabled={pending()}
         />
-        <button class="trd-btn" type="submit" disabled={pending()}>
+        <button class="pg-btn" type="submit" disabled={pending()}>
           {pending() ? t("weight.logging") : t("weight.quickLog")}
         </button>
       </div>
@@ -199,7 +199,7 @@ export default function WeightCard() {
         </label>
         <input
           id="trd-weight-note"
-          class="trd-input"
+          class="pg-input"
           type="text"
           placeholder={t("weight.noteOptional")}
           value={note()}
@@ -211,17 +211,17 @@ export default function WeightCard() {
       </Show>
       <Show when={error()}>{(message) => <p class="form-error trd-error">{message()}</p>}</Show>
       <p class="trd-log-links">
-        <button type="button" class="trd-link" onClick={() => chooseUnit(otherUnit())}>
+        <button type="button" class="pg-link" onClick={() => chooseUnit(otherUnit())}>
           {t("weight.useUnit", { unit: otherUnit() })}
         </button>
         <Show when={!noteOpen()}>
           <span aria-hidden="true">·</span>
-          <button type="button" class="trd-link" onClick={() => setNoteOpen(true)}>
+          <button type="button" class="pg-link" onClick={() => setNoteOpen(true)}>
             {t("weight.addNote")}
           </button>
         </Show>
         <span aria-hidden="true">·</span>
-        <A href="/weight" class="trd-link">
+        <A href="/weight" class="pg-link">
           {t("weight.allEntries")}
         </A>
       </p>
@@ -229,9 +229,9 @@ export default function WeightCard() {
   );
 
   return (
-    <section class="trd-card trd-weight" aria-labelledby="trd-weight-title">
-      <div class="trd-card-head">
-        <h2 class="trd-card-title" id="trd-weight-title">
+    <section class="pg-card trd-weight" aria-labelledby="trd-weight-title">
+      <div class="pg-card-head">
+        <h2 class="pg-card-title" id="trd-weight-title">
           {t("weight.title")}
         </h2>
         <Show when={(body.view?.series.length ?? 0) > 1}>
@@ -255,7 +255,7 @@ export default function WeightCard() {
       <Show
         when={body.view}
         fallback={
-          <p class="trd-muted" role="status">
+          <p class="pg-muted" role="status">
             {body.loadError ?? t("weight.loading")}
           </p>
         }
@@ -263,7 +263,7 @@ export default function WeightCard() {
         {(view) => (
           <Show
             when={view().stats.count > 0}
-            fallback={<p class="trd-empty">{t("weight.emptyDesk")}</p>}
+            fallback={<p class="pg-empty-text">{t("weight.emptyDesk")}</p>}
           >
             <div class="trd-weight-now">
               <p class="trd-weight-value">
@@ -278,13 +278,13 @@ export default function WeightCard() {
                 )}
               </Show>
             </div>
-            <p class="trd-muted trd-weight-line">
+            <p class="pg-muted trd-weight-line">
               <Show when={view().stat_labels.avg7}>{(avg) => t("weight.avgLine", { avg: avg() })}</Show>
               <span aria-hidden="true"> · </span>
               <Show
                 when={view().stat_labels.goal}
                 fallback={
-                  <A href="/weight" class="trd-link">
+                  <A href="/weight" class="pg-link">
                     {t("weight.setGoal")}
                   </A>
                 }

@@ -7,8 +7,8 @@ import WeightView from "../Weight";
 import { ArrowUpRightIcon, CalendarIcon, PlayIcon, PlusCircleIcon, SparkleIcon } from "./icons";
 import RoutineBuilder from "./RoutineBuilder";
 import TrainingDesk from "./TrainingDesk";
-import { SettingsBody } from "./Settings";
-import { ConfirmButton, exerciseById, Eyebrow, GymPage, isSettingsSearch, Metric, setsText, useGymClock, useWide } from "./shared";
+import { SettingsBody, SettingsDesk } from "./Settings";
+import { ConfirmButton, exerciseById, Eyebrow, GymPage, isSettingsSearch, Metric, setsText, useGymClock } from "./shared";
 import { gt } from "./strings";
 
 // Training (RootView.swift `TrainingView`): hero, weekly goal, the active
@@ -260,28 +260,32 @@ function TrainingBody(props: { view: GymView }) {
 const weightRail = () => <WeightView compact />;
 
 /**
- * On a desktop-wide page (on /gym and /training alike) the Training page is
- * gym/TrainingDesk.tsx, with the weight in its rail. `weightAbove`: the
- * Training page's phone layout, the weight above the Gym; /gym on a phone
- * shows the Gym alone.
+ * On a desktop-wide page (on /gym and /training alike) the Training overview is
+ * gym/TrainingDesk.tsx, with the weight in its rail, and Settings is the
+ * desktop SettingsDesk; GymPage gives both the shared header row.
+ * `weightAbove`: the Training page's phone layout, the weight above the Gym;
+ * /gym on a phone shows the Gym alone.
  */
 export default function GymHome(props: { weightAbove?: boolean } = {}) {
   const location = useLocation();
   const settings = createMemo(() => isSettingsSearch(location.search));
-  const { wide, track } = useWide();
-  const desk = () => wide() && !settings();
+  const [wide, setWide] = createSignal(false);
   return (
     <>
-      <Show when={!desk() && props.weightAbove}>{weightRail()}</Show>
-      <GymPage wide={desk()} subnav={!desk()} ref={track}>
-        {(view) => (
-          <Show when={settings()} fallback={
+      <Show when={!wide() && props.weightAbove}>{weightRail()}</Show>
+      <GymPage onWide={setWide}>
+        {(view, desk) => (
+          <Show
+            when={settings()}
+            fallback={
               <Show when={desk()} fallback={<TrainingBody view={view()} />}>
                 <TrainingDesk view={view()} />
               </Show>
             }
           >
-            <SettingsBody view={view()} />
+            <Show when={desk()} fallback={<SettingsBody view={view()} />}>
+              <SettingsDesk view={view()} />
+            </Show>
           </Show>
         )}
       </GymPage>

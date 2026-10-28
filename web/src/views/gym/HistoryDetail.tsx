@@ -3,6 +3,7 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import type { GymView, Workout, WorkoutExercise } from "../../api/gym";
 import { formatDateTime } from "../../lib/units";
 import { runGym } from "../../state/gym";
+import { WorkoutDetailDesk, WorkoutMissingDesk } from "./DeskViews";
 import { ConfirmButton, exerciseById, GymPage, JOURNAL_HREF, setBadge, setKindLabel, setsText, setValueText } from "./shared";
 import { gt } from "./strings";
 
@@ -94,19 +95,25 @@ export default function HistoryDetailView() {
   const params = useParams();
   return (
     <GymPage>
-      {(view) => (
+      {(view, wide) => (
         <Show
           when={view().state.history.find((w) => w.id === params.id)}
           fallback={
-            <div class="empty">
-              <p class="empty-title">{gt("workoutNotFound")}</p>
-              <A href={JOURNAL_HREF} class="btn btn-link">
-                {gt("backToJournal")}
-              </A>
-            </div>
+            <Show when={!wide()} fallback={<WorkoutMissingDesk />}>
+              <div class="empty">
+                <p class="empty-title">{gt("workoutNotFound")}</p>
+                <A href={JOURNAL_HREF} class="btn btn-link">
+                  {gt("backToJournal")}
+                </A>
+              </div>
+            </Show>
           }
         >
-          {(workout) => <Detail view={view()} workout={workout()} />}
+          {(workout) => (
+            <Show when={wide()} fallback={<Detail view={view()} workout={workout()} />}>
+              <WorkoutDetailDesk view={view()} workout={workout()} />
+            </Show>
+          )}
         </Show>
       )}
     </GymPage>

@@ -1,232 +1,23 @@
 /*
- * The desktop Training page (gym/TrainingDesk.tsx): GymHome on a page at least
- * WIDE_MIN_PX wide. The phone layout (styles/gym.css) is untouched.
- *
- * One system: one card surface, a 16 px radius, a 24 px gutter, spacing from
- * 12 / 16 / 24, tabular figures, two text weights (400 and 600), secondary
- * text in the muted token. The header's "Start workout" is the only filled
- * accent; data (the sparkline, the Next badge) uses the softer data colour.
+ * The desktop Training overview (gym/TrainingDesk.tsx, WeightCard.tsx): the pieces
+ * only it has (the week strip, the play buttons, the routine menu, the workout in
+ * progress, the weight card). The frame, header, grid, cards, rows, buttons and
+ * empty states are the page system's (styles/page.css). The phone layout
+ * (styles/gym.css) is untouched.
  */
 
-.gym-theme.gym-page--wide .gym-inner {
-  max-width: 1320px;
-  padding: 32px max(40px, var(--safe-right)) 48px max(40px, var(--safe-left));
-}
-
 .trd {
-  --trd-surface: var(--glass);
-  --trd-border: var(--border);
-  --trd-hair: color-mix(in srgb, var(--text) 8%, transparent);
-  --trd-fill: color-mix(in srgb, var(--text) 6%, transparent);
-  --trd-fill-hover: color-mix(in srgb, var(--text) 10%, transparent);
-  --trd-text: var(--text);
-  --trd-muted: var(--text-muted);
-  --trd-accent: var(--cyan);
-  --trd-on-accent: color-mix(in srgb, var(--trd-accent) 12%, #000);
-  --trd-data: var(--lu-accent);
-  --trd-success: var(--lu-positive);
-  --trd-warning: var(--lu-warning);
-  --trd-danger: var(--lu-negative);
-  --trd-radius: 16px;
-
-  color: var(--trd-text);
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 1.45;
-  font-variant-numeric: tabular-nums;
-}
-
-.trd :is(h1, h2, p, dl, dd, ol, ul) {
-  margin: 0;
-}
-
-.trd .icon {
-  width: 16px;
-  height: 16px;
-}
-
-.trd-muted {
-  color: var(--trd-muted);
-}
-
-.trd-strong {
-  color: var(--trd-text);
-  font-weight: 600;
-}
-
-/* ---------- Header row ---------- */
-
-.trd-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px 24px;
-  margin-bottom: 24px;
-}
-
-.trd-title {
-  font-size: 28px;
-  font-weight: 600;
-  line-height: 1.15;
-  letter-spacing: -0.4px;
-}
-
-.trd-date {
-  margin-top: 4px;
-}
-
-.trd-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.trd-seg {
-  display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--trd-border);
-  border-radius: 12px;
-  background: var(--trd-surface);
-}
-
-.trd-seg-item {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 8px;
-  color: var(--trd-muted);
-  text-decoration: none;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.trd-seg-item:hover {
-  color: var(--trd-text);
-  background: var(--trd-fill);
-}
-
-.trd-seg-item[aria-current="page"] {
-  color: var(--trd-text);
-  font-weight: 600;
-  background: var(--trd-fill-hover);
-}
-
-.trd-seg-icon {
-  padding: 0 8px;
-}
-
-.trd-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 40px;
-  padding: 0 16px 0 14px;
-  border: 0;
-  border-radius: 12px;
-  background: var(--trd-accent);
-  color: var(--trd-on-accent);
-  font: inherit;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: filter 120ms ease, transform 120ms ease;
-}
-
-.trd-cta:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-
-.trd-cta:active:not(:disabled) {
-  transform: scale(0.98);
-}
-
-.trd-cta:disabled {
-  opacity: 0.6;
-}
-
-.trd-cta .icon {
-  width: 14px;
-  height: 14px;
-}
-
-/* ---------- Columns ---------- */
-
-.trd-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 62fr) minmax(300px, 38fr);
-  gap: 24px;
-  align-items: start;
-}
-
-.trd-main,
-.trd-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.trd-rail {
-  position: sticky;
-  top: 16px;
-}
-
-/* ---------- Cards ---------- */
-
-.trd-card {
-  padding: 24px;
-  border: 1px solid var(--trd-border);
-  border-radius: var(--trd-radius);
-  background: var(--trd-surface);
-}
-
-.trd-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 32px;
-}
-
-/* Every card title sits on one 32 px line, so titles in both columns share a baseline. */
-.trd-card-title {
-  display: flex;
-  align-items: center;
-  min-height: 32px;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.trd-card {
-  padding-top: 20px;
-}
-
-.trd-list-card {
-  padding: 20px 0 8px;
-}
-
-.trd-list-card > .trd-card-head {
-  padding: 0 16px 8px 24px;
-}
-
-.trd-empty {
-  color: var(--trd-muted);
-}
-
-.trd-card > .trd-empty {
-  margin-top: 8px;
-}
-
-.trd-empty-block {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 4px 24px 16px;
+  --trd-text: var(--pg-text);
+  --trd-muted: var(--pg-muted);
+  --trd-border: var(--pg-border);
+  --trd-hair: var(--pg-hair);
+  --trd-fill: var(--pg-fill);
+  --trd-fill-hover: var(--pg-fill-hover);
+  --trd-accent: var(--pg-accent);
+  --trd-data: var(--pg-data);
+  --trd-success: var(--pg-success);
+  --trd-warning: var(--pg-warning);
+  --trd-danger: var(--pg-danger);
 }
 
 /* ---------- This week ---------- */
@@ -242,7 +33,7 @@
   margin-top: 8px;
 }
 
-.trd-week-count .trd-num {
+.trd-week-count .pg-num {
   font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.3px;
@@ -310,76 +101,8 @@
 
 /* ---------- Rows (routines, recent workouts) ---------- */
 
-.trd-rows {
-  padding: 0;
-  list-style: none;
-}
-
-.trd-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  min-height: 64px;
-  padding: 12px 16px 12px 24px;
-  border-top: 1px solid var(--trd-hair);
-}
-
-.trd-row-main {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.trd-row-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.trd-row-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.trd-row-link {
-  color: inherit;
-  text-decoration: none;
-}
-
-.trd-row-link:hover {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.trd-row-sub {
-  margin-top: 2px;
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .trd-more {
   color: var(--trd-text);
-}
-
-.trd-row-meta {
-  flex: none;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.trd-badge {
-  flex: none;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--trd-data) 18%, transparent);
-  color: var(--trd-data);
-  font-size: 12px;
-  font-weight: 600;
 }
 
 .trd-play {
@@ -411,126 +134,6 @@
 .trd-play:disabled {
   opacity: 0.45;
   cursor: default;
-}
-
-/* ---------- Buttons, links, inputs ---------- */
-
-.trd-btn {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--trd-text) 14%, transparent);
-  border-radius: 10px;
-  background: var(--trd-fill);
-  color: var(--trd-text);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.trd-btn:hover:not(:disabled) {
-  background: var(--trd-fill-hover);
-}
-
-.trd-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.trd-btn .icon {
-  width: 14px;
-  height: 14px;
-}
-
-.trd-btn--ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--trd-muted);
-}
-
-.trd-btn--ghost:hover:not(:disabled) {
-  color: var(--trd-text);
-}
-
-.trd-btn--danger {
-  border-color: color-mix(in srgb, var(--trd-danger) 40%, transparent);
-  background: color-mix(in srgb, var(--trd-danger) 16%, transparent);
-  color: var(--trd-danger);
-}
-
-.trd-btn--danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--trd-danger) 24%, transparent);
-}
-
-.trd-icon-btn {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--trd-muted);
-  cursor: pointer;
-}
-
-.trd-icon-btn:hover,
-.trd-icon-btn[aria-expanded="true"] {
-  background: var(--trd-fill);
-  color: var(--trd-text);
-}
-
-.trd-link {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--trd-muted);
-  font: inherit;
-  font-size: 13px;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.trd-link:hover {
-  color: var(--trd-text);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.trd-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--trd-border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--trd-text) 4%, transparent);
-  color: var(--trd-text);
-  font: inherit;
-}
-
-.trd-input::placeholder {
-  color: var(--trd-muted);
-}
-
-.trd-input:focus {
-  border-color: color-mix(in srgb, var(--trd-data) 70%, transparent);
-  outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--trd-data) 20%, transparent);
-}
-
-.trd :is(button, a, input):focus-visible {
-  outline: 2px solid var(--trd-data);
-  outline-offset: 2px;
 }
 
 /* ---------- The ⋯ menu ---------- */
@@ -611,7 +214,7 @@
   font-weight: 600;
 }
 
-.trd-active-meta .trd-muted {
+.trd-active-meta .pg-muted {
   font-weight: 400;
 }
 
@@ -771,7 +374,7 @@
   gap: 8px;
 }
 
-.trd-log-row .trd-btn {
+.trd-log-row .pg-btn {
   min-height: 36px;
 }
 
@@ -784,48 +387,198 @@
   font-size: 13px;
 }
 
+/* ---------- Last 30 days ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .trd .trd-play {
+    transition: none;
+  }
+}
+
 .trd-error {
   margin: 0;
 }
 
-/* ---------- Last 30 days ---------- */
+/* ---------- Journal, Progress, details (gym/DeskViews.tsx) ---------- */
 
-.trd-stats {
-  margin-top: 4px;
-}
-
-.trd-stat {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-  border-top: 1px solid var(--trd-hair);
-}
-
-.trd-stat:first-child {
-  border-top: 0;
-}
-
-.trd-stat:last-child {
-  padding-bottom: 0;
-}
-
-.trd-stat dd {
-  min-width: 0;
+.trd-names {
+  display: block;
+  max-width: 280px;
   overflow: hidden;
-  font-weight: 600;
-  text-align: right;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.trd-stat dd .trd-muted {
+.trd-confirm {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+
+.trd-detail-title {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.trd-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--pg-hair);
+}
+
+.trd-notes {
+  margin-top: 12px;
+}
+
+.pg-card--list > .trd-notes {
+  margin: 4px 0 12px;
+}
+
+.trd-set {
+  min-height: 48px;
+}
+
+.trd-set--skipped .pg-row-main {
+  color: var(--pg-muted);
+  text-decoration: line-through;
+}
+
+.trd-set-badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--pg-fill);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trd-set-badge--flag {
+  background: color-mix(in srgb, var(--pg-data) 18%, transparent);
+  color: var(--pg-data);
+}
+
+.trd-caption {
+  font-size: 12px;
+}
+
+.trd-chart {
+  margin-top: 16px;
+}
+
+.trd-measure-value {
+  color: var(--pg-text);
+  font-weight: 600;
+}
+
+.trd-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- Settings (gym/Settings.tsx, desk) ---------- */
+
+.trd-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.trd-settings.pg-card > .pg-card-title + * {
+  margin-top: 0;
+}
+
+.trd-settings .field-label {
+  margin-bottom: 8px;
+  color: var(--pg-muted);
+  font-size: 13px;
   font-weight: 400;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .trd :is(.trd-cta, .trd-play, .trd-btn, .trd-seg-item) {
-    transition: none;
-  }
+.trd-settings .segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--pg-border);
+  border-radius: 12px;
+  background: transparent;
+}
+
+.trd-settings .segment {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--pg-muted);
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.trd-settings .segment:hover {
+  background: var(--pg-fill);
+  color: var(--pg-text);
+}
+
+.trd-settings .segment--on {
+  background: var(--pg-fill-hover);
+  color: var(--pg-text);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.trd-settings .segment:has(input:focus-visible) {
+  outline: 2px solid var(--pg-data);
+  outline-offset: 2px;
+}
+
+.trd-settings .stepper {
+  gap: 8px;
+}
+
+.trd-settings .stepper-label {
+  flex: none;
+  min-width: 200px;
+  font-weight: 600;
+}
+
+.trd-settings legend {
+  padding: 0;
+}
+
+.trd-settings .stepper-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid color-mix(in srgb, var(--pg-text) 14%, transparent);
+  border-radius: var(--pg-radius-control);
+  background: var(--pg-fill);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.trd-settings-save {
+  align-self: flex-start;
+}
+
+.trd-settings .data-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trd-settings .restore-confirm {
+  padding: 16px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pg-danger) 8%, transparent);
+}
+
+.trd-settings .restore-confirm-title {
+  font-weight: 600;
 }
