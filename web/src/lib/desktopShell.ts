@@ -28,6 +28,8 @@ export interface SecretaryShell {
   show?(view: ShellView): void;
   /** Make the Mac forget its device token (the web app signs out too). */
   signOut?(): void | Promise<void>;
+  /** "Show adult plugins" changed on this device: the rail shows or hides NClient at once. */
+  setAdultPlugins?(on: boolean): void;
 }
 
 declare global {

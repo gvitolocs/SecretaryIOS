@@ -25,4 +25,6 @@ export function setShowAdult(on: boolean): void {
     // Private mode: the choice lasts for this page only.
   }
   setSignal(on);
+  // Secretary Code's rail hides NClient right away (it also rereads the key on every rail click).
+  window.secretaryShell?.setAdultPlugins?.(on);
 }
