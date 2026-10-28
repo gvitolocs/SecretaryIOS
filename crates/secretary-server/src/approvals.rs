@@ -22,6 +22,16 @@
 //!   6-digit app PIN (`PUT /v1/approvals/pin`, an Argon2id hash in
 //!   `approval-pin.json`; 5 wrong ones in a row lock it for 15 minutes).
 //!   Denying never needs either.
+//! - **Approver devices**: the first device to register a key does so at once.
+//!   Once a device has a key, every later registration (a new device, or a
+//!   replacement key) is held as pending and becomes an `approver.enroll`
+//!   request of its own: sensitive, so only another keyed device (Face ID or
+//!   Touch ID) can approve it, and the requesting device never can. A keyed
+//!   device can revoke another device's key with a proof (or the PIN). Keyed
+//!   devices see every request at once, without the main device's head start.
+//! - Every sensitive decision names the device and how it was verified
+//!   (`decidedVia`, e.g. "Touch ID on MacBook Air"), in the audit log, the
+//!   requester's view and an ops record sent to Lucina.
 //! - Approving mints a **grant**: `b64url(payload_json) + "." + b64url(sig)`,
 //!   Ed25519 over `"secretary-approval-v1." + b64url(payload_json)`, key
 //!   `approval-grant.key` (a different key and domain string than the "Add
@@ -43,7 +53,8 @@
 //! | `GET /v1/approvals/{id}` | device | one request, decided or expired too |
 //! | `POST /v1/approvals/{id}/decide` | device | approve or deny |
 //! | `GET`, `PUT /v1/approvals/settings` | device | main device |
-//! | `POST`, `DELETE /v1/approvals/keys` | device | the biometric key of this device |
+//! | `POST`, `DELETE /v1/approvals/keys` | device | the biometric key of this device (a later one waits for an `approver.enroll` approval) |
+//! | `DELETE /v1/approvals/keys/{deviceId}` | device with a key | revoke another device's key (proof or PIN) |
 //! | `PUT`, `DELETE /v1/approvals/pin` | device | the optional app PIN |
 
 use std::collections::{BTreeMap, HashMap};
@@ -89,12 +100,19 @@ pub const PROOF_CONTEXT: &str = "secretary-approval-v1\n";
 pub const KEY_PROOF_CONTEXT: &str = "secretary-approval-key-v1\n";
 /// PIN change proof = this + `{deviceId}`, signed by the device's registered key.
 pub const PIN_PROOF_CONTEXT: &str = "secretary-approval-pin-v1\n";
+/// Revocation proof = this + `{callerDeviceId}\n{targetDeviceId}`, signed by the caller's registered key.
+pub const REVOKE_PROOF_CONTEXT: &str = "secretary-approval-revoke-v1\n";
+/// An enrollment request's `payloadHash` is the SHA-256 of this + `{deviceId}\n{publicKey}`.
+pub const ENROLL_CONTEXT: &str = "secretary-approval-enroll-v1\n";
+/// The action of a request to add an approver key.
+pub const ENROLL_ACTION: &str = "approver.enroll";
 /// Wrong PINs in a row before the lock.
 pub const PIN_MAX_FAILURES: u32 = 5;
 /// How long the PIN stays locked.
 pub const PIN_LOCK_MS: i64 = 15 * 60 * 1000;
 /// Approving an action with one of these prefixes needs a biometric proof.
-pub const SENSITIVE_PREFIXES: [&str; 8] = [
+pub const SENSITIVE_PREFIXES: [&str; 9] = [
+    "approver.",
     "secret.",
     "root.",
     "sudo.",
@@ -260,6 +278,28 @@ struct StoredKey {
 struct KeysDoc {
     #[serde(default)]
     keys: BTreeMap<String, StoredKey>,
+    /// Keys waiting for their `approver.enroll` request, by device id. Never used to verify anything.
+    #[serde(default)]
+    pending: BTreeMap<String, PendingKey>,
+}
+
+/// A registration held until another approver device approves it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingKey {
+    approval_id: String,
+    payload_hash: String,
+    key: StoredKey,
+}
+
+/// The `payloadHash` an enrollment request is bound to.
+fn enroll_hash(device_id: &str, public_key: &str) -> String {
+    format!(
+        "sha256:{}",
+        hex(&Sha256::digest(
+            format!("{ENROLL_CONTEXT}{device_id}\n{public_key}").as_bytes()
+        ))
+    )
 }
 
 /// `approval-pin.json`: the app PIN as an Argon2id PHC string, and the
@@ -359,6 +399,8 @@ struct Decided {
     by_name: String,
     biometric: bool,
     verified_by: Option<&'static str>,
+    /// "Touch ID on MacBook Air", "PIN on iPhone", or the device's name.
+    via: String,
     grant: Option<String>,
 }
 
@@ -661,10 +703,11 @@ impl Approvals {
         a.requester_id != device_id && self.in_scope(a, device_id, main, now)
     }
 
+    /// The main device, and every approver device (one with a key), at once; the rest after the escalation.
     fn in_scope(&self, a: &Approval, device_id: &str, main: Option<&str>, now: i64) -> bool {
         match main {
             None => true,
-            Some(m) => m == device_id || self.escalated(a, main, now),
+            Some(m) => m == device_id || self.escalated(a, main, now) || self.has_key(device_id),
         }
     }
 
@@ -697,6 +740,7 @@ impl Approvals {
             v["decidedAt"] = json!(rfc3339(d.at_ms));
             v["decidedBy"] = json!(d.by_name);
             v["decidedById"] = json!(d.by_id);
+            v["decidedVia"] = json!(d.via);
             v["biometric"] = json!(d.biometric);
             if let Some(by) = d.verified_by {
                 v["verifiedBy"] = json!(by);
@@ -763,6 +807,7 @@ impl Approvals {
         if let Some(d) = a.decided.as_ref().filter(|_| status != "expired") {
             v["decidedAt"] = json!(rfc3339(d.at_ms));
             v["decidedBy"] = json!(d.by_name);
+            v["decidedVia"] = json!(d.via);
         }
         Ok(Waited {
             pending: status == "pending",
@@ -987,7 +1032,7 @@ impl Approvals {
         pin_ok: bool,
         main: Option<&str>,
         now: i64,
-    ) -> Result<(), ApiError> {
+    ) -> Result<DecidedInfo, ApiError> {
         let mut map = self.lock();
         self.sweep_locked(&mut map, now);
         let a = map.get_mut(id).ok_or_else(not_found)?;
@@ -1004,6 +1049,22 @@ impl Approvals {
             None
         };
         let biometric = verified_by.is_some();
+        let via = match verified_by {
+            Some("device_key") => self
+                .keys
+                .read(|k| k.keys.get(&who.device_id).map(|s| s.label.clone()))
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| format!("device key on {}", who.device_name)),
+            Some(_) => format!("PIN on {}", who.device_name),
+            None => who.device_name.clone(),
+        };
+        if approve && a.action == ENROLL_ACTION && !key_ok {
+            // Adding an approver takes another approver's own key: Face ID or Touch ID, never the PIN.
+            return Err(forbidden(
+                "biometric_required",
+                "adding an approver device needs Face ID or Touch ID on a device that already approves",
+            ));
+        }
         if approve && a.sensitive && !biometric {
             return Err(forbidden(
                 "biometric_required",
@@ -1042,6 +1103,7 @@ impl Approvals {
             by_name: who.device_name.clone(),
             biometric,
             verified_by,
+            via: via.clone(),
             grant,
         });
         self.audit.log(
@@ -1049,12 +1111,24 @@ impl Approvals {
             json!({
                 "id": a.id, "action": a.action, "decision": decision, "device": who.device_id,
                 "deviceName": who.device_name, "biometric": biometric, "verifiedBy": verified_by,
-                "sensitive": a.sensitive,
+                "via": via, "sensitive": a.sensitive,
             }),
         );
+        let out = DecidedInfo {
+            id: a.id.clone(),
+            action: a.action.clone(),
+            summary: a.summary.clone(),
+            details: a.details.clone(),
+            requester_id: a.requester_id.clone(),
+            requester_name: a.requester.name.clone(),
+            payload_hash: a.payload_hash.clone(),
+            sensitive: a.sensitive,
+            approve,
+            via,
+        };
         drop(map);
         self.wake();
-        Ok(())
+        Ok(out)
     }
 
     fn main_device_id(&self) -> Option<String> {
@@ -1064,6 +1138,48 @@ impl Approvals {
     fn has_key(&self, device_id: &str) -> bool {
         self.keys.read(|k| k.keys.contains_key(device_id))
     }
+
+    /// Whether a device other than `device_id` has a key (then a new key needs an approver's OK).
+    fn other_key_exists(&self, device_id: &str) -> bool {
+        self.keys.read(|k| k.keys.keys().any(|d| d != device_id))
+    }
+
+    /// An approved `approver.enroll` request: its pending key becomes the device's key. Only the pending key bound
+    /// to this very request (id and payload hash) counts. Returns the key id when one was activated.
+    fn activate_enrollment(&self, d: &DecidedInfo) -> io::Result<Option<String>> {
+        self.keys.update(|k| {
+            let matches = k
+                .pending
+                .get(&d.requester_id)
+                .is_some_and(|p| p.approval_id == d.id && p.payload_hash == d.payload_hash);
+            if !matches {
+                return None;
+            }
+            let p = k.pending.remove(&d.requester_id)?;
+            if d.approve {
+                let key_id = p.key.key_id.clone();
+                k.keys.insert(d.requester_id.clone(), p.key);
+                Some(key_id)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// What a decision was about, for the follow-ups outside the lock (enrollment, the ops record).
+#[derive(Debug, Clone)]
+struct DecidedInfo {
+    id: String,
+    action: String,
+    summary: String,
+    details: String,
+    requester_id: String,
+    requester_name: String,
+    payload_hash: String,
+    sensitive: bool,
+    approve: bool,
+    via: String,
 }
 
 /// What [`Approvals::precheck`] found.
@@ -1315,7 +1431,7 @@ async fn decide(
             pin_ok = true;
         }
     }
-    st.approvals.decide_at(
+    let decided = st.approvals.decide_at(
         &who,
         &id,
         approve,
@@ -1326,9 +1442,77 @@ async fn decide(
         now_ms(),
     )?;
     tracing::info!(id = %id, device = %who.device_id, approve, "approval answered");
+    if decided.action == ENROLL_ACTION {
+        finish_enrollment(&st, &decided).await;
+    }
+    if decided.sensitive {
+        record_decision(&st, &decided);
+    }
     Ok(Json(
         json!({"status": if approve { "approved" } else { "denied" }}),
     ))
+}
+
+/// An answered `approver.enroll` request: activate (or drop) the pending key and tell the owner.
+async fn finish_enrollment(st: &AppState, d: &DecidedInfo) {
+    match st.approvals.activate_enrollment(d) {
+        Ok(Some(key_id)) => {
+            st.approvals.audit.log(
+                "key_registered",
+                json!({"device": d.requester_id, "deviceName": d.requester_name, "keyId": key_id,
+                       "approvedVia": d.via, "approval": d.id}),
+            );
+            tell_owner(
+                st,
+                &format!(
+                    "{} can now approve requests (added on {})",
+                    d.requester_name, d.via
+                ),
+            )
+            .await;
+        }
+        Ok(None) => {
+            if !d.approve {
+                st.approvals.audit.log(
+                    "key_refused",
+                    json!({"device": d.requester_id, "reason": "enrollment denied", "approval": d.id}),
+                );
+            }
+        }
+        Err(e) => tracing::error!(error = %e, "approval keys not saved"),
+    }
+}
+
+/// A sensitive decision goes to Lucina's ops record, naming the device ("approved on Touch ID on MacBook Air").
+/// Fire and forget: Lucina may be away; the audit log has it anyway.
+fn record_decision(st: &AppState, d: &DecidedInfo) {
+    if st.lucina().is_err() {
+        return;
+    }
+    let st = st.clone();
+    let verb = if d.approve { "Approved" } else { "Denied" };
+    let root = d.action.starts_with("root.") || d.action.starts_with("sudo.");
+    let mut body = json!({
+        "kind": "decision",
+        "project": if root { "nezopt" } else { "secretary" },
+        "title": clip(&format!("{verb} on {}: {}", d.via, d.summary), 200),
+        "body": format!("{verb} by the owner on **{}** ({}).\n\nRequested by {}.\n\n```\n{}\n```",
+                        d.via, d.action, d.requester_name, clip(&d.details, 4000)),
+        "decided_by": "owner",
+        "question": clip(&d.summary, 4000),
+        "asked_by": clip(&d.requester_name, 100),
+        "dedup_key": format!("approval:{}", d.id),
+    });
+    if root {
+        body["host"] = json!("nezopt");
+    }
+    tokio::spawn(async move {
+        let call = secretary_core::Call::ops_record(body).with_caller("secretary:approvals");
+        let Ok(lucina) = st.lucina() else { return };
+        if let Err(e) = lucina.call_with_status::<Value>(&call).await {
+            tracing::warn!(error = %e, "approval decision not recorded in the ops record");
+        }
+    });
 }
 
 fn settings_json(st: &AppState, me: &str) -> Result<Value, ApiError> {
@@ -1346,6 +1530,15 @@ fn settings_json(st: &AppState, me: &str) -> Result<Value, ApiError> {
                 "name": d.name,
                 "isMain": main.as_deref() == Some(d.id.as_str()),
                 "hasBiometricKey": st.approvals.has_key(&d.id),
+            });
+            st.approvals.keys.read(|k| {
+                if let Some(key) = k.keys.get(&d.id) {
+                    v["keyLabel"] = json!(key.label);
+                    v["keyCreatedAt"] = json!(key.created_at);
+                }
+                if let Some(p) = k.pending.get(&d.id) {
+                    v["pendingApprovalId"] = json!(p.approval_id);
+                }
             });
             if let Some(seen) = &d.last_seen_at {
                 v["lastSeen"] = json!(seen);
@@ -1483,6 +1676,9 @@ async fn register_key(
         label: label.to_owned(),
         created_at: crate::devices::now_rfc3339(),
     };
+    if st.approvals.other_key_exists(&who.device_id) {
+        return enroll(&st, &who, stored).await;
+    }
     st.approvals
         .keys
         .update(|k| {
@@ -1498,6 +1694,140 @@ async fn register_key(
     );
     tell_owner(&st, &format!("Approvals set up on {}", who.device_name)).await;
     Ok(Json(json!({"keyId": key_id})))
+}
+
+/// A key registered while another device already has one: held until an approver device approves the
+/// `approver.enroll` request it opens (asked by this device, so it can wait on it but never answer it).
+async fn enroll(st: &AppState, who: &Identity, key: StoredKey) -> Result<Json<Value>, ApiError> {
+    let hash = enroll_hash(&who.device_id, &key.public_key);
+    let label = if key.label.is_empty() {
+        "a device key".to_owned()
+    } else {
+        key.label.clone()
+    };
+    let body = CreateBody {
+        requester: RequesterIn {
+            kind: "device".into(),
+            name: who.device_name.clone(),
+            detail: Some("approver set-up".into()),
+        },
+        action: ENROLL_ACTION.into(),
+        summary: clip(&format!("Add {} as an approver device ({label})", who.device_name), 200),
+        details: format!(
+            "Device: {} ({})\nKey: {} ({label})\nOnce added, this device can approve root commands and other sensitive requests with its own Touch ID or Face ID.\nYou can revoke it in Settings → Approvals.",
+            who.device_name, who.device_id, key.key_id
+        ),
+        risk: Some("high".into()),
+        sensitive: Some(true),
+        payload_hash: hash.clone(),
+        ttl_secs: None,
+    };
+    let created = st.approvals.create_at(who, body, now_ms())?;
+    let key_id = key.key_id.clone();
+    st.approvals
+        .keys
+        .update(|k| {
+            k.pending.insert(
+                who.device_id.clone(),
+                PendingKey {
+                    approval_id: created.id.clone(),
+                    payload_hash: hash,
+                    key,
+                },
+            );
+        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "approval keys not saved");
+            ApiError::internal("could not save the key")
+        })?;
+    st.approvals.audit.log(
+        "key_pending",
+        json!({"device": who.device_id, "deviceName": who.device_name, "keyId": key_id, "approval": created.id}),
+    );
+    announce(st, &created, effective_main(st)).await;
+    Ok(Json(
+        json!({"keyId": key_id, "status": "pending_approval", "approvalId": created.id}),
+    ))
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RevokeBody {
+    #[serde(default)]
+    proof: Option<SigIn>,
+    #[serde(default)]
+    pin: Option<String>,
+}
+
+/// `DELETE /v1/approvals/keys/{deviceId} {proof: {signature}} | {pin}`: revoke another device's key (or its
+/// pending one). The caller must be an approver itself and prove it: its key signs
+/// `secretary-approval-revoke-v1\n{callerId}\n{targetId}`, or the PIN.
+async fn revoke_key(
+    State(st): State<AppState>,
+    Extension(who): Extension<Identity>,
+    Path(target): Path<String>,
+    raw: axum::body::Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let body: RevokeBody = if raw.iter().all(u8::is_ascii_whitespace) {
+        RevokeBody::default()
+    } else {
+        serde_json::from_slice(&raw).map_err(|_| bad("body: {proof?: {signature}, pin?}"))?
+    };
+    let msg = format!("{REVOKE_PROOF_CONTEXT}{}\n{target}", who.device_id);
+    let key_ok = body.proof.as_ref().is_some_and(|p| {
+        st.approvals
+            .device_key(&who.device_id)
+            .is_some_and(|(_, vk)| sig_ok(&vk, msg.as_bytes(), &p.signature))
+    });
+    if !key_ok {
+        match body.pin {
+            Some(pin) if pin_format_ok(&pin) => verify_pin(&st, pin, who.device_id.clone()).await?,
+            Some(_) => return Err(bad("pin: exactly 6 digits")),
+            None => {
+                return Err(forbidden(
+                    "biometric_required",
+                    "revoking a device needs this device's key (Face ID / Touch ID) or the PIN",
+                ))
+            }
+        }
+    }
+    let (removed, pending) = st
+        .approvals
+        .keys
+        .update(|k| {
+            (
+                k.keys.remove(&target).is_some(),
+                k.pending.remove(&target).is_some(),
+            )
+        })
+        .map_err(|e| {
+            tracing::error!(error = %e, "approval keys not saved");
+            ApiError::internal("could not remove the key")
+        })?;
+    if removed || pending {
+        let name = st
+            .devices
+            .active_device(&target)
+            .ok()
+            .flatten()
+            .map_or_else(|| target.clone(), |d| d.name);
+        st.approvals.audit.log(
+            "key_revoked",
+            json!({"device": target, "deviceName": name, "by": who.device_id, "byName": who.device_name,
+                   "verifiedBy": if key_ok { "device_key" } else { "pin" }}),
+        );
+        if removed {
+            tell_owner(
+                &st,
+                &format!(
+                    "{name} can no longer approve requests (revoked on {})",
+                    who.device_name
+                ),
+            )
+            .await;
+        }
+    }
+    Ok(Json(json!({"removed": removed, "pendingRemoved": pending})))
 }
 
 /// `DELETE /v1/approvals/keys`
@@ -1671,6 +2001,10 @@ pub fn routes(state: AppState) -> Router<AppState> {
             get(get_settings).put(put_settings),
         )
         .route("/v1/approvals/keys", post(register_key).delete(delete_key))
+        .route(
+            "/v1/approvals/keys/{device_id}",
+            axum::routing::delete(revoke_key),
+        )
         .route("/v1/approvals/pin", put(put_pin).delete(delete_pin))
         .route("/v1/approvals/{id}", get(get_one))
         .route("/v1/approvals/{id}/decide", post(decide))
