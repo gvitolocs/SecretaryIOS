@@ -1,6 +1,7 @@
 import { A } from "@solidjs/router";
-import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createResource, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { nclientApi, nclientImageUrl, type NClientDetail, type NClientSearch, type NClientSummary, type NClientTag } from "../api/nclient";
+import { Button, Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PageHeader, SectionNav, useWide, type SectionNavItem } from "../components/page";
 import { NClientReader } from "../components/NClientReader";
 import { createSaves, SaveControl } from "../components/NClientSave";
 import { t } from "../i18n";
@@ -36,7 +37,7 @@ function Grid(props: { items: NClientSummary[]; open: (id: number) => void }) {
   }</For></div>;
 }
 
-function EnabledNClient() {
+function EnabledNClient(props: { wide: () => boolean }) {
   const [query, setQuery] = createSignal("");
   const [sort, setSort] = createSignal<NClientSearch["sort"]>("recent");
   const [include, setInclude] = createSignal<NClientTag[]>([]);
@@ -98,73 +99,119 @@ function EnabledNClient() {
   }
   const unchosen = () => (tags()?.tags ?? []).filter(tag => !include().some(x => x.id === tag.id) && !exclude().some(x => x.id === tag.id));
 
-  return <>
-    <Show when={!reading()}>
-      <nav class="nclient-bar" aria-label={t("nclient.title")}>
-        <button type="button" aria-pressed={mode() === "search" && !detail()} onClick={() => { setMode("search"); back(); }}>{t("nclient.search")}</button>
-        <button type="button" aria-pressed={mode() === "favorites" && !detail()} onClick={() => { setMode("favorites"); back(); void refetch(); }}>{t("nclient.favorites")}</button>
-        <button type="button" disabled={busy()} onClick={() => void open()}>{t("nclient.random")}</button>
-      </nav>
+  const sectionNavItems = (): SectionNavItem[] => [
+    { label: t("nclient.search"), onSelect: () => { setMode("search"); back(); }, current: mode() === "search" && !detail() && !reading() },
+    { label: t("nclient.favorites"), onSelect: () => { setMode("favorites"); back(); void refetch(); }, current: mode() === "favorites" && !detail() && !reading() },
+    { label: t("nclient.random"), onSelect: () => void open(), current: false },
+  ];
+
+  const searchFields = () => (
+    <>
+      <form class="nclient-search" onSubmit={e => { e.preventDefault(); searchNow(); }}>
+        <label class="nclient-search-q">{t("nclient.query")}<input type="search" value={query()} onInput={e => setQuery(e.currentTarget.value)} autocomplete="off" autocapitalize="off" spellcheck={false} /></label>
+        <label>{t("nclient.sort")}<select value={sort()} onChange={e => setSort(e.currentTarget.value as NClientSearch["sort"])}>
+          <option value="recent">{t("nclient.recent")}</option><option value="popular">{t("nclient.popular")}</option>
+          <option value="popular-week">{t("nclient.week")}</option><option value="popular-today">{t("nclient.today")}</option><option value="popular-month">{t("nclient.month")}</option>
+        </select></label>
+        <Show when={props.wide()} fallback={<button type="submit" class="nclient-primary">{t("nclient.search")}</button>}>
+          <Button type="submit">{t("nclient.search")}</Button>
+        </Show>
+      </form>
+      <details class="nclient-filters" onToggle={e => { if (e.currentTarget.open && tagSearch() === undefined) setTagSearch(""); }}>
+        <summary>{t("nclient.filters")}<Show when={include().length + exclude().length}> · {include().length + exclude().length}</Show></summary>
+        <label>{t("nclient.tags")}<input type="search" value={tagQuery()} onInput={e => typeTag(e.currentTarget.value)} autocomplete="off" autocapitalize="off" spellcheck={false} /></label>
+        <Show when={tags.loading}><p role="status" class="nclient-note">{t("common.loading")}</p></Show>
+        <Show when={tags.error}><p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={() => void retryTags()}>{t("nclient.retry")}</button></p></Show>
+        <ul class="nclient-tags">
+          <For each={unchosen()}>{tag => <li>
+            <span class="nclient-tag-name">{tag.name}</span>
+            <button type="button" aria-label={`${t("nclient.include")} ${tag.name}`} onClick={() => chooseTag(tag, false)}>+</button>
+            <button type="button" aria-label={`${t("nclient.exclude")} ${tag.name}`} onClick={() => chooseTag(tag, true)}>−</button>
+          </li>}</For>
+        </ul>
+      </details>
+      <Show when={include().length + exclude().length}>
+        <div class="nclient-chips">
+          <For each={include()}>{tag => <button type="button" class="nclient-chip" aria-label={`${t("nclient.remove")}: +${tag.name}`} onClick={() => setInclude(l => l.filter(x => x.id !== tag.id))}>+{tag.name} ×</button>}</For>
+          <For each={exclude()}>{tag => <button type="button" class="nclient-chip nclient-chip--minus" aria-label={`${t("nclient.remove")}: −${tag.name}`} onClick={() => setExclude(l => l.filter(x => x.id !== tag.id))}>−{tag.name} ×</button>}</For>
+        </div>
+      </Show>
+    </>
+  );
+
+  const searchForm = (desk: boolean) => (
+    <Show when={mode() === "search"}>
+      <Show when={desk} fallback={searchFields()}>
+        <Card title={t("nclient.search")} class="nclient-desk-search">{searchFields()}</Card>
+      </Show>
     </Show>
-    <Show when={busy()}><p role="status" class="nclient-note">{t("common.loading")}</p></Show>
-    <Show when={error()}><p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={back}>{t("nclient.back")}</button></p></Show>
+  );
+
+  const listBody = (desk: boolean) => (
     <Show when={detail()} fallback={<Show when={!busy()}>
-      <Show when={mode() === "search"}>
-        <form class="nclient-search" onSubmit={e => { e.preventDefault(); searchNow(); }}>
-          <label class="nclient-search-q">{t("nclient.query")}<input type="search" value={query()} onInput={e => setQuery(e.currentTarget.value)} autocomplete="off" autocapitalize="off" spellcheck={false} /></label>
-          <label>{t("nclient.sort")}<select value={sort()} onChange={e => setSort(e.currentTarget.value as NClientSearch["sort"])}>
-            <option value="recent">{t("nclient.recent")}</option><option value="popular">{t("nclient.popular")}</option>
-            <option value="popular-week">{t("nclient.week")}</option><option value="popular-today">{t("nclient.today")}</option><option value="popular-month">{t("nclient.month")}</option>
-          </select></label>
-          <button type="submit" class="nclient-primary">{t("nclient.search")}</button>
-        </form>
-        <details class="nclient-filters" onToggle={e => { if (e.currentTarget.open && tagSearch() === undefined) setTagSearch(""); }}>
-          <summary>{t("nclient.filters")}<Show when={include().length + exclude().length}> · {include().length + exclude().length}</Show></summary>
-          <label>{t("nclient.tags")}<input type="search" value={tagQuery()} onInput={e => typeTag(e.currentTarget.value)} autocomplete="off" autocapitalize="off" spellcheck={false} /></label>
-          <Show when={tags.loading}><p role="status" class="nclient-note">{t("common.loading")}</p></Show>
-          <Show when={tags.error}><p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={() => void retryTags()}>{t("nclient.retry")}</button></p></Show>
-          <ul class="nclient-tags">
-            <For each={unchosen()}>{tag => <li>
-              <span class="nclient-tag-name">{tag.name}</span>
-              <button type="button" aria-label={`${t("nclient.include")} ${tag.name}`} onClick={() => chooseTag(tag, false)}>+</button>
-              <button type="button" aria-label={`${t("nclient.exclude")} ${tag.name}`} onClick={() => chooseTag(tag, true)}>−</button>
-            </li>}</For>
-          </ul>
-        </details>
-        <Show when={include().length + exclude().length}>
-          <div class="nclient-chips">
-            <For each={include()}>{tag => <button type="button" class="nclient-chip" aria-label={`${t("nclient.remove")}: +${tag.name}`} onClick={() => setInclude(l => l.filter(x => x.id !== tag.id))}>+{tag.name} ×</button>}</For>
-            <For each={exclude()}>{tag => <button type="button" class="nclient-chip nclient-chip--minus" aria-label={`${t("nclient.remove")}: −${tag.name}`} onClick={() => setExclude(l => l.filter(x => x.id !== tag.id))}>−{tag.name} ×</button>}</For>
-          </div>
+      {!desk && searchForm(false)}
+      <Show when={desk}>{searchForm(true)}</Show>
+      <Show when={list.loading}>
+        <Show when={desk} fallback={<p role="status" class="nclient-note">{t("common.loading")}</p>}>
+          <LoadingState label={t("common.loading")} />
         </Show>
       </Show>
-      <Show when={list.loading}><p role="status" class="nclient-note">{t("common.loading")}</p></Show>
-      <Show when={list.error}><p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={() => void refetch()}>{t("nclient.retry")}</button></p></Show>
+      <Show when={list.error}>
+        <Show when={desk} fallback={<p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={() => void refetch()}>{t("nclient.retry")}</button></p>}>
+          <ErrorState message={t("nclient.error")} retryLabel={t("nclient.retry")} onRetry={() => void refetch()} />
+        </Show>
+      </Show>
       <Show when={!list.loading && !list.error}>
-        <Show when={list()?.items.length} fallback={<p class="nclient-note">{t("nclient.empty")}</p>}><Grid items={list()?.items ?? []} open={id => void open(id)} /></Show>
-        <Show when={mode() === "search" && (list()?.numPages ?? 0) > 1}><div class="nclient-bar nclient-bar--nav">
-          <button type="button" disabled={search().page <= 1} onClick={() => setSearch(s => ({ ...s, page: s.page - 1 }))}>{t("nclient.previous")}</button>
-          <span>{t("nclient.page", { page: list()?.page ?? 1, pages: list()?.numPages ?? 1 })}</span>
-          <button type="button" disabled={search().page >= (list()?.numPages ?? 1)} onClick={() => setSearch(s => ({ ...s, page: s.page + 1 }))}>{t("nclient.next")}</button>
-        </div></Show>
+        <Show when={list()?.items.length} fallback={
+          <Show when={desk} fallback={<p class="nclient-note">{t("nclient.empty")}</p>}>
+            <EmptyState text={t("nclient.empty")} />
+          </Show>
+        }>
+          <Grid items={list()?.items ?? []} open={id => void open(id)} />
+        </Show>
+        <Show when={mode() === "search" && (list()?.numPages ?? 0) > 1}>
+          <Show when={desk} fallback={
+            <div class="nclient-bar nclient-bar--nav">
+              <button type="button" disabled={search().page <= 1} onClick={() => setSearch(s => ({ ...s, page: s.page - 1 }))}>{t("nclient.previous")}</button>
+              <span>{t("nclient.page", { page: list()?.page ?? 1, pages: list()?.numPages ?? 1 })}</span>
+              <button type="button" disabled={search().page >= (list()?.numPages ?? 1)} onClick={() => setSearch(s => ({ ...s, page: s.page + 1 }))}>{t("nclient.next")}</button>
+            </div>
+          }>
+            <div class="nclient-desk-pager">
+              <Button disabled={search().page <= 1} onClick={() => setSearch(s => ({ ...s, page: s.page - 1 }))}>{t("nclient.previous")}</Button>
+              <span class="nclient-bar-page">{t("nclient.page", { page: list()?.page ?? 1, pages: list()?.numPages ?? 1 })}</span>
+              <Button disabled={search().page >= (list()?.numPages ?? 1)} onClick={() => setSearch(s => ({ ...s, page: s.page + 1 }))}>{t("nclient.next")}</Button>
+            </div>
+          </Show>
+        </Show>
       </Show>
     </Show>}>
       {gallery => <Show when={reading()} fallback={<>
-        <button type="button" class="nclient-back" onClick={back}>‹ {t("nclient.back")}</button>
+        <Show when={desk} fallback={<button type="button" class="nclient-back" onClick={back}>‹ {t("nclient.back")}</button>}>
+          <button type="button" class="pg-link pg-back" onClick={back}>{t("nclient.back")}</button>
+          <h2 class="trd-detail-title">{gallery().title}</h2>
+        </Show>
         <div class="nclient-detail">
-          <Show when={nclientImageUrl(gallery().coverUrl)}>{url => <img class="nclient-cover" src={url()} alt="" referrerpolicy="no-referrer" />}</Show>
+          <Show when={!desk}>
+            <Show when={nclientImageUrl(gallery().coverUrl)}>{url => <img class="nclient-cover" src={url()} alt="" referrerpolicy="no-referrer" />}</Show>
+          </Show>
           <div class="nclient-detail-main">
-            <h2>{gallery().title}</h2>
+            <Show when={!desk}><h2>{gallery().title}</h2></Show>
             <p class="nclient-meta">{t("nclient.pages", { count: gallery().pages.length })}{gallery().language ? ` · ${gallery().language}` : ""}</p>
             <Show when={gallery().tags.length}>
               <ul class="nclient-taglist" aria-label={t("nclient.tags")}><For each={gallery().tags}>{tag => <li>{tag.name}</li>}</For></ul>
             </Show>
             <div class="nclient-bar">
-              <button type="button" class="nclient-primary" disabled={!gallery().pages.length} onClick={() => readFrom(gallery().progress ? gallery().progress!.page : 0)}>{gallery().progress ? t("nclient.resume") : t("nclient.read")}</button>
-              <button type="button" disabled={favoriteBusy()} aria-pressed={gallery().favorite} onClick={() => void toggleFavorite()}>{gallery().favorite ? t("nclient.unfavorite") : t("nclient.favorite")}</button>
+              <Show when={desk} fallback={<button type="button" class="nclient-primary" disabled={!gallery().pages.length} onClick={() => readFrom(gallery().progress ? gallery().progress!.page : 0)}>{gallery().progress ? t("nclient.resume") : t("nclient.read")}</button>}>
+                <Button disabled={!gallery().pages.length} onClick={() => readFrom(gallery().progress ? gallery().progress!.page : 0)}>{gallery().progress ? t("nclient.resume") : t("nclient.read")}</Button>
+              </Show>
+              <Show when={desk} fallback={<button type="button" disabled={favoriteBusy()} aria-pressed={gallery().favorite} onClick={() => void toggleFavorite()}>{gallery().favorite ? t("nclient.unfavorite") : t("nclient.favorite")}</button>}>
+                <Button disabled={favoriteBusy()} onClick={() => void toggleFavorite()}>{gallery().favorite ? t("nclient.unfavorite") : t("nclient.favorite")}</Button>
+              </Show>
             </div>
             <SaveControl saves={saves} id={gallery().id} />
           </div>
+          <Show when={desk && nclientImageUrl(gallery().coverUrl)}>{url => <img class="nclient-cover" src={url()} alt="" referrerpolicy="no-referrer" />}</Show>
         </div>
         <Show when={gallery().pages.length}>
           <h3>{t("nclient.pagesHeading")}</h3>
@@ -176,7 +223,9 @@ function EnabledNClient() {
             }</For>
           </div>
           <Show when={thumbs() < gallery().pages.length}>
-            <button type="button" class="nclient-more" onClick={() => setThumbs(n => n + THUMBS_STEP)}>{t("nclient.morePages", { count: gallery().pages.length - thumbs() })}</button>
+            <Show when={desk} fallback={<button type="button" class="nclient-more" onClick={() => setThumbs(n => n + THUMBS_STEP)}>{t("nclient.morePages", { count: gallery().pages.length - thumbs() })}</button>}>
+              <Button onClick={() => setThumbs(n => n + THUMBS_STEP)}>{t("nclient.morePages", { count: gallery().pages.length - thumbs() })}</Button>
+            </Show>
           </Show>
         </Show>
         <Show when={gallery().related.length}>
@@ -189,28 +238,108 @@ function EnabledNClient() {
           saveControl={<SaveControl saves={saves} id={gallery().id} compact />} />
       </Show>}
     </Show>
-  </>;
+  );
+
+  const core = () => (
+    <>
+      <Show when={!reading() && !props.wide()}>
+        <nav class="nclient-bar" aria-label={t("nclient.title")}>
+          <button type="button" aria-pressed={mode() === "search" && !detail()} onClick={() => { setMode("search"); back(); }}>{t("nclient.search")}</button>
+          <button type="button" aria-pressed={mode() === "favorites" && !detail()} onClick={() => { setMode("favorites"); back(); void refetch(); }}>{t("nclient.favorites")}</button>
+          <button type="button" disabled={busy()} onClick={() => void open()}>{t("nclient.random")}</button>
+        </nav>
+      </Show>
+      <Show when={busy()}>
+        <Show when={props.wide()} fallback={<p role="status" class="nclient-note">{t("common.loading")}</p>}>
+          <LoadingState label={t("common.loading")} />
+        </Show>
+      </Show>
+      <Show when={error()}>
+        <Show when={props.wide()} fallback={<p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={back}>{t("nclient.back")}</button></p>}>
+          <ErrorState message={t("nclient.error")} retryLabel={t("nclient.back")} onRetry={back} />
+        </Show>
+      </Show>
+      {listBody(props.wide())}
+    </>
+  );
+
+  return (
+    <Show when={props.wide()} fallback={core()}>
+      <>
+        <PageHeader title={t("nclient.title")} nav={<SectionNav label={t("nclient.title")} items={sectionNavItems()} />} />
+        <PageGrid layout="full">
+          <Card class="nclient-desk-main">{core()}</Card>
+        </PageGrid>
+      </>
+    </Show>
+  );
+}
+
+function AdultShell(props: { wide: () => boolean; children: JSX.Element }) {
+  return (
+    <Show when={showAdult()} fallback={
+      <Show when={props.wide()} fallback={
+        <div class="nclient-note">
+          <p>{t("nclient.hidden")}</p>
+          <button type="button" onClick={() => setShowAdult(true)}>{t("nclient.showAdult")}</button>
+        </div>
+      }>
+        <EmptyState text={t("nclient.hidden")} action={<Button onClick={() => setShowAdult(true)}>{t("nclient.showAdult")}</Button>} />
+      </Show>
+    }>
+      {props.children}
+    </Show>
+  );
 }
 
 export default function NClientView() {
-  // Hidden on this device: nothing is fetched until the owner turns adult plugins back on.
+  const { wide, track } = useWide();
   const [status, { refetch }] = createResource(() => showAdult() || undefined, () => nclientApi.status());
   onMount(() => {
     const previous = document.title;
     document.title = "NClient";
     onCleanup(() => { document.title = previous; });
   });
-  return <section class="nclient" aria-labelledby="nclient-title">
-    <A href="/plugins" class="media-back">{t("media.back")}</A>
-    <h1 id="nclient-title">{t("nclient.title")}</h1>
-    <Show when={showAdult()} fallback={<div class="nclient-note">
-      <p>{t("nclient.hidden")}</p>
-      <button type="button" onClick={() => setShowAdult(true)}>{t("nclient.showAdult")}</button>
-    </div>}>
-      <Show when={status.loading}><p role="status" class="nclient-note">{t("common.loading")}</p></Show>
-      <Show when={status.error}><p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={() => void refetch()}>{t("nclient.retry")}</button></p></Show>
-      <Show when={!status.loading && !status.error && status() && !status()!.enabled}><p class="nclient-note">{t("nclient.unavailable")}</p></Show>
-      <Show when={!status.error && status()?.enabled}><EnabledNClient /></Show>
-    </Show>
-  </section>;
+
+  const statusBody = () => (
+    <>
+      <Show when={status.loading}>
+        <Show when={wide()} fallback={<p role="status" class="nclient-note">{t("common.loading")}</p>}>
+          <LoadingState label={t("common.loading")} />
+        </Show>
+      </Show>
+      <Show when={status.error}>
+        <Show when={wide()} fallback={<p role="alert" class="nclient-note">{t("nclient.error")} <button type="button" onClick={() => void refetch()}>{t("nclient.retry")}</button></p>}>
+          <ErrorState message={t("nclient.error")} retryLabel={t("nclient.retry")} onRetry={() => void refetch()} />
+        </Show>
+      </Show>
+      <Show when={!status.loading && !status.error && status() && !status()!.enabled}>
+        <Show when={wide()} fallback={<p class="nclient-note">{t("nclient.unavailable")}</p>}>
+          <EmptyState text={t("nclient.unavailable")} />
+        </Show>
+      </Show>
+      <Show when={!status.error && status()?.enabled}>
+        <EnabledNClient wide={wide} />
+      </Show>
+    </>
+  );
+
+  return (
+    <section class="nclient" classList={{ "nclient--wide": wide() }} ref={track} aria-labelledby={wide() ? undefined : "nclient-title"}>
+      <Show when={wide()} fallback={
+        <>
+          <A href="/plugins" class="media-back">{t("media.back")}</A>
+          <h1 id="nclient-title">{t("nclient.title")}</h1>
+          <AdultShell wide={wide}>{statusBody()}</AdultShell>
+        </>
+      }>
+        <Page class="nclient-desk">
+          <Show when={!(showAdult() && !status.loading && !status.error && status()?.enabled)}>
+            <PageHeader title={t("nclient.title")} />
+          </Show>
+          <AdultShell wide={wide}>{statusBody()}</AdultShell>
+        </Page>
+      </Show>
+    </section>
+  );
 }
