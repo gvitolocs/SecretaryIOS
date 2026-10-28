@@ -4,16 +4,179 @@
 //! `÷`, `x` between numbers, `of`/`di` as multiplication ("17% of 230"),
 //! decimal comma, constants `pi`, `e`, functions `sqrt abs round floor ceil
 //! ln log log2 exp sin cos tan`.
+//!
+//! Arithmetic is exact (arbitrary-precision rationals), so money, per-kg
+//! prices and averages come out right. `pi`, `e`, the transcendental
+//! functions, irrational square roots and non-integer powers fall back to
+//! f64, and from there on the result is marked inexact.
 
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{schema_for, Ctx, SideEffect, Tool, ToolError, ToolResult};
 
+/// Largest numerator or denominator an exact value may have.
+const MAX_BITS: u64 = 4096;
+/// Largest integer exponent magnitude for exact powers.
+const MAX_EXP: u64 = 10_000;
+
+/// A computed value: exact while only exact operations were applied.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Number {
+    Exact(BigRational),
+    Approx(f64),
+}
+
+impl Number {
+    pub fn to_f64(&self) -> f64 {
+        match self {
+            Number::Exact(r) => r.to_f64().unwrap_or(f64::NAN),
+            Number::Approx(v) => *v,
+        }
+    }
+    pub fn is_exact(&self) -> bool {
+        matches!(self, Number::Exact(_))
+    }
+}
+
+fn check_size(r: BigRational) -> Result<BigRational, String> {
+    if r.numer().bits() > MAX_BITS || r.denom().bits() > MAX_BITS {
+        return Err(format!(
+            "number too large for exact arithmetic (over {MAX_BITS} bits)"
+        ));
+    }
+    Ok(r)
+}
+
+fn checked(r: BigRational) -> Result<Number, String> {
+    check_size(r).map(Number::Exact)
+}
+
+/// `b^n` for an integer `n`, refusing results beyond the size limits.
+fn pow_exact(b: &BigRational, n: i64) -> Result<BigRational, String> {
+    let e = n.unsigned_abs();
+    if e > MAX_EXP {
+        return Err(format!("exponent too large (max {MAX_EXP})"));
+    }
+    if b.is_zero() {
+        return match n {
+            0 => Ok(BigRational::one()),
+            n if n < 0 => Err("division by zero".into()),
+            _ => Ok(BigRational::zero()),
+        };
+    }
+    for part in [b.numer(), b.denom()] {
+        let bits = part.bits();
+        if bits > 1 && (bits - 1) * e + 1 > MAX_BITS {
+            return Err(format!(
+                "number too large for exact arithmetic (over {MAX_BITS} bits)"
+            ));
+        }
+    }
+    let (num, den) = (b.numer().pow(e as u32), b.denom().pow(e as u32));
+    check_size(if n < 0 {
+        BigRational::new(den, num)
+    } else {
+        BigRational::new(num, den)
+    })
+}
+
+fn binop(a: Number, b: Number, op: char) -> Result<Number, String> {
+    match (a, b) {
+        (Number::Exact(x), Number::Exact(y)) => checked(match op {
+            '+' => x + y,
+            '-' => x - y,
+            '*' => x * y,
+            _ => {
+                if y.is_zero() {
+                    return Err("division by zero".into());
+                }
+                x / y
+            }
+        }),
+        (a, b) => {
+            let (x, y) = (a.to_f64(), b.to_f64());
+            Ok(Number::Approx(match op {
+                '+' => x + y,
+                '-' => x - y,
+                '*' => x * y,
+                _ => {
+                    if y == 0.0 {
+                        return Err("division by zero".into());
+                    }
+                    x / y
+                }
+            }))
+        }
+    }
+}
+
+fn power(base: Number, exp: Number) -> Result<Number, String> {
+    let exponent = exp.to_f64();
+    if exponent.fract() == 0.0 && exponent.abs() > MAX_EXP as f64 {
+        return Err(format!("exponent too large (max {MAX_EXP})"));
+    }
+    let zero_base = match &base {
+        Number::Exact(r) => r.is_zero(),
+        Number::Approx(v) => *v == 0.0,
+    };
+    let negative_exponent = match &exp {
+        Number::Exact(r) => r.is_negative(),
+        Number::Approx(v) => *v < 0.0,
+    };
+    if zero_base && negative_exponent {
+        return Err("division by zero".into());
+    }
+    match (&base, &exp) {
+        (Number::Exact(b), Number::Exact(e)) if e.is_integer() => {
+            let n = e
+                .numer()
+                .to_i64()
+                .ok_or_else(|| format!("exponent too large (max {MAX_EXP})"))?;
+            checked(pow_exact(b, n)?)
+        }
+        _ => Ok(Number::Approx(base.to_f64().powf(exp.to_f64()))),
+    }
+}
+
+fn sqrt(arg: Number) -> Result<Number, String> {
+    if match &arg {
+        Number::Exact(r) => r.is_negative(),
+        Number::Approx(v) => *v < 0.0,
+    } {
+        return Err("sqrt of a negative number".into());
+    }
+    if let Number::Exact(r) = &arg {
+        let (n, d) = (r.numer().sqrt(), r.denom().sqrt());
+        if &(&n * &n) == r.numer() && &(&d * &d) == r.denom() {
+            return Ok(Number::Exact(BigRational::new(n, d)));
+        }
+    }
+    Ok(Number::Approx(arg.to_f64().sqrt()))
+}
+
+/// Splits a normalized literal ("1000.5", ".5", "1.2e-3") into
+/// `digits * 10^scale`.
+fn parse_decimal(s: &str) -> Option<(BigInt, i64)> {
+    let (mant, exp) = match s.find(['e', 'E']) {
+        Some(i) => (&s[..i], s[i + 1..].parse::<i64>().ok()?),
+        None => (s, 0),
+    };
+    let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+    if !int.chars().chain(frac.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let digits: BigInt = format!("{int}{frac}").parse().ok()?;
+    Some((digits, exp.checked_sub(frac.len() as i64)?))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
-    Num(f64),
+    Num(BigRational),
     Ident(String),
     Op(char),
     LParen,
@@ -61,10 +224,11 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, String> {
             } else {
                 text.replace(',', "")
             };
-            let n: f64 = normalized
-                .parse()
-                .map_err(|_| format!("bad number {text:?}"))?;
-            out.push(Tok::Num(n));
+            let (digits, scale) =
+                parse_decimal(&normalized).ok_or_else(|| format!("bad number {text:?}"))?;
+            let ten = BigRational::from_integer(BigInt::from(10));
+            let n = pow_exact(&ten, scale)? * BigRational::from_integer(digits);
+            out.push(Tok::Num(check_size(n)?));
             continue;
         }
         if c.is_alphabetic() {
@@ -112,102 +276,111 @@ impl Parser {
         self.pos += 1;
         t
     }
-    // expr := term (('+'|'-') term)*
-    fn expr(&mut self) -> Result<f64, String> {
+    fn nested(&mut self, parse: fn(&mut Self) -> Result<Number, String>) -> Result<Number, String> {
         self.depth += 1;
         if self.depth > 64 {
             return Err("expression too deep".into());
         }
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+    // expr := term (('+'|'-') term)*
+    fn expr(&mut self) -> Result<Number, String> {
         let mut v = self.term()?;
         while let Some(Tok::Op(op @ ('+' | '-'))) = self.peek().cloned() {
             self.pos += 1;
             let rhs = self.term()?;
-            v = if op == '+' { v + rhs } else { v - rhs };
+            v = binop(v, rhs, op)?;
         }
-        self.depth -= 1;
         Ok(v)
     }
     // term := power (('*'|'/') power | implicit power)*
-    fn term(&mut self) -> Result<f64, String> {
+    fn term(&mut self) -> Result<Number, String> {
         let mut v = self.unary()?;
         loop {
             match self.peek().cloned() {
                 Some(Tok::Op(op @ ('*' | '/'))) => {
                     self.pos += 1;
                     let rhs = self.unary()?;
-                    if op == '/' {
-                        if rhs == 0.0 {
-                            return Err("division by zero".into());
-                        }
-                        v /= rhs;
-                    } else {
-                        v *= rhs;
-                    }
+                    v = binop(v, rhs, op)?;
                 }
                 // implicit multiplication: 2(3+4), 2pi
-                Some(Tok::LParen) | Some(Tok::Ident(_)) => v *= self.unary()?,
+                Some(Tok::LParen) | Some(Tok::Ident(_)) => {
+                    let rhs = self.unary()?;
+                    v = binop(v, rhs, '*')?;
+                }
                 _ => return Ok(v),
             }
         }
     }
     // unary := ('-'|'+') unary | power
-    fn unary(&mut self) -> Result<f64, String> {
+    fn unary(&mut self) -> Result<Number, String> {
         match self.peek() {
             Some(Tok::Op('-')) => {
                 self.pos += 1;
-                Ok(-self.unary()?)
+                Ok(match self.nested(Self::unary)? {
+                    Number::Exact(r) => Number::Exact(-r),
+                    Number::Approx(v) => Number::Approx(-v),
+                })
             }
             Some(Tok::Op('+')) => {
                 self.pos += 1;
-                self.unary()
+                self.nested(Self::unary)
             }
             _ => self.power(),
         }
     }
     // power := postfix ('^' unary)?
-    fn power(&mut self) -> Result<f64, String> {
+    fn power(&mut self) -> Result<Number, String> {
         let base = self.postfix()?;
         if let Some(Tok::Op('^')) = self.peek() {
             self.pos += 1;
-            let exp = self.unary()?;
-            return Ok(base.powf(exp));
+            let exp = self.nested(Self::unary)?;
+            return power(base, exp);
         }
         Ok(base)
     }
     // postfix := atom '%'*
-    fn postfix(&mut self) -> Result<f64, String> {
+    fn postfix(&mut self) -> Result<Number, String> {
         let mut v = self.atom()?;
         while let Some(Tok::Op('%')) = self.peek() {
             self.pos += 1;
-            v /= 100.0;
+            v = binop(v, Number::Exact(BigRational::from_integer(100.into())), '/')?;
         }
         Ok(v)
     }
-    fn atom(&mut self) -> Result<f64, String> {
+    fn atom(&mut self) -> Result<Number, String> {
         match self.next() {
-            Some(Tok::Num(n)) => Ok(n),
+            Some(Tok::Num(n)) => Ok(Number::Exact(n)),
             Some(Tok::LParen) => {
-                let v = self.expr()?;
+                let v = self.nested(Self::expr)?;
                 match self.next() {
                     Some(Tok::RParen) => Ok(v),
                     _ => Err("missing ')'".into()),
                 }
             }
             Some(Tok::Ident(name)) => match name.as_str() {
-                "pi" | "π" => Ok(std::f64::consts::PI),
-                "e" => Ok(std::f64::consts::E),
+                "pi" | "π" => Ok(Number::Approx(std::f64::consts::PI)),
+                "e" => Ok(Number::Approx(std::f64::consts::E)),
                 f => {
                     let arg = match self.peek() {
                         Some(Tok::LParen) => self.atom()?,
-                        _ => self.postfix()?,
+                        _ => self.nested(Self::postfix)?,
                     };
-                    Ok(match f {
-                        "sqrt" | "radice" => {
-                            if arg < 0.0 {
-                                return Err("sqrt of a negative number".into());
-                            }
-                            arg.sqrt()
-                        }
+                    let exact = match (&arg, f) {
+                        (_, "sqrt" | "radice") => return sqrt(arg),
+                        (Number::Exact(r), "abs") => Some(r.abs()),
+                        (Number::Exact(r), "round") => Some(r.round()),
+                        (Number::Exact(r), "floor") => Some(r.floor()),
+                        (Number::Exact(r), "ceil") => Some(r.ceil()),
+                        _ => None,
+                    };
+                    if let Some(r) = exact {
+                        return checked(r);
+                    }
+                    let arg = arg.to_f64();
+                    Ok(Number::Approx(match f {
                         "abs" => arg.abs(),
                         "round" => arg.round(),
                         "floor" => arg.floor(),
@@ -220,7 +393,7 @@ impl Parser {
                         "cos" => arg.cos(),
                         "tan" => arg.tan(),
                         _ => return Err(format!("unknown function or name {f:?}")),
-                    })
+                    }))
                 }
             },
             Some(t) => Err(format!("unexpected {t:?}")),
@@ -230,7 +403,7 @@ impl Parser {
 }
 
 /// Evaluate an expression.
-pub fn evaluate(src: &str) -> Result<f64, String> {
+pub fn evaluate(src: &str) -> Result<Number, String> {
     if src.chars().count() > 500 {
         return Err("expression too long".into());
     }
@@ -247,7 +420,7 @@ pub fn evaluate(src: &str) -> Result<f64, String> {
     if p.pos < p.toks.len() {
         return Err(format!("unexpected {:?}", p.toks[p.pos]));
     }
-    if !v.is_finite() {
+    if !v.to_f64().is_finite() {
         return Err("result is not a finite number".into());
     }
     Ok(v)
@@ -264,6 +437,67 @@ pub fn format_number(v: f64) -> String {
     }
 }
 
+/// `r` rounded half away from zero to exactly `places` decimals.
+fn round_decimal(r: &BigRational, places: u32) -> String {
+    let scale = BigInt::from(10).pow(places);
+    let n = (r * BigRational::from_integer(scale.clone()))
+        .round()
+        .to_integer();
+    let sign = if n.is_negative() { "-" } else { "" };
+    let (int, frac) = (n.abs() / &scale, n.abs() % &scale);
+    if places == 0 {
+        format!("{sign}{int}")
+    } else {
+        format!("{sign}{int}.{frac:0>width$}", width = places as usize)
+    }
+}
+
+/// Decimal places of `r` if its decimal expansion terminates.
+fn terminating_places(r: &BigRational) -> Option<u32> {
+    let mut d = r.denom().clone();
+    let (two, five) = (BigInt::from(2), BigInt::from(5));
+    let (mut twos, mut fives) = (0u32, 0u32);
+    while (&d % &two).is_zero() {
+        d /= &two;
+        twos += 1;
+    }
+    while (&d % &five).is_zero() {
+        d /= &five;
+        fives += 1;
+    }
+    d.is_one().then_some(twos.max(fives))
+}
+
+/// The exact decimal when it terminates, else 10 decimals with no trailing
+/// zeros (like [`format_number`]).
+fn format_exact(r: &BigRational) -> String {
+    let s = round_decimal(r, terminating_places(r).unwrap_or(10));
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_owned()
+    } else {
+        s
+    }
+}
+
+fn output(expression: &str, v: &Number) -> Value {
+    let mut out = json!({"expression": expression, "result": v.to_f64(), "exact": v.is_exact()});
+    let exact = match v {
+        Number::Exact(r) => {
+            if terminating_places(r).is_none() {
+                out["fraction"] = json!(format!("{}/{}", r.numer(), r.denom()));
+            }
+            out["formatted"] = json!(format_exact(r));
+            r.clone()
+        }
+        Number::Approx(f) => {
+            out["formatted"] = json!(format_number(*f));
+            BigRational::from_float(*f).unwrap_or_default()
+        }
+    };
+    out["rounded_2"] = json!(round_decimal(&exact, 2));
+    out
+}
+
 #[derive(Deserialize, JsonSchema)]
 struct Args {
     /// Arithmetic expression, e.g. "17% * 230" or "(1200 - 350) / 3".
@@ -278,7 +512,7 @@ impl Tool for CalculatorTool {
         "calculator"
     }
     fn description(&self) -> &'static str {
-        "Exact arithmetic: + - * / ^, percent (17% * 230), parentheses, sqrt/abs/round/ln/log/sin/cos/tan, pi, e. Use it for any calculation instead of mental math."
+        "Exact arithmetic (no floating-point error) for money, prices per kg, averages: + - * / ^, percent (17% * 230), parentheses, sqrt/abs/round/ln/log/sin/cos/tan, pi, e. Returns `formatted`, `rounded_2` (2 decimals, for money), `exact` (false once pi/e/ln/sin/irrational roots are involved) and `fraction` for repeating decimals (1/3). Use it for any calculation instead of mental math."
     }
     fn parameters(&self) -> Value {
         schema_for::<Args>()
@@ -289,13 +523,18 @@ impl Tool for CalculatorTool {
     async fn call(&self, args: Value, _ctx: &Ctx) -> ToolResult {
         let a: Args = super::args(args)?;
         let v = evaluate(&a.expression).map_err(ToolError::new)?;
-        Ok(json!({"expression": a.expression, "result": v, "formatted": format_number(v)}))
+        Ok(output(&a.expression, &v))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn out(src: &str) -> Value {
+        output(src, &evaluate(src).unwrap_or_else(|e| panic!("{src}: {e}")))
+    }
 
     #[test]
     fn evaluates() {
@@ -317,15 +556,168 @@ mod tests {
             ("12 × 3 ÷ 4", 9.0),
         ];
         for (src, want) in cases {
-            let got = evaluate(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+            let got = evaluate(src)
+                .unwrap_or_else(|e| panic!("{src}: {e}"))
+                .to_f64();
             assert!((got - want).abs() < 1e-9, "{src}: {got} != {want}");
         }
-        assert_eq!(format_number(evaluate("17% * 230").unwrap()), "39.1");
-        assert_eq!(format_number(evaluate("1/3").unwrap()), "0.3333333333");
+        assert_eq!(out("17% * 230")["formatted"], "39.1");
+        assert_eq!(out("1/3")["formatted"], "0.3333333333");
         for bad in [
-            "1/0", "2 +", "(1", "rm -rf", "sqrt(-1)", "", "foo(2)", "2 ** ", "1e999*10",
+            "1/0", "2 +", "(1", "rm -rf", "sqrt(-1)", "", "foo(2)", "2 ** ", "1e999*10", "0^-1",
+            "2^100000", "1e99999",
         ] {
             assert!(evaluate(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn exact_results() {
+        let v = out("0.1 + 0.2");
+        assert_eq!(v["formatted"], "0.3");
+        assert_eq!(v["exact"], true);
+        assert!(v.get("fraction").is_none());
+
+        assert_eq!(out("19.95 / 0.75")["formatted"], "26.6");
+        assert_eq!(out("19.95 / 0.75")["rounded_2"], "26.60");
+
+        let avg = out("(72.5 + 80 + 77.25) / 3");
+        assert_eq!(avg["formatted"], "76.5833333333");
+        assert_eq!(avg["fraction"], "919/12");
+        assert_eq!(out("1/3")["fraction"], "1/3");
+        assert_eq!(out("-1/3")["formatted"], "-0.3333333333");
+
+        let pct = out("10% of 249.95");
+        assert_eq!(pct["formatted"], "24.995");
+        assert_eq!(pct["rounded_2"], "25.00");
+        assert_eq!(out("2.675")["rounded_2"], "2.68");
+        assert_eq!(out("-2.675")["rounded_2"], "-2.68");
+        assert_eq!(out("round(2.5) + round(-2.5)")["formatted"], "0");
+
+        assert_eq!(out("2^-2")["formatted"], "0.25");
+        assert_eq!(out("2^-2")["exact"], true);
+        assert_eq!(out("2^0.5")["exact"], false);
+        let root = out("sqrt(2.25)");
+        assert_eq!(root["formatted"], "1.5");
+        assert_eq!(root["exact"], true);
+        assert_eq!(out("sqrt(2)")["exact"], false);
+        assert_eq!(out("2pi")["exact"], false);
+        assert!(out("2pi").get("fraction").is_none());
+    }
+
+    #[test]
+    fn exact_literals_and_functions() {
+        for (src, want) in [
+            ("3,5", "3.5"),
+            ("1,000.5", "1000.5"),
+            ("1_000.5", "1000.5"),
+            ("1.25e-2", "0.0125"),
+            (".5 + 1.", "1.5"),
+            ("2(3 + 4)", "14"),
+            ("12 : 4", "3"),
+            ("sqrt(16)", "4"),
+            ("sqrt(1/16)", "0.25"),
+            ("abs(-1/3)", "0.3333333333"),
+            ("round(2.5)", "3"),
+            ("round(-2.5)", "-3"),
+            ("floor(-1.2)", "-2"),
+            ("ceil(-1.2)", "-1"),
+            ("1/100000000000", "0.00000000001"),
+            ("-1/300000000000", "0"),
+        ] {
+            let v = out(src);
+            assert_eq!(v["formatted"], want, "{src}");
+            assert_eq!(v["exact"], true, "{src}");
+            assert!(v["result"].is_number(), "{src}");
+        }
+        for src in [
+            "pi",
+            "e",
+            "ln(1)",
+            "log(10)",
+            "log2(2)",
+            "exp(0)",
+            "sin(0)",
+            "cos(0)",
+            "tan(0)",
+            "abs(pi)",
+            "round(pi)",
+            "floor(pi)",
+            "ceil(pi)",
+            "sqrt(pi-pi)",
+            "0 * pi",
+            "pi^0",
+        ] {
+            let v = out(src);
+            assert_eq!(v["exact"], false, "{src}");
+            assert!(v.get("fraction").is_none(), "{src}");
+        }
+        assert_eq!(format_number(-0.0), "0");
+        assert_eq!(format_number(1.0 / 3.0), "0.3333333333");
+    }
+
+    #[test]
+    fn guards() {
+        for src in ["1/0", "0^-1", "0^-0.5", "0^(-1e-1000)"] {
+            assert_eq!(evaluate(src).unwrap_err(), "division by zero", "{src}");
+        }
+        for src in ["2^100000", "2^-100000", "pi^100000", "2^round(100000+pi)"] {
+            assert!(
+                evaluate(src).unwrap_err().contains("exponent too large"),
+                "{src}"
+            );
+        }
+        for src in [
+            "2^4096",
+            "2^-4096",
+            "(3^2585)/(3^2585)",
+            "(2^3000)*(2^3000)",
+        ] {
+            assert!(evaluate(src).unwrap_err().contains("4096 bits"), "{src}");
+        }
+        assert_eq!(
+            evaluate("sqrt(-1e-1000)").unwrap_err(),
+            "sqrt of a negative number"
+        );
+        assert!(evaluate(&format!("{}1{}", "(".repeat(64), ")".repeat(64))).is_ok());
+        for src in [
+            format!("{}1{}", "(".repeat(65), ")".repeat(65)),
+            format!("{}1", "-".repeat(65)),
+            format!("{}1", "abs ".repeat(65)),
+            format!("{}1", "1^".repeat(65)),
+        ] {
+            assert_eq!(evaluate(&src).unwrap_err(), "expression too deep");
+        }
+        assert_eq!(
+            evaluate(&"1".repeat(501)).unwrap_err(),
+            "expression too long"
+        );
+    }
+
+    /// `n / 10^places` written as a decimal literal, e.g. (-1234, 2) -> "(-12.34)".
+    fn lit(n: i64, places: u32) -> String {
+        let scale = 10i64.pow(places);
+        let sign = if n < 0 { "-" } else { "" };
+        let (int, frac) = (n.abs() / scale, n.abs() % scale);
+        if places == 0 {
+            format!("({sign}{int})")
+        } else {
+            format!("({sign}{int}.{frac:0>width$})", width = places as usize)
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn exact_round_trips(
+            an in -1_000_000i64..1_000_000, ap in 0u32..5,
+            bn in -1_000_000i64..1_000_000, bp in 0u32..5,
+        ) {
+            let (a, b) = (lit(an, ap), lit(bn, bp));
+            let want = evaluate(&a).unwrap();
+            prop_assert_eq!(evaluate(&format!("{a} + {b} - {b}")).unwrap(), want.clone());
+            if bn != 0 {
+                prop_assert_eq!(evaluate(&format!("({a} * {b}) / {b}")).unwrap(), want);
+            }
         }
     }
 }
