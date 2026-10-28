@@ -263,6 +263,79 @@ impl Call {
         Self::new(Method::POST, &["computer", "view", view_id, "ticket"]).with_body(body)
     }
 
+    /// `POST /ops/records`: one record for Lucina's ops record (`NewRecord`;
+    /// Lucina validates it and denies unknown fields). 201 new, 200 duplicate:
+    /// send it with [`LucinaClient::call_with_status`].
+    pub fn ops_record(body: Value) -> Self {
+        Self::new(Method::POST, &["ops", "records"]).with_body(body)
+    }
+
+    /// `GET /ops/records/{id}`: one record (id = 16 lowercase hex).
+    pub fn ops_record_get(id: &str) -> Result<Self> {
+        if id.len() != 16
+            || !id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(Error::Invalid {
+                field: "id",
+                message: "must be 16 lowercase hex digits".into(),
+            });
+        }
+        Ok(Self::new(Method::GET, &["ops", "records", id]))
+    }
+
+    /// `GET /ops/search?q=&project=&kind=&since=&until=&limit=`: Lucina's record
+    /// by words, project, kind and dates. Blank parameters are left out.
+    pub fn ops_search(
+        q: Option<&str>,
+        project: Option<&str>,
+        kind: Option<&str>,
+        since: Option<&str>,
+        until: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Self> {
+        let mut c = Self::new(Method::GET, &["ops", "search"]);
+        if let Some(q) = present(q) {
+            if q.chars().count() > validate::MAX_OPS_QUERY_CHARS {
+                return Err(Error::Invalid {
+                    field: "q",
+                    message: format!(
+                        "must be at most {} characters",
+                        validate::MAX_OPS_QUERY_CHARS
+                    ),
+                });
+            }
+            c.query.push(("q", q.to_owned()));
+        }
+        for (field, v) in [
+            ("project", project),
+            ("kind", kind),
+            ("since", since),
+            ("until", until),
+        ] {
+            if let Some(v) = present(v) {
+                if v.len() > 64 || v.chars().any(char::is_control) {
+                    return Err(Error::Invalid {
+                        field,
+                        message: "must be at most 64 characters".into(),
+                    });
+                }
+                c.query.push((field, v.to_owned()));
+            }
+        }
+        if let Some(n) = limit {
+            if !(1..=validate::MAX_OPS_SEARCH_LIMIT).contains(&n) {
+                return Err(Error::Invalid {
+                    field: "limit",
+                    message: format!("must be 1..={}", validate::MAX_OPS_SEARCH_LIMIT),
+                });
+            }
+            c.query.push(("limit", n.to_string()));
+        }
+        Ok(c)
+    }
+
     /// `POST /game/control`: start (`true`) or pause the run.
     pub fn game_control(running: bool) -> Self {
         let reason = if running {
@@ -610,6 +683,11 @@ impl Call {
     pub fn path(&self) -> String {
         format!("/api/secretary/{}", self.segments.join("/"))
     }
+}
+
+/// A query parameter that was given and is not blank, trimmed.
+fn present(s: Option<&str>) -> Option<&str> {
+    s.map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// `workspace` | `android` (Lucina also accepts their aliases; the apps use these two).
@@ -1076,6 +1154,61 @@ mod tests {
                 .contains('?'),
             "no query without a radius"
         );
+    }
+
+    #[test]
+    fn ops_calls() {
+        let c = client("http://h:1");
+        let rec = Call::ops_record(json!({"kind": "deploy", "project": "p1", "title": "x"}))
+            .with_caller("mcp:claude");
+        assert_eq!(rec.method(), &Method::POST);
+        assert_eq!(c.url(&rec).as_str(), "http://h:1/api/secretary/ops/records");
+        assert_eq!(rec.body().unwrap()["kind"], "deploy");
+        assert_eq!(rec.caller.as_deref(), Some("mcp:claude"));
+
+        assert_eq!(
+            c.url(&Call::ops_record_get("0123456789abcdef").unwrap())
+                .as_str(),
+            "http://h:1/api/secretary/ops/records/0123456789abcdef"
+        );
+        for bad in [
+            "0123456789ABCDEF",
+            "0123456789abcde",
+            "../../../../x/ab",
+            "",
+        ] {
+            assert!(Call::ops_record_get(bad).is_err(), "{bad}");
+        }
+
+        let s = Call::ops_search(
+            Some("go live"),
+            Some("p1"),
+            Some("deploy"),
+            Some("2026-10-01"),
+            None,
+            Some(5),
+        )
+        .unwrap();
+        assert_eq!(
+            c.url(&s).as_str(),
+            "http://h:1/api/secretary/ops/search?q=go+live&project=p1&kind=deploy&since=2026-10-01&limit=5"
+        );
+        let s = Call::ops_search(Some(" "), None, None, None, None, None).unwrap();
+        assert_eq!(c.url(&s).as_str(), "http://h:1/api/secretary/ops/search");
+        let long = "x".repeat(validate::MAX_OPS_QUERY_CHARS + 1);
+        let at_max = "x".repeat(validate::MAX_OPS_QUERY_CHARS);
+        assert!(Call::ops_search(Some(&at_max), None, None, None, None, Some(50)).is_ok());
+        for (q, limit, field) in [
+            (Some(long.as_str()), None, "q"),
+            (None, Some(0), "limit"),
+            (None, Some(51), "limit"),
+        ] {
+            match Call::ops_search(q, None, None, None, None, limit) {
+                Err(Error::Invalid { field: f, .. }) => assert_eq!(f, field),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(Call::ops_search(None, Some(&"p".repeat(65)), None, None, None, None).is_err());
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub mod keep;
 pub mod login;
 pub mod mcp;
 pub mod oauth;
+pub mod ops;
 pub mod ratelimit;
 pub mod scope;
 pub mod status;

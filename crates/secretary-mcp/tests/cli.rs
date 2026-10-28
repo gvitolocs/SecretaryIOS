@@ -46,14 +46,14 @@ async fn token_issue_list_revoke() {
     let grok = out.trim().to_owned();
 
     // the running server picks up the new tokens without a restart
-    assert_eq!(h.tool_names(&token).await.len(), 32);
+    assert_eq!(h.tool_names(&token).await.len(), 35);
     let (e, text) = h
         .call(&grok, "ask_lucina", json!({"message": "ciao"}))
         .await;
     assert!(!e && text.contains("from grok"), "{text}");
     assert_eq!(
         h.tool_names(&grok).await.len(),
-        21,
+        23,
         "default scopes are read,chat"
     );
 
@@ -84,7 +84,7 @@ async fn token_issue_list_revoke() {
     );
     assert_eq!(
         h.tool_names(&grok).await.len(),
-        21,
+        23,
         "other tokens keep working"
     );
     let (code, out, _) = cli(&dir, &["token", "list"]);

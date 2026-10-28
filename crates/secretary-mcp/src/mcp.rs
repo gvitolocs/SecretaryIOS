@@ -37,6 +37,8 @@ To hand Lucina a briefing, document or anything long or worth keeping, save it a
 instead of pasting it into ask_lucina; the owner sees notes in the Secretary app and Lucina recalls them by slug (note_get, notes_search). \
 Notes are Google-Keep style: labels, colours, pinned/archived, checklists (note_get shows item numbers; note_update checks items off, adds or removes them, and changes labels, colour, archive and reminder), and note_labels lists the labels. \
 The owner's tasks (Todoist) are in tasks_list, task_add and task_complete. \
+Lucina keeps the record of all the owner's projects: report every deploy, incident, decision, finished piece of work (status) and finding with ops_record, \
+one record per event (project slug, title, body; for incidents severity, timeline, cause, fix, follow_ups), and look things up with ops_search and ops_get. \
 Lucina's computer is an isolated Linux desktop sandbox (container `lucina-workspace` on nezopt; not nezopt's host, not the owner's Mac). Its only browser is Chromium: one window, already open and signed in to the owner's accounts (Outlook, Google). Use the Lucina MCP tools: `computer_screenshot` to see it (it lists each window's pid and window_id), `computer_call` with `get_window_state` {pid, window_id} to read that Chromium window and `click`, `type_text`, `press_key` to act in it (reuse its tabs; ctrl+t opens a new tab there), `computer_bash` for shell work, or `computer_task` to have Lucina do the whole job. The driver's browser_* tools cannot attach to that window; never open a second browser window or an isolated profile, and never install or launch Firefox. Those signed-in sessions are the owner's: read and navigate freely, but never send email or messages, buy anything, accept terms or change account settings without the owner's explicit OK.\n\n\
 With the `agents` scope you can also drive Lucina Agents, the owner's coding agents on nezopt (Claude Code, Codex, OpenCode, Cursor, Copilot): \
 make a git worktree with workspace_create, start an agent in it with agent_run (provider + task), follow it with agent_wait and agent_logs, \
@@ -242,6 +244,7 @@ impl LucinaMcp {
             "tasks_list" => t.tasks_list(args).await,
             "task_add" => t.task_add(args).await,
             "task_complete" => t.task_complete(args).await,
+            name if name.starts_with("ops_") => t.ops(name, args).await,
             _ => Err(ToolError(format!("unknown tool {name}"))),
         }
     }
@@ -341,7 +344,7 @@ impl ServerHandler for LucinaMcp {
         let c = caller(&ctx)?;
         let tools: Vec<Tool> = tools::specs()
             .iter()
-            .filter(|s| c.has(s.scope))
+            .filter(|s| s.allowed(|x| c.has(x)))
             .map(|s| s.tool())
             .collect();
         Ok(ListToolsResult::with_all_items(tools)
@@ -368,7 +371,7 @@ impl ServerHandler for LucinaMcp {
                 None,
             ));
         };
-        if !c.has(spec.scope) {
+        if !spec.allowed(|x| c.has(x)) {
             audit("tool_call", &name, &c, started, false);
             tracing::warn!(target: "secretary_mcp::audit", event = "scope_denied", name = %name, caller = %c.name, need = %spec.scope);
             if spec.scope == Scope::Agents {

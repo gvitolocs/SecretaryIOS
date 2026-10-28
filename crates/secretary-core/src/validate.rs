@@ -134,6 +134,10 @@ pub fn flag(field: &'static str, s: &str) -> Result<&'static str> {
 /// Max page size of `GET /timeline`.
 pub const MAX_TIMELINE_LIMIT: u32 = 200;
 
+/// Longest `q` and page size of `GET /ops/search` (Lucina's ops record).
+pub const MAX_OPS_QUERY_CHARS: usize = 500;
+pub const MAX_OPS_SEARCH_LIMIT: u32 = 50;
+
 /// Radius range of `GET /grocery/deals/map?radiusM=` (meters),
 /// also enforced by the server route.
 pub const DEALS_RADIUS_MIN: u32 = 500;
