@@ -258,8 +258,15 @@ const DATE_BUCKETS: &[&str] = &[
     "fotos de",
     "fotos von",
 ];
-/// Archived photos: imported, but the folder is not an album.
-const ARCHIVE_DIRS: &[&str] = &["archive", "arkiv", "archivio"];
+/// Archived photos and Google's "Failed Videos": imported, but the folder is not an album.
+const ARCHIVE_DIRS: &[&str] = &[
+    "archive",
+    "arkiv",
+    "archivio",
+    "failed videos",
+    "mislykkede videoer",
+    "video non riusciti",
+];
 /// Deleted photos: not imported.
 const TRASH_DIRS: &[&str] = &["trash", "bin", "papirkurv", "cestino", "papierkorb"];
 /// An album folder's own metadata file (localized).
@@ -860,6 +867,7 @@ mod tests {
             "Takeout",
             "Arkiv",
             "Archive",
+            "Mislykkede videoer",
         ] {
             assert_eq!(takeout_album(d), None, "{d}");
         }
