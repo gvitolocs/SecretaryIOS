@@ -431,6 +431,12 @@ pub struct Payload {
     /// Approvals only, with previews on: the request's `details` (a root plan's commands), clipped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Lucina's decisions (`data: {kind: "decision", decisionId, options}`): the id and the options, so the
+    /// app's notification can answer with a button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_options: Vec<String>,
 }
 
 /// Result of one delivery (after retries).
@@ -753,6 +759,22 @@ pub fn apns_body(payload: &Payload) -> Value {
         (Some(_), Some(d)) => format!("{}\n{}", payload.body, clip_bytes(d, APNS_DETAIL_BYTES)),
         _ => payload.body.clone(),
     };
+    // A decision: the static DECISION category (Option 1 / Option 2 / my own words), its options listed in the
+    // text so the buttons read clearly; the app swaps in one with the options' own labels when the push wakes it.
+    let (aps_category, alert_body) = match &payload.decision_id {
+        Some(_) if !payload.decision_options.is_empty() => {
+            let options: Vec<String> = payload
+                .decision_options
+                .iter()
+                .take(6)
+                .enumerate()
+                .map(|(i, o)| format!("{}. {}", i + 1, clip_bytes(o, 200)))
+                .collect();
+            ("DECISION", format!("{alert_body}\n{}", options.join("\n")))
+        }
+        Some(_) => ("DECISION", alert_body),
+        None => (aps_category, alert_body),
+    };
     let mut body = json!({
         "aps": {
             "alert": {"title": payload.title, "body": alert_body},
@@ -773,6 +795,12 @@ pub fn apns_body(payload: &Payload) -> Value {
         body["approvalSensitive"] = json!(sensitive);
         // Wake the app too, so it refreshes its approvals and the Lock Screen widget; and let the
         // request through a Focus (the app has the time-sensitive entitlement).
+        body["aps"]["content-available"] = json!(1);
+        body["aps"]["interruption-level"] = json!("time-sensitive");
+    }
+    if let Some(id) = &payload.decision_id {
+        body["decisionId"] = json!(id);
+        body["decisionOptions"] = json!(payload.decision_options.iter().take(6).collect::<Vec<_>>());
         body["aps"]["content-available"] = json!(1);
         body["aps"]["interruption-level"] = json!("time-sensitive");
     }
@@ -802,7 +830,28 @@ mod tests {
             approval_id: Some("apr_1".into()),
             sensitive: Some(sensitive),
             detail,
+            decision_id: None,
+            decision_options: Vec::new(),
         }
+    }
+
+    #[test]
+    fn apns_decision_body_has_the_options_and_the_decision_category() {
+        let mut p = approval_payload(false, None);
+        p.approval_id = None;
+        p.sensitive = None;
+        p.category = "lucina".into();
+        p.title = "Decision needed: claude-code".into();
+        p.body = "Deploy the gallery fix?".into();
+        p.decision_id = Some("dc-0123456789ab".into());
+        p.decision_options = vec!["Deploy now".into(), "Wait".into()];
+        let b = apns_body(&p);
+        assert_eq!(b["aps"]["category"], "DECISION");
+        assert_eq!(b["aps"]["alert"]["body"], "Deploy the gallery fix?\n1. Deploy now\n2. Wait");
+        assert_eq!(b["decisionId"], "dc-0123456789ab");
+        assert_eq!(b["decisionOptions"], json!(["Deploy now", "Wait"]));
+        assert_eq!(b["aps"]["content-available"], 1);
+        assert!(b.get("approvalId").is_none());
     }
 
     #[test]

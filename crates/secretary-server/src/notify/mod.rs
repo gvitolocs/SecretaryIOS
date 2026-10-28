@@ -356,6 +356,20 @@ impl Notifier {
                         ))
                     })
                     .flatten();
+                // Lucina's decision ({kind: "decision", decisionId, options}); its options only with previews on.
+                let decision = n
+                    .data
+                    .as_ref()
+                    .filter(|d| d["kind"] == "decision")
+                    .and_then(|d| {
+                        let id = d["decisionId"].as_str()?.to_owned();
+                        let options = d["options"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(|o| o.as_str().map(str::to_owned)).collect())
+                            .filter(|_: &Vec<String>| settings.previews)
+                            .unwrap_or_default();
+                        Some((id, options))
+                    });
                 let payload = Payload {
                     id: Some(n.id.clone()),
                     category: n.category.as_str().to_owned(),
@@ -376,6 +390,8 @@ impl Notifier {
                         .filter(|d| !d.trim().is_empty())
                         .map(str::to_owned),
                     approval_id: approval.map(|(id, _)| id),
+                    decision_id: decision.as_ref().map(|(id, _)| id.clone()),
+                    decision_options: decision.map(|(_, o)| o).unwrap_or_default(),
                 };
                 (s, payload)
             })
@@ -537,6 +553,8 @@ impl Notifier {
                 approval_id: None,
                 sensitive: None,
                 detail: None,
+                decision_id: None,
+                decision_options: Vec::new(),
             };
             targets.push((s, payload));
         }
@@ -575,6 +593,8 @@ impl Notifier {
                     approval_id: None,
                     sensitive: None,
                     detail: None,
+                    decision_id: None,
+                    decision_options: Vec::new(),
                 };
                 (s, payload)
             })
