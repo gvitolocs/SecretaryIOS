@@ -242,7 +242,7 @@ fn count_where(c: &Connection, cond: &str) -> rusqlite::Result<(i64, i64, Option
     c.query_row(
         &format!(
             "SELECT COALESCE(SUM(i.kind = 'photo'), 0), COALESCE(SUM(i.kind = 'video'), 0), MAX(i.taken_at) \
-             FROM items i WHERE i.trashed_at IS NULL AND i.hidden = 0 AND {cond}"
+             FROM items i WHERE i.trashed_at IS NULL AND i.hidden = 0 AND i.archived = 0 AND {cond}"
         ),
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),

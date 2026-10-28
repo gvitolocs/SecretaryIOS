@@ -22,6 +22,9 @@ pub enum BatchOp {
     Unfavorite,
     AlbumAdd,
     AlbumRemove,
+    /// Hide from the main Gallery without deleting (`items.archived`).
+    Archive,
+    Unarchive,
 }
 
 impl BatchOp {
@@ -34,6 +37,8 @@ impl BatchOp {
             "unfavorite" => Self::Unfavorite,
             "album_add" => Self::AlbumAdd,
             "album_remove" => Self::AlbumRemove,
+            "archive" => Self::Archive,
+            "unarchive" => Self::Unarchive,
             _ => return None,
         })
     }
@@ -74,7 +79,7 @@ pub struct Plan {
 /// Check a request as a whole; the message is the 400 body.
 pub fn plan(req: BatchReq) -> Result<Plan, String> {
     let op = BatchOp::parse(&req.op).ok_or_else(|| {
-        "op must be one of trash, restore, purge, favorite, unfavorite, album_add, album_remove"
+        "op must be one of trash, restore, purge, favorite, unfavorite, album_add, album_remove, archive, unarchive"
             .to_string()
     })?;
     if req.ids.is_empty() {
@@ -138,19 +143,23 @@ pub fn id_ok(id: &str) -> bool {
 
 struct Row {
     trashed: bool,
+    archived: bool,
+    media: bool,
     device: Option<String>,
     asset_id: Option<String>,
 }
 
 fn row(c: &Connection, id: &str) -> rusqlite::Result<Option<Row>> {
     c.query_row(
-        "SELECT trashed_at IS NOT NULL, device, asset_id FROM items WHERE id = ?1",
+        "SELECT trashed_at IS NOT NULL, device, asset_id, archived != 0, kind IN ('photo', 'video') FROM items WHERE id = ?1",
         [id],
         |r| {
             Ok(Row {
                 trashed: r.get(0)?,
                 device: r.get(1)?,
                 asset_id: r.get(2)?,
+                archived: r.get(3)?,
+                media: r.get(4)?,
             })
         },
     )
@@ -206,6 +215,12 @@ pub fn apply(c: &mut Connection, plan: &Plan) -> rusqlite::Result<Outcome> {
         let error = match plan.op {
             BatchOp::Trash if item.trashed => Some("already_trashed"),
             BatchOp::Restore if !item.trashed => Some("not_trashed"),
+            // Only pictures and videos are archived (a Drive file has no place in the Gallery), and the Trash is
+            // a separate shelf: restore first.
+            BatchOp::Archive | BatchOp::Unarchive if !item.media => Some("not_media"),
+            BatchOp::Archive | BatchOp::Unarchive if item.trashed => Some("trashed"),
+            BatchOp::Archive if item.archived => Some("already_archived"),
+            BatchOp::Unarchive if !item.archived => Some("not_archived"),
             _ => None,
         };
         if let Some(error) = error {
@@ -232,6 +247,12 @@ pub fn apply(c: &mut Connection, plan: &Plan) -> rusqlite::Result<Outcome> {
                 tx.execute(
                     "UPDATE items SET trashed_at = NULL, updated_at = ?2 WHERE id = ?1",
                     params![id, now],
+                )?;
+            }
+            BatchOp::Archive | BatchOp::Unarchive => {
+                tx.execute(
+                    "UPDATE items SET archived = ?3, updated_at = ?2 WHERE id = ?1",
+                    params![id, now, plan.op == BatchOp::Archive],
                 )?;
             }
             BatchOp::Favorite | BatchOp::Unfavorite => {
@@ -282,6 +303,8 @@ mod tests {
             ("unfavorite", BatchOp::Unfavorite),
             ("album_add", BatchOp::AlbumAdd),
             ("album_remove", BatchOp::AlbumRemove),
+            ("archive", BatchOp::Archive),
+            ("unarchive", BatchOp::Unarchive),
         ] {
             assert_eq!(BatchOp::parse(s), Some(op));
         }
@@ -326,7 +349,14 @@ mod tests {
             ..req(op, &["a"])
         };
         assert!(plan(also("trash")).unwrap().also_from_device);
-        for op in ["restore", "purge", "favorite", "unfavorite"] {
+        for op in [
+            "restore",
+            "purge",
+            "favorite",
+            "unfavorite",
+            "archive",
+            "unarchive",
+        ] {
             assert!(plan(also(op)).is_err(), "{op}");
         }
         // Explicitly false is fine anywhere.

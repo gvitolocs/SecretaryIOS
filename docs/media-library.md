@@ -179,6 +179,34 @@ kernel DK3).
     - `POST devices/{id}/deletions/ack {asset_ids}` → `{acked: n}` (only pending ones count).
     - A request stays queued if its item is purged, and is queued again if the item is trashed again after the ack.
     - The iOS side that consumes this is a follow-up.
+- Browsing the Gallery (2026-10-28, `browse.rs`): Places, memories and the archive. All of it uses the listing's own
+  filters (`db::list_filters`), so a map, a memory and the grid always agree on what is visible (not trashed, not
+  archived, the chosen `origin` and `kind`; both default to the whole Gallery, photos and videos).
+  - **Places.** `GET items/places?origin=&kind=&bbox=&zoom=&limit=` groups the pictures that have a position into
+    map clusters: `{zoom, total, clusters: [{id, count, lat, lon, bbox, cover}]}`, biggest first, at most `limit`
+    (300 by default, 500 at most). `bbox` is the visible window `west,south,east,north` in degrees (`west > east`
+    crosses the date line); `zoom` is the map zoom on a 256 px-tile map (0 to 24, 3 by default; MapLibre counts 512 px
+    tiles, so the web sends its zoom plus one). The grid is square on screen (Web Mercator), 72 px cells; `lat` and
+    `lon` are the mean of the members, `bbox` the box around them. `cover` is the item JSON of the picture that
+    stands for the cluster (a favorite first, then the newest); `total` counts every picture with a position in
+    the window. Bad `bbox`, `zoom` or `origin` are 400.
+  - **`bbox` on `GET items`** (and `items/months`) lists exactly those pictures: a cluster opens in the grid with
+    `items?bbox=<the cluster's bbox>`. Pictures without a position never match.
+  - **On this day.** `GET items/on-this-day?date=MM-DD&year=&per_year=&origin=&kind=` answers
+    `{date, year, years: [{year, years_ago, total, items}]}`, newest year first: the pictures taken on that calendar
+    day in years before `year` (today's date and year in the library's time zone by default). `total` is all of the
+    year's pictures that day, `items` at most `per_year` (6; up to 20) in time order: favorites first, then the most
+    pixels, and a picture within 30 s of one already chosen is skipped (a burst counts once). Only pictures with a
+    real `taken_at` count, never ones dated by when they were added. `date` must be a real day (`02-29` is one).
+  - **Recently added.** `GET items/recent?origin=&kind=&days=&limit=` answers `{total, items}`: the newest arrivals by
+    `added_at` (not taken date), `total` counting those within `days` (1 to 36500; all by default), `limit` 30 (up to 200).
+  - **Archive.** `items.archived` (idempotent column migration, partial index) hides a photo or video from the Gallery
+    without deleting it. `POST items/batch` takes `archive` and `unarchive`; per-id errors `not_media` (a Drive file),
+    `trashed`, `already_archived`, `not_archived`. `GET items?archived=true` lists the archive (default: the archived
+    are left out, of the listing, `items/months`, the sources' and devices' counts, Places and the memories). The Trash
+    shows trashed items whether archived or not, and a restored item is still archived. An archived item is still
+    found by id, in albums and by a share link (archiving is about browsing, not about access).
+
 - Share links (2026-10-27, `share.rs`, `share_http.rs`):
   - owner: `POST albums/{id}/shares {expires_in_days?, allow_original?}` → `{token, url_path, …}`;
     `GET albums/{id}/shares`, `GET shares` (with views and `live`); `DELETE shares/{token}` revokes (the row stays).
