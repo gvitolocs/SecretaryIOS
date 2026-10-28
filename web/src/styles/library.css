@@ -108,3 +108,17 @@
 .library-controls .btn {
   margin-top: 10px;
 }
+
+/* Desktop book detail follows the shared sub-page heading. */
+.pg .library-detail-title { font-size: 20px; font-weight: 600; margin-bottom: 16px; }
+.pg .library-meta { gap: 8px 16px; }
+.pg .library-command { font-size: 13px; }
+.pg .pg-row-name:has([id^="highlight-"]) { white-space: pre-wrap; }
+
+.pg .library-filter-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pg .library-filter-row [aria-pressed="true"] { background: var(--pg-fill-hover); border-color: var(--pg-border-strong); }
+.pg .library-cover { display: grid; place-items: center; flex: none; width: 40px; height: 56px; background: var(--pg-fill); border-radius: var(--pg-radius-control); color: var(--pg-muted); }
+.pg .library-highlight-row .pg-row-sub, .pg .library-book-row .pg-row-sub { white-space: pre-wrap; }
+
+.pg.library-desk .pg-card:has(#library-status) { display: flex; flex-direction: column; gap: 12px; }
+.pg.library-desk .pg-card:has(#library-status) form { display: flex; flex-direction: column; gap: 8px; }
