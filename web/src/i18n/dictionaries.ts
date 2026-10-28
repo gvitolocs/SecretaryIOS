@@ -31,11 +31,12 @@ import { wardrobe } from "./dict/wardrobe";
 import { viewer } from "./dict/viewer";
 import { gallery } from "./dict/gallery";
 import { galleryInfo } from "./dict/galleryInfo";
+import { editor } from "./dict/editor";
 import { weight } from "./dict/weight";
 import { nclient } from "./dict/nclient";
 import { pixiv } from "./dict/pixiv";
 import { instagram } from "./dict/instagram";
 
-export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram };
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, editor };
 
 export type Dictionaries = typeof dictionaries;
