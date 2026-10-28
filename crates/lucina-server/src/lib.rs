@@ -42,6 +42,7 @@ pub mod rich;
 pub mod secrets;
 pub mod selftest;
 pub mod share;
+pub mod video;
 pub mod surface;
 pub mod telegram;
 

@@ -45,6 +45,7 @@ pub mod meshy_turn;
 pub mod plugin_turn;
 pub mod reply;
 mod share_turn;
+mod youtube_turn;
 
 /// Counted after the MCP prefix (which may add up to 100 more on the wire).
 pub const MAX_MESSAGE_CHARS: usize = 12_000;
@@ -1230,6 +1231,11 @@ async fn json_turn(
     let persona = t.persona().to_owned();
     let memory = prepared.memory_context.as_str();
 
+    // A YouTube link and "transcribe / report / summarise" (crate::video): a background job.
+    if let Some(f) = youtube_turn::try_turn(t, cmid) {
+        return f;
+    }
+
     if t.share {
         if t.guarded {
             // Not the owner: no tools, an answer from the extracted content only.
@@ -2025,6 +2031,37 @@ struct JobDest {
     origin: Option<Arc<ChannelOrigin>>,
 }
 
+/// A finished job on the owner's devices (`/v1/notify`), keyed to its timeline item so it is
+/// one notification with secretary-server's timeline ingester.
+fn notify_job(
+    st: &AppState,
+    job_id: &str,
+    title: &str,
+    text: &str,
+    timeline_id: Option<&str>,
+    channel: &str,
+) {
+    if !st.cfg.app_notify {
+        return;
+    }
+    let mut body = json!({
+        "category": "lucina_message", "title": title,
+        "body": text.chars().take(600).collect::<String>(),
+        "route": "/", "channel": channel,
+        "dedupKey": format!("lucina:job:{job_id}"),
+    });
+    if let Some(id) = timeline_id {
+        body["timelineId"] = json!(id);
+    }
+    let secretary = st.secretary.clone();
+    tokio::spawn(async move {
+        let r = crate::bridges::notify(&secretary, &body).await;
+        if !r.ok {
+            tracing::warn!(status = r.status, "job notification failed");
+        }
+    });
+}
+
 /// `startJob`: run the action, report on the timeline and the job record
 /// (and, from a chat channel, in the chat: it has no polling client).
 fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: String, dest: JobDest) {
@@ -2088,6 +2125,7 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     let reply = st.planner.generate_skill_reply(&t, "Google Drive spreadsheet update through Cursor", &result, "Answer in 1-3 short sentences. Say updated only if the result contains \"Verification: PASS\"; otherwise say it was not confirmed.").await.map_err(|e| e.to_string())?;
                     Ok((reply, result))
                 }
+                crate::video::ACTION => crate::video::run(&st, &plan, &job.id).await,
                 "oracle_monitor_task" => Ok(("Oracle SSH monitoring is disabled on nezopt. Oracle peer1 runs Poko only, not Lucina.".into(), String::new())),
                 "generate_image" => Err("image generation (ComfyUI) is not available on the Rust Lucina yet".into()),
                 "graph_task" => Err("graph_task needs rclone and the Drive cache, which the Rust Lucina does not have".into()),
@@ -2115,6 +2153,16 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                     (rich_msg, text)
                 };
                 let item = record(text, rich_msg.as_ref());
+                if action == crate::video::ACTION {
+                    notify_job(
+                        &st,
+                        &job.id,
+                        "Video report ready",
+                        &result,
+                        item.as_ref().map(|i| i.id.as_str()),
+                        &channel,
+                    );
+                }
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "done".into();
                     j.result = Some(result.clone());
@@ -2142,6 +2190,16 @@ fn spawn_job(st: AppState, job: Job, plan: Value, message: String, memory: Strin
                 tracing::error!(job_id = %job.id, %action, error = %reason.chars().take(300).collect::<String>(), "secretary job failed");
                 let text = format!("{} failed: {reason}", jobs::label(&action));
                 let item = record(text.clone(), None);
+                if action == crate::video::ACTION {
+                    notify_job(
+                        &st,
+                        &job.id,
+                        "Video report failed",
+                        &text,
+                        item.as_ref().map(|i| i.id.as_str()),
+                        &channel,
+                    );
+                }
                 let _ = st.jobs.update(&job.id, |j| {
                     j.status = "error".into();
                     j.error = Some(reason.clone());

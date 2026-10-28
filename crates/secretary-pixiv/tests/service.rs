@@ -505,6 +505,19 @@ async fn signed_urls_serve_images_with_the_referer_and_cache_them() {
 }
 
 #[tokio::test]
+async fn signed_url_tokens_are_lowercase_hex() {
+    // Lucina shows these links in chat; her secret redactor masks mixed-case random-looking
+    // segments (base64), so the token must stay lowercase hex.
+    let e = env().await;
+    let r = get(&e.app, "/v1/pixiv/ranking?mode=day").await;
+    let thumb = r.json["data"]["items"][0]["thumbUrl"].as_str().unwrap().to_string();
+    let token = thumb.trim_start_matches("/v1/pixiv/s/").split('/').nth(1).unwrap();
+    assert!(token.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "{token}");
+    assert_eq!(String::from_utf8(hex::decode(token).unwrap()).unwrap(), img(1001, 0));
+    assert_eq!(send(&e.app, "GET", &thumb, false, None).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn bad_and_expired_signatures_are_refused() {
     let e = env().await;
     let r = get(&e.app, "/v1/pixiv/ranking?mode=day").await;

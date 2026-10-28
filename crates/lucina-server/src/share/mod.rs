@@ -10,7 +10,7 @@ pub mod memory;
 pub mod router;
 mod structured;
 pub mod tools;
-mod vision;
+pub(crate) mod vision;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
