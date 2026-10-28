@@ -23,6 +23,8 @@ pub const PLAUSIBLE_MIN: f64 = 0.4;
 pub const BIND_MIN: f64 = 0.75;
 /// A section is set from this confidence up.
 pub const SECTION_MIN: f64 = 0.5;
+/// An implausible item Jev reads as a chore from this probability up is offered as a reminder or task.
+pub const CHORE_MIN: f64 = 0.5;
 /// A closest item is suggested from this confidence up.
 pub const SUGGEST_MIN: f64 = 0.3;
 
@@ -46,25 +48,32 @@ pub enum Gate {
 impl Gate {
     /// The `add` op of `lucina_grocery` for `text` (the owner's words stay the typed name).
     pub fn add_op(&self, text: &str) -> Option<Value> {
+        let mut op = json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "text": text});
+        self.apply_to(&mut op).then_some(op)
+    }
+
+    /// Put this decision on an existing `add` op: a bound item sets `catalogId`
+    /// (its illustration key), a section alone sets `section` when the op has none.
+    /// The op's own text, spec, quantity and unit stay. `false` for [`Gate::Ask`].
+    pub fn apply_to(&self, op: &mut Value) -> bool {
         let Gate::Add {
             catalog_id,
             section,
             ..
         } = self
         else {
-            return None;
+            return false;
         };
-        let mut op = json!({"opId": uuid::Uuid::new_v4().to_string(), "type": "add", "text": text});
         if let Some(id) = catalog_id {
+            // The catalog id is also the illustration key: clients draw its art from it.
             op["catalogId"] = json!(id);
-            // The catalog id is also the illustration key; an explicit `svg:` icon
-            // wins over any emoji in every client.
-            op["icon"] = json!(format!("svg:{id}"));
         }
         if let (None, Some(s)) = (catalog_id, section) {
-            op["section"] = json!(s);
+            if op.get("section").is_none_or(Value::is_null) {
+                op["section"] = json!(s);
+            }
         }
-        Some(op)
+        true
     }
 }
 
@@ -95,6 +104,14 @@ pub fn questions(idx: &CatalogIndex) -> Vec<(String, Question)> {
             "No: an appliance, furniture, electronics, clothes, a person, a place, a task, or a mis-heard word that names no product.",
         ),
     )];
+    qs.push((
+        "chore".to_owned(),
+        Question::noul_with(
+            "Is `item` rather a chore or something to do or remember (take the laundry out, call someone, pay a bill) than a product to buy?",
+            "Yes: a task, chore or reminder.",
+            "No: a product, or nonsense.",
+        ),
+    ));
     let sections: Vec<(String, String)> = idx
         .sections()
         .iter()
@@ -135,7 +152,14 @@ pub fn questions(idx: &CatalogIndex) -> Vec<(String, Question)> {
     qs
 }
 
-fn ask_text(lang: &str, text: &str, suggestion: Option<&str>) -> String {
+fn ask_text(lang: &str, text: &str, suggestion: Option<&str>, chore: bool) -> String {
+    if chore {
+        return match lang {
+            "it" => format!("«{text}» sembra più una cosa da fare che da comprare, quindi non l'ho messo nella lista della spesa. Vuoi un promemoria o un'attività?"),
+            "da" => format!("“{text}” lyder mere som noget, der skal gøres, end noget, der skal købes, så det kom ikke på indkøbslisten. Vil du have en påmindelse eller en opgave?"),
+            _ => format!("“{text}” sounds like something to do rather than to buy, so I didn't put it on the shopping list. Want a reminder or a task instead?"),
+        };
+    }
     match (lang, suggestion) {
         ("it", Some(s)) => format!("«{text}» non mi sembra una cosa da lista della spesa, quindi non l'ho aggiunto. Intendevi «{s}»?"),
         ("it", None) => format!("«{text}» non mi sembra una cosa da lista della spesa, quindi non l'ho aggiunto. Cosa intendevi?"),
@@ -177,8 +201,9 @@ pub fn decide(
                     .or_else(|| i.display_name())
                     .unwrap_or_else(|| i.id.clone())
             });
+        let chore = d.yes("chore").is_some_and(|p| p >= CHORE_MIN);
         return Gate::Ask {
-            question: ask_text(lang, text, suggestion.as_deref()),
+            question: ask_text(lang, text, suggestion.as_deref(), chore),
             suggestion,
         };
     }
@@ -293,6 +318,17 @@ mod tests {
     }
 
     #[test]
+    fn a_chore_is_offered_as_a_reminder_or_task() {
+        let mut d = decision(0.05, ("laundry-detergent", 0.5));
+        d.answers.insert("chore".into(), Answer::Noul(0.9));
+        let Gate::Ask { question, .. } = decide(&idx(), &d, "Lavatrici", "it") else {
+            panic!()
+        };
+        assert!(question.contains("cosa da fare"), "{question}");
+        assert!(question.contains("promemoria"));
+    }
+
+    #[test]
     fn a_plausible_item_is_bound_only_when_jev_is_sure() {
         let g = decide(&idx(), &decision(0.95, ("laundry-detergent", 0.9)), "Pastiglie bucato", "it");
         assert_eq!(
@@ -305,7 +341,7 @@ mod tests {
         );
         let op = g.add_op("Pastiglie bucato").unwrap();
         assert_eq!(op["catalogId"], "laundry-detergent");
-        assert_eq!(op["icon"], "svg:laundry-detergent");
+        assert!(op.get("icon").is_none(), "no svg: icon is written");
         assert_eq!(op["text"], "Pastiglie bucato");
         assert!(op.get("section").is_none(), "the catalog item brings its section");
 
@@ -316,11 +352,56 @@ mod tests {
     }
 
     #[test]
+    fn apply_to_keeps_the_ops_own_fields_and_section() {
+        let bound = Gate::Add {
+            catalog_id: Some("laundry-detergent".into()),
+            section: Some("household".into()),
+            by: "jev",
+        };
+        let mut op = json!({"opId": "x", "type": "add", "name": "Pastiglie", "spec": "60", "quantity": 2, "unit": "pz"});
+        assert!(bound.apply_to(&mut op));
+        assert_eq!(
+            op,
+            json!({"opId": "x", "type": "add", "name": "Pastiglie", "spec": "60", "quantity": 2, "unit": "pz",
+                   "catalogId": "laundry-detergent"})
+        );
+
+        let section_only = Gate::Add {
+            catalog_id: None,
+            section: Some("household".into()),
+            by: "jev",
+        };
+        let mut op = json!({"type": "add", "name": "Panni"});
+        assert!(section_only.apply_to(&mut op));
+        assert_eq!(op["section"], "household");
+        let mut op = json!({"type": "add", "name": "Panni", "section": "deli"});
+        assert!(section_only.apply_to(&mut op));
+        assert_eq!(op["section"], "deli", "the op's own section wins");
+
+        let fallback = Gate::Add {
+            catalog_id: None,
+            section: None,
+            by: "fallback",
+        };
+        let mut op = json!({"type": "add", "name": "Panni"});
+        assert!(fallback.apply_to(&mut op));
+        assert_eq!(op, json!({"type": "add", "name": "Panni"}));
+
+        let ask = Gate::Ask {
+            question: "?".into(),
+            suggestion: None,
+        };
+        let mut op = json!({"type": "add", "name": "Lavatrici"});
+        assert!(!ask.apply_to(&mut op));
+        assert_eq!(op, json!({"type": "add", "name": "Lavatrici"}));
+    }
+
+    #[test]
     fn questions_cover_every_section_with_a_none_option() {
         let qs = questions(&idx());
         let names: Vec<&str> = qs.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["plausible", "section", "item_household", "item_deli"]);
-        let Question::Choice { options, .. } = &qs[2].1 else {
+        assert_eq!(names, ["plausible", "chore", "section", "item_household", "item_deli"]);
+        let Question::Choice { options, .. } = &qs[3].1 else {
             panic!()
         };
         assert_eq!(options.last().unwrap().0, "none");

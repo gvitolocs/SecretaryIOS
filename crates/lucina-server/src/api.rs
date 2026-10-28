@@ -1266,17 +1266,42 @@ async fn shopping_lists(
             _ => return Err(ApiError::bad_request("expectedRevision must be an integer")),
         };
         let lang = shopping_lang(uri, Some(&body))?;
-        let out = repo
+        // MCP adds go through Jev first; app batches never do.
+        let (ops, asked) = if crate::shopping_mcp_gate::is_mcp(&body) {
+            crate::shopping_mcp_gate::gate_ops(
+                lucina_jev::shared(),
+                &repo.catalog_index(),
+                &body["ops"],
+                lang.as_deref(),
+            )
+            .await
+        } else {
+            (body["ops"].clone(), Vec::new())
+        };
+        if !asked.is_empty() && ops.as_array().is_some_and(Vec::is_empty) {
+            // Every op was asked about: nothing to apply, the list as it is.
+            let mut state = repo
+                .list_state_in(user, id, lang.as_deref())
+                .await
+                .map_err(grocery_error)?;
+            state["applied"] = json!([]);
+            state["duplicates"] = json!([]);
+            state["merged"] = json!([]);
+            state["rejected"] = json!(asked);
+            return Ok(ok(state));
+        }
+        let mut out = repo
             .apply_ops_in(
                 user,
                 id,
-                &body["ops"],
+                &ops,
                 expected,
                 shopping_channel(&body),
                 lang.as_deref(),
             )
             .await
             .map_err(grocery_error)?;
+        out.rejected.extend(asked);
         return Ok(ok(out.to_json()));
     }
     if sub.is_some() {
