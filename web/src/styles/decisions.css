@@ -6,3 +6,11 @@
 .dc-answer textarea { width: 100%; min-height: 90px; padding: 12px; font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .apv-page details > summary { cursor: pointer; margin-bottom: 12px; }
 .dc-reason { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+
+.pg .dc-detail-title { font-size: 20px; font-weight: 600; margin: 0 0 24px; }
+.pg .dc-options, .pg .dc-answer { display: grid; gap: 12px; margin: 16px 0; }
+.pg .dc-options .pg-btn { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.pg .dc-answer-desk textarea { background: var(--pg-fill); border: 1px solid var(--pg-border); border-radius: var(--pg-radius-control); color: var(--pg-text); }
+.pg .apv-summary { font-size: 16px; font-weight: 600; color: var(--pg-text); }
+.pg .apv-asking, .pg .apv-expiry { color: var(--pg-muted); font-size: 13px; }
+.pg .apv-badge { background: var(--pg-fill); color: var(--pg-muted); border-color: var(--pg-border); font-size: 12px; font-weight: 600; }
