@@ -141,6 +141,42 @@ describe("PhotoViewer", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
+  it("keeps a flick's speed when the release comes late, but not after a rest", async () => {
+    const { onClose } = open();
+    await placed();
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    // 30 points in 30 ms; the up event arrives 45 ms later without moving (a busy page). Counting that wait,
+    // the speed would be 400 points per second, under the flick threshold.
+    pointer("pointerDown", 400, 200);
+    now = 15;
+    pointer("pointerMove", 400, 215);
+    now = 30;
+    pointer("pointerMove", 400, 230);
+    now = 75;
+    pointer("pointerUp", 400, 230);
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    clock.mockRestore();
+  });
+
+  it("springs back a short drag that rested before the release", async () => {
+    const { onClose } = open();
+    await placed();
+    let now = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    pointer("pointerDown", 400, 200);
+    now = 15;
+    pointer("pointerMove", 400, 215);
+    now = 30;
+    pointer("pointerMove", 400, 230);
+    now = 230;
+    pointer("pointerUp", 400, 230);
+    expect(screen.getByRole("dialog").classList.contains("pv--closing")).toBe(false);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(onClose).not.toHaveBeenCalled();
+    clock.mockRestore();
+  });
+
   it("finishes a page slide when the next drag starts", async () => {
     const { index, onClose } = open();
     await placed();

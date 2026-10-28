@@ -88,6 +88,8 @@ const TAP_SLOP = 6;
 const TAP_MS = 300;
 const DOUBLE_TAP_MS = 280;
 const SETTLE_MS = 220;
+/** A finger that rests this long before lifting has no throw left. */
+const RELEASE_PAUSE_MS = 50;
 
 type SaveState = { phase: "idle" } | { phase: "saving"; percent: number } | { phase: "saved"; duplicate: boolean } | { phase: "error" };
 
@@ -384,8 +386,13 @@ export function PhotoViewer(props: PhotoViewerProps) {
     const dy = p.y - start.y;
     const now = performance.now();
     const quick = now - start.t < TAP_MS;
-    samples.push({ ...p, t: now });
-    while (samples.length > 1 && samples[0]!.t < now - 100) samples.shift();
+    // A finger lifted right after its last move keeps that move's speed (the up event can come late
+    // on a busy page); one that rested first has stopped.
+    const end = samples[samples.length - 1];
+    if (!end || end.x !== p.x || end.y !== p.y || now - end.t > RELEASE_PAUSE_MS) {
+      samples.push({ ...p, t: now });
+      while (samples.length > 1 && samples[0]!.t < now - 100) samples.shift();
+    }
     start = null;
     const { vx } = velocity();
     if (axis === "pager") {
@@ -666,7 +673,7 @@ export function PhotoViewer(props: PhotoViewerProps) {
           <button type="button" class="pv-btn pv-close" aria-label={t("common.close")} onClick={() => props.onClose()}>←</button>
           <span class="pv-title">
             <span class="pv-name">{current()?.name}</span>
-            <Show when={count() > 0}><span class="pv-count">{props.index + 1} / {count()}</span></Show>
+            <Show when={count() > 1}><span class="pv-count">{props.index + 1} / {count()}</span></Show>
           </span>
           <div class="pv-actions" role="toolbar" aria-label={t("galleryInfo.toolbarLabel")}>
             <Show when={props.actions?.share}>
