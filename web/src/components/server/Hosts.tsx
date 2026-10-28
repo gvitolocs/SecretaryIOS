@@ -98,7 +98,8 @@ export function HostCard(props: { host: Host; href: string }) {
 
 export function HostDetail(props: { host: Host; services: ServiceGroup[]; attention: AttentionItem[]; links: Links }) {
   const h = () => props.host;
-  const components = createMemo(() => allComponents(props.services).filter((c) => c.host === h().id));
+  // Running things only: the host's checkouts (repos) are in Services behind "Show repos".
+  const components = createMemo(() => allComponents(props.services).filter((c) => c.host === h().id && c.kind !== "repo"));
   const attention = createMemo(() => props.attention.filter((a) => a.host === h().id && !a.flapping));
   return (
     <div class="sh-detail">
