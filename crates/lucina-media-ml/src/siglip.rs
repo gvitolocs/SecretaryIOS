@@ -260,6 +260,10 @@ impl Embedder for Siglip {
     fn relevance(&self, cosine: f32) -> f32 {
         relevance(cosine)
     }
+
+    fn release_idle(&self, idle: Duration, vision: bool) {
+        Siglip::release_idle(self, idle, vision);
+    }
 }
 
 #[cfg(test)]

@@ -248,7 +248,7 @@ impl PromptVectors {
         for c in Category::ALL {
             let mut per = Vec::new();
             for p in c.prompts() {
-                let mut v = embedder.embed_text(p)?;
+                let mut v = embedder.embed_label(p)?;
                 if v.len() != dim || !vector::normalize(&mut v) {
                     return Err(MlError::Failed(format!(
                         "the text tower returned a bad vector for a {} prompt",
@@ -262,7 +262,7 @@ impl PromptVectors {
         Ok(PromptVectors {
             model: embedder.model().to_string(),
             dim,
-            scale: ZERO_SHOT_SCALE,
+            scale: embedder.zero_shot_scale(),
             vectors,
         })
     }
@@ -1050,6 +1050,48 @@ mod tests {
             }
         }
         assert!(PromptVectors::build(&Broken).is_err());
+    }
+
+    /// Prompts are labels, not queries, and the model says how sharp its softmax is.
+    struct Labelled;
+    impl Embedder for Labelled {
+        fn model(&self) -> &str {
+            "labelled"
+        }
+        fn dim(&self) -> usize {
+            N
+        }
+        fn embed_images(&self, _: &[image::RgbImage]) -> Result<Vec<Vec<f32>>, MlError> {
+            Err(MlError::Failed("no images".into()))
+        }
+        fn embed_text(&self, _: &str) -> Result<Vec<f32>, MlError> {
+            Err(MlError::Failed("a prompt is not a query".into()))
+        }
+        fn relevance(&self, cosine: f32) -> f32 {
+            cosine
+        }
+        fn embed_label(&self, text: &str) -> Result<Vec<f32>, MlError> {
+            Words.embed_text(text)
+        }
+        fn zero_shot_scale(&self) -> f32 {
+            7.0
+        }
+    }
+
+    #[test]
+    fn prompts_use_the_embedders_label_text_and_scale() {
+        let pv = PromptVectors::build(&Labelled).unwrap();
+        let zs = pv.score(&axis(Category::Food.index())).unwrap();
+        assert_eq!(zs.top(), Category::Food);
+        // One cosine of 1 against nine of 0 at scale 7 is 1 / (1 + 9·e^-7) = 0.9918, not the 1.0
+        // that the default scale of 100 gives.
+        let top = zs.score(Category::Food);
+        assert!((top - 0.9918).abs() < 1e-3, "{top}");
+        let sharp = PromptVectors::build(&Words)
+            .unwrap()
+            .score(&axis(Category::Food.index()))
+            .unwrap();
+        assert!(sharp.score(Category::Food) > 0.9999);
     }
 
     #[test]

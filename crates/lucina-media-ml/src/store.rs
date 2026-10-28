@@ -114,6 +114,28 @@ pub fn count(c: &Connection, model: &str) -> rusqlite::Result<i64> {
     )
 }
 
+/// How many vectors each model has stored, by model id.
+pub fn counts_by_model(
+    c: &Connection,
+) -> rusqlite::Result<std::collections::BTreeMap<String, i64>> {
+    let mut st = c.prepare("SELECT model, COUNT(*) FROM ml_embeddings GROUP BY model")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    rows.collect()
+}
+
+/// The model other than `current` with the most stored vectors: the one that answered searches
+/// before `current` was chosen. Ties go to the smaller id so the answer is stable. `None` when no
+/// other model has a vector.
+pub fn previous_model(c: &Connection, current: &str) -> rusqlite::Result<Option<String>> {
+    c.query_row(
+        "SELECT model FROM ml_embeddings WHERE model != ?1 \
+         GROUP BY model ORDER BY COUNT(*) DESC, model ASC LIMIT 1",
+        [current],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
 pub fn failures(c: &Connection, model: &str) -> rusqlite::Result<i64> {
     c.query_row(
         "SELECT COUNT(*) FROM ml_embed_failures WHERE model = ?1",
@@ -173,6 +195,28 @@ mod tests {
         put(&c, "it_1", "m", &[1.0], "t1").unwrap();
         assert_eq!(failures(&c, "m").unwrap(), 0);
         assert_eq!(get(&c, "it_1", "m").unwrap(), Some(vec![1.0]));
+    }
+
+    #[test]
+    fn counts_and_previous_model() {
+        let c = db();
+        assert_eq!(previous_model(&c, "new").unwrap(), None);
+        for id in ["a", "b", "c"] {
+            put(&c, id, "old", &[1.0], "t").unwrap();
+        }
+        put(&c, "a", "older", &[1.0], "t").unwrap();
+        put(&c, "a", "new", &[1.0], "t").unwrap();
+        let counts = counts_by_model(&c).unwrap();
+        assert_eq!(counts["old"], 3);
+        assert_eq!(counts["older"], 1);
+        assert_eq!(counts["new"], 1);
+        // The most rows other than the current one; the current model never counts.
+        assert_eq!(previous_model(&c, "new").unwrap().as_deref(), Some("old"));
+        assert_eq!(previous_model(&c, "old").unwrap().as_deref(), Some("new"));
+        // A tie goes to the smaller id.
+        put(&c, "b", "older", &[1.0], "t").unwrap();
+        put(&c, "c", "older", &[1.0], "t").unwrap();
+        assert_eq!(previous_model(&c, "new").unwrap().as_deref(), Some("old"));
     }
 
     #[test]
