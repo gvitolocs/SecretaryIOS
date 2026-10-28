@@ -13,7 +13,6 @@ import {
   distanceM,
   formatDistance,
   formatMinutes,
-  googleSearchUrl,
   hasPoint,
   placeRoute,
   placeTimeLabel,
@@ -144,9 +143,6 @@ export function PlaceCard(props: { place: PlaceInfo; class?: string }) {
           <a class="place-card-notfound-link" href={route()} onClick={open}>{head()}</a>
           <p class="place-card-missing">
             <span>{t("maps.notFound")}</span>
-            <a href={googleSearchUrl(props.place.address || props.place.title)} target="_blank" rel="noopener noreferrer">
-              {t("maps.searchInMaps")}
-            </a>
           </p>
         </div>
       }

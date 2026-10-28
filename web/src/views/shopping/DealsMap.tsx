@@ -17,7 +17,7 @@ import {
   type DealsMapData,
   type MapStore,
 } from "../../lib/dealsMap";
-import { googleDirectionsUrl, type MapPin } from "../../lib/mapKit";
+import { navigateRoute, type MapPin } from "../../lib/mapKit";
 import { LucinaMap } from "../../components/LucinaMap";
 import { shop, t } from "../../state/shopping";
 import "../../styles/shopping.css";
@@ -301,9 +301,12 @@ export default function DealsMapView() {
                     ×
                   </button>
                 </header>
-                <a class="deals-directions" href={googleDirectionsUrl(s())} target="_blank" rel="noreferrer">
+                <A
+                  class="deals-directions"
+                  href={navigateRoute({ title: s().name, address: s().street ?? undefined, lat: s().lat, lng: s().lng })}
+                >
                   🧭 {t("mapDirections")}
-                </a>
+                </A>
                 <Show when={s().listMatches.length > 0}>
                   <h3 class="deals-panel-sec">{t("mapListTitle")}</h3>
                   <ul class="deals-list">
