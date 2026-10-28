@@ -425,9 +425,8 @@ mod tests {
             "/map/place?navigate=1&lat=56.172282&lng=10.192006&title=Security%20and%20Privacy"
         ));
         assert!(!path.contains("maps.apple") && !path.contains("google"));
-        assert_eq!(
-            map_route(&b[0]).unwrap().contains("navigate"),
-            false,
+        assert!(
+            !map_route(&b[0]).unwrap().contains("navigate"),
             "the card itself only opens the map"
         );
     }

@@ -64,7 +64,7 @@ async fn run(args: &[&str], timeout: Duration) -> ApiResult {
         .map_err(|e| unavailable(format!("catalog: {e}")))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let msg = err.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("failed").trim().to_owned();
+        let msg = err.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("failed").trim().to_owned();
         if msg.contains("no component") {
             return Err(ApiError(StatusCode::NOT_FOUND, "CATALOG_NOT_FOUND".into(), msg));
         }

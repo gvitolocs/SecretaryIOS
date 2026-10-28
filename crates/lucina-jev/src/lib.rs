@@ -506,11 +506,11 @@ impl Jev {
                 );
                 JevError::Quota(status)
             }
-            401 | 402 | 403 => {
+            401..=403 => {
                 self.open_breaker(COOL_CREDITS, "credits or key refused");
                 JevError::Credits(status)
             }
-            529 | 500..=599 => {
+            500..=599 => {
                 self.open_breaker(COOL_OVERLOADED, "overload");
                 JevError::Overloaded(status)
             }
