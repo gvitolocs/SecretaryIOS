@@ -1,0 +1,22 @@
+[package]
+name = "secretary-avatar-com3d2"
+version.workspace = true
+edition.workspace = true
+license = "MIT AND BSD-3-Clause"
+description = "Rust-native COM3D2 asset and avatar compatibility foundation"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+glam = { version = "0.29", features = ["serde"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tiny_http = "0.12"
+png = "0.18"
+image = { version = "0.25", default-features = false, features = ["jpeg", "webp"] }
+meshoptimizer-rs = { version = "=0.2.4", default-features = false, features = ["std"] }
