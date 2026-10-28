@@ -20,15 +20,37 @@ struct WidgetGallery: View {
     private static let inline = CGSize(width: 300, height: 22)
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Text("Widget gallery · page \(page)").font(.caption).foregroundStyle(.secondary)
-                content
-            }
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity)
+        ScrollView { sheet }
+            .background(Color(white: page >= 6 ? 0.08 : 0.55).ignoresSafeArea())
+    }
+
+    /// The page itself, without the scroll view (also what `export` renders).
+    private var sheet: some View {
+        VStack(spacing: 16) {
+            Text("Widget gallery · page \(page)").font(.caption).foregroundStyle(.secondary)
+            content
         }
-        .background(Color(white: page >= 6 ? 0.08 : 0.55).ignoresSafeArea())
+        .padding(.vertical, 24)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// `-SecretaryWidgetGalleryExport YES`: every page rendered to Documents/widget-gallery-<n>.png
+    /// (390 pt wide, @3x, dark), for `devicectl device copy from` when no USB screenshot is possible.
+    static func exportIfRequested() {
+        guard UserDefaults.standard.bool(forKey: "SecretaryWidgetGalleryExport"),
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        for page in 0...7 {
+            let view = WidgetGallery(page: page).sheet
+                .frame(width: 390)
+                .background(Color(white: page >= 6 ? 0.08 : 0.55))
+                .environment(\.colorScheme, .dark)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 3
+            if let data = renderer.uiImage?.pngData() {
+                try? data.write(to: docs.appendingPathComponent("widget-gallery-\(page).png"), options: .atomic)
+            }
+        }
+        try? "done\n".write(to: docs.appendingPathComponent("widget-gallery-done.txt"), atomically: true, encoding: .utf8)
     }
 
     @ViewBuilder private var content: some View {

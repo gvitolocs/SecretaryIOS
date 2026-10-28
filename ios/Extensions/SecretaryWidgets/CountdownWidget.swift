@@ -102,55 +102,84 @@ struct CountdownWidgetView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         case .systemMedium:
-            VStack(alignment: .leading, spacing: LucinaTokens.Space.xs) {
-                // Three events fill the widget: the header only above fewer.
-                if events.count < 3 { WidgetHeader(title: "Countdown", symbol: "hourglass") }
-                if events.isEmpty {
+            if events.isEmpty {
+                VStack(alignment: .leading, spacing: LucinaTokens.Space.xs) {
+                    WidgetHeader(title: "Countdown", symbol: "hourglass")
                     message
-                } else {
-                    ForEach(events.prefix(3)) { row($0) }
-                    Spacer(minLength: 0)
+                }
+            } else {
+                // One line per event, tiled: the title and date on the left, the count on the right.
+                VStack(spacing: 0) {
+                    ForEach(Array(events.prefix(3).enumerated()), id: \.element.id) { index, event in
+                        if index > 0 { Divider().overlay(LucinaTokens.Colors.separator) }
+                        row(event, figure: events.count == 1 ? 52 : events.count == 2 ? 40 : 30)
+                            .frame(maxHeight: .infinity)
+                    }
                 }
             }
         default:
-            VStack(alignment: .leading, spacing: LucinaTokens.Space.xs) {
-                WidgetHeader(title: "Countdown", symbol: "hourglass", trailing: events.count > 1 ? "+\(events.count - 1)" : nil)
-                if let event = events.first {
-                    Spacer(minLength: 0)
-                    Text(verbatim: label(event))
-                        .font(.system(size: LucinaTokens.FontSize.largeTitle, weight: .bold).monospacedDigit())
-                        .foregroundStyle(LucinaTokens.Colors.accent)
-                        .lineLimit(1).minimumScaleFactor(0.5)
-                        .widgetAccentable()
+            if let event = events.first {
+                // The owner's reference: the title top left, the count big in the bottom right.
+                let parts = Countdown.parts(event, now: entry.date)
+                VStack(alignment: .leading, spacing: LucinaTokens.Space.xxs) {
                     Text(verbatim: event.title)
-                        .font(LucinaTokens.Fonts.headline).foregroundStyle(LucinaTokens.Colors.text)
-                        .lineLimit(2).privacySensitive()
+                        .font(.system(size: LucinaTokens.FontSize.title3, weight: .semibold))
+                        .foregroundStyle(LucinaTokens.Colors.text)
+                        .lineLimit(2).minimumScaleFactor(0.8).privacySensitive()
                     Text(verbatim: Countdown.dateText(event))
                         .font(LucinaTokens.Fonts.caption2).foregroundStyle(LucinaTokens.Colors.textSecondary)
                         .lineLimit(1).minimumScaleFactor(0.8)
-                } else {
+                    Spacer(minLength: 0)
+                    figure(parts, size: parts.value.allSatisfy(\.isNumber) ? 64 : 34)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: LucinaTokens.Space.xs) {
+                    WidgetHeader(title: "Countdown", symbol: "hourglass")
                     message
                 }
             }
         }
     }
 
-    /// "15 days — Network exam", the date below.
-    private func row(_ event: CountdownEvent) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: LucinaTokens.Space.xs) {
-                Text(verbatim: label(event))
-                    .font(.system(size: LucinaTokens.FontSize.title3, weight: .bold).monospacedDigit())
-                    .foregroundStyle(LucinaTokens.Colors.accent)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .widgetAccentable()
-                Text(verbatim: "— \(event.title)")
+    /// The small label above the big figure, right-aligned ("days" over "15").
+    private func figure(_ parts: (value: String, unit: String?), size: CGFloat) -> some View {
+        VStack(alignment: .trailing, spacing: -size * 0.08) {
+            if let unit = parts.unit {
+                Text(verbatim: unit).font(LucinaTokens.Fonts.subheadline.weight(.medium))
+                    .foregroundStyle(LucinaTokens.Colors.textSecondary).lineLimit(1)
+            }
+            Text(verbatim: parts.value)
+                .font(.system(size: size, weight: .heavy, design: .rounded).monospacedDigit())
+                .foregroundStyle(LucinaTokens.Colors.text)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .widgetAccentable()
+        }
+    }
+
+    /// "Network exam" and its date on the left, "days 15" on the right.
+    private func row(_ event: CountdownEvent, figure size: CGFloat) -> some View {
+        HStack(alignment: .center, spacing: LucinaTokens.Space.md) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: event.title)
                     .font(LucinaTokens.Fonts.headline).foregroundStyle(LucinaTokens.Colors.text)
                     .lineLimit(1).privacySensitive()
+                Text(verbatim: Countdown.dateText(event))
+                    .font(LucinaTokens.Fonts.caption2).foregroundStyle(LucinaTokens.Colors.textSecondary).lineLimit(1)
             }
-            Text(verbatim: Countdown.dateText(event))
-                .font(LucinaTokens.Fonts.caption2).foregroundStyle(LucinaTokens.Colors.textSecondary).lineLimit(1)
+            Spacer(minLength: 0)
+            let parts = Countdown.parts(event, now: entry.date)
+            HStack(alignment: .lastTextBaseline, spacing: LucinaTokens.Space.xs) {
+                if let unit = parts.unit {
+                    Text(verbatim: unit).font(LucinaTokens.Fonts.caption.weight(.medium))
+                        .foregroundStyle(LucinaTokens.Colors.textSecondary).lineLimit(1)
+                }
+                Text(verbatim: parts.value)
+                    .font(.system(size: parts.value.allSatisfy(\.isNumber) ? size : size * 0.62, weight: .heavy, design: .rounded).monospacedDigit())
+                    .foregroundStyle(LucinaTokens.Colors.text)
+                    .lineLimit(1).fixedSize()
+                    .widgetAccentable()
+            }
         }
         .accessibilityElement(children: .combine)
     }

@@ -54,7 +54,10 @@ struct MainTabs: View {
             return .handled
         })
         #if DEBUG || SCREENSHOTS
-        .task { await WidgetSelfTest.runIfRequested(app) }
+        .task {
+            await WidgetSelfTest.runIfRequested(app)
+            WidgetGallery.exportIfRequested()
+        }
         #endif
         // The owner's approval prompt, over every tab and every sheet (a window of its own).
         .modifier(ApprovalHost(store: app.approvals, openSettings: { app.showSettings = true }))
