@@ -3,6 +3,8 @@ import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { acceptLabJob, cancelLabJob, discardLabJob, listLab, retryLabJob, type LabJob } from "../api/gallery";
 import { ApiError } from "../api/client";
+import { Card, ErrorState, LoadingState, EmptyState, Page, PageGrid, useWide } from "../components/page";
+import { GalleryDetail, GalleryHeader } from "../components/gallery/GalleryHeader";
 import { LabCard } from "../components/gallery/lab/LabCard";
 import { BackIcon } from "../components/Icons";
 import { t } from "../i18n";
@@ -17,6 +19,7 @@ import "../styles/gallery-lab.css";
 type Busy = "accept" | "discard" | "retry" | "cancel";
 
 export default function GalleryLab() {
+  const { wide, track } = useWide();
   // A store, reconciled by id: a card keeps its DOM (the slider position, the loaded pictures) while the page asks again.
   const [jobs, setJobs] = createStore<LabJob[]>([]);
   // Copies (plain JSON, so store proxies copy too): the store merges into the objects it is given.
@@ -115,59 +118,93 @@ export default function GalleryLab() {
       show(jobs.filter((j) => j.id !== job.id));
     });
 
-  return (
-    <section class="gallery lab" aria-labelledby="lab-title">
-      <div class="g-top">
-        <header class="g-bar">
-          <A class="g-back" href="/gallery" aria-label={t("lab.back")}>
-            <BackIcon />
-          </A>
-          <h1 class="g-title" id="lab-title">
-            {t("lab.title")}
-          </h1>
-        </header>
-      </div>
-      <div class="lab-scroll">
-        <p class="g-note">{t("lab.intro")}</p>
-        <Show when={state() === "ready" && !enabled()}>
-          <p class="lab-warn" role="status">
-            {t("lab.notSetUp")}
-          </p>
-        </Show>
-        <Show when={state() !== "loading"} fallback={<p class="g-note" role="status">{t("lab.loading")}</p>}>
+  const content = () => (
+    <>
+      <p class="g-note">{t("lab.intro")}</p>
+      <Show when={state() === "ready" && !enabled()}>
+        <p classList={{ "lab-warn": !wide(), "pg-notice": wide() }} role="status">
+          {t("lab.notSetUp")}
+        </p>
+      </Show>
+      <Show when={state() !== "loading"} fallback={<Show when={wide()} fallback={<p class="g-note" role="status">{t("lab.loading")}</p>}><LoadingState label={t("lab.loading")} /></Show>}>
+        <Show
+          when={state() !== "error"}
+          fallback={
+            <Show
+              when={wide()}
+              fallback={
+                <div class="lab-error">
+                  <p class="gv-error" role="alert">
+                    {t("lab.loadFailed")}
+                  </p>
+                  <button type="button" class="btn btn--small" onClick={() => void refresh()}>
+                    {t("lab.reload")}
+                  </button>
+                </div>
+              }
+            >
+              <ErrorState message={t("lab.loadFailed")} retryLabel={t("lab.reload")} onRetry={() => void refresh()} />
+            </Show>
+          }
+        >
           <Show
-            when={state() !== "error"}
+            when={jobs.length > 0}
             fallback={
-              <div class="lab-error">
-                <p class="gv-error" role="alert">
-                  {t("lab.loadFailed")}
-                </p>
-                <button type="button" class="btn btn--small" onClick={() => void refresh()}>
-                  {t("lab.reload")}
-                </button>
-              </div>
+              <Show when={wide()} fallback={<p class="g-note lab-empty">{t("lab.empty")}</p>}>
+                <Card label={t("lab.title")}>
+                  <EmptyState text={t("lab.empty")} />
+                </Card>
+              </Show>
             }
           >
-            <Show when={jobs.length > 0} fallback={<p class="g-note lab-empty">{t("lab.empty")}</p>}>
-              <ul class="lab-list" aria-label={t("lab.jobsLabel")}>
-                <For each={jobs}>
-                  {(job) => (
-                    <LabCard
-                      job={job}
-                      busy={busy()[job.id] ?? null}
-                      error={errors()[job.id] ?? null}
-                      onAccept={(j) => void accept(j)}
-                      onDiscard={(j) => void discard(j)}
-                      onRetry={(j) => void retry(j)}
-                      onRemove={(j) => void remove(j)}
-                    />
-                  )}
-                </For>
-              </ul>
-            </Show>
+            <ul class="lab-list" aria-label={t("lab.jobsLabel")}>
+              <For each={jobs}>
+                {(job) => (
+                  <LabCard
+                    wide={wide()}
+                    job={job}
+                    busy={busy()[job.id] ?? null}
+                    error={errors()[job.id] ?? null}
+                    onAccept={(j) => void accept(j)}
+                    onDiscard={(j) => void discard(j)}
+                    onRetry={(j) => void retry(j)}
+                    onRemove={(j) => void remove(j)}
+                  />
+                )}
+              </For>
+            </ul>
           </Show>
         </Show>
-      </div>
+      </Show>
+    </>
+  );
+
+  return (
+    <section class="gallery lab" classList={{ "g-page-root": wide(), "gallery--wide": wide() }} ref={track} aria-labelledby={wide() ? undefined : "lab-title"} aria-label={wide() ? t("lab.title") : undefined}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <div class="g-top">
+              <header class="g-bar">
+                <A class="g-back" href="/gallery" aria-label={t("lab.back")}>
+                  <BackIcon />
+                </A>
+                <h1 class="g-title" id="lab-title">
+                  {t("lab.title")}
+                </h1>
+              </header>
+            </div>
+            <div class="lab-scroll">{content()}</div>
+          </>
+        }
+      >
+        <Page class="g-lib">
+          <GalleryHeader count={state() === "ready" ? jobs.length : undefined} />
+          <GalleryDetail href="/gallery" back={t("gallery.backToGallery")} title={t("lab.title")} />
+          <PageGrid layout="full">{content()}</PageGrid>
+        </Page>
+      </Show>
     </section>
   );
 }

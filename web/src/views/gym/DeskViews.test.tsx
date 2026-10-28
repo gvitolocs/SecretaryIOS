@@ -6,6 +6,7 @@ import { resetGym } from "../../state/gym";
 import { markLucinaOnline } from "../../state/lucina";
 import { stubFetch, type Call } from "../../test/fetch";
 import { renderAt } from "../../test/router";
+import { stubWide } from "../../test/wide";
 import { gymView } from "./fixture";
 import GymHome from "./GymHome";
 import JournalView from "./History";
@@ -65,16 +66,6 @@ function engine(v: () => GymView) {
   });
 }
 
-/** Every page measures as desktop-wide (jsdom has no ResizeObserver). */
-class WideObserver {
-  constructor(private cb: ResizeObserverCallback) {}
-  observe() {
-    this.cb([{ contentRect: { width: 1200 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
-  }
-  unobserve() {}
-  disconnect() {}
-}
-
 function renderGym(path: string) {
   return renderAt(path, () => (
     <>
@@ -102,7 +93,7 @@ describe("desktop Gym sections", () => {
   beforeEach(() => {
     resetGym();
     markLucinaOnline();
-    vi.stubGlobal("ResizeObserver", WideObserver);
+    stubWide();
   });
   afterEach(() => vi.unstubAllGlobals());
 

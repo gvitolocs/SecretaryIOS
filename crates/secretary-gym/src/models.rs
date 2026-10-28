@@ -198,6 +198,16 @@ pub enum Command {
         #[serde(default)]
         from_active: bool,
     },
+    /// Rename a routine and/or replace its exercises (in the given order).
+    /// Exercises it already had keep their sets, reps and weight; new ones
+    /// start at 3 × 8. Absent fields are left as they are.
+    UpdateRoutine {
+        routine_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exercise_ids: Option<Vec<String>>,
+    },
     DeleteRoutine {
         routine_id: String,
     },

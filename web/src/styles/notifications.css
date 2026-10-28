@@ -619,3 +619,27 @@
 .account-sheet {
   border: 1px solid color-mix(in srgb, var(--violet) 35%, var(--border));
 }
+
+/* ---------- Page system: the Account settings Cards (desktop) ---------- */
+
+.pg .pg-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg .pg-form .pg-field-label:not(:first-child) {
+  margin-top: 8px;
+}
+
+.pg .pg-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pg .pg-choices .pg-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--pg-data) 45%, transparent);
+  background: var(--pg-fill-hover);
+}

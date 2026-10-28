@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { stubWide } from "../test/wide";
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
 import { readFileSync } from "node:fs";
@@ -189,6 +190,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Only the desktop stub (stubWide): the fetch stub stays, since gallery requests may still settle after a test.
+  delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
   lucinaViewer.setDevice(null);
   vi.restoreAllMocks();
 });
@@ -737,5 +740,65 @@ describe("languages", () => {
     mount();
     await waitFor(() => expect(document.querySelector(".g-head__label")).not.toBeNull());
     expect(document.querySelector(".g-head__label")!.textContent!.toLowerCase()).toContain("onsdag");
+  });
+});
+
+it("keeps the desktop Gallery header above its filters and empty photo surface", async () => {
+  stubWide(); backend([]); mount();
+  expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+  expect(within(screen.getByRole("navigation", { name: "Gallery sections" })).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+  expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+  expect(document.querySelector(".g-title")).toBeNull();
+  expect(document.querySelector(".pg-grid--full")).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Filters" })).toBeInTheDocument();
+  await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No photos here yet."));
+});
+
+it("renders the toolbar and the photo grid as full-width children of the grid page, under the header", async () => {
+  stubWide(); backend(library(30)); mount();
+  await screen.findByRole("heading", { level: 1, name: "Gallery" });
+  await waitFor(() => expect(document.querySelector(".g-body .g-scroll")).not.toBeNull());
+  const header = document.querySelector(".pg-head")!;
+  const main = document.querySelector(".pg-grid--full > .pg-main")!;
+  expect(header.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // One toolbar row for the search and icon buttons, then the filters, then the grid, all inside the page's main column.
+  expect(main.querySelector(":scope > .g-top .g-desktop-tools .g-search")).not.toBeNull();
+  expect(main.querySelectorAll(":scope > .g-top .g-desktop-tools .pg-icon-btn").length).toBeGreaterThan(0);
+  expect(main.querySelector(":scope > .g-top .g-filters")).not.toBeNull();
+  expect(main.querySelector(":scope > .g-main .g-body .g-scroll")).not.toBeNull();
+});
+
+function mountShelf(path: string) {
+  // The routes of src/index.tsx: the shelves ask for the desktop layout.
+  return renderAt(path, () => (
+    <>
+      <Route path="/gallery" component={() => <GalleryView />} />
+      <Route path="/gallery/trash" component={() => <GalleryView trash desktop />} />
+      <Route path="/gallery/archive" component={() => <GalleryView archive desktop />} />
+    </>
+  ));
+}
+
+describe("Trash and Archive on the page system (desktop)", () => {
+  it.each([
+    ["/gallery/trash", "Trash"],
+    ["/gallery/archive", "Archive"],
+  ])("%s keeps the Gallery header (Photos current) over a back link and the %s heading", async (path, title) => {
+    stubWide(); backend(library(5)); mountShelf(path);
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "Gallery sections" })).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { level: 2, name: title })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery");
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(document.querySelector(".g-title")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta").length).toBeLessThanOrEqual(1);
+    await waitFor(() => expect(document.querySelector(".pg-grid--full > .pg-main > .g-main .g-scroll")).not.toBeNull());
+    // Shelves have no source bar, memories strip or shelf icons.
+    expect(document.querySelector(".pg-icon-btn")).toBeNull();
+  });
+
+  it("shows the friendly empty state in the Trash", async () => {
+    stubWide(); backend([]); mountShelf("/gallery/trash");
+    await waitFor(() => expect(document.querySelector(".pg-empty")).not.toBeNull());
   });
 });

@@ -4,6 +4,8 @@ import type { FeatureDictionary } from "../types";
 
 const en = {
   title: "Plugins",
+  count: "{count} plugins",
+  empty: "No plugins are available on this device.",
   memos: "Voice memos",
   memosDetail: "Recorded, transcribed, summarised",
   library: "Library",
@@ -48,6 +50,8 @@ export const plugins: FeatureDictionary<typeof en> = {
   en,
   it: {
     title: "Plugin",
+    count: "{count} plugin",
+    empty: "Nessun plugin disponibile su questo dispositivo.",
     memos: "Memo vocali",
     memosDetail: "Registrati, trascritti, riassunti",
     library: "Biblioteca",
@@ -89,6 +93,8 @@ export const plugins: FeatureDictionary<typeof en> = {
   },
   da: {
     title: "Plugins",
+    count: "{count} plugins",
+    empty: "Ingen plugins er tilgængelige på denne enhed.",
     memos: "Talememoer",
     memosDetail: "Optaget, transskriberet, opsummeret",
     library: "Bibliotek",

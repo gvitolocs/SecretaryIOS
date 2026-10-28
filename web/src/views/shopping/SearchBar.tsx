@@ -61,7 +61,7 @@ function useMatches(search: { text: () => string }) {
 }
 
 /** Search field with an add button; quick-spec chips show while typing. */
-export function SearchField(props: { search: ShopSearch; act: (fn: () => void) => void; resultsId: string }) {
+export function SearchField(props: { search: ShopSearch; act: (fn: () => void) => void; resultsId: string; wide?: boolean }) {
   const s = props.search;
   const m = s.matches;
 
@@ -99,7 +99,7 @@ export function SearchField(props: { search: ShopSearch; act: (fn: () => void) =
         <input
           ref={s.setInput}
           id="bring-search-field"
-          class="shop-search-field"
+          class={props.wide ? "pg-input" : "shop-search-field"}
           type="search"
           placeholder={t("searchPlaceholder")}
           value={s.query()}
@@ -135,8 +135,12 @@ export function SearchField(props: { search: ShopSearch; act: (fn: () => void) =
             <span aria-hidden="true">×</span>
           </button>
         </Show>
-        <button type="submit" class="shop-search-add" aria-label={t("addTyped")}>
-          <span aria-hidden="true" />
+        <button type="submit" class={props.wide ? "pg-icon-btn" : "shop-search-add"} aria-label={t("addTyped")}>
+          <Show when={props.wide} fallback={<span aria-hidden="true" />}>
+            <svg class="pg-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </Show>
         </button>
       </form>
       <Show when={s.active()}>
@@ -211,6 +215,8 @@ export function SearchResults(props: { search: ShopSearch; act: (fn: () => void)
                 flipId={`hist:${row.id}`}
                 kind={onList() ? "need" : "recent"}
                 icon={itemIcon(row)}
+                catalogId={row.catalogId}
+                iconPicked={row.iconPicked}
                 section={row.section}
                 name={row.name}
                 spec={s.spec() || row.spec}

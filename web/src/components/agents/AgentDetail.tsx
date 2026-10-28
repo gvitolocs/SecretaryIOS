@@ -23,7 +23,7 @@ import { DiffPane, FilesPane } from "./Workspace";
 const BACK_LABEL = () => t("agents.back");
 
 /** One agent: header (title, status, actions), tabs (chat, changes, files, terminal, scripts) and the open tab. */
-export function AgentDetail(props: { id: string; tab: AgentTab }) {
+export function AgentDetail(props: { id: string; tab: AgentTab; desk?: boolean }) {
   const item = () => agentsState.items[props.id];
   const snap = () => agentsState.snapshots[props.id];
   const ws = () => workspaceOf(props.id);
@@ -92,10 +92,14 @@ export function AgentDetail(props: { id: string; tab: AgentTab }) {
   }
 
   return (
-    <section class="ag-detail" aria-label={title()}>
+    <section class="ag-detail" classList={{ "ag-detail--desk": props.desk }} aria-label={title()}>
       <Show when={!missing()} fallback={<p class="ag-note" role="alert">{t("agents.notFound")}</p>}>
         <header class="ag-head">
-          <A href="/agents" class="ag-back" aria-label={BACK_LABEL()}>‹ {BACK_LABEL()}</A>
+          <Show when={!props.desk}>
+            <A href="/agents" class="ag-back" aria-label={BACK_LABEL()}>
+              ‹ {BACK_LABEL()}
+            </A>
+          </Show>
           <div class="ag-head__text">
             <Show
               when={editing()}

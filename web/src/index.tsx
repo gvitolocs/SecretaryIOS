@@ -6,6 +6,8 @@ import { registerServiceWorker } from "./lib/push";
 import "./state/appearance";
 import "./styles.css";
 import "./styles/lucina-look.css";
+// The frosted glass material, last so it wins over each surface's own rules.
+import "./styles/glass.css";
 import ChatView from "./views/Chat";
 import ShoppingView from "./views/Shopping";
 import { DesktopViewerHost } from "./components/DesktopViewer";
@@ -111,10 +113,10 @@ render(
       <Route path="/media" component={() => <Navigate href="/gallery" />} />
       <Route path="/media/library" component={MediaView} />
       <Route path="/gallery" component={GalleryView} />
-      <Route path="/gallery/trash" component={() => <GalleryView trash />} />
+      <Route path="/gallery/trash" component={() => <GalleryView trash desktop />} />
       <Route path="/instagram/:username?" component={InstagramView} />
       <Route path="/agents/*rest" component={AgentsView} />
-      <Route path="/gallery/archive" component={() => <GalleryView archive />} />
+      <Route path="/gallery/archive" component={() => <GalleryView archive desktop />} />
       <Route path="/gallery/albums" component={GalleryAlbumsView} />
       <Route path="/gallery/album/:id" component={GalleryAlbumView} />
       <Route path="/gallery/people" component={GalleryPeopleView} />
@@ -128,7 +130,7 @@ render(
       <Route path="/films/play/:id" component={FilmsView} />
       <Route path="/pixiv/:id?" component={PixivView} />
       <Route path="/drive/*rest" component={DriveView} />
-      <Route path="/server-health" component={ServerHealthView} />
+      <Route path="/server-health/:section?" component={ServerHealthView} />
       <Route path="/notifications" component={NotificationsView} />
       <Route path="/account" component={AccountView} />
       <Route path="/secrets" component={SecretsView} />

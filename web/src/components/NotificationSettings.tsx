@@ -54,7 +54,7 @@ function Toggle(props: { id: string; label: string; hint?: string; checked: bool
 }
 
 /** Notification settings, in the account panel. */
-export function NotificationSettings() {
+export function NotificationSettings(props: { desktop?: boolean }) {
   const [error, setError] = createSignal<string | null>(null);
   const [status, setStatus] = createSignal<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = createSignal(false);
@@ -95,15 +95,15 @@ export function NotificationSettings() {
   };
 
   return (
-    <div class="settings-form notif-settings" aria-labelledby="notif-settings-title">
-      <h3 id="notif-settings-title" class="field-label notif-settings-title">
+    <div class={props.desktop ? "pg-form" : "settings-form notif-settings"} id={props.desktop ? "notif-settings-title" : undefined} aria-labelledby={props.desktop ? undefined : "notif-settings-title"}>
+      <Show when={!props.desktop}><h3 id="notif-settings-title" class="field-label notif-settings-title">
         {t("notify.settings")}
-      </h3>
+      </h3></Show>
 
       {/* This device's push. */}
       <div class="notif-block">
-        <span class="field-label appearance-label">{t("notify.pushTitle")}</span>
-        <p class="muted small" role="status">
+        <span class={props.desktop ? "pg-field-label" : "field-label appearance-label"}>{t("notify.pushTitle")}</span>
+        <p class={props.desktop ? "pg-muted" : "muted small"} role="status">
           {pushStatus() === "on"
             ? t("notify.pushOn")
             : pushStatus() === "denied"
@@ -118,7 +118,7 @@ export function NotificationSettings() {
           <Show when={pushStatus() === "off"}>
             <button
               type="button"
-              class="btn btn--primary btn--small"
+              class={props.desktop ? "pg-btn" : "btn btn--primary btn--small"}
               disabled={pushBusy()}
               onClick={() => {
                 setError(null);
@@ -131,7 +131,7 @@ export function NotificationSettings() {
           <Show when={pushStatus() === "on"}>
             <button
               type="button"
-              class="btn btn--small"
+              class={props.desktop ? "pg-btn" : "btn btn--small"}
               disabled={testing()}
               onClick={async () => {
                 setTesting(true);
@@ -141,7 +141,7 @@ export function NotificationSettings() {
             >
               {testing() ? t("notify.pushWorking") : t("notify.pushTest")}
             </button>
-            <button type="button" class="btn btn--small" disabled={pushBusy()} onClick={() => void turnOffPush()}>
+            <button type="button" class={props.desktop ? "pg-btn" : "btn btn--small"} disabled={pushBusy()} onClick={() => void turnOffPush()}>
               {t("notify.pushDisable")}
             </button>
           </Show>
@@ -159,7 +159,7 @@ export function NotificationSettings() {
         {(cur) => (
           <>
             <div class="notif-block">
-              <span class="field-label appearance-label">{t("notify.categoriesTitle")}</span>
+              <span class={props.desktop ? "pg-field-label" : "field-label appearance-label"}>{t("notify.categoriesTitle")}</span>
               <For each={TOGGLED}>
                 {(c) => (
                   <Toggle
@@ -175,7 +175,7 @@ export function NotificationSettings() {
                 {t("notify.calendarLead")}
                 <select
                   id="notif-lead"
-                  class="text-input notif-select"
+                  class={props.desktop ? "pg-input" : "text-input notif-select"}
                   value={String(cur().calendarLeadMinutes)}
                   disabled={!cur().categories.calendar}
                   onChange={(e) => {
@@ -191,13 +191,13 @@ export function NotificationSettings() {
             </div>
 
             <div class="notif-block">
-              <span class="field-label appearance-label" id="notif-dnd">
+              <span class={props.desktop ? "pg-field-label" : "field-label appearance-label"} id="notif-dnd">
                 {t("notify.dndTitle")}
               </span>
-              <div class="segmented segmented--wide" role="group" aria-labelledby="notif-dnd">
+              <div class={props.desktop ? "pg-choices" : "segmented segmented--wide"} role="group" aria-labelledby="notif-dnd">
                 <button
                   type="button"
-                  class="segmented-btn"
+                  class={props.desktop ? "pg-btn" : "segmented-btn"}
                   classList={{ "segmented-btn--active": !dndActive() }}
                   aria-pressed={!dndActive() ? "true" : "false"}
                   onClick={() => void change((x) => (x.dndUntil = null))}
@@ -206,22 +206,22 @@ export function NotificationSettings() {
                 </button>
                 <button
                   type="button"
-                  class="segmented-btn"
+                  class={props.desktop ? "pg-btn" : "segmented-btn"}
                   onClick={() => void change((x) => (x.dndUntil = Date.now() + 3_600_000))}
                 >
                   {t("notify.dnd1h")}
                 </button>
-                <button type="button" class="segmented-btn" onClick={() => void change((x) => (x.dndUntil = tomorrowMorning()))}>
+                <button type="button" class={props.desktop ? "pg-btn" : "segmented-btn"} onClick={() => void change((x) => (x.dndUntil = tomorrowMorning()))}>
                   {t("notify.dndMorning")}
                 </button>
               </div>
               <Show when={dndActive()}>
-                {(until) => <p class="muted small">{t("notify.dndUntil", { time: timeFmt(until()) })}</p>}
+                {(until) => <p class={props.desktop ? "pg-muted" : "muted small"}>{t("notify.dndUntil", { time: timeFmt(until()) })}</p>}
               </Show>
             </div>
 
             <div class="notif-block">
-              <span class="field-label appearance-label">{t("notify.quietTitle")}</span>
+              <span class={props.desktop ? "pg-field-label" : "field-label appearance-label"}>{t("notify.quietTitle")}</span>
               <Toggle
                 id="notif-quiet"
                 label={t("notify.quietEnable")}
@@ -229,11 +229,11 @@ export function NotificationSettings() {
                 onChange={(v) => void change((x) => (x.quietHours.enabled = v))}
               />
               <div class="notif-times">
-                <label class="field-label" for="notif-quiet-from">
+                <label class={props.desktop ? "pg-field-label" : "field-label"} for="notif-quiet-from">
                   {t("notify.quietFrom")}
                   <input
                     id="notif-quiet-from"
-                    class="text-input"
+                    class={props.desktop ? "pg-input" : "text-input"}
                     type="time"
                     value={cur().quietHours.start}
                     disabled={!cur().quietHours.enabled}
@@ -243,11 +243,11 @@ export function NotificationSettings() {
                     }}
                   />
                 </label>
-                <label class="field-label" for="notif-quiet-to">
+                <label class={props.desktop ? "pg-field-label" : "field-label"} for="notif-quiet-to">
                   {t("notify.quietTo")}
                   <input
                     id="notif-quiet-to"
-                    class="text-input"
+                    class={props.desktop ? "pg-input" : "text-input"}
                     type="time"
                     value={cur().quietHours.end}
                     disabled={!cur().quietHours.enabled}
@@ -279,10 +279,10 @@ export function NotificationSettings() {
             </div>
 
             <div class="notif-block">
-              <span class="field-label appearance-label">{t("notify.devicesTitle")}</span>
+              <span class={props.desktop ? "pg-field-label" : "field-label appearance-label"}>{t("notify.devicesTitle")}</span>
               <Show
                 when={(settingsView()?.subscriptions.length ?? 0) > 0}
-                fallback={<p class="muted small">{t("notify.devicesEmpty")}</p>}
+                fallback={<p class={props.desktop ? "pg-muted" : "muted small"}>{t("notify.devicesEmpty")}</p>}
               >
                 <ul class="notif-devices">
                   <For each={settingsView()?.subscriptions ?? []}>
@@ -298,7 +298,7 @@ export function NotificationSettings() {
                                 <span class="notif-chip">{t("notify.deviceThis")}</span>
                               </Show>
                             </span>
-                            <span class="muted small">
+                            <span class={props.desktop ? "pg-muted" : "muted small"}>
                               {d.failures > 0
                                 ? t("notify.deviceFailing")
                                 : d.lastSuccessAt
@@ -321,7 +321,7 @@ export function NotificationSettings() {
                           />
                           <button
                             type="button"
-                            class="btn-link notif-remove"
+                            class={props.desktop ? "pg-btn pg-btn--ghost" : "btn-link notif-remove"}
                             aria-label={`${t("notify.deviceRemove")}: ${d.label}`}
                             onClick={() => void removeDevice(d.id).then((e) => e && setError(t("notify.saveFailed", { error: e })))}
                           >
@@ -339,7 +339,7 @@ export function NotificationSettings() {
       </Show>
       <Show when={error()}>
         {(msg) => (
-          <p class="form-error" role="alert">
+          <p class={props.desktop ? "pg-notice" : "form-error"} role="alert">
             {msg()}
           </p>
         )}

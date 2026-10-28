@@ -5,6 +5,8 @@ import type { FeatureDictionary } from "../types";
 
 const en = {
   title: "Add secret",
+  pageTitle: "Secrets",
+  pageContext: "Browse names and locations; secret values stay private.",
   newProjectTitle: "New Infisical project",
   name: "Name",
   namePlaceholder: "OPENAI_API_KEY",
@@ -69,6 +71,8 @@ export const secrets: FeatureDictionary<typeof en> = {
   en,
   it: {
     title: "Aggiungi segreto",
+    pageTitle: "Segreti",
+    pageContext: "Sfoglia nomi e posizioni; i valori restano privati.",
     newProjectTitle: "Nuovo progetto Infisical",
     name: "Nome",
     namePlaceholder: "OPENAI_API_KEY",
@@ -129,6 +133,8 @@ export const secrets: FeatureDictionary<typeof en> = {
   },
   da: {
     title: "Tilføj hemmelighed",
+    pageTitle: "Hemmeligheder",
+    pageContext: "Se navne og placeringer; værdier forbliver private.",
     newProjectTitle: "Nyt Infisical-projekt",
     name: "Navn",
     namePlaceholder: "OPENAI_API_KEY",

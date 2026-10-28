@@ -5,6 +5,7 @@ import { setLocale } from "../i18n";
 import { rawItem, sizeTheBox } from "../test/galleryGrid";
 import { peopleBackend, rawPerson, type PeopleBackend } from "../test/peopleBackend";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryView from "./Gallery";
 import GalleryPersonView from "./GalleryPerson";
 
@@ -248,5 +249,31 @@ describe("the Gallery's header", () => {
     expect(labels.indexOf("Places")).toBe(labels.indexOf("People") + 1);
     await waitFor(() => expect(shownIds()).toEqual(["m1"]));
     expect(b.calls.some((c) => c.url.includes("/people") || c.url.includes("/faces"))).toBe(false);
+  });
+});
+
+describe("a person's page on the page system (desktop)", () => {
+  it("keeps the Gallery header (People current), a back link to People and the person's name as the heading", async () => {
+    stubWide();
+    setup();
+    mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "People" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { level: 2, name: "Alma" })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery/people");
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    await waitFor(() => expect(shownIds()).toEqual(["a1", "a2", "a3", "a4", "a5"]));
+    // The person's face, count and birth date stay above the full photo grid.
+    expect(document.querySelector(".pp-person")).not.toBeNull();
+    expect(document.querySelector(".pg-grid--full > .pg-main > .g-main .g-scroll")).not.toBeNull();
+  });
+
+  it("shows the friendly empty state when the person has no photos", async () => {
+    stubWide();
+    setup({ ids: [] });
+    mount();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).not.toBeNull());
   });
 });

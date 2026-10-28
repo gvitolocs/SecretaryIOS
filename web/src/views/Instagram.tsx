@@ -4,6 +4,18 @@ import { ApiError } from "../api/client";
 import { instagramApi, type IgItem, type IgPage, type IgProfileBundle } from "../api/instagram";
 import { instagramWatched, refreshInstagramBadges, refreshInstagramWatched, setInstagramBadges } from "../state/instagramBadge";
 import { BackIcon, BellIcon, CheckIcon, ExternalIcon, SearchIcon } from "../components/Icons";
+import {
+  Card,
+  EmptyState,
+  ListRow,
+  LoadingState,
+  Page,
+  PageGrid,
+  PageHeader,
+  PrimaryAction,
+  RowList,
+  useWide,
+} from "../components/page";
 import InstagramViewer from "../components/InstagramViewer";
 import { t } from "../i18n";
 import { formatCount, parseTyped, slideIndexOf, slidesOf } from "../lib/instagram";
@@ -372,6 +384,8 @@ function ProfilePage(props: { username: string; open: (o: Opened) => void }) {
 }
 
 export default function InstagramView() {
+  const measured = useWide();
+  const wide = measured.wide;
   const params = useParams<{ username?: string }>();
   const navigate = useNavigate();
   const [text, setText] = createSignal("");
@@ -381,8 +395,8 @@ export default function InstagramView() {
   onMount(() => void refreshInstagramWatched());
   const [recent] = createResource(() => (params.username ? null : true), () => instagramApi.recent().catch(() => []));
 
-  async function submit(e: Event) {
-    e.preventDefault();
+  async function openTyped(e?: Event) {
+    e?.preventDefault();
     setProblem("");
     const typed = parseTyped(text());
     if (!typed) return setProblem(t("instagram.invalid"));
@@ -407,75 +421,213 @@ export default function InstagramView() {
     }
   }
 
-  return (
-    <section class="instagram" aria-labelledby="instagram-title">
-      <A href="/plugins" class="media-back ig-back">
-        <BackIcon /> {t("instagram.back")}
-      </A>
-      <h1 id="instagram-title">{t("instagram.title")}</h1>
-      <form class="ig-find" onSubmit={submit} role="search">
-        <label class="media-search">
-          <SearchIcon />
-          <input type="search" value={text()} placeholder={t("instagram.search")} aria-label={t("instagram.searchLabel")} autocapitalize="none" autocomplete="off" spellcheck={false} onInput={(e) => setText(e.currentTarget.value)} />
-        </label>
-        <button type="submit" class="ig-btn ig-btn--primary" disabled={busy()}>{t("instagram.open")}</button>
-      </form>
-      <Show when={problem()}>
-        <p class="ig-note" role="alert">{problem()}</p>
+  const findForm = () => (
+    <form class="ig-find" onSubmit={openTyped} role="search">
+      <label class="media-search">
+        <SearchIcon />
+        <input
+          type="search"
+          class={wide() ? "pg-input" : undefined}
+          value={text()}
+          placeholder={t("instagram.search")}
+          aria-label={t("instagram.searchLabel")}
+          autocapitalize="none"
+          autocomplete="off"
+          spellcheck={false}
+          onInput={(e) => setText(e.currentTarget.value)}
+        />
+      </label>
+      <Show
+        when={wide()}
+        fallback={
+          <button type="submit" class="ig-btn ig-btn--primary" disabled={busy()}>
+            {t("instagram.open")}
+          </button>
+        }
+      >
+        <PrimaryAction disabled={busy()} onClick={() => void openTyped()}>
+          {t("instagram.open")}
+        </PrimaryAction>
       </Show>
+    </form>
+  );
 
-      <Show keyed when={params.username} fallback={
-        <>
-        <Show when={instagramWatched().length > 0}>
-          <section class="ig-watched" aria-labelledby="ig-watched-title">
-            <h2 id="ig-watched-title" class="media-section">{t("instagram.watchList")}</h2>
-            <ul class="ig-chips">
-              <For each={instagramWatched()}>
-                {(w) => {
-                  const fresh = () => w.newStories + w.newPosts;
-                  return (
-                    <li>
-                      <button type="button" class="ig-chip" aria-label={fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`} onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}>
-                        <Avatar url={w.picUrl ?? null} name={w.username} />
-                        <span class="ig-chip__name">@{w.username}</span>
-                        <Show when={fresh() > 0}>
-                          <span class="ig-dot" aria-hidden="true">{fresh()}</span>
-                        </Show>
-                      </button>
-                    </li>
-                  );
-                }}
-              </For>
-            </ul>
-          </section>
-        </Show>
-        <section class="ig-recent" aria-labelledby="ig-recent-title">
-          <h2 id="ig-recent-title" class="media-section">{t("instagram.recent")}</h2>
-          <Show when={(recent() ?? []).length > 0} fallback={<p class="ig-muted">{recent.loading ? t("instagram.loading") : t("instagram.recentEmpty")}</p>}>
-            <ul class="ig-recent__list">
-              <For each={recent()}>
-                {(r) => (
-                  <li>
-                    <button type="button" class="ig-person" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
-                      <Avatar url={r.picUrl} name={r.username} />
-                      <span class="ig-person__text">
-                        <span class="ig-person__name">
-                          <span>{r.fullName || r.username}</span>
-                          <Show when={r.isVerified}><Verified /></Show>
-                        </span>
-                        <small>@{r.username}</small>
-                      </span>
+  const watchedRail = () => (
+    <Show when={instagramWatched().length > 0}>
+      <Card list title={t("instagram.watchList")}>
+        <RowList label={t("instagram.watchList")}>
+          <For each={instagramWatched()}>
+            {(w) => {
+              const fresh = () => w.newStories + w.newPosts;
+              return (
+                <ListRow
+                  leading={<Avatar url={w.picUrl ?? null} name={w.username} />}
+                  title={
+                    <button type="button" class="pg-row-name" onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}>
+                      @{w.username}
                     </button>
-                  </li>
-                )}
-              </For>
-            </ul>
+                  }
+                  badge={fresh() > 0 ? fresh() : undefined}
+                />
+              );
+            }}
+          </For>
+        </RowList>
+      </Card>
+    </Show>
+  );
+
+  const recentMain = () => (
+    <Card list title={t("instagram.recent")}>
+      <Show when={recent.loading}>
+        <LoadingState label={t("instagram.loading")} />
+      </Show>
+      <Show when={!recent.loading && (recent() ?? []).length === 0}>
+        <EmptyState text={t("instagram.recentEmpty")} />
+      </Show>
+      <Show when={(recent() ?? []).length > 0}>
+        <RowList label={t("instagram.recent")}>
+          <For each={recent()}>
+            {(r) => (
+              <ListRow
+                leading={<Avatar url={r.picUrl} name={r.username} />}
+                title={
+                  <button type="button" class="pg-row-name" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
+                    {r.fullName || r.username}
+                  </button>
+                }
+                sub={`@${r.username}`}
+                badge={r.isVerified ? <Verified /> : undefined}
+              />
+            )}
+          </For>
+        </RowList>
+      </Show>
+    </Card>
+  );
+
+  return (
+    <div ref={measured.track}>
+      <Show
+        when={wide()}
+        fallback={
+          <section class="instagram" aria-labelledby="instagram-title">
+            <A href="/plugins" class="media-back ig-back">
+              <BackIcon /> {t("instagram.back")}
+            </A>
+            <h1 id="instagram-title">{t("instagram.title")}</h1>
+            {findForm()}
+            <Show when={problem()}>
+              <p class="ig-note" role="alert">
+                {problem()}
+              </p>
+            </Show>
+
+            <Show
+              keyed
+              when={params.username}
+              fallback={
+                <>
+                  <Show when={instagramWatched().length > 0}>
+                    <section class="ig-watched" aria-labelledby="ig-watched-title">
+                      <h2 id="ig-watched-title" class="media-section">
+                        {t("instagram.watchList")}
+                      </h2>
+                      <ul class="ig-chips">
+                        <For each={instagramWatched()}>
+                          {(w) => {
+                            const fresh = () => w.newStories + w.newPosts;
+                            return (
+                              <li>
+                                <button
+                                  type="button"
+                                  class="ig-chip"
+                                  aria-label={fresh() > 0 ? t("instagram.chipLabel", { name: w.username, count: fresh() }) : `@${w.username}`}
+                                  onClick={() => navigate(`/instagram/${encodeURIComponent(w.username)}`)}
+                                >
+                                  <Avatar url={w.picUrl ?? null} name={w.username} />
+                                  <span class="ig-chip__name">@{w.username}</span>
+                                  <Show when={fresh() > 0}>
+                                    <span class="ig-dot" aria-hidden="true">
+                                      {fresh()}
+                                    </span>
+                                  </Show>
+                                </button>
+                              </li>
+                            );
+                          }}
+                        </For>
+                      </ul>
+                    </section>
+                  </Show>
+                  <section class="ig-recent" aria-labelledby="ig-recent-title">
+                    <h2 id="ig-recent-title" class="media-section">
+                      {t("instagram.recent")}
+                    </h2>
+                    <Show when={(recent() ?? []).length > 0} fallback={<p class="ig-muted">{recent.loading ? t("instagram.loading") : t("instagram.recentEmpty")}</p>}>
+                      <ul class="ig-recent__list">
+                        <For each={recent()}>
+                          {(r) => (
+                            <li>
+                              <button type="button" class="ig-person" onClick={() => navigate(`/instagram/${encodeURIComponent(r.username)}`)}>
+                                <Avatar url={r.picUrl} name={r.username} />
+                                <span class="ig-person__text">
+                                  <span class="ig-person__name">
+                                    <span>{r.fullName || r.username}</span>
+                                    <Show when={r.isVerified}>
+                                      <Verified />
+                                    </Show>
+                                  </span>
+                                  <small>@{r.username}</small>
+                                </span>
+                              </button>
+                            </li>
+                          )}
+                        </For>
+                      </ul>
+                    </Show>
+                    <p class="ig-muted ig-hint">{t("instagram.hint")}</p>
+                  </section>
+                </>
+              }
+            >
+              {(username) => <ProfilePage username={username} open={setOpened} />}
+            </Show>
+          </section>
+        }
+      >
+        <Page class="instagram-desk">
+          <PageHeader
+            title={t("instagram.title")}
+            context={params.username ? undefined : t("instagram.hint")}
+            action={findForm()}
+          />
+          <Show when={problem()}>
+            <p class="pg-notice" role="alert">
+              {problem()}
+            </p>
           </Show>
-          <p class="ig-muted ig-hint">{t("instagram.hint")}</p>
-        </section>
-        </>
-      }>
-        {(username) => <ProfilePage username={username} open={setOpened} />}
+          <Show
+            keyed
+            when={params.username}
+            fallback={
+              <PageGrid layout="rail" railLabel={t("instagram.watchList")} rail={watchedRail()}>
+                {recentMain()}
+              </PageGrid>
+            }
+          >
+            {(username) => (
+              <>
+                <a href="/instagram" class="pg-link pg-back">
+                  {t("instagram.backList")}
+                </a>
+                <PageGrid layout="full">
+                  <ProfilePage username={username} open={setOpened} />
+                </PageGrid>
+              </>
+            )}
+          </Show>
+        </Page>
       </Show>
 
       <Show when={opened()} keyed>
@@ -490,6 +642,6 @@ export default function InstagramView() {
           />
         )}
       </Show>
-    </section>
+    </div>
   );
 }

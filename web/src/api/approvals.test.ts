@@ -35,6 +35,21 @@ describe("approvals API parsing", () => {
     expect(parseSettings({})).toBeNull();
   });
 
+  it("reads the Touch ID fields leniently", () => {
+    expect(parseApproval({ ...approvalJson("apr_1"), status: "approved", decidedVia: "Touch ID on MacBook Air" })?.decidedVia).toBe("Touch ID on MacBook Air");
+    expect(parseApproval({ ...approvalJson("apr_1"), decidedVia: 7 })).not.toHaveProperty("decidedVia");
+    const s = parseSettings({
+      devices: [
+        { id: "d1", name: "Mac", keyLabel: "Touch ID on MacBook Air", keyCreatedAt: "2026-10-28T10:00:00Z", pendingApprovalId: "apr_e" },
+        { id: "d2", name: "iPhone", keyLabel: 5, pendingApprovalId: "" },
+      ],
+      thisDeviceId: "d1",
+    });
+    expect(s?.devices[0]).toMatchObject({ keyLabel: "Touch ID on MacBook Air", keyCreatedAt: "2026-10-28T10:00:00Z", pendingApprovalId: "apr_e" });
+    expect(s?.devices[1]).not.toHaveProperty("keyLabel");
+    expect(s?.devices[1]).not.toHaveProperty("pendingApprovalId");
+  });
+
   it("keeps notifications of the approval category", () => {
     expect(parseNotification({ id: "n1", ts: 1, category: "approval", body: "x", route: "/approvals/apr_1" })).toMatchObject({
       category: "approval",

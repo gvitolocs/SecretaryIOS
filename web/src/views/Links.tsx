@@ -1,5 +1,14 @@
 import { useSearchParams } from "@solidjs/router";
-import { createMemo, createSignal, For, type JSX, Match, onMount, Show, Switch } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  For,
+  type JSX,
+  Match,
+  onMount,
+  Show,
+  Switch,
+} from "solid-js";
 import { toApiError } from "../api/client";
 import {
   acceptProposal,
@@ -40,6 +49,21 @@ import {
   SparkIcon,
   SpeakerIcon,
 } from "../components/Icons";
+import {
+  Page,
+  PageHeader,
+  PageGrid,
+  Card as PageCard,
+  RowList,
+  ListRow,
+  Button,
+  PrimaryAction,
+  EmptyState,
+  LoadingState,
+  ErrorState,
+  Sheet,
+  useWide,
+} from "../components/page";
 import { locale, type MessageKey, t } from "../i18n";
 import { nav } from "../lib/navigate";
 import "../styles/links.css";
@@ -92,12 +116,18 @@ function cardName(c: LinkCard): string {
 function cardDetail(c: LinkCard): string | null {
   switch (c.id) {
     case "iphone-calendar":
-      return c.status === "connected" ? t("links.detailIphoneOn", { count: c.count ?? 0 }) : t("links.detailIphoneOff");
+      return c.status === "connected"
+        ? t("links.detailIphoneOn", { count: c.count ?? 0 })
+        : t("links.detailIphoneOff");
     case "google-calendar":
     case "google-gmail":
     case "google-drive":
       if (c.status === "unavailable") return t("links.detailGoogleUnavailable");
-      if (c.id === "google-calendar" && c.count !== undefined && c.status !== "disconnected")
+      if (
+        c.id === "google-calendar" &&
+        c.count !== undefined &&
+        c.status !== "disconnected"
+      )
         return t("links.detailGoogleItems", { count: c.count });
       return null;
     case "channel:telegram":
@@ -114,7 +144,10 @@ function cardDetail(c: LinkCard): string | null {
         : t("links.detailTodoistOff")
       : t("links.detailTodoistOn", { count: c.count ?? 0 });
   }
-  if (c.kind === "ai") return c.status === "unknown" ? t("links.detailAiUnknown") : t("links.detailAi");
+  if (c.kind === "ai")
+    return c.status === "unknown"
+      ? t("links.detailAiUnknown")
+      : t("links.detailAi");
   if (c.kind === "mcp") return t("links.detailMcp");
   if (c.kind === "ics") {
     const n = t("links.icsEvents", { count: c.count ?? 0 });
@@ -134,14 +167,24 @@ function relative(iso: string | null | undefined): string | null {
   if (abs < 3600) return rtf.format(Math.round(diff / 60), "minute");
   if (abs < 86_400) return rtf.format(Math.round(diff / 3600), "hour");
   if (abs < 30 * 86_400) return rtf.format(Math.round(diff / 86_400), "day");
-  return new Date(ms).toLocaleDateString(locale(), { day: "numeric", month: "short", year: "numeric" });
+  return new Date(ms).toLocaleDateString(locale(), {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 function footLine(c: LinkCard): string | null {
   const when = relative(c.lastSyncAt);
-  if (c.kind === "channel" || c.kind === "ai") return when ? t("links.activeAt", { time: when }) : null;
-  if (c.kind === "bookmark" || c.kind === "mcp") return when ? t("links.addedAt", { time: when }) : null;
-  if (c.status === "connected" || c.status === "reconnect" || c.status === "error") {
+  if (c.kind === "channel" || c.kind === "ai")
+    return when ? t("links.activeAt", { time: when }) : null;
+  if (c.kind === "bookmark" || c.kind === "mcp")
+    return when ? t("links.addedAt", { time: when }) : null;
+  if (
+    c.status === "connected" ||
+    c.status === "reconnect" ||
+    c.status === "error"
+  ) {
     return when ? t("links.syncedAt", { time: when }) : t("links.neverSynced");
   }
   return null;
@@ -195,7 +238,7 @@ interface CardHandlers {
   run: (card: LinkCard, action: LinkAction) => Promise<void>;
 }
 
-function Card(props: { card: LinkCard; h: CardHandlers }) {
+function Card(props: { card: LinkCard; h: CardHandlers; wide?: boolean }) {
   const [confirming, setConfirming] = createSignal<LinkAction | null>(null);
   const c = () => props.card;
   const busy = () => props.h.busy() === c().id;
@@ -229,77 +272,192 @@ function Card(props: { card: LinkCard; h: CardHandlers }) {
     await props.h.run(c(), a);
   }
 
-  return (
-    <li class={`link-card link-card--${c().status}`} classList={{ "link-card--busy": busy() }} aria-busy={busy()}>
-      <div class="link-card-top">
-        <Glyph card={c()} />
-        <div class="link-card-title">
-          <h3 class="link-name">{cardName(c())}</h3>
-          <Show when={c().account}>{(a) => <span class="link-account">{a()}</span>}</Show>
-        </div>
-        <StatusPill status={c().status} />
-      </div>
-      <Show when={cardDetail(c())}>{(d) => <p class="link-detail">{d()}</p>}</Show>
-      <Show when={c().error}>{(e) => <p class="link-error">{e()}</p>}</Show>
-      <Show when={(c().scopes?.length ?? 0) > 0 || (c().tags?.length ?? 0) > 0}>
-        <div class="link-chips" aria-label={t("links.access")}>
-          <For each={c().scopes ?? []}>{(s) => <span class="link-chip link-chip--scope">{s}</span>}</For>
-          <For each={c().tags ?? []}>{(s) => <span class="link-chip">#{s}</span>}</For>
-        </div>
+  const desktopActions = () => (
+    <>
+      <Show when={c().url}>
+        {(u) => (
+          <a
+            class="pg-link"
+            href={u()}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t("links.open")}
+          </a>
+        )}
       </Show>
-      <Show when={footLine(c()) || actions().length > 0 || c().url}>
-        <div class="link-card-foot">
-          <span class="link-when">{footLine(c())}</span>
-          <div class="link-actions">
-            <Show when={c().url}>
-              {(u) => (
-                <a class="btn btn--small" href={u()} target="_blank" rel="noopener noreferrer">
-                  {t("links.open")}
-                </a>
-              )}
+      <For each={actions()}>
+        {(a) => (
+          <Show
+            when={confirming() === a}
+            fallback={
+              <Button
+                variant="ghost"
+                disabled={busy()}
+                onClick={() => void act(a)}
+              >
+                {label(a)}
+              </Button>
+            }
+          >
+            <Button
+              variant="danger"
+              disabled={busy()}
+              onClick={() => void act(a)}
+            >
+              {a === "remove"
+                ? t("links.confirmRemove")
+                : t("links.confirmDisconnect")}
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirming(null)}>
+              {t("common.cancel")}
+            </Button>
+          </Show>
+        )}
+      </For>
+    </>
+  );
+  return (
+    <Show when={props.wide} fallback={phone()}>
+      <ListRow
+        class="links-source-row"
+        title={cardName(c())}
+        badge={t(STATUS[c().status] ?? "links.statusUnknown")}
+        sub={
+          <>
+            {c().account} {cardDetail(c())}
+            <Show when={c().error}>
+              {(e) => <span role="alert"> {e()}</span>}
             </Show>
-            <For each={actions()}>
-              {(a) => (
-                <Switch>
-                  <Match when={confirming() === a}>
-                    <span class="confirm-pair">
-                      <button type="button" class="btn btn--small btn--danger" disabled={busy()} onClick={() => void act(a)}>
-                        {a === "remove" ? t("links.confirmRemove") : t("links.confirmDisconnect")}
-                      </button>
-                      <button type="button" class="btn btn--small" onClick={() => setConfirming(null)}>
-                        {t("common.cancel")}
-                      </button>
-                    </span>
-                  </Match>
-                  <Match when={confirming() !== a}>
-                    <button
-                      type="button"
-                      class="btn btn--small"
-                      classList={{ "btn--primary": a === "connect" || a === "reconnect" || (a === "token" && !c().oauth) }}
-                      disabled={busy()}
-                      onClick={() => void act(a)}
-                    >
-                      {label(a)}
-                    </button>
-                  </Match>
-                </Switch>
-              )}
+            <span aria-label={t("links.access")}>
+              {" "}
+              {[
+                ...(c().scopes ?? []),
+                ...(c().tags ?? []).map((s) => `#${s}`),
+              ].join(" · ")}
+            </span>
+          </>
+        }
+        meta={footLine(c())}
+        trailing={desktopActions()}
+      />
+    </Show>
+  );
+  function phone() {
+    return (
+      <li
+        class={`link-card link-card--${c().status}`}
+        classList={{ "link-card--busy": busy() }}
+        aria-busy={busy()}
+      >
+        <div class="link-card-top">
+          <Glyph card={c()} />
+          <div class="link-card-title">
+            <h3 class="link-name">{cardName(c())}</h3>
+            <Show when={c().account}>
+              {(a) => <span class="link-account">{a()}</span>}
+            </Show>
+          </div>
+          <StatusPill status={c().status} />
+        </div>
+        <Show when={cardDetail(c())}>
+          {(d) => <p class="link-detail">{d()}</p>}
+        </Show>
+        <Show when={c().error}>{(e) => <p class="link-error">{e()}</p>}</Show>
+        <Show
+          when={(c().scopes?.length ?? 0) > 0 || (c().tags?.length ?? 0) > 0}
+        >
+          <div class="link-chips" aria-label={t("links.access")}>
+            <For each={c().scopes ?? []}>
+              {(s) => <span class="link-chip link-chip--scope">{s}</span>}
+            </For>
+            <For each={c().tags ?? []}>
+              {(s) => <span class="link-chip">#{s}</span>}
             </For>
           </div>
-        </div>
-      </Show>
-    </li>
-  );
+        </Show>
+        <Show when={footLine(c()) || actions().length > 0 || c().url}>
+          <div class="link-card-foot">
+            <span class="link-when">{footLine(c())}</span>
+            <div class="link-actions">
+              <Show when={c().url}>
+                {(u) => (
+                  <a
+                    class="btn btn--small"
+                    href={u()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {t("links.open")}
+                  </a>
+                )}
+              </Show>
+              <For each={actions()}>
+                {(a) => (
+                  <Switch>
+                    <Match when={confirming() === a}>
+                      <span class="confirm-pair">
+                        <button
+                          type="button"
+                          class="btn btn--small btn--danger"
+                          disabled={busy()}
+                          onClick={() => void act(a)}
+                        >
+                          {a === "remove"
+                            ? t("links.confirmRemove")
+                            : t("links.confirmDisconnect")}
+                        </button>
+                        <button
+                          type="button"
+                          class="btn btn--small"
+                          onClick={() => setConfirming(null)}
+                        >
+                          {t("common.cancel")}
+                        </button>
+                      </span>
+                    </Match>
+                    <Match when={confirming() !== a}>
+                      <button
+                        type="button"
+                        class="btn btn--small"
+                        classList={{
+                          "btn--primary":
+                            a === "connect" ||
+                            a === "reconnect" ||
+                            (a === "token" && !c().oauth),
+                        }}
+                        disabled={busy()}
+                        onClick={() => void act(a)}
+                      >
+                        {label(a)}
+                      </button>
+                    </Match>
+                  </Switch>
+                )}
+              </For>
+            </div>
+          </div>
+        </Show>
+      </li>
+    );
+  }
 }
 
 function eventTime(e: CalendarEvent): string {
   if (e.allDay) return t("links.allDay");
-  return new Date(e.startMs).toLocaleTimeString(locale(), { hour: "2-digit", minute: "2-digit" });
+  return new Date(e.startMs).toLocaleTimeString(locale(), {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function eventDay(e: CalendarEvent): string {
   const d = e.allDay ? new Date(`${e.start}T12:00:00`) : new Date(e.startMs);
-  return d.toLocaleDateString(locale(), { weekday: "short", day: "numeric", month: "short" });
+  return d.toLocaleDateString(locale(), {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
 }
 
 function Upcoming(props: { events: CalendarEvent[] | null }) {
@@ -309,7 +467,10 @@ function Upcoming(props: { events: CalendarEvent[] | null }) {
       {(events) => (
         <div class="links-upcoming card">
           <h3 class="links-upcoming-title">{t("links.upcomingTitle")}</h3>
-          <Show when={events().length > 0} fallback={<p class="muted small">{t("links.upcomingEmpty")}</p>}>
+          <Show
+            when={events().length > 0}
+            fallback={<p class="muted small">{t("links.upcomingEmpty")}</p>}
+          >
             <ol class="links-agenda">
               <For each={events().slice(0, MAX)}>
                 {(e) => (
@@ -317,13 +478,17 @@ function Upcoming(props: { events: CalendarEvent[] | null }) {
                     <span class="links-agenda-day">{eventDay(e)}</span>
                     <span class="links-agenda-time">{eventTime(e)}</span>
                     <span class="links-agenda-title">{e.title}</span>
-                    <span class="links-agenda-cal">{e.calendar ?? e.source}</span>
+                    <span class="links-agenda-cal">
+                      {e.calendar ?? e.source}
+                    </span>
                   </li>
                 )}
               </For>
             </ol>
             <Show when={events().length > MAX}>
-              <p class="muted small">{t("links.moreEvents", { count: events().length - MAX })}</p>
+              <p class="muted small">
+                {t("links.moreEvents", { count: events().length - MAX })}
+              </p>
             </Show>
           </Show>
         </div>
@@ -332,7 +497,7 @@ function Upcoming(props: { events: CalendarEvent[] | null }) {
   );
 }
 
-function IcsForm(props: { onAdded: (msg: string) => void }) {
+function IcsForm(props: { onAdded: (msg: string) => void; wide?: boolean }) {
   const [label, setLabel] = createSignal("");
   const [url, setUrl] = createSignal("");
   const [pending, setPending] = createSignal(false);
@@ -356,21 +521,35 @@ function IcsForm(props: { onAdded: (msg: string) => void }) {
   }
 
   return (
-    <form class="card links-form" onSubmit={(e) => void submit(e)} aria-label={t("links.addIcsTitle")}>
-      <h3 class="links-form-title">
+    <form
+      class={props.wide ? "pg-field" : "card links-form"}
+      onSubmit={(e) => void submit(e)}
+      aria-label={t("links.addIcsTitle")}
+    >
+      <h3 class={props.wide ? "pg-card-title" : "links-form-title"}>
         <PlusIcon />
         {t("links.addIcsTitle")}
       </h3>
-      <p class="muted small">{t("links.icsHelp")}</p>
-      <div class="links-form-row">
-        <label class="links-field links-field--narrow">
-          <span class="field-label">{t("links.icsLabel")}</span>
-          <input class="text-input" value={label()} onInput={(e) => setLabel(e.currentTarget.value)} maxlength="80" disabled={pending()} />
-        </label>
-        <label class="links-field">
-          <span class="field-label">{t("links.icsUrl")}</span>
+      <p class={props.wide ? "pg-muted" : "muted small"}>{t("links.icsHelp")}</p>
+      <div class={props.wide ? "pg-field" : "links-form-row"}>
+        <label class={props.wide ? "pg-field" : "links-field links-field--narrow"}>
+          <span class={props.wide ? "pg-field-label" : "field-label"}>
+            {t("links.icsLabel")}
+          </span>
           <input
-            class="text-input"
+            class={props.wide ? "pg-input" : "text-input"}
+            value={label()}
+            onInput={(e) => setLabel(e.currentTarget.value)}
+            maxlength="80"
+            disabled={pending()}
+          />
+        </label>
+        <label class={props.wide ? "pg-field" : "links-field"}>
+          <span class={props.wide ? "pg-field-label" : "field-label"}>
+            {t("links.icsUrl")}
+          </span>
+          <input
+            class={props.wide ? "pg-input" : "text-input"}
             type="url"
             inputmode="url"
             placeholder="webcal://… · https://…/basic.ics"
@@ -383,15 +562,23 @@ function IcsForm(props: { onAdded: (msg: string) => void }) {
           />
         </label>
       </div>
-      <Show when={error()}>{(m) => <p class="form-error">{m()}</p>}</Show>
-      <button class="btn btn--primary" type="submit" disabled={pending() || !url().trim()}>
+      <Show when={error()}>{(m) => <p class={props.wide ? "pg-notice" : "form-error"}>{m()}</p>}</Show>
+      <button
+        class={props.wide ? "pg-btn" : "btn btn--primary"}
+        type="submit"
+        disabled={pending() || !url().trim()}
+      >
         {pending() ? t("links.icsAdding") : t("links.icsAdd")}
       </button>
     </form>
   );
 }
 
-function TodoistTokenForm(props: { onSaved: (msg: string) => void; onCancel: () => void }) {
+function TodoistTokenForm(props: {
+  onSaved: (msg: string) => void;
+  onCancel: () => void;
+  wide?: boolean;
+}) {
   const [token, setToken] = createSignal("");
   const [pending, setPending] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -407,26 +594,39 @@ function TodoistTokenForm(props: { onSaved: (msg: string) => void; onCancel: () 
     try {
       const r = await saveTodoistToken(v);
       setToken("");
-      props.onSaved(t("links.todoistTokenSaved", { account: r.account ?? "Todoist" }));
+      props.onSaved(
+        t("links.todoistTokenSaved", { account: r.account ?? "Todoist" }),
+      );
     } catch (err) {
       const e2 = toApiError(err);
-      setError(e2.code === "todoist_token_rejected" ? t("links.todoistTokenRejected") : e2.message);
+      setError(
+        e2.code === "todoist_token_rejected"
+          ? t("links.todoistTokenRejected")
+          : e2.message,
+      );
     } finally {
       setPending(false);
     }
   }
 
   return (
-    <form class="card links-form todoist-token" onSubmit={(e) => void submit(e)} aria-label={t("links.todoistPasteToken")}>
-      <label class="field-label" for="todoist-token">
+    <form
+      class={props.wide ? "pg-field" : "card links-form todoist-token"}
+      onSubmit={(e) => void submit(e)}
+      aria-label={t("links.todoistPasteToken")}
+    >
+      <label
+        class={props.wide ? "pg-field-label" : "field-label"}
+        for="todoist-token"
+      >
         {t("links.todoistTokenLabel")}
       </label>
-      <p class="links-hint">{t("links.todoistTokenHint")}</p>
-      <div class="links-form-row">
+      <p class={props.wide ? "pg-muted" : "links-hint"}>{t("links.todoistTokenHint")}</p>
+      <div class={props.wide ? "pg-field" : "links-form-row"}>
         <input
           ref={input}
           id="todoist-token"
-          class="text-input"
+          class={props.wide ? "pg-input" : "text-input"}
           type="password"
           autocomplete="off"
           spellcheck={false}
@@ -434,19 +634,27 @@ function TodoistTokenForm(props: { onSaved: (msg: string) => void; onCancel: () 
           onInput={(e) => setToken(e.currentTarget.value)}
           disabled={pending()}
         />
-        <button type="submit" class="btn btn--primary btn--small" disabled={pending() || !token().trim()}>
+        <button
+          type="submit"
+          class={props.wide ? "pg-btn" : "btn btn--primary btn--small"}
+          disabled={pending() || !token().trim()}
+        >
           {pending() ? t("links.todoistChecking") : t("links.todoistTokenSave")}
         </button>
-        <button type="button" class="btn btn--small" onClick={() => props.onCancel()}>
+        <button
+          type="button"
+          class={props.wide ? "pg-btn" : "btn btn--small"}
+          onClick={() => props.onCancel()}
+        >
           {t("common.cancel")}
         </button>
       </div>
-      <Show when={error()}>{(m) => <p class="link-error">{m()}</p>}</Show>
+      <Show when={error()}>{(m) => <p class={props.wide ? "pg-notice" : "link-error"}>{m()}</p>}</Show>
     </form>
   );
 }
 
-function LinkForm(props: { onAdded: (msg: string) => void }) {
+function LinkForm(props: { onAdded: (msg: string) => void; wide?: boolean }) {
   const [kind, setKind] = createSignal<"bookmark" | "mcp">("bookmark");
   const [label, setLabel] = createSignal("");
   const [url, setUrl] = createSignal("");
@@ -484,17 +692,21 @@ function LinkForm(props: { onAdded: (msg: string) => void }) {
   }
 
   return (
-    <form class="card links-form" onSubmit={(e) => void submit(e)} aria-label={t("links.addLinkTitle")}>
-      <div class="links-form-head">
-        <h3 class="links-form-title">
+    <form
+      class={props.wide ? "pg-field" : "card links-form"}
+      onSubmit={(e) => void submit(e)}
+      aria-label={t("links.addLinkTitle")}
+    >
+      <div class={props.wide ? "pg-field" : "links-form-head"}>
+        <h3 class={props.wide ? "pg-card-title" : "links-form-title"}>
           <PlusIcon />
           {t("links.addLinkTitle")}
         </h3>
-        <div class="segmented" role="group">
+        <div class={props.wide ? "pg-row-actions" : "segmented"} role="group">
           <button
             type="button"
-            class="segmented-btn"
-            classList={{ "segmented-btn--active": kind() === "bookmark" }}
+            class={props.wide ? "pg-btn" : "segmented-btn"}
+            classList={{ "segmented-btn--active": !props.wide && kind() === "bookmark" }}
             aria-pressed={kind() === "bookmark" ? "true" : "false"}
             onClick={() => setKind("bookmark")}
           >
@@ -502,8 +714,8 @@ function LinkForm(props: { onAdded: (msg: string) => void }) {
           </button>
           <button
             type="button"
-            class="segmented-btn"
-            classList={{ "segmented-btn--active": kind() === "mcp" }}
+            class={props.wide ? "pg-btn" : "segmented-btn"}
+            classList={{ "segmented-btn--active": !props.wide && kind() === "mcp" }}
             aria-pressed={kind() === "mcp" ? "true" : "false"}
             onClick={() => setKind("mcp")}
           >
@@ -512,21 +724,41 @@ function LinkForm(props: { onAdded: (msg: string) => void }) {
         </div>
       </div>
       <Show when={kind() === "mcp"}>
-        <p class="muted small">{t("links.mcpHelp")}</p>
+        <p class={props.wide ? "pg-muted" : "muted small"}>{t("links.mcpHelp")}</p>
       </Show>
-      <div class="links-form-row">
-        <label class="links-field links-field--icon">
-          <span class="field-label">{t("links.linkIcon")}</span>
-          <input class="text-input" value={icon()} onInput={(e) => setIcon(e.currentTarget.value)} maxlength="16" placeholder="✦" disabled={pending()} />
-        </label>
-        <label class="links-field links-field--narrow">
-          <span class="field-label">{t("links.linkLabel")}</span>
-          <input class="text-input" value={label()} onInput={(e) => setLabel(e.currentTarget.value)} maxlength="80" required disabled={pending()} />
-        </label>
-        <label class="links-field">
-          <span class="field-label">{t("links.linkUrl")}</span>
+      <div class={props.wide ? "pg-field" : "links-form-row"}>
+        <label class={props.wide ? "pg-field" : "links-field links-field--icon"}>
+          <span class={props.wide ? "pg-field-label" : "field-label"}>
+            {t("links.linkIcon")}
+          </span>
           <input
-            class="text-input"
+            class={props.wide ? "pg-input" : "text-input"}
+            value={icon()}
+            onInput={(e) => setIcon(e.currentTarget.value)}
+            maxlength="16"
+            placeholder="✦"
+            disabled={pending()}
+          />
+        </label>
+        <label class={props.wide ? "pg-field" : "links-field links-field--narrow"}>
+          <span class={props.wide ? "pg-field-label" : "field-label"}>
+            {t("links.linkLabel")}
+          </span>
+          <input
+            class={props.wide ? "pg-input" : "text-input"}
+            value={label()}
+            onInput={(e) => setLabel(e.currentTarget.value)}
+            maxlength="80"
+            required
+            disabled={pending()}
+          />
+        </label>
+        <label class={props.wide ? "pg-field" : "links-field"}>
+          <span class={props.wide ? "pg-field-label" : "field-label"}>
+            {t("links.linkUrl")}
+          </span>
+          <input
+            class={props.wide ? "pg-input" : "text-input"}
             type="url"
             inputmode="url"
             placeholder={kind() === "mcp" ? "https://…/mcp" : "https://"}
@@ -539,28 +771,53 @@ function LinkForm(props: { onAdded: (msg: string) => void }) {
           />
         </label>
       </div>
-      <label class="links-field">
-        <span class="field-label">
-          {t("links.linkTags")} <span class="muted">· {t("links.linkTagsHint")}</span>
+      <label class={props.wide ? "pg-field" : "links-field"}>
+        <span class={props.wide ? "pg-field-label" : "field-label"}>
+          {t("links.linkTags")}{" "}
+          <span class="muted">· {t("links.linkTagsHint")}</span>
         </span>
-        <input class="text-input" value={tags()} onInput={(e) => setTags(e.currentTarget.value)} disabled={pending()} />
+        <input
+          class={props.wide ? "pg-input" : "text-input"}
+          value={tags()}
+          onInput={(e) => setTags(e.currentTarget.value)}
+          disabled={pending()}
+        />
       </label>
-      <Show when={error()}>{(m) => <p class="form-error">{m()}</p>}</Show>
-      <button class="btn btn--primary" type="submit" disabled={pending() || !label().trim() || !url().trim()}>
+      <Show when={error()}>{(m) => <p class={props.wide ? "pg-notice" : "form-error"}>{m()}</p>}</Show>
+      <button
+        class={props.wide ? "pg-btn" : "btn btn--primary"}
+        type="submit"
+        disabled={pending() || !label().trim() || !url().trim()}
+      >
         {t("links.linkAdd")}
       </button>
     </form>
   );
 }
 
-function ProposalRow(props: { p: Proposal; onDone: (msg: string | null) => void; onError: (m: string) => void }) {
+function ProposalRow(props: {
+  wide?: boolean;
+  p: Proposal;
+  onDone: (msg: string | null) => void;
+  onError: (m: string) => void;
+}) {
   const [pending, setPending] = createSignal(false);
   const when = () => {
     const e = props.p.event;
     if (/^\d{4}-\d{2}-\d{2}$/.test(e.start)) {
-      return new Date(`${e.start}T12:00:00`).toLocaleDateString(locale(), { weekday: "short", day: "numeric", month: "short" });
+      return new Date(`${e.start}T12:00:00`).toLocaleDateString(locale(), {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+      });
     }
-    return new Date(e.start).toLocaleString(locale(), { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    return new Date(e.start).toLocaleString(locale(), {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
   async function run(accept: boolean) {
     setPending(true);
@@ -575,30 +832,74 @@ function ProposalRow(props: { p: Proposal; onDone: (msg: string | null) => void;
     }
   }
   return (
-    <li class="links-proposal">
-      <div class="links-proposal-text">
-        <strong>{props.p.event.title}</strong>
-        <span class="muted small">
-          {when()}
-          <Show when={props.p.event.location}>{(l) => ` · ${l()}`}</Show>
-        </span>
-        <span class="muted small">{t("links.proposalFrom", { from: props.p.from })}</span>
-      </div>
-      <div class="link-actions">
-        <button type="button" class="btn btn--small btn--primary" disabled={pending()} onClick={() => void run(true)}>
-          {t("links.accept")}
-        </button>
-        <button type="button" class="btn btn--small" disabled={pending()} onClick={() => void run(false)}>
-          {t("links.dismiss")}
-        </button>
-      </div>
-    </li>
+    <Show when={props.wide} fallback={phone()}>
+      <ListRow
+        title={props.p.event.title}
+        sub={
+          <>
+            {when()} {props.p.event.location} ·{" "}
+            {t("links.proposalFrom", { from: props.p.from })}
+          </>
+        }
+        trailing={
+          <>
+            <Button disabled={pending()} onClick={() => void run(true)}>
+              {t("links.accept")}
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={pending()}
+              onClick={() => void run(false)}
+            >
+              {t("links.dismiss")}
+            </Button>
+          </>
+        }
+      />
+    </Show>
   );
+  function phone() {
+    return (
+      <li class="links-proposal">
+        <div class="links-proposal-text">
+          <strong>{props.p.event.title}</strong>
+          <span class="muted small">
+            {when()}
+            <Show when={props.p.event.location}>{(l) => ` · ${l()}`}</Show>
+          </span>
+          <span class="muted small">
+            {t("links.proposalFrom", { from: props.p.from })}
+          </span>
+        </div>
+        <div class="link-actions">
+          <button
+            type="button"
+            class="btn btn--small btn--primary"
+            disabled={pending()}
+            onClick={() => void run(true)}
+          >
+            {t("links.accept")}
+          </button>
+          <button
+            type="button"
+            class="btn btn--small"
+            disabled={pending()}
+            onClick={() => void run(false)}
+          >
+            {t("links.dismiss")}
+          </button>
+        </div>
+      </li>
+    );
+  }
 }
 
 export default function LinksView() {
+  const { wide, track } = useWide();
+  const [form, setForm] = createSignal<"ics" | "link" | null>(null);
   const [params, setParams] = useSearchParams();
   const [data, setData] = createSignal<LinksOverview | null>(null);
+  const [eventsError, setEventsError] = createSignal<string | null>(null);
   const [events, setEvents] = createSignal<CalendarEvent[] | null>(null);
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
@@ -616,7 +917,9 @@ export default function LinksView() {
     }
     try {
       setEvents((await getEvents(7)).events);
-    } catch {
+      setEventsError(null);
+    } catch (err) {
+      setEventsError(toApiError(err).message);
       setEvents(null);
     }
   }
@@ -624,11 +927,21 @@ export default function LinksView() {
   onMount(() => {
     const g = params.google;
     if (g === "connected") setNotice(t("links.googleConnected"));
-    else if (g === "error") setError(t("links.googleError", { reason: String(params.reason ?? "unknown") }));
+    else if (g === "error")
+      setError(
+        t("links.googleError", { reason: String(params.reason ?? "unknown") }),
+      );
     const td = params.todoist;
     if (td === "connected") setNotice(t("links.todoistConnected"));
-    else if (td === "error") setError(t("links.todoistError", { reason: String(params.reason ?? "unknown") }));
-    if (g || td) setParams({ google: undefined, todoist: undefined, reason: undefined }, { replace: true });
+    else if (td === "error")
+      setError(
+        t("links.todoistError", { reason: String(params.reason ?? "unknown") }),
+      );
+    if (g || td)
+      setParams(
+        { google: undefined, todoist: undefined, reason: undefined },
+        { replace: true },
+      );
     void refresh();
   });
 
@@ -676,7 +989,10 @@ export default function LinksView() {
           return;
         }
         if (action === "connect" || action === "reconnect") {
-          const services = card.kind === "google" && card.service ? [card.service] : ["calendar"];
+          const services =
+            card.kind === "google" && card.service
+              ? [card.service]
+              : ["calendar"];
           const { authorizeUrl } = await connectGoogle(services);
           nav.assign(authorizeUrl);
           return;
@@ -689,7 +1005,10 @@ export default function LinksView() {
           setNotice(t("links.disconnected"));
         } else if (action === "remove" && card.kind === "ics") {
           await removeIcs(card.id.slice("ics:".length));
-        } else if (action === "remove" && (card.kind === "bookmark" || card.kind === "mcp")) {
+        } else if (
+          action === "remove" &&
+          (card.kind === "bookmark" || card.kind === "mcp")
+        ) {
           await removeCustom(card.id.slice("custom:".length));
         }
         await refresh();
@@ -709,112 +1028,372 @@ export default function LinksView() {
   };
 
   return (
-    <div class="links">
-      <div class="links-inner">
-        <header class="links-head">
-          <div>
-            <h1 class="view-title">{t("links.title")}</h1>
-            <p class="links-sub">{t("links.subtitle")}</p>
-          </div>
-          <button type="button" class="btn btn--small links-sync" classList={{ "is-spinning": syncing() }} onClick={() => void syncAll()} disabled={syncing()}>
-            <RefreshIcon />
-            {syncing() ? t("links.syncing") : t("links.syncNow")}
-          </button>
-        </header>
-
-        <Show when={notice()}>
-          {(m) => (
-            <div class="links-toast" role="status">
-              <span>{m()}</span>
-              <button type="button" class="banner-close" onClick={() => setNotice(null)} aria-label={t("common.dismiss")}>
-                ×
-              </button>
-            </div>
-          )}
-        </Show>
-        <Show when={error()}>
-          {(m) => (
-            <div class="notice" role="alert">
-              <span>{m()}</span>
-              <button type="button" class="banner-close" onClick={() => setError(null)} aria-label={t("common.dismiss")}>
-                ×
-              </button>
-            </div>
-          )}
-        </Show>
-
-        <Show
-          when={data()}
-          fallback={
-            <Show when={loadError()} fallback={<p class="muted center" role="status">{t("links.loading")}</p>}>
-              {(m) => (
-                <div class="empty" role="alert">
-                  <p class="empty-title">{m()}</p>
-                  <button class="btn" type="button" onClick={() => void refresh()}>
-                    {t("common.tryAgain")}
-                  </button>
-                </div>
-              )}
-            </Show>
-          }
-        >
-          <Show when={proposals().length > 0}>
-            <section class="card links-proposals" aria-label={t("links.proposalsTitle")}>
-              <h2 class="section-title">{t("links.proposalsTitle")}</h2>
-              <ul class="links-proposal-list">
-                <For each={proposals()}>
-                  {(p) => (
-                    <ProposalRow
-                      p={p}
-                      onDone={(m) => {
-                        if (m) setNotice(m);
-                        void refresh();
-                      }}
-                      onError={setError}
-                    />
-                  )}
-                </For>
-              </ul>
-            </section>
-          </Show>
-
-          <For each={groups()}>
-            {(g) => (
-              <section class={`links-group links-group--${g.id}`} aria-labelledby={`links-group-${g.id}`}>
-                <div class="links-group-head">
-                  <h2 class="section-title" id={`links-group-${g.id}`}>
-                    {GROUP_TITLE[g.id] ? t(GROUP_TITLE[g.id] as MessageKey) : g.id}
-                  </h2>
-                  <Show when={GROUP_HINT[g.id]}>{(k) => <p class="links-hint">{t(k())}</p>}</Show>
-                </div>
-                <Show when={g.id === "calendars"}>
-                  <Upcoming events={events()} />
-                </Show>
-                <Show when={g.cards.length > 0} fallback={<p class="muted small links-empty">{t("links.noLinks")}</p>}>
-                  <ul class="links-grid">
-                    <For each={g.cards}>{(c) => <Card card={c} h={handlers} />}</For>
-                  </ul>
-                </Show>
-                <Show when={g.id === "calendars"}>
-                  <IcsForm onAdded={added} />
-                </Show>
-                <Show when={g.id === "tasks" && tokenOpen()}>
-                  <TodoistTokenForm
-                    onSaved={(m) => {
-                      setTokenOpen(false);
-                      added(m);
-                    }}
-                    onCancel={() => setTokenOpen(false)}
-                  />
-                </Show>
-                <Show when={g.id === "custom"}>
-                  <LinkForm onAdded={added} />
-                </Show>
-              </section>
+    <div class="links" ref={track}>
+      <Show when={wide()} fallback={phone()}>
+        <Page class="links-desk">
+          <PageHeader
+            title={t("links.title")}
+            context={t("links.subtitle")}
+            action={
+              <PrimaryAction
+                disabled={syncing()}
+                onClick={() => void syncAll()}
+              >
+                {syncing() ? t("links.syncing") : t("links.syncNow")}
+              </PrimaryAction>
+            }
+          />
+          <For
+            each={[notice(), error(), data() ? loadError() : null].filter(
+              Boolean,
+            )}
+          >
+            {(m) => (
+              <div class="pg-notice" role="status">
+                {m}
+                <Button
+                  variant="ghost"
+                  aria-label={t("common.dismiss")}
+                  onClick={() => {
+                    setNotice(null);
+                    setError(null);
+                    setLoadError(null);
+                  }}
+                >
+                  ×
+                </Button>
+              </div>
             )}
           </For>
-        </Show>
-      </div>
+          <Show
+            when={data()}
+            fallback={
+              <Show
+                when={loadError()}
+                fallback={<LoadingState label={t("links.loading")} />}
+              >
+                {(m) => (
+                  <ErrorState
+                    message={m()}
+                    retryLabel={t("common.tryAgain")}
+                    onRetry={() => void refresh()}
+                  />
+                )}
+              </Show>
+            }
+          >
+            <PageGrid
+              layout="rail"
+              rail={
+                <For each={groups()}>
+                  {(g) => (
+                    <PageCard
+                      list
+                      title={
+                        GROUP_TITLE[g.id]
+                          ? t(GROUP_TITLE[g.id] as MessageKey)
+                          : g.id
+                      }
+                      actions={
+                        <>
+                          <Show when={g.id === "calendars"}>
+                            <Button
+                              variant="ghost"
+                              onClick={() => setForm("ics")}
+                            >
+                              {t("links.addIcsTitle")}
+                            </Button>
+                          </Show>
+                          <Show when={g.id === "custom"}>
+                            <Button
+                              variant="ghost"
+                              onClick={() => setForm("link")}
+                            >
+                              {t("links.addLinkTitle")}
+                            </Button>
+                          </Show>
+                        </>
+                      }
+                    >
+                      <Show when={GROUP_HINT[g.id]}>
+                        {(k) => <p class="pg-muted">{t(k())}</p>}
+                      </Show>
+                      <RowList>
+                        <For each={g.cards}>
+                          {(c) => <Card wide card={c} h={handlers} />}
+                        </For>
+                      </RowList>
+                      <Show when={!g.cards.length}>
+                        <EmptyState text={t("links.noLinks")} />
+                      </Show>
+                    </PageCard>
+                  )}
+                </For>
+              }
+            >
+              <PageCard list title={t("links.proposalsTitle")}>
+                <RowList>
+                  <For each={proposals()}>
+                    {(p) => (
+                      <ProposalRow
+                        wide
+                        p={p}
+                        onDone={(m) => {
+                          if (m) setNotice(m);
+                          void refresh();
+                        }}
+                        onError={setError}
+                      />
+                    )}
+                  </For>
+                </RowList>
+                <Show when={!proposals().length}>
+                  <EmptyState text={t("links.proposalsEmpty")} />
+                </Show>
+              </PageCard>
+              <PageCard list title={t("links.upcomingTitle")}>
+                <Show
+                  when={events()}
+                  fallback={
+                    <Show
+                      when={eventsError()}
+                      fallback={<LoadingState label={t("links.loading")} />}
+                    >
+                      {(m) => (
+                        <ErrorState
+                          message={m()}
+                          retryLabel={t("common.tryAgain")}
+                          onRetry={() => void refresh()}
+                        />
+                      )}
+                    </Show>
+                  }
+                >
+                  {(es) => (
+                    <Show
+                      when={es().length}
+                      fallback={<EmptyState text={t("links.upcomingEmpty")} />}
+                    >
+                      <RowList>
+                        <For each={es()}>
+                          {(e) => (
+                            <ListRow
+                              title={e.title}
+                              sub={e.calendar ?? e.source}
+                              meta={`${eventDay(e)} · ${eventTime(e)}`}
+                            />
+                          )}
+                        </For>
+                      </RowList>
+                    </Show>
+                  )}
+                </Show>
+              </PageCard>
+            </PageGrid>
+          </Show>
+          <Sheet
+            open={form() !== null}
+            onClose={() => setForm(null)}
+            title={
+              form() === "ics"
+                ? t("links.addIcsTitle")
+                : t("links.addLinkTitle")
+            }
+          >
+            <Show
+              when={form() === "ics"}
+              fallback={
+                <LinkForm
+                  wide
+                  onAdded={(m) => {
+                    setForm(null);
+                    added(m);
+                  }}
+                />
+              }
+            >
+              <IcsForm
+                wide
+                onAdded={(m) => {
+                  setForm(null);
+                  added(m);
+                }}
+              />
+            </Show>
+          </Sheet>
+          <Sheet
+            open={tokenOpen()}
+            onClose={() => setTokenOpen(false)}
+            title={t("links.todoistPasteToken")}
+          >
+            <TodoistTokenForm
+              wide
+              onSaved={(m) => {
+                setTokenOpen(false);
+                added(m);
+              }}
+              onCancel={() => setTokenOpen(false)}
+            />
+          </Sheet>
+        </Page>
+      </Show>
     </div>
   );
+  function phone() {
+    return (
+      <>
+        <div class="links-inner">
+          <header class="links-head">
+            <div>
+              <h1 class="view-title">{t("links.title")}</h1>
+              <p class="links-sub">{t("links.subtitle")}</p>
+            </div>
+            <button
+              type="button"
+              class="btn btn--small links-sync"
+              classList={{ "is-spinning": syncing() }}
+              onClick={() => void syncAll()}
+              disabled={syncing()}
+            >
+              <RefreshIcon />
+              {syncing() ? t("links.syncing") : t("links.syncNow")}
+            </button>
+          </header>
+
+          <Show when={notice()}>
+            {(m) => (
+              <div class="links-toast" role="status">
+                <span>{m()}</span>
+                <button
+                  type="button"
+                  class="banner-close"
+                  onClick={() => setNotice(null)}
+                  aria-label={t("common.dismiss")}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </Show>
+          <Show when={error()}>
+            {(m) => (
+              <div class="notice" role="alert">
+                <span>{m()}</span>
+                <button
+                  type="button"
+                  class="banner-close"
+                  onClick={() => setError(null)}
+                  aria-label={t("common.dismiss")}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </Show>
+
+          <Show
+            when={data()}
+            fallback={
+              <Show
+                when={loadError()}
+                fallback={
+                  <p class="muted center" role="status">
+                    {t("links.loading")}
+                  </p>
+                }
+              >
+                {(m) => (
+                  <div class="empty" role="alert">
+                    <p class="empty-title">{m()}</p>
+                    <button
+                      class="btn"
+                      type="button"
+                      onClick={() => void refresh()}
+                    >
+                      {t("common.tryAgain")}
+                    </button>
+                  </div>
+                )}
+              </Show>
+            }
+          >
+            <Show when={proposals().length > 0}>
+              <section
+                class="card links-proposals"
+                aria-label={t("links.proposalsTitle")}
+              >
+                <h2 class="section-title">{t("links.proposalsTitle")}</h2>
+                <ul class="links-proposal-list">
+                  <For each={proposals()}>
+                    {(p) => (
+                      <ProposalRow
+                        p={p}
+                        onDone={(m) => {
+                          if (m) setNotice(m);
+                          void refresh();
+                        }}
+                        onError={setError}
+                      />
+                    )}
+                  </For>
+                </ul>
+              </section>
+            </Show>
+
+            <For each={groups()}>
+              {(g) => (
+                <section
+                  class={`links-group links-group--${g.id}`}
+                  aria-labelledby={`links-group-${g.id}`}
+                >
+                  <div class="links-group-head">
+                    <h2 class="section-title" id={`links-group-${g.id}`}>
+                      {GROUP_TITLE[g.id]
+                        ? t(GROUP_TITLE[g.id] as MessageKey)
+                        : g.id}
+                    </h2>
+                    <Show when={GROUP_HINT[g.id]}>
+                      {(k) => <p class="links-hint">{t(k())}</p>}
+                    </Show>
+                  </div>
+                  <Show when={g.id === "calendars"}>
+                    <Upcoming events={events()} />
+                  </Show>
+                  <Show
+                    when={g.cards.length > 0}
+                    fallback={
+                      <p class="muted small links-empty">
+                        {t("links.noLinks")}
+                      </p>
+                    }
+                  >
+                    <ul class="links-grid">
+                      <For each={g.cards}>
+                        {(c) => <Card card={c} h={handlers} />}
+                      </For>
+                    </ul>
+                  </Show>
+                  <Show when={g.id === "calendars"}>
+                    <IcsForm onAdded={added} />
+                  </Show>
+                  <Show when={g.id === "tasks" && tokenOpen()}>
+                    <TodoistTokenForm
+                      onSaved={(m) => {
+                        setTokenOpen(false);
+                        added(m);
+                      }}
+                      onCancel={() => setTokenOpen(false)}
+                    />
+                  </Show>
+                  <Show when={g.id === "custom"}>
+                    <LinkForm onAdded={added} />
+                  </Show>
+                </section>
+              )}
+            </For>
+          </Show>
+        </div>
+      </>
+    );
+  }
 }

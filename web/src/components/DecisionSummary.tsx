@@ -5,10 +5,10 @@ import { relativeTime } from "./NotificationBell";
 import "../styles/approvals.css";
 import "../styles/decisions.css";
 
-export function DecisionSummary(props: { item: Decision; detail?: boolean }) {
+export function DecisionSummary(props: { item: Decision; detail?: boolean; hideTitle?: boolean }) {
   const asker = () => props.item.asking_client + (props.item.asking_session ? ` (${props.item.asking_session})` : "");
   return <>
-    <h2 class="apv-summary">{props.item.question}</h2>
+    <Show when={!props.hideTitle}><h2 class="apv-summary">{props.item.question}</h2></Show>
     <p class="apv-asking">{t("decisions.asking", { name: asker() })}</p>
     <div class="apv-badges">
       <span class={`apv-badge apv-badge--${props.item.impact}`}>{t(({ low: "decisions.impactLow", medium: "decisions.impactMedium", high: "decisions.impactHigh" } as const)[props.item.impact])}</span>

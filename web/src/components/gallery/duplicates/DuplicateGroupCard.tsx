@@ -4,9 +4,12 @@ import { locale, t, type MessageKey } from "../../../i18n";
 import { formatBytes } from "../../../lib/drive";
 import { itemName, scorePercent } from "../../../lib/galleryDedup";
 import { dimensionsText } from "../../../lib/galleryCompare";
+import { Card } from "../../page";
 import { CheckIcon } from "../stacks/StackIcons";
 
 export interface DuplicateGroupCardProps {
+  /** The page-system card and quiet buttons (desktop). */
+  wide?: boolean;
   group: DuplicateGroup;
   jxl: boolean;
   /** A request is running: the buttons wait. */
@@ -30,8 +33,9 @@ function takenText(member: DuplicateMember): string {
  */
 export function DuplicateGroupCard(props: DuplicateGroupCardProps) {
   const reasonLabel = () => t(`galleryDedup.reason_${props.group.reason}` as MessageKey);
-  return (
-    <article class="dd-group" aria-label={t("galleryDedup.groupLabel", { count: props.group.members.length })}>
+  const label = () => t("galleryDedup.groupLabel", { count: props.group.members.length });
+  const body = () => (
+    <>
       <header class="dd-group__head">
         <span class="dd-class">{t(`galleryDedup.class_${props.group.class}` as MessageKey)}</span>
         <span class="dd-score" classList={{ "dd-score--weak": !props.group.applicable }}>
@@ -74,8 +78,8 @@ export function DuplicateGroupCard(props: DuplicateGroupCardProps) {
                 </div>
                 <button
                   type="button"
-                  class="btn"
-                  classList={{ "btn--primary": suggested() }}
+                  class={props.wide ? "pg-btn" : "btn"}
+                  classList={{ "btn--primary": suggested() && !props.wide }}
                   disabled={props.busy}
                   aria-label={t("galleryDedup.keepAria", { name: name() })}
                   onClick={() => props.onKeep(props.group, member.item.id)}
@@ -88,10 +92,24 @@ export function DuplicateGroupCard(props: DuplicateGroupCardProps) {
         </For>
       </ul>
       <footer class="dd-group__foot">
-        <button type="button" class="btn" disabled={props.busy} onClick={() => props.onDismiss(props.group)}>
+        <button type="button" class={props.wide ? "pg-btn pg-btn--ghost" : "btn"} disabled={props.busy} onClick={() => props.onDismiss(props.group)}>
           {t("galleryDedup.notDuplicates")}
         </button>
       </footer>
-    </article>
+    </>
+  );
+  return (
+    <Show
+      when={props.wide}
+      fallback={
+        <article class="dd-group" aria-label={label()}>
+          {body()}
+        </article>
+      }
+    >
+      <Card class="dd-group" label={label()}>
+        {body()}
+      </Card>
+    </Show>
   );
 }

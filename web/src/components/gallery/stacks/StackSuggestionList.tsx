@@ -4,6 +4,8 @@ import { t, type MessageKey } from "../../../i18n";
 import { itemName, spanSeconds } from "../../../lib/galleryDedup";
 
 export interface StackSuggestionListProps {
+  /** Quiet page-system buttons (desktop). */
+  wide?: boolean;
   suggestions: StackSuggestion[];
   jxl: boolean;
   busy: boolean;
@@ -48,10 +50,10 @@ export function StackSuggestionList(props: StackSuggestionListProps) {
                 </For>
               </ul>
               <div class="dd-suggestion__actions">
-                <button type="button" class="btn btn--primary" disabled={props.busy} onClick={() => props.onStack(s)}>
+                <button type="button" class={props.wide ? "pg-btn" : "btn btn--primary"} disabled={props.busy} onClick={() => props.onStack(s)}>
                   {t("galleryDedup.stackIt")}
                 </button>
-                <button type="button" class="btn" disabled={props.busy} onClick={() => props.onDismiss(s)}>
+                <button type="button" class={props.wide ? "pg-btn pg-btn--ghost" : "btn"} disabled={props.busy} onClick={() => props.onDismiss(s)}>
                   {t("galleryDedup.notAStack")}
                 </button>
               </div>

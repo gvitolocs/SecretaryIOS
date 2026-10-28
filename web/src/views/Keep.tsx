@@ -1,7 +1,17 @@
 import { useLocation, useNavigate } from "@solidjs/router";
-import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import type { KeepNote } from "../api/keep";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import type { KeepNote, LabelInfo } from "../api/keep";
 import { AccountDialog } from "../components/AccountDialog";
+import {
+  Card,
+  EmptyState as PageEmptyState,
+  LoadingState,
+  Page,
+  PageGrid,
+  PageHeader,
+  RowList,
+  useWide,
+} from "../components/page";
 import { KeepContext, KeepRootContext, type KeepCtx } from "../components/keep/ctx";
 import { Composer } from "../components/keep/Composer";
 import { ConfirmDialog, LabelsDialog } from "../components/keep/Dialogs";
@@ -14,10 +24,11 @@ import { SearchPage } from "../components/keep/SearchPage";
 import { SelectionBar } from "../components/keep/SelectionBar";
 import { Snackbar } from "../components/keep/Snackbar";
 import { TopBar } from "../components/keep/TopBar";
+import { GridViewIcon, ListViewIcon, RefreshIcon, SettingsIcon } from "../components/keep/icons";
 import { moveItem } from "../components/keep/ChecklistEditor";
 import { t } from "../i18n";
 import { positionBetween, searchActive, searchNotes, splitPinned, viewNotes, emptySearch, type KeepView } from "../lib/keepFilter";
-import { keepHref, noteHref, parseKeepPath } from "../lib/keepRoute";
+import { keepHref, noteHref, parseKeepPath, sameView } from "../lib/keepRoute";
 import { keep, startAutoSync } from "../state/keep";
 import { clearSelection, drawerOpen, listMode, navCollapsed, search, searchOpen, selection, setDrawerOpen, setListMode, setNavCollapsed, setSearch, setSearchOpen } from "../state/keepUi";
 import { effectiveTheme } from "../state/appearance";
@@ -27,12 +38,90 @@ import "../styles/keep.css";
 // Routes: /keep, /keep/reminders, /keep/archive, /keep/trash, /keep/label/<name>, /keep/note/<id> (a note's dialog).
 // The cache, sync and optimistic writes live in state/keep.ts; everything on this page reads that store.
 
-function EmptyState(props: { icon: () => JSX.Element; text: string }) {
+function KeepEmptyState(props: { icon: () => JSX.Element; text: string }) {
   return (
     <div class="kp-empty" role="status">
       <span class="kp-empty-icon">{props.icon()}</span>
       <p>{props.text}</p>
     </div>
+  );
+}
+
+function keepSectionContext(view: KeepView, labelName: (tag: string) => string): string {
+  switch (view.kind) {
+    case "reminders":
+      return t("keep.reminders");
+    case "archive":
+      return t("keep.archive");
+    case "trash":
+      return t("keep.trash");
+    case "label":
+      return labelName((view as { tag: string }).tag);
+    default:
+      return t("keep.notes");
+  }
+}
+
+function KeepDeskNavRow(props: { href: string; label: string; icon: JSX.Element; active: boolean; onGo: (href: string) => void }) {
+  return (
+    <li class={`pg-row${props.active ? " keep-desk-nav--active" : ""}`}>
+      <span class="keep-desk-nav-icon" aria-hidden="true">
+        {props.icon}
+      </span>
+      <div class="pg-row-main">
+        <p class="pg-row-title">
+          <a
+            href={props.href}
+            class="pg-row-name pg-row-link"
+            aria-current={props.active ? "page" : undefined}
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+              e.preventDefault();
+              props.onGo(props.href);
+            }}
+          >
+            {props.label}
+          </a>
+        </p>
+      </div>
+    </li>
+  );
+}
+
+function KeepDeskNav(props: { view: KeepView; labels: LabelInfo[]; onGo: (href: string) => void; onEditLabels: () => void }) {
+  const is = (v: KeepView) => sameView(props.view, v);
+  return (
+    <Card list label={t("keep.menu")}>
+      <RowList>
+        <KeepDeskNavRow href="/keep" label={t("keep.notes")} icon={<BulbOutlineIcon />} active={is({ kind: "notes" })} onGo={props.onGo} />
+        <KeepDeskNavRow href="/keep/reminders" label={t("keep.reminders")} icon={<BellIcon />} active={is({ kind: "reminders" })} onGo={props.onGo} />
+        <For each={props.labels}>
+          {(l) => (
+            <KeepDeskNavRow
+              href={keepHref({ kind: "label", tag: l.tag }, l.name)}
+              label={l.name}
+              icon={<LabelIcon />}
+              active={is({ kind: "label", tag: l.tag })}
+              onGo={props.onGo}
+            />
+          )}
+        </For>
+        <li class="pg-row">
+          <span class="keep-desk-nav-icon" aria-hidden="true">
+            <LabelIcon />
+          </span>
+          <div class="pg-row-main">
+            <p class="pg-row-title">
+              <button type="button" class="pg-link" onClick={props.onEditLabels}>
+                {t("keep.editLabels")}
+              </button>
+            </p>
+          </div>
+        </li>
+        <KeepDeskNavRow href="/keep/archive" label={t("keep.archive")} icon={<ArchiveIcon />} active={is({ kind: "archive" })} onGo={props.onGo} />
+        <KeepDeskNavRow href="/keep/trash" label={t("keep.trash")} icon={<TrashIcon />} active={is({ kind: "trash" })} onGo={props.onGo} />
+      </RowList>
+    </Card>
   );
 }
 
@@ -181,12 +270,112 @@ export default function KeepView() {
   const trashIds = () => keep.all().filter((n) => n.deletedAt).map((n) => n.id);
   const showFilters = () => searchOpen() && !searching();
 
+  const measured = useWide();
+  const wide = measured.wide;
+
+  const keepMain = (
+    <>
+      <Show when={keep.status() === "error" && keep.error()}>
+        <p class={wide() ? "pg-notice" : "kp-sync-error"} role="status">
+          {t("keep.syncFailed")}
+        </p>
+      </Show>
+      <Show when={showFilters()}>
+        <SearchPage labels={keep.labels()} theme={theme()} onPick={(p) => setSearch({ ...search(), ...p })} />
+      </Show>
+      <Show when={!showFilters()}>
+        <Show when={!searching() && (view().kind === "notes" || view().kind === "label")}>
+          <Composer initialLabel={labelDisplay()} />
+        </Show>
+        <Show when={view().kind === "trash" && !searching() && trashIds().length > 0}>
+          <div class="kp-trash-bar">
+            <span>{t("keep.trashHint")}</span>
+            <button type="button" class="kp-text-btn kp-text-btn--accent" data-action="empty-trash" onClick={() => setConfirmEmpty(true)}>
+              {t("keep.emptyTrashBtn")}
+            </button>
+          </div>
+        </Show>
+        <Show
+          when={keep.loaded()}
+          fallback={
+            <Show when={wide()} fallback={<div class="kp-loading" aria-hidden="true" />}>
+              <LoadingState label={t("common.loading")} />
+            </Show>
+          }
+        >
+          <Show
+            when={shown().length > 0}
+            fallback={
+              <Show when={wide()} fallback={<KeepEmptyState icon={emptyFor().icon} text={emptyFor().text} />}>
+                <PageEmptyState text={emptyFor().text} />
+              </Show>
+            }
+          >
+            <Show
+              when={(sections() as { reminders?: boolean }).reminders}
+              fallback={
+                <>
+                  <Section notes={sections().pinned} heading={t("keep.pinned")} />
+                  <Section notes={sections().others} heading={sections().pinned.length ? t("keep.others") : undefined} />
+                </>
+              }
+            >
+              <Section notes={sections().pinned} heading={sections().others.length ? t("keep.upcoming") : undefined} />
+              <Section notes={sections().others} heading={sections().pinned.length ? t("keep.earlier") : undefined} />
+            </Show>
+          </Show>
+        </Show>
+      </Show>
+    </>
+  );
+
+  const deskHeaderTools = (
+    <>
+      <input
+        class="pg-input keep-desk-search"
+        type="search"
+        autocomplete="off"
+        placeholder={t("keep.search")}
+        aria-label={t("keep.search")}
+        value={search().q}
+        onFocus={() => setSearchOpen(true)}
+        onInput={(e) => setSearch({ ...search(), q: e.currentTarget.value })}
+      />
+      <button
+        type="button"
+        class="pg-icon-btn"
+        classList={{ "kp-spin": keep.status() === "syncing" }}
+        aria-label={t("keep.refresh")}
+        title={t("keep.refresh")}
+        onClick={() => void keep.sync()}
+      >
+        <RefreshIcon />
+      </button>
+      <button
+        type="button"
+        class="pg-icon-btn"
+        aria-label={listMode() ? t("keep.gridView") : t("keep.listView")}
+        title={listMode() ? t("keep.gridView") : t("keep.listView")}
+        onClick={() => setListMode(!listMode())}
+      >
+        {listMode() ? <GridViewIcon /> : <ListViewIcon />}
+      </button>
+      <button type="button" class="pg-icon-btn" aria-label={t("keep.settings")} title={t("keep.settings")} onClick={() => setSettingsOpen(true)}>
+        <SettingsIcon />
+      </button>
+    </>
+  );
+
   return (
     <KeepRootContext.Provider value={rootEl}>
       <KeepContext.Provider value={ctx}>
         <div
           class="kp"
-          ref={setRootEl}
+          ref={(el) => {
+            setRootEl(el);
+            measured.track(el);
+          }}
+          classList={{ "kp--desk": wide() }}
           data-theme={theme()}
           data-nav={navCollapsed() ? "collapsed" : "open"}
           data-drawer={drawerOpen() ? "open" : "closed"}
@@ -194,86 +383,80 @@ export default function KeepView() {
           data-selecting={selection().size > 0 ? "yes" : undefined}
           data-searching={searchOpen() ? "yes" : undefined}
         >
-          <Show when={selection().size > 0} fallback={
-            <TopBar
-              search={search()}
-              searchOpen={searchOpen()}
-              theme={theme()}
-              labelName={keep.labelName}
-              listMode={listMode()}
-              syncing={keep.status() === "syncing"}
-              onMenu={() => {
-                if (typeof matchMedia === "function" && matchMedia("(max-width: 600px)").matches) setDrawerOpen(!drawerOpen());
-                else setNavCollapsed(!navCollapsed());
-              }}
-              onHome={() => go("/keep")}
-              onSearchFocus={() => setSearchOpen(true)}
-              onSearch={(p) => setSearch({ ...search(), ...p })}
-              onSearchExit={() => {
-                setSearch(emptySearch());
-                setSearchOpen(false);
-              }}
-              onRefresh={() => void keep.sync()}
-              onToggleList={() => setListMode(!listMode())}
-              onSettings={() => setSettingsOpen(true)}
-            />
-          }>
-            <SelectionBar notes={selectedNotes()} />
-          </Show>
-          <div class="kp-body">
-            <Show when={drawerOpen()}>
-              <div class="kp-drawer-scrim" onClick={() => setDrawerOpen(false)} />
-            </Show>
-            <Nav view={view()} labels={keep.labels()} collapsed={navCollapsed()} onGo={go} onEditLabels={() => { setDrawerOpen(false); setLabelsOpen(true); }} />
-            <main class="kp-main" id="keep-main" aria-label={t("keep.title")}>
-              <Show when={keep.status() === "error" && keep.error()}>
-                <p class="kp-sync-error" role="status">
-                  {t("keep.syncFailed")}
-                </p>
-              </Show>
-              <Show when={showFilters()}>
-                <SearchPage
-                  labels={keep.labels()}
+          <Show
+            when={selection().size > 0}
+            fallback={
+              <Show when={!wide()}>
+                <TopBar
+                  search={search()}
+                  searchOpen={searchOpen()}
                   theme={theme()}
-                  onPick={(p) => setSearch({ ...search(), ...p })}
+                  labelName={keep.labelName}
+                  listMode={listMode()}
+                  syncing={keep.status() === "syncing"}
+                  onMenu={() => {
+                    if (typeof matchMedia === "function" && matchMedia("(max-width: 600px)").matches) setDrawerOpen(!drawerOpen());
+                    else setNavCollapsed(!navCollapsed());
+                  }}
+                  onHome={() => go("/keep")}
+                  onSearchFocus={() => setSearchOpen(true)}
+                  onSearch={(p) => setSearch({ ...search(), ...p })}
+                  onSearchExit={() => {
+                    setSearch(emptySearch());
+                    setSearchOpen(false);
+                  }}
+                  onRefresh={() => void keep.sync()}
+                  onToggleList={() => setListMode(!listMode())}
+                  onSettings={() => setSettingsOpen(true)}
                 />
               </Show>
-              <Show when={!showFilters()}>
-                <Show when={!searching() && (view().kind === "notes" || view().kind === "label")}>
-                  <Composer initialLabel={labelDisplay()} />
+            }
+          >
+            <SelectionBar notes={selectedNotes()} />
+          </Show>
+          <Show
+            when={wide()}
+            fallback={
+              <div class="kp-body">
+                <Show when={drawerOpen()}>
+                  <div class="kp-drawer-scrim" onClick={() => setDrawerOpen(false)} />
                 </Show>
-                <Show when={view().kind === "trash" && !searching() && trashIds().length > 0}>
-                  <div class="kp-trash-bar">
-                    <span>{t("keep.trashHint")}</span>
-                    <button type="button" class="kp-text-btn kp-text-btn--accent" data-action="empty-trash" onClick={() => setConfirmEmpty(true)}>
-                      {t("keep.emptyTrashBtn")}
-                    </button>
-                  </div>
-                </Show>
-                <Show when={keep.loaded()} fallback={<div class="kp-loading" aria-hidden="true" />}>
-                  <Show
-                    when={shown().length > 0}
-                    fallback={
-                      <EmptyState icon={emptyFor().icon} text={emptyFor().text} />
-                    }
-                  >
-                    <Show
-                      when={(sections() as { reminders?: boolean }).reminders}
-                      fallback={
-                        <>
-                          <Section notes={sections().pinned} heading={t("keep.pinned")} />
-                          <Section notes={sections().others} heading={sections().pinned.length ? t("keep.others") : undefined} />
-                        </>
-                      }
-                    >
-                      <Section notes={sections().pinned} heading={sections().others.length ? t("keep.upcoming") : undefined} />
-                      <Section notes={sections().others} heading={sections().pinned.length ? t("keep.earlier") : undefined} />
-                    </Show>
-                  </Show>
-                </Show>
-              </Show>
-            </main>
-          </div>
+                <Nav
+                  view={view()}
+                  labels={keep.labels()}
+                  collapsed={navCollapsed()}
+                  onGo={go}
+                  onEditLabels={() => {
+                    setDrawerOpen(false);
+                    setLabelsOpen(true);
+                  }}
+                />
+                <main class="kp-main" id="keep-main" aria-label={t("keep.title")}>
+                  {keepMain}
+                </main>
+              </div>
+            }
+          >
+            <Page class="keep-desk">
+              <PageHeader title={t("keep.title")} context={keepSectionContext(view(), keep.labelName)} action={deskHeaderTools} />
+              <PageGrid
+                layout="split"
+                railLabel={t("keep.menu")}
+                rail={
+                  <KeepDeskNav
+                    view={view()}
+                    labels={keep.labels()}
+                    onGo={go}
+                    onEditLabels={() => setLabelsOpen(true)}
+                  />
+                }
+              >
+                <main class="kp-main keep-desk-main" id="keep-main" aria-label={t("keep.title")}>
+                  {keepMain}
+                </main>
+              </PageGrid>
+            </Page>
+          </Show>
           <Show when={dialogId()}>{(id) => <NoteDialog id={id()} onClose={closeNote} />}</Show>
           <Show when={labelsOpen()}>
             <LabelsDialog onClose={() => setLabelsOpen(false)} />

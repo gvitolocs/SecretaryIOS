@@ -15,6 +15,8 @@ import {
   type StackSuggestion,
 } from "../api/gallery";
 import { ApiError } from "../api/client";
+import { Card, EmptyState, ErrorState, LoadingState, Page, PageGrid, PrimaryAction, useWide } from "../components/page";
+import { GalleryDetail, GalleryHeader } from "../components/gallery/GalleryHeader";
 import { DuplicateGroupCard } from "../components/gallery/duplicates/DuplicateGroupCard";
 import { GalleryViewer } from "../components/gallery/GalleryViewer";
 import { Modal } from "../components/gallery/Modal";
@@ -39,6 +41,7 @@ interface Toast {
 }
 
 export default function GalleryDuplicatesView() {
+  const { wide, track } = useWide();
   const [jxl] = createResource(supportsJxl);
   const [data, setData] = createSignal<DuplicatesPage | null>(null);
   const [groups, setGroups] = createSignal<DuplicateGroup[]>([]);
@@ -199,99 +202,151 @@ export default function GalleryDuplicatesView() {
     });
   }
 
-  return (
-    <div class="dd-page">
-      <header class="dd-head">
-        <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
-          <BackIcon />
-        </A>
-        <h1 class="dd-h1">{t("galleryDedup.title")}</h1>
-        <Show when={applicable() > 0}>
-          <button type="button" class="btn btn--primary" disabled={busy()} onClick={() => setConfirming(true)}>
-            {t("galleryDedup.applyAll")}
-          </button>
-        </Show>
-      </header>
+  const retryLoad = () => {
+    setLoading(true);
+    void load();
+  };
+  const loadingLine = () => (
+    <Show when={wide()} fallback={<p class="dd-state" role="status">{t("gallery.loading")}</p>}>
+      <LoadingState label={t("gallery.loading")} />
+    </Show>
+  );
 
-      <Show when={!loading()} fallback={<p class="dd-state" role="status">{t("gallery.loading")}</p>}>
-        <Show
-          when={!failed()}
-          fallback={
-            <p class="dd-state" role="alert">
-              {t("galleryDedup.loadError")}{" "}
-              <button type="button" class="btn" onClick={() => { setLoading(true); void load(); }}>
-                {t("galleryDedup.retry")}
-              </button>
-            </p>
-          }
-        >
-          <p class="dd-intro">{t("galleryDedup.intro")}</p>
-
-          <Show when={burstCount() > 0}>
-            <div class="dd-banner" role="status">
-              <span>{t("galleryDedup.burstsBanner", { count: burstCount() })}</span>
-              <button type="button" class="btn" onClick={() => (burstsOpen() ? setBurstsOpen(false) : void showBursts())}>
-                {burstsOpen() ? t("galleryDedup.burstsHide") : t("galleryDedup.burstsReview")}
-              </button>
-            </div>
-          </Show>
-          <Show when={burstsOpen()}>
-            <Show when={!burstsFailed()} fallback={<p class="dd-state" role="alert">{t("galleryDedup.loadError")}</p>}>
-              <Show when={bursts()} fallback={<p class="dd-state" role="status">{t("gallery.loading")}</p>}>
-                {(list) => (
-                  <StackSuggestionList
-                    suggestions={list()}
-                    jxl={jxl() ?? false}
-                    busy={busy()}
-                    pending={burstsPending()}
-                    onStack={(s) => void stackBurst(s)}
-                    onDismiss={(s) => void dismissBurst(s)}
-                  />
-                )}
-              </Show>
-            </Show>
-          </Show>
-
-          <Show when={(data()?.hashes.pending ?? 0) > 0}>
-            <p class="dd-note" role="status">
-              {t("galleryDedup.pending", { count: data()?.hashes.pending ?? 0 })}
-            </p>
-          </Show>
-
+  const content = () => (
+    <Show when={!loading()} fallback={loadingLine()}>
+      <Show
+        when={!failed()}
+        fallback={
           <Show
-            when={groups().length > 0}
+            when={wide()}
             fallback={
-              <Show when={(data()?.hashes.pending ?? 0) === 0}>
-                <div class="dd-state">
-                  <p>{t("galleryDedup.empty")}</p>
-                  <p class="dd-note">{t("galleryDedup.emptyHint")}</p>
-                </div>
-              </Show>
+              <p class="dd-state" role="alert">
+                {t("galleryDedup.loadError")}{" "}
+                <button type="button" class="btn" onClick={retryLoad}>
+                  {t("galleryDedup.retry")}
+                </button>
+              </p>
             }
           >
-            <p class="dd-summary">{t("galleryDedup.summary", { count: total() })}</p>
-            <div class="dd-groups">
-              <For each={groups()}>
-                {(group) => <DuplicateGroupCard group={group} jxl={jxl() ?? false} busy={busy()} onKeep={(g, id) => void keep(g, id)} onDismiss={(g) => void dismiss(g)} onOpen={open} />}
-              </For>
-            </div>
-            <Show when={hasMore()}>
-              <div class="dd-more">
-                <button
-                  type="button"
-                  class="btn"
-                  disabled={busy()}
-                  onClick={() => {
-                    setLimit((n) => n + PAGE);
-                    void load();
-                  }}
-                >
-                  {t("galleryDedup.loadMore")}
-                </button>
-              </div>
+            <ErrorState message={t("galleryDedup.loadError")} retryLabel={t("galleryDedup.retry")} onRetry={retryLoad} />
+          </Show>
+        }
+      >
+        <p class="dd-intro">{t("galleryDedup.intro")}</p>
+
+        <Show when={burstCount() > 0}>
+          <div class="dd-banner" classList={{ "pg-card": wide() }} role="status">
+            <span>{t("galleryDedup.burstsBanner", { count: burstCount() })}</span>
+            <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => (burstsOpen() ? setBurstsOpen(false) : void showBursts())}>
+              {burstsOpen() ? t("galleryDedup.burstsHide") : t("galleryDedup.burstsReview")}
+            </button>
+          </div>
+        </Show>
+        <Show when={burstsOpen()}>
+          <Show when={!burstsFailed()} fallback={<p class="dd-state" role="alert">{t("galleryDedup.loadError")}</p>}>
+            <Show when={bursts()} fallback={loadingLine()}>
+              {(list) => (
+                <StackSuggestionList
+                  wide={wide()}
+                  suggestions={list()}
+                  jxl={jxl() ?? false}
+                  busy={busy()}
+                  pending={burstsPending()}
+                  onStack={(s) => void stackBurst(s)}
+                  onDismiss={(s) => void dismissBurst(s)}
+                />
+              )}
             </Show>
           </Show>
         </Show>
+
+        <Show when={(data()?.hashes.pending ?? 0) > 0}>
+          <p class="dd-note" role="status">
+            {t("galleryDedup.pending", { count: data()?.hashes.pending ?? 0 })}
+          </p>
+        </Show>
+
+        <Show
+          when={groups().length > 0}
+          fallback={
+            <Show when={(data()?.hashes.pending ?? 0) === 0}>
+              <Show
+                when={wide()}
+                fallback={
+                  <div class="dd-state">
+                    <p>{t("galleryDedup.empty")}</p>
+                    <p class="dd-note">{t("galleryDedup.emptyHint")}</p>
+                  </div>
+                }
+              >
+                <Card label={t("galleryDedup.title")}>
+                  <EmptyState title={t("galleryDedup.empty")} text={t("galleryDedup.emptyHint")} />
+                </Card>
+              </Show>
+            </Show>
+          }
+        >
+          <p class="dd-summary">{t("galleryDedup.summary", { count: total() })}</p>
+          <div class="dd-groups">
+            <For each={groups()}>
+              {(group) => <DuplicateGroupCard wide={wide()} group={group} jxl={jxl() ?? false} busy={busy()} onKeep={(g, id) => void keep(g, id)} onDismiss={(g) => void dismiss(g)} onOpen={open} />}
+            </For>
+          </div>
+          <Show when={hasMore()}>
+            <div class="dd-more">
+              <button
+                type="button"
+                class={wide() ? "pg-btn" : "btn"}
+                disabled={busy()}
+                onClick={() => {
+                  setLimit((n) => n + PAGE);
+                  void load();
+                }}
+              >
+                {t("galleryDedup.loadMore")}
+              </button>
+            </div>
+          </Show>
+        </Show>
+      </Show>
+    </Show>
+  );
+
+  return (
+    <div class={wide() ? "g-page-root" : "dd-page"} ref={track}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <header class="dd-head">
+              <A class="g-back" href="/gallery" aria-label={t("gallery.backToGallery")}>
+                <BackIcon />
+              </A>
+              <h1 class="dd-h1">{t("galleryDedup.title")}</h1>
+              <Show when={applicable() > 0}>
+                <button type="button" class="btn btn--primary" disabled={busy()} onClick={() => setConfirming(true)}>
+                  {t("galleryDedup.applyAll")}
+                </button>
+              </Show>
+            </header>
+            {content()}
+          </>
+        }
+      >
+        <Page class="g-lib">
+          <GalleryHeader
+            count={loading() || failed() ? undefined : total()}
+            action={
+              <Show when={applicable() > 0}>
+                <PrimaryAction disabled={busy()} onClick={() => setConfirming(true)}>
+                  {t("galleryDedup.applyAll")}
+                </PrimaryAction>
+              </Show>
+            }
+          />
+          <GalleryDetail href="/gallery" back={t("gallery.backToGallery")} title={t("galleryDedup.title")} />
+          <PageGrid layout="full">{content()}</PageGrid>
+        </Page>
       </Show>
 
       <Show when={toast()}>

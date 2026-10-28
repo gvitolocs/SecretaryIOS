@@ -23,6 +23,10 @@
   --lu-warning: #ff9f0a;
   --lu-info: #64d2ff;
   --lu-scrim: #00000099;
+  --lu-glass: #14162899;
+  --lu-glass-border: #ffffff1a;
+  --lu-glass-highlight: #ffffff14;
+  --lu-glass-fallback: #16182a;
   --lu-tab-bar-bg: #1c1c1eb8;
 
   --lu-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif;
@@ -67,6 +71,7 @@
   --lu-radius-field: 12px;
   --lu-radius-button: 14px;
   --lu-radius-sheet: 24px;
+  --lu-radius-glass: 28px;
   --lu-radius-pill: 999px;
   --lu-space-xxs: 2px;
   --lu-space-xs: 4px;
@@ -128,6 +133,10 @@
     --lu-warning: #ff9500;
     --lu-info: #32ade6;
     --lu-scrim: #00000033;
+    --lu-glass: #ffffff99;
+    --lu-glass-border: #3c3c4317;
+    --lu-glass-highlight: #ffffffcc;
+    --lu-glass-fallback: #f7f7fa;
     --lu-tab-bar-bg: #ffffffb8;
   }
 }
@@ -152,5 +161,9 @@
   --lu-warning: #ff9500;
   --lu-info: #32ade6;
   --lu-scrim: #00000033;
+  --lu-glass: #ffffff99;
+  --lu-glass-border: #3c3c4317;
+  --lu-glass-highlight: #ffffffcc;
+  --lu-glass-fallback: #f7f7fa;
   --lu-tab-bar-bg: #ffffffb8;
 }

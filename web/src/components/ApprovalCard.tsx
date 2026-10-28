@@ -2,12 +2,17 @@
 // stays open, and Approve / Deny. Used by the global pop-up and by the /approvals pages.
 //
 // The web has no Face ID key, so a sensitive request can only be denied here: Approve stays disabled and says
-// where to approve it.
+// where to approve it. Inside Secretary Code, a Mac with a Touch ID key approves it too (the desktop app asks
+// for the fingerprint and sends the answer); a Mac without one points to the account section to set it up.
 
+import { A } from "@solidjs/router";
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { Button, Card } from "./page";
 import type { Approval } from "../api/approvals";
+import { desktopApprover } from "../api/desktopApprover";
 import { t, type MessageKey } from "../i18n";
-import { CLOSED, decideApproval, skipApproval, type Outcome } from "../state/approvals";
+import { approveWithTouchId, CLOSED, decideApproval, skipApproval, type Outcome } from "../state/approvals";
+import { macApproverStatus, macCanApprove, refreshMacApprover } from "../state/macApprover";
 import "../styles/approvals.css";
 
 const RISK_LABEL: Record<Approval["risk"], MessageKey> = {
@@ -46,6 +51,7 @@ export function outcomeText(o: Outcome): string {
 
 export function ApprovalCard(props: {
   item: Approval;
+  desktop?: boolean;
   /** "1 of 3": where this one is in the queue. */
   position?: { index: number; total: number };
   /** The request was closed (see CLOSED in state/approvals). */
@@ -55,6 +61,7 @@ export function ApprovalCard(props: {
   /** Extra controls in the header corner. */
   children?: JSX.Element;
 }) {
+  const [confirmDeny, setConfirmDeny] = createSignal(false);
   const [busy, setBusy] = createSignal<"approve" | "deny" | null>(null);
   const [note, setNote] = createSignal<MessageKey | null>(null);
   const [now, setNow] = createSignal(Date.now());
@@ -63,6 +70,7 @@ export function ApprovalCard(props: {
 
   onMount(() => {
     timer = setInterval(() => setNow(Date.now()), 1000);
+    if (props.item.sensitive && desktopApprover()) void refreshMacApprover();
   });
   onCleanup(() => timer !== undefined && clearInterval(timer));
 
@@ -81,23 +89,34 @@ export function ApprovalCard(props: {
     if (busy() || closed) return;
     setBusy(decision);
     setNote(null);
-    const outcome = await decideApproval(props.item, decision);
+    const outcome = macApprove(decision) ? await approveWithTouchId(props.item) : await decideApproval(props.item, decision);
     setBusy(null);
     if (CLOSED.includes(outcome.kind)) {
       if (closed) return;
       closed = true;
       props.onDone(outcome);
+    } else if (outcome.kind === "cancelled") return;
+    else if (outcome.kind === "needsSetup" || outcome.kind === "unavailable") {
+      // The Mac's key is gone or Touch ID stopped working: look again, so the card shows what is true now.
+      void refreshMacApprover();
+      setNote(outcome.kind === "needsSetup" ? "approvals.errNeedsSetup" : "approvals.errTouchId");
     } else if (outcome.kind === "needsFaceId") setNote("approvals.faceId");
     else if (outcome.kind === "notMain") setNote("approvals.errNotMain");
     else if (outcome.kind === "changed") setNote("approvals.errChanged");
     else setNote("approvals.errSend");
   }
 
-  const canApprove = () => !props.item.sensitive && !busy() && !expired();
+  /** A sensitive request approved with Touch ID on this Mac. */
+  const macApprove = (decision: "approve" | "deny") => decision === "approve" && props.item.sensitive && macCanApprove();
+  /** Inside Secretary Code, with Touch ID available on this Mac but no key yet. */
+  const needsMacSetup = () => {
+    const s = macApproverStatus();
+    return props.item.sensitive && !!desktopApprover() && !!s && s.available && !s.hasKey;
+  };
+  const canApprove = () => (!props.item.sensitive || macCanApprove()) && !busy() && !expired();
   const initial = () => (props.item.requester.name.trim()[0] ?? "?").toUpperCase();
 
-  return (
-    <article class="apv-card" classList={{ "apv-card--sensitive": props.item.sensitive }} aria-labelledby={`apv-sum-${props.item.id}`}>
+  const content = () => <>
       <header class="apv-head">
         <span class="apv-avatar" aria-hidden="true">
           {initial()}
@@ -114,7 +133,7 @@ export function ApprovalCard(props: {
         {props.children}
       </header>
 
-      <h2 class="apv-summary" id={`apv-sum-${props.item.id}`}>
+      <h2 class={props.desktop ? "apv-detail-title" : "apv-summary"} id={`apv-sum-${props.item.id}`}>
         {props.item.summary}
       </h2>
 
@@ -141,18 +160,25 @@ export function ApprovalCard(props: {
 
       <Show when={props.item.sensitive}>
         <p class="apv-faceid" id={`apv-face-${props.item.id}`} role="note">
-          {t("approvals.faceId")}
+          {macCanApprove() ? t("approvals.touchId") : t("approvals.faceId")}
+          <Show when={needsMacSetup()}>
+            {" "}
+            {/* The pop-up covers the page: put this one off so the account section can be reached. */}
+            <A class="apv-setup" href="/account?section=approvals" onClick={() => props.onLater?.()}>
+              {t("approvals.macSetupLink")}
+            </A>
+          </Show>
         </p>
       </Show>
       <Show when={note()}>
         {(key) => (
-          <p class="form-error" role="alert">
+          <p class={props.desktop ? "pg-notice" : "form-error"} role="alert">
             {t(key())}
           </p>
         )}
       </Show>
 
-      <div class="apv-actions">
+      <Show when={props.desktop} fallback={<>      <div class="apv-actions">
         <button type="button" class="btn" disabled={busy() !== null || expired()} onClick={() => void answer("deny")}>
           {busy() === "deny" ? t("approvals.denying") : t("approvals.deny")}
         </button>
@@ -166,6 +192,15 @@ export function ApprovalCard(props: {
           {busy() === "approve" ? t("approvals.approving") : t("approvals.approve")}
         </button>
       </div>
+</>}>
+        <div class="apv-actions">
+          <Show when={confirmDeny()} fallback={<Button disabled={busy() !== null || expired()} onClick={() => setConfirmDeny(true)}>{t("approvals.deny")}</Button>}>
+            <Button variant="danger" disabled={busy() !== null || expired()} onClick={() => void answer("deny")}>{busy() === "deny" ? t("approvals.denying") : t("approvals.deny")}</Button>
+            <Button variant="ghost" disabled={busy() !== null} onClick={() => setConfirmDeny(false)}>{t("common.cancel")}</Button>
+          </Show>
+          <button type="button" class="pg-cta" aria-describedby={props.item.sensitive ? `apv-face-${props.item.id}` : undefined} disabled={!canApprove()} onClick={() => void answer("approve")}>{busy() === "approve" ? t("approvals.approving") : t("approvals.approve")}</button>
+        </div>
+      </Show>
       <Show when={props.onLater}>
         {(later) => (
           <button type="button" class="apv-later" onClick={() => later()()}>
@@ -173,7 +208,12 @@ export function ApprovalCard(props: {
           </button>
         )}
       </Show>
-    </article>
+  </>;
+
+  return (
+    <Show when={props.desktop} fallback={<article class="apv-card" classList={{ "apv-card--sensitive": props.item.sensitive }} aria-labelledby={`apv-sum-${props.item.id}`}>
+      {content()}
+    </article>}><Card label={props.item.summary} class="apv-desk-detail">{content()}</Card></Show>
   );
 }
 

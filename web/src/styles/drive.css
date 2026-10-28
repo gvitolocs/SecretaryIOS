@@ -186,3 +186,9 @@
   .drive-preview__bar .drive-glyph { display: none; }
   .drive-btn { padding: 0 10px; }
 }
+
+/* Desktop (page system): the type chips wrap instead of scrolling out of the column. */
+.pg .drive-chips {
+  flex-wrap: wrap;
+  overflow: visible;
+}

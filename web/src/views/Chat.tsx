@@ -282,6 +282,10 @@ const LOAD_OLDER_PX = 200;
 const AUTO_SCROLL_MS = 900;
 /** Within this distance of the bottom, new items keep the list pinned to the end. */
 const STICK_PX = 80;
+/** A scroll this soon after the reader's own input (wheel, touch, keys, scrollbar drag) is theirs. */
+const READER_INPUT_MS = 700;
+/** How long reader input waits for its first scroll event (a busy page can paint that late). */
+const READER_PENDING_MS = 3_000;
 
 function resultText(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -662,12 +666,21 @@ export default function ChatView() {
   }
   /** While our own scroll-to-end runs, scroll events are not the reader's. */
   let autoScrollUntil = 0;
-  let userScrolled = false;
+  /**
+   * When the reader last moved the list (wheel, touch, keys, scrollbar drag). Only their scrolls unpin it: the
+   * browser also lowers scrollTop when content above shrinks or the view grows (Secretary Code re-places its warm
+   * view on every rail switch), and taking that for a scroll up left the chat stuck above the newest messages.
+   */
+  let readerInputAt = 0;
+  /** Reader input with no scroll event yet: the next one is theirs even when a slow frame delays it. */
+  let inputPending = false;
+  let touching = false;
   let lastScrollTop = 0;
   let content: HTMLDivElement | undefined;
   let draggingList = false;
   const readerScroll = () => {
-    userScrolled = true;
+    readerInputAt = Date.now();
+    inputPending = true;
     autoScrollUntil = 0;
   };
 
@@ -705,39 +718,66 @@ export default function ChatView() {
   function onScroll() {
     if (!list) return;
     const top = list.scrollTop;
-    if (Date.now() < autoScrollUntil) {
-      lastScrollTop = top;
-      return;
-    }
     const movedUp = top < lastScrollTop;
-    if (movedUp) userScrolled = true;
     lastScrollTop = top;
-    if (!userScrolled) return;
-    atBottom = !movedUp && list.scrollHeight - top - list.clientHeight < STICK_PX;
+    if (Date.now() < autoScrollUntil) return;
+    const distance = list.scrollHeight - top - list.clientHeight;
+    const pending = inputPending && Date.now() - readerInputAt < READER_PENDING_MS;
+    inputPending = false;
+    if (touching || pending || Date.now() - readerInputAt < READER_INPUT_MS) {
+      readerInputAt = Date.now();
+      // A drop that lands exactly on the end is the browser clamping, not a scroll up.
+      atBottom = distance <= 1 || (!movedUp && distance < STICK_PX);
+    } else if (atBottom) {
+      // Layout moved the list, not the reader: stay on the newest message.
+      if (distance > 1) scrollToEnd(false);
+      return;
+    } else if (distance <= 1) {
+      atBottom = true;
+    }
+    // Older pages load only once the reader has scrolled away from the end, never on mount.
     if (!atBottom && top < LOAD_OLDER_PX && hasMore()) void older();
   }
 
+  /**
+   * Pin to the end once the DOM has settled. A hidden page (Secretary Code's view while another rail item is
+   * shown, a background tab) runs no animation frames, so it pins at once instead of when it is shown again.
+   */
+  function pinSoon(smooth: boolean) {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") scrollToEnd(false);
+    else requestAnimationFrame(() => scrollToEnd(smooth));
+  }
+
   onMount(() => {
+    scrollToEnd(false);
     const frame = requestAnimationFrame(() => scrollToEnd(false));
+    // Growing content (photos, previews, fonts, a revealing reply) and a resized view keep a pinned list at the end.
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
       if (atBottom) scrollToEnd(false);
     }) : null;
     if (content) observer?.observe(content);
+    if (list) observer?.observe(list);
     const latest = () => {
       atBottom = true;
-      userScrolled = false;
+      readerInputAt = 0;
+      inputPending = false;
       scrollToEnd(true);
     };
     const release = () => { draggingList = false; };
+    const shown = () => {
+      if (document.visibilityState === "visible" && atBottom) scrollToEnd(false);
+    };
     window.addEventListener("secretary:chat-latest", latest);
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
+    document.addEventListener("visibilitychange", shown);
     onCleanup(() => {
       cancelAnimationFrame(frame);
       observer?.disconnect();
       window.removeEventListener("secretary:chat-latest", latest);
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
+      document.removeEventListener("visibilitychange", shown);
     });
     onCleanup(connectTimeline());
   });
@@ -751,7 +791,7 @@ export default function ChatView() {
       () => [visible()[visible().length - 1]?.key, sending()] as const,
       (_now, prev) => {
         const firstFill = !prev?.[0];
-        if (atBottom) requestAnimationFrame(() => scrollToEnd(!firstFill));
+        if (atBottom) pinSoon(!firstFill);
       },
       { defer: true },
     ),
@@ -762,7 +802,7 @@ export default function ChatView() {
     on(
       revealTick,
       () => {
-        if (atBottom) requestAnimationFrame(() => scrollToEnd(true));
+        if (atBottom) pinSoon(true);
       },
       { defer: true },
     ),
@@ -806,7 +846,7 @@ export default function ChatView() {
       filter,
       () => {
         atBottom = true;
-        requestAnimationFrame(() => scrollToEnd(false));
+        pinSoon(false);
       },
       { defer: true },
     ),
@@ -1000,7 +1040,10 @@ export default function ChatView() {
         ref={list}
         onScroll={onScroll}
         onWheel={readerScroll}
+        onTouchStart={() => { touching = true; readerScroll(); }}
         onTouchMove={readerScroll}
+        onTouchEnd={() => { touching = false; readerScroll(); }}
+        onTouchCancel={() => { touching = false; readerScroll(); }}
         onPointerDown={() => { draggingList = true; }}
         onPointerMove={() => { if (draggingList) readerScroll(); }}
         onKeyDown={(e) => {

@@ -1,9 +1,9 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "../../test/router";
-import { Button, Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, PrimaryAction, RowList, SectionNav, Sheet } from ".";
+import { Button, Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, PrimaryAction, RowList, SectionNav, Sheet, useWide } from ".";
 
 describe("page system", () => {
   it("renders the header row: title, context, sections and one accent action", () => {
@@ -79,6 +79,16 @@ describe("page system", () => {
     ));
     expect(single.container.querySelector(".pg-grid--single")).not.toBeNull();
     expect(screen.queryByRole("complementary")).toBeNull();
+    single.unmount();
+    const split = render(() => (
+      <PageGrid layout="split" rail={<p>List</p>} railLabel="Notes">
+        <p>Detail</p>
+      </PageGrid>
+    ));
+    const side = screen.getByRole("navigation", { name: "Notes" });
+    expect(side).toHaveClass("pg-side");
+    // The list comes first, then the selected item.
+    expect(split.container.querySelector(".pg-grid--split")!.firstElementChild).toBe(side);
   });
 
   it("names a card's region by its title and lists rows edge to edge", () => {
@@ -151,5 +161,44 @@ describe("page system", () => {
     fireEvent.click(opener);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  describe("useWide", () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it("measures a capped page by the slot it sits in", async () => {
+      // The page's own column is 480 px (a phone max-width); its slot is 1200 px.
+      // Like a real ResizeObserver, this one reports after the element is attached.
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(private cb: ResizeObserverCallback) {}
+          observe() {
+            queueMicrotask(() => this.cb([{ contentRect: { width: 480 } } as ResizeObserverEntry], this as unknown as ResizeObserver));
+          }
+          disconnect() {}
+        },
+      );
+      const slot = document.createElement("div");
+      vi.spyOn(slot, "getBoundingClientRect").mockReturnValue({ width: 1200 } as DOMRect);
+      document.body.append(slot);
+      let own = false;
+      let bySlot = false;
+      render(
+        () => {
+          const a = useWide();
+          const b = useWide();
+          return (
+            <>
+              <section ref={a.track}>{String((own = a.wide()))}</section>
+              <section ref={b.trackSlot}>{String((bySlot = b.wide()))}</section>
+            </>
+          );
+        },
+        { container: slot },
+      );
+      await waitFor(() => expect(bySlot).toBe(true));
+      expect(own).toBe(false);
+    });
   });
 });

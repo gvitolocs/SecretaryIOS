@@ -1374,3 +1374,138 @@
     animation: none;
   }
 }
+
+/* Desktop page system. Keep phone rules above intact. */
+.pg.tasks-desk {
+  overflow-y: auto;
+  --p1: var(--pg-danger);
+  --p2: var(--pg-warning);
+  --p3: var(--pg-data);
+  --p4: var(--pg-muted);
+  --due-overdue: var(--pg-danger);
+  --due-today: var(--pg-success);
+  --due-tomorrow: var(--pg-warning);
+  --due-week: var(--pg-data);
+  --due-later: var(--pg-muted);
+}
+
+.pg.tasks-desk .pg-head-actions {
+  flex-wrap: wrap;
+}
+
+.pg.tasks-desk .tasks-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0;
+  overflow: visible;
+}
+
+.pg.tasks-desk .tasks-search {
+  padding: 0;
+}
+
+.pg.tasks-desk .tasks-search .pg-input {
+  flex: 1;
+}
+
+.pg.tasks-desk .tasks-desk-open {
+  color: var(--pg-text);
+  font: inherit;
+  text-align: left;
+  white-space: normal;
+}
+
+.pg.tasks-desk .pg-row-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  white-space: normal;
+}
+
+.pg.tasks-desk .tasks-desk-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.pg.tasks-desk .tasks-desk-row--child {
+  padding-left: 48px;
+}
+
+.pg.tasks-desk .tasks-desk-row--sub {
+  padding-left: 24px;
+}
+
+.pg.tasks-desk .tasks-desk-row--done .tasks-desk-open {
+  color: var(--pg-muted);
+  text-decoration: line-through;
+}
+
+.pg.tasks-desk .tasks-desk-row--pending {
+  opacity: 0.6;
+}
+
+.pg.tasks-desk .tasks-group-count {
+  margin-left: 8px;
+  color: var(--pg-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.pg.tasks-desk .tasks-sync {
+  margin-top: 12px;
+  padding: 0;
+  color: var(--pg-muted);
+  font-size: 13px;
+}
+
+.pg.tasks-desk .tasks-sync-dot {
+  background: var(--pg-success);
+  box-shadow: none;
+}
+
+.pg.tasks-desk .tasks-sync--disconnected .tasks-sync-dot {
+  background: var(--pg-muted);
+}
+
+.pg.tasks-desk :is(.tasks-sync--error, .tasks-sync--reconnect) .tasks-sync-dot {
+  background: var(--pg-danger);
+}
+
+.pg.tasks-desk .tasks-sync--rate_limited .tasks-sync-dot {
+  background: var(--pg-warning);
+}
+
+.pg.tasks-desk :is(.tasks-shortcuts, .tasks-conflicts-title) {
+  color: var(--pg-muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.pg.tasks-desk .tasks-conflict {
+  border-color: var(--pg-border);
+  color: var(--pg-text);
+  font-size: 13px;
+}
+
+.pg-sheet .tasks-desk-add {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pg-sheet .tasks-desk-add .qa-hint {
+  margin: 0;
+  color: var(--pg-muted);
+  font-size: 13px;
+}
+
+.pg-sheet .tasks-desk-add .qa-chip {
+  border-radius: var(--pg-radius-control);
+  background: var(--pg-fill);
+  color: var(--pg-text);
+  font-size: 13px;
+  font-weight: 400;
+}

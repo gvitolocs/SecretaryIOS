@@ -97,3 +97,8 @@
   .nclient-viewport { height: max(280px, calc(100svh - 250px)); }
   .nclient-page--height { height: calc(max(280px, 100svh - 250px) * var(--nc-zoom)); }
 }
+
+/* Desktop page system: no plugin panel chrome. */
+.nclient--wide { max-width: none; margin: 0; padding: 0; background: transparent; border-radius: 0; }
+.pg.nclient-desk .nclient-desk-main { padding: var(--pg-pad, 24px); }
+.pg.nclient-desk .nclient-desk-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }

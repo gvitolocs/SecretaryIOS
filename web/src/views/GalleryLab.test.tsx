@@ -7,6 +7,7 @@ import { setLocale } from "../i18n";
 import { galleryItem } from "../test/galleryFixtures";
 import { labJob } from "../test/labFixtures";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryLab from "./GalleryLab";
 
 vi.mock("../api/gallery", async (original) => ({
@@ -42,7 +43,10 @@ beforeEach(() => {
   listLab.mockResolvedValue({ enabled: true, jobs: [queued, failed, done, running] });
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("GalleryLab", () => {
   it("lists the edits: the running one first, then the queue, the finished and the failed", async () => {
@@ -149,5 +153,33 @@ describe("GalleryLab", () => {
     listLab.mockResolvedValue({ enabled: true, jobs: [queued] });
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await screen.findByText("remove the bin");
+  });
+});
+
+describe("GalleryLab on the page system (desktop)", () => {
+  it("keeps the shared Gallery header (Photos current), a back link and the edits as cards with quiet buttons", async () => {
+    stubWide();
+    view();
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector(".g-bar")).toBeNull();
+    expect(screen.getByRole("heading", { level: 2, name: "AI Lab" })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery");
+    await screen.findByText("turn it into a watercolour");
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    expect(card("lab_done").querySelector(".btn--primary")).toBeNull();
+    expect(within(card("lab_done")).getByRole("button", { name: "Accept" })).toHaveClass("pg-btn");
+  });
+
+  it("shows the empty state and the error state", async () => {
+    stubWide();
+    listLab.mockResolvedValue({ enabled: true, jobs: [] });
+    const { unmount } = view();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).not.toBeNull());
+    unmount();
+    listLab.mockRejectedValue(new Error("down"));
+    view();
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
   });
 });

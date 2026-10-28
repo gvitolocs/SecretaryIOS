@@ -1,6 +1,7 @@
 import { useNavigate } from "@solidjs/router";
 import { For, Show, type JSX } from "solid-js";
 import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
+import { EmptyState, Page, PageGrid, PageHeader, useWide } from "../components/page";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
 import { setShowAdult, showAdult } from "../lib/adult";
@@ -95,15 +96,13 @@ export const PLUGINS: Plugin[] = [
 
 export default function PluginsView() {
   const navigate = useNavigate();
-  return (
-    <section class="plugins-page" aria-labelledby="plugins-title">
-      <h1 id="plugins-title">{t("plugins.title")}</h1>
-      <div class="plugins-grid">
+  const { wide, track } = useWide();
+  const tiles = () => <>
         <For each={visiblePlugins()}>
           {(plugin) => (
             <button
               type="button"
-              class="plugin-card"
+              class={wide() ? "pg-card plugins-desk-tile" : "plugin-card"}
               data-plugin={plugin.id}
               onClick={() => (plugin.href ? navigate(plugin.href) : plugin.run?.(navigate))}
             >
@@ -118,11 +117,26 @@ export default function PluginsView() {
             </button>
           )}
         </For>
+  </>;
+  const adultToggle = () => <label class={wide() ? "plugins-desk-adult" : "plugins-adult"}>
+    <input type="checkbox" checked={showAdult()} onChange={(e) => setShowAdult(e.currentTarget.checked)} />
+    <span>{t("plugins.showAdult")}</span>
+  </label>;
+  return (
+    <div ref={track}><Show when={wide()} fallback={<section class="plugins-page" aria-labelledby="plugins-title">
+      <h1 id="plugins-title">{t("plugins.title")}</h1>
+      <div class="plugins-grid">
+        {tiles()}
       </div>
-      <label class="plugins-adult">
-        <input type="checkbox" checked={showAdult()} onChange={(e) => setShowAdult(e.currentTarget.checked)} />
-        <span>{t("plugins.showAdult")}</span>
-      </label>
-    </section>
+      {adultToggle()}
+    </section>}><Page>
+      <PageHeader title={t("plugins.title")} context={t("plugins.count", { count: visiblePlugins().length })} />
+      <PageGrid layout="full">
+        <Show when={visiblePlugins().length} fallback={<EmptyState text={t("plugins.empty")} />}>
+          <div class="plugins-desk-grid" role="region" aria-label={t("plugins.title")}>{tiles()}</div>
+        </Show>
+        {adultToggle()}
+      </PageGrid>
+    </Page></Show></div>
   );
 }

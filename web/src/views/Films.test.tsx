@@ -1,9 +1,10 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { playQueue } from "../state/media";
 import { stubFetch } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import FilmsView, { splitTitle } from "./Films";
 
 // The real engine from the committed module (the page fetches it; jsdom cannot).
@@ -126,5 +127,34 @@ describe("Films", () => {
   it("splits the edition off the title", () => {
     expect(splitTitle("Up - Dansk dub + Dansk subs")).toEqual({ name: "Up", edition: "Dansk dub + Dansk subs" });
     expect(splitTitle("Film")).toEqual({ name: "Film", edition: null });
+  });
+});
+
+describe("Films desktop", () => {
+  beforeEach(() => stubWide());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the page header, collection cards and empty state", async () => {
+    stubFetch((call) => {
+      if (call.url.startsWith("/v1/media/albums")) return { body: { ok: true, albums: [] } };
+      if (call.url.startsWith("/v1/media/progress")) return { body: { ok: true, entries: [], acks: [] } };
+      return { status: 404, body: {} };
+    });
+    renderFilms();
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Films");
+    expect(document.querySelector("#films-title")).toBeNull();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    expect(screen.getByRole("searchbox", { name: "Search films" })).toHaveClass("pg-input");
+    expect(await screen.findByText("No films yet")).toBeInTheDocument();
+  });
+
+  it("groups folders in cards on a full grid", async () => {
+    serve();
+    renderFilms();
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Films");
+    expect(await screen.findByText("3 films")).toBeInTheDocument();
+    const dansk = screen.getByRole("region", { name: "Dansk film" });
+    expect(within(dansk).getByRole("button", { name: /^Biler/ })).toBeInTheDocument();
+    expect(document.querySelector(".films-row")).toBeNull();
   });
 });

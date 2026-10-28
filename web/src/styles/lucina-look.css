@@ -48,12 +48,6 @@ samp {
   font-family: var(--lu-font-mono);
 }
 
-/* Cards: flat dark grey, no borders or glass. */
-.glass {
-  border-color: transparent;
-  box-shadow: none;
-}
-
 /* The floating tab bar: a glass capsule, the active tab in the accent on a soft pill. */
 .tabbar {
   border-radius: var(--lu-radius-pill);
@@ -244,6 +238,14 @@ samp {
   flex-direction: column;
 }
 
+/* On /weight the weight view scrolls itself (styles.css .weight); on /training it is one block of a longer page
+   that scrolls as a whole, so it takes its full height instead of a clipped scroll box of its own. */
+.training-page > .weight {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+}
+
 .weight-all-link {
   align-self: flex-start;
   color: var(--lu-accent);
@@ -269,3 +271,14 @@ samp {
   line-height: 20px;
   text-align: center;
 }
+
+/* Desktop Plugins: page-system surfaces; phone tiles above stay unchanged. */
+.pg .plugins-desk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.pg .plugins-desk-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--pg-text); font: inherit; text-align: left; cursor: pointer; }
+.pg .plugins-desk-tile:hover { background: var(--pg-fill-hover); }
+.pg .plugins-desk-tile:focus-visible { outline: 2px solid var(--pg-data); outline-offset: 4px; }
+.pg .plugins-desk-tile .plugin-icon { background: var(--pg-fill); color: var(--pg-data); border-radius: var(--pg-radius-control); }
+.pg .plugins-desk-tile .plugin-title { font-size: 15px; font-weight: 600; }
+.pg .plugins-desk-tile .plugin-detail { font-size: 13px; color: var(--pg-muted); }
+.pg .plugins-desk-tile .plugin-badge { background: var(--pg-danger); color: var(--pg-text); font-size: 12px; font-weight: 600; }
+.pg .plugins-desk-adult { display: flex; align-items: center; gap: 8px; color: var(--pg-muted); font-size: 13px; }

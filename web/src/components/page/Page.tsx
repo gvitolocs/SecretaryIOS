@@ -129,13 +129,25 @@ export function PrimaryAction(props: {
 
 /**
  * The content grid. `rail`: a main column and a sticky rail (62 / 38) that
- * stack below 880 px; `single`: one column up to 880 px; `full`: the whole
- * width, for media grids and maps.
+ * stack below 880 px; `split`: a list column on the left (280-340 px, its own
+ * scroll) and the selected item on the right, for list + detail pages;
+ * `single`: one column up to 880 px; `full`: the whole width, for media
+ * grids and maps. `rail` holds the rail (right) or, for `split`, the list (left).
  */
-export function PageGrid(props: { layout?: "rail" | "single" | "full"; children: JSX.Element; rail?: JSX.Element; railLabel?: string }) {
+export function PageGrid(props: {
+  layout?: "rail" | "split" | "single" | "full";
+  children: JSX.Element;
+  rail?: JSX.Element;
+  railLabel?: string;
+}) {
   const layout = () => props.layout ?? (props.rail ? "rail" : "single");
   return (
     <div class={`pg-grid pg-grid--${layout()}`}>
+      <Show when={layout() === "split" && props.rail}>
+        <nav class="pg-side" aria-label={props.railLabel}>
+          {props.rail}
+        </nav>
+      </Show>
       <div class="pg-main">{props.children}</div>
       <Show when={layout() === "rail" && props.rail}>
         <aside class="pg-rail" aria-label={props.railLabel}>

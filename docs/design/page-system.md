@@ -32,6 +32,8 @@ browser with Lucina's stage hidden). Below that the phone layouts stay as they a
 3. **Content grid** (`PageGrid`):
    - `rail`: a main column and a sticky rail, 62 / 38, 24 px gutter. The default for a page with a
      primary list plus context (stats, filters, a form).
+   - `split`: a list column on the left (280-340 px, scrolls by itself) and the selected item on the
+     right. For list + detail pages (notes, chats, agents, stores and a map).
    - `single`: one column up to 880 px. For one list, one form or one document.
    - `full`: the whole width. For media grids, maps, a canvas, a terminal.
 4. **Cards** (`Card`): one surface for every block. 1 px border, 16 px radius, 24 px padding (16 on a
@@ -75,6 +77,10 @@ shell's navy surfaces, the phone's iOS greys, light mode).
   desktop and the 16 px gutter on a phone.
 - **Type**: page title 28/600 (24 on a phone), card title 16/600, row title 15/600, body 14/400,
   secondary 13, caption 12, big numbers 24 or 36/600. Two weights only. Tabular figures everywhere.
+- **Material**: cards and lists are solid (`--pg-surface`). Surfaces that float over content (sheets,
+  popovers and menus, the composer, the phone tab bar) are frosted glass (`styles/glass.css`, the
+  `--lu-glass*` tokens from `design/tokens.json`); they keep the radii above (sheets 16 px), only the
+  material changes. Never glass over the live desktop or a playing video (solid glass there).
 - **Accent**: one filled accent button per page, in the header. Everything else is a quiet button
   (`pg-btn`), a ghost button (`pg-btn--ghost`), a text link (`pg-link`) or an icon button
   (`pg-icon-btn`). Destructive actions are `pg-btn--danger` behind a confirm step.
@@ -151,3 +157,44 @@ a screenshot link is not converted yet.
     ![](page-system/journal-detail.jpg)
   - Adding a measurement is the reference sheet. ![](page-system/progress-sheet.jpg)
   - The live workout (`/gym/workout`) is a focused flow and keeps its own screen.
+
+Every other page (release b). Screenshots are named after the route in `page-system/`.
+
+| Page (route) | Purpose | Header (context · nav · accent) | Grid | Shot |
+| --- | --- | --- | --- | --- |
+| Lucina (`/`) | Talk to Lucina | none: the conversation and her stage are the page | exception, full-bleed | — |
+| All chats (`/chats/:key?`) | Every conversation across devices and bots | count · — · — | single, split with a conversation | ![](page-system/chats.jpg) |
+| Shopping (`/shopping`) | The shopping list | list · N to buy, list switcher and ⋯ as quiet buttons · — (⊕ stays in the add field) | rail: to buy, catalog · recently used, offers | ![](page-system/shopping.jpg) |
+| Offers near you (`/shopping/map`) | Stores and offers on a map | back link · — · — | split: stores list · map | ![](page-system/shopping-map.jpg) |
+| Notes (`/notes/:key?`) | Briefings and documents | — · — · **New note** | split: notes list · the note | ![](page-system/notes.jpg) |
+| Keep (`/keep`) | Google-Keep-style notes | current label · search, refresh, view, settings as icons · — | split: labels · notes | ![](page-system/keep.jpg) |
+| Tasks (`/tasks`) | Todoist tasks | section · Inbox · Today · Upcoming · Filters & labels · Completed · **Add task** (sheet) | rail: task groups · projects, goal | ![](page-system/tasks.jpg) |
+| Gallery (`/gallery`, albums, people, places, shared; lab, duplicates, trash, archive, album, person, category) | Photos and videos | count · Photos · Albums · People · Places · Shared · the section's one action (New album, Share an album, Apply all suggestions) | full; sub-pages keep the header, a back link and a heading | ![](page-system/gallery.jpg) ![](page-system/gallery-albums.jpg) |
+| Films (`/films`) | Film and Dansk film | count, search · — · — | full: one card per collection | ![](page-system/films.jpg) |
+| Media library (`/media/library`) | Videos, audio, photos | — · Videos · Audio · Photos, search · — | single list | ![](page-system/media-library.jpg) |
+| Drive (`/drive`) | Lectures, projects and files | folder path, search · — · — | single list, type chips on top | ![](page-system/drive.jpg) |
+| Instagram (`/instagram`) | Watched profiles | anonymous note · username field · **Open** | rail: recent profiles · watched accounts | ![](page-system/instagram.jpg) |
+| Pixiv (`/pixiv`) | Ranking, search, bookmarks | — · Ranking · Search · Bookmarks · — | full grid, mode chips on top | ![](page-system/pixiv.jpg) |
+| NClient (`/nclient`) | Private reading | — · Search · Favorites · Random · — | full | ![](page-system/nclient.jpg) |
+| Library (`/library/:id?`) | Kindle books, highlights | — · — · — | rail: search, filters, books · activity | ![](page-system/library.jpg) |
+| Connections (`/links`) | Calendars, chats, AI clients | subtitle · — · **Sync calendars** | rail: waiting for your OK, next 7 days · sources | ![](page-system/links.jpg) |
+| Plugins (`/plugins`) | Everything else | count · — · — | full tile grid | ![](page-system/plugins.jpg) |
+| Agents (`/agents/*`) | Coding agents | running / permission counts · Runs · Permissions · Schedules · Usage · Map · **New run** | split: runs · the agent | ![](page-system/agents.jpg) |
+| Lucina's computer (`/computer`) | Watch and take over her desktop | connection status · Desktop · Android · **Take over** | full viewer | ![](page-system/computer.jpg) |
+| Server (`/server-health`) | Hosts, services, incidents, deploys (owner ops dashboard, server-v2-web) | status line · Overview · Services · Incidents · Deploys, refresh icon · — | per section; host details in a sheet | ![](page-system/server-health.jpg) |
+| Secrets (`/secrets`) | Secret names by location | — · — · **Add secret** (sheet) | single | ![](page-system/secrets.jpg) |
+| Account (`/account`) | Settings of this device | device · General · Notification settings · Import · — | rail: settings cards · device, log out | ![](page-system/account.jpg) |
+| Notifications (`/notifications`) | What Lucina told you | unread count, Mark all read, settings icon · — · — | single: one card per day | ![](page-system/notifications.jpg) |
+| Decisions, Approvals (`/decisions`, `/approvals`, details) | Lucina's questions; requests for your OK | subtitle · — · — | single list, detail with a back link | ![](page-system/decisions.jpg) ![](page-system/approvals.jpg) |
+| Weight (`/weight`) | All weigh-ins | latest weigh-in, link back to Training · — · — | rail: trend, weigh-ins · log, stats, settings | ![](page-system/weight.jpg) |
+| My desk (`/desk`) | Lucina's work and tools | subtitle · — · Refresh (quiet) | single | ![](page-system/desk.jpg) |
+| Voice memos (`/memos/:id?`) | Recorded, transcribed, summarised | — · — · — | split: memos · the memo | ![](page-system/memos.jpg) |
+| 3D models (`/models/:id?`) | Lucina's studio | — · — · — | full grid, detail with a back link | ![](page-system/models.jpg) |
+| Scan QR code (`/scan`) | Sign in another device | — · — · — | single: camera card, code field | ![](page-system/scan.jpg) |
+| Pokémon (`/pokemon`) | Lucina's game | — · — · **Play** | single | ![](page-system/pokemon.jpg) |
+
+Notes:
+- Inside Secretary Code, pages that show Lucina's stage beside them (All chats) have less than 880 px and
+  use their narrow layout, like Training in a 1280 px browser with the stage open.
+- Pages whose phone column is capped (Scan, Pokémon, Memos, Models, Desk, Computer) measure their route
+  slot with `useWide().trackSlot`, or they would never switch.

@@ -2,7 +2,7 @@ import { Route, type RouteSectionProps } from "@solidjs/router";
 import { fireEvent, screen } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApprovalPopup } from "../components/ApprovalPopup";
-import { approvalJson, NOW } from "../test/approvals";
+import { approvalJson, NOW, stubApprover } from "../test/approvals";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
 import ApprovalDetail from "./ApprovalDetail";
@@ -65,6 +65,31 @@ describe("/approvals/:id (the Web Push link)", () => {
     await until(() => screen.getByText("This request was approved."));
     expect(screen.getByText("Answered on iPhone.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("prefers how it was answered over which device", async () => {
+    stubFetch(() => ({ body: { ...approvalJson("apr_9"), status: "approved", decidedBy: "MacBook Air", decidedVia: "Touch ID on MacBook Air" } }));
+    renderAt("/approvals/apr_9", routes);
+    await until(() => screen.getByText("This request was approved."));
+    expect(screen.getByText("Answered with Touch ID on MacBook Air.")).toBeInTheDocument();
+    expect(screen.queryByText("Answered on MacBook Air.")).toBeNull();
+  });
+
+  it("approves a sensitive one with Touch ID on this Mac", async () => {
+    const bridge = stubApprover();
+    try {
+      const calls = stubFetch((c) =>
+        c.method === "GET" && c.url === "/v1/approvals/apr_9" ? { body: { ...approvalJson("apr_9", { sensitive: true }), status: "pending" } } : { status: 404, body: {} },
+      );
+      renderAt("/approvals/apr_9", routes);
+      await until(() => expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+      await until(() => screen.getByText("Approved."));
+      expect(bridge.approve).toHaveBeenCalledWith("apr_9");
+      expect(calls.some((c) => c.method === "POST")).toBe(false);
+    } finally {
+      delete window.secretaryApprover;
+    }
   });
 
   it("says so for an expired one", async () => {

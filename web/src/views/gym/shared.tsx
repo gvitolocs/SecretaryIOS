@@ -2,7 +2,7 @@ import { useLocation, useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
 import type { Exercise, ExerciseKind, GymCommand, GymView, SetKind, WorkoutSet } from "../../api/gym";
 import { formatDistance, formatDuration } from "../../lib/units";
-import { ErrorState, LoadingState, Page, PageHeader, PrimaryAction, SectionNav } from "../../components/page";
+import { ErrorState, LoadingState, Page, PageHeader, PrimaryAction, SectionNav, useWide } from "../../components/page";
 import { dismissGymError, elapsedNow, gym, refreshGym, restRemainingNow, runGym, tickClock } from "../../state/gym";
 import "../../styles/gym.css";
 import { GearIcon, PlayIcon } from "./icons";
@@ -393,29 +393,8 @@ export function GymPage(props: {
   );
 }
 
-/** Content width from which a Gym page switches to its desktop layout. */
-export const WIDE_MIN_PX = 880;
-
-/**
- * Whether the element given to `track` is desktop-wide. Measures the page's
- * own slot (the shell's rail and Lucina's dock take part of the window), and
- * stays false where ResizeObserver is missing (jsdom), so tests see the phone layout.
- */
-export function useWide() {
-  const [wide, setWide] = createSignal(false);
-  let observer: ResizeObserver | undefined;
-  onCleanup(() => observer?.disconnect());
-  function track(el: HTMLElement) {
-    if (typeof ResizeObserver !== "function") return;
-    observer?.disconnect();
-    observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
-      setWide(width >= WIDE_MIN_PX);
-    });
-    observer.observe(el);
-  }
-  return { wide, track };
-}
+// The desktop switch is the page system's (components/page/useWide.ts).
+export { useWide, WIDE_MIN_PX } from "../../components/page";
 
 /**
  * Two-step destructive button: the first click arms it, the second runs

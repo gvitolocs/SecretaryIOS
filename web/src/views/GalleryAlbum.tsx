@@ -8,7 +8,7 @@ export default function GalleryAlbumView() {
   // Another album is another list: start the view afresh.
   return (
     <Show when={params.id} keyed>
-      {(id) => <GalleryView album={id} />}
+      {(id) => <GalleryView album={id} desktop />}
     </Show>
   );
 }

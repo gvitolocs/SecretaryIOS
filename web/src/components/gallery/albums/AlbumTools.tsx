@@ -11,6 +11,8 @@ import "../../../styles/gallery-albums.css";
 type Dialog = "rename" | "delete" | "share" | null;
 
 export interface AlbumToolsProps {
+  /** Header icon buttons of the page system (desktop). */
+  wide?: boolean;
   album: AlbumCard;
   onRenamed: (album: AlbumCard) => void;
   /** The album is gone (its photos are not). */
@@ -21,7 +23,7 @@ export interface AlbumToolsProps {
 export function AlbumTools(props: AlbumToolsProps) {
   const [dialog, setDialog] = createSignal<Dialog>(null);
   const button = (label: string, icon: () => JSX.Element, open: Dialog) => (
-    <button type="button" class="g-iconbtn" aria-label={label} title={label} onClick={() => setDialog(open)}>
+    <button type="button" class={props.wide ? "pg-icon-btn" : "g-iconbtn"} aria-label={label} title={label} onClick={() => setDialog(open)}>
       {icon()}
     </button>
   );

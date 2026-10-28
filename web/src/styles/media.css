@@ -63,3 +63,9 @@
 .media-photo__nav--prev { left: 8px; }
 .media-photo__nav--next { right: 8px; }
 .media-parking { display: none; }
+
+.pg .media-desk-thumb { display: grid; padding: 0; border: 0; background: none; cursor: pointer; }
+.pg .media-desk-thumb .media-poster { width: 56px; height: 56px; }
+.pg .media-desk-thumb .media-poster[data-kind="audio"],
+.pg .media-row[data-kind="audio"] .media-poster { width: 56px; height: 56px; }
+.pg .media-progress--row { width: 48px; }

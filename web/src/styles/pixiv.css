@@ -99,3 +99,8 @@
 .px-reader__msg { flex: 1; min-width: 0; margin: 0; font-size: var(--lu-type-footnote); color: var(--lu-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .px-zoom { display: flex; align-items: center; gap: var(--lu-space-xs); flex: none; }
 .px-reader__count { margin: 0; flex: none; font-size: var(--lu-type-footnote); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Desktop page system: thumbnail grid on the card surface. */
+.pg.pixiv-desk .pixiv-surface { padding: var(--pg-pad, 24px); }
+.pg.pixiv-desk .px-chips { margin: 0; padding: 0 0 12px; }
+.pg.pixiv-desk .px-panel { gap: 16px; }

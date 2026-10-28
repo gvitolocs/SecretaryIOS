@@ -1,9 +1,10 @@
 import { useNavigate, useSearchParams } from "@solidjs/router";
-import { createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
+import { useWide } from "../components/page";
 import { AccountDialog } from "../components/AccountDialog";
 import { NotificationPanel } from "../components/NotificationBell";
-import { closeSecretSheet, openSecretSheet, secretSheet } from "../state/secretSheet";
+import { NotificationsPage } from "../components/NotificationsPage";
 import { signOut } from "../state/session";
 import ChatView from "./Chat";
 
@@ -12,31 +13,43 @@ import ChatView from "./Chat";
 // They work in a browser too.
 
 export function NotificationsView() {
+  const { wide, track } = useWide();
   const navigate = useNavigate();
   return (
-    <>
-      <ChatView />
-      <Portal>
-        <NotificationPanel
-          open
-          onClose={() => navigate("/", { replace: true })}
-          onSettings={() => navigate("/account?section=notifications", { replace: true })}
-        />
-      </Portal>
-    </>
+    <div ref={track}>
+      <Show
+        when={wide()}
+        fallback={
+          <>
+            <ChatView />
+            <Portal>
+              <NotificationPanel
+                open
+                onClose={() => navigate("/", { replace: true })}
+                onSettings={() => navigate("/account?section=notifications", { replace: true })}
+              />
+            </Portal>
+          </>
+        }
+      >
+        <NotificationsPage />
+      </Show>
+    </div>
   );
 }
 
 export function AccountView() {
+  const { wide, track } = useWide();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [signingOut, setSigningOut] = createSignal(false);
   return (
-    <>
-      <ChatView />
+    <div ref={track}>
+      <Show when={!wide()}><ChatView /></Show>
       <AccountDialog
+        desktop={wide()}
         open
-        section={params.section === "notifications" ? "notifications" : null}
+        section={params.section === "notifications" || params.section === "approvals" || params.section === "import" ? params.section : null}
         onClose={() => navigate("/", { replace: true })}
         signingOut={signingOut()}
         onSignOut={async () => {
@@ -49,21 +62,8 @@ export function AccountView() {
           }
         }}
       />
-    </>
+    </div>
   );
 }
 
-/** The "Add secret" sheet (rendered by the Shell) over the chat; closing it goes back to the chat. */
-export function SecretsView() {
-  const navigate = useNavigate();
-  let opened = false;
-  onMount(() => openSecretSheet());
-  createEffect(() => {
-    if (secretSheet()) opened = true;
-    else if (opened) navigate("/", { replace: true });
-  });
-  onCleanup(() => {
-    if (secretSheet()) closeSecretSheet();
-  });
-  return <ChatView />;
-}
+export { SecretsView } from "./Secrets";

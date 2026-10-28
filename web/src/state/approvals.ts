@@ -4,6 +4,7 @@
 import { createSignal } from "solid-js";
 import { toApiError } from "../api/client";
 import { approvalsApi, type Approval, type Decision } from "../api/approvals";
+import { desktopApprover } from "../api/desktopApprover";
 
 /** Poll interval while the document is visible (contract: web and the Mac app poll every 5 s). */
 export const APPROVAL_POLL_MS = 5_000;
@@ -35,7 +36,7 @@ let inflight = false;
  * Fetch the pending list. Quiet on purpose: while the server doesn't have the routes (404) or is unreachable,
  * the pop-up simply has nothing to show; it never raises an error banner.
  */
-export async function refreshApprovals(): Promise<void> {
+export async function refreshApprovals(onError?: () => void): Promise<void> {
   if (inflight) return;
   inflight = true;
   try {
@@ -49,6 +50,7 @@ export async function refreshApprovals(): Promise<void> {
     }));
   } catch (e) {
     if (toApiError(e).status === 404) setItems([]);
+    else onError?.();
   } finally {
     inflight = false;
   }
@@ -83,7 +85,10 @@ export function startApprovals(): () => void {
   };
 }
 
-/** How a decision ended. "error" and "notAllowed" leave the request open; the rest close it. */
+/**
+ * How a decision ended. "error", "needsFaceId", "notMain", "changed", "cancelled" (Touch ID dismissed),
+ * "needsSetup" and "unavailable" (Touch ID on this Mac) leave the request open; the rest close it.
+ */
 export type Outcome =
   | { kind: "approved" }
   | { kind: "denied" }
@@ -93,6 +98,9 @@ export type Outcome =
   | { kind: "needsFaceId" }
   | { kind: "notMain" }
   | { kind: "changed" }
+  | { kind: "cancelled" }
+  | { kind: "needsSetup" }
+  | { kind: "unavailable" }
   | { kind: "error" };
 
 export const CLOSED: readonly Outcome["kind"][] = ["approved", "denied", "expired", "decided", "gone"];
@@ -118,4 +126,51 @@ export async function decideApproval(a: Approval, decision: Decision): Promise<O
     void refreshApprovals();
     return outcome;
   }
+}
+
+/**
+ * Approve with Touch ID on this Mac (Secretary Code only). The main process fetches the request, prompts, signs
+ * and posts the decision; the answers map onto the outcomes the web path uses.
+ */
+export async function approveWithTouchId(a: Approval): Promise<Outcome> {
+  const bridge = desktopApprover();
+  if (!bridge) return { kind: "unavailable" };
+  let outcome: Outcome;
+  try {
+    const r = await bridge.approve(a.id);
+    if (r.ok) outcome = { kind: "approved" };
+    else
+      switch (r.error) {
+        case "cancelled":
+          return { kind: "cancelled" };
+        case "decided":
+          outcome = { kind: "decided" };
+          break;
+        case "expired":
+          outcome = { kind: "expired" };
+          break;
+        case "notPending":
+          outcome = { kind: "gone" };
+          break;
+        case "changed":
+          outcome = { kind: "changed" };
+          break;
+        case "notMain":
+          outcome = { kind: "notMain" };
+          break;
+        case "needsSetup":
+          outcome = { kind: "needsSetup" };
+          break;
+        case "unavailable":
+          outcome = { kind: "unavailable" };
+          break;
+        default:
+          outcome = { kind: "error" };
+      }
+  } catch {
+    outcome = { kind: "error" };
+  }
+  if (CLOSED.includes(outcome.kind)) skipApproval(a.id);
+  void refreshApprovals();
+  return outcome;
 }

@@ -159,16 +159,6 @@ h3 {
   text-transform: uppercase;
 }
 
-/* ---------- Glass ---------- */
-
-.glass {
-  background: var(--glass);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(var(--blur)) saturate(1.4);
-  backdrop-filter: blur(var(--blur)) saturate(1.4);
-}
-
 /* ---------- Buttons and inputs ---------- */
 
 .btn {
@@ -790,6 +780,20 @@ select.text-input option {
   max-width: 480px;
   margin: 0 auto;
   padding: 16px var(--pad-right) 32px var(--pad-left);
+}
+.scan-page--wide {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.pg.scan-desk .scan-desk-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Desktop: the viewfinder keeps a phone-sized square instead of filling the column. */
+.pg.scan-desk .scan-viewfinder {
+  max-width: 420px;
 }
 
 .scan-head {

@@ -1,5 +1,6 @@
 import { useNavigate, useParams } from "@solidjs/router";
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { Card, EmptyState, ErrorState, ListRow, LoadingState, Page, PageGrid, PageHeader, PrimaryAction, RowList, useWide } from "../components/page";
 import { api } from "../api/secretary";
 import { parseTs, type TimelineItem } from "../api/timeline";
 import { locale, t } from "../i18n";
@@ -42,6 +43,7 @@ const kindLabel = (c: Conversation) =>
   t(c.kind === "device" || c.kind === "legacy" ? "chats.device" : c.kind === "agent" ? "chats.agent" : "chats.bot");
 
 export default function ChatsView() {
+  const { wide, track } = useWide();
   const params = useParams();
   const navigate = useNavigate();
   const [conversations, setConversations] = createSignal<Conversation[]>([]);
@@ -157,8 +159,54 @@ export default function ChatsView() {
     navigate("/");
   }
 
+  const conversationBody = () => (          <>
+            <Show when={!wide()}>
+            <button class="btn" onClick={() => navigate("/chats")}>
+              {t("chats.title")}
+            </button>
+            <Show when={canContinue()} fallback={<p>{t("chats.lives", { place: selected()?.title ?? key() ?? "" })}</p>}>
+              <button class="btn btn--primary" disabled={!items().length} onClick={continueHere}>
+                {t("chats.continue")}
+              </button>
+            </Show>
+            </Show>
+            <Show when={wide() && !canContinue()}><p class="pg-muted">{t("chats.lives", { place: selected()?.title ?? key() ?? "" })}</p></Show>
+            <div
+              class={wide() ? "chats-desk-messages" : "conversation-messages"}
+              onScroll={(e) => {
+                if (e.currentTarget.scrollTop < 80) void older();
+              }}
+            >
+              <Show when={before()}>
+                <button class={wide() ? "pg-btn" : "btn"} disabled={loading()} onClick={() => void older()}>
+                  {t("chat.loadEarlier")}
+                </button>
+              </Show>
+              <fieldset disabled class="readonly-messages" aria-label={t("chat.conversation")}>
+                <For each={chatRows(items().map(fromItem))}>
+                  {(row) => (isToolRun(row) ? <ToolSteps steps={row.steps} /> : <MessageItem readOnly message={row} />)}
+                </For>
+              </fieldset>
+            </div>
+            <Show when={wide() && !loading() && !items().length && !error()}><EmptyState text={t("chats.emptyConversation")} /></Show>
+          </>);
+  const list = () => <Card list class="chats-desk-list" label={t("chats.title")}>
+    <Show when={conversations().length} fallback={<Show when={!loading() && !error()}><EmptyState text={t("chats.empty")} /></Show>}>
+      <RowList label={t("chats.title")}><For each={conversations()}>{c => <ListRow
+        leading={<span class="chats-desk-avatar" aria-hidden="true">{c.title.trim()[0] ?? "?"}</span>}
+        title={<a class="pg-row-name pg-row-link" href={own(c) ? "/" : `/chats/${encodeURIComponent(c.key)}`} aria-current={c.key === key() ? "page" : undefined}>{c.title}</a>}
+        badge={kindLabel(c)} sub={<>{own(c) ? `${t("chats.thisDevice")} · ` : ""}{c.lastText}</>}
+        meta={<time>{relativeTime(c.lastTs)}</time>}
+        trailing={<span class="pg-badge" aria-label={t("chats.messageCount", { count: c.count })}>{c.count}</span>}
+      />}</For></RowList>
+    </Show>
+  </Card>;
+  const status = () => <>
+    <Show when={error()}><ErrorState message={t("chat.loadFailed")} retryLabel={t("common.tryAgain")} onRetry={refreshNow} /></Show>
+    <Show when={loading()}><LoadingState label={t("common.loading")} /></Show>
+  </>;
   return (
-    <section class="chats-page">
+    <div ref={track}><Show when={wide()} fallback={<section class="chats-page">
       <h1 id="chats-title">{selected()?.title ?? t("chats.title")}</h1>
       <Show when={error()}>
         <p role="alert">
@@ -171,33 +219,7 @@ export default function ChatsView() {
       <Show
         when={!key()}
         fallback={
-          <>
-            <button class="btn" onClick={() => navigate("/chats")}>
-              {t("chats.title")}
-            </button>
-            <Show when={canContinue()} fallback={<p>{t("chats.lives", { place: selected()?.title ?? key() ?? "" })}</p>}>
-              <button class="btn btn--primary" disabled={!items().length} onClick={continueHere}>
-                {t("chats.continue")}
-              </button>
-            </Show>
-            <div
-              class="conversation-messages"
-              onScroll={(e) => {
-                if (e.currentTarget.scrollTop < 80) void older();
-              }}
-            >
-              <Show when={before()}>
-                <button class="btn" disabled={loading()} onClick={() => void older()}>
-                  {t("chat.loadEarlier")}
-                </button>
-              </Show>
-              <fieldset disabled class="readonly-messages" aria-label={t("chat.conversation")}>
-                <For each={chatRows(items().map(fromItem))}>
-                  {(row) => (isToolRun(row) ? <ToolSteps steps={row.steps} /> : <MessageItem readOnly message={row} />)}
-                </For>
-              </fieldset>
-            </div>
-          </>
+          conversationBody()
         }
       >
         <div class="conversation-list">
@@ -223,6 +245,17 @@ export default function ChatsView() {
       <Show when={loading()}>
         <p role="status">{t("common.loading")}</p>
       </Show>
-    </section>
+    </section>}><Page>
+      <PageHeader title={t("chats.title")} context={t("chats.count", { count: conversations().length })}
+        action={<Show when={key() && canContinue()}><PrimaryAction disabled={!items().length} onClick={continueHere}>{t("chats.continue")}</PrimaryAction></Show>} />
+      <Show when={key()} fallback={<PageGrid layout="single">{status()}{list()}</PageGrid>}>
+        <PageGrid layout="split" rail={list()} railLabel={t("chats.title")}>
+          <a class="pg-link pg-back" href="/chats">{t("chats.title")}</a>
+          <h2 class="chats-desk-title">{selected()?.title ?? key()}</h2>
+          {status()}
+          <Card label={t("chat.conversation")}>{conversationBody()}</Card>
+        </PageGrid>
+      </Show>
+    </Page></Show></div>
   );
 }

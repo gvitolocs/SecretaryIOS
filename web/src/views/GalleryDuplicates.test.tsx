@@ -5,6 +5,7 @@ import { setLocale } from "../i18n";
 import { type Call, stubFetch } from "../test/fetch";
 import { rawItem } from "../test/galleryGrid";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import GalleryDuplicatesView from "./GalleryDuplicates";
 
 vi.mock("../lib/jxl", () => ({ supportsJxl: () => Promise.resolve(false) }));
@@ -292,5 +293,39 @@ describe("bursts that could be stacked", () => {
     await screen.findByRole("region", { name: "Bursts" });
     fireEvent.click(screen.getByRole("button", { name: "Hide" }));
     expect(screen.queryByRole("region", { name: "Bursts" })).toBeNull();
+  });
+});
+
+describe("the duplicate review on the page system (desktop)", () => {
+  it("keeps the shared Gallery header with Apply all as its one accent button, a back link and groups on cards", async () => {
+    stubWide();
+    backend();
+    mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Gallery" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Gallery sections" });
+    expect(within(nav).getByRole("link", { name: "Photos" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("heading", { level: 2, name: "Duplicates" })).toHaveClass("g-detail-title");
+    expect(document.querySelector("a.pg-back")).toHaveAttribute("href", "/gallery");
+    expect(document.querySelector(".dd-head")).toBeNull();
+    await screen.findByText("2 groups to review");
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(document.querySelector(".pg-cta")).toHaveTextContent("Apply all suggestions");
+    const cards = screen.getAllByRole("region", { name: "Duplicate group of 2 photos" });
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toHaveClass("pg-card");
+    // No accent button inside the groups.
+    expect(document.querySelectorAll(".dd-group .btn--primary")).toHaveLength(0);
+  });
+
+  it("shows the empty state and the error state", async () => {
+    stubWide();
+    backend({ groups: [] });
+    const { unmount } = mount();
+    await waitFor(() => expect(document.querySelector(".pg-empty")).toHaveTextContent("No duplicates found."));
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(0);
+    unmount();
+    backend({ failFirst: true });
+    mount();
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
   });
 });
