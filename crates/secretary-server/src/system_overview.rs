@@ -3,7 +3,8 @@
 //!
 //! - `GET /v1/system/overview[?fresh=1]` (device or session, like
 //!   `GET /v1/system/health`) → `{generated_at, overall, attention_count,
-//!   checks_ok, checks_total, sources, hosts, attention, services, timeline}`.
+//!   flapping_count, checks_ok, checks_total, sources, hosts, attention,
+//!   services, timeline}`.
 //!
 //! Sources, fetched concurrently, each with its own deadline; a failing one is
 //! reported in `sources.<name>` (`{ok, at, error}`) and never fails the response:
@@ -20,7 +21,17 @@
 //! down/broken (crit) or warn/degraded (warn) plus the sentinel's warn/crit checks,
 //! one item per catalog component when a check matches one of its units or
 //! containers, and a component that is broken only because of other listed ones
-//! folded into their `caused`; crit first, then the oldest; `services` = the
+//! folded into their `caused`. A warn item with no sentinel source, whose every
+//! non-ok catalog finding is a unit or container that is up now and whose only
+//! problem is the failure count (`active/running`, `active/waiting` or
+//! `active/exited`, plus "N failures in 24h"), is `flapping`: it stays in
+//! `attention`, but `attention_count` skips it (`flapping_count` counts it) and
+//! `overall` ignores it. All flapping and nothing else is `ok`. Its
+//! summary is "Running; failed N times in 24 h", N the largest such count.
+//! Order is non-flapping first (crit, then warn, oldest `since` first), then
+//! flapping by `failures_24h` descending. A summary keeps at most two parts, and
+//! one part per kind (the larger 24 h failure count, or the larger job-history
+//! count). `public_hostnames_broken` keeps hostnames only. `services` = the
 //! catalog tree, trimmed; `timeline` = ops records and sentinel state changes,
 //! newest first, at most [`MAX_TIMELINE`]. Every free-text field goes through
 //! [`redact`].
@@ -384,7 +395,8 @@ fn lower_name<T: serde::Serialize>(v: &T) -> Option<String> {
     serde_json::to_value(v).ok()?.as_str().map(str::to_owned)
 }
 
-/// One finding in plain words.
+/// One finding in plain words. "last run …, last success …, N failed jobs in
+/// history" drops the timestamps.
 pub fn plain(what: &str, detail: &str) -> String {
     let d = detail.trim();
     let lower = d.to_ascii_lowercase();
@@ -403,6 +415,9 @@ pub fn plain(what: &str, detail: &str) -> String {
     if let Some(n) = failures_24h_in(&lower) {
         return format!("failed {n} times in 24 h");
     }
+    if let Some(n) = failed_jobs_in(&lower) {
+        return format!("{n} failed jobs in history");
+    }
     shorten(&redact(if d.is_empty() { what } else { d }), MAX_LINE)
 }
 
@@ -419,6 +434,147 @@ fn failures_24h_in(lower: &str) -> Option<u64> {
         .rev()
         .collect();
     digits.parse().ok()
+}
+
+/// `N` in "…, N failed jobs in history", when the rest is only the last-run timestamps.
+fn failed_jobs_in(lower: &str) -> Option<u64> {
+    let lower = lower.trim();
+    let at = lower
+        .rfind(" failed jobs in history")
+        .or_else(|| lower.rfind(" failed job in history"))?;
+    let marker_len = if lower[at..].starts_with(" failed jobs") {
+        " failed jobs in history".len()
+    } else {
+        " failed job in history".len()
+    };
+    if !lower[at + marker_len..].trim().is_empty() {
+        return None;
+    }
+    let head = lower[..at].trim_end();
+    let digits: String = head
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let n = digits.parse().ok()?;
+    let prefix = head[..head.len() - digits.len()].trim().trim_end_matches(',').trim();
+    (prefix.is_empty() || run_and_success(prefix)).then_some(n)
+}
+
+/// "last run <time>, last success <time>".
+fn run_and_success(prefix: &str) -> bool {
+    let Some((run, success)) = prefix
+        .strip_prefix("last run ")
+        .and_then(|r| r.split_once(", last success "))
+    else {
+        return false;
+    };
+    let (run, success) = (run.trim(), success.trim());
+    !run.is_empty() && !success.is_empty() && !run.contains(',') && !success.contains(',')
+}
+
+/// "failed N times in 24 h" from [`plain`].
+fn failure_count_part(s: &str) -> Option<u64> {
+    s.strip_prefix("failed ")?.strip_suffix(" times in 24 h")?.parse().ok()
+}
+
+/// "N failed jobs in history" from [`plain`].
+fn jobs_part(s: &str) -> Option<u64> {
+    s.strip_suffix(" failed jobs in history")
+        .or_else(|| s.strip_suffix(" failed job in history"))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// One part per kind: the larger 24 h failure count, the larger job-history count.
+fn keep_worse(parts: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fail_at: Option<usize> = None;
+    let mut fail_n = 0u64;
+    let mut jobs_at: Option<usize> = None;
+    let mut jobs_n = 0u64;
+    for p in parts {
+        if let Some(n) = failure_count_part(&p) {
+            match fail_at {
+                Some(i) if n > fail_n => {
+                    fail_n = n;
+                    out[i] = p;
+                }
+                Some(_) => {}
+                None => {
+                    fail_n = n;
+                    fail_at = Some(out.len());
+                    out.push(p);
+                }
+            }
+            continue;
+        }
+        if let Some(n) = jobs_part(&p) {
+            match jobs_at {
+                Some(i) if n > jobs_n => {
+                    jobs_n = n;
+                    out[i] = p;
+                }
+                Some(_) => {}
+                None => {
+                    jobs_n = n;
+                    jobs_at = Some(out.len());
+                    out.push(p);
+                }
+            }
+            continue;
+        }
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn word(what: &str, w: &str) -> bool {
+    what.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|p| p == w)
+}
+
+/// A unit or container that is up, whose detail is only "N failures in 24h".
+fn active_failure_count(what: &str, detail: &str) -> Option<u64> {
+    if !word(what, "unit") && !word(what, "container") {
+        return None;
+    }
+    let lower = detail.trim().to_ascii_lowercase();
+    let (state, rest) = lower.split_once(',')?;
+    if !matches!(
+        state.trim(),
+        "active/running" | "active/waiting" | "active/exited"
+    ) {
+        return None;
+    }
+    let rest = rest.trim();
+    let n = failures_24h_in(rest)?;
+    (rest == format!("{n} failures in 24h")).then_some(n)
+}
+
+/// Largest failure count when every non-ok finding is [`active_failure_count`].
+fn active_only(findings: &[&Value]) -> Option<u64> {
+    if findings.is_empty() {
+        return None;
+    }
+    let mut max_n = 0u64;
+    for f in findings {
+        max_n = max_n.max(active_failure_count(
+            st(f, "what").unwrap_or(""),
+            st(f, "detail").unwrap_or(""),
+        )?);
+    }
+    Some(max_n)
 }
 
 fn bad_finding(f: &Value) -> bool {
@@ -510,6 +666,10 @@ struct Item {
     details: Vec<String>,
     since: Option<DateTime<Utc>>,
     failures_24h: Option<u64>,
+    /// Largest "N failures in 24h" when every non-ok catalog finding is only that
+    /// on a unit or container that is up now. Not serialized; decides `flapping`.
+    active_failures: Option<u64>,
+    flapping: bool,
     impact: Option<Value>,
     caused: Vec<String>,
     logs: Option<String>,
@@ -523,6 +683,7 @@ impl Item {
             "key": self.key,
             "sources": self.sources,
             "severity": self.severity,
+            "flapping": self.flapping,
             "title": self.title,
             "component_id": self.component_id,
             "host": self.host,
@@ -552,6 +713,27 @@ fn impact_entry(v: &Value, names: &HashMap<&str, &str>) -> Option<Value> {
     Some(json!({"id": id, "name": redact(name)}))
 }
 
+/// A DNS hostname. Drops URLs (`http://:8801`, any scheme with an empty host),
+/// paths, and names with no dot.
+fn public_hostname(raw: &str) -> bool {
+    let s = raw.trim();
+    if s.is_empty() || s.to_ascii_lowercase().contains("://") {
+        return false;
+    }
+    if s.contains(['/', '?', '#', '@', ':', ' ']) || !s.contains('.') {
+        return false;
+    }
+    let s = s.strip_suffix('.').unwrap_or(s);
+    !s.is_empty()
+        && !s.starts_with('.')
+        && s.split('.').all(|label| {
+            (1..64).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
 fn impact_of(v: Option<&Value>, names: &HashMap<&str, &str>) -> Option<Value> {
     let v = v.filter(|v| v.is_object())?;
     let list = |k: &str| -> Vec<Value> {
@@ -562,7 +744,7 @@ fn impact_of(v: Option<&Value>, names: &HashMap<&str, &str>) -> Option<Value> {
     };
     let public: Vec<Value> = arr(v, "public_hostnames_broken")
         .iter()
-        .filter_map(|h| h.as_str().map(|h| json!(redact(h))))
+        .filter_map(|h| h.as_str().filter(|h| public_hostname(h)).map(|h| json!(redact(h))))
         .collect();
     Some(
         json!({"broken": list("broken"), "degraded": list("degraded"), "public_hostnames_broken": public}),
@@ -602,7 +784,7 @@ fn catalog_item(p: Problem, names: &HashMap<&str, &str>) -> Item {
         .filter_map(Value::as_str)
         .collect();
     let summary = if !parts.is_empty() {
-        parts.into_iter().take(2).collect::<Vec<_>>().join("; ")
+        keep_worse(parts).into_iter().take(2).collect::<Vec<_>>().join("; ")
     } else if !by.is_empty() {
         let how = if state_of(effective) == "crit" {
             "Broken"
@@ -634,6 +816,8 @@ fn catalog_item(p: Problem, names: &HashMap<&str, &str>) -> Item {
         details: findings.iter().map(|f| finding_line(f)).collect(),
         since: p.str("since").and_then(parse_time),
         failures_24h: p.get("failures_24h").and_then(Value::as_u64),
+        active_failures: active_only(&findings),
+        flapping: false,
         impact: impact_of(p.get("impact"), names),
         caused: Vec::new(),
         logs: p.str("logs").map(redact),
@@ -1129,6 +1313,8 @@ pub fn build(
                     details: vec![line],
                     since,
                     failures_24h: None,
+                    active_failures: None,
+                    flapping: false,
                     impact: None,
                     caused: Vec::new(),
                     logs: None,
@@ -1140,16 +1326,31 @@ pub fn build(
             items.push(item);
         }
     }
+    for it in &mut items {
+        if it.severity != "warn" || it.sources.contains(&"sentinel") {
+            continue;
+        }
+        let Some(n) = it.active_failures else {
+            continue;
+        };
+        it.flapping = true;
+        it.summary = format!("Running; failed {n} times in 24 h");
+    }
     items.sort_by(|a, b| {
-        severity_rank(b.severity)
-            .cmp(&severity_rank(a.severity))
-            .then_with(|| match (a.since, b.since) {
+        a.flapping.cmp(&b.flapping).then_with(|| {
+            let rank = if a.flapping {
+                b.failures_24h.unwrap_or(0).cmp(&a.failures_24h.unwrap_or(0))
+            } else {
+                severity_rank(b.severity).cmp(&severity_rank(a.severity))
+            };
+            rank.then_with(|| match (a.since, b.since) {
                 (Some(x), Some(y)) => x.cmp(&y),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
             })
             .then_with(|| a.key.cmp(&b.key))
+        })
     });
 
     // Hosts.
@@ -1309,6 +1510,7 @@ pub fn build(
         .unwrap_or(0);
     let worst_item = items
         .iter()
+        .filter(|i| !i.flapping)
         .map(|i| severity_rank(i.severity))
         .max()
         .unwrap_or(0);
@@ -1335,7 +1537,8 @@ pub fn build(
     json!({
         "generated_at": rfc(now),
         "overall": overall,
-        "attention_count": items.len(),
+        "attention_count": items.iter().filter(|i| !i.flapping).count(),
+        "flapping_count": items.iter().filter(|i| i.flapping).count(),
         "checks_ok": checks_ok,
         "checks_total": checks_total,
         "sources": sources,
