@@ -378,8 +378,15 @@ async fn handle(
             if !st.v2 {
                 return err(StatusCode::BAD_GATEWAY, "lucina_error");
             }
-            let mut applied = vec![];
+            let (mut applied, mut rejected) = (vec![], vec![]);
             for op in body["ops"].as_array().cloned().unwrap_or_default() {
+                // Lucina's Jev gate on MCP batches: not a shopping item, ask instead
+                if body["via"] == "mcp" && op["name"] == "lavatrici" {
+                    rejected.push(json!({"opId": op["opId"], "error": "needs_confirmation",
+                        "text": "lavatrici", "question": "Intendevi Detersivo per lavatrice?",
+                        "suggestion": "Detersivo per lavatrice"}));
+                    continue;
+                }
                 applied.push(op["opId"].clone());
                 match op["type"].as_str() {
                     Some("add") => {
@@ -396,8 +403,12 @@ async fn handle(
                     _ => {}
                 }
             }
-            st.revision += 1;
-            Json(json!({"revision": st.revision, "applied": applied, "duplicates": [], "items": st.items})).into_response()
+            if !applied.is_empty() {
+                st.revision += 1;
+            }
+            Json(json!({"revision": st.revision, "applied": applied, "duplicates": [],
+                "rejected": rejected, "items": st.items}))
+            .into_response()
         }
         ("GET", ["v1", "shopping"]) => Json(Value::Array(st.legacy.clone())).into_response(),
         ("POST", ["v1", "shopping"]) => {
@@ -759,7 +770,11 @@ impl Harness {
     pub fn issue_at(&self, name: &str, scopes: &str, depth: u8) -> (String, String) {
         let store = secretary_mcp::tokens::TokenStore::new(self.data_dir());
         let (rec, secret) = store
-            .issue_at(name, secretary_mcp::scope::Scopes::parse_list(scopes).unwrap(), depth)
+            .issue_at(
+                name,
+                secretary_mcp::scope::Scopes::parse_list(scopes).unwrap(),
+                depth,
+            )
             .unwrap();
         (rec.id, secret)
     }
