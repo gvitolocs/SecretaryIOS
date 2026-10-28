@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ControlState } from "../api/computer";
 import { toScreen } from "../api/computer";
 import { setLocale } from "../i18n";
+import { stubWide } from "../test/wide";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
 import { deferred } from "../test/fetch";
@@ -111,6 +112,30 @@ describe("Lucina's computer", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("uses the desktop page header, sections and viewer card without the phone toolbar", async () => {
+    stubWide();
+    fakeLucina(state());
+    renderComputer();
+    expect(screen.getByRole("heading", { level: 1, name: "Lucina's computer" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Which computer" });
+    expect(within(nav).getByRole("link", { name: "Desktop" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(within(nav).getByRole("link", { name: "Android" }));
+    expect(within(nav).getByRole("link", { name: "Android" })).toHaveAttribute("aria-current", "page");
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(document.querySelector(".computer-status, .computer-seg, #computer-title")).toBeNull();
+    expect(screen.getByRole("region", { name: "Lucina's screen" })).toHaveClass("pg-card");
+    expect(await screen.findByTitle("Lucina's screen")).toBeInTheDocument();
+  });
+
+  it("keeps the desktop header visible when the computer cannot load", async () => {
+    stubWide();
+    stubFetch(() => ({ status: 404, body: { error: { code: "not_found", message: "Not found." } } }));
+    renderComputer();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Lucina's computer");
+    expect(await screen.findByRole("alert")).toHaveClass("pg-error");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
   it("watches live until the owner takes over, then drives with a new ticket on the same view", async () => {

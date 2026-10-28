@@ -17,6 +17,7 @@ import {
 import type { DeskFallback } from "../components/DeskPlayer";
 import DriveBar, { barIcons, type DriveBarAction } from "../components/DriveBar";
 import { BackIcon } from "../components/Icons";
+import { Button, Card, ErrorState, ListRow, LoadingState, RowList, Page, PageGrid, PageHeader, PrimaryAction, SectionNav, useWide } from "../components/page";
 import { t } from "../i18n";
 import { hasFocusMode, onFocusModeChange, setFocusMode } from "../lib/focusMode";
 import { readString, writeString } from "../lib/storage";
@@ -274,6 +275,7 @@ export function pointIn(
 }
 
 export default function ComputerView() {
+  const { wide, track } = useWide();
   const [sandbox, setSandbox] = createSignal<Sandbox>(readString("local", "computer.sandbox") === "android" ? "android" : "workspace");
   const [mode, setMode] = createSignal<"live" | "simple">(readString("local", "computer.mode") === "simple" ? "simple" : "live");
   const [state, setState] = createSignal<ControlState | null>(null);
@@ -1051,9 +1053,7 @@ export default function ComputerView() {
     }),
   );
 
-  return (
-    <section class="computer-page" aria-labelledby="computer-title" data-full={full() ? "yes" : "no"}>
-      <A href="/plugins" class="computer-back">
+  const PhoneHeader = () => <>      <A href="/plugins" class="computer-back">
         <BackIcon /> {t("plugins.title")}
       </A>
       <h1 id="computer-title">{t("computer.title")}</h1>
@@ -1110,13 +1110,14 @@ export default function ComputerView() {
         </Show>
       </div>
 
-      <Show when={notice()}>
-        <p class="computer-notice" role="status">{notice()}</p>
+</>;
+  const Content = () => <>      <Show when={notice()}>
+        <p class={wide() ? "pg-notice" : "computer-notice"} role="status">{notice()}</p>
       </Show>
       <Show when={idleOut() && !mine()}>
         <div class="computer-files computer-idle" role="status">
           <span>{t("computer.idleOut")}</span>
-          <button type="button" class="computer-btn" disabled={busy() || !state()} onClick={() => void takeOver()}>
+          <button type="button" class={wide() ? "pg-btn" : "computer-btn"} disabled={busy() || !state()} onClick={() => void takeOver()}>
             {t("computer.takeOver")}
           </button>
           <button type="button" class="computer-files-close" aria-label={t("computer.dismiss")} onClick={() => setIdleOut(false)}>
@@ -1134,7 +1135,7 @@ export default function ComputerView() {
             </span>
             <button
               type="button"
-              class="computer-btn"
+              class={wide() ? "pg-btn" : "computer-btn"}
               onClick={() => {
                 for (const f of files()) downloadFile(sandbox(), f);
                 setOffer(null);
@@ -1149,7 +1150,7 @@ export default function ComputerView() {
         )}
       </Show>
       <Show when={error()}>
-        <p class="computer-error" role="alert">{error()}</p>
+        <Show when={wide()} fallback={<p class="computer-error" role="alert">{error()}</p>}><ErrorState message={error()!} retryLabel={t("common.tryAgain")} onRetry={() => { void loadState(); void openView(viewMode()); }} /></Show>
       </Show>
 
       <Show when={desk()}>
@@ -1192,7 +1193,7 @@ export default function ComputerView() {
               />
             }
           >
-            <Show when={view()} fallback={<p class="computer-loading">{t("computer.loading")}</p>}>
+            <Show when={view()} fallback={<Show when={wide()} fallback={<p class="computer-loading">{t("computer.loading")}</p>}><LoadingState label={t("computer.loading")} /></Show>}>
               {(v) => (
                 <iframe
                   ref={frame}
@@ -1227,10 +1228,10 @@ export default function ComputerView() {
               <div class="computer-confirm" role="alertdialog" aria-label={t("computer.takeOver")}>
                 <p>{c().message}</p>
                 <div class="computer-confirm-actions">
-                  <button type="button" class="btn" onClick={() => setConfirming(null)}>
+                  <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => setConfirming(null)}>
                     {t("computer.cancel")}
                   </button>
-                  <button type="button" class="btn btn--primary" onClick={() => void takeOver(c().pass, true)}>
+                  <button type="button" class={wide() ? "pg-btn" : "btn btn--primary"} onClick={() => void takeOver(c().pass, true)}>
                     {t("computer.takeOver")}
                   </button>
                 </div>
@@ -1250,21 +1251,21 @@ export default function ComputerView() {
         </div>
 
         <div class="computer-bar computer-actions">
-          <button type="button" class="btn" onClick={() => toggleFull()} aria-pressed={full()}>
+          <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => toggleFull()} aria-pressed={full()}>
             {full() ? t("computer.exitFull") : t("computer.fullScreen")}
           </button>
           <Show when={mine()}>
-            <button type="button" class="btn" aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
+            <button type="button" class={wide() ? "pg-btn" : "btn"} aria-pressed={keyboard()} onClick={() => toggleKeyboard()}>
               {t("computer.keyboard")}
             </button>
           </Show>
           <Show when={zoom().scale > 1.05}>
-            <button type="button" class="btn" onClick={() => resetZoom()}>
+            <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => resetZoom()}>
               {t("computer.resetZoom")}
             </button>
           </Show>
           <Show when={classic() && sandbox() === "workspace" && mode() === "live" && deskCapable()}>
-            <button type="button" class="btn" onClick={() => useDesk()}>
+            <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => useDesk()}>
               {t("desk.useDesk")}
             </button>
           </Show>
@@ -1293,19 +1294,19 @@ export default function ComputerView() {
               <div class="computer-keys">
                 <For each={KEYS}>
                   {(k) => (
-                    <button type="button" class="computer-key" aria-label={k.key} onClick={() => pressKey(k)}>
+                    <button type="button" class={wide() ? "pg-btn" : "computer-key"} aria-label={k.key} onClick={() => pressKey(k)}>
                       {k.label}
                     </button>
                   )}
                 </For>
               </div>
               <div class="computer-clip">
-                <textarea class="text-input" rows="2" aria-label={t("computer.clipboardLabel")} value={clip()} placeholder={t("computer.clipboardPlaceholder")} onInput={(e) => setClip(e.currentTarget.value)} />
+                <textarea class={wide() ? "pg-input" : "text-input"} rows="2" aria-label={t("computer.clipboardLabel")} value={clip()} placeholder={t("computer.clipboardPlaceholder")} onInput={(e) => setClip(e.currentTarget.value)} />
                 <div class="computer-clip-actions">
-                  <button type="button" class="btn" disabled={!clip()} onClick={() => void send([{ kind: "clipboard_write", text: clip() }])}>
+                  <button type="button" class={wide() ? "pg-btn" : "btn"} disabled={!clip()} onClick={() => void send([{ kind: "clipboard_write", text: clip() }])}>
                     {t("computer.clipboardSend")}
                   </button>
-                  <button type="button" class="btn" onClick={() => void readClipboard()}>
+                  <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => void readClipboard()}>
                     {t("computer.clipboardRead")}
                   </button>
                 </div>
@@ -1316,7 +1317,7 @@ export default function ComputerView() {
       </Show>
 
       <Show when={mine() && !desk()}>
-        <div class="computer-card computer-input">
+        <div class={wide() ? "pg-card computer-input" : "computer-card computer-input"}>
           <form
             class="computer-type"
             onSubmit={(e) => {
@@ -1328,13 +1329,13 @@ export default function ComputerView() {
             }}
           >
             <label class="sr-only" for="computer-type">{t("computer.typeLabel")}</label>
-            <input id="computer-type" class="text-input" value={text()} placeholder={t("computer.typePlaceholder")} autocomplete="off" onInput={(e) => setText(e.currentTarget.value)} />
-            <button type="submit" class="btn">{t("computer.send")}</button>
+            <input id="computer-type" class={wide() ? "pg-input" : "text-input"} value={text()} placeholder={t("computer.typePlaceholder")} autocomplete="off" onInput={(e) => setText(e.currentTarget.value)} />
+            <button type="submit" class={wide() ? "pg-btn" : "btn"}>{t("computer.send")}</button>
           </form>
           <div class="computer-keys" role="group" aria-label={t("computer.keys")}>
             <For each={KEYS}>
               {(k) => (
-                <button type="button" class="computer-key" onClick={() => pressKey(k)}>
+                <button type="button" class={wide() ? "pg-btn" : "computer-key"} onClick={() => pressKey(k)}>
                   {k.label}
                 </button>
               )}
@@ -1342,12 +1343,12 @@ export default function ComputerView() {
           </div>
           <div class="computer-clip">
             <label for="computer-clip">{t("computer.clipboardLabel")}</label>
-            <textarea id="computer-clip" class="text-input" rows="2" value={clip()} placeholder={t("computer.clipboardPlaceholder")} onInput={(e) => setClip(e.currentTarget.value)} />
+            <textarea id="computer-clip" class={wide() ? "pg-input" : "text-input"} rows="2" value={clip()} placeholder={t("computer.clipboardPlaceholder")} onInput={(e) => setClip(e.currentTarget.value)} />
             <div class="computer-clip-actions">
-              <button type="button" class="btn" disabled={!clip()} onClick={() => void send([{ kind: "clipboard_write", text: clip() }])}>
+              <button type="button" class={wide() ? "pg-btn" : "btn"} disabled={!clip()} onClick={() => void send([{ kind: "clipboard_write", text: clip() }])}>
                 {t("computer.clipboardSend")}
               </button>
-              <button type="button" class="btn" onClick={() => void readClipboard()}>
+              <button type="button" class={wide() ? "pg-btn" : "btn"} onClick={() => void readClipboard()}>
                 {t("computer.clipboardRead")}
               </button>
             </div>
@@ -1356,7 +1357,7 @@ export default function ComputerView() {
       </Show>
 
       <Show when={recent().some(meaningful)}>
-        <h2>{t("computer.activity")}</h2>
+        <Show when={wide()} fallback={<>        <h2>{t("computer.activity")}</h2>
         <ul class="computer-card computer-log">
           <For each={recent().filter(meaningful).slice(0, 10)}>
             {(e) => (
@@ -1366,6 +1367,46 @@ export default function ComputerView() {
             )}
           </For>
         </ul>
+</>}>
+          <Card list title={t("computer.activity")}><RowList>
+            <For each={recent().filter(meaningful).slice(0, 10)}>{(e) => <ListRow title={auditLine(e)} sub={clock(e.at)} />}</For>
+          </RowList></Card>
+        </Show>
+      </Show>
+</>;
+
+  return (
+    <section ref={track} class={wide() ? "computer-desktop" : "computer-page"} aria-label={wide() ? t("computer.title") : undefined} aria-labelledby={wide() ? undefined : "computer-title"} data-full={full() ? "yes" : "no"} onClick={(e) => {
+      if (!wide()) return;
+      const link = (e.target as HTMLElement).closest<HTMLAnchorElement>(".pg-seg a");
+      if (!link) return;
+      e.preventDefault();
+      setSandbox(link.getAttribute("href") === "?sandbox=android" ? "android" : "workspace");
+    }}>
+      <Show when={wide()} fallback={<><PhoneHeader /><Content /></>}>
+        <Page class="computer-wide">
+          <PageHeader title={t("computer.title")} context={<>
+            <span role="status">{driverLabel(state(), mine() || (desk() && deskDriving()))}</span>
+            <Show when={state()?.task}>{(task) => <> · {t("computer.working", { what: task().what })}</>}</Show>
+            <Show when={!mine() && !desk()}> · {t("computer.watchOnly")}</Show>
+            <Show when={mode() === "live" && view() && via()}>{(how) => <> · {how() === "lan" ? t("computer.viaLan") : t("computer.viaRemote")}</>}</Show>
+          </>} nav={<SectionNav label={t("computer.sandboxes")} items={[
+            { label: t("computer.desktop"), href: "?sandbox=workspace", current: sandbox() === "workspace" },
+            { label: t("computer.android"), href: "?sandbox=android", current: sandbox() === "android" },
+          ]} />} action={<Show when={mine() || (desk() && deskDriving())} fallback={<PrimaryAction disabled={busy() || !state()} onClick={() => void takeOver()}>{t("computer.takeOver")}</PrimaryAction>}>
+            <Button disabled={busy()} onClick={() => void giveBack()}>{t("computer.giveBack")}</Button>
+          </Show>} />
+          <PageGrid layout="full"><Card label={t("computer.viewer")}>
+            <div class="computer-bar">
+              <A href="/plugins" class="pg-link pg-back"><BackIcon /> {t("plugins.title")}</A>
+              <div class="pg-seg" role="group" aria-label={t("computer.viewMode")}>
+                <button class="pg-seg-item" type="button" aria-pressed={mode() === "live"} onClick={() => setMode("live")}>{t("computer.live")}</button>
+                <button class="pg-seg-item" type="button" aria-pressed={mode() === "simple"} onClick={() => setMode("simple")}>{t("computer.simple")}</button>
+              </div>
+            </div>
+            <Content />
+          </Card></PageGrid>
+        </Page>
       </Show>
     </section>
   );
