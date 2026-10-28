@@ -165,7 +165,6 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   let next: DeskSocket | null = null;
   let replay: Replay | null = null;
   /** The takeover happened in Secretary Code's focus mode: leaving focus gives the desktop back. */
-  let takenInFocus = false;
   let attempts = 0;
   let retryTimer: number | undefined;
   let idleTimer: number | undefined;
@@ -321,7 +320,8 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       return;
     }
     if (code === 4001) {
-      setNotice(t("desk.controlEnded"));
+      // "idle": two minutes without keys, mouse or touch gave the desktop back (Lucina's OWNER_IDLE).
+      setNotice(reason === "idle" ? t("computer.idleOut") : t("desk.controlEnded"));
       setDriving(false);
       props.onChanged?.();
       open("watch");
@@ -396,7 +396,6 @@ export default function DeskPlayer(props: DeskPlayerProps) {
   };
 
   const takeOver = (trigger: Replay | null) => {
-    takenInFocus = inShell && focus();
     setConfirm(null);
     setNotice(null);
     setError(null);
@@ -865,7 +864,10 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       (window as unknown as { __lucinadesk?: unknown }).__lucinadesk = { ...s, firstDrawAt, mode: cur?.mode, via: st?.via, frames: st?.frames, bytes: st?.bytes, marks: st?.marks };
     }, 500);
     const onFullscreen = () => {
-      if (!document.fullscreenElement && !inShell) setFocus(false);
+      if (document.fullscreenElement || inShell) return;
+      setFocus(false);
+      // Leaving full screen gives the desktop back, like leaving focus mode in the Mac app.
+      if (driving()) giveBack();
     };
     const onVisible = () => {
       window.clearTimeout(idleTimer);
@@ -889,13 +891,13 @@ export default function DeskPlayer(props: DeskPlayerProps) {
       }
     };
     // The shell leaves focus by itself (Esc, its "Exit focus", another view): follow it, never fight it.
-    // Like the classic view there: a takeover made in focus mode ends with it (like closing the tab).
+    // Like the classic view there: leaving focus mode gives the desktop back, however it was taken.
     const unFocus = onFocusModeChange((on) => {
       shellFocus = on;
       setFocus(on);
       if (on) return;
       closeKeyboard();
-      if (takenInFocus && driving()) giveBack();
+      if (driving()) giveBack();
     });
     // Leaving the page while driving: the closing socket gives the desktop back, but not a lease the
     // owner already held from elsewhere, so say it outright (keepalive survives the navigation).
