@@ -103,7 +103,7 @@ export function ImportReportView(props: { report: ImportReport }) {
   );
 }
 
-export function KeepImport(props: { run?: typeof importGoogleKeep }) {
+export function KeepImport(props: { desktop?: boolean; run?: typeof importGoogleKeep }) {
   const run = props.run ?? importGoogleKeep;
   const [file, setFile] = createSignal<File | null>(null);
   const [phase, setPhase] = createSignal<Phase>("idle");
@@ -148,12 +148,12 @@ export function KeepImport(props: { run?: typeof importGoogleKeep }) {
   }
 
   return (
-    <section class="settings-form kp-import" aria-labelledby="kp-import-title" id="kp-import">
-      <h3 class="field-label" id="kp-import-title">
+    <section class={props.desktop ? "pg-form" : "settings-form kp-import"} aria-labelledby={props.desktop ? undefined : "kp-import-title"} id="kp-import">
+      <Show when={!props.desktop}><h3 class={props.desktop ? "pg-field-label" : "field-label"} id="kp-import-title">
         {t("keep.importTitle")}
-      </h3>
+      </h3></Show>
       <h4 class="kp-imp-sub">{t("keep.importKeepTitle")}</h4>
-      <p class="muted small">{t("keep.importKeepIntro")}</p>
+      <p class={props.desktop ? "pg-muted" : "muted small"}>{t("keep.importKeepIntro")}</p>
       <ol class="kp-imp-steps">
         <li>{t("keep.importStep1")}</li>
         <li>{t("keep.importStep2")}</li>
@@ -162,23 +162,23 @@ export function KeepImport(props: { run?: typeof importGoogleKeep }) {
       </ol>
       <div class="kp-imp-pick">
         <input ref={picker} type="file" accept=".zip,application/zip" hidden data-testid="import-file" onChange={(e) => choose(e.currentTarget.files?.[0])} />
-        <button type="button" class="btn" disabled={busy()} onClick={() => picker?.click()}>
+        <button type="button" class={props.desktop ? "pg-btn" : "btn"} disabled={busy()} onClick={() => picker?.click()}>
           {t("keep.importPick")}
         </button>
         <span class="muted small kp-imp-name">{file() ? `${file()!.name} (${formatBytes(file()!.size)})` : t("keep.importNoFile")}</span>
       </div>
       <div class="kp-imp-actions">
-        <button type="button" class="btn" data-action="check" disabled={!file() || busy()} onClick={() => void go(true)}>
+        <button type="button" class={props.desktop ? "pg-btn" : "btn"} data-action="check" disabled={!file() || busy()} onClick={() => void go(true)}>
           {t("keep.importCheck")}
         </button>
-        <button type="button" class="btn btn--primary" data-action="import" disabled={!file() || busy()} onClick={() => void go(false)}>
+        <button type="button" class={props.desktop ? "pg-btn" : "btn btn--primary"} data-action="import" disabled={!file() || busy()} onClick={() => void go(false)}>
           {t("keep.importRun")}
         </button>
       </div>
       <Show when={busy()}>
         <div class="kp-imp-progress" role="status">
           <progress max="1" value={progress()} aria-label={percent()} />
-          <span class="muted small">
+          <span class={props.desktop ? "pg-muted" : "muted small"}>
             <Switch>
               <Match when={progress() >= 1}>{t("keep.importProcessing")}</Match>
               <Match when={true}>{phase() === "checking" ? t("keep.uploadingPercent", { percent: percent() }) : t("keep.importing", { percent: percent() })}</Match>
@@ -187,15 +187,15 @@ export function KeepImport(props: { run?: typeof importGoogleKeep }) {
         </div>
       </Show>
       <Show when={error()}>
-        <p class="form-error" role="alert">
+        <p class={props.desktop ? "pg-notice" : "form-error"} role="alert">
           {error()}
         </p>
       </Show>
       <Show when={report()}>{(r) => <ImportReportView report={r()} />}</Show>
       <Show when={phase() === "checked"}>
-        <p class="muted small">{t("keep.importThenRun")}</p>
+        <p class={props.desktop ? "pg-muted" : "muted small"}>{t("keep.importThenRun")}</p>
       </Show>
-      <p class="muted small">{t("keep.importSafe")}</p>
+      <p class={props.desktop ? "pg-muted" : "muted small"}>{t("keep.importSafe")}</p>
     </section>
   );
 }

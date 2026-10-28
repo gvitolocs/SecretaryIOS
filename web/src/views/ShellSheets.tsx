@@ -1,6 +1,7 @@
 import { useNavigate, useSearchParams } from "@solidjs/router";
-import { createSignal } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
+import { useWide } from "../components/page";
 import { AccountDialog } from "../components/AccountDialog";
 import { NotificationPanel } from "../components/NotificationBell";
 import { signOut } from "../state/session";
@@ -27,15 +28,17 @@ export function NotificationsView() {
 }
 
 export function AccountView() {
+  const { wide, track } = useWide();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [signingOut, setSigningOut] = createSignal(false);
   return (
-    <>
-      <ChatView />
+    <div ref={track}>
+      <Show when={!wide()}><ChatView /></Show>
       <AccountDialog
+        desktop={wide()}
         open
-        section={params.section === "notifications" ? "notifications" : null}
+        section={params.section === "notifications" ? "notifications" : params.section === "import" ? "import" : null}
         onClose={() => navigate("/", { replace: true })}
         signingOut={signingOut()}
         onSignOut={async () => {
@@ -48,7 +51,7 @@ export function AccountView() {
           }
         }}
       />
-    </>
+    </div>
   );
 }
 

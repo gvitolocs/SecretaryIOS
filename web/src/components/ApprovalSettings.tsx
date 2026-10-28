@@ -4,9 +4,10 @@
 
 import { createSignal, For, onMount, Show } from "solid-js";
 import { approvalsApi, type ApprovalSettings as Settings } from "../api/approvals";
+import { Card } from "./page";
 import { t } from "../i18n";
 
-export function ApprovalSettings() {
+export function ApprovalSettings(props: { desktop?: boolean }) {
   const [settings, setSettings] = createSignal<Settings | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
@@ -42,21 +43,20 @@ export function ApprovalSettings() {
 
   const withFaceId = () => settings()?.devices.filter((d) => d.hasBiometricKey) ?? [];
 
-  return (
-    <Show when={settings()}>
-      <div class="settings-form" aria-labelledby="apv-settings-title">
-        <h3 class="field-label" id="apv-settings-title">
+  const form = () => (
+      <div class={props.desktop ? "pg-form" : "settings-form"} aria-labelledby={props.desktop ? undefined : "apv-settings-title"}>
+        <Show when={!props.desktop}><h3 class={props.desktop ? "pg-field-label" : "field-label"} id="apv-settings-title">
           {t("approvals.settingsTitle")}
-        </h3>
+        </h3></Show>
         <Show when={settings()}>
           {(cur) => (
             <>
-              <label class="field-label" for="apv-main-device">
+              <label class={props.desktop ? "pg-field-label" : "field-label"} for="apv-main-device">
                 {t("approvals.mainLabel")}
               </label>
               <select
                 id="apv-main-device"
-                class="text-input"
+                class={props.desktop ? "pg-input" : "text-input"}
                 value={cur().mainDeviceId ?? ""}
                 disabled={saving()}
                 aria-describedby="apv-main-hint"
@@ -73,21 +73,21 @@ export function ApprovalSettings() {
                   )}
                 </For>
               </select>
-              <p id="apv-main-hint" class="muted small">
+              <p id="apv-main-hint" class={props.desktop ? "pg-muted" : "muted small"}>
                 {t("approvals.mainHint", { secs: cur().escalateAfterSecs })}
               </p>
-              <p class="muted small" data-testid="apv-faceid-devices">
+              <p class={props.desktop ? "pg-muted" : "muted small"} data-testid="apv-faceid-devices">
                 {withFaceId().length
                   ? t("approvals.faceIdOn", { names: withFaceId().map((d) => d.name).join(", ") })
                   : t("approvals.faceIdNone")}
               </p>
               <Show when={error() === "save"}>
-                <p class="form-error" role="alert">
+                <p class={props.desktop ? "pg-notice" : "form-error"} role="alert">
                   {t("approvals.saveError")}
                 </p>
               </Show>
               <Show when={saved()}>
-                <p class="muted small" role="status">
+                <p class={props.desktop ? "pg-muted" : "muted small"} role="status">
                   {t("approvals.saved")}
                 </p>
               </Show>
@@ -95,6 +95,14 @@ export function ApprovalSettings() {
           )}
         </Show>
       </div>
+  );
+
+  // Desktop: the settings page shows it as a Card of its own.
+  return (
+    <Show when={settings()}>
+      <Show when={props.desktop} fallback={form()}>
+        <Card title={t("approvals.settingsTitle")}>{form()}</Card>
+      </Show>
     </Show>
   );
 }
