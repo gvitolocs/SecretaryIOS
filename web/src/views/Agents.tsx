@@ -3,6 +3,7 @@ import { createMemo, Match, onCleanup, onMount, Show, Switch, type JSX } from "s
 import { agentsApi } from "../api/agents";
 import { AgentDetail } from "../components/agents/AgentDetail";
 import { AgentList } from "../components/agents/AgentList";
+import { MapPage } from "../components/agents/MapPage";
 import { NewRun, PermissionsPage, SchedulesPage, UsagePage } from "../components/agents/Pages";
 import { BackIcon } from "../components/Icons";
 import { t } from "../i18n";
@@ -12,7 +13,7 @@ import "../styles/agents.css";
 
 // Lucina Agents at /agents (a Plugins card; owner devices): the coding agents on nezopt (Claude, Codex, OpenCode,
 // Cursor, …) through /v1/agents. Routes: /agents (list), /agents/new, /agents/<id>[/changes|/files|/terminal|/scripts],
-// /agents/permissions[/<id>], /agents/schedules, /agents/usage. Wide screens show the list beside the page; a
+// /agents/permissions[/<id>], /agents/schedules, /agents/usage, /agents/map[/<componentId>] (the Homelab service map). Wide screens show the list beside the page; a
 // phone shows one of them (list -> detail). The stream, caches and actions live in state/agents.ts.
 
 export default function AgentsView() {
@@ -23,6 +24,10 @@ export default function AgentsView() {
     return r.page === "permissions" ? r.id : undefined;
   };
   const open = () => pendingPermissions().length;
+  const mapId = () => {
+    const r = route();
+    return r.page === "map" ? r.id : undefined;
+  };
 
   onMount(() => {
     onCleanup(startAgents());
@@ -60,6 +65,7 @@ export default function AgentsView() {
               <A href="/agents/schedules" class="ag-btn" aria-current={route().page === "schedules" ? "page" : undefined}>{t("agents.schedules")}</A>
             </Show>
             <A href="/agents/usage" class="ag-btn" aria-current={route().page === "usage" ? "page" : undefined}>{t("agents.usage")}</A>
+            <A href="/agents/map" class="ag-btn" aria-current={route().page === "map" ? "page" : undefined}>{t("agents.map")}</A>
           </nav>
         </header>
         <AgentList current={currentId()} />
@@ -77,6 +83,9 @@ export default function AgentsView() {
           </Match>
           <Match when={route().page === "usage"}>
             <PageFrame><UsagePage /></PageFrame>
+          </Match>
+          <Match when={route().page === "map"}>
+            <PageFrame><MapPage componentId={mapId()} /></PageFrame>
           </Match>
           <Match when={agent()}>{(a) => <AgentDetail id={a().id} tab={a().tab} />}</Match>
         </Switch>
