@@ -39,9 +39,20 @@ pub fn cpu_temp_c() -> Option<f32> {
 /// Block while the CPU is at or above `max_c` (the owner's limit is 90). Returns how many
 /// 15-second pauses it took.
 pub fn wait_for_cool(max_c: u32) -> u32 {
+    wait_for_cool_with(max_c, cpu_temp_c, || {
+        std::thread::sleep(Duration::from_secs(15))
+    })
+}
+
+/// [`wait_for_cool`] with the sensor and the pause supplied (tests drive both).
+pub fn wait_for_cool_with(
+    max_c: u32,
+    mut temp: impl FnMut() -> Option<f32>,
+    mut pause: impl FnMut(),
+) -> u32 {
     let mut pauses = 0;
-    while cpu_temp_c().is_some_and(|t| t >= max_c as f32) {
-        std::thread::sleep(Duration::from_secs(15));
+    while temp().is_some_and(|t| t >= max_c as f32) {
+        pause();
         pauses += 1;
     }
     pauses

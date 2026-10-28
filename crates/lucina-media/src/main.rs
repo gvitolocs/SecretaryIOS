@@ -90,16 +90,29 @@ enum Cmd {
     /// Put a merged duplicate back as its own item.
     DedupUndo { item: String },
     /// The JPEG XL archive format for the photos in the store (docs/media-library.md).
-    /// `--dry-run` measures a sample read-only; `--apply` converts (and, with `--delete-originals`,
-    /// deletes originals that proved themselves); `--restore-originals` undoes the deletions.
+    /// `--dry-run` measures a sample read-only; `--apply` converts JPEG (bit-exact) and PNG
+    /// (pixel-exact) and, with `--delete-originals`, deletes originals that proved themselves;
+    /// `--restore-originals` puts deleted JPEGs back; `--export-manifest` lists every archived file.
     ArchiveJxl {
         #[arg(long)]
         dry_run: bool,
-        /// Convert the store's JPEGs. Refuses to run without --i-have-a-backup.
+        /// Convert the store's JPEGs and PNGs. Refuses to run without --i-have-a-backup.
         #[arg(long)]
         apply: bool,
         #[arg(long)]
         restore_originals: bool,
+        /// Write the complete manifest (one JSON line per archived file and item) from the catalog,
+        /// read-only, to this file.
+        #[arg(long)]
+        export_manifest: Option<PathBuf>,
+        /// Apply: which formats to convert, comma separated (default jpeg,png). HEIC, RAW, GIF,
+        /// WebP, AVIF, TIFF, BMP and video are never touched.
+        #[arg(long, value_delimiter = ',', default_value = "jpeg,png")]
+        kinds: Vec<String>,
+        /// Apply: append one JSON line per processed file here; failures also go to
+        /// `<path>.failures.jsonl`.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
         /// The owner has a backup of the store (required by --apply).
         #[arg(long)]
         i_have_a_backup: bool,
@@ -304,6 +317,9 @@ async fn main() -> anyhow::Result<()> {
             dry_run,
             apply,
             restore_originals,
+            export_manifest,
+            kinds,
+            manifest,
             i_have_a_backup,
             delete_originals,
             sample,
@@ -315,16 +331,20 @@ async fn main() -> anyhow::Result<()> {
             effort9,
         } => {
             anyhow::ensure!(
-                [dry_run, apply, restore_originals]
+                [dry_run, apply, restore_originals, export_manifest.is_some()]
                     .iter()
                     .filter(|b| **b)
                     .count()
                     == 1,
-                "pass exactly one of --dry-run, --apply, --restore-originals"
+                "pass exactly one of --dry-run, --apply, --restore-originals, --export-manifest"
             );
             anyhow::ensure!(
                 !delete_originals || apply,
                 "--delete-originals only goes with --apply"
+            );
+            anyhow::ensure!(
+                manifest.is_none() || apply,
+                "--manifest only goes with --apply (use --export-manifest to write the full manifest)"
             );
             if dry_run {
                 // Read-only: the catalog is opened read-only and nothing is written but the report.
@@ -343,6 +363,13 @@ async fn main() -> anyhow::Result<()> {
                     std::fs::write(&path, serde_json::to_vec_pretty(&rep)?)?;
                 }
                 println!("{}", serde_json::to_string_pretty(&rep.summary)?);
+            } else if let Some(out) = export_manifest {
+                // Read-only: the catalog is opened read-only; only `out` is written.
+                let n = tokio::task::spawn_blocking(move || {
+                    lucina_media::archive_manifest::export(&cfg, &out)
+                })
+                .await??;
+                println!("{n} manifest lines");
             } else if apply {
                 anyhow::ensure!(
                     i_have_a_backup,
@@ -354,6 +381,8 @@ async fn main() -> anyhow::Result<()> {
                     delete_originals,
                     limit,
                     max_temp_c: max_temp,
+                    kinds: archive_jxl::Kinds::parse(&kinds)?,
+                    manifest,
                 };
                 let stats =
                     tokio::task::spawn_blocking(move || archive_jxl::apply(&lib, &opts)).await??;
@@ -361,9 +390,10 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             } else {
                 let lib = Library::open(cfg)?;
-                let n = tokio::task::spawn_blocking(move || archive_jxl::restore_originals(&lib))
-                    .await??;
-                println!("restored {n}");
+                let stats =
+                    tokio::task::spawn_blocking(move || archive_jxl::restore_originals(&lib))
+                        .await??;
+                println!("{}", serde_json::to_string_pretty(&stats)?);
             }
         }
         Cmd::Serve => serve(cfg).await?,
@@ -385,7 +415,10 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
     tokio::spawn(ingest::thumb_worker(lib.clone()));
     tokio::spawn(ingest::spool_mover(lib.clone()));
     tokio::spawn(lucina_media::trash::retention_worker(lib.clone()));
-    tokio::spawn(lucina_media::lab_run::worker(lib.clone(), lucina_media::lab_run::LabConfig::from_env()));
+    tokio::spawn(lucina_media::lab_run::worker(
+        lib.clone(),
+        lucina_media::lab_run::LabConfig::from_env(),
+    ));
     {
         let l = lib.clone();
         tokio::spawn(async move {

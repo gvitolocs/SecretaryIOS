@@ -400,7 +400,8 @@ async fn item_file(
                 "original is not reachable right now".into(),
             ));
         }
-        let mut res = serve_file(headers, path, &it.mime, &it.hash, "private, no-store").await?;
+        let etag = crate::archive_jxl::original_etag(&lib.cfg, &path, &it.hash);
+        let mut res = serve_file(headers, path, &it.mime, &etag, "private, no-store").await?;
         res.headers_mut().insert(
             header::CONTENT_DISPOSITION,
             HeaderValue::from_static("attachment"),

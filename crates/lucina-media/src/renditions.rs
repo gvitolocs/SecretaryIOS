@@ -137,7 +137,13 @@ pub async fn version_file(
             }
         })?;
         Ok(found.map(|b| {
-            let path = crate::store::path_of(&lib.cfg, &b);
+            let mut path = crate::store::path_of(&lib.cfg, &b);
+            // An older version whose file was archived away: its rebuilt copy.
+            if b.location == "store" && !path.is_file() {
+                if let Some(p) = crate::archive_jxl::materialize(&lib.cfg, &lib.db, &b.hash) {
+                    path = p;
+                }
+            }
             let mime = meta::mime_for(FsPath::new(&format!("x.{}", b.ext)), None);
             (path, mime, b.hash)
         }))

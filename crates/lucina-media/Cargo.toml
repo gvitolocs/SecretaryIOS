@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 blake3 = "1"
+sha2 = { workspace = true }
 nom-exif = "3"
 reverse_geocoder = "4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff", "bmp"] }
@@ -63,3 +64,5 @@ libc = "0.2"
 tempfile = "3"
 http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Palette PNGs for the archive tests (the image crate cannot write them).
+png = "0.18"
