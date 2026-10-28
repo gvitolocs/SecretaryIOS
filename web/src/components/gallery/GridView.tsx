@@ -28,6 +28,7 @@ import {
   type Window,
 } from "../../lib/galleryLayout";
 import { thumbHashToImage } from "../../lib/thumbhash";
+import { StackIcon } from "./stacks/StackIcons";
 import { isLive } from "../../lib/galleryLive";
 import { GridScrubber } from "./GridScrubber";
 import { LiveIcon } from "./live/LiveIcons";
@@ -147,6 +148,7 @@ function tileLabel(item: GalleryItem, trash: boolean): string {
   if (day) parts.push(day);
   if (item.deviceName) parts.push(item.deviceName);
   if (item.favorite) parts.push(t("gallery.favoriteTag"));
+  if (item.stack) parts.push(t("galleryDedup.stackBadge", { count: item.stack.count }));
   if (trash) {
     const left = daysLeft(item.trashExpiresAt);
     if (left !== null) parts.push(t("gallery.daysLeft", { count: left }));
@@ -279,6 +281,14 @@ function Tile(props: { cell: Cell; ctx: Ctx; rowHeight: number }) {
               <span class="g-badge g-badge--live" aria-hidden="true">
                 <LiveIcon class="g-badge__live" />
               </span>
+            </Show>
+            <Show when={it().stack}>
+              {(stack) => (
+                <span class="g-badge g-badge--stack" aria-hidden="true">
+                  <StackIcon />
+                  {stack().count}
+                </span>
+              )}
             </Show>
             <Show when={ctx.showSource()}>
               <span class="g-badge g-badge--source" aria-hidden="true" title={it().deviceName ?? undefined}>

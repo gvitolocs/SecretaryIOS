@@ -68,7 +68,16 @@ export interface GalleryItem {
   thumbhash: string | null;
   /** A Live Photo: the id of the other half (the hidden motion clip), else null. Listings return only the still. */
   livePair: string | null;
+  /** The stack this photo belongs to (a burst, RAW+JPEG or a set the owner stacked); null or absent for a single photo. */
+  stack?: StackRef | null;
   urls: GalleryUrls;
+}
+
+/** A photo's stack, as the item JSON carries it. Listings show only the primary, with the count of the whole stack. */
+export interface StackRef {
+  id: string;
+  count: number;
+  primary: boolean;
 }
 
 export type SourceKind = "iphone" | "ipad" | "android" | "mac" | "pc" | "backup" | "camera" | "other" | "chat" | "lucina";
@@ -183,6 +192,14 @@ function parseUrls(v: unknown): GalleryUrls {
   return out;
 }
 
+function parseStackRef(v: unknown): StackRef | null {
+  const r = obj(v);
+  const id = str(r.id);
+  const count = num(r.count);
+  if (!id || count === null || count < 2) return null;
+  return { id, count, primary: r.primary !== false };
+}
+
 export function parseItem(raw: unknown): GalleryItem | null {
   const r = obj(raw);
   const id = str(r.id);
@@ -216,6 +233,7 @@ export function parseItem(raw: unknown): GalleryItem | null {
     trashExpiresAt: str(r.trash_expires_at),
     thumbhash: str(r.thumbhash),
     livePair: str(r.live_pair),
+    stack: parseStackRef(r.stack),
     urls: parseUrls(r.urls),
   };
 }
@@ -1047,6 +1065,238 @@ export async function listGalleryPage(q: GalleryQuery): Promise<GalleryPage> {
   if (q.similarTo) return listSimilar(q.similarTo, q);
   if (q.smart && q.q?.trim()) return searchSmart(q);
   return listGallery(q);
+}
+
+// ---- duplicates and stacks (views/GalleryDuplicates.tsx, components/gallery/duplicates, components/gallery/stacks) ----------
+// The duplicate review: groups of the same picture found by the server (perceptual hashes), each with a suggested keeper.
+// Resolving hides the copies under the keeper (never deletes; `undoDuplicates` puts them back). Stacks collapse a set
+// (a burst, RAW+JPEG, or photos the owner picked) into one tile with a count; only the primary shows in listings.
+
+export type DuplicateClass = "exact" | "same_photo_reencoded" | "resized_copy";
+export type KeepReason = "highest_resolution" | "largest_file" | "most_metadata" | "device_original" | "first_added";
+
+export interface DuplicateMember {
+  item: GalleryItem;
+  /** How many metadata fields the copy has (date, place, camera, caption, albums, favourite…). */
+  metadata: number;
+  /** The server suggests keeping this one. */
+  keep: boolean;
+}
+
+export interface DuplicateGroup {
+  id: string;
+  class: DuplicateClass;
+  /** 0 to 1: how sure the server is that these are the same photo. */
+  score: number;
+  /** "Apply all suggestions" would resolve this group. */
+  applicable: boolean;
+  /** The suggested keeper's id; it is also the first member. */
+  keep: string;
+  reason: KeepReason;
+  members: DuplicateMember[];
+}
+
+export interface DuplicatesPage {
+  hashes: { photos: number; hashed: number; pending: number };
+  total: number;
+  applicable: number;
+  minScore: number;
+  reclaimableBytes: number;
+  stackSuggestions: number;
+  groups: DuplicateGroup[];
+}
+
+const CLASSES = new Set(["exact", "same_photo_reencoded", "resized_copy"]);
+const REASONS = new Set(["highest_resolution", "largest_file", "most_metadata", "device_original", "first_added"]);
+
+export function parseDuplicateGroup(raw: unknown): DuplicateGroup | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  const keep = str(r.keep);
+  if (!id || !keep || typeof r.class !== "string" || !CLASSES.has(r.class)) return null;
+  const members: DuplicateMember[] = [];
+  for (const m of Array.isArray(r.members) ? r.members : []) {
+    const item = parseItem(m);
+    if (!item) continue;
+    const review = obj(obj(m).review);
+    members.push({ item, metadata: Math.max(0, num(review.metadata) ?? 0), keep: review.keep === true || item.id === keep });
+  }
+  if (members.length < 2) return null;
+  return {
+    id,
+    class: r.class as DuplicateClass,
+    score: Math.min(1, Math.max(0, num(r.score) ?? 0)),
+    applicable: r.applicable === true,
+    keep,
+    reason: (typeof r.reason === "string" && REASONS.has(r.reason) ? r.reason : "largest_file") as KeepReason,
+    members,
+  };
+}
+
+export async function listDuplicates(opts: { limit?: number; offset?: number } = {}): Promise<DuplicatesPage> {
+  const params = new URLSearchParams({ status: "open", limit: String(Math.min(200, Math.max(1, opts.limit ?? 50))), offset: String(Math.max(0, opts.offset ?? 0)) });
+  const body = obj(await request<unknown>("GET", `/v1/media/duplicates?${params}`));
+  const hashes = obj(body.hashes);
+  return {
+    hashes: { photos: num(hashes.photos) ?? 0, hashed: num(hashes.hashed) ?? 0, pending: Math.max(0, num(hashes.pending) ?? 0) },
+    total: num(body.total) ?? 0,
+    applicable: num(body.applicable) ?? 0,
+    minScore: num(body.min_score) ?? 0.7,
+    reclaimableBytes: num(body.reclaimable_bytes) ?? 0,
+    stackSuggestions: num(body.stack_suggestions) ?? 0,
+    groups: (Array.isArray(body.groups) ? body.groups : []).map(parseDuplicateGroup).filter((g): g is DuplicateGroup => g !== null),
+  };
+}
+
+export interface Merged {
+  id: string;
+  into: string;
+}
+
+export interface ResolveResult {
+  merged: Merged[];
+  skipped: { id: string; reason: string }[];
+}
+
+function parseMerged(v: unknown): Merged[] {
+  return (Array.isArray(v) ? v : []).map((m) => ({ id: str(obj(m).id), into: str(obj(m).into) })).filter((m): m is Merged => m.id !== null && m.into !== null);
+}
+
+/** Hide the `drop` copies under `keep[0]` (undoable). Other `keep` ids stay, and are recorded as not duplicates of each other. */
+export async function resolveDuplicates(keep: string[], drop: string[]): Promise<ResolveResult> {
+  const body = obj(await request<unknown>("POST", "/v1/media/duplicates/resolve", { body: { keep, drop }, timeoutMs: 60_000 }));
+  return {
+    merged: parseMerged(body.merged),
+    skipped: (Array.isArray(body.skipped) ? body.skipped : []).map((s) => ({ id: str(obj(s).id) ?? "", reason: str(obj(s).reason) ?? "" })).filter((s) => s.id),
+  };
+}
+
+/** "Not duplicates": the server remembers the pairs so the group does not come back; `undo` forgets them again. */
+export async function dismissDuplicates(ids: string[], undo = false): Promise<void> {
+  await request<unknown>("POST", "/v1/media/duplicates/dismiss", { body: undo ? { ids, undo: true } : { ids } });
+}
+
+/** Put merged copies back as photos of their own. */
+export async function undoDuplicates(ids: string[]): Promise<{ undone: string[]; notMerged: string[] }> {
+  const body = obj(await request<unknown>("POST", "/v1/media/duplicates/undo", { body: { ids }, timeoutMs: 60_000 }));
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  return { undone: list(body.undone), notMerged: list(body.not_merged) };
+}
+
+export interface ResolveAllResult {
+  groups: number;
+  merged: Merged[];
+  skipped: Record<string, number>;
+}
+
+export async function resolveAllDuplicates(minScore?: number): Promise<ResolveAllResult> {
+  const body = obj(await request<unknown>("POST", "/v1/media/duplicates/resolve-all", { body: minScore === undefined ? {} : { min_score: minScore }, timeoutMs: 120_000 }));
+  const skipped: Record<string, number> = {};
+  for (const [reason, n] of Object.entries(obj(body.skipped))) if (typeof n === "number") skipped[reason] = n;
+  return { groups: num(body.groups) ?? 0, merged: parseMerged(body.merged_ids), skipped };
+}
+
+export type StackKind = "manual" | "burst" | "raw_jpeg";
+
+export interface Stack {
+  id: string;
+  kind: StackKind;
+  /** The photo that stands for the stack in listings. */
+  primary: string;
+  count: number;
+  createdAt: string;
+  /** Every member, the primary first, then by capture time. */
+  items: GalleryItem[];
+}
+
+const STACK_KINDS = new Set(["manual", "burst", "raw_jpeg"]);
+
+export function parseStack(raw: unknown): Stack | null {
+  const r = obj(raw);
+  const id = str(r.id);
+  const primary = str(r.primary);
+  if (!id || !primary) return null;
+  const items = (Array.isArray(r.items) ? r.items : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
+  return {
+    id,
+    kind: (typeof r.kind === "string" && STACK_KINDS.has(r.kind) ? r.kind : "manual") as StackKind,
+    primary,
+    count: num(r.count) ?? items.length,
+    createdAt: str(r.created_at) ?? "",
+    items,
+  };
+}
+
+function stackOf(body: unknown): Stack {
+  const stack = parseStack(obj(body).stack);
+  if (!stack) throw new Error("stack missing in the answer");
+  return stack;
+}
+
+export async function getStack(id: string): Promise<Stack> {
+  return stackOf(await request<unknown>("GET", `/v1/media/stacks/${enc(id)}`));
+}
+
+/** Stack 2 to 100 photos. A photo that is already in a stack, trashed or hidden refuses the whole request (409). */
+export async function createStack(ids: string[], opts: { primary?: string; kind?: StackKind } = {}): Promise<Stack> {
+  const body: Raw = { ids };
+  if (opts.primary) body.primary = opts.primary;
+  if (opts.kind) body.kind = opts.kind;
+  return stackOf(await request<unknown>("POST", "/v1/media/stacks", { body }));
+}
+
+export async function setStackPrimary(id: string, primary: string): Promise<Stack> {
+  return stackOf(await request<unknown>("PUT", `/v1/media/stacks/${enc(id)}`, { body: { primary } }));
+}
+
+/** Unstack: every member is a photo of its own again. */
+export async function deleteStack(id: string): Promise<string[]> {
+  const body = obj(await request<unknown>("DELETE", `/v1/media/stacks/${enc(id)}`));
+  return (Array.isArray(body.unstacked) ? body.unstacked : []).filter((x): x is string => typeof x === "string");
+}
+
+export type SuggestionEvidence = "time_and_look" | "time" | "name";
+
+export interface StackSuggestion {
+  id: string;
+  kind: StackKind;
+  evidence: SuggestionEvidence;
+  primary: string;
+  spanMs: number;
+  items: GalleryItem[];
+}
+
+export interface StackSuggestions {
+  total: number;
+  /** Photos whose perceptual hash is not computed yet: suggestions by look wait for them. */
+  hashesPending: number;
+  suggestions: StackSuggestion[];
+}
+
+export async function listStackSuggestions(limit = 50): Promise<StackSuggestions> {
+  const body = obj(await request<unknown>("GET", `/v1/media/stacks/suggestions?limit=${Math.min(200, Math.max(1, limit))}`));
+  const suggestions: StackSuggestion[] = [];
+  for (const s of Array.isArray(body.suggestions) ? body.suggestions : []) {
+    const r = obj(s);
+    const id = str(r.id);
+    const primary = str(r.primary);
+    const items = (Array.isArray(r.items) ? r.items : []).map(parseItem).filter((i): i is GalleryItem => i !== null);
+    if (!id || !primary || items.length < 2) continue;
+    suggestions.push({
+      id,
+      kind: (typeof r.kind === "string" && STACK_KINDS.has(r.kind) ? r.kind : "burst") as StackKind,
+      evidence: (r.evidence === "time" || r.evidence === "name" ? r.evidence : "time_and_look") as SuggestionEvidence,
+      primary,
+      spanMs: num(r.span_ms) ?? 0,
+      items,
+    });
+  }
+  return { total: num(body.total) ?? suggestions.length, hashesPending: num(body.hashes_pending) ?? 0, suggestions };
+}
+
+/** That exact set is not proposed again. */
+export async function dismissStackSuggestion(ids: string[]): Promise<void> {
+  await request<unknown>("POST", "/v1/media/stacks/suggestions/dismiss", { body: { ids } });
 }
 
 // ---- people (views/GalleryPeople.tsx, GalleryPerson via Gallery, components/gallery/people) --------------------------------

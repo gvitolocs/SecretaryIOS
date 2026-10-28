@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createResource, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { Portal } from "solid-js/web";
-import { batch, patchItem, previewUrl, type GalleryItem, type ItemEdit } from "../../api/gallery";
+import { batch, patchItem, previewUrl, type GalleryItem, type ItemEdit, type Stack } from "../../api/gallery";
 import { t } from "../../i18n";
 import { nextRotation } from "../../lib/galleryInfo";
 import { isLive } from "../../lib/galleryLive";
@@ -23,6 +23,7 @@ import { LiveVideo } from "./live/LiveVideo";
 import { SimilarIcon } from "./smart/SmartIcons";
 import { createViewerFaces } from "./faces/viewerFaces";
 import { ShareSheet } from "./share/ShareSheet";
+import { StackStrip } from "./stacks/StackStrip";
 import { AlbumIcon, DownloadIcon, HeartIcon, InfoIcon, RenameIcon, RestoreIcon, RotateIcon, TrashIcon } from "./ViewerIcons";
 
 export interface GalleryViewerProps {
@@ -40,6 +41,11 @@ export interface GalleryViewerProps {
   archive?: boolean;
   /** Show "Similar photos" (smart search is on): called with the photo to look for pictures like it. */
   onSimilar?: (item: GalleryItem) => void;
+  /**
+   * A photo of a stack changed the stack (made primary, unstacked, or the primary or a member was deleted): the list
+   * has to be loaded again. Without it a stacked photo still shows its strip, but the list is not refreshed.
+   */
+  onStackChanged?: (change: "primary" | "unstack" | "member") => void;
   /** A person in the info panel was chosen: open their page. */
   onPerson?: (id: string) => void;
   /** A face was assigned or unassigned (a person's photo count may have changed). */
@@ -76,7 +82,7 @@ function typing(target: EventTarget | null): boolean {
  * rename, add to album, download, share and delete (Delete / Backspace). Edits show at once and roll back with an
  * error when the server refuses; every saved change goes out through `onChanged` / `onRemoved`.
  */
-export function GalleryViewer(props: GalleryViewerProps) {
+function ViewerBody(props: GalleryViewerProps & { onStackPick?: (stack: Stack, id: string) => void }) {
   const [jxl] = createResource(supportsJxl);
   const [infoOpen, setInfoOpen] = createSignal(storedInfoOpen());
   const [dialog, setDialog] = createSignal<Dialog>(null);
@@ -495,6 +501,21 @@ export function GalleryViewer(props: GalleryViewerProps) {
           </Portal>
         )}
       </Show>
+      <Show when={current()?.stack}>
+        {(ref) => (
+          <Portal>
+            <div class="st-strip-wrap" classList={{ "st-strip-wrap--panel": infoOpen() }}>
+              <StackStrip
+                stackId={ref().id}
+                currentId={current()!.id}
+                jxl={jxl() ?? false}
+                onPick={(stack, id) => props.onStackPick?.(stack, id)}
+                onChanged={(change) => props.onStackChanged?.(change)}
+              />
+            </div>
+          </Portal>
+        )}
+      </Show>
       {faces.picker()}
       <Show when={editing() && current()}>{(item) => <PhotoEditor item={item()} onClose={() => setEditing(false)} onSaved={edited} />}</Show>
       <Show when={current()}>
@@ -519,5 +540,52 @@ export function GalleryViewer(props: GalleryViewerProps) {
         )}
       </Show>
     </>
+  );
+}
+
+/**
+ * The Gallery's viewer. A stacked photo shows its stack's strip; the stack's other photos are not in the list (only the
+ * primary is), so picking one opens the stack's own list in the same viewer until it is closed.
+ */
+export function GalleryViewer(props: GalleryViewerProps) {
+  const [inStack, setInStack] = createSignal<{ items: GalleryItem[]; index: number } | null>(null);
+
+  const pick = (stack: Stack, id: string) => {
+    const listed = inStack() ? -1 : props.items.findIndex((i) => i.id === id);
+    if (listed >= 0) {
+      props.onIndex(listed);
+      return;
+    }
+    const index = stack.items.findIndex((i) => i.id === id);
+    if (index >= 0) setInStack({ items: stack.items, index });
+  };
+
+  const changed = (item: GalleryItem) => {
+    setInStack((s) => (s ? { ...s, items: s.items.map((i) => (i.id === item.id ? item : i)) } : s));
+    props.onChanged(item);
+  };
+
+  const removed = (id: string) => {
+    const stacked = (inStack()?.items ?? props.items).some((i) => i.id === id && i.stack);
+    setInStack((s) => (s ? { items: s.items.filter((i) => i.id !== id), index: Math.max(0, Math.min(s.index, s.items.length - 2)) } : s));
+    props.onRemoved(id);
+    if (stacked) props.onStackChanged?.("member");
+  };
+
+  // One viewer throughout: the list and the index are the stack's while a member outside the list is shown.
+  return (
+    <ViewerBody
+      {...props}
+      items={inStack()?.items ?? props.items}
+      index={inStack()?.index ?? props.index}
+      onIndex={(index) => {
+        const s = inStack();
+        if (s) setInStack({ ...s, index });
+        else props.onIndex(index);
+      }}
+      onChanged={changed}
+      onRemoved={removed}
+      onStackPick={pick}
+    />
   );
 }
