@@ -38,11 +38,16 @@ final class GalleryStore {
             .appendingPathComponent("\(scope ?? "gallery")-listing.json")
     }
 
-    init(api: @escaping () -> GalleryAPI, scope: String? = nil, thisDevice: String? = nil) {
+    /// `items`: a fixed list for the viewer (the photos and videos of a Drive folder), not the saved listing.
+    init(api: @escaping () -> GalleryAPI, scope: String? = nil, thisDevice: String? = nil, items fixed: [GalleryItem]? = nil) {
         self.api = api
         self.scope = scope
         self.thisDevice = thisDevice
         filter = GalleryAPI.Filter(scope: scope, device: thisDevice)
+        if let fixed {
+            items = fixed
+            return
+        }
         // The saved listing can be thousands of items: decoded off the main thread, not at launch.
         let url = listingURL
         Task { [weak self] in
