@@ -84,6 +84,24 @@ enum Admit {
     Stored(Box<Notification>, bool),
 }
 
+/// Which devices a push goes to (by the device that registered the subscription).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Audience {
+    All,
+    Only(String),
+    Except(String),
+}
+
+impl Audience {
+    pub fn includes(&self, device_id: &str) -> bool {
+        match self {
+            Audience::All => true,
+            Audience::Only(d) => d == device_id,
+            Audience::Except(d) => d != device_id,
+        }
+    }
+}
+
 pub struct Notifier {
     pub cfg: NotifyConfig,
     pub inbox: Inbox,
@@ -204,6 +222,7 @@ impl Notifier {
             return Ok(Admit::Skip(Outcome::Present));
         }
         let quiet = settings.quiet_at(now)
+            && !category.always_on()
             && !(category == Category::Reminder && settings.reminders_bypass_quiet);
         let notification = Notification {
             id: model::new_id(now),
@@ -232,15 +251,25 @@ impl Notifier {
         Ok(Admit::Stored(Box::new(notification), !quiet))
     }
 
-    /// Store and (unless quiet) push one notification.
+    /// Store and (unless quiet) push one notification to every device.
     pub async fn publish(self: &Arc<Self>, n: NewNotification) -> io::Result<Outcome> {
+        self.publish_to(n, &Audience::All).await
+    }
+
+    /// [`Self::publish`], with the push going only to `audience` (the inbox
+    /// entry is the same either way).
+    pub async fn publish_to(
+        self: &Arc<Self>,
+        n: NewNotification,
+        audience: &Audience,
+    ) -> io::Result<Outcome> {
         let me = self.clone();
         let now = model::now_ms();
         match blocking(move || me.admit(n, now)).await? {
             Admit::Skip(o) => Ok(o),
             Admit::Stored(notification, push) => {
                 let pushed = if push {
-                    let targets = self.targets_for(&notification, now);
+                    let targets = self.targets_for_audience(&notification, now, audience);
                     let count = targets.len();
                     if count > 0 {
                         let opts = PushOpts::for_notification(&notification);
@@ -263,8 +292,31 @@ impl Notifier {
         settings.allows(c, &s.id) && settings.allows(c, &s.device_id)
     }
 
+    /// Push an already stored notification to `audience` (the escalation of
+    /// an approval to the devices that were not asked first). Returns how
+    /// many subscriptions were sent to.
+    pub async fn push_stored(self: &Arc<Self>, n: &Notification, audience: &Audience) -> usize {
+        let targets = self.targets_for_audience(n, model::now_ms(), audience);
+        let count = targets.len();
+        if count > 0 {
+            let opts = PushOpts::for_notification(n);
+            push::deliver_all(self.clone(), targets, opts).await;
+        }
+        count
+    }
+
     /// The subscriptions this notification goes to, each with its payload.
     pub fn targets_for(&self, n: &Notification, now: i64) -> Vec<(Subscription, Payload)> {
+        self.targets_for_audience(n, now, &Audience::All)
+    }
+
+    /// [`Self::targets_for`], narrowed to `audience`.
+    pub fn targets_for_audience(
+        &self,
+        n: &Notification,
+        now: i64,
+        audience: &Audience,
+    ) -> Vec<(Subscription, Payload)> {
         let settings = self.settings.get();
         let unread = self.inbox.unread();
         let burst = if n.category == Category::LucinaMessage {
@@ -276,6 +328,7 @@ impl Notifier {
         self.pusher
             .list()
             .into_iter()
+            .filter(|s| audience.includes(&s.device_id))
             .filter(|s| Self::sub_allows(&settings, n.category, s))
             .map(|s| {
                 let l = text::lang(s.lang.as_deref().or(Some(settings.language.as_str())));
@@ -289,6 +342,15 @@ impl Notifier {
                 } else {
                     text::hidden_body(l).to_owned()
                 };
+                let approval = (n.category == Category::Approval)
+                    .then(|| {
+                        let d = n.data.as_ref()?;
+                        Some((
+                            d["approvalId"].as_str()?.to_owned(),
+                            d["sensitive"].as_bool().unwrap_or(false),
+                        ))
+                    })
+                    .flatten();
                 let payload = Payload {
                     id: Some(n.id.clone()),
                     category: n.category.as_str().to_owned(),
@@ -299,6 +361,9 @@ impl Notifier {
                     ts: n.ts,
                     unread,
                     digest: false,
+                    url: approval.as_ref().map(|_| n.route.clone()),
+                    sensitive: approval.as_ref().map(|(_, s)| *s),
+                    approval_id: approval.map(|(id, _)| id),
                 };
                 (s, payload)
             })
@@ -456,6 +521,9 @@ impl Notifier {
                 ts: now,
                 unread,
                 digest: true,
+                url: None,
+                approval_id: None,
+                sensitive: None,
             };
             targets.push((s, payload));
         }
@@ -490,6 +558,9 @@ impl Notifier {
                     ts: now,
                     unread,
                     digest: false,
+                    url: None,
+                    approval_id: None,
+                    sensitive: None,
                 };
                 (s, payload)
             })

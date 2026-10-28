@@ -119,6 +119,8 @@ pub struct Config {
     pub public_url: String,
     /// How long a QR sign-in request waits for a phone (tests shorten it).
     pub qr_login_ttl: Duration,
+    /// Owner approvals: TTLs, escalation, rate limits (tests shorten them).
+    pub approvals: crate::approvals::ApprovalsConfig,
     pub health_timeout: Duration,
     pub health_ttl: Duration,
     pub notify: crate::notify::NotifyConfig,
@@ -185,6 +187,7 @@ impl Config {
             login_rate_per_minute: 5,
             public_url: DEFAULT_PUBLIC_URL.into(),
             qr_login_ttl: crate::qr_login::TTL,
+            approvals: crate::approvals::ApprovalsConfig::default(),
             health_timeout: Duration::from_secs(3),
             health_ttl: Duration::from_secs(10),
             notify: crate::notify::NotifyConfig::default(),

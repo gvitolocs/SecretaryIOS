@@ -285,7 +285,11 @@ fn account_locked(wait: std::time::Duration) -> ApiError {
 
 /// Check the owner's email + password off the async runtime.
 /// `Ok(())`, 401 `invalid_credentials` or 429 `account_locked`.
-async fn check_password(st: &AppState, email: String, password: String) -> Result<(), ApiError> {
+pub(crate) async fn check_password(
+    st: &AppState,
+    email: String,
+    password: String,
+) -> Result<(), ApiError> {
     let store = st.owner.clone();
     let verdict = tokio::task::spawn_blocking(move || store.verify(&email, &password))
         .await
