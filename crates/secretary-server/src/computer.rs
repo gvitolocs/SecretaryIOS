@@ -20,6 +20,10 @@
 //! - `POST /v1/computer/view/{id}/ticket` `{mode?}`: the same view, re-issued
 //!   (a renewal, or the watch↔control switch of a take-over) so the running
 //!   viewer takes the new ticket instead of the page reloading it
+//! - `POST|GET /v1/computer/files?sandbox=&name=|path=`: a file to her desktop
+//!   (raw body, 100 MiB) or one copied there, streamed (Lucina's `computer_files`)
+//! - `GET|POST /v1/computer/clipboard/files`: the files on her clipboard, or
+//!   `{sandbox, paths}` puts uploaded ones there
 //! - `GET  /v1/computer/viewer-assets/{version}/{file}`: Cua's viewer files and
 //!   our shim, immutable and ticket-free (the view itself keeps its ticket)
 //! - `ANY  /v1/computer/view/{viewId}/{*rest}` the live view itself, **without**
@@ -30,12 +34,13 @@
 //!   Cookies and `Authorization` are never forwarded, and every response is
 //!   served under a CSP `sandbox`, so Cua's viewer runs in an opaque origin.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, Request, State};
+use axum::extract::{ConnectInfo, OriginalUri, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -90,7 +95,12 @@ pub(crate) fn caller(headers: &HeaderMap) -> String {
 
 /// The device label Lucina logs: the device's own name, plus the MCP client.
 pub(crate) fn device_label(ident: &Identity, caller: &str) -> String {
-    let name: String = ident.device_name.chars().filter(|c| !c.is_control()).take(40).collect();
+    let name: String = ident
+        .device_name
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(40)
+        .collect();
     if caller == "app" {
         name
     } else {
@@ -100,20 +110,35 @@ pub(crate) fn device_label(ident: &Identity, caller: &str) -> String {
 
 async fn forward(st: &AppState, call: Call) -> ApiResult {
     let (status, data) = st.lucina()?.call_with_status::<Value>(&call).await?;
-    Ok((StatusCode::from_u16(status).unwrap_or(StatusCode::OK), Json(data)))
+    Ok((
+        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+        Json(data),
+    ))
 }
 
 fn sandbox_of(body: &Value) -> Result<&str, ApiError> {
-    match body.get("sandbox").and_then(Value::as_str).unwrap_or("workspace") {
+    match body
+        .get("sandbox")
+        .and_then(Value::as_str)
+        .unwrap_or("workspace")
+    {
         s @ ("workspace" | "android") => Ok(s),
-        _ => Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "sandbox: must be workspace or android")),
+        _ => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "sandbox: must be workspace or android",
+        )),
     }
 }
 
 fn object(body: Value) -> Result<serde_json::Map<String, Value>, ApiError> {
     match body {
         Value::Object(m) => Ok(m),
-        _ => Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "body must be a JSON object")),
+        _ => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "body must be a JSON object",
+        )),
     }
 }
 
@@ -126,27 +151,54 @@ async fn status(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     forward(&st, Call::computer_status().with_caller(&caller(&headers))).await
 }
 
-async fn task(State(st): State<AppState>, headers: HeaderMap, JsonBody(body): JsonBody<Value>) -> ApiResult {
+async fn task(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
     let task = body.get("task").and_then(Value::as_str).unwrap_or("");
-    forward(&st, Call::computer_task(task)?.with_caller(&caller(&headers))).await
+    forward(
+        &st,
+        Call::computer_task(task)?.with_caller(&caller(&headers)),
+    )
+    .await
 }
 
 async fn job(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
     forward(&st, Call::computer_job(&id)?.with_caller(&caller(&headers))).await
 }
 
-async fn job_cancel(State(st): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> ApiResult {
-    forward(&st, Call::computer_job_cancel(&id)?.with_caller(&caller(&headers))).await
+async fn job_cancel(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    forward(
+        &st,
+        Call::computer_job_cancel(&id)?.with_caller(&caller(&headers)),
+    )
+    .await
 }
 
-async fn call(State(st): State<AppState>, headers: HeaderMap, JsonBody(body): JsonBody<Value>) -> ApiResult {
+async fn call(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    JsonBody(body): JsonBody<Value>,
+) -> ApiResult {
     let mut m = object(body)?;
     let sandbox = sandbox_of(&Value::Object(m.clone()))?.to_owned();
     m.insert("sandbox".into(), json!(sandbox));
-    forward(&st, Call::computer_call(Value::Object(m)).with_caller(&caller(&headers))).await
+    forward(
+        &st,
+        Call::computer_call(Value::Object(m)).with_caller(&caller(&headers)),
+    )
+    .await
 }
 
-async fn screenshot(State(st): State<AppState>, QueryArgs(q): QueryArgs<SandboxQuery>) -> Result<Response, ApiError> {
+async fn screenshot(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<SandboxQuery>,
+) -> Result<Response, ApiError> {
     let call = Call::computer_screenshot(q.sandbox.as_deref().unwrap_or("workspace"))?;
     let (content_type, body) = st.lucina()?.bytes(&call).await?;
     Ok((
@@ -159,8 +211,15 @@ async fn screenshot(State(st): State<AppState>, QueryArgs(q): QueryArgs<SandboxQ
         .into_response())
 }
 
-async fn control_state(State(st): State<AppState>, QueryArgs(q): QueryArgs<SandboxQuery>) -> ApiResult {
-    forward(&st, Call::computer_control_state(q.sandbox.as_deref().unwrap_or("workspace"))?).await
+async fn control_state(
+    State(st): State<AppState>,
+    QueryArgs(q): QueryArgs<SandboxQuery>,
+) -> ApiResult {
+    forward(
+        &st,
+        Call::computer_control_state(q.sandbox.as_deref().unwrap_or("workspace"))?,
+    )
+    .await
 }
 
 async fn control(
@@ -172,15 +231,24 @@ async fn control(
     let sandbox = sandbox_of(&body)?.to_owned();
     let action = body.get("action").and_then(Value::as_str).unwrap_or("");
     if !matches!(action, "take" | "release" | "heartbeat") {
-        return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "action: must be take, release or heartbeat"));
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "action: must be take, release or heartbeat",
+        ));
     }
     let who = caller(&headers);
-    let call = Call::computer_control(json!({
+    let mut body_out = json!({
         "sandbox": sandbox,
         "action": action,
         "device": device_label(&ident, &who),
-    }));
-    forward(&st, call.with_caller(&who)).await
+    });
+    // A heartbeat says whether the owner gave real input since the last one: Lucina gives
+    // the desktop back after two idle minutes (an open page alone never keeps it).
+    if let Some(active) = body.get("active").and_then(Value::as_bool) {
+        body_out["active"] = json!(active);
+    }
+    forward(&st, Call::computer_control(body_out).with_caller(&who)).await
 }
 
 async fn input(
@@ -220,8 +288,14 @@ pub(crate) async fn lan_door(st: &AppState) -> Option<LanDoor> {
         }
     }
     let data: Value = st.lucina().ok()?.call(&Call::computer_lan()).await.ok()?;
-    let door = match (data.get("url").and_then(Value::as_str), data.get("publicIp").and_then(Value::as_str)) {
-        (Some(url), Some(ip)) if url.starts_with("https://") => Some(LanDoor { url: url.to_owned(), public_ip: ip.to_owned() }),
+    let door = match (
+        data.get("url").and_then(Value::as_str),
+        data.get("publicIp").and_then(Value::as_str),
+    ) {
+        (Some(url), Some(ip)) if url.starts_with("https://") => Some(LanDoor {
+            url: url.to_owned(),
+            public_ip: ip.to_owned(),
+        }),
         _ => None,
     };
     *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), door.clone()));
@@ -245,7 +319,13 @@ async fn view(
     let sandbox = sandbox_of(&body)?.to_owned();
     let mode = match body.get("mode").and_then(Value::as_str).unwrap_or("watch") {
         m @ ("watch" | "control") => m,
-        _ => return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_request", "mode: must be watch or control")),
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "mode: must be watch or control",
+            ))
+        }
     };
     let who = caller(&headers);
     let call = Call::computer_view(json!({
@@ -257,13 +337,21 @@ async fn view(
     let view_id = data.get("viewId").and_then(Value::as_str).unwrap_or("");
     let ticket = data.get("ticket").and_then(Value::as_str).unwrap_or("");
     if !valid_view_id(view_id) || ticket.is_empty() || ticket.contains(['#', '&', ' ']) {
-        return Err(ApiError::new(StatusCode::BAD_GATEWAY, "lucina_error", "Lucina sent no usable view"));
+        return Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "lucina_error",
+            "Lucina sent no usable view",
+        ));
     }
     // Cua's viewer reads these from the fragment; audio stays off (the Android
     // sandbox has no sound server, and the owner watches silently).
     let clipboard = if mode == "control" { "on" } else { "off" };
     let client_ip = crate::auth::client_ip(&st, &headers, peer.map(|Extension(c)| c.0));
-    let lan = if who == "app" { lan_offer(&who, &client_ip, lan_door(&st).await.as_ref()) } else { None };
+    let lan = if who == "app" {
+        lan_offer(&who, &client_ip, lan_door(&st).await.as_ref())
+    } else {
+        None
+    };
     Ok((
         status,
         Json(json!({
@@ -294,13 +382,18 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/computer/input", post(input))
         .route("/v1/computer/view", post(view))
         .route("/v1/computer/view/{view_id}/ticket", post(view_ticket))
+        .route("/v1/computer/files", get(files).post(files))
+        .route("/v1/computer/clipboard/files", get(files).post(files))
 }
 
 /// The live view (capability URL; see the module doc).
 pub fn view_routes() -> Router<AppState> {
     Router::new()
         .route("/v1/computer/view/{view_id}/{*rest}", any(view_proxy))
-        .route("/v1/computer/viewer-assets/{version}/{file}", get(viewer_asset))
+        .route(
+            "/v1/computer/viewer-assets/{version}/{file}",
+            get(viewer_asset),
+        )
 }
 
 /// The files `viewer-assets` may serve: Cua's four and our shim.
@@ -327,7 +420,8 @@ async fn viewer_asset(
         return ApiError::new(StatusCode::NOT_FOUND, "not_found", "").into_response();
     }
     let Some((addr, auth)) = st.lucina.as_ref().and_then(|l| l.passthrough()) else {
-        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "lucina_not_configured", "").into_response();
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "lucina_not_configured", "")
+            .into_response();
     };
     let path = format!("/api/secretary/computer/viewer-assets/{version}/{file}");
     let mut resp = match passthrough_client()
@@ -342,7 +436,10 @@ async fn viewer_asset(
             for (k, v) in up.headers() {
                 if matches!(
                     k.as_str(),
-                    "content-type" | "cache-control" | "content-length" | "access-control-allow-origin"
+                    "content-type"
+                        | "cache-control"
+                        | "content-length"
+                        | "access-control-allow-origin"
                 ) {
                     headers.append(k.clone(), v.clone());
                 }
@@ -385,7 +482,10 @@ async fn view_ticket(
 }
 
 fn valid_view_id(id: &str) -> bool {
-    id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 fn valid_rest(rest: &str) -> bool {
@@ -398,8 +498,14 @@ fn valid_rest(rest: &str) -> bool {
 }
 
 fn harden(h: &mut HeaderMap) {
-    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(VIEW_CSP));
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(VIEW_CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
@@ -439,7 +545,8 @@ async fn view_proxy(
         return ApiError::new(StatusCode::NOT_FOUND, "not_found", "").into_response();
     }
     let Some((addr, auth)) = st.lucina.as_ref().and_then(|l| l.passthrough()) else {
-        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "lucina_not_configured", "").into_response();
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "lucina_not_configured", "")
+            .into_response();
     };
     let upgrade = req
         .headers()
@@ -463,9 +570,16 @@ async fn http(addr: &str, auth: &str, path: &str, req: Request) -> Response {
         url.push('?');
         url.push_str(q);
     }
-    let body = match axum::body::to_bytes(body, VIEW_BODY_LIMIT).await {
+    let limit = if path.ends_with("/cua.env.v1.ComputerService/SetClipboard") {
+        CLIP_BODY_LIMIT
+    } else {
+        VIEW_BODY_LIMIT
+    };
+    let body = match axum::body::to_bytes(body, limit).await {
         Ok(b) => b,
-        Err(_) => return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "").into_response(),
+        Err(_) => {
+            return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "").into_response()
+        }
     };
     let mut rb = passthrough_client()
         .request(parts.method.clone(), &url)
@@ -480,15 +594,18 @@ async fn http(addr: &str, auth: &str, path: &str, req: Request) -> Response {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e.without_url(), "computer view: Lucina unreachable");
-            return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "").into_response();
+            return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "")
+                .into_response();
         }
     };
     let status = up.status();
     let mut headers = HeaderMap::new();
     for (k, v) in up.headers() {
         let n = k.as_str();
-        if matches!(n, "content-type" | "content-encoding" | "etag" | "last-modified")
-            || n.starts_with("grpc-")
+        if matches!(
+            n,
+            "content-type" | "content-encoding" | "etag" | "last-modified"
+        ) || n.starts_with("grpc-")
             || n.starts_with("connect-")
             || n.starts_with("access-control-")
         {
@@ -558,9 +675,13 @@ pub(crate) async fn socket(addr: &str, auth: &str, path: &str, mut req: Request)
         }
     }
     head.push_str("\r\n");
-    let mut upstream = match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await {
+    let mut upstream = match tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+        .await
+    {
         Ok(Ok(s)) => s,
-        _ => return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "").into_response(),
+        _ => {
+            return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "").into_response()
+        }
     };
     let _ = upstream.set_nodelay(true);
     if upstream.write_all(head.as_bytes()).await.is_err() {
@@ -569,7 +690,10 @@ pub(crate) async fn socket(addr: &str, auth: &str, path: &str, mut req: Request)
     let (status, up_headers, leftover) =
         match tokio::time::timeout(Duration::from_secs(15), read_head(&mut upstream)).await {
             Ok(Ok(h)) => h,
-            _ => return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "").into_response(),
+            _ => {
+                return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "")
+                    .into_response()
+            }
         };
     if status != 101 {
         // 410 view_ended / 403 / 502 from Lucina: pass the status on.
@@ -582,7 +706,11 @@ pub(crate) async fn socket(addr: &str, auth: &str, path: &str, mut req: Request)
     for (k, v) in &up_headers {
         if matches!(
             k.as_str(),
-            "upgrade" | "connection" | "sec-websocket-accept" | "sec-websocket-protocol" | "sec-websocket-extensions"
+            "upgrade"
+                | "connection"
+                | "sec-websocket-accept"
+                | "sec-websocket-protocol"
+                | "sec-websocket-extensions"
         ) {
             if let (Ok(n), Ok(v)) = (HeaderName::try_from(k.as_str()), HeaderValue::from_str(v)) {
                 resp.headers_mut().insert(n, v);
@@ -605,6 +733,113 @@ pub(crate) async fn socket(addr: &str, auth: &str, path: &str, mut req: Request)
     resp
 }
 
+/// Largest body the live view's `SetClipboard` may carry (a PNG up to 16 MiB);
+/// every other viewer RPC stays under [`VIEW_BODY_LIMIT`].
+const CLIP_BODY_LIMIT: usize = 18 * 1024 * 1024;
+
+/// Query keys the file routes pass on to Lucina (the device comes from the login).
+const FILE_QUERY: [&str; 3] = ["sandbox", "name", "path"];
+
+fn files_client() -> &'static reqwest::Client {
+    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .http1_only()
+            .no_gzip()
+            .connect_timeout(Duration::from_secs(5))
+            // No total timeout: 100 MiB over a phone link takes a while; a stall still ends it.
+            .read_timeout(Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("files proxy client")
+    })
+}
+
+/// `POST|GET /v1/computer/files` and `GET|POST /v1/computer/clipboard/files`:
+/// streamed to and from Lucina's `computer_files`, which checks the owner's
+/// lease, names, paths and the 100 MiB cap. The audit device is this login's.
+async fn files(
+    State(st): State<AppState>,
+    Extension(ident): Extension<Identity>,
+    OriginalUri(uri): OriginalUri,
+    Query(q): Query<HashMap<String, String>>,
+    req: Request,
+) -> Response {
+    let Some((addr, auth)) = st.lucina.as_ref().and_then(|l| l.passthrough()) else {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "lucina_not_configured", "")
+            .into_response();
+    };
+    let lucina_path = if uri.path().ends_with("/clipboard/files") {
+        "/api/secretary/computer/clipboard/files"
+    } else {
+        "/api/secretary/computer/files"
+    };
+    let who = caller(req.headers());
+    let mut query: Vec<(&str, String)> = FILE_QUERY
+        .iter()
+        .filter_map(|k| q.get(*k).map(|v| (*k, v.clone())))
+        .collect();
+    query.push(("device", device_label(&ident, &who)));
+    let (parts, body) = req.into_parts();
+    let mut rb = files_client()
+        .request(parts.method.clone(), format!("http://{addr}{lucina_path}"))
+        .query(&query)
+        .header(header::AUTHORIZATION, auth)
+        .header("x-lucina-caller", who)
+        .body(reqwest::Body::wrap_stream(body.into_data_stream()));
+    for name in [header::CONTENT_TYPE, header::CONTENT_LENGTH] {
+        if let Some(v) = parts.headers.get(&name) {
+            rb = rb.header(name, v);
+        }
+    }
+    let up = match rb.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e.without_url(), "computer files: Lucina unreachable");
+            return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_unreachable", "")
+                .into_response();
+        }
+    };
+    let status = up.status();
+    let json = up
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if json {
+        // Answers and errors: Lucina's envelope, unwrapped like every other call.
+        let bytes = match up.bytes().await {
+            Ok(b) if b.len() <= 1024 * 1024 => b,
+            _ => return ApiError::new(StatusCode::BAD_GATEWAY, "lucina_error", "").into_response(),
+        };
+        return match secretary_core::client::decode_envelope(status.as_u16(), &bytes) {
+            Ok(data) => (status, Json(data)).into_response(),
+            Err(e) => ApiError::from(e).into_response(),
+        };
+    }
+    // A download: streamed.
+    let mut headers = HeaderMap::new();
+    for name in [
+        header::CONTENT_TYPE,
+        header::CONTENT_LENGTH,
+        header::CONTENT_DISPOSITION,
+    ] {
+        if let Some(v) = up.headers().get(&name) {
+            headers.insert(name, v.clone());
+        }
+    }
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    let mut resp = Response::new(Body::from_stream(up.bytes_stream()));
+    *resp.status_mut() = status;
+    *resp.headers_mut() = headers;
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,31 +854,66 @@ mod tests {
         assert!(valid_rest("viewer/viewer.js"));
         assert!(valid_rest("cua.env.v1.StreamService/OpenMedia"));
         assert!(valid_rest("media"));
-        for bad in ["", "../x", "viewer/../../x", "a b", "a%2e", "x?y", &"a".repeat(129)] {
+        for bad in [
+            "",
+            "../x",
+            "viewer/../../x",
+            "a b",
+            "a%2e",
+            "x?y",
+            &"a".repeat(129),
+        ] {
             assert!(!valid_rest(bad), "{bad}");
         }
     }
 
     #[test]
     fn the_home_network_door_is_offered_to_the_owner_at_home_only() {
-        let door = LanDoor { url: "https://lan.getsecretary.tech:9443".into(), public_ip: "84.238.78.250".into() };
-        assert_eq!(lan_offer("app", "84.238.78.250", Some(&door)), Some(json!({"url": "https://lan.getsecretary.tech:9443"})));
-        assert_eq!(lan_offer("app", "203.0.113.9", Some(&door)), None, "away from home");
-        assert_eq!(lan_offer("mcp:claude", "84.238.78.250", Some(&door)), None, "agents never get it");
-        assert_eq!(lan_offer("app", "84.238.78.250", None), None, "no door set up");
+        let door = LanDoor {
+            url: "https://lan.getsecretary.tech:9443".into(),
+            public_ip: "84.238.78.250".into(),
+        };
+        assert_eq!(
+            lan_offer("app", "84.238.78.250", Some(&door)),
+            Some(json!({"url": "https://lan.getsecretary.tech:9443"}))
+        );
+        assert_eq!(
+            lan_offer("app", "203.0.113.9", Some(&door)),
+            None,
+            "away from home"
+        );
+        assert_eq!(
+            lan_offer("mcp:claude", "84.238.78.250", Some(&door)),
+            None,
+            "agents never get it"
+        );
+        assert_eq!(
+            lan_offer("app", "84.238.78.250", None),
+            None,
+            "no door set up"
+        );
         assert_eq!(lan_offer("app", "unknown", Some(&door)), None);
     }
 
     #[test]
     fn only_versioned_viewer_assets_are_cacheable() {
         assert!(valid_version("0123456789abcdef"));
-        for bad in ["", "0123456789abcde", "0123456789abcdefa", "0123456789abcdeg", "../../../../etc"] {
+        for bad in [
+            "",
+            "0123456789abcde",
+            "0123456789abcdefa",
+            "0123456789abcdeg",
+            "../../../../etc",
+        ] {
             assert!(!valid_version(bad), "{bad}");
         }
         let year = HeaderValue::from_static("public, max-age=31536000, immutable");
         // The view: no-store, whatever the sandbox said.
         let mut h = HeaderMap::new();
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
         harden(&mut h);
         assert_eq!(h[header::CACHE_CONTROL], "no-store");
         assert_eq!(h[header::CONTENT_SECURITY_POLICY], VIEW_CSP);
@@ -657,7 +927,10 @@ mod tests {
         harden_asset(StatusCode::NOT_FOUND, &mut h);
         assert_eq!(h[header::CACHE_CONTROL], "no-store");
         let mut h = HeaderMap::new();
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
         harden_asset(StatusCode::OK, &mut h);
         assert_eq!(h[header::CACHE_CONTROL], "no-store");
     }

@@ -74,6 +74,10 @@ const RECONNECT_SECS = [1, 2, 4, 8];
 const READY_MS = 6_000;
 /** How long a notice stays over the stream in focus mode. */
 const NOTICE_FULL_MS = 6_000;
+/** Driving without real input this long gives the desktop back (Lucina's OWNER_IDLE too). */
+const IDLE_MS = 120_000;
+/** A page hidden this long (another tab, the lid closed) gives the desktop back. */
+const HIDDEN_MS = 60_000;
 // `key`/`modifiers` are the driver's (X11) names for the screenshot mode; `live` is the same chord in
 // the Cua viewer's own key names, sent over the live socket like a touch.
 const KEYS: { label: string; key: string; modifiers?: ("ctrl" | "shift" | "alt" | "super")[]; live: string[] }[] = [
@@ -310,6 +314,8 @@ export default function ComputerView() {
   /** The viewer failed or never came up: a fresh view is minted after 1, 2, 4, then every 8 s. */
   /** Cua's own toolbar buttons, mirrored into the drive bar in focus mode (the viewer reports them). */
   const [viewerButtons, setViewerButtons] = createSignal<ViewerButton[]>([]);
+  /** The desktop went back to Lucina because nobody touched it: a toast with one click back. */
+  const [idleOut, setIdleOut] = createSignal(false);
   /** Files just copied on her desktop, offered as downloads. */
   const [offer, setOffer] = createSignal<CopiedFile[] | null>(null);
   const [reconnecting, setReconnecting] = createSignal(false);
@@ -326,8 +332,6 @@ export default function ComputerView() {
   let controlGen = 0;
   /** Full screen ended while a takeover was still in flight: give back as soon as it lands. */
   let giveBackWhenDone = false;
-  /** Control was taken from full screen (focus mode): leaving it gives control back. */
-  let takenInFull = false;
   const coarse = () => typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)").matches;
   let pinchBase: { scale: number; dx: number; dy: number } | null = null;
 
@@ -376,9 +380,14 @@ export default function ComputerView() {
     }
   };
 
+  /** The page is gone: a give-back, renewal or retry still in flight must not open a view. */
+  let disposed = false;
+  onCleanup(() => (disposed = true));
+
   /** Mint a view for the current sandbox and mode; renew it a couple of minutes before it expires. */
   const openView = async (kind: "watch" | "control") => {
     window.clearTimeout(renewTimer);
+    if (disposed) return;
     if (mode() !== "live" || desk()) {
       setView(null);
       return;
@@ -409,6 +418,7 @@ export default function ComputerView() {
   /** The viewer is down (an error page in the frame, a failed stream, Lucina away): retry with backoff. */
   const reconnect = () => {
     window.clearTimeout(readyTimer);
+    if (disposed) return;
     if (retryTimer !== undefined || mode() !== "live" || desk()) return;
     setReconnecting(true);
     const delay = (RECONNECT_SECS[Math.min(retries, RECONNECT_SECS.length - 1)] ?? 8) * 1000;
@@ -473,11 +483,38 @@ export default function ComputerView() {
   /** The lease ended elsewhere (expired, released from another device). */
   const lost = () => {
     controlGen += 1;
-    takenInFull = false;
     setMine(false);
     setKeyboard(false);
     setNotice(t("computer.takeoverEnded"));
     void refreshTicket("watch");
+  };
+
+  // ---------------------------------------------------------------- idle
+
+  /** The owner's last real input (keys, mouse, touch), here or in the viewer frame. */
+  let lastInput = Date.now();
+  const touched = () => {
+    lastInput = Date.now();
+    setIdleOut(false);
+  };
+  /** Whether there was real input since the last heartbeat, on a page the owner can see. */
+  const activeNow = () => Date.now() - lastInput < HEARTBEAT_MS + 1_000 && !document.hidden;
+
+  /** Lucina has the desktop again because nobody touched it: say so, with one click back. */
+  const wentIdle = () => {
+    controlGen += 1;
+    setMine(false);
+    setKeyboard(false);
+    setTools(false);
+    setNotice(null);
+    setIdleOut(true);
+    void refreshTicket("watch");
+  };
+
+  /** Give the desktop back now (leaving focus mode, a hidden page, idle), even mid-takeover. */
+  const giveBackSoon = () => {
+    if (busy()) giveBackWhenDone = true;
+    else if (mine()) void giveBack();
   };
 
   /** Whether taking over needs a "yes" first (Lucina or an agent is mid-task), and what it says. */
@@ -513,7 +550,7 @@ export default function ComputerView() {
       const r = await computerApi.take(sandbox());
       setState(r.state);
       setMine(true);
-      takenInFull = full() && hasFocusMode();
+      touched(); // taking over is input: the idle clock starts now
       setNotice(r.stoppedTask ? t("computer.stoppedTask", { what: r.stoppedTask }) : null);
       await refreshTicket("control");
       if (pass) post({ type: "lucina:pass", ...pass });
@@ -548,7 +585,6 @@ export default function ComputerView() {
     setKeyboard(false);
     setTools(false);
     controlGen += 1;
-    takenInFull = false;
     try {
       // Switch the running viewer to watching first: a control view dies with the lease, so after
       // the release there would be nothing left to re-issue and the viewer would have to reload.
@@ -728,11 +764,8 @@ export default function ComputerView() {
     setFull(false);
     setTools(false);
     setConfirming(null);
-    // Taken from focus mode in the Mac app: leaving it gives the desktop back, like closing the tab.
-    if (takenInFull && mine()) {
-      if (busy()) giveBackWhenDone = true;
-      else void giveBack();
-    }
+    // Leaving focus mode gives the desktop back, like closing the tab (however it was taken).
+    if (mine() || busy()) giveBackSoon();
   };
 
   const toggleFull = () => (full() ? exitFull() : enterFull());
@@ -860,18 +893,50 @@ export default function ComputerView() {
     }, SHOT_POLL_MS);
     // Files copied in her file manager while this page drives: offered as downloads.
     const copied = watchCopiedFiles(sandbox, () => mine() && mode() === "live" && !desk(), setOffer);
+    // While driving: renew the lease, saying whether the owner touched anything. Two minutes
+    // without real input give the desktop back (here, and on Lucina's side if this page is gone).
     const beat = window.setInterval(() => {
       if (!mine()) return;
-      computerApi.heartbeat(sandbox()).catch((e) => {
-        if (toApiError(e).code === "not_driving") lost();
+      if (Date.now() - lastInput >= IDLE_MS) {
+        giveBackSoon();
+        setIdleOut(true);
+        return;
+      }
+      computerApi.heartbeat(sandbox(), activeNow()).catch((e) => {
+        const code = toApiError(e).code;
+        if (code === "owner_idle") wentIdle();
+        else if (code === "not_driving") lost();
       });
     }, HEARTBEAT_MS);
+    // Real input on this page (the stream's own arrives as `lucina:active`).
+    const onInput = () => {
+      if (mine()) touched();
+    };
+    const inputs = ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"] as const;
+    for (const ev of inputs) window.addEventListener(ev, onInput, { capture: true, passive: true });
+    // A page the owner cannot see for a minute (another tab, a closed lid) gives the desktop back.
+    let hiddenAt: number | null = null;
+    let hiddenTimer: number | undefined;
+    const onVisibility = () => {
+      window.clearTimeout(hiddenTimer);
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        if (mine()) hiddenTimer = window.setTimeout(giveBackSoon, HIDDEN_MS);
+        return;
+      }
+      // Back from sleep: timers did not run while it slept.
+      if (hiddenAt !== null && Date.now() - hiddenAt >= HIDDEN_MS && mine()) giveBackSoon();
+      hiddenAt = null;
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     // The first frame, from the viewer itself (its own status dot).
     const onMessage = (e: MessageEvent) => {
       // Only the viewer frame speaks this protocol (its origin is opaque, so check the window).
       if (!frame || e.source !== frame.contentWindow) return;
       const data = e.data as { type?: string; state?: string } | null;
       if (!data || typeof data.type !== "string") return;
+      // Real input in the stream (keys, mouse, touch), reported by the viewer frame.
+      if (data.type === "lucina:active" && mine()) touched();
       if (data.type === "lucina:ready") {
         window.clearTimeout(readyTimer);
         post({ type: "lucina:chrome", toolbar: !full() });
@@ -920,6 +985,9 @@ export default function ComputerView() {
       window.clearInterval(poll);
       window.clearInterval(shots);
       window.clearInterval(beat);
+      window.clearTimeout(hiddenTimer);
+      for (const ev of inputs) window.removeEventListener(ev, onInput, { capture: true });
+      document.removeEventListener("visibilitychange", onVisibility);
       copied.stop();
       window.clearTimeout(renewTimer);
       window.clearTimeout(markTimer);
@@ -1044,6 +1112,17 @@ export default function ComputerView() {
 
       <Show when={notice()}>
         <p class="computer-notice" role="status">{notice()}</p>
+      </Show>
+      <Show when={idleOut() && !mine()}>
+        <div class="computer-files computer-idle" role="status">
+          <span>{t("computer.idleOut")}</span>
+          <button type="button" class="computer-btn" disabled={busy() || !state()} onClick={() => void takeOver()}>
+            {t("computer.takeOver")}
+          </button>
+          <button type="button" class="computer-files-close" aria-label={t("computer.dismiss")} onClick={() => setIdleOut(false)}>
+            ✕
+          </button>
+        </div>
       </Show>
       <Show when={offer()}>
         {(files) => (

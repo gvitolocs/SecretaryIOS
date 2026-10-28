@@ -1282,7 +1282,8 @@ Notification:
 ```
 
 `category`: `lucina_message`, `reminder`, `calendar`, `device_confirm`,
-`shopping`, `presence`, `system`. Without `title`, clients title it by category.
+`shopping`, `presence`, `system`, `approval` (always on: no switch, no per-device mute, and quiet
+hours / DND do not hold it; see [Approvals](#approvals)). Without `title`, clients title it by category.
 `route` is an app path (`/`, `/shopping`, `/gym`, `/weight`).
 
 | Route | |
@@ -1628,17 +1629,20 @@ from Todoist durations or the title ("15 min shadowing").
 ## Notes
 
 Briefings, notes and documents the owner reads in the app (Notes view on
-web and iOS) and that Lucina recalls by name. ChatGPT, Grok and Claude Code
-save them through Lucina MCP (`note_save`, `note_append`), Lucina through
-her service token, the owner in the app.
+web and iOS) and that Lucina recalls by name; since Lucina Keep also colored
+notes, checklists, labels, archive, attachments and reminders (design and
+details: [keep.md](keep.md)). ChatGPT, Grok and Claude Code save notes through
+Lucina MCP (`note_save`, `note_append`), Lucina through her service token, the
+owner in the app.
 
 Auth: a device (Bearer, or the session cookie plus `X-Secretary-CSRF: 1` for
 writes) **or** Lucina's service token. Every write is logged (id, slug,
-size, source, caller; never the content). Bodies on these routes may be up
+size, source, caller; never the content). JSON bodies on these routes may be up
 to 768 KiB (a note holds at most 256 KiB of text; JSON escaping can double
-it).
+it); attachment uploads up to 25 MB.
 
-A note:
+A note (fields after `updatedAt` are the Keep additions; all have defaults, so
+notes written earlier load unchanged):
 
 ```json
 {
@@ -1650,74 +1654,176 @@ A note:
   "source": "chatgpt",
   "pinned": true,
   "createdAt": "2026-10-22T11:30:00.123Z",
-  "updatedAt": "2026-10-22T11:30:00.123Z"
+  "updatedAt": "2026-10-22T11:30:00.123Z",
+  "color": "default",
+  "archived": false,
+  "attachments": [],
+  "annotations": [],
+  "collaborators": [],
+  "position": 1761132600123.0,
+  "rev": 17
 }
 ```
 
+A list note also has `"items": [{"id": "i_0a1b2c3d4e5f", "text": "milk", "checked": false, "indent": 0}]`
+(and `content` is derived from it, `- [ ] milk`); a note with a reminder has
+`"reminder": {"at": "2026-11-01T09:00:00+01:00", "recurrence": "weekly", "lucinaId": "r42"}`
+(`recurrence` and `lucinaId` optional); an imported one has `"import": {...}`;
+a trashed one has `"deletedAt"`.
+
 - `slug`: unique among live notes, `[a-z0-9]` then `[a-z0-9-]` (no `--`, no
-  trailing `-`), at most 64; not `trash`, `new` or `search`. Wherever a route
-  takes `{key}`, it is the id or the slug (case-insensitive), so
-  `/v1/notes/craftit-meeting` works.
+  trailing `-`), at most 64; not `trash`, `new`, `search`, `labels`, `changes`,
+  `attachments`, `import` or `batch`. Wherever a route takes `{key}`, it is the
+  id or the slug (case-insensitive), so `/v1/notes/craftit-meeting` works.
+- `title`: at most 200 characters; **may be empty** when the note has content,
+  items or attachments (`400 title: must not be empty` otherwise). An untitled
+  note's slug comes from the first six words of its text.
 - `content`: markdown, at most 256 KiB (UTF-8), no control characters other
   than newline and tab; `\r\n` becomes `\n`. Clients render it without raw
   HTML and only follow `http(s)`/`mailto` links.
-- `tags`: at most 16, each at most 32 letters, digits, spaces, `-` or `_`;
-  stored lower-case, a leading `#` dropped, duplicates removed.
+- `tags` (= Keep labels): at most 50, each at most 50 characters, any characters
+  except control characters and `,`; stored trimmed, whitespace collapsed, a
+  leading `#` dropped, lower-case; duplicates removed. Bodies may also send
+  `labels` (alias; display names); both are merged. Display names live in the
+  label registry (below).
+- `color`: `default red orange yellow green teal blue cerulean purple pink brown gray`.
+- `position`: manual order, higher = earlier in the grid; defaults to `createdAt`
+  in epoch milliseconds.
+- `rev`: the store revision of the last write to the note (server-set; see
+  [Changes](#get-v1noteschangessincelimit)).
 - `source`: who wrote it, `[a-z0-9][a-z0-9-]*` (`owner`, `lucina`, `chatgpt`,
   `grok`, `claude-code`, …). Default: `lucina` for the service token,
   `owner` otherwise.
 - `updatedAt` has millisecond precision and doubles as the version for
   `baseUpdatedAt`.
 
-### `GET /v1/notes?q=&tag=&limit=200`
+### `GET /v1/notes?q=&tag=&limit=200&archived=&color=&type=`
 
-`{"notes": [NoteSummary]}`: pinned first, then the most recently updated. A
-summary is the note without `content`, plus `size` (bytes) and `excerpt`
-(the start of the content, or the text around the first match of `q`).
-`q` (at most 200 characters) looks in the title, slug, tags and content,
-case- and accent-insensitive; `tag` keeps notes with that tag. `limit`:
-1-500.
+`{"notes": [NoteSummary]}`: pinned first, then the most recently updated; the
+trash is not listed. A summary is the note without `content`, plus `size`
+(bytes) and `excerpt` (the start of the content, or the text around the first
+match of `q`), and `color`, `archived`, `isList`, `itemsTotal`, `itemsDone`,
+`attachmentCount`, `hasImage`, `reminderAt` (absent without a reminder),
+`position`, `rev` and `labels` (display names in tag order). `q` (at most 200
+characters) looks in the title, slug, tags and content (item text included),
+case- and accent-insensitive; `tag` keeps notes with that label (normalized the
+same way); `archived=include|exclude|only` (default `include`); `color`;
+`type=list|text|image|audio|link|reminder`. `limit`: 1-500. Unknown values are
+`400`.
 
 ### `POST /v1/notes`
 
-`{title, content?, slug?, tags?, source?, pinned?}` → `201` and the note.
-Without `slug`, one is made from the title (`-2`, `-3`, … when taken). An
-explicit slug that is taken answers `409 slug_taken` (update or append to
-that note instead). At most 2000 live notes (`409 notes_full`).
+`{title?, content?, slug?, tags?, labels?, source?, pinned?, color?, archived?,
+items?, annotations?, collaborators?, reminder?, position?, attachments?}` →
+`201` and the note. `items` (`[{text, checked?, indent?, id?}]`, at most 1000)
+makes a list note and `content` is derived (and any `content` in the body
+ignored). Without `slug`, one is made from the title (`-2`, `-3`, … when
+taken). An explicit slug that is taken answers `409 slug_taken` (update or
+append to that note instead). At most 20000 live notes (`409 notes_full`).
+`reminder` `{at, recurrence?}` creates a Lucina reminder (see
+[Reminders](keep.md#reminders)); Lucina failing is `502` and nothing is saved.
+`rev`, `import`, `createdAt` and `reminder.lucinaId` are accepted and ignored.
+`attachments` refers to files already stored (`[{id, file | mimetype}]`); upload
+new ones with the route below.
 
 ### `GET /v1/notes/{key}`
 
-The note, or `404 note_not_found`.
+The note, or `404 note_not_found` (notes in the trash are not found here; see
+the trash and `changes`).
 
 ### `PATCH /v1/notes/{key}`
 
-Any of `{title, content, slug, tags, pinned}`; absent fields keep their
-value. Optional `baseUpdatedAt`: the `updatedAt` the client edited; when
-the note changed since, `409 conflict` and nothing is saved. Optional
-`source` names who edited (logged only). Unknown fields are refused.
+Any of the `POST` fields (except `createdAt`); absent fields keep their value.
+Optional `baseUpdatedAt`: the `updatedAt` the client edited; when the note
+changed since, `409 conflict` and nothing is saved. Optional `source` names who
+edited (logged only). Unknown fields are refused.
+
+- `content` on a list note is parsed back into items (`- [ ]`/`- [x]` lines keep
+  their state, other non-empty lines become unchecked items); `items` and
+  `content` in one body: `items` wins; `items: null` is `400`.
+- `{"convert": "text"}` turns a list note into plain lines, `{"convert": "list"}`
+  turns every non-empty line into an item (cannot be combined with `items` or
+  `content`).
+- `reminder: {at, recurrence?}` sets or changes the reminder (a new Lucina
+  reminder, the old one cancelled), `reminder: null` clears it (cancelling it).
+  Lucina failing is `502` (`503 lucina_not_configured` without a Lucina) and
+  the note is unchanged.
+- `attachments` replaces the attachment list with already-stored files.
 
 ### `POST /v1/notes/{key}/append`
 
 `{content, separator?}`: adds `content` at the end exactly as given (for
 documents sent in chunks); `separator` (at most 8 characters, e.g.
 `"\n\n"`) goes between the old text and the new one when the note is not
-empty. Over 256 KiB in total: `413 note_too_large`.
+empty. On a list note the appended lines become items at the end. Over 256 KiB
+in total: `413 note_too_large`.
 
 ### `DELETE /v1/notes/{key}`
 
 Moves the note to the trash: `{deleted: true, id, slug, deletedAt,
-purgeAfter}`. The slug is free again at once.
+purgeAfter}`. The slug is free again at once. A Lucina reminder of the note is
+cancelled (best effort).
 
 ### `GET /v1/notes/trash`
 
 `{"notes": [NoteSummary + deletedAt, purgeAfter], "days": 30}`, newest
-deletion first. Notes deleted more than 30 days ago are purged here and on
-every delete.
+deletion first. Notes deleted more than 30 days ago are purged (forever).
 
 ### `POST /v1/notes/trash/{id}/restore`
 
 Brings the note back (by id) and answers it. If a live note took its slug
 meanwhile, the restored one gets `-2` (or the next free number).
+
+### `DELETE /v1/notes/trash/{id}` and `DELETE /v1/notes/trash`
+
+Delete one trashed note forever (`404 note_not_found` when it is not in the
+trash), or empty the trash: `{"ok": true, "removed": n}`. Attachment files that
+no remaining note uses are removed.
+
+### `POST /v1/notes/batch`
+
+`{ids: [≤500], set?: {color?, pinned?, archived?}, addLabels?: [name],
+removeLabels?: [name], trash?, restore?, deleteForever?}` → `{"notes": [Note]}`,
+the notes that changed (`deleteForever` adds `"removed": [id]`). `ids` are ids
+or slugs; unknown ones are skipped. `trash` / `restore` / `deleteForever` exclude
+each other and `set` / labels. Batch cannot set reminders.
+
+### `GET /v1/notes/changes?since=&limit=`
+
+The sync feed for the web app's cache. `{"notes": [Note], "removed": [id],
+"cursor": "<rev>", "hasMore": bool}`: full notes (live, archived and trashed,
+`deletedAt` set for trash) whose `rev` is above `since`, the ids deleted forever
+since, in revision order, at most `limit` (1-500, default 200). Keep the
+`cursor` and pass it as the next `since` while `hasMore`. No `since` (or `0`)
+returns everything. `410 cursor_expired` when `since` is older than the 60 days
+tombstones are kept (or is not a cursor of this store): drop the cache and load
+from 0.
+
+### Labels
+
+- `GET /v1/notes/labels` → `{"labels": [{tag, name, count}]}`, by name
+  (case-insensitive); `count` = live non-trashed notes.
+- `POST /v1/notes/labels` `{name}` → `201 {tag, name, count}`; `409 label_exists`.
+- `PATCH /v1/notes/labels/{tag}` `{name}` → `{tag, name, count}`: a new display
+  case for the same tag, or a new tag rewritten in every note (live and trash;
+  merged into the label that already has that name). `404 label_not_found`.
+  `{tag}` is percent-encoded.
+- `DELETE /v1/notes/labels/{tag}` → `{"ok": true, "removed": n}`: out of the
+  registry and every note.
+
+### Attachments
+
+- `POST /v1/notes/{key}/attachments?name=` with the raw bytes as the body and
+  `Content-Type` = mimetype → `201` and the note. Images (`png jpeg gif webp
+  heic heif`), audio (`3gpp mp4 aac mpeg ogg webm x-m4a`) and `application/pdf`
+  only (`415 unsupported_media_type`), at most 25 MB (`413
+  attachment_too_large`) and 50 per note (`409 attachments_full`). Stored by
+  SHA-256 and shared by notes with the same bytes; the attachment's `id` is the
+  hash: `{id, file: "<sha256>.<ext>", mimetype, size, name?, createdAt}`.
+- `DELETE /v1/notes/{key}/attachments/{attId}` → the note.
+- `GET /v1/notes/attachments/{file}` → the bytes (`file` as in `attachments[].file`;
+  `404` otherwise): `Cache-Control: private, max-age=31536000, immutable`, `ETag`,
+  `Range`.
 
 ### Seed notes
 
@@ -2080,6 +2186,66 @@ Lucina writes the receipt to the timeline (`meta.kind: secret_receipt`): "Saved 
 env / path (fingerprint xxxxxxxx)". In chat, `/secret …` never reaches her model, timeline, Honcho
 or replay cache, and token-shaped text is masked before the turn and offered as a held value.
 
+## Approvals
+
+"When Lucina needs my permission, I get a prompt on my main device and press Yes." One API for every
+requester (Lucina's secrets guard and root commands, the Infisical broker, agentd, a device).
+Code: `crates/secretary-server/src/approvals.rs`. Pending requests live in memory (a restart drops
+them); settings and keys are JSON files (0600) in the data dir; every event is appended to
+`approvals-audit.jsonl` (`created`, `notified` main/escalated, `decided` with device and biometric
+yes/no, `expired`, `waited` when a grant is handed out). Names and ids only, no secret values.
+
+**Requester** routes take the service token (`svc_…`) or a device Bearer/cookie. A device that asks
+always shows as `kind: device` with its own name. Creation is limited to 20 per requester per minute (429).
+
+| Route | |
+|---|---|
+| `POST /v1/approvals` | `{requester: {kind: lucina\|broker\|agentd\|mcp\|device, name, detail?}, action, summary (<=200), details? (<=4000), risk: low\|medium\|high, sensitive?, payloadHash: "sha256:<64 hex>", ttlSecs?}` → `201 {id: "apr_…", status: "pending", sensitive, expiresAt}`. `ttlSecs`: default 300, clamped to 30..900. `action`: lowercase `[a-z0-9._-]`. |
+| `GET /v1/approvals/{id}/wait?timeout=25` | Long poll (at most 30 s), only for the identity that asked, else 404 `approval_not_found`. `{id, status: pending\|approved\|denied\|expired, decidedAt?, decidedBy? (device name), grant?}`. |
+| `GET /v1/approvals/public-key` | Public. `{alg: "ed25519", publicKey: <base64>, keyId: <8 hex>}`. |
+
+`sensitive` is forced when `action` starts with `secret.`, `root.`, `sudo.`, `message.send`,
+`email.send`, `payment.`, `account.` or `broker.`.
+
+**Grant** (on `approved`, the same string on every wait until the request expires):
+`b64url(payload_json) + "." + b64url(signature)`; the signature (Ed25519, key `approval-grant.key`,
+made on first start, a different key and context than the "Add secret" grants) is over the ASCII bytes
+`"secretary-approval-v1." + b64url(payload_json)`. Payload:
+`{v: 1, id, action, requester: {kind, name}, payloadHash, decision: "approved", decidedBy: <device id>,
+biometric, iat, exp: iat + 120}`. A verifier checks the signature with the pinned public key, `exp`,
+`action`, that `payloadHash` is the hash of what it is about to do, and single use (it remembers ids
+until `exp`).
+
+**Approver** routes take a device (Bearer, or cookie with `X-Secretary-CSRF: 1`); the service token
+gets 403 `service_cannot_decide` on all of them.
+
+| Route | |
+|---|---|
+| `GET /v1/approvals?status=pending\|all` | `{approvals: […]}`, newest first. `pending`: what this device may decide now (not its own requests; inside the first 30 s only the main device sees it). Item: `{id, status, requester, action, summary, details, risk, sensitive, payloadHash, createdAt, expiresAt, escalated, youAreMain, decidedAt?, decidedBy?, decidedById?, biometric?}`. |
+| `GET /v1/approvals/{id}` | One item, also decided or expired (kept for an hour), for a deep link that says "already answered". |
+| `POST /v1/approvals/{id}/decide` | `{decision: approve\|deny, payloadHash, proof?: {keyId, signature}}` → `{status: approved\|denied}`. |
+| `GET /v1/approvals/settings` | `{mainDeviceId, escalateAfterSecs: 30, devices: [{id, name, isMain, hasBiometricKey, lastSeen?}], thisDeviceId}`. |
+| `PUT /v1/approvals/settings` | `{mainDeviceId: "<id>" \| null}` (the field is required; 404 `device_not_found`). Answers like `GET`. |
+| `POST /v1/approvals/keys` | `{publicKey: <base64 X9.63 uncompressed P-256>, label?, password: <owner password>}` → `{keyId}`. Replaces this device's key. A wrong password is 403 `invalid_credentials`. |
+| `DELETE /v1/approvals/keys` | `{removed}`. |
+
+`proof.signature` is a base64 DER ECDSA P-256/SHA-256 signature over the ASCII bytes
+`"secretary-approval-v1\n{id}\n{payloadHash}\n{decision}"`, made with the key registered to the
+deciding device (a Secure Enclave key usable after Face ID). Approving a sensitive request without a
+valid proof gives 403 `biometric_required`; denying never needs one. The web has no such key, so it can
+approve only requests that are not sensitive.
+
+Decide errors: 404 `approval_not_found`; 409 `approval_decided`; 410 `approval_expired`; 403
+`self_approval` (the approver is the requester device); 403 `not_main_device` (first 30 s, a main
+device is set and this is not it); 409 `payload_mismatch` (`payloadHash` differs from the request's);
+403 `biometric_required`; 403 `csrf` (cookie without the header).
+
+**Delivery.** On create the server publishes a notification of category `approval` to the main
+device's subscriptions, and to every other device after 30 s if the request is still pending (at once
+to all when no main device is set). Web Push payload: `route` and `url` = `/approvals/<id>`, plus
+`approvalId` and `sensitive`. APNs (when configured): `aps.category = "APPROVAL"`, `approvalId`,
+`sensitive`. The native app has no remote push on a free team and polls `GET /v1/approvals?status=pending`.
+
 ## Models
 
 The owner's private 3D gallery: models Lucina made with Meshy AI (crate
@@ -2123,6 +2289,10 @@ video?, rigged?}`. Clients build the file URLs from the id on their own origin.
 | 400 | `due_in_past`, `unparseable_reminder`, `invalid_status` | Lucina | See the routes above. |
 | 401 | `unauthorized` | server | No/invalid/revoked device token or session. |
 | 403 | `csrf` | server | Cookie request that changes state without `X-Secretary-CSRF: 1`. |
+| 403 | `self_approval`, `not_main_device`, `biometric_required`, `service_cannot_decide` | server | Approvals: see [Approvals](#approvals). |
+| 404 | `approval_not_found` | server | No such approval request (or not yours to wait on). |
+| 409 | `approval_decided`, `payload_mismatch` | server | Approvals. |
+| 410 | `approval_expired` | server | Deciding an approval request that ran out. |
 | 404 | `not_found` | server | Unknown `/v1` route. |
 | 404 | `job_not_found`, `reminder_not_found`, `item_not_found` | Lucina | |
 | 404 | `note_not_found` | server | No note with that id or slug. |

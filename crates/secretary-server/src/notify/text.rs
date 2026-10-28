@@ -33,6 +33,9 @@ pub fn title(c: Category, l: &str) -> &'static str {
         (Category::Presence, "da") => "Lucinas status",
         (Category::Presence, _) => "Lucina's status",
         (Category::System, _) => "Secretary",
+        (Category::Approval, "it") => "Serve il tuo permesso",
+        (Category::Approval, "da") => "Din tilladelse ønskes",
+        (Category::Approval, _) => "Approval needed",
     }
 }
 

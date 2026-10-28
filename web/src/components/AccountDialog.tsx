@@ -3,6 +3,7 @@ import { toApiError } from "../api/client";
 import { api } from "../api/secretary";
 import { openWardrobe } from "../state/wardrobe";
 import { HangerIcon, QrIcon } from "./Icons";
+import { ApprovalSettings } from "./ApprovalSettings";
 import { KeepImport } from "./KeepImport";
 import { NotificationSettings } from "./NotificationSettings";
 import { detectedLocale, LOCALE_NAMES, LOCALES, localeOverride, setLocale, t, type Locale, type MessageKey } from "../i18n";
@@ -223,6 +224,7 @@ export function AccountDialog(props: {
             </a>
           </div>
           <NotificationSettings />
+          <ApprovalSettings />
           <KeepImport />
           <form class="settings-form" onSubmit={submit} novalidate aria-label={t("shell.changePassword")}>
             <h3 class="field-label">{t("shell.changePassword")}</h3>

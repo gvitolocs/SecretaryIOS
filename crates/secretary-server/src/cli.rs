@@ -1,5 +1,6 @@
 //! Command line: `serve` (default), `token issue|list|revoke` and
-//! `user set|show`, `service-token generate` and `notes import|list`.
+//! `user set|show`, `service-token generate` and
+//! `notes import|import-keep|list`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -76,6 +77,19 @@ pub enum NotesAction {
     },
     /// List notes (slug, size, source, title); never prints content.
     List,
+    /// Import Google Takeout Keep zips (all parts: `takeout-…-001.zip`, …).
+    /// Idempotent: a re-import skips what is there, updates notes not edited
+    /// here, and never brings back what was deleted here.
+    ImportKeep {
+        #[arg(required = true)]
+        zips: Vec<PathBuf>,
+        /// Count what would happen; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn seed_files(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
@@ -124,6 +138,24 @@ pub fn run_notes(
                     }
                     None => writeln!(out, "kept {slug} (exists; --replace to overwrite)")?,
                 }
+            }
+        }
+        NotesAction::ImportKeep {
+            zips,
+            dry_run,
+            json,
+        } => {
+            let report = crate::keep_import::import_takeout(
+                &store,
+                &zips,
+                dry_run,
+                crate::notes::Caller("owner"),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            if json {
+                writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            } else {
+                write!(out, "{}", report.render_text())?;
             }
         }
         NotesAction::List => {

@@ -2527,6 +2527,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-push-native",
+ "zip",
 ]
 
 [[package]]

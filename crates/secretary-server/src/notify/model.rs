@@ -23,10 +23,13 @@ pub enum Category {
     Presence,
     /// Security and server notices, e.g. a new device signed in (off by default).
     System,
+    /// Someone asks for the owner's permission (`crate::approvals`). Always
+    /// on: no switch, no per-device mute, and quiet hours / DND do not hold it.
+    Approval,
 }
 
 impl Category {
-    pub const ALL: [Category; 7] = [
+    pub const ALL: [Category; 8] = [
         Category::LucinaMessage,
         Category::Reminder,
         Category::Calendar,
@@ -34,6 +37,7 @@ impl Category {
         Category::Shopping,
         Category::Presence,
         Category::System,
+        Category::Approval,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -45,6 +49,7 @@ impl Category {
             Category::Shopping => "shopping",
             Category::Presence => "presence",
             Category::System => "system",
+            Category::Approval => "approval",
         }
     }
 
@@ -55,6 +60,12 @@ impl Category {
     /// On unless the owner turns it on (presence, system) or off.
     pub fn default_on(self) -> bool {
         !matches!(self, Category::Presence | Category::System)
+    }
+
+    /// Categories that cannot be switched off, muted per device or held back
+    /// by quiet hours.
+    pub fn always_on(self) -> bool {
+        matches!(self, Category::Approval)
     }
 
     /// The web route a click opens when the notification names none.
@@ -69,7 +80,7 @@ impl Category {
     pub fn urgent(self) -> bool {
         matches!(
             self,
-            Category::Reminder | Category::Calendar | Category::DeviceConfirm
+            Category::Reminder | Category::Calendar | Category::DeviceConfirm | Category::Approval
         )
     }
 
@@ -239,6 +250,8 @@ mod tests {
         assert_eq!(Category::parse("nope"), None);
         assert!(!Category::Presence.default_on() && !Category::System.default_on());
         assert!(Category::LucinaMessage.default_on());
+        assert!(Category::Approval.default_on() && Category::Approval.always_on());
+        assert!(Category::Approval.urgent() && !Category::Reminder.always_on());
     }
 
     #[test]

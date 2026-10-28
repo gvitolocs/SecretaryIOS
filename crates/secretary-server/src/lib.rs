@@ -5,6 +5,7 @@
 //! `secretary-core`), forwarding with the server-held Lucina token, error
 //! mapping and static file serving. It owns no product logic.
 
+pub mod approvals;
 pub mod assets;
 pub mod auth;
 pub mod avatar;
@@ -21,6 +22,7 @@ pub mod error;
 pub mod google;
 pub mod health;
 pub mod insights;
+pub mod keep_import;
 pub mod library;
 pub mod links;
 pub mod models;
@@ -149,6 +151,8 @@ pub struct Inner {
     pub system_health: Arc<system_health::HealthStore>,
     /// Signs the owner grants of "Add secret" (`secret-grant.key`).
     pub grant_signer: owner_secrets::GrantSigner,
+    /// Owner approvals: requests, grants, audit (`/v1/approvals*`).
+    pub approvals: Arc<approvals::Approvals>,
 }
 
 #[derive(Clone)]
@@ -204,6 +208,10 @@ impl AppState {
             tasks: Arc::new(tasks::TasksHub::open(&cfg.data_dir, cfg.todoist.clone())?),
             system_health: system_health::store(&cfg.data_dir),
             grant_signer: owner_secrets::GrantSigner::new(&cfg.data_dir),
+            approvals: Arc::new(approvals::Approvals::open(
+                &cfg.data_dir,
+                cfg.approvals.clone(),
+            )?),
         })))
     }
 
@@ -297,6 +305,8 @@ pub fn app(state: AppState) -> Router {
         auth::require_device_or_service,
     ));
 
+    let approvals = approvals::routes(state.clone());
+
     let device_events = device::events_routes().route_layer(middleware::from_fn_with_state(
         state.clone(),
         auth::require_device_events,
@@ -311,6 +321,7 @@ pub fn app(state: AppState) -> Router {
         .merge(device_events)
         .merge(auth::session_routes())
         .merge(qr_login::public_routes())
+        .merge(approvals)
         .merge(protected)
         .merge(computer::view_routes())
         .merge(desk::ws_routes())
@@ -370,12 +381,18 @@ pub async fn shutdown_signal() {
 }
 
 /// Serve `router` on `listener` with peer addresses available to handlers
-/// (the login rate limit needs them).
+/// (the login rate limit needs them). Accepted sockets get TCP_NODELAY: the
+/// computer live view's and LucinaDesk's WebSockets carry small messages (acks,
+/// input) that Nagle plus delayed ACKs would hold for ~40 ms each.
 pub async fn serve_on(
     listener: tokio::net::TcpListener,
     router: Router,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    use axum::serve::ListenerExt as _;
+    let listener = listener.tap_io(|tcp| {
+        let _ = tcp.set_nodelay(true);
+    });
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -410,6 +427,7 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         "secretary-server listening"
     );
     notify::spawn_workers(&state);
+    approvals::spawn_sweeper(&state);
     if !cfg.calendar_sync_every.is_zero() {
         calendar::spawn_sync_loop(state.clone(), cfg.calendar_sync_every);
     }

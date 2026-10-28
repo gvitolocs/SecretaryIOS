@@ -559,6 +559,50 @@ describe("DeskPlayer", () => {
     });
   });
 
+  it("an idle close (4001 \"idle\") says why: Lucina has the computer again", async () => {
+    render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+    await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+    await live(FakeWS.all[0]!);
+    fireEvent.keyDown(screen.getByRole("img"), { key: "a" });
+    await waitFor(() => expect(FakeWS.all).toHaveLength(2));
+    const control = FakeWS.all[1]!;
+    control.open();
+    control.frame();
+    control.drop(4001, "idle");
+    await waitFor(() => expect(FakeWS.all).toHaveLength(3));
+    expect(FakeWS.all[2]!.protocols[1]).toMatch(/^ticket\.t-watch-/);
+    expect(screen.getByText("You were idle, so Lucina has the computer again.")).toBeInTheDocument();
+  });
+
+  it("leaving focus mode in Secretary Code gives the desktop back, however it was taken", async () => {
+    let listener: ((on: boolean) => void) | null = null;
+    shellIs({
+      showCode() {},
+      setFocusMode: () => undefined,
+      onFocusModeChange: (l: (on: boolean) => void) => {
+        listener = l;
+        return () => (listener = null);
+      },
+    });
+    try {
+      render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
+      await waitFor(() => expect(FakeWS.all).toHaveLength(1));
+      await live(FakeWS.all[0]!);
+      listener!(false); // out of focus mode first: this takeover is not "made in focus mode"
+      fireEvent.keyDown(screen.getByRole("img"), { key: "a" });
+      await waitFor(() => expect(FakeWS.all).toHaveLength(2));
+      const control = FakeWS.all[1]!;
+      control.open();
+      control.frame();
+      listener!(true);
+      listener!(false); // Esc or the shell's Exit focus
+      await waitFor(() => expect(FakeWS.all).toHaveLength(3));
+      expect(FakeWS.all[2]!.protocols[1]).toMatch(/^ticket\.t-watch-/);
+    } finally {
+      delete window.secretaryShell;
+    }
+  });
+
   it("when the lease ends elsewhere (4001) it goes back to watching", async () => {
     render(() => <DeskPlayer sandbox="workspace" state={idle} onFallback={() => undefined} />);
     await waitFor(() => expect(FakeWS.all).toHaveLength(1));

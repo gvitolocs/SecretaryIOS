@@ -65,6 +65,8 @@ impl Categories {
             Category::Shopping => self.shopping,
             Category::Presence => self.presence,
             Category::System => self.system,
+            // No switch: approvals are always on.
+            Category::Approval => true,
         }
     }
 }
@@ -278,6 +280,9 @@ impl Settings {
 
     /// Whether a push of `category` may go to device / subscription `target`.
     pub fn allows(&self, category: Category, target: &str) -> bool {
+        if category.always_on() {
+            return true;
+        }
         if !self.categories.get(category) {
             return false;
         }
@@ -388,5 +393,14 @@ mod tests {
         assert!(!s.allows(Category::Reminder, "ps_b"));
         s.categories.reminder = false;
         assert!(!s.allows(Category::Reminder, "ps_c"));
+        // Approvals ignore every switch, global and per device.
+        s.devices.insert(
+            "ps_a".into(),
+            DevicePrefs {
+                enabled: false,
+                categories: [("approval".to_owned(), false)].into(),
+            },
+        );
+        assert!(s.allows(Category::Approval, "ps_a"));
     }
 }

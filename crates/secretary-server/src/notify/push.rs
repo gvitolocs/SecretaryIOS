@@ -420,6 +420,14 @@ pub struct Payload {
     pub unread: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub digest: bool,
+    /// Approvals only: the web route again as `url`, the approval's id and
+    /// whether approving it needs a biometric proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitive: Option<bool>,
 }
 
 /// Result of one delivery (after retries).
@@ -712,18 +720,29 @@ pub async fn deliver_all(
 
 /// JSON for the APNs body (`aps` + our fields).
 pub fn apns_body(payload: &Payload) -> Value {
-    json!({
+    // The app registers the notification category "APPROVAL" (Approve/Deny actions).
+    let aps_category = if payload.approval_id.is_some() {
+        "APPROVAL"
+    } else {
+        payload.category.as_str()
+    };
+    let mut body = json!({
         "aps": {
             "alert": {"title": payload.title, "body": payload.body},
             "sound": "default",
             "badge": payload.unread,
             "thread-id": payload.category,
-            "category": payload.category,
+            "category": aps_category,
         },
         "id": payload.id,
         "route": payload.route,
         "category": payload.category,
-    })
+    });
+    if let Some(id) = &payload.approval_id {
+        body["approvalId"] = json!(id);
+        body["sensitive"] = json!(payload.sensitive.unwrap_or(false));
+    }
+    body
 }
 
 #[cfg(test)]

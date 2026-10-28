@@ -1,6 +1,7 @@
 // Every feature's dictionary. To add one: create dict/<feature>.ts like the
 // others (English first, then `it` and `da` with the same keys) and list it here.
 
+import { approvals } from "./dict/approvals";
 import { share } from "./dict/share";
 import { chats } from "./dict/chats";
 import { chat } from "./dict/chat";
@@ -32,6 +33,6 @@ import { gallery } from "./dict/gallery";
 import { galleryInfo } from "./dict/galleryInfo";
 import { weight } from "./dict/weight";
 
-export const dictionaries = { chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo };
+export const dictionaries = { approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo };
 
 export type Dictionaries = typeof dictionaries;
