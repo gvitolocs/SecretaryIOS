@@ -27,7 +27,7 @@ const Wardrobe = lazy(() => import("../components/Wardrobe"));
 // The owner's four sections (2026-10-24), the same as the iPhone tabs: Chat, Shopping,
 // Training + Weight, Plugins. Everything else is a plugin card on /plugins.
 const TRAINING_PATHS = ["/training", "/gym", "/weight"];
-const PLUGIN_PATHS = ["/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram"];
+const PLUGIN_PATHS = ["/chats", "/plugins", "/notes", "/keep", "/tasks", "/links", "/models", "/memos", "/desk", "/library", "/media", "/drive", "/server-health", "/computer", "/nclient", "/pixiv", "/instagram", "/agents"];
 
 function NavLinks(props: { class: string }) {
   const location = useLocation();
@@ -68,7 +68,7 @@ function useRouteTransition(target: () => HTMLElement | undefined) {
   const location = useLocation();
   createEffect(
     on(
-      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname.startsWith("/keep") ? "/keep" : location.pathname.startsWith("/tasks") ? "/tasks" : location.pathname),
+      () => (location.pathname.startsWith("/notes") ? "/notes" : location.pathname.startsWith("/keep") ? "/keep" : location.pathname.startsWith("/tasks") ? "/tasks" : location.pathname.startsWith("/agents") ? "/agents" : location.pathname),
       () => {
         const el = target();
         if (!el || reducedMotion() || typeof el.animate !== "function") return;

@@ -702,3 +702,15 @@ export function InstagramIcon() {
     </svg>
   );
 }
+
+export function AgentsIcon() {
+  return (
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4.5" y="8" width="15" height="11" rx="3.5" />
+      <path d="M12 8V5M10.5 4h3" />
+      <circle cx="9.5" cy="13.5" r="1" />
+      <circle cx="14.5" cy="13.5" r="1" />
+      <path d="M2.5 12.5v2M21.5 12.5v2" />
+    </svg>
+  );
+}

@@ -3,6 +3,7 @@ import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from 
 import { Portal } from "solid-js/web";
 import type { AppNotification, Category } from "../api/notifications";
 import { locale, t } from "../i18n";
+import { agentNotificationRoute } from "../lib/agentsRoute";
 import { prefetchPushKey } from "../lib/push";
 import {
   markAllRead,
@@ -24,6 +25,7 @@ import {
   ClockIcon,
   GearIcon,
   ListIcon,
+  PlugIcon,
   PulseIcon,
   ShieldCheckIcon,
   SparkIcon,
@@ -34,6 +36,7 @@ const ICONS: Record<Category, () => JSX.Element> = {
   reminder: ClockIcon,
   calendar: CalendarIcon,
   device_confirm: ShieldCheckIcon,
+  agent: PlugIcon,
   shopping: ListIcon,
   presence: PulseIcon,
   system: GearIcon,
@@ -174,7 +177,7 @@ export function NotificationPanel(props: { open: boolean; onClose: () => void; o
   function open(n: AppNotification) {
     void markRead([n.id]);
     props.onClose();
-    navigate(safeRoute(n.route));
+    navigate(agentNotificationRoute(n) ?? safeRoute(n.route));
   }
 
   return (

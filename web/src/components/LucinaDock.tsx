@@ -42,10 +42,12 @@ export function LucinaDock() {
   // Hidden, not unmounted: the stage and its WebGL context survive, like the float layout.
   const inShell = embedded();
   // Keep (/keep) is a full-width page everywhere: its grid wants the whole window, like Google Keep.
+  // Agents (/agents) is a list beside a chat, diffs and terminals: it wants the width too.
   const offstage = createMemo(
     () =>
       !wardrobeOpen() &&
       (location.pathname === "/keep" || location.pathname.startsWith("/keep/") ||
+        location.pathname === "/agents" || location.pathname.startsWith("/agents/") ||
         (inShell && location.pathname !== "/" && !location.pathname.startsWith("/chats"))),
   );
   const layout = createMemo<DockLayout>(() => (wide() ? "side" : onChat() ? "strip" : "float"));

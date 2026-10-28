@@ -29,6 +29,12 @@ describe("Plugins", () => {
     expect(PLUGINS.find((p) => p.id === "keep")?.href).toBe("/keep");
   });
 
+  it("has an Agents card that opens /agents", () => {
+    renderPlugins();
+    expect(PLUGINS.find((p) => p.id === "agents")?.href).toBe("/agents");
+    expect(screen.getByRole("button", { name: /^Agents/ })).toHaveAttribute("data-plugin", "agents");
+  });
+
   it("has an Instagram card that opens /instagram", () => {
     renderPlugins();
     expect(PLUGINS.find((p) => p.id === "instagram")?.href).toBe("/instagram");
