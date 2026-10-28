@@ -35,6 +35,8 @@ nom-exif = "3"
 reverse_geocoder = "4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "tiff"] }
 futures-util = "0.3"
+# The Lab tells the owner through secretary-server and Telegram.
+reqwest = { workspace = true }
 subtle = "2"
 mime_guess = "2"
 walkdir = "2"

@@ -191,6 +191,7 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
+        crate::lab::migrate(&conn)?;
         let now = now_str();
         for (key, title) in SYSTEM_ALBUMS {
             conn.execute(

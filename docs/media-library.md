@@ -209,6 +209,64 @@ kernel DK3).
 
 The upload protocol's decisions (chunk offsets, finish once, dedupe or version) are pure functions in `protocol.rs`.
 
+## AI Lab: "Edit with Lucina…" (2026-10-28)
+
+A prompt, and optionally a reference photo, edit one picture with a small image model that runs **on nezopt, in the
+background, one job at a time**. Nothing goes to a cloud. The result waits in the Lab (`/gallery/lab`); Accept puts it in the
+library, Discard deletes it, and Lucina says "Your picture is ready" when a job finishes. Code: `src/lab.rs` (queue table,
+accept, discard), `src/lab_run.rs` (worker, runner, notification), `src/lab_http.rs` (routes).
+
+**Routes** (all under `/v1/media`, behind the upstream key like the rest; jobs are JSON with `id` = `lab_<32 hex>`):
+
+| Route | |
+|---|---|
+| `POST items/{id}/lab` `{prompt, reference_item_id?, steps?, seed?}` | Queue an edit. 201 + the job. 400: empty or over 1000 characters, not a photo, in the Trash, a reference that is the item itself or not a photo. 404: no such item. 429: 30 jobs already queued. |
+| `GET lab[?status=a,b&item_id=…&limit=n]` | `{enabled, jobs}`: running first, then the queue (oldest first), then the newest. Without `status`, discarded jobs are left out. `enabled` is whether `LUCINA_MEDIA_LAB_CMD` is set. |
+| `GET lab/{job}` | One job. |
+| `GET lab/{job}/result` | The finished picture (PNG), while the job is `done`. |
+| `GET lab/{job}/before` | What the model was given (the item as displayed, scaled), while the job keeps it. |
+| `POST lab/{job}/accept` | `done` only: the result becomes a **new item**; 200 `{job, item, duplicate}`. |
+| `POST lab/{job}/discard` | `done` or `failed`: deletes the result files; the row stays as `discarded`. |
+| `POST lab/{job}/retry` | `failed` only: back in the queue with the same request. |
+| `DELETE lab/{job}` | 204 for a queued, failed or discarded job; 409 for a running one (it finishes first) and for `done` / `accepted` ones. |
+
+A job: `{id, item_id, reference_item_id, prompt, status, phase, progress, error, seed, steps, model, attempts,
+queue_position, created_at, started_at, finished_at, accepted_item_id, result: {hash, bytes, width, height}|null,
+original: {id, title, width, height, rotation, thumbhash, trashed}|null, urls: {before, after, reference, result}}`.
+`status` is `queued | running | done | failed | accepted | discarded`; while running, `phase` is `waiting` (for the GPU) and then
+`generating`, and `progress` is 0 to 100. `urls.before` is `…/lab/{job}/before` while the input is kept, else the original's
+1024 px thumbnail; `urls.after` is the result while `done` and the new item's thumbnail once `accepted`.
+
+**Accept makes a new item, never a new version.** The original keeps its bytes, hash, version and device asset (a phone upload of
+the original must still find it, and a "version" would replace what the Gallery shows). The edit is a new item with source
+`lucina-lab` (so it is in the Gallery's All and Lucina groups, with no device: a device deletion can never target it), the
+original's `taken_at` and place, the prompt as its caption, and `links: {derived_from, lab_job, prompt}`. The original's `links`
+gets `lab_edits: [new ids]`; that is the only column of the original that changes. The result's bytes are copied before ingest, so
+a failure leaves the job `done`. If the bytes already are an item, nothing new is made (`duplicate: true`). The tables have no
+foreign keys, so purging an original from the Trash is never blocked by an old job.
+
+**Worker.** One background task claims the oldest queued job, writes `input.png` (the item as displayed: EXIF orientation and the
+saved rotation applied, long side at most `LUCINA_MEDIA_LAB_MAX_SIDE`, 1024) and `reference.png` into
+`<data_dir>/lab/<job>/`, and runs `LUCINA_MEDIA_LAB_CMD --input IN --prompt TEXT --output OUT [--reference REF] [--steps N]
+[--seed N]` without a shell, in its own process group. The command owns the GPU lease (`gpu-lease run`) and exits when done, so
+the model never stays in VRAM. On stdout it may print `MODEL <name>`, `STARTED` (lease granted) and `PROGRESS <0-100>`; its
+stderr tail is the error of a failed job. Two clocks: `LUCINA_MEDIA_LAB_WAIT_TIMEOUT` (7200 s) before `STARTED`,
+`LUCINA_MEDIA_LAB_TIMEOUT` (1800 s) after it; at the limit the group gets SIGTERM, then SIGKILL after 5 s. Jobs left `running`
+by a restart are queued again. Events on `/v1/media/events`: `lab.queued`, `lab.running`, `lab.done`, `lab.failed`,
+`lab.accepted`, `lab.cancelled` (`item_id` carries the job id, except `lab.accepted`: the new item).
+
+**Telling the owner.** When a job ends the job is marked announced (once), then: the app inbox through secretary-server
+`POST /v1/notify` (service token, category `lucina_message`, title "Lucina Lab", body "Your picture is ready" or "Your picture
+could not be made", route `/gallery/lab`, `dedupKey lab:<job>`), the same path the voice memos use; and Lucina's Telegram bot
+(app push needs APNs, which is off, so Telegram is what buzzes the phone). A failed send never fails the job. Environment:
+`LUCINA_SECRETARY_SERVER_URL`, `LUCINA_SECRETARY_SERVICE_TOKEN_FILE` (as lucina-memo), `TELEGRAM_BOT_TOKEN_LUCINA[_FILE]`,
+`LUCINA_MEDIA_LAB_TELEGRAM_CHAT_ID` (else `TELEGRAM_OWNER_CHAT_ID`, else the first `TELEGRAM_ALLOWED_CHAT_IDS`),
+`LUCINA_MEDIA_LAB_NOTIFY_APP` / `LUCINA_MEDIA_LAB_NOTIFY_TELEGRAM` (`off` to silence a channel), `LUCINA_MEDIA_LAB_LANG`
+(`en`, `it`, `da`), `LUCINA_MEDIA_LAB_LINK_BASE` (default `https://getsecretary.tech`).
+
+**The model** is `~/models/lab/lab-edit` on nezopt (chosen and measured in `~/scratch/gallery/lab/MODEL.md`): stable-diffusion.cpp
+(Vulkan) with FLUX.2 klein 4B, Apache 2.0. Set `LUCINA_MEDIA_LAB_CMD=/home/nez/models/lab/lab-edit`.
+
 ## Clients
 
 - **iPhone** (`ios/Secretary/Features/Gallery`):
