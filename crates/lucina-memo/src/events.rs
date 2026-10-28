@@ -142,7 +142,7 @@ pub fn series_key(title: &str) -> String {
         .join(" ")
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
     pub id: String,
@@ -256,17 +256,69 @@ pub async fn fetch(
     Ok(reply.events)
 }
 
-pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Vec<Candidate>, String> {
-    let events = fetch(
-        app,
-        m.recorded_at - chrono::Duration::minutes(minutes),
-        m.recording_end() + chrono::Duration::minutes(minutes),
-    )
-    .await?;
+pub struct Candidates {
+    pub items: Vec<Candidate>,
+    pub stale: bool,
+}
+impl std::ops::Deref for Candidates {
+    type Target = Vec<Candidate>;
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+impl IntoIterator for Candidates {
+    type Item = Candidate;
+    type IntoIter = std::vec::IntoIter<Candidate>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Candidates, String> {
+    let from = m.recorded_at - chrono::Duration::minutes(minutes);
+    let to = m.recording_end() + chrono::Duration::minutes(minutes);
+    let failure = match fetch(app, from, to).await {
+        Ok(events) => {
+            app.calendar
+                .merge(events, chrono::Utc::now())
+                .map_err(|e| e.to_string())?;
+            None
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "calendar unavailable; using cache");
+            Some(e)
+        }
+    };
+    let events = app.calendar.window(from, to).1;
+    if events.is_empty() {
+        if let Some(e) = failure {
+            return Err(e);
+        }
+    }
+    Ok(Candidates {
+        items: build_candidates(app, m, events, true).await,
+        stale: failure.is_some(),
+    })
+}
+/// Cache-only selection never makes geocoding or calendar network requests.
+pub async fn cached_candidates(app: &App, m: &Memo) -> (u64, Vec<Candidate>) {
+    let (generation, events) = app.calendar.window(
+        m.recorded_at - chrono::Duration::minutes(30),
+        m.recording_end() + chrono::Duration::minutes(30),
+    );
+    (generation, build_candidates(app, m, events, false).await)
+}
+async fn build_candidates(
+    app: &App,
+    m: &Memo,
+    events: Vec<CalendarEvent>,
+    network: bool,
+) -> Vec<Candidate> {
     let mut out = Vec::new();
     for e in events {
         let loc_match = match (&m.location, &app.cfg.geocode_url, &e.location) {
-            (Some(fix), Some(url), Some(location)) => geocode_match(url, location, fix).await,
+            (Some(fix), Some(url), Some(location)) => {
+                geocode_match(url, location, fix, network).await
+            }
             _ => false,
         };
         out.push(Candidate {
@@ -304,10 +356,15 @@ pub async fn candidates(app: &App, m: &Memo, minutes: i64) -> Result<Vec<Candida
         )
     });
     sorted.extend(out);
-    Ok(sorted)
+    sorted
 }
 type Geocodes = HashMap<String, Vec<(f64, f64)>>;
-async fn geocode_match(url: &str, location: &str, fix: &crate::model::GeoFix) -> bool {
+async fn geocode_match(
+    url: &str,
+    location: &str,
+    fix: &crate::model::GeoFix,
+    network: bool,
+) -> bool {
     static CACHE: OnceLock<Mutex<Geocodes>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
     let key = format!("{url}|{location}|{}|{}", fix.lat, fix.lon);
@@ -319,6 +376,9 @@ async fn geocode_match(url: &str, location: &str, fix: &crate::model::GeoFix) ->
     let points = if let Some(p) = cached {
         p
     } else {
+        if !network {
+            return false;
+        }
         #[derive(Deserialize)]
         struct Point {
             lat: f64,

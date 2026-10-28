@@ -19,6 +19,10 @@ pub struct Resummarize {
 }
 
 pub async fn run(app: Arc<App>) {
+    if let Err(e) = crate::calendar::refresh(&app).await {
+        tracing::warn!(error = %e, "calendar refresh deferred");
+    }
+    let mut refreshed = std::time::Instant::now();
     loop {
         match next_due(&app) {
             Some(id) => {
@@ -29,6 +33,18 @@ pub async fn run(app: Arc<App>) {
             None => {
                 // Idle: give one memo that runs on the iPhone's transcript Whisper's, if the GPU is free.
                 if upgrade_one(&app).await {
+                    continue;
+                }
+                if refreshed.elapsed() >= Duration::from_secs(900) {
+                    if let Err(e) = crate::calendar::refresh(&app).await {
+                        tracing::warn!(error = %e, "calendar refresh deferred");
+                    }
+                    refreshed = std::time::Instant::now();
+                }
+                if relink_one(&app).await {
+                    continue;
+                }
+                if crate::archive::archive_one(&app) {
                     continue;
                 }
                 tokio::select! {
@@ -85,6 +101,7 @@ pub async fn process(app: &App, id: &str) -> Result<(), String> {
         }
         Err(StepError::Failed(why)) => {
             let _ = app.store.update(id, |m| {
+                m.archived_rev = None;
                 m.attempts += 1;
                 m.error = Some(why.chars().take(1000).collect());
                 if m.attempts >= max {
@@ -375,6 +392,7 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
             entries.push((m.clone(), note_path.trim_end_matches(".md").to_owned()));
             entries.sort_by_key(|e| std::cmp::Reverse(e.0.recorded_at));
             let index_md = obsidian::index(&entries, tz);
+            write_atomic(&store.dir(id).join("note.md"), note_md.as_bytes())?;
             let bundle = obsidian::stage(
                 &work.join("obsidian"),
                 &base,
@@ -402,7 +420,9 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
                         "{}.md",
                         obsidian::safe_name(&crate::events::series_title(&event.title))
                     ));
-                    write_atomic(&index_path, obsidian::index(&series_entries, tz).as_bytes())?;
+                    let series_md = obsidian::index(&series_entries, tz);
+                    write_atomic(&index_path, series_md.as_bytes())?;
+                    write_atomic(&store.dir(id).join("series-index.md"), series_md.as_bytes())?;
                 }
             }
             obsidian::push(vault, &bundle).await?;
@@ -445,6 +465,8 @@ async fn steps(app: &App, id: &str) -> Result<(), StepError> {
 
     let m = store.update(id, |m| {
         m.status = Status::Done;
+        // --all may have archived this revision while it was still processing.
+        m.archived_rev = None;
         m.error = None;
         m.attempts = 0;
         m.next_attempt_at = None;
@@ -588,4 +610,68 @@ pub fn request_reprocess(
     })?;
     app.wake.notify_one();
     Ok(m)
+}
+
+/// Check one pending recording against the persistent cache, without network access.
+pub async fn relink_one(app: &App) -> bool {
+    let generation = app.calendar.generation();
+    let mut memos: Vec<_> = app
+        .store
+        .list()
+        .into_iter()
+        .filter(|m| {
+            // Memos still in the pipeline get their link in step 1b; this job takes the
+            // finished ones (Stateright `WorkerRelink`: done or failed).
+            m.event.is_none()
+                && kernel::may_auto_link(kernel::LinkSource::parse(m.event_source.as_deref()))
+                && matches!(m.status, Status::Done | Status::Failed)
+                && m.recorded_at >= Utc::now() - chrono::Duration::days(90)
+                && m.link_checked_gen.is_none_or(|g| g < generation)
+        })
+        .collect();
+    memos.sort_by_key(|m| m.recorded_at);
+    let Some(m) = memos.first() else {
+        return false;
+    };
+    let (generation, candidates) = crate::events::cached_candidates(app, m).await;
+    let picked = kernel::pick_event(
+        m.recorded_at.timestamp_millis(),
+        m.recording_end().timestamp_millis(),
+        &candidates.iter().map(|c| c.cand).collect::<Vec<_>>(),
+    );
+    let mut linked = false;
+    let result = app.store.update(&m.id, |m| {
+        if m.event.is_some()
+            || !kernel::may_auto_link(kernel::LinkSource::parse(m.event_source.as_deref()))
+            || !matches!(m.status, Status::Done | Status::Failed)
+        {
+            return;
+        }
+        m.link_checked_gen = Some(generation);
+        if let Some(i) = picked {
+            m.event = Some(candidates[i].event.clone());
+            m.event_source = Some("auto".into());
+            m.steps.linked_at = Some(Utc::now());
+            crate::events::apply_title(m, app.cfg.timezone);
+            m.steps.summarized_at = None;
+            m.steps.rendered_at = None;
+            m.steps.published_at = None;
+            m.revision += 1;
+            m.status = Status::Queued;
+            m.attempts = 0;
+            m.next_attempt_at = None;
+            m.error = None;
+            linked = true;
+        }
+    });
+    match result {
+        Ok(_) => {
+            tracing::info!(id = %m.id, generation, linked, "memo calendar re-link checked");
+            linked
+        }
+        Err(e) => {
+            tracing::warn!(id = %m.id, error = %e, "memo re-link failed");
+            false
+        }
+    }
 }

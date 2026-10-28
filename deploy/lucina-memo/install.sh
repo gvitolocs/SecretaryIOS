@@ -38,7 +38,10 @@ if [ -s "$HOME/.config/infisical-mcp/svc-lucina-memo.token" ]; then
 else
   echo "note: no ~/.config/infisical-mcp/svc-lucina-memo.token; summaries and briefs fall back (no DeepSeek key)" >&2
 fi
+install -m 0755 "$REPO/deploy/lucina-memo/lucina-memo-backup.sh" "$HOME/.local/bin/lucina-memo-backup"
+install -m 0644 "$REPO/deploy/lucina-memo/lucina-memo-backup.service" "$REPO/deploy/lucina-memo/lucina-memo-backup.timer" "$UNITS/"
 systemctl --user daemon-reload
+systemctl --user enable --now lucina-memo-backup.timer
 systemctl --user enable lucina-memo.service >/dev/null
 systemctl --user restart lucina-memo.service
 systemctl --user --no-pager --lines=0 status lucina-memo.service | head -5
