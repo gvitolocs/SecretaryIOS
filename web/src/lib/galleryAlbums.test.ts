@@ -33,6 +33,14 @@ describe("sectionAlbums", () => {
     expect(builtIn.map((a) => a.id)).toEqual(["sys-a", "sys-b"]);
   });
 
+  it("leaves out the built-in Screenshots album only while Things has categories", () => {
+    const all = [album("sys-screenshots", { systemKey: "screenshots", title: "Screenshots" }), album("sys-videos", { systemKey: "videos" })];
+    expect(sectionAlbums(all).builtIn.map((a) => a.id)).toEqual(["sys-screenshots", "sys-videos"]);
+    expect(sectionAlbums(all, { things: true }).builtIn.map((a) => a.id)).toEqual(["sys-videos"]);
+    // An owner's album that happens to be called Screenshots stays.
+    expect(sectionAlbums([album("mine", { title: "Screenshots" })], { things: true }).own).toHaveLength(1);
+  });
+
   it("keeps empty albums (a new album has no photos yet)", () => {
     expect(sectionAlbums([album("fresh", { count: 0 })]).own).toHaveLength(1);
   });
