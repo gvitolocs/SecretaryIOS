@@ -20,16 +20,17 @@ struct ApprovalsAPI: Sendable {
         let decision: String
         let payloadHash: String
         let proof: ApprovalProof?
+        let pin: String?
     }
 
     private struct DecideAnswer: Decodable { let status: String? }
 
-    /// Approve or deny. A sensitive approve carries `proof`. Returns the status the server reports.
+    /// Approve or deny. A sensitive approve carries `proof` (Face ID or passcode) or the owner's `pin`. Returns the status the server reports.
     @discardableResult
-    func decide(_ id: String, decision: ApprovalDecision, payloadHash: String, proof: ApprovalProof? = nil) async throws -> ApprovalStatus? {
+    func decide(_ id: String, decision: ApprovalDecision, payloadHash: String, proof: ApprovalProof? = nil, pin: String? = nil) async throws -> ApprovalStatus? {
         // Never retried on another endpoint after an ambiguous failure: the answer may have arrived.
         let answer: DecideAnswer = try await client.send("POST", "/v1/approvals/\(Self.segment(id))/decide",
-                                                         body: DecideBody(decision: decision.rawValue, payloadHash: payloadHash, proof: proof))
+                                                         body: DecideBody(decision: decision.rawValue, payloadHash: payloadHash, proof: proof, pin: pin))
         return ApprovalStatus(raw: answer.status)
     }
 
@@ -54,22 +55,50 @@ struct ApprovalsAPI: Sendable {
         let _: JSONValue = try await client.send("PUT", "/v1/approvals/settings", body: SettingsBody(mainDeviceId: id))
     }
 
+    struct SignatureProof: Codable, Equatable, Sendable { let signature: String }
+
     private struct RegisterBody: Encodable {
         let publicKey: String
         let label: String
-        let password: String
+        let proof: SignatureProof
     }
 
     private struct RegisterAnswer: Decodable { let keyId: String? }
 
-    /// Registers this device's Face ID key. The owner's password is required, so a stolen device token cannot add its own key.
-    func registerKey(publicKey: Data, label: String, password: String) async throws -> String {
+    /// What the new key signs to prove it is on this device: `secretary-approval-key-v1\n{thisDeviceId}\n{publicKeyB64}`.
+    static func registrationString(deviceId: String, publicKey: String) -> String {
+        "secretary-approval-key-v1\n\(deviceId)\n\(publicKey)"
+    }
+
+    /// What a registered key signs to change or remove the PIN without the current one.
+    static func pinProofString(deviceId: String) -> String {
+        "secretary-approval-pin-v1\n\(deviceId)"
+    }
+
+    /// Registers this device's Face ID key. No password: the device token authorizes it, and the new key proves
+    /// possession by signing `registrationString` (Face ID or the passcode).
+    func registerKey(publicKey: String, label: String, signature: String) async throws -> String {
         let answer: RegisterAnswer = try await client.send("POST", "/v1/approvals/keys",
-                                                           body: RegisterBody(publicKey: publicKey.base64EncodedString(), label: label, password: password))
+                                                           body: RegisterBody(publicKey: publicKey, label: label, proof: SignatureProof(signature: signature)))
         guard let keyId = answer.keyId, !keyId.isEmpty else {
             throw APIError.decoding(message: "The server did not return a key id.")
         }
         return keyId
+    }
+
+    private struct PinBody: Encodable {
+        let pin: String?
+        let currentPin: String?
+        let proof: SignatureProof?
+    }
+
+    /// Sets or replaces the 6-digit PIN. With a PIN already set, send `currentPin` or a `proof` from this device's key.
+    func setPin(_ pin: String, currentPin: String? = nil, proof: SignatureProof? = nil) async throws {
+        let _: JSONValue = try await client.send("PUT", "/v1/approvals/pin", body: PinBody(pin: pin, currentPin: currentPin, proof: proof))
+    }
+
+    func deletePin(currentPin: String? = nil, proof: SignatureProof? = nil) async throws {
+        let _: JSONValue = try await client.send("DELETE", "/v1/approvals/pin", body: PinBody(pin: nil, currentPin: currentPin, proof: proof))
     }
 
     func deleteKey() async throws {
@@ -91,14 +120,30 @@ enum ApprovalOutcome: Equatable, Sendable {
     case expired
     /// The server no longer knows the request.
     case gone
-    /// A sensitive approve needs the Face ID key, and this iPhone has none (or the server refused it).
+    /// A sensitive approve needs Face ID or a PIN, and this iPhone has neither set up (or the server refused it).
     case needsSetup
+    /// Face ID isn't usable here but a PIN is set: the PIN pad takes over.
+    case pinRequired
+    /// 403 `pin_wrong`: `attemptsLeft` tries before the PIN locks.
+    case pinWrong(attemptsLeft: Int?)
+    /// 429 `pin_locked`: try again in `minutes`.
+    case pinLocked(minutes: Int)
     case failed(String)
 
     var isFinal: Bool {
         switch self {
         case .approved, .denied, .alreadyDecided, .expired, .gone: return true
-        case .needsSetup, .failed: return false
+        case .needsSetup, .pinRequired, .pinWrong, .pinLocked, .failed: return false
+        }
+    }
+
+    /// The line under the PIN pad after a refused PIN.
+    var pinMessage: String? {
+        switch self {
+        case let .pinWrong(left?): return left == 1 ? "Wrong PIN, 1 try left" : "Wrong PIN, \(left) tries left"
+        case .pinWrong(nil): return "Wrong PIN"
+        case let .pinLocked(minutes): return "PIN locked, try again in \(minutes) min"
+        default: return nil
         }
     }
 
@@ -116,6 +161,11 @@ enum ApprovalOutcome: Equatable, Sendable {
             return .gone
         case (403, "biometric_required"):
             return .needsSetup
+        case (403, "pin_wrong"):
+            return .pinWrong(attemptsLeft: e.attemptsLeft)
+        case (429, "pin_locked"):
+            if case let .rateLimited(_, retryAfter, _) = e { return .pinLocked(minutes: max(1, Int((Double(retryAfter ?? 60) / 60).rounded(.up)))) }
+            return .pinLocked(minutes: 15)
         case (403, "not_main_device"):
             return .failed(String(localized: "Your main device answers first. This iPhone can answer in a few seconds."))
         case (403, "self_approval"):

@@ -9,6 +9,8 @@ protocol ApprovalSigning: Sendable {
     var keyId: String? { get }
     /// Makes a new Secure Enclave key (kept in memory, not saved) and returns its X9.63 public key.
     func prepareKey() throws -> Data
+    /// Signs `message` with the key just prepared (not yet saved), after Face ID or the passcode. Returns the base64 DER signature.
+    func signWithPreparedKey(_ message: String, reason: String) async throws -> String
     /// Saves the prepared key once the server registered it under `keyId`.
     func commitKey(keyId: String) throws
     func removeKey() throws
@@ -120,6 +122,17 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
 
     func sign(_ message: String, reason: String) async throws -> ApprovalProof {
         guard let stored = stored(), let blob = Data(base64Encoded: stored.data) else { throw ApprovalSignError.noKey }
+        let signature = try await Self.sign(message, reason: reason, keyData: blob)
+        return ApprovalProof(keyId: stored.keyId, signature: signature)
+    }
+
+    func signWithPreparedKey(_ message: String, reason: String) async throws -> String {
+        guard let key = lock.withLock({ prepared }) else { throw ApprovalSignError.noKey }
+        return try await Self.sign(message, reason: reason, keyData: key.dataRepresentation)
+    }
+
+    /// Face ID, or the passcode, then the Secure Enclave signature (base64 DER) over `message`.
+    private static func sign(_ message: String, reason: String, keyData blob: Data) async throws -> String {
         let context = LAContext()
         context.localizedReason = reason
         context.localizedCancelTitle = String(localized: "Cancel")
@@ -141,6 +154,6 @@ final class SecureEnclaveApprovalSigner: ApprovalSigning, @unchecked Sendable {
             if code == Int(errSecAuthFailed) { throw ApprovalSignError.cancelled }
             throw ApprovalSignError.failed("\(error.localizedDescription) (\(code))")
         }
-        return ApprovalProof(keyId: stored.keyId, signature: signature.base64EncodedString())
+        return signature.base64EncodedString()
     }
 }

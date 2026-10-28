@@ -25,30 +25,6 @@
         }
       }
     },
-    "NSFaceIDUsageDescription": {
-      "comment": "Face ID permission: signing a sensitive owner approval.",
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Secretary asks for Face ID before it approves a sensitive request for you, like revealing a secret or running a command as root."
-          }
-        },
-        "it": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Secretary chiede Face ID prima di approvare per te una richiesta delicata, come rivelare un segreto o eseguire un comando come root."
-          }
-        },
-        "da": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Secretary beder om Face ID, før den godkender en følsom anmodning for dig, som at afsløre en hemmelighed eller køre en kommando som root."
-          }
-        }
-      }
-    },
     "NSPhotoLibraryAddUsageDescription": {
       "comment": "Add-only photo permission: saving a chat photo.",
       "extractionState": "manual",

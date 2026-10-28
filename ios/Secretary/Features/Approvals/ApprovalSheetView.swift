@@ -58,6 +58,10 @@ private struct RequestView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 16)
         }
+        .task(id: item.id) {
+            // Whether a PIN is set decides which buttons a sensitive request shows.
+            if item.sensitive { await store.loadSettings() }
+        }
     }
 
     private var requester: some View {
@@ -122,57 +126,95 @@ private struct RequestView: View {
         }
     }
 
-    private var buttons: some View {
+    private var hasKey: Bool { store.signer.keyId != nil }
+
+    /// A sensitive approve with neither Face ID nor a PIN set up on this iPhone.
+    private var needsSetup: Bool {
+        guard item.sensitive else { return false }
+        if store.outcome == .needsSetup { return true }
+        return !hasKey && store.settings != nil && !store.hasPin
+    }
+
+    /// The PIN pad replaces the buttons: the owner asked for it, Face ID isn't usable, or there is no key.
+    private var showsPad: Bool {
+        guard item.sensitive, !needsSetup else { return false }
+        return store.pinEntry || (!hasKey && store.hasPin)
+    }
+
+    @ViewBuilder private var buttons: some View {
         let working = store.working
         let expired = item.isExpired(at: Date())
-        return VStack(spacing: 10) {
-            message
-            Button {
-                Task { await store.decide(.approve) }
-            } label: {
-                HStack(spacing: 8) {
-                    if working == .approve {
-                        ProgressView().tint(.white)
-                    } else {
-                        Image(systemName: item.sensitive ? "faceid" : "checkmark")
+        if showsPad {
+            VStack(spacing: 12) {
+                PinPad(title: "Enter your PIN", message: store.outcome?.pinMessage, busy: working != nil || expired) { pin in
+                    Task { await store.decide(.approve, pin: pin) }
+                }
+                HStack {
+                    if hasKey {
+                        Button("Use Face ID instead") { store.showPinPad(false) }
+                            .accessibilityIdentifier("approvalUseFaceID")
                     }
-                    Text(item.sensitive ? LocalizedStringKey("Approve with Face ID") : LocalizedStringKey("Approve"))
+                    Spacer()
+                    Button("Deny", role: .destructive) { Task { await store.decide(.deny) } }
+                        .disabled(working != nil || expired)
+                        .accessibilityIdentifier("approvalDeny")
                 }
-                .font(.headline)
-                .frame(maxWidth: .infinity, minHeight: 28)
+                .font(.subheadline.weight(.semibold))
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accentFill)
-            .disabled(working != nil || expired)
-            .accessibilityIdentifier("approvalApprove")
-            Button(role: .destructive) {
-                Task { await store.decide(.deny) }
-            } label: {
-                HStack(spacing: 8) {
-                    if working == .deny { ProgressView() } else { Image(systemName: "xmark") }
-                    Text("Deny")
+        } else {
+            VStack(spacing: 10) {
+                message
+                Button {
+                    Task { await store.decide(.approve) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if working == .approve {
+                            ProgressView().tint(.white)
+                        } else {
+                            Image(systemName: item.sensitive ? "faceid" : "checkmark")
+                        }
+                        Text(item.sensitive ? LocalizedStringKey("Approve with Face ID") : LocalizedStringKey("Approve"))
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 28)
                 }
-                .font(.headline)
-                .frame(maxWidth: .infinity, minHeight: 28)
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accentFill)
+                .disabled(working != nil || expired || needsSetup)
+                .accessibilityIdentifier("approvalApprove")
+                if item.sensitive, hasKey, store.hasPin {
+                    Button("Use PIN instead") { store.showPinPad(true) }
+                        .font(.subheadline.weight(.semibold))
+                        .disabled(working != nil || expired)
+                        .accessibilityIdentifier("approvalUsePIN")
+                }
+                Button(role: .destructive) {
+                    Task { await store.decide(.deny) }
+                } label: {
+                    HStack(spacing: 8) {
+                        if working == .deny { ProgressView() } else { Image(systemName: "xmark") }
+                        Text("Deny")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                }
+                .buttonStyle(.bordered)
+                .disabled(working != nil || expired)
+                .accessibilityIdentifier("approvalDeny")
             }
-            .buttonStyle(.bordered)
-            .disabled(working != nil || expired)
-            .accessibilityIdentifier("approvalDeny")
         }
     }
 
     @ViewBuilder private var message: some View {
-        switch store.outcome {
-        case .needsSetup:
+        if needsSetup {
             VStack(spacing: 6) {
-                Text("Face ID or passcode isn't set up for approvals on this iPhone, so a sensitive request can't be approved here.")
+                Text("Set up approvals in Settings → Approvals")
                     .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 Button("Open Settings") { openSettings() }.font(.footnote.weight(.semibold))
+                    .accessibilityIdentifier("approvalOpenSettings")
             }
-        case let .failed(text):
+        } else if case let .failed(text) = store.outcome {
             Text(text).font(.footnote).foregroundStyle(Theme.negative).multilineTextAlignment(.center)
-        default:
-            EmptyView()
         }
     }
 }

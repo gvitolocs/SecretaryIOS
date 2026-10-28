@@ -45,6 +45,8 @@ final class ApprovalsStore {
     private(set) var outcome: ApprovalOutcome?
     /// The answer being sent (Face ID, then the request).
     private(set) var working: ApprovalDecision?
+    /// The PIN pad is showing instead of the Approve / Deny buttons.
+    private(set) var pinEntry = false
 
     // Settings → Approvals
     private(set) var settings: ApprovalSettings?
@@ -186,6 +188,7 @@ final class ApprovalsStore {
 
     /// The prompt's X: not answered, so it returns the next time the app becomes active.
     func dismissSheet() async {
+        pinEntry = false
         if let item = sheetItem, outcome?.isFinal != true { dismissed.insert(item.id) }
         sheetItem = nil
         outcome = nil
@@ -196,6 +199,7 @@ final class ApprovalsStore {
     /// Opens the prompt on one request (a tapped notification), fetching it when it is not listed yet.
     func open(id: String) async {
         dismissed.remove(id)
+        pinEntry = false
         working = nil
         outcome = nil
         if let item = pending.first(where: { $0.id == id }) {
@@ -220,42 +224,72 @@ final class ApprovalsStore {
 
     // MARK: - Answering
 
-    /// The prompt's Approve / Deny.
-    func decide(_ decision: ApprovalDecision) async {
+    /// The prompt's Approve / Deny. `pin` is the owner's 6 digits from the PIN pad (a sensitive approve only).
+    func decide(_ decision: ApprovalDecision, pin: String? = nil) async {
         guard let item = sheetItem, working == nil, outcome?.isFinal != true else { return }
         working = decision
         outcome = nil
-        let result = await answer(item, decision)
+        let result = await answer(item, decision, pin: pin)
         working = nil
         guard let result else { return } // Face ID cancelled: the owner is back at the prompt
+        switch result {
+        case .pinRequired:
+            pinEntry = true
+            return
+        case .pinWrong, .pinLocked:
+            pinEntry = true
+        default:
+            break
+        }
         outcome = result
         await settle(item, result)
     }
 
-    /// Sends the answer. A sensitive approve is signed first (Face ID); a deny never is. Nil: Face ID was cancelled.
-    func answer(_ item: ApprovalItem, _ decision: ApprovalDecision) async -> ApprovalOutcome? {
+    /// This iPhone knows the owner set a PIN (from Settings → Approvals, loaded when a sensitive prompt opens).
+    var hasPin: Bool { settings?.hasPin ?? false }
+
+    /// Sends the answer. A sensitive approve carries the owner's `pin`, or is signed first (Face ID or the passcode);
+    /// a deny never needs either. Nil: Face ID was cancelled. `.pinRequired`: the PIN pad takes over.
+    func answer(_ item: ApprovalItem, _ decision: ApprovalDecision, pin: String? = nil) async -> ApprovalOutcome? {
         guard let api = api() else { return .failed(APIError.network(message: "").userMessage) }
         var proof: ApprovalProof?
+        var sentPin: String?
         if decision == .approve, item.sensitive {
-            guard signer.keyId != nil else { return .needsSetup }
-            do {
-                proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary)
-            } catch ApprovalSignError.cancelled {
-                return nil
-            } catch ApprovalSignError.noKey {
-                return .needsSetup
-            } catch {
-                return .failed((error as? ApprovalSignError)?.userMessage ?? error.localizedDescription)
+            if let pin {
+                sentPin = pin
+            } else if signer.keyId == nil {
+                return hasPin ? .pinRequired : .needsSetup
+            } else {
+                do {
+                    proof = try await signer.sign(item.signingString(for: .approve), reason: item.summary.isEmpty ? item.action : item.summary)
+                } catch ApprovalSignError.cancelled {
+                    return nil
+                } catch ApprovalSignError.noKey {
+                    return hasPin ? .pinRequired : .needsSetup
+                } catch let error as ApprovalSignError {
+                    // Face ID is locked out or not set up, or there is no Secure Enclave: the PIN takes over.
+                    if hasPin, error == .needsDeviceSecurity || error == .unavailable { return .pinRequired }
+                    return .failed(error.userMessage)
+                } catch {
+                    return .failed(error.localizedDescription)
+                }
             }
         }
         do {
-            try await api.decide(item.id, decision: decision, payloadHash: item.payloadHash, proof: proof)
+            try await api.decide(item.id, decision: decision, payloadHash: item.payloadHash, proof: proof, pin: sentPin)
             return decision == .approve ? .approved : .denied
         } catch {
             let e = APIError.wrap(error)
             if e.endsSession { onTransportError?(e) }
-            return ApprovalOutcome.from(error)
+            let result = ApprovalOutcome.from(error)
+            return result == .needsSetup && hasPin ? .pinRequired : result
         }
+    }
+
+    /// The PIN pad's "Use PIN instead" / its back button.
+    func showPinPad(_ on: Bool) {
+        pinEntry = on
+        if on, case .failed? = outcome { outcome = nil }
     }
 
     /// After an answer the server accepted or refused: tidy the list and the notification.
@@ -366,27 +400,98 @@ final class ApprovalsStore {
         await loadSettings()
     }
 
-    /// Makes the Secure Enclave key and registers it. The owner's password proves it is the owner.
-    func setUpFaceID(password: String) async {
-        guard let api = api(), !settingsBusy else { return }
+    /// Makes the Secure Enclave key and registers it. No password: this device's token authorizes the call, and the
+    /// new key proves it exists by signing `secretary-approval-key-v1\n{thisDeviceId}\n{publicKeyB64}` (Face ID or the
+    /// passcode). Returns true when the key is registered and saved.
+    @discardableResult
+    func setUpFaceID() async -> Bool {
+        guard let api = api(), !settingsBusy else { return false }
         settingsBusy = true
         defer { settingsBusy = false }
+        var registered = false
         do {
-            let publicKey = try signer.prepareKey()
-            let keyId = try await api.registerKey(publicKey: publicKey, label: String(localized: "Face ID on \(deviceLabel())"), password: password)
+            let latest = try await api.settings()
+            settings = latest
+            guard let deviceId = latest.thisDeviceId, !deviceId.isEmpty else {
+                throw ApprovalSignError.failed(String(localized: "The server doesn't know this iPhone yet. Open Secretary again in a moment."))
+            }
+            let publicKey = try signer.prepareKey().base64EncodedString()
+            let signature = try await signer.signWithPreparedKey(
+                ApprovalsAPI.registrationString(deviceId: deviceId, publicKey: publicKey),
+                reason: String(localized: "Set up approvals on this iPhone"))
+            let keyId = try await api.registerKey(publicKey: publicKey, label: "Face ID on \(deviceLabel())", signature: signature)
             try signer.commitKey(keyId: keyId)
+            settingsMessage = nil
+            registered = true
+        } catch ApprovalSignError.cancelled {
             settingsMessage = nil
         } catch let error as ApprovalSignError {
             settingsMessage = error.userMessage
         } catch {
             let e = APIError.wrap(error)
             switch e.status {
-            case 401, 403: settingsMessage = String(localized: "That password isn't right.")
             case 404, 405: settingsMessage = String(localized: "Approvals aren't on the server yet. Try again later."); availability = .unsupported
             default: settingsMessage = e.userMessage
             }
         }
         await loadSettings(keepMessage: true)
+        return registered
+    }
+
+    /// The result of choosing, changing or removing the PIN.
+    enum PinChange: Equatable {
+        case done
+        /// Face ID was cancelled: nothing was sent.
+        case cancelled
+        /// The server (or the app) refused; `currentWasWrong` sends the owner back to the current-PIN step.
+        case refused(String, currentWasWrong: Bool)
+    }
+
+    static func isValidPin(_ pin: String) -> Bool {
+        pin.count == 6 && pin.allSatisfy { $0 >= "0" && $0 <= "9" }
+    }
+
+    /// Chooses a PIN, or replaces the existing one. With a PIN already set, `currentPin` is the old PIN; without it, this
+    /// device's key signs `secretary-approval-pin-v1\n{thisDeviceId}` (Face ID or the passcode).
+    func setPIN(_ pin: String, currentPin: String? = nil) async -> PinChange {
+        await changePIN(currentPin: currentPin) { api, proof in try await api.setPin(pin, currentPin: currentPin, proof: proof) } validate: { Self.isValidPin(pin) && (currentPin.map(Self.isValidPin) ?? true) }
+    }
+
+    func removePIN(currentPin: String? = nil) async -> PinChange {
+        await changePIN(currentPin: currentPin) { api, proof in try await api.deletePin(currentPin: currentPin, proof: proof) } validate: { currentPin.map(Self.isValidPin) ?? true }
+    }
+
+    private func changePIN(currentPin: String?, send: (ApprovalsAPI, ApprovalsAPI.SignatureProof?) async throws -> Void, validate: () -> Bool) async -> PinChange {
+        guard validate() else { return .refused(String(localized: "A PIN is 6 digits."), currentWasWrong: false) }
+        guard let api = api() else { return .refused(APIError.network(message: "").userMessage, currentWasWrong: false) }
+        guard !settingsBusy else { return .cancelled }
+        settingsBusy = true
+        defer { settingsBusy = false }
+        do {
+            if settings == nil { settings = try await api.settings() }
+            var proof: ApprovalsAPI.SignatureProof?
+            if settings?.hasPin == true, currentPin == nil, signer.keyId != nil, let deviceId = settings?.thisDeviceId {
+                let signed = try await signer.sign(ApprovalsAPI.pinProofString(deviceId: deviceId), reason: String(localized: "Change your approval PIN"))
+                proof = ApprovalsAPI.SignatureProof(signature: signed.signature)
+            }
+            try await send(api, proof)
+            settingsMessage = nil
+            await loadSettings()
+            return .done
+        } catch ApprovalSignError.cancelled {
+            return .cancelled
+        } catch let error as ApprovalSignError {
+            return .refused(error.userMessage, currentWasWrong: false)
+        } catch {
+            let e = APIError.wrap(error)
+            if e.endsSession { onTransportError?(e) }
+            let outcome = ApprovalOutcome.from(error)
+            if let text = outcome.pinMessage {
+                if case .pinWrong = outcome { return .refused(text, currentWasWrong: true) }
+                return .refused(text, currentWasWrong: false)
+            }
+            return .refused(e.userMessage, currentWasWrong: false)
+        }
     }
 
     func removeFaceID() async {
@@ -403,6 +508,7 @@ final class ApprovalsStore {
     func reset() {
         let ids = pending.map(\.id)
         pending = []
+        pinEntry = false
         sheetItem = nil
         outcome = nil
         working = nil

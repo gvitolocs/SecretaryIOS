@@ -133,10 +133,16 @@ When Lucina, the secrets broker or agentd need the owner's permission, the serve
   for a sensitive one, whose Approve also opens the app, because a notification's buttons are per category).
   Deny, and Approve of a non-sensitive request, are answered from the notification; a sensitive Approve opens the
   prompt. No APNs: the free Personal Team has none.
-- A sensitive approve is signed: a Secure Enclave P-256 key (`[.privateKeyUsage, .biometryCurrentSet]`) signs
-  `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}` after Face ID, and the base64 DER signature goes in
-  `proof`. Settings → Approvals registers the key (`POST /v1/approvals/keys`, needs the owner's password) and
-  picks the main device. Deny never needs a proof.
+- A sensitive approve is signed: a Secure Enclave P-256 key (`[.privateKeyUsage, .userPresence]`) signs
+  `secretary-approval-v1\n{id}\n{payloadHash}\n{decision}` after Face ID or the passcode, and the base64 DER
+  signature goes in `proof`. Or, with an optional 6-digit PIN (v2 addendum), `pin` goes in the decide body: the
+  fallback when Face ID isn't available (PIN pad; 403 `pin_wrong` + `attemptsLeft`, 429 `pin_locked`). Deny never
+  needs either.
+- Setup has no password (v2): Settings → Approvals → Set up creates the key and registers it
+  (`POST /v1/approvals/keys {publicKey, label, proof:{signature}}`; the new key signs
+  `secretary-approval-key-v1\n{thisDeviceId}\n{publicKeyB64}`), then offers "Choose a PIN (optional)"
+  (`PUT /v1/approvals/pin`). Changing or removing the PIN sends the current PIN or a proof over
+  `secretary-approval-pin-v1\n{thisDeviceId}`. The approvals UI is English only (no it/da strings).
 - Screenshots: `SHOTS="approval approval-plain" scripts/device-shots.sh …` (fixture data, nothing is sent).
 ## Device bridge (docs/device-bridge.md)
 

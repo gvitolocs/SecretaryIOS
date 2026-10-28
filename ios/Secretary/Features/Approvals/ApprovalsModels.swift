@@ -247,8 +247,11 @@ struct ApprovalSettings: Decodable, Equatable, Sendable {
     var escalateAfterSecs: Int
     var devices: [ApprovalDevice]
     var thisDeviceId: String?
+    /// A 6-digit approval PIN is set (the fallback when Face ID isn't available).
+    var hasPin: Bool
 
-    init(mainDeviceId: String? = nil, escalateAfterSecs: Int = 30, devices: [ApprovalDevice] = [], thisDeviceId: String? = nil) {
+    init(mainDeviceId: String? = nil, escalateAfterSecs: Int = 30, devices: [ApprovalDevice] = [], thisDeviceId: String? = nil, hasPin: Bool = false) {
+        self.hasPin = hasPin
         self.mainDeviceId = mainDeviceId
         self.escalateAfterSecs = escalateAfterSecs
         self.devices = devices
@@ -261,9 +264,10 @@ struct ApprovalSettings: Decodable, Equatable, Sendable {
         escalateAfterSecs = (try? c.decodeIfPresent(Int.self, forKey: .escalateAfterSecs)) ?? 30
         devices = (try? c.decodeIfPresent(LossyArray<ApprovalDevice>.self, forKey: .devices))?.values ?? []
         thisDeviceId = (try? c.decodeIfPresent(String.self, forKey: .thisDeviceId)).flatMap { $0 }
+        hasPin = (try? c.decodeIfPresent(Bool.self, forKey: .hasPin)) ?? false
     }
 
-    private enum CodingKeys: String, CodingKey { case mainDeviceId, escalateAfterSecs, devices, thisDeviceId }
+    private enum CodingKeys: String, CodingKey { case mainDeviceId, escalateAfterSecs, devices, thisDeviceId, hasPin }
 
     var thisDevice: ApprovalDevice? { devices.first { $0.id == thisDeviceId } }
 

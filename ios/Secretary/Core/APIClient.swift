@@ -300,8 +300,11 @@ final class APIClient: @unchecked Sendable {
         struct Body: Decodable {
             let code: String?
             let message: String?
+            let attemptsLeft: Int?
         }
         let error: Body?
+        /// `pin_wrong` carries the tries left next to (or inside) the error.
+        let attemptsLeft: Int?
     }
 
     /// Engine-shaped failure: `{"ok": false, "code": "...", "error": "..."}`.
@@ -317,6 +320,7 @@ final class APIClient: @unchecked Sendable {
         if let envelope = try? decoder.decode(ErrorEnvelope.self, from: response.data), let body = envelope.error {
             if let c = body.code, !c.isEmpty { code = c }
             if let m = body.message { message = m }
+            if code == "pin_wrong", let left = body.attemptsLeft ?? envelope.attemptsLeft { message = "\(APIError.attemptsLeftPrefix)\(left)" }
         } else if let engine = try? decoder.decode(EngineErrorBody.self, from: response.data) {
             if let c = engine.code, !c.isEmpty { code = c }
             if let m = engine.error { message = m }

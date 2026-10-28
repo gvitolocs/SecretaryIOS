@@ -9,10 +9,17 @@ final class FakeApprovalSigner: ApprovalSigning, @unchecked Sendable {
     var error: Error?
     var prepareError: Error?
     private(set) var signed: [(message: String, reason: String)] = []
+    private(set) var preparedSigned: [String] = []
+    var preparedError: Error?
 
     func prepareKey() throws -> Data {
         if let prepareError { throw prepareError }
         return Data([4, 1, 2, 3])
+    }
+    func signWithPreparedKey(_ message: String, reason: String) async throws -> String {
+        preparedSigned.append(message)
+        if let preparedError { throw preparedError }
+        return "bmV3c2ln"
     }
     func commitKey(keyId: String) throws { self.keyId = keyId }
     func removeKey() throws { keyId = nil }
@@ -61,6 +68,13 @@ private func itemJSON(id: String, sensitive: Bool, status: String? = nil, extra:
      "risk":"high","sensitive":\(sensitive),"payloadHash":"sha256:\(String(repeating: "ab", count: 32))",
      "createdAt":"2026-10-28T10:00:00.123456789Z","expiresAt":"2026-10-28T10:05:00Z","escalated":false,"youAreMain":true\
      \(status.map { ",\"status\":\"\($0)\",\"decidedBy\":\"iPad\"" } ?? "")\(extra)}
+    """
+}
+
+private func settingsJSON(hasPin: Bool, serverKey: Bool = false) -> String {
+    """
+    {"mainDeviceId":null,"thisDeviceId":"dev_1","hasPin":\(hasPin),
+     "devices":[{"id":"dev_1","name":"iPhone","hasBiometricKey":\(serverKey)}]}
     """
 }
 
@@ -466,7 +480,7 @@ final class ApprovalsTests: XCTestCase {
         let api = ApprovalsAPI(client: StubURLProtocol.makeClient())
         try await api.setMainDevice("dev_1")
         try await api.setMainDevice(nil)
-        let keyId = try await api.registerKey(publicKey: Data([4, 9, 9]), label: "Face ID on iPhone", password: "pw")
+        let keyId = try await api.registerKey(publicKey: "BAkJ", label: "Face ID on iPhone", signature: "c2ln")
         try await api.deleteKey()
         XCTAssertEqual(keyId, "k1b2c3d4")
         let r = StubURLProtocol.requests
@@ -474,35 +488,53 @@ final class ApprovalsTests: XCTestCase {
                        ["PUT /v1/approvals/settings", "PUT /v1/approvals/settings", "POST /v1/approvals/keys", "DELETE /v1/approvals/keys"])
         XCTAssertEqual(String(data: r[0].httpBody ?? Data(), encoding: .utf8), #"{"mainDeviceId":"dev_1"}"#)
         XCTAssertEqual(String(data: r[1].httpBody ?? Data(), encoding: .utf8), #"{"mainDeviceId":null}"#)
-        let body = decodeBody(r[2])
-        XCTAssertEqual(body["publicKey"] as? String, Data([4, 9, 9]).base64EncodedString())
-        XCTAssertEqual(body["label"] as? String, "Face ID on iPhone")
-        XCTAssertEqual(body["password"] as? String, "pw")
         XCTAssertTrue(r.allSatisfy { $0.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Bearer ") ?? false })
     }
 
-    func testSettingUpFaceIDRegistersAndStoresTheKey() async throws {
+    // MARK: v2: setup without a password
+
+    func testRegistrationSigningStringAndBodyHaveNoPassword() async throws {
         signer.keyId = nil
         StubURLProtocol.handler = { request in
             switch (request.httpMethod, request.url?.path) {
             case ("POST", "/v1/approvals/keys"): return .init(status: 201, body: #"{"keyId":"key_new"}"#)
-            case ("GET", "/v1/approvals/settings"):
-                return .init(body: #"{"mainDeviceId":null,"thisDeviceId":"dev_1","devices":[{"id":"dev_1","name":"iPhone","hasBiometricKey":true}]}"#)
+            case ("GET", "/v1/approvals/settings"): return .init(body: settingsJSON(hasPin: false, serverKey: true))
             default: return .init(body: "{}")
             }
         }
-        await store.loadSettings()
-        XCTAssertEqual(store.keyStatus, .lostLocally)
-        await store.setUpFaceID(password: "owner-password")
+        XCTAssertEqual(ApprovalsAPI.registrationString(deviceId: "dev_1", publicKey: "BAECAw=="), "secretary-approval-key-v1\ndev_1\nBAECAw==")
+        let ok = await store.setUpFaceID()
+        XCTAssertTrue(ok)
+        // The new key signs "secretary-approval-key-v1\n{thisDeviceId}\n{publicKeyB64}" with the exact string it sends.
+        let sentKey = Data([4, 1, 2, 3]).base64EncodedString()
+        XCTAssertEqual(signer.preparedSigned, ["secretary-approval-key-v1\ndev_1\n\(sentKey)"])
         XCTAssertEqual(signer.keyId, "key_new")
         XCTAssertEqual(store.keyStatus, .ready)
         XCTAssertNil(store.settingsMessage)
+        let post = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "POST" && $0.url?.path == "/v1/approvals/keys" })
+        let body = decodeBody(post)
+        XCTAssertEqual(body["publicKey"] as? String, sentKey)
+        XCTAssertEqual(body["label"] as? String, "Face ID on iPhone")
+        XCTAssertEqual(body["proof"] as? [String: String], ["signature": "bmV3c2ln"])
+        XCTAssertNil(body["password"])
+        XCTAssertEqual(Set(body.keys), ["publicKey", "label", "proof"])
+    }
+
+    func testCancellingFaceIDDuringSetupRegistersNothing() async throws {
+        signer.keyId = nil
+        signer.preparedError = ApprovalSignError.cancelled
+        StubURLProtocol.handler = { _ in .init(body: settingsJSON(hasPin: false)) }
+        let ok = await store.setUpFaceID()
+        XCTAssertFalse(ok)
+        XCTAssertNil(signer.keyId)
+        XCTAssertNil(store.settingsMessage)
+        XCTAssertTrue(StubURLProtocol.requests.filter { $0.httpMethod == "POST" }.isEmpty)
     }
 
     func testSettingUpOnAServerWithoutApprovalsSaysSo() async throws {
         signer.keyId = nil
         StubURLProtocol.handler = { _ in .init(status: 404, body: #"{"error":{"code":"not_found","message":"no route"}}"#) }
-        await store.setUpFaceID(password: "pw")
+        await store.setUpFaceID()
         XCTAssertEqual(store.settingsMessage, "Approvals aren't on the server yet. Try again later.")
         XCTAssertNil(signer.keyId)
         XCTAssertEqual(store.availability, .unsupported)
@@ -519,9 +551,10 @@ final class ApprovalsTests: XCTestCase {
         let failing = FakeApprovalSigner()
         failing.keyId = nil
         failing.prepareError = ApprovalSignError.needsDeviceSecurity
+        StubURLProtocol.handler = { _ in .init(body: settingsJSON(hasPin: false)) }
         let client = StubURLProtocol.makeClient()
         let store = ApprovalsStore(api: { ApprovalsAPI(client: client) }, signer: failing, notifier: notifier, defaults: defaults)
-        await store.setUpFaceID(password: "pw")
+        await store.setUpFaceID()
         XCTAssertEqual(store.settingsMessage, ApprovalSignError.needsDeviceSecurity.userMessage)
         XCTAssertTrue(StubURLProtocol.requests.filter { $0.url?.path == "/v1/approvals/keys" }.isEmpty)
         // Signing refused for the same reason is a message on the prompt, not a silent dead end.
@@ -532,15 +565,197 @@ final class ApprovalsTests: XCTestCase {
         XCTAssertEqual(result, .failed(ApprovalSignError.needsDeviceSecurity.userMessage))
     }
 
-    func testAWrongPasswordIsSaidPlainlyAndStoresNothing() async throws {
+    // MARK: v2: the PIN
+
+    func testPinRequestBodies() async throws {
+        let api = ApprovalsAPI(client: StubURLProtocol.makeClient())
+        try await api.setPin("123456")
+        try await api.setPin("654321", currentPin: "123456")
+        try await api.setPin("111111", proof: .init(signature: "c2ln"))
+        try await api.deletePin(currentPin: "654321")
+        try await api.deletePin(proof: .init(signature: "c2ln"))
+        let r = StubURLProtocol.requests
+        XCTAssertEqual(r.map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" },
+                       ["PUT /v1/approvals/pin", "PUT /v1/approvals/pin", "PUT /v1/approvals/pin", "DELETE /v1/approvals/pin", "DELETE /v1/approvals/pin"])
+        XCTAssertEqual(decodeBody(r[0]) as NSDictionary, ["pin": "123456"])
+        XCTAssertEqual(decodeBody(r[1]) as NSDictionary, ["pin": "654321", "currentPin": "123456"])
+        XCTAssertEqual(decodeBody(r[2]) as NSDictionary, ["pin": "111111", "proof": ["signature": "c2ln"]])
+        XCTAssertEqual(decodeBody(r[3]) as NSDictionary, ["currentPin": "654321"])
+        XCTAssertEqual(decodeBody(r[4]) as NSDictionary, ["proof": ["signature": "c2ln"]])
+    }
+
+    func testChoosingAPinNeedsNoProofAndTheStoreSendsIt() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals/settings" ? .init(body: settingsJSON(hasPin: false, serverKey: true)) : .init(body: "{}")
+        }
+        let result = await store.setPIN("123456")
+        XCTAssertEqual(result, .done)
+        XCTAssertTrue(signer.signed.isEmpty)
+        let put = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "PUT" && $0.url?.path == "/v1/approvals/pin" })
+        XCTAssertEqual(decodeBody(put) as NSDictionary, ["pin": "123456"])
+        // Not six digits: refused before anything is sent.
+        let before = StubURLProtocol.requests.count
+        let bad = await store.setPIN("12345")
+        XCTAssertEqual(bad, .refused("A PIN is 6 digits.", currentWasWrong: false))
+        XCTAssertEqual(StubURLProtocol.requests.count, before)
+    }
+
+    func testChangingThePinSignsTheProofStringWhenThereIsAKey() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals/settings" ? .init(body: settingsJSON(hasPin: true, serverKey: true)) : .init(body: "{}")
+        }
+        XCTAssertEqual(ApprovalsAPI.pinProofString(deviceId: "dev_1"), "secretary-approval-pin-v1\ndev_1")
+        let result = await store.setPIN("654321")
+        XCTAssertEqual(result, .done)
+        XCTAssertEqual(signer.signed.map(\.message), ["secretary-approval-pin-v1\ndev_1"])
+        let put = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "PUT" && $0.url?.path == "/v1/approvals/pin" })
+        XCTAssertEqual(decodeBody(put) as NSDictionary, ["pin": "654321", "proof": ["signature": "c2ln"]])
+        // Removing it the same way.
+        let removed = await store.removePIN()
+        XCTAssertEqual(removed, .done)
+        XCTAssertEqual(signer.signed.map(\.message), ["secretary-approval-pin-v1\ndev_1", "secretary-approval-pin-v1\ndev_1"])
+        let delete = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "DELETE" && $0.url?.path == "/v1/approvals/pin" })
+        XCTAssertEqual(decodeBody(delete) as NSDictionary, ["proof": ["signature": "c2ln"]])
+    }
+
+    func testChangingThePinWithTheCurrentPinSignsNothing() async throws {
         signer.keyId = nil
         StubURLProtocol.handler = { request in
-            if request.httpMethod == "POST" { return .init(status: 403, body: #"{"error":{"code":"invalid_password","message":"no"}}"#) }
-            return .init(body: #"{"thisDeviceId":"dev_1","devices":[{"id":"dev_1","name":"iPhone"}]}"#)
+            request.url?.path == "/v1/approvals/settings" ? .init(body: settingsJSON(hasPin: true)) : .init(body: "{}")
         }
-        await store.setUpFaceID(password: "nope")
-        XCTAssertNil(signer.keyId)
-        XCTAssertEqual(store.settingsMessage, "That password isn't right.")
-        XCTAssertEqual(store.keyStatus, .notSetUp)
+        let result = await store.setPIN("654321", currentPin: "123456")
+        XCTAssertEqual(result, .done)
+        XCTAssertTrue(signer.signed.isEmpty)
+        let put = try XCTUnwrap(StubURLProtocol.requests.first { $0.httpMethod == "PUT" && $0.url?.path == "/v1/approvals/pin" })
+        XCTAssertEqual(decodeBody(put) as NSDictionary, ["pin": "654321", "currentPin": "123456"])
+    }
+
+    func testAWrongCurrentPinSendsTheOwnerBackToTheCurrentStep() async throws {
+        signer.keyId = nil
+        StubURLProtocol.handler = { request in
+            if request.httpMethod == "PUT" { return .init(status: 403, body: #"{"error":{"code":"pin_wrong","message":"no"},"attemptsLeft":2}"#) }
+            return .init(body: settingsJSON(hasPin: true))
+        }
+        let result = await store.setPIN("654321", currentPin: "000000")
+        XCTAssertEqual(result, .refused("Wrong PIN, 2 tries left", currentWasWrong: true))
+    }
+
+    func testDecodesHasPin() throws {
+        XCTAssertTrue(try Fixtures.decode(ApprovalSettings.self, settingsJSON(hasPin: true)).hasPin)
+        XCTAssertFalse(try Fixtures.decode(ApprovalSettings.self, settingsJSON(hasPin: false)).hasPin)
+        XCTAssertFalse(try Fixtures.decode(ApprovalSettings.self, #"{"thisDeviceId":"dev_1","devices":[]}"#).hasPin)
+    }
+
+    // MARK: v2: approving with the PIN
+
+    func testPinFallbackWhenThereIsNoKey() async throws {
+        signer.keyId = nil
+        StubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/approvals/settings" { return .init(body: settingsJSON(hasPin: true)) }
+            return .init(body: #"{"status":"approved"}"#)
+        }
+        let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_pin", sensitive: true))
+        await store.loadSettings()
+        // No key, PIN set: nothing is sent, the pad opens.
+        let first = await store.answer(item, .approve)
+        XCTAssertEqual(first, .pinRequired)
+        XCTAssertTrue(decideRequests().isEmpty)
+        await store.apply([item])
+        await store.decide(.approve)
+        XCTAssertTrue(store.pinEntry)
+        XCTAssertNil(store.outcome)
+        XCTAssertTrue(decideRequests().isEmpty)
+        // The PIN goes in the decide body, with no proof, and nothing is signed.
+        await store.decide(.approve, pin: "123456")
+        XCTAssertEqual(store.outcome, .approved)
+        XCTAssertTrue(signer.signed.isEmpty)
+        let body = decodeBody(try XCTUnwrap(decideRequests().first))
+        XCTAssertEqual(body["decision"] as? String, "approve")
+        XCTAssertEqual(body["payloadHash"] as? String, item.payloadHash)
+        XCTAssertEqual(body["pin"] as? String, "123456")
+        XCTAssertNil(body["proof"])
+    }
+
+    func testUsePinInsteadWhenTheKeyExists() async throws {
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
+        let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_pin2", sensitive: true))
+        let result = await store.answer(item, .approve, pin: "246810")
+        XCTAssertEqual(result, .approved)
+        XCTAssertTrue(signer.signed.isEmpty)
+        XCTAssertEqual(decodeBody(try XCTUnwrap(decideRequests().first))["pin"] as? String, "246810")
+    }
+
+    func testFaceIDUnavailableFallsBackToThePinWhenSet() async throws {
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals/settings" ? .init(body: settingsJSON(hasPin: true, serverKey: true)) : .init(body: "{}")
+        }
+        await store.loadSettings()
+        signer.error = ApprovalSignError.needsDeviceSecurity
+        let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_lock", sensitive: true))
+        let result = await store.answer(item, .approve)
+        XCTAssertEqual(result, .pinRequired)
+        XCTAssertTrue(decideRequests().isEmpty)
+    }
+
+    func testNeitherKeyNorPinMeansSetUpFirst() async throws {
+        signer.keyId = nil
+        StubURLProtocol.handler = { request in
+            request.url?.path == "/v1/approvals/settings" ? .init(body: settingsJSON(hasPin: false)) : .init(body: "{}")
+        }
+        await store.loadSettings()
+        XCTAssertFalse(store.hasPin)
+        let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_setup", sensitive: true))
+        let result = await store.answer(item, .approve)
+        XCTAssertEqual(result, .needsSetup)
+        XCTAssertTrue(decideRequests().isEmpty)
+        // A request that is not sensitive never needs either.
+        let plain = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_plain2", sensitive: false))
+        StubURLProtocol.handler = { _ in .init(body: #"{"status":"approved"}"#) }
+        let ok = await store.answer(plain, .approve)
+        XCTAssertEqual(ok, .approved)
+    }
+
+    func testPinWrongAndPinLockedAreMapped() async throws {
+        func outcome(_ status: Int, _ code: String, body: String, headers: [String: String] = [:]) async throws -> ApprovalOutcome {
+            StubURLProtocol.handler = { _ in
+                .init(status: status, body: body, headers: ["Content-Type": "application/json"].merging(headers) { $1 })
+            }
+            let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_m", sensitive: true))
+            let result = await store.answer(item, .approve, pin: "000000")
+            return try XCTUnwrap(result)
+        }
+        // attemptsLeft next to the error, or inside it.
+        let a = try await outcome(403, "pin_wrong", body: #"{"error":{"code":"pin_wrong","message":"Wrong PIN"},"attemptsLeft":3}"#)
+        XCTAssertEqual(a, .pinWrong(attemptsLeft: 3))
+        XCTAssertEqual(a.pinMessage, "Wrong PIN, 3 tries left")
+        let b = try await outcome(403, "pin_wrong", body: #"{"error":{"code":"pin_wrong","message":"Wrong PIN","attemptsLeft":1}}"#)
+        XCTAssertEqual(b, .pinWrong(attemptsLeft: 1))
+        XCTAssertEqual(b.pinMessage, "Wrong PIN, 1 try left")
+        let c = try await outcome(403, "pin_wrong", body: #"{"error":{"code":"pin_wrong","message":"Wrong PIN"}}"#)
+        XCTAssertEqual(c, .pinWrong(attemptsLeft: nil))
+        XCTAssertEqual(c.pinMessage, "Wrong PIN")
+        let locked = try await outcome(429, "pin_locked", body: #"{"error":{"code":"pin_locked","message":"locked"}}"#, headers: ["Retry-After": "900"])
+        XCTAssertEqual(locked, .pinLocked(minutes: 15))
+        XCTAssertEqual(locked.pinMessage, "PIN locked, try again in 15 min")
+        let soon = try await outcome(429, "pin_locked", body: #"{"error":{"code":"pin_locked","message":"locked"}}"#, headers: ["Retry-After": "61"])
+        XCTAssertEqual(soon, .pinLocked(minutes: 2))
+        XCTAssertFalse(a.isFinal)
+        XCTAssertFalse(locked.isFinal)
+    }
+
+    func testAWrongPinKeepsThePadOpenWithTheTriesLeft() async throws {
+        signer.keyId = nil
+        StubURLProtocol.handler = { request in
+            if request.url?.path == "/v1/approvals/settings" { return .init(body: settingsJSON(hasPin: true)) }
+            return .init(status: 403, body: #"{"error":{"code":"pin_wrong","message":"no"},"attemptsLeft":4}"#)
+        }
+        await store.loadSettings()
+        let item = try Fixtures.decode(ApprovalItem.self, itemJSON(id: "apr_w", sensitive: true))
+        await store.apply([item])
+        await store.decide(.approve, pin: "000000")
+        XCTAssertEqual(store.outcome, .pinWrong(attemptsLeft: 4))
+        XCTAssertTrue(store.pinEntry)
+        XCTAssertEqual(store.sheetItem?.id, "apr_w")
+        XCTAssertFalse(store.outcome?.isFinal ?? true)
     }
 }
