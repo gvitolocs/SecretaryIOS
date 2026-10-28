@@ -238,6 +238,14 @@ samp {
   flex-direction: column;
 }
 
+/* On /weight the weight view scrolls itself (styles.css .weight); on /training it is one block of a longer page
+   that scrolls as a whole, so it takes its full height instead of a clipped scroll box of its own. */
+.training-page > .weight {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
+}
+
 .weight-all-link {
   align-self: flex-start;
   color: var(--lu-accent);
