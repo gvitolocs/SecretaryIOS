@@ -62,7 +62,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(crate::dedup::HASH_SCHEMA)
 }
 
-/// The item an id stands for now: the survivor when `id` is a hidden duplicate, else `id`.
+/// The item an id resolves to: the survivor when `id` is a hidden duplicate, else `id` itself.
 pub fn resolve(c: &Connection, id: &str) -> rusqlite::Result<String> {
     Ok(c.query_row(
         "SELECT duplicate_of FROM item_links WHERE item_id = ?1 AND undone_at IS NULL",
