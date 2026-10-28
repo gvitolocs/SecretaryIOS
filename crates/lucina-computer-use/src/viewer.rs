@@ -94,8 +94,12 @@ impl ViewerConfig {
                 .filter(|v| !v.is_empty())
         };
         Self {
-            cua_home: PathBuf::from(text("LUCINA_CUA_HOME").unwrap_or_else(|| DEFAULT_CUA_HOME.into())),
-            cua_bin: PathBuf::from(text("LUCINA_CUA_BIN").unwrap_or_else(|| DEFAULT_CUA_BIN.into())),
+            cua_home: PathBuf::from(
+                text("LUCINA_CUA_HOME").unwrap_or_else(|| DEFAULT_CUA_HOME.into()),
+            ),
+            cua_bin: PathBuf::from(
+                text("LUCINA_CUA_BIN").unwrap_or_else(|| DEFAULT_CUA_BIN.into()),
+            ),
         }
     }
 }
@@ -148,6 +152,12 @@ fn token(cfg: &ViewerConfig, sb: SandboxId) -> Result<String, Error> {
         .ok_or_else(|| Error::Viewer(format!("no Cua credential for {}", sb.space())))
 }
 
+/// The sandbox's API address and its full credential (not a viewer ticket):
+/// what `lucina-server's computer_files` uses for its own file and clipboard calls.
+pub fn api_credential(cfg: &ViewerConfig, sb: SandboxId) -> Result<(String, String), Error> {
+    Ok((machine_url(cfg, sb)?, token(cfg, sb)?))
+}
+
 /// The `CreateViewerTicket` request body.
 pub fn ticket_request(mode: ViewMode, ttl: Duration) -> Value {
     json!({
@@ -183,29 +193,49 @@ pub fn parse_ticket(stdout: &str, machine: String) -> Result<ViewTicket, Error> 
 }
 
 /// Mints a viewer ticket on the sandbox.
-pub async fn mint(cfg: &ViewerConfig, sb: SandboxId, mode: ViewMode, ttl: Duration) -> Result<ViewTicket, Error> {
+pub async fn mint(
+    cfg: &ViewerConfig,
+    sb: SandboxId,
+    mode: ViewMode,
+    ttl: Duration,
+) -> Result<ViewTicket, Error> {
     let machine = machine_url(cfg, sb)?;
     let token = token(cfg, sb)?;
     let body = ticket_request(mode, ttl).to_string();
     let mut cmd = Command::new(&cfg.cua_bin);
-    cmd.args(["spacesd", "call", &machine, "SystemService/CreateViewerTicket", &body])
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("HOME", std::env::var("HOME").unwrap_or_else(|_| "/home/nez".into()))
-        .env("CUA_HOME", &cfg.cua_home)
-        .env("CUA_ENV_TOKEN", token)
-        .env("DO_NOT_TRACK", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    cmd.args([
+        "spacesd",
+        "call",
+        &machine,
+        "SystemService/CreateViewerTicket",
+        &body,
+    ])
+    .env_clear()
+    .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+    .env(
+        "HOME",
+        std::env::var("HOME").unwrap_or_else(|_| "/home/nez".into()),
+    )
+    .env("CUA_HOME", &cfg.cua_home)
+    .env("CUA_ENV_TOKEN", token)
+    .env("DO_NOT_TRACK", "1")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
     let out = tokio::time::timeout(CLI_TIMEOUT, cmd.output())
         .await
         .map_err(|_| Error::Viewer("ticket request timed out".into()))?
         .map_err(|e| Error::Viewer(format!("cua CLI: {e}")))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        let first = err.lines().next().unwrap_or("").chars().take(200).collect::<String>();
+        let first = err
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
         return Err(Error::Viewer(format!("ticket refused: {first}")));
     }
     parse_ticket(&String::from_utf8_lossy(&out.stdout), machine)
@@ -274,10 +304,23 @@ mod tests {
             r#"{"name":"lucina-workspace","api_port":32771,"exposed_ports":{"3211":32999}}"#,
         )
         .unwrap();
-        let cfg = ViewerConfig { cua_home: dir.path().into(), cua_bin: "/bin/false".into() };
-        assert_eq!(machine_url(&cfg, SandboxId::Workspace).unwrap(), "http://127.0.0.1:32999");
-        assert_eq!(machine_url(&cfg, SandboxId::Android).unwrap(), "http://127.0.0.1:32792");
-        std::fs::write(dir.path().join("sandboxes/lucina-workspace.json"), r#"{"api_port":0}"#).unwrap();
+        let cfg = ViewerConfig {
+            cua_home: dir.path().into(),
+            cua_bin: "/bin/false".into(),
+        };
+        assert_eq!(
+            machine_url(&cfg, SandboxId::Workspace).unwrap(),
+            "http://127.0.0.1:32999"
+        );
+        assert_eq!(
+            machine_url(&cfg, SandboxId::Android).unwrap(),
+            "http://127.0.0.1:32792"
+        );
+        std::fs::write(
+            dir.path().join("sandboxes/lucina-workspace.json"),
+            r#"{"api_port":0}"#,
+        )
+        .unwrap();
         assert!(machine_url(&cfg, SandboxId::Workspace).is_err());
     }
 
@@ -302,8 +345,13 @@ mod tests {
             r#"{"direct:127.0.0.1:32792":{"token":"tok-secret"}}"#,
         )
         .unwrap();
-        let cfg = ViewerConfig { cua_home: dir.path().into(), cua_bin: "/bin/false".into() };
-        let e = mint(&cfg, SandboxId::Android, ViewMode::Watch, VIEW_TTL).await.unwrap_err();
+        let cfg = ViewerConfig {
+            cua_home: dir.path().into(),
+            cua_bin: "/bin/false".into(),
+        };
+        let e = mint(&cfg, SandboxId::Android, ViewMode::Watch, VIEW_TTL)
+            .await
+            .unwrap_err();
         assert!(matches!(e, Error::Viewer(_)));
         assert!(!e.to_string().contains("tok-secret"));
     }

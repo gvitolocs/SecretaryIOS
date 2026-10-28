@@ -54,7 +54,7 @@ anyhow = "1"
 async-trait = { workspace = true }
 sha2 = { workspace = true }
 regex = "1"
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 
 libc = "0.2"
 base64 = "=0.22.1"

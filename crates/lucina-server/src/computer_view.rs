@@ -14,10 +14,10 @@
 //!   spliced byte for byte;
 //! - on **control** views only, `ComputerService/{GetClipboard,SetClipboard}`:
 //!   the viewer's clipboard sync (it polls the desktop's clipboard every second
-//!   and sets it from a paste before sending Ctrl+V). Text only: both messages are
-//!   rewritten to drop images and file paths, text is capped at
-//!   [`CLIP_TEXT_LIMIT`], and each change is audited as a byte count, never the
-//!   text.
+//!   and sets it from a paste before sending Ctrl+V). Both messages are rewritten
+//!   to carry text and PNG images only (file paths go through `computer_files`),
+//!   capped at [`CLIP_TEXT_LIMIT`] and [`CLIP_IMAGE_LIMIT`], and each change is
+//!   audited as byte counts, never the content.
 //!
 //! Files, ticket minting and every other RPC are refused. A control view dies
 //! when the owner gives the desktop back or the lease lapses: requests answer
@@ -67,18 +67,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::api::ApiError;
+use crate::cua_wire::{clip_proto, grpc_web, read_capped};
 use crate::AppState;
 
 /// Views kept at once (each app tab holds one).
 const MAX_VIEWS: usize = 32;
 /// Largest RPC body the viewer sends.
 const RPC_BODY_LIMIT: usize = 256 * 1024;
-/// Clipboard text passed either way (secretary-server caps request bodies at
-/// 256 KiB too). Longer text is not synced.
-const CLIP_TEXT_LIMIT: usize = 256 * 1024;
-/// Largest `GetClipboard` answer read before its image is dropped (Cua sends
-/// PNGs up to 16 MiB).
-const CLIP_RESPONSE_LIMIT: usize = 20 * 1024 * 1024;
+/// Clipboard text passed either way. Longer text is not synced.
+const CLIP_TEXT_LIMIT: usize = 1024 * 1024;
+/// A clipboard PNG passed either way (Cua's own cap is 16 MiB).
+const CLIP_IMAGE_LIMIT: usize = 16 * 1024 * 1024;
+/// Largest `SetClipboard` body (secretary-server lets this RPC through at this size).
+const CLIP_REQUEST_LIMIT: usize = CLIP_IMAGE_LIMIT + CLIP_TEXT_LIMIT + 64 * 1024;
+/// Largest `GetClipboard` answer read (larger ones, e.g. a huge image, are refused).
+const CLIP_RESPONSE_LIMIT: usize = 40 * 1024 * 1024;
 const INPUT_LOG_EVERY: Duration = Duration::from_secs(5);
 const WATCHDOG_EVERY: Duration = Duration::from_secs(2);
 
@@ -221,7 +224,7 @@ fn live(id: &str) -> Option<View> {
 enum Target {
     Asset,
     Rpc,
-    /// `ComputerService/{Get,Set}Clipboard`: control views only, text only.
+    /// `ComputerService/{Get,Set}Clipboard`: control views only, text and PNG only.
     Clipboard(Clip),
     Socket,
     /// `POST ticket`: re-issue this view's ticket (renew, or switch mode).
@@ -737,9 +740,10 @@ fn seen_generation() -> &'static Mutex<HashMap<&'static str, u64>> {
     SEEN.get_or_init(Default::default)
 }
 /// `POST ComputerService/{Get,Set}Clipboard` (gRPC-web, binary, unary): the
-/// messages are rewritten to carry text only, so neither side sees images or
-/// file paths, and a change is audited as a byte count. Refusals are gRPC-web
-/// errors the viewer can read (a bare HTTP error fails its CORS check).
+/// messages are rewritten to carry text and PNG images only (file paths go
+/// through `computer_files`), each within its cap, and a change is audited as
+/// byte counts. Refusals are gRPC-web errors the viewer can read (a bare HTTP
+/// error fails its CORS check).
 async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Response {
     let binary = req
         .headers()
@@ -753,10 +757,15 @@ async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Respons
         return grpc_error(GRPC_UNIMPLEMENTED, "the clipboard takes binary gRPC-web");
     }
     let (parts, body) = req.into_parts();
-    let Ok(body) = axum::body::to_bytes(body, RPC_BODY_LIMIT).await else {
+    let limit = if clip == Clip::Set {
+        CLIP_REQUEST_LIMIT
+    } else {
+        RPC_BODY_LIMIT
+    };
+    let Ok(body) = axum::body::to_bytes(body, limit).await else {
         return grpc_error(
             GRPC_RESOURCE_EXHAUSTED,
-            "clipboard text over 256 KiB is not synced",
+            "clipboard over the size limit is not synced",
         );
     };
     let Some(message) = grpc_web::single_message(&body) else {
@@ -764,20 +773,26 @@ async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Respons
     };
     let (message, sent) = match clip {
         // `GetClipboardRequest` has no fields.
-        Clip::Get => (Vec::new(), 0),
-        Clip::Set => match clip_proto::set_request_text(message) {
-            Some(Some(text)) if text.len() <= CLIP_TEXT_LIMIT => {
-                (clip_proto::set_request(text), text.len())
+        Clip::Get => (Vec::new(), (0, 0)),
+        Clip::Set => {
+            let Some(asked) = clip_proto::set_request(message) else {
+                return grpc_error(GRPC_INVALID_ARGUMENT, "malformed SetClipboardRequest");
+            };
+            let kept = synced(&asked);
+            if kept.is_empty() {
+                let too_big = asked.text.is_some_and(|t| t.len() > CLIP_TEXT_LIMIT)
+                    || asked.png.is_some_and(|p| p.len() > CLIP_IMAGE_LIMIT);
+                return if too_big {
+                    grpc_error(
+                        GRPC_RESOURCE_EXHAUSTED,
+                        "clipboard over the size limit is not synced",
+                    )
+                } else {
+                    grpc_error(GRPC_UNIMPLEMENTED, "only text and PNG images are synced")
+                };
             }
-            Some(Some(_)) => {
-                return grpc_error(
-                    GRPC_RESOURCE_EXHAUSTED,
-                    "clipboard text over 256 KiB is not synced",
-                )
-            }
-            Some(None) => return grpc_error(GRPC_UNIMPLEMENTED, "only text is synced"),
-            None => return grpc_error(GRPC_INVALID_ARGUMENT, "malformed SetClipboardRequest"),
-        },
+            (clip_proto::set_request_bytes(&kept), sizes(&kept))
+        }
     };
     let Some(up) = send_upstream(view, rest, &parts, grpc_web::frame(0, &message)).await else {
         return grpc_error(GRPC_UNAVAILABLE, "the sandbox is unreachable");
@@ -806,7 +821,7 @@ async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Respons
                 control().note(
                     view.sandbox,
                     "clipboard_to_desktop",
-                    json!({"device": view.device, "bytes": sent}),
+                    json!({"device": view.device, "bytes": sent.0, "imageBytes": sent.1}),
                 );
                 // The paste's own generation, so the next poll does not audit it back.
                 let set = frames.iter().find(|(f, _)| *f == 0);
@@ -822,7 +837,7 @@ async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Respons
             answer
         }
         Clip::Get => {
-            let mut out = Vec::with_capacity(answer.len().min(CLIP_TEXT_LIMIT + 64));
+            let mut out = Vec::with_capacity(answer.len());
             for (flags, bytes) in &frames {
                 if flags & 0x80 != 0 {
                     out.extend(grpc_web::frame(*flags, bytes));
@@ -831,24 +846,25 @@ async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Respons
                 if flags & 1 != 0 {
                     return grpc_error(GRPC_UNAVAILABLE, "compressed clipboard answer");
                 }
-                let Some((text, generation)) = clip_proto::get_response(bytes) else {
+                let Some((content, generation)) = clip_proto::get_response(bytes) else {
                     return grpc_error(GRPC_UNAVAILABLE, "malformed GetClipboardResponse");
                 };
-                let text = text.filter(|t| t.len() <= CLIP_TEXT_LIMIT);
+                let kept = synced(&content);
                 let before = seen_generation()
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(view.sandbox.as_str(), generation);
                 if ok && before.is_some_and(|g| g != generation) {
+                    let (text, image) = sizes(&kept);
                     control().note(
                         view.sandbox,
                         "clipboard_from_desktop",
-                        json!({"device": view.device, "bytes": text.map_or(0, str::len)}),
+                        json!({"device": view.device, "bytes": text, "imageBytes": image}),
                     );
                 }
                 out.extend(grpc_web::frame(
                     0,
-                    &clip_proto::get_response_bytes(text, generation),
+                    &clip_proto::get_response_bytes(&kept, generation),
                 ));
             }
             out
@@ -857,6 +873,23 @@ async fn clipboard(view: &View, clip: Clip, rest: &str, req: Request) -> Respons
     let mut resp = Response::new(Body::from(body));
     *resp.headers_mut() = headers;
     resp
+}
+
+/// What the viewer's clipboard sync may carry: text and a PNG, each within its
+/// cap; never file paths (`computer_files` owns those).
+fn synced<'a>(c: &clip_proto::Content<'a>) -> clip_proto::Content<'a> {
+    clip_proto::Content {
+        text: c.text.filter(|t| t.len() <= CLIP_TEXT_LIMIT),
+        files: Vec::new(),
+        png: c
+            .png
+            .filter(|p| p.len() <= CLIP_IMAGE_LIMIT && clip_proto::is_png(p)),
+    }
+}
+
+/// `(text bytes, image bytes)`, for the audit.
+fn sizes(c: &clip_proto::Content<'_>) -> (usize, usize) {
+    (c.text.map_or(0, str::len), c.png.map_or(0, <[u8]>::len))
 }
 
 const GRPC_INVALID_ARGUMENT: u8 = 3;
@@ -885,205 +918,6 @@ fn grpc_error(code: u8, message: &'static str) -> Response {
         HeaderValue::from_static("grpc-status, grpc-message"),
     );
     resp
-}
-
-/// gRPC-web framing: `[flags][u32 big-endian length][bytes]` per frame; flag
-/// `0x80` marks the trailers frame, flag `1` a compressed message.
-mod grpc_web {
-    pub(super) fn frames(mut b: &[u8]) -> Option<Vec<(u8, &[u8])>> {
-        let mut out = Vec::new();
-        while !b.is_empty() {
-            let (&flags, rest) = b.split_first()?;
-            let len = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
-            let bytes = rest.get(4..4 + len)?;
-            out.push((flags, bytes));
-            b = &rest[4 + len..];
-        }
-        Some(out)
-    }
-
-    /// The one uncompressed message of a unary request.
-    pub(super) fn single_message(b: &[u8]) -> Option<&[u8]> {
-        match frames(b)?.as_slice() {
-            [(0, m)] => Some(m),
-            _ => None,
-        }
-    }
-
-    pub(super) fn frame(flags: u8, bytes: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(5 + bytes.len());
-        out.push(flags);
-        out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-        out.extend_from_slice(bytes);
-        out
-    }
-
-    /// Whether a trailers frame says `grpc-status: 0`.
-    pub(super) fn status_ok(trailers: &[u8]) -> bool {
-        String::from_utf8_lossy(trailers).split("\r\n").any(|l| {
-            l.split_once(':').is_some_and(|(k, v)| {
-                k.trim().eq_ignore_ascii_case("grpc-status") && v.trim() == "0"
-            })
-        })
-    }
-}
-
-async fn read_capped(mut up: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    while let Some(chunk) = up.chunk().await.ok()? {
-        if out.len() + chunk.len() > limit {
-            return None;
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Some(out)
-}
-
-/// Just enough protobuf for the clipboard messages of `cua.env.v1` (field
-/// numbers from the viewer's embedded descriptor):
-///
-/// - `ClipboardContent { optional string text = 1; repeated string file_paths = 2; optional bytes image_png = 3; }`
-/// - `SetClipboardRequest { ClipboardContent content = 1; }`
-/// - `GetClipboardResponse { ClipboardContent content = 1; uint64 generation = 2; }`
-/// - `SetClipboardResponse { uint64 generation = 1; }`
-mod clip_proto {
-    enum Field<'a> {
-        Varint(u64),
-        Len(&'a [u8]),
-        Fixed,
-    }
-
-    fn varint(b: &mut &[u8]) -> Option<u64> {
-        let mut v = 0u64;
-        for i in 0..10 {
-            let (&x, rest) = b.split_first()?;
-            *b = rest;
-            v |= u64::from(x & 0x7f) << (7 * i);
-            if x & 0x80 == 0 {
-                return Some(v);
-            }
-        }
-        None
-    }
-
-    /// Every field of a message, or `None` if it is not well-formed.
-    fn fields(mut b: &[u8]) -> Option<Vec<(u64, Field<'_>)>> {
-        let mut out = Vec::new();
-        while !b.is_empty() {
-            let key = varint(&mut b)?;
-            let field = match key & 7 {
-                0 => Field::Varint(varint(&mut b)?),
-                1 | 5 => {
-                    let n = if key & 7 == 1 { 8 } else { 4 };
-                    b = b.get(n..)?;
-                    Field::Fixed
-                }
-                2 => {
-                    let n = usize::try_from(varint(&mut b)?).ok()?;
-                    let v = b.get(..n)?;
-                    b = &b[n..];
-                    Field::Len(v)
-                }
-                _ => return None,
-            };
-            out.push((key >> 3, field));
-        }
-        Some(out)
-    }
-
-    /// The text of a `ClipboardContent`: `None` if malformed, `Some(None)` if it has none.
-    fn content_text(b: &[u8]) -> Option<Option<&str>> {
-        let mut text = None;
-        for (n, f) in fields(b)? {
-            if let (1, Field::Len(v)) = (n, f) {
-                text = Some(std::str::from_utf8(v).ok()?);
-            }
-        }
-        Some(text)
-    }
-
-    pub(super) fn set_request_text(b: &[u8]) -> Option<Option<&str>> {
-        let mut text = None;
-        for (n, f) in fields(b)? {
-            if let (1, Field::Len(v)) = (n, f) {
-                text = content_text(v)?;
-            }
-        }
-        Some(text)
-    }
-
-    /// The generation a `SetClipboardResponse { uint64 generation = 1; }` reports.
-    pub(super) fn set_response_generation(b: &[u8]) -> Option<u64> {
-        fields(b)?.into_iter().find_map(|(n, f)| match (n, f) {
-            (1, Field::Varint(g)) => Some(g),
-            _ => None,
-        })
-    }
-
-    /// `(text, generation)` of a `GetClipboardResponse`.
-    pub(super) fn get_response(b: &[u8]) -> Option<(Option<&str>, u64)> {
-        let (mut text, mut generation) = (None, 0);
-        for (n, f) in fields(b)? {
-            match (n, f) {
-                (1, Field::Len(v)) => text = content_text(v)?,
-                (2, Field::Varint(g)) => generation = g,
-                _ => {}
-            }
-        }
-        Some((text, generation))
-    }
-
-    fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-        while v >= 0x80 {
-            out.push((v as u8) | 0x80);
-            v >>= 7;
-        }
-        out.push(v as u8);
-    }
-
-    fn put_len(out: &mut Vec<u8>, field: u64, v: &[u8]) {
-        put_varint(out, field << 3 | 2);
-        put_varint(out, v.len() as u64);
-        out.extend_from_slice(v);
-    }
-
-    fn content(text: Option<&str>) -> Vec<u8> {
-        let mut c = Vec::new();
-        if let Some(t) = text {
-            put_len(&mut c, 1, t.as_bytes());
-        }
-        c
-    }
-
-    pub(super) fn set_request(text: &str) -> Vec<u8> {
-        let mut out = Vec::new();
-        put_len(&mut out, 1, &content(Some(text)));
-        out
-    }
-
-    pub(super) fn get_response_bytes(text: Option<&str>, generation: u64) -> Vec<u8> {
-        let mut out = Vec::new();
-        put_len(&mut out, 1, &content(text));
-        if generation != 0 {
-            put_varint(&mut out, 2 << 3);
-            put_varint(&mut out, generation);
-        }
-        out
-    }
-
-    #[cfg(test)]
-    pub(super) fn image_content(text: Option<&str>, png: &[u8], generation: u64) -> Vec<u8> {
-        let mut c = content(text);
-        put_len(&mut c, 2, b"/home/lucina/secret.txt");
-        put_len(&mut c, 3, png);
-        let mut out = Vec::new();
-        put_len(&mut out, 1, &c);
-        if generation != 0 {
-            put_varint(&mut out, 2 << 3);
-            put_varint(&mut out, generation);
-        }
-        out
-    }
 }
 
 /// Reads an HTTP/1.1 response head; returns `(status, headers, bytes after the head)`.
@@ -1284,12 +1118,15 @@ where
     );
 }
 
+/// Tests that take the Android lease (`control()` is process-wide), here and in `computer_files`.
+#[cfg(test)]
+pub(crate) static ANDROID_LEASE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Tests that take the Android lease (`control()` is process-wide).
-    static ANDROID_LEASE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    use super::ANDROID_LEASE;
 
     #[test]
     fn only_the_viewer_surface_is_reachable() {
@@ -1452,48 +1289,71 @@ mod tests {
         assert!(live("nope").is_none());
     }
 
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR fake";
+
+    fn content<'a>(
+        text: Option<&'a str>,
+        files: &[&'a str],
+        png: Option<&'a [u8]>,
+    ) -> clip_proto::Content<'a> {
+        clip_proto::Content {
+            text,
+            files: files.to_vec(),
+            png,
+        }
+    }
+
     #[test]
-    fn clipboard_messages_keep_only_text() {
+    fn clipboard_messages_round_trip_and_keep_text_and_png() {
         assert_eq!(clip_proto::set_response_generation(&[0x08, 0x2b]), Some(43));
         assert_eq!(clip_proto::set_response_generation(&[]), None);
-        let png = [0x89, b'P', b'N', b'G'];
-        let set = clip_proto::image_content(Some("ciao è"), &png, 0);
-        assert_eq!(clip_proto::set_request_text(&set), Some(Some("ciao è")));
-        let rewritten = clip_proto::set_request("ciao è");
-        assert!(rewritten.len() < set.len(), "image and file paths are gone");
+        let all = content(Some("ciao è"), &["/home/lucina/secret.txt"], Some(PNG));
+        let set = clip_proto::set_request_bytes(&all);
         assert_eq!(
-            clip_proto::set_request_text(&rewritten),
-            Some(Some("ciao è"))
+            clip_proto::set_request(&set),
+            Some(content(
+                Some("ciao è"),
+                &["/home/lucina/secret.txt"],
+                Some(PNG)
+            ))
         );
-        let image_only = clip_proto::image_content(None, &png, 0);
-        assert_eq!(clip_proto::set_request_text(&image_only), Some(None));
         assert_eq!(
-            clip_proto::set_request_text(&[0x0a, 0x05, 0x0a]),
+            synced(&all),
+            content(Some("ciao è"), &[], Some(PNG)),
+            "file paths never pass"
+        );
+        assert_eq!(
+            synced(&content(None, &[], Some(b"GIF89a"))),
+            content(None, &[], None),
+            "PNG only"
+        );
+        let huge = "x".repeat(CLIP_TEXT_LIMIT + 1);
+        assert!(synced(&content(Some(&huge), &[], None)).is_empty());
+        assert_eq!(
+            clip_proto::set_request(&[0x0a, 0x05, 0x0a]),
             None,
             "truncated"
         );
         assert_eq!(
-            clip_proto::set_request_text(&[0x0a, 0x02, 0x0a, 0x00, 0xff]),
+            clip_proto::set_request(&[0x0a, 0x02, 0x0a, 0x00, 0xff]),
             None
         );
-        assert_eq!(clip_proto::set_request_text(&[]), Some(None));
+        assert_eq!(clip_proto::set_request(&[]), Some(content(None, &[], None)));
 
-        let got = clip_proto::image_content(Some("hello"), &png, 300);
-        assert_eq!(clip_proto::get_response(&got), Some((Some("hello"), 300)));
-        let back = clip_proto::get_response_bytes(Some("hello"), 300);
-        assert_eq!(clip_proto::get_response(&back), Some((Some("hello"), 300)));
-        assert!(
-            !back.windows(4).any(|w| w == png),
-            "no image reaches the owner"
-        );
-        assert!(
-            !back.windows(6).any(|w| w == b"secret"),
-            "no file paths either"
-        );
+        let got = clip_proto::get_response_bytes(&all, 300);
         assert_eq!(
-            clip_proto::get_response(&clip_proto::get_response_bytes(None, 7)),
-            Some((None, 7))
+            clip_proto::get_response(&got),
+            Some((
+                content(Some("ciao è"), &["/home/lucina/secret.txt"], Some(PNG)),
+                300
+            ))
         );
+        let empty = clip_proto::get_response_bytes(&content(None, &[], None), 7);
+        assert_eq!(
+            clip_proto::get_response(&empty),
+            Some((content(None, &[], None), 7))
+        );
+        assert_eq!(sizes(&all), ("ciao è".len(), PNG.len()));
     }
 
     const TRAILERS: &[u8] = b"grpc-status:0\r\ngrpc-message:\r\n";
@@ -1511,9 +1371,12 @@ mod tests {
             .route(
                 "/cua.env.v1.ComputerService/GetClipboard",
                 post(move || async move {
-                    grpc(&clip_proto::image_content(
-                        Some("copied on the desktop"),
-                        &[0x89, b'P', b'N', b'G'],
+                    grpc(&clip_proto::get_response_bytes(
+                        &content(
+                            Some("copied on the desktop"),
+                            &["/home/lucina/secret.txt"],
+                            Some(PNG),
+                        ),
                         42,
                     ))
                 }),
@@ -1596,7 +1459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_clipboard_syncs_text_only_and_only_while_driving() {
+    async fn the_clipboard_syncs_text_and_images_only_while_driving() {
         let machine = fake_sandbox().await;
         let _one = ANDROID_LEASE.lock().await;
         let sb = SandboxId::Android;
@@ -1635,29 +1498,46 @@ mod tests {
         assert!(ok, "the trailers come through");
         assert_eq!(
             clip_proto::get_response(&message),
-            Some((Some("copied on the desktop"), 42))
-        );
-        assert!(
-            !message.windows(3).any(|w| w == b"PNG"),
-            "the image is dropped"
+            Some((content(Some("copied on the desktop"), &[], Some(PNG)), 42)),
+            "text and image reach the owner, the file path does not"
         );
 
-        let paste =
-            clip_proto::image_content(Some("pasted from the Mac"), &[0x89, b'P', b'N', b'G'], 0);
+        let paste = clip_proto::set_request_bytes(&content(
+            Some("pasted from the Mac"),
+            &["/etc/passwd"],
+            Some(PNG),
+        ));
         let r = serve(&ctl, set, rpc(Method::POST, set, &paste), true).await;
         assert_eq!(r.status(), StatusCode::OK);
         let (echoed, ok) = answer(r).await;
         assert!(ok);
         assert_eq!(
-            echoed,
-            clip_proto::set_request("pasted from the Mac"),
-            "the desktop gets the text only"
+            clip_proto::set_request(&echoed),
+            Some(content(Some("pasted from the Mac"), &[], Some(PNG))),
+            "the desktop gets the text and the image"
         );
+        // A screenshot-sized PNG goes through.
+        let mut big = PNG.to_vec();
+        big.resize(8 * 1024 * 1024, 7);
+        let r = serve(
+            &ctl,
+            set,
+            rpc(
+                Method::POST,
+                set,
+                &clip_proto::set_request_bytes(&content(None, &[], Some(&big))),
+            ),
+            true,
+        )
+        .await;
+        assert!(answer(r).await.1);
 
         // Refusals are gRPC-web errors the viewer's opaque origin can read.
-        let image_only = clip_proto::image_content(None, &[1, 2, 3], 0);
-        let huge = clip_proto::set_request(&"x".repeat(CLIP_TEXT_LIMIT + 1));
-        for (body, code) in [(image_only, "12"), (huge, "8")] {
+        let gif = clip_proto::set_request_bytes(&content(None, &[], Some(b"GIF89a")));
+        let files = clip_proto::set_request_bytes(&content(None, &["/etc/passwd"], None));
+        let huge_text = "x".repeat(CLIP_TEXT_LIMIT + 1);
+        let huge = clip_proto::set_request_bytes(&content(Some(&huge_text), &[], None));
+        for (body, code) in [(gif, "12"), (files, "12"), (huge, "8")] {
             let r = serve(&ctl, set, rpc(Method::POST, set, &body), true).await;
             assert_eq!(r.status(), StatusCode::OK);
             assert_eq!(r.headers()["grpc-status"], code);

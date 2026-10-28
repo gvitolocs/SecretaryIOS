@@ -42,8 +42,8 @@
  * The page's key buttons (Esc, Tab, arrows…) arrive as `{type:"lucina:keys"}`
  * and go out on the live socket like any other key.
  *
- * 4. Clipboard. Cua syncs it while driving: a paste (Cmd+V, mapped to Ctrl+V)
- *    sets the desktop's clipboard before the key goes out, and the desktop's
+ * 4. Clipboard. Cua syncs text and PNG images while driving: a paste (Cmd+V,
+ *    mapped to Ctrl+V) sets the desktop's clipboard before the key goes out, and the desktop's
  *    clipboard is polled every second and written to this computer's. The
  *    paste needs no permission, but this frame's opaque origin can never be
  *    granted `clipboard-write`, so the viewer's `navigator.clipboard` writes
@@ -51,6 +51,12 @@
  *    own origin and answers `lucina:clipboard-done`. The viewer starts its sync
  *    only for a session that began in control, so a watch→control switch
  *    starts it here (and a switch back stops it).
+ *
+ * 5. Files. A Cmd+V that carries files (copied in Finder), or files dropped on
+ *    the stream, go to the page (`lucina:files`), which uploads them to
+ *    `~/Desktop/From Mac/` and puts them on her clipboard; a paste then sends
+ *    Ctrl+V. A Ctrl/Cmd+C or X while driving tells the page (`lucina:copied`)
+ *    to look for files on her clipboard, which it offers as downloads.
  *
  * It also reports the stream state to the parent (`lucina:state`) so the app
  * can stop showing "Connecting…" on the first frame rather than on load.
@@ -656,7 +662,8 @@
 
   // --------------------------------------------------------------- clipboard
 
-  var CLIP_TEXT_LIMIT = 256 * 1024; // lucina-server's cap; longer text is not synced
+  var CLIP_TEXT_LIMIT = 1024 * 1024; // lucina-server's caps; larger content is not synced
+  var CLIP_IMAGE_LIMIT = 16 * 1024 * 1024;
   var CLIP_ANSWER_MS = 1200; // under the viewer's own 1.5 s, after which it offers a "Copy" chip
   var clipSeq = 0;
   var clipWaiting = {};
@@ -679,16 +686,19 @@
     }
   }
 
-  /** Where clipboard text may go: the page that frames us (CSP frame-ancestors pins which). */
+  /** Where clipboard content may go: the page that frames us (CSP frame-ancestors pins which). */
   function pageOrigin() {
     var a = location.ancestorOrigins;
     return a && a.length ? a[0] : null;
   }
 
-  function writeViaPage(text) {
+  /** `clip`: `{text?: string, png?: ArrayBuffer}`; the page writes it from its own origin. */
+  function writeViaPage(clip) {
     var origin = pageOrigin();
     if (!origin || origin === "null") return Promise.reject(new DOMException("no page to write the clipboard", "NotAllowedError"));
-    if (text.length > CLIP_TEXT_LIMIT) return Promise.reject(new DOMException("clipboard text over 256 KiB", "DataError"));
+    if (clip.text !== undefined && clip.text.length > CLIP_TEXT_LIMIT) delete clip.text;
+    if (clip.png && clip.png.byteLength > CLIP_IMAGE_LIMIT) delete clip.png;
+    if (clip.text === undefined && !clip.png) return Promise.reject(new DOMException("clipboard over the size limit", "DataError"));
     return new Promise(function (resolve, reject) {
       var id = ++clipSeq;
       var timer = setTimeout(function () {
@@ -702,7 +712,8 @@
         else reject(new DOMException("clipboard write needs a gesture", "NotAllowedError"));
       };
       try {
-        parentWindow.postMessage({ type: "lucina:clipboard", id: id, text: text }, origin);
+        var msg = { type: "lucina:clipboard", id: id, text: clip.text, png: clip.png };
+        parentWindow.postMessage(msg, origin, clip.png ? [clip.png] : []);
       } catch (e) {
         clipWaiting[id](false);
       }
@@ -713,18 +724,121 @@
     var proto = window.Clipboard && window.Clipboard.prototype;
     if (!proto || !pageOrigin()) return;
     proto.writeText = function (text) {
-      return writeViaPage(String(text));
+      return writeViaPage({ text: String(text) });
     };
-    // The viewer uses write() only for an image (with its text alongside); images are not synced.
+    // The viewer uses write() for an image (PNG, with its text alongside when there is some).
     proto.write = function (items) {
       var item = items && items[0];
-      if (!item || !item.types || item.types.indexOf("text/plain") < 0) {
-        return Promise.reject(new DOMException("only text is synced", "NotAllowedError"));
+      var types = (item && item.types) || [];
+      var clip = {};
+      var reads = [];
+      if (types.indexOf("image/png") >= 0) {
+        reads.push(item.getType("image/png").then(function (b) { return b.arrayBuffer(); }).then(function (buf) { clip.png = buf; }));
       }
-      return item.getType("text/plain").then(function (blob) {
-        return blob.text();
-      }).then(writeViaPage);
+      if (types.indexOf("text/plain") >= 0) {
+        reads.push(item.getType("text/plain").then(function (b) { return b.text(); }).then(function (t) { clip.text = t; }));
+      }
+      if (!reads.length) return Promise.reject(new DOMException("only text and PNG images are synced", "DataError"));
+      return Promise.all(reads).then(function () {
+        return writeViaPage(clip);
+      });
     };
+  }
+
+  // ------------------------------------------------------------------- files
+
+  var filesSeq = 0;
+  var filesWaiting = {};
+
+  /**
+   * A paste of files (copied in Finder) carries them as `File`s; a screenshot on the clipboard
+   * arrives as one PNG named `image.png`, which Cua's own image sync handles.
+   */
+  function pastedFiles(data) {
+    var files = data && data.files ? Array.prototype.slice.call(data.files) : [];
+    if (!files.length) return [];
+    if (files.length === 1 && files[0].type === "image/png" && files[0].name === "image.png") return [];
+    return files;
+  }
+
+  /** Hands files to the page (it uploads them and puts them on her clipboard); `then(ok)` after. */
+  function sendFilesViaPage(files, paste, then) {
+    var origin = pageOrigin();
+    if (!origin || origin === "null") return then(false);
+    var id = ++filesSeq;
+    filesWaiting[id] = then;
+    try {
+      parentWindow.postMessage({ type: "lucina:files", id: id, files: files, paste: paste }, origin);
+    } catch (e) {
+      delete filesWaiting[id];
+      then(false);
+    }
+  }
+
+  /**
+   * Cmd+V with files: they go to `From Mac` on her desktop and onto her clipboard first, then
+   * Ctrl+V goes out (Cua's viewer would send it after 300 ms with whatever her clipboard held).
+   * Dropping files on the stream sends them the same way, without pasting.
+   */
+  function sendFilesWhileDriving() {
+    window.addEventListener(
+      "paste",
+      function (e) {
+        if (mode !== "control") return;
+        var files = pastedFiles(e.clipboardData);
+        if (!files.length) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        var viewer = app();
+        var held = viewer && viewer.input && viewer.input.pendingPaste;
+        if (held) {
+          clearTimeout(held.timer);
+          viewer.input.pendingPaste = null;
+        }
+        flash("Sending " + (files.length === 1 ? files[0].name : files.length + " files") + "…");
+        sendFilesViaPage(files, true, function (ok) {
+          if (ok) pressKeys(["control", "v"]);
+        });
+      },
+      true
+    );
+    var carriesFiles = function (e) {
+      var types = e.dataTransfer && e.dataTransfer.types;
+      return !!types && Array.prototype.indexOf.call(types, "Files") >= 0;
+    };
+    document.addEventListener(
+      "dragover",
+      function (e) {
+        if (mode !== "control" || !carriesFiles(e)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.dataTransfer.dropEffect = "copy";
+      },
+      true
+    );
+    document.addEventListener(
+      "drop",
+      function (e) {
+        if (mode !== "control" || !carriesFiles(e)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        var files = Array.prototype.slice.call(e.dataTransfer.files || []);
+        if (!files.length) return;
+        flash("Sending " + (files.length === 1 ? files[0].name : files.length + " files") + "…");
+        sendFilesViaPage(files, false, function () {});
+      },
+      true
+    );
+    // A copy or cut on her desktop: the page looks for files on her clipboard right away.
+    document.addEventListener(
+      "keydown",
+      function (e) {
+        if (mode !== "control" || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+        var k = (e.key || "").toLowerCase();
+        if (k === "c" || k === "x") send({ type: "lucina:copied" });
+      },
+      true
+    );
   }
 
   // ------------------------------------------------------------------ wiring
@@ -763,6 +877,13 @@
       case "lucina:clipboard-done":
         if (typeof data.id === "number" && clipWaiting[data.id]) clipWaiting[data.id](data.ok === true);
         break;
+      case "lucina:files-done":
+        if (typeof data.id === "number" && filesWaiting[data.id]) {
+          var done = filesWaiting[data.id];
+          delete filesWaiting[data.id];
+          done(data.ok === true);
+        }
+        break;
       case "lucina:ticket": {
         var nextMode = data.mode === "watch" || data.mode === "control" ? data.mode : mode;
         var changed = nextMode !== mode;
@@ -782,5 +903,6 @@
   autoHideToolbar();
   forwardEscapeWhileWatching();
   relayClipboardWrites();
+  sendFilesWhileDriving();
   send({ type: "lucina:ready", coarse: COARSE, mode: mode });
 })();
