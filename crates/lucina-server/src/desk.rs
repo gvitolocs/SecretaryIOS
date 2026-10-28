@@ -21,7 +21,9 @@
 //!   gateway (`refused` once per kind, then dropped). Only `ack`, `refresh` and `ping` pass.
 //!   Clipboard (contract section 8) is control-only both ways: the gateway hears `mode=control`
 //!   for control sockets only, a watch socket's `clipboard` is refused, and a `clipboard` frame
-//!   from the gateway never reaches a watch socket.
+//!   from the gateway never reaches a watch socket. Clipboard images ride as binary frames of
+//!   kind 2 (`[2, 1, 0, 0]` + PNG, at most 10 MiB) under the same rule; the only other binary
+//!   is video (kind 1, gateway to owner, every mode).
 //! - **Lease.** A control socket takes the owner's takeover lease when it opens (Lucina's
 //!   task stops, agents get 409 `owner_driving`), renews it every [`RENEW_EVERY`], and gives
 //!   it back when the last control socket of the sandbox closes, unless the owner already
@@ -29,9 +31,9 @@
 //!   (give-back in another tab, expiry) the socket closes with 4001.
 //! - **Audit** (`computer-audit.jsonl`, through `control()`): `desk_open {device, mode, via}`,
 //!   `desk_closed {device, mode, via, why, code, openMs, mouse, keys, textChars, clipboardIn,
-//!   clipboardOut, bytesIn, bytesOut}`, the lease's own `take`/`release`, and `input {batch: {via: "desk", …}}`
+//!   clipboardOut, clipboardImageIn, clipboardImageOut, bytesIn, bytesOut}`, the lease's own `take`/`release`, and `input {batch: {via: "desk", …}}`
 //!   every [`INPUT_LOG_EVERY`] while there is input. Typed and clipboard text is never logged,
-//!   only its size (`clipboardIn`/`clipboardOut` are UTF-8 bytes).
+//!   only its size (`clipboardIn`/`clipboardOut` are UTF-8 bytes, the image counts PNG bytes).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -60,10 +62,18 @@ const MAX_UNREDEEMED: usize = 4;
 const RENEW_EVERY: Duration = Duration::from_secs(10);
 const CHECK_EVERY: Duration = Duration::from_secs(2);
 const INPUT_LOG_EVERY: Duration = Duration::from_secs(5);
-/// Largest client message forwarded; larger ones are refused (`too_large`).
+/// Largest client text message forwarded; larger ones are refused (`too_large`).
 const MAX_MESSAGE: usize = 64 * 1024;
-/// Larger than this the socket itself fails (tungstenite's limit).
-const MAX_FRAME: usize = 256 * 1024;
+/// Largest clipboard image (PNG bytes, after the 4-byte header), either way.
+const MAX_CLIPBOARD_IMAGE: usize = 10 * 1024 * 1024;
+/// Larger than this the socket itself fails (tungstenite's limit); a little over the largest
+/// clipboard image, so a slightly oversized one is refused rather than ending the session.
+const MAX_FRAME: usize = MAX_CLIPBOARD_IMAGE + 1024 * 1024;
+const _: () = assert!(MAX_FRAME > 4 + MAX_CLIPBOARD_IMAGE, "the socket takes a full image");
+/// Binary frame kinds (contract section 4).
+const KIND_VIDEO: u8 = 1;
+const KIND_CLIPBOARD_IMAGE: u8 = 2;
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
 const MAX_INPUT_PER_SEC: u32 = 200;
 /// Seconds in a row over [`MAX_INPUT_PER_SEC`] before the socket closes with 4008.
 const FLOOD_SECS: u32 = 5;
@@ -296,6 +306,8 @@ struct Counts {
     text_chars: u64,
     /// Clipboard text the owner pushed to the host (bytes).
     clipboard_in: u64,
+    /// Clipboard images the owner pushed (PNG bytes).
+    clipboard_image_in: u64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -317,6 +329,8 @@ struct Filter {
     counts: Counts,
     /// Host clipboard text sent to the owner (bytes).
     clipboard_out: u64,
+    /// Host clipboard images sent to the owner (PNG bytes).
+    clipboard_image_out: u64,
 }
 
 fn int_in(v: &Value, k: &str, lo: i64, hi: i64) -> bool {
@@ -381,6 +395,7 @@ impl Filter {
             over_secs: 0,
             counts: Counts::default(),
             clipboard_out: 0,
+            clipboard_image_out: 0,
         }
     }
 
@@ -416,6 +431,42 @@ impl Filter {
 
     /// A text frame from the gateway: `false` drops it. Host clipboard frames reach control
     /// sockets only (the gateway sends them to control sessions only; this is the second layer).
+    /// A binary frame from the gateway: `false` drops it. Video reaches every socket; a
+    /// clipboard image (and any kind added later) reaches control sockets only.
+    fn host_binary(&mut self, b: &[u8]) -> bool {
+        match b.first() {
+            Some(&KIND_VIDEO) => true,
+            Some(&KIND_CLIPBOARD_IMAGE) if self.mode == ViewMode::Control => {
+                self.clipboard_image_out += b.len().saturating_sub(4) as u64;
+                true
+            }
+            _ => self.mode == ViewMode::Control,
+        }
+    }
+
+    /// A binary frame from the owner: only a clipboard image (kind 2, PNG) on a control socket.
+    fn binary(&mut self, b: &[u8], now: Instant) -> Verdict {
+        if b.first() != Some(&KIND_CLIPBOARD_IMAGE) {
+            return self.refuse("unknown", "invalid");
+        }
+        if self.mode == ViewMode::Watch {
+            return self.refuse("clipboard", "watch");
+        }
+        if b.len() > 4 + MAX_CLIPBOARD_IMAGE {
+            return self.refuse("clipboard", "too_large");
+        }
+        match self.rate_ok(now) {
+            Err(()) => return Verdict::Violation,
+            Ok(false) => return self.refuse("clipboard", "too_large"),
+            Ok(true) => {}
+        }
+        if b.len() < 4 + PNG_SIGNATURE.len() || b[1..4] != [1, 0, 0] || b[4..12] != PNG_SIGNATURE {
+            return self.refuse("clipboard", "invalid");
+        }
+        self.counts.clipboard_image_in += (b.len() - 4) as u64;
+        Verdict::Forward
+    }
+
     fn host_frame(&mut self, text: &str) -> bool {
         if !text.contains("clipboard") {
             return true;
@@ -599,6 +650,8 @@ async fn session(mut browser: WebSocket, t: Ticket, via: &'static str) {
             "textChars": filter.counts.text_chars,
             "clipboardIn": filter.counts.clipboard_in,
             "clipboardOut": filter.clipboard_out,
+            "clipboardImageIn": filter.counts.clipboard_image_in,
+            "clipboardImageOut": filter.clipboard_image_out,
             "bytesIn": bytes.inbound,
             "bytesOut": bytes.outbound,
         }),
@@ -666,10 +719,21 @@ async fn pump(
                     }
                     Message::Binary(b) => {
                         bytes.inbound += b.len() as u64;
-                        if let Verdict::Drop(Some(refused)) = filter.refuse("unknown", "invalid") {
-                            let _ = browser.send(Message::Text(refused.into())).await;
+                        match filter.binary(&b, Instant::now()) {
+                            Verdict::Forward => GwMessage::Binary(b),
+                            Verdict::Drop(Some(refused)) => {
+                                bytes.outbound += refused.len() as u64;
+                                if browser.send(Message::Text(refused.into())).await.is_err() {
+                                    return (code::NORMAL, "client gone".into());
+                                }
+                                continue;
+                            }
+                            Verdict::Drop(None) => continue,
+                            Verdict::Violation => {
+                                let _ = browser.send(closed_frame("too much input")).await;
+                                return (code::VIOLATION, "input flood".into());
+                            }
                         }
-                        continue;
                     }
                     Message::Close(_) => return (code::NORMAL, "client closed".into()),
                     Message::Ping(_) | Message::Pong(_) => continue,
@@ -687,7 +751,12 @@ async fn pump(
                         }
                         Message::Text(s.as_str().into())
                     }
-                    Some(Ok(GwMessage::Binary(b))) => Message::Binary(b),
+                    Some(Ok(GwMessage::Binary(b))) => {
+                        if !filter.host_binary(&b) {
+                            continue;
+                        }
+                        Message::Binary(b)
+                    }
                     Some(Ok(GwMessage::Close(frame))) => {
                         let (c, r) = frame
                             .map(|f| (u16::from(f.code), f.reason.as_str().to_owned()))
@@ -735,6 +804,7 @@ async fn pump(
                             "keys": c.keys - logged.keys,
                             "textChars": c.text_chars - logged.text_chars,
                             "clipboardIn": c.clipboard_in - logged.clipboard_in,
+                            "clipboardImageIn": c.clipboard_image_in - logged.clipboard_image_in,
                         });
                         if control().owner_input(t.sandbox, &t.device, batch).is_err() {
                             let _ = browser.send(closed_frame("control ended")).await;
@@ -838,7 +908,7 @@ mod tests {
         assert_eq!(f.text(r#"{"type":"key","char":"l","modifiers":["Control"]}"#, now), Verdict::Forward);
         assert_eq!(f.text(r#"{"type":"key","key":"Return"}"#, now), Verdict::Forward);
         assert_eq!(f.text(r#"{"type":"clipboard","text":"héllo"}"#, now), Verdict::Forward);
-        assert_eq!(f.counts, Counts { mouse: 1, keys: 2, text_chars: 4, clipboard_in: 6 });
+        assert_eq!(f.counts, Counts { mouse: 1, keys: 2, text_chars: 4, clipboard_in: 6, clipboard_image_in: 0 });
         assert!(f.host_frame(r#"{"type":"clipboard","text":"ciao"}"#));
         assert_eq!(f.clipboard_out, 4, "bytes, not the text");
         let big = json!({"type": "clipboard", "text": "x".repeat(MAX_CLIPBOARD + 1)}).to_string();
@@ -862,6 +932,57 @@ mod tests {
         }
         assert!(matches!(f.text("not json", now), Verdict::Drop(_)));
         assert!(matches!(f.text(r#"{"type":"files"}"#, now), Verdict::Drop(_)));
+    }
+
+    fn png(len: usize) -> Vec<u8> {
+        let mut b = vec![KIND_CLIPBOARD_IMAGE, 1, 0, 0];
+        b.extend_from_slice(&PNG_SIGNATURE);
+        b.resize(4 + len.max(PNG_SIGNATURE.len()), 0);
+        b
+    }
+
+    #[test]
+    fn clipboard_images_are_control_only_both_ways() {
+        let now = Instant::now();
+        let video = [KIND_VIDEO, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAA];
+        let mut w = Filter::new(ViewMode::Watch);
+        match w.binary(&png(100), now) {
+            Verdict::Drop(Some(r)) => assert_eq!(
+                serde_json::from_str::<Value>(&r).unwrap(),
+                json!({"type": "refused", "what": "clipboard", "why": "watch"})
+            ),
+            v => panic!("{v:?}"),
+        }
+        assert!(w.host_binary(&video), "video reaches every socket");
+        assert!(!w.host_binary(&png(100)), "a host image never reaches a watch socket");
+        assert!(!w.host_binary(&[9, 0, 0, 0]), "nor a kind added later");
+        assert_eq!((w.counts.clipboard_image_in, w.clipboard_image_out), (0, 0));
+
+        let mut c = Filter::new(ViewMode::Control);
+        assert_eq!(c.binary(&png(100), now), Verdict::Forward);
+        assert!(c.host_binary(&png(50)));
+        assert!(c.host_binary(&video));
+        assert_eq!((c.counts.clipboard_image_in, c.clipboard_image_out), (100, 50), "PNG bytes only");
+        assert_eq!(c.binary(&png(MAX_CLIPBOARD_IMAGE), now), Verdict::Forward, "10 MiB is allowed");
+        match Filter::new(ViewMode::Control).binary(&png(MAX_CLIPBOARD_IMAGE + 1), now) {
+            Verdict::Drop(Some(r)) => assert!(r.contains("too_large"), "{r}"),
+            v => panic!("{v:?}"),
+        }
+        let mut not_png = png(100);
+        not_png[5] = b'X';
+        match Filter::new(ViewMode::Control).binary(&not_png, now) {
+            Verdict::Drop(Some(r)) => assert!(r.contains("\"invalid\"") && r.contains("clipboard"), "{r}"),
+            v => panic!("{v:?}"),
+        }
+        let mut bad_header = png(100);
+        bad_header[1] = 2;
+        assert!(matches!(Filter::new(ViewMode::Control).binary(&bad_header, now), Verdict::Drop(_)));
+        for other in [&video[..], &[], &[3, 0, 0, 0]] {
+            match Filter::new(ViewMode::Control).binary(other, now) {
+                Verdict::Drop(Some(r)) => assert!(r.contains("unknown") && r.contains("invalid"), "{r}"),
+                v => panic!("{other:?}: {v:?}"),
+            }
+        }
     }
 
     #[test]
