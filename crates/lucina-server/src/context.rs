@@ -131,9 +131,9 @@ pub async fn classify(
                         confidence, "jev overrides a tier-0 rule");
                     return tier0::from_model_json(&v, user_text, recent, s);
                 }
-                if crate::jev_route::doubts_side_effect(&c.intent, jev_intent, confidence) {
+                if crate::jev_route::doubts(&c, jev_intent, confidence) {
                     tracing::info!(target: "lucina_jev::route", tier0 = %c.intent, jev = jev_intent,
-                        confidence, "jev doubts a side-effect tier-0 rule; the planner decides");
+                        confidence, "jev doubts a tier-0 rule; the planner decides");
                     let mut v = v;
                     v["reply_mode"] = serde_json::json!("full_plan");
                     return tier0::from_model_json(&v, user_text, recent, s);

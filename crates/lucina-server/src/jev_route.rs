@@ -162,12 +162,20 @@ const NO_OVERRIDE_INTO: &[&str] = &[
 /// the full planner instead of running directly (`LUCINA_JEV_DOUBT_MIN`).
 pub const DOUBT_MIN: f64 = 0.6;
 
-/// Jev doubts a side-effect tier-0 rule (a post, reviving Qwen, a spreadsheet
-/// write, a coding task…): the planner decides instead of the regex.
-pub fn doubts_side_effect(tier0_intent: &str, jev_intent: &str, confidence: f64) -> bool {
-    NO_OVERRIDE_INTO.contains(&tier0_intent)
-        && jev_intent != tier0_intent
-        && confidence >= env_f64("LUCINA_JEV_DOUBT_MIN", DOUBT_MIN)
+/// Jev doubts a tier-0 rule enough that the planner should decide instead:
+/// a side-effect rule (a post, reviving Qwen, a spreadsheet write, a coding
+/// task…) Jev reads as something else, or a plain-chat rule (no tools) Jev
+/// reads as a request for an action.
+pub fn doubts(tier0: &lucina_intent::tier0::Classification, jev_intent: &str, confidence: f64) -> bool {
+    if jev_intent == tier0.intent || confidence < env_f64("LUCINA_JEV_DOUBT_MIN", DOUBT_MIN) {
+        return false;
+    }
+    let side_effect = NO_OVERRIDE_INTO.contains(&tier0.intent.as_str());
+    let chat_but_action = tier0.reply_mode == "chat"
+        && !tier0.needs_tools
+        && lucina_intent::tier0::default_reply_mode(jev_intent) != "chat"
+        && jev_intent != "unknown";
+    side_effect || chat_but_action
 }
 
 /// Jev's sure answer replaces the tier-0 rule's.
@@ -253,9 +261,17 @@ mod tests {
         assert!(!overrides("chat", "social_post", 0.99));
         assert!(!overrides("chat", "cursor_task", 0.99));
         assert!(!overrides("chat", "chat", 0.99));
-        assert!(doubts_side_effect("social_post", "schedule_reminder", 0.87));
-        assert!(!doubts_side_effect("social_post", "social_post", 0.99));
-        assert!(!doubts_side_effect("chat", "schedule_reminder", 0.87));
+        let s = lucina_intent::heuristics::Settings::default();
+        let post = lucina_intent::tier0::from_model_json(
+            &json!({"intent": "social_post", "confidence": 1.0, "needs_tools": true}), "x", "", &s);
+        assert!(doubts(&post, "schedule_reminder", 0.87));
+        assert!(!doubts(&post, "social_post", 0.99));
+        assert!(!doubts(&post, "schedule_reminder", 0.4));
+        let chat = lucina_intent::tier0::from_model_json(
+            &json!({"intent": "chat", "confidence": 0.95, "reply_mode": "chat"}), "x", "", &s);
+        assert!(doubts(&chat, "computer_task", 0.6));
+        assert!(!doubts(&chat, "social_greeting", 0.9), "both are conversational");
+        assert!(!doubts(&chat, "unknown", 0.9));
     }
 
     #[test]
