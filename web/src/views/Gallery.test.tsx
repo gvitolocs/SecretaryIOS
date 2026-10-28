@@ -190,7 +190,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  // Only the desktop stub (stubWide): the fetch stub stays, since gallery requests may still settle after a test.
+  delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
   lucinaViewer.setDevice(null);
   vi.restoreAllMocks();
 });
