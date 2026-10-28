@@ -275,7 +275,7 @@ export function pointIn(
 }
 
 export default function ComputerView() {
-  const { wide, track } = useWide();
+  const { wide, trackSlot } = useWide();
   const [sandbox, setSandbox] = createSignal<Sandbox>(readString("local", "computer.sandbox") === "android" ? "android" : "workspace");
   const [mode, setMode] = createSignal<"live" | "simple">(readString("local", "computer.mode") === "simple" ? "simple" : "live");
   const [state, setState] = createSignal<ControlState | null>(null);
@@ -1376,7 +1376,7 @@ export default function ComputerView() {
 </>;
 
   return (
-    <section ref={track} class={wide() ? "computer-desktop" : "computer-page"} aria-label={wide() ? t("computer.title") : undefined} aria-labelledby={wide() ? undefined : "computer-title"} data-full={full() ? "yes" : "no"} onClick={(e) => {
+    <section ref={trackSlot} class={wide() ? "computer-desktop" : "computer-page"} aria-label={wide() ? t("computer.title") : undefined} aria-labelledby={wide() ? undefined : "computer-title"} data-full={full() ? "yes" : "no"} onClick={(e) => {
       if (!wide()) return;
       const link = (e.target as HTMLElement).closest<HTMLAnchorElement>(".pg-seg a");
       if (!link) return;
