@@ -36,7 +36,7 @@ export const MIN_PASSWORD_LENGTH = 8;
 export function AccountDialog(props: {
   open: boolean;
   onClose: () => void;
-  section?: "notifications" | "import" | null;
+  section?: "notifications" | "import" | "approvals" | null;
   /** A sign-out button at the end (the /account route; the top bar has its own). */
   onSignOut?: () => void;
   signingOut?: boolean;
@@ -63,6 +63,8 @@ export function AccountDialog(props: {
         queueMicrotask(() => {
           if (props.section === "import") {
             document.getElementById("kp-import")?.scrollIntoView?.({ block: "start" });
+          } else if (props.section === "approvals") {
+            document.getElementById("apv-settings-title")?.scrollIntoView?.({ block: "start" });
           } else if (props.section === "notifications") {
             const el = document.getElementById("notif-settings-title");
             el?.scrollIntoView?.({ block: "start" });

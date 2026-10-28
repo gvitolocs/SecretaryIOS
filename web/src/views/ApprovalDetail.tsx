@@ -82,8 +82,10 @@ export default function ApprovalDetail() {
             {(a) => (
               <div class="apv-card apv-card--done" role="status">
                 <p class="apv-done-text">{statusLine(a())}</p>
-                <Show when={a().decidedBy}>
-                  <p class="muted small">{t("approvals.statusBy", { device: a().decidedBy! })}</p>
+                <Show when={a().decidedVia ?? a().decidedBy}>
+                  <p class="muted small">
+                    {a().decidedVia ? t("approvals.statusVia", { via: a().decidedVia! }) : t("approvals.statusBy", { device: a().decidedBy! })}
+                  </p>
                 </Show>
                 <p class="apv-asking">{a().summary}</p>
               </div>

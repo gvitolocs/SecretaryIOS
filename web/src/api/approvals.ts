@@ -1,6 +1,7 @@
 // Owner approvals (contract: approvals-contract.md, server: approvals.rs). This device is an approver: it lists the
 // requests it may decide, answers them, and picks the "main device" that gets them first. A web browser has no
-// Face ID key, so it can approve only requests that are not sensitive; denying never needs proof.
+// Face ID key, so it can approve only requests that are not sensitive; denying never needs proof. Inside Secretary
+// Code, a Mac with a Touch ID key can approve sensitive ones too (api/desktopApprover.ts).
 
 import { request } from "./client";
 
@@ -32,6 +33,8 @@ export interface Approval {
   status: ApprovalStatus;
   decidedAt?: string;
   decidedBy?: string;
+  /** How it was answered, e.g. "Touch ID on MacBook Air"; preferred over `decidedBy` when present. */
+  decidedVia?: string;
 }
 
 export type Decision = "approve" | "deny";
@@ -42,6 +45,11 @@ export interface ApprovalDevice {
   isMain: boolean;
   hasBiometricKey: boolean;
   lastSeen?: string;
+  /** The key's name, e.g. "Touch ID on MacBook Air". */
+  keyLabel?: string;
+  keyCreatedAt?: string;
+  /** The "Add <device> as an approver device" request still waiting for an existing approver. */
+  pendingApprovalId?: string;
 }
 
 export interface ApprovalSettings {
@@ -92,6 +100,7 @@ export function parseApproval(v: unknown): Approval | null {
   };
   if (typeof o.decidedAt === "string") a.decidedAt = o.decidedAt;
   if (typeof o.decidedBy === "string") a.decidedBy = o.decidedBy;
+  if (typeof o.decidedVia === "string" && o.decidedVia) a.decidedVia = o.decidedVia;
   return a;
 }
 
@@ -118,6 +127,9 @@ export function parseSettings(v: unknown): ApprovalSettings | null {
       isMain: x.isMain === true,
       hasBiometricKey: x.hasBiometricKey === true,
       ...(typeof x.lastSeen === "string" ? { lastSeen: x.lastSeen } : {}),
+      ...(typeof x.keyLabel === "string" && x.keyLabel ? { keyLabel: x.keyLabel } : {}),
+      ...(typeof x.keyCreatedAt === "string" && x.keyCreatedAt ? { keyCreatedAt: x.keyCreatedAt } : {}),
+      ...(typeof x.pendingApprovalId === "string" && x.pendingApprovalId ? { pendingApprovalId: x.pendingApprovalId } : {}),
     });
   }
   return {
