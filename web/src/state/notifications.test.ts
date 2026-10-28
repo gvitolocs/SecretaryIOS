@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parsePage } from "../api/notifications";
 import { setLocale } from "../i18n";
 import { deviceLabel, pushSupport, urlBase64ToBytes } from "../lib/push";
@@ -14,6 +14,7 @@ import {
   saveSettings,
   settingsView,
   unreadCount,
+  startNotifications,
 } from "./notifications";
 
 const SETTINGS = {
@@ -118,6 +119,18 @@ describe("notifications state", () => {
     expect(await saveSettings({ ...SETTINGS, previews: true })).toContain("quietHours.end");
     expect(settingsView()!.settings.previews).toBe(false);
     setLocale(null);
+  });
+
+  it("navigates to a decision from a service-worker open message", () => {
+    stubFetch(() => ({ status: 404, body: {} }));
+    const sw = new EventTarget();
+    vi.stubGlobal("navigator", { serviceWorker: sw });
+    const navigate = vi.fn();
+    const stop = startNotifications(navigate);
+    try {
+      sw.dispatchEvent(new MessageEvent("message", { data: { type: "open", route: "/decisions/dc-0123456789ab" } }));
+      expect(navigate).toHaveBeenCalledWith("/decisions/dc-0123456789ab");
+    } finally { stop(); }
   });
 
   it("only opens app routes", () => {
