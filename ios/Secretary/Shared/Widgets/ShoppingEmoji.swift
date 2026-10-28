@@ -71,6 +71,19 @@ struct ShoppingEmojiSection: WidgetSection {
         return Self.defaultEmoji
     }
 
+    /// The row's illustration in ItemIcons.xcassets, in ItemVisual's order (the widget has no
+    /// ItemVisual): an `svg:<key>` icon; its catalogue item's art unless the owner picked another
+    /// emoji; else, when the row has no emoji of its own beyond its section's or the cart, its
+    /// section's art ("other" excluded). The widget draws it only when the asset exists.
+    func art(icon rawIcon: String?, catalogId: String?, section rowSection: String?, picked: Bool) -> String? {
+        let icon = rawIcon.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+        if let icon, icon.hasPrefix("svg:") { return "item-\(icon.dropFirst(4))" }
+        if let catalogId, !(picked && icon != nil && icon != items[catalogId]) { return "item-\(catalogId)" }
+        guard let section = rowSection ?? catalogId.flatMap({ itemSections[$0] }), section != "other" else { return nil }
+        if let icon, icon != Self.defaultEmoji, icon != (sections[section] ?? Self.categoryEmoji[section]) { return nil }
+        return "section-\(section)"
+    }
+
     /// One emoji (with its variation selector, skin tone or joiners), not a word or an `svg:` key.
     static func isEmoji(_ text: String) -> Bool {
         guard text.count == 1, let first = text.unicodeScalars.first else { return false }
