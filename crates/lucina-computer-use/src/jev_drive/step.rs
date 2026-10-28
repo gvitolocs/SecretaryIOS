@@ -284,6 +284,9 @@ pub fn offer<'a>(target: Where, screen: &'a Screen, mem: &Memory, plan: &Plan) -
     if target == Where::Android {
         ops.push(("home", "Go to the Android home screen."));
     }
+    if target == Where::Desktop && !mem.banned(fp, "escape", "") {
+        ops.push(("escape", "Close an open dropdown, menu, date picker or dialog that is in the way (Escape key)."));
+    }
     if mem.wait_run < WAIT_RUN_MAX {
         ops.push(("wait", "The page is still loading or updating: wait a moment."));
     }
@@ -593,8 +596,14 @@ pub fn candidates(offer: &Offer, d: &Decision) -> Vec<Candidate> {
         }
     }
     all.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-    all.into_iter()
-        .take(TOP_K)
+    let mut top: Vec<(String, Option<Element>, f64)> = all.into_iter().take(TOP_K).collect();
+    // When Jev leans towards done, the text model may say so.
+    let done = d.yes("done").unwrap_or(0.0);
+    if done >= 0.3 && !top.iter().any(|c| c.0 == "done") {
+        top.truncate(TOP_K - 1);
+        top.push(("done".into(), None, done));
+    }
+    top.into_iter()
         .enumerate()
         .map(|(i, (op, target, p))| Candidate {
             id: format!("c{}", i + 1),

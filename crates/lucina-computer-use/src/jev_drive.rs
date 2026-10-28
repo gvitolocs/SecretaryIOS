@@ -822,6 +822,9 @@ impl Device {
             (Where::Desktop, "back") => {
                 self.tool("hotkey", json!({"keys": ["alt", "Left"]})).await?;
             }
+            (Where::Desktop, "escape") => {
+                self.tool("press_key", json!({"key": "Escape"})).await?;
+            }
             (_, "scroll_down") => {
                 self.bash(&format!("{ADB} shell input swipe 360 1000 360 350 350"))
                     .await?;
@@ -1026,7 +1029,7 @@ async fn fallback_pick(
     let list: Vec<String> = cands.iter().map(|c| c.describe()).collect();
     let r = words(
         "computer-pick",
-        &format!("You pick Lucina's next browser action for a task from a short list, or none when no item clearly helps. Answer JSON only: {{\"pick\":\"c1\"}} or {{\"pick\":\"none\"}}. {UNTRUSTED}"),
+        &format!("You pick Lucina's next browser action for a task from a short list. Pick the item that moves the task forward; pick done when the page text already answers the task (results below the visible part count). Answer none only when every item would be wrong or harmful. Answer JSON only: {{\"pick\":\"c1\"}} or {{\"pick\":\"none\"}}. {UNTRUSTED}"),
         format!(
             "Task: {task}\nPage: {}\nSteps taken: {}\nVisible text:\n{}\n\nCandidates:\n{}",
             screen.title,
