@@ -158,10 +158,11 @@ struct ServerOverview: Codable, Equatable, Sendable {
     }
 
     func components(onHost id: String) -> [ServerComponentRef] {
-        allComponents.filter { $0.component.host == id }.sorted { ($0.component.state, $0.component.name) < ($1.component.state, $1.component.name) }
+        // Running things only: checkouts (repos) are in Services.
+        allComponents.filter { $0.component.host == id && $0.component.kind != "repo" }.sorted { ($0.component.state, $0.component.name) < ($1.component.state, $1.component.name) }
     }
 
-    func attention(onHost id: String) -> [ServerAttention] { attention.filter { $0.host == id } }
+    func attention(onHost id: String) -> [ServerAttention] { needItems.filter { $0.host == id } }
 
     /// Healthy components (ok or idle) by group, for "All good · N checks".
     var healthyByGroup: [ServerHealthyGroup] {
