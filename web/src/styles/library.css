@@ -122,3 +122,8 @@
 
 .pg.library-desk .pg-card:has(#library-status) { display: flex; flex-direction: column; gap: 12px; }
 .pg.library-desk .pg-card:has(#library-status) form { display: flex; flex-direction: column; gap: 8px; }
+
+/* Desktop: the search field reads by its placeholder; the label icon sat on a line of its own above it. */
+.pg.library-desk .pg-field > .icon {
+  display: none;
+}
