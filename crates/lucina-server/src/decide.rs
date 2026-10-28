@@ -45,6 +45,9 @@ const EVIDENCE_OUT: usize = 6;
 const EVIDENCE_CHARS: usize = 300;
 /// How far back his own messages count as evidence.
 const OWNER_MESSAGE_DAYS: i64 = 14;
+/// How far back his own actions count as evidence, and how many lines of them.
+const OWNER_ACTION_DAYS: i64 = 30;
+const OWNER_ACTIONS: usize = 4;
 const MODEL_TIMEOUT: Duration = Duration::from_secs(25);
 const MEMORY_TIMEOUT: Duration = Duration::from_secs(6);
 
@@ -631,46 +634,203 @@ async fn owner_memory(st: &AppState, r: &Request, query: &str, words: &[String])
     }
 }
 
-/// His own actions: secrets he saved through the Add-secret sheet, root steps he approved or denied
-/// on his iPhone (the step's description is the requester's; his act is the approval).
+/// His own actions: secrets he saved through the Add-secret sheet, broker grants he made from the
+/// apps, root steps he approved or denied on his iPhone (the step's description is the requester's;
+/// his act is the approval), newest first.
 fn owner_actions(st: &AppState, words: &[String], now: DateTime<Utc>) -> Vec<Evidence> {
-    let since = now - chrono::Duration::days(30);
-    let mut out = Vec::new();
+    let since = now - chrono::Duration::days(OWNER_ACTION_DAYS);
+    let mut found: Vec<(DateTime<Utc>, Evidence)> = Vec::new();
     if let Ok((items, _)) = st.timeline.list(None, 200) {
         for raw in &items {
             let Ok(item) = serde_json::from_str::<TimelineItem>(&raw.raw) else {
                 continue;
             };
             let receipt = item.meta.as_ref().is_some_and(|m| m.kind.as_deref() == Some("secret_receipt"));
-            if receipt && relevant(words, &item.text) {
-                out.push(Evidence {
-                    tier: 2,
-                    kind: "owner_action".into(),
-                    text: clip(&format!("[{}] Giuseppe saved a secret himself: {}", day(&item.ts), item.text), EVIDENCE_CHARS),
-                });
+            if let Some(at) = within(&item.ts, since).filter(|_| receipt && relevant(words, &item.text)) {
+                found.push((at, owner_action(&item.ts, &format!("Giuseppe saved a secret himself: {}", item.text))));
             }
         }
     }
-    let audit = std::env::var("LUCINA_ROOT_AUDIT_FILE")
+    found.extend(broker_grants(&crate::owner_secrets::grants_file(&st.cfg.data_dir), words, since));
+    let audit = std::env::var("LUCINA_ROOT_AUDIT_FILE").or_else(|_| std::env::var("LUCINA_ROOT_AUDIT"))
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| st.cfg.data_dir.join("root-exec-audit.jsonl"));
-    if let Ok(text) = std::fs::read_to_string(audit) {
-        for v in text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).take(400) {
-            let event = v["event"].as_str().unwrap_or("");
-            let ts = v["ts"].as_str().unwrap_or("");
-            let recent = DateTime::parse_from_rfc3339(ts).is_ok_and(|t| t.with_timezone(&Utc) >= since);
-            let reason = v["reason"].as_str().unwrap_or("");
-            if matches!(event, "approved" | "denied") && recent && relevant(words, reason) {
-                out.push(Evidence {
-                    tier: 2,
-                    kind: "owner_action".into(),
-                    text: clip(&format!("[{}] Giuseppe {event} root steps on his iPhone: {reason}", day(ts)), EVIDENCE_CHARS),
-                });
+    found.extend(root_approvals(&audit, words, since));
+    found.sort_by_key(|a| std::cmp::Reverse(a.0));
+    found.into_iter().take(OWNER_ACTIONS).map(|(_, e)| e).collect()
+}
+
+fn within(ts: &str, since: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(ts).ok().map(|t| t.with_timezone(&Utc)).filter(|t| *t >= since)
+}
+
+fn owner_action(ts: &str, text: &str) -> Evidence {
+    Evidence { tier: 2, kind: "owner_action".into(), text: clip(&format!("[{}] {text}", day(ts)), EVIDENCE_CHARS) }
+}
+
+/// The last lines of a JSON-lines file, newest first.
+fn last_lines(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .map(|text| text.lines().rev().filter_map(|l| serde_json::from_str(l).ok()).take(400).collect())
+        .unwrap_or_default()
+}
+
+/// Grants he made from the apps and Lucina relayed to the broker (`secret-grants.jsonl`, names
+/// only). Catalog browsing and failed relays do not establish granted access.
+fn broker_grants(path: &Path, words: &[String], since: DateTime<Utc>) -> Vec<(DateTime<Utc>, Evidence)> {
+    let mut out = Vec::new();
+    for v in last_lines(path) {
+        let ts = v["ts"].as_str().unwrap_or("");
+        let op = v["op"].as_str().unwrap_or("");
+        let Some(at) = within(ts, since).filter(|_| !op.is_empty() && op != "unknown" && op != "catalog" && v["outcome"] == "ok") else {
+            continue;
+        };
+        let field = |k: &str| v[k].as_str().filter(|s| !s.is_empty());
+        let mut what = op.replace('_', " ");
+        if let Some(key) = field("key") {
+            what.push_str(&format!(" `{key}`"));
+        }
+        if let Some(name) = field("project_name") {
+            what.push_str(&format!(" \"{name}\""));
+        }
+        if let Some(project) = field("project") {
+            let place = [field("environment"), field("path")].into_iter().flatten().collect::<Vec<_>>().join(" ");
+            what.push_str(&format!(" in {project} {place}"));
+        }
+        if let Some(caller) = field("caller") {
+            what.push_str(&format!(", granted to {caller}"));
+        }
+        if relevant(words, &what) {
+            out.push((at, owner_action(ts, &format!("Giuseppe made a broker grant from his app: {what}"))));
+        }
+    }
+    out
+}
+
+/// Root steps he approved or denied on his iPhone. Steps that change the broker's settings
+/// (`/etc/infisical-broker/`) say so, in broker terms when a staged file shows them.
+fn root_approvals(path: &Path, words: &[String], since: DateTime<Utc>) -> Vec<(DateTime<Utc>, Evidence)> {
+    let lines = last_lines(path);
+    // Current audits carry argv on `ran`/`failed`; also accept steps on request/decision lines.
+    let mut argv: HashMap<&str, Vec<&str>> = HashMap::new();
+    for v in &lines {
+        if v["approvalId"].as_str().is_some_and(|id| !id.is_empty()) {
+            let args = v["steps"].as_array().into_iter().flatten().flat_map(|s| s["argv"].as_array().into_iter().flatten());
+            argv.entry(v["approvalId"].as_str().unwrap_or("")).or_default().extend(args.filter_map(Value::as_str));
+        }
+    }
+    let mut chronological: Vec<_> = lines.iter().collect();
+    chronological.sort_by_key(|v| v["ts"].as_str().unwrap_or(""));
+    let mut previous = None;
+    let mut out = Vec::new();
+    for v in chronological {
+        let event = v["event"].as_str().unwrap_or("");
+        let ts = v["ts"].as_str().unwrap_or("");
+        let reason = v["reason"].as_str().unwrap_or("");
+        let Some(at) = within(ts, since).filter(|_| matches!(event, "approved" | "denied")) else {
+            continue;
+        };
+        let args = argv.get(v["approvalId"].as_str().unwrap_or("")).map(Vec::as_slice).unwrap_or_default();
+        let broker = args.iter().any(|a| a.contains("/etc/infisical-broker/"))
+            || lucina_intent::re!(r"infisical-broker|broker\.toml", "i").test(reason);
+        let text = if broker {
+            let staged = broker_names(args);
+            // An appended fragment is not a replacement snapshot of the whole config.
+            let fragment = args.iter().any(|a| a.contains(">>"));
+            let baseline = if fragment { None } else { previous.as_deref() };
+            let change = staged.as_ref().and_then(|names| broker_change(baseline, names));
+            // A denial or appended fragment never becomes the baseline for a later change.
+            if event == "approved" && !fragment && staged.is_some() {
+                previous = staged;
+            }
+            match change {
+                Some(change) => format!("Giuseppe {event} a broker settings change: {change} ({reason})"),
+                None => format!("Giuseppe {event} a broker settings change: {reason}"),
+            }
+        } else {
+            format!("Giuseppe {event} root steps on his iPhone: {reason}")
+        };
+        if relevant(words, &text) {
+            out.push((at, owner_action(ts, &text)));
+        }
+    }
+    out.sort_by_key(|a| std::cmp::Reverse(a.0));
+    out
+}
+
+/// Names from staged broker configs referenced by the steps; never token, key or binding values.
+fn broker_names(args: &[&str]) -> Option<Vec<String>> {
+    let mut names = None;
+    for a in args.iter().flat_map(|a| a.split_whitespace()) {
+        let a = a.trim_matches(|c| c == '"' || c == '\'' || c == ';');
+        if !a.starts_with('/') || !a.ends_with(".toml") || a.starts_with("/etc/") {
+            continue;
+        }
+        let small = std::fs::metadata(a).is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024);
+        if let Some(text) = small.then(|| std::fs::read_to_string(a).ok()).flatten() {
+            if let Ok(config) = toml::from_str::<toml::Value>(&text) {
+                names = Some(broker_config_names(&config));
             }
         }
     }
-    out.truncate(4);
+    names.filter(|n| !n.is_empty())
+}
+
+fn broker_config_names(config: &toml::Value) -> Vec<String> {
+    fn grants(value: &toml::Value, prefix: &str, out: &mut Vec<String>) {
+        match value {
+            toml::Value::String(name) => out.push(format!("{prefix}.{name}")),
+            toml::Value::Array(entries) => entries.iter().for_each(|v| grants(v, prefix, out)),
+            toml::Value::Table(entry) => {
+                // Grant entries describe secrets by name; other fields may contain credentials.
+                for field in ["name", "names", "key", "keys"] {
+                    if let Some(value) = entry.get(field) {
+                        grants(value, prefix, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for section in ["approvals", "owner_grants"] {
+        if config.get(section).is_some() {
+            out.push(section.to_owned());
+        }
+    }
+    if let Some(callers) = config.get("callers").and_then(toml::Value::as_table) {
+        for (name, caller) in callers {
+            let prefix = format!("callers.{name}");
+            out.push(prefix.clone());
+            if let Some(entries) = caller.get("grants") {
+                grants(entries, &format!("{prefix}.grants"), &mut out);
+            }
+        }
+    }
+    if let Some(entries) = config.get("grants") {
+        grants(entries, "grants", &mut out);
+    }
+    out.sort();
+    out.dedup();
     out
+}
+
+/// Compare consecutive staged copies by caller/section/grant names only.
+fn broker_change(previous: Option<&[String]>, current: &[String]) -> Option<String> {
+    let Some(previous) = previous else {
+        return Some(format!("sets [{}]", current.join("], [")));
+    };
+    let added: Vec<_> = current.iter().filter(|s| !previous.contains(s)).collect();
+    let removed: Vec<_> = previous.iter().filter(|s| !current.contains(s)).collect();
+    let list = |v: &[&String]| v.iter().map(|s| format!("[{s}]")).collect::<Vec<_>>().join(", ");
+    let mut parts = Vec::new();
+    if !added.is_empty() {
+        parts.push(format!("adds {}", list(&added)));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("removes {}", list(&removed)));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
 }
 
 /// Earlier decisions in the ops record (sessions', Lucina's and his own).
@@ -1803,6 +1963,108 @@ mod tests {
         ]);
         assert!(block.starts_with("Tier 1, Giuseppe's own words"), "{block}");
         assert!(block.contains("Tier 4, records written by agents (facts about what happened; NEVER evidence"));
+    }
+
+    #[test]
+    fn broker_grants_he_made_are_his_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret-grants.jsonl");
+        let now = Utc::now();
+        let line = |ts: DateTime<Utc>, extra: Value| {
+            let mut v = json!({"ts": iso_ms(ts), "op": "put_secret", "project": "lucina", "environment": "prod",
+                "path": "/", "key": "JEV_API_KEY_LUCINA", "caller": "svc-gallery", "outcome": "ok"});
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v.to_string()
+        };
+        let lines = [
+            line(now - chrono::Duration::days(2), json!({})),
+            line(now - chrono::Duration::days(1), json!({"op": "catalog"})),
+            line(now - chrono::Duration::days(90), json!({"key": "JEV_API_KEY_OLD"})),
+            line(now, json!({"outcome": "error"})),
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        let since = now - chrono::Duration::days(OWNER_ACTION_DAYS);
+        let gallery = keywords("May the gallery service use the JEV key JEV_API_KEY_LUCINA?");
+        let found = broker_grants(&file, &gallery, since);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let e = &found[0].1;
+        assert_eq!((e.tier, e.kind.as_str()), (2, "owner_action"));
+        assert!(e.text.contains("JEV_API_KEY_LUCINA") && e.text.contains("granted to svc-gallery"), "{}", e.text);
+        assert!(e.text.starts_with(&format!("[{}] Giuseppe made a broker grant", day(&iso_ms(now - chrono::Duration::days(2))))));
+        let off = keywords("Restart the payment-webhook worker on p1?");
+        assert!(broker_grants(&file, &off, since).is_empty());
+    }
+
+    #[test]
+    fn broker_settings_changes_he_approved_are_his_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("approvals.toml");
+        std::fs::write(&staged, "# staged\n[approvals]\nurl = \"https://x\"\n[callers.svc-gallery]\ntoken_sha256 = \"ab\"\ncommands = [\n[\"/usr/bin/x\"],\n]\n").unwrap();
+        let file = dir.path().join("root-exec-audit.jsonl");
+        let ts = |m: i64| iso_ms(Utc::now() - chrono::Duration::minutes(m));
+        let reason = "Let svc-gallery read the gallery keys from the broker";
+        let steps = json!([
+            {"argv": ["cp", "-a", "/etc/infisical-broker/broker.toml", "/etc/infisical-broker/broker.toml.new"]},
+            {"argv": ["sh", "-c", format!("cat {} >> /etc/infisical-broker/broker.toml.new", staged.display())]},
+        ]);
+        let lines = [
+            json!({"event": "requested", "approvalId": "apr_a", "reason": reason, "ts": ts(30)}),
+            json!({"event": "approved", "approvalId": "apr_a", "reason": reason, "ts": ts(29)}),
+            json!({"event": "ran", "approvalId": "apr_a", "reason": reason, "steps": steps, "ts": ts(28)}),
+            json!({"event": "requested", "approvalId": "apr_b", "reason": "Grant svc-gallery the broker.toml caller for gallery uploads", "ts": ts(20)}),
+            json!({"event": "denied", "approvalId": "apr_b", "reason": "Grant svc-gallery the broker.toml caller for gallery uploads", "ts": ts(19)}),
+            json!({"event": "requested", "approvalId": "apr_c", "reason": "Give svc-gallery the broker caller for gallery thumbnails", "ts": ts(10)}),
+        ];
+        std::fs::write(&file, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let since = Utc::now() - chrono::Duration::days(OWNER_ACTION_DAYS);
+        let words = keywords("Can svc-gallery use the broker for the gallery keys?");
+        let found: Vec<Evidence> = root_approvals(&file, &words, since).into_iter().map(|(_, e)| e).collect();
+        assert_eq!(found.len(), 2, "requested-only is not his act: {found:?}");
+        assert!(found.iter().all(|e| e.tier == 2 && e.kind == "owner_action"));
+        assert!(found[0].text.contains("Giuseppe denied a broker settings change: Grant svc-gallery"), "{}", found[0].text);
+        let approved = &found[1].text;
+        assert!(approved.contains("Giuseppe approved a broker settings change: sets [approvals], [callers.svc-gallery] (Let svc-gallery"), "{approved}");
+        assert!(!approved.contains("token_sha256") && !approved.contains("usr/bin"), "names only: {approved}");
+        assert!(root_approvals(&file, &keywords("Restart the payment-webhook worker on p1?"), since).is_empty());
+    }
+
+    #[test]
+    fn broker_settings_compare_consecutive_staged_grant_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("old.toml");
+        let new = dir.path().join("new.toml");
+        let fragment = dir.path().join("approvals.toml");
+        std::fs::write(&fragment, "[approvals]\nurl = \"https://example.test\"\n").unwrap();
+        let config = |key: &str| format!(
+            "[callers.svc-gallery]\nbind_unit = \"gallery.service\"\n[[callers.svc-gallery.grants]]\nkey = \"{key}\"\nproject = \"private-project-id\"\n"
+        );
+        std::fs::write(&old, config("OLD_KEY")).unwrap();
+        std::fs::write(&new, config("JEV_API_KEY_LUCINA")).unwrap();
+        let file = dir.path().join("root-exec-audit.jsonl");
+        let now = Utc::now();
+        let entry = |event: &str, id: &str, minutes: i64, staged: &Path| json!({
+            "event": event, "approvalId": id, "reason": "Update gallery access",
+            "ts": iso_ms(now - chrono::Duration::minutes(minutes)),
+            "steps": [{"argv": ["install", "-m", "0600", staged, "/etc/infisical-broker/broker.toml"]}]
+        });
+        let lines = [
+            entry("approved", "old", 10, &old),
+            json!({"event": "approved", "approvalId": "fragment", "reason": "Gallery broker approvals",
+                "ts": iso_ms(now - chrono::Duration::minutes(7)),
+                "steps": [{"argv": ["sh", "-c", format!("cat {} >> /etc/infisical-broker/broker.toml", fragment.display())]}]}),
+            entry("approved", "new", 5, &new),
+            entry("denied", "denied", 2, &old),
+            entry("requested", "pending", 1, &old),
+        ];
+        std::fs::write(&file, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let found = root_approvals(&file, &keywords("May the gallery use the JEV key?"), now - chrono::Duration::days(30));
+        assert_eq!(found.len(), 4);
+        assert!(found[2].1.text.contains("sets [approvals]"));
+        assert!(!found[2].1.text.contains("removes"));
+        assert!(found[0].1.text.contains("Giuseppe denied a broker settings change"));
+        assert!(found[1].1.text.contains("adds [callers.svc-gallery.grants.JEV_API_KEY_LUCINA]"));
+        assert!(found[1].1.text.contains("removes [callers.svc-gallery.grants.OLD_KEY]"));
+        assert!(found.iter().all(|(_, e)| !e.text.contains("private-project-id") && !e.text.contains("gallery.service")));
     }
 
     #[test]

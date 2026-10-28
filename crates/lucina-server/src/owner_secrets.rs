@@ -6,7 +6,9 @@
 //!   device) to infisical-brokerd as op `grant`. Lucina cannot make a grant;
 //!   she only passes it on with the value. After a save she writes a receipt
 //!   (names and fingerprint, never the value) to the timeline and learns the
-//!   value in the redactor under its name.
+//!   value in the redactor under its name. Every relayed grant leaves one
+//!   line in [`grants_file`] (what it named and how it went, never the value,
+//!   the grant itself or a token): his own acts, evidence for decisions.
 //! - **`/secret NAME VALUE [target]`** in any chat is answered here, before
 //!   the model, the timeline, Honcho, recent turns and the replay cache: the
 //!   value is held in memory ([`HeldSecrets`], 10 minutes, zeroized) and
@@ -18,10 +20,13 @@
 //!   sheet's new-project step; nothing is created without the owner's tap.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use lucina_secrets::SecretValue;
 use lucina_store::timeline::{Meta, NewItem, TimelineStore};
 use serde_json::{json, Value};
@@ -295,6 +300,56 @@ fn rich_meta(bubbles: Vec<String>, actions: Vec<Value>) -> Option<Meta> {
         .map(|(m, _)| Meta::rich(&m))
 }
 
+/// `LUCINA_SECRET_GRANTS_FILE`, default `<data_dir>/secret-grants.jsonl`: one line per relayed grant.
+pub fn grants_file(data_dir: &Path) -> PathBuf {
+    std::env::var("LUCINA_SECRET_GRANTS_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| data_dir.join("secret-grants.jsonl"))
+}
+
+/// What a grant names, for [`grants_file`]: the action and its names only (project, environment,
+/// path, key, the caller it is for). Never the value, its hash, a held id, the signature or a token.
+fn grant_record(grant: &str) -> Value {
+    let payload = grant
+        .split('.')
+        .nth(1)
+        .and_then(|p| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(p).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .unwrap_or(Value::Null);
+    let text = |key: &str| payload[key].as_str().map(|s| s.chars().take(256).collect::<String>());
+    let mut out = json!({"ts": lucina_store::timeutil::now_iso(), "op": text("act").unwrap_or_else(|| "unknown".into())});
+    for key in ["project", "environment", "path", "key", "project_name", "slug"] {
+        if let Some(v) = text(key) {
+            out[key] = json!(v);
+        }
+    }
+    if let Some(caller) = ["caller", "service", "grantee"].iter().find_map(|k| text(k)) {
+        out["caller"] = json!(caller);
+    }
+    out
+}
+
+/// Append one line to [`grants_file`] (mode 0600); a failure is logged, never the caller's problem.
+fn record_grant(path: &Path, line: &Value) {
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        let mut bytes = serde_json::to_vec(line)?;
+        bytes.push(b'\n');
+        f.write_all(&bytes)
+    };
+    if let Err(e) = write() {
+        tracing::warn!(path = %path.display(), error = %e.kind(), "secret grant record not written");
+    }
+}
+
 /// `POST /api/secretary/secrets/grant`.
 pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiError> {
     let grant = body["grant"]
@@ -317,13 +372,21 @@ pub async fn relay(st: &crate::AppState, mut body: Value) -> Result<Value, ApiEr
     };
     wipe(&mut body);
     let token = st.cfg.broker.token()?;
+    let mut record = grant_record(&grant);
     let mut req = json!({"token": token.expose_secret(), "op": "grant", "grant": grant});
     if let Some(v) = &value {
         req["value"] = json!(v.expose_secret());
     }
-    let result = broker_call(&st.cfg.broker.socket, req)
-        .await
-        .map_err(|(c, m)| broker_error(&c, &m))?;
+    let answer = broker_call(&st.cfg.broker.socket, req).await;
+    match &answer {
+        Ok(_) => record["outcome"] = json!("ok"),
+        Err((code, _)) => {
+            record["outcome"] = json!("error");
+            record["error"] = json!(code);
+        }
+    }
+    record_grant(&grants_file(&st.cfg.data_dir), &record);
+    let result = answer.map_err(|(c, m)| broker_error(&c, &m))?;
     if result.get("fingerprint").is_some() {
         // A save: learn the value under its name, forget the held copy, write the receipt.
         let name = result["key"].as_str().unwrap_or("SECRET").to_owned();
@@ -726,6 +789,42 @@ mod tests {
             receipt_text(&r),
             "Saved `POKO_KEY` in Poko / prod / /Pokobot (fingerprint ab12cd34)"
         );
+    }
+
+    #[test]
+    fn grant_records_name_no_value() {
+        let payload = json!({"v": 1, "aud": "infisical-brokerd", "jti": "abc123", "iat": 1, "exp": 91,
+            "sub": "device:dev_1", "act": "put_secret", "project": "lucina", "environment": "prod",
+            "path": "/", "key": "JEV_API_KEY_LUCINA", "caller": "svc-gallery", "overwrite": false,
+            "value_sha256": "5e8f", "held": "held-0123456789", "value": "test-secret-value",
+            "signature": "test-signature", "token": "test-token"});
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let grant = format!("g1.{}.{}", b64(&serde_json::to_vec(&payload).unwrap()), b64(b"signature-bytes"));
+        let r = grant_record(&grant);
+        assert_eq!(r["op"], "put_secret");
+        assert_eq!(r["key"], "JEV_API_KEY_LUCINA");
+        assert_eq!(r["caller"], "svc-gallery");
+        assert_eq!((r["project"].as_str(), r["environment"].as_str(), r["path"].as_str()), (Some("lucina"), Some("prod"), Some("/")));
+        let line = r.to_string();
+        for leak in ["value", "5e8f", "held", "jti", "abc123", "sub", "dev_1", "grant", "sig", "token", "test-secret-value", "test-signature", "test-token", &b64(b"signature-bytes")] {
+            assert!(!line.contains(leak), "{leak} in {line}");
+        }
+        assert_eq!(grant_record("g1.not-base64!.x")["op"], "unknown");
+    }
+
+    #[test]
+    fn grant_log_is_private_even_when_it_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("secret-grants.jsonl");
+        std::fs::write(&file, "").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        record_grant(&file, &json!({"op": "catalog", "outcome": "ok"}));
+        record_grant(&file, &json!({"op": "put_secret", "outcome": "error"}));
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        let text = std::fs::read_to_string(file).unwrap();
+        let lines: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1]["outcome"], "error");
     }
 
     #[test]
