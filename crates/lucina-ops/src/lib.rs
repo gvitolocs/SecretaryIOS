@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-pub use record::{Kind, NewRecord, Paths, Recorded, Severity, StoredRecord};
+pub use record::{DecidedBy, Kind, NewRecord, Paths, Recorded, Severity, StoredRecord};
 pub use vault::{Vault, VaultError};
 
 use render::ProjectInsert;
@@ -138,6 +138,12 @@ pub struct SearchItem {
     pub source: String,
     pub links: Vec<String>,
     pub paths: Paths,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<DecidedBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
     pub score: f64,
     pub matched: Vec<String>,
 }
@@ -303,6 +309,9 @@ impl Ops {
                 recorded_at: now,
                 source,
                 dedup_key: v.dedup_key,
+                decided_by: v.decided_by,
+                question: v.question,
+                asked_by: v.asked_by,
                 redacted,
                 honcho_synced: false,
                 paths: Paths {
@@ -423,6 +432,8 @@ impl Ops {
                 "host": r.host,
                 "source": r.source,
                 "at": r.at.to_rfc3339(),
+                "decided_by": r.decided_by.map(record::DecidedBy::as_str),
+                "asked_by": r.asked_by,
             }),
         };
         client
@@ -736,6 +747,9 @@ impl Ops {
                     source: r.source,
                     links: r.links,
                     paths: r.paths,
+                    decided_by: r.decided_by,
+                    question: r.question,
+                    asked_by: r.asked_by,
                     score,
                     matched,
                 })
@@ -814,6 +828,8 @@ fn local_score(r: &StoredRecord, terms: &[String]) -> f64 {
         .chain(r.fix.iter())
         .chain(r.follow_ups.iter())
         .chain(r.links.iter())
+        .chain(r.question.iter())
+        .chain(r.asked_by.iter())
     {
         rest.push(' ');
         rest.push_str(s);

@@ -17,21 +17,31 @@ use super::{Finish, Turn};
 
 pub const ACTION: &str = "ops";
 /// Projects named in chat before they have records.
+/// The main ids of the service catalog (nezopt ~/Projects/Homelab/catalog), plus hosts.
 const KNOWN_PROJECTS: &[&str] = &[
     "lucina",
     "lucina-agents",
+    "lucina-computer",
+    "lucinamaps",
+    "secretary",
     "pokoin",
-    "pokobot",
+    "pokoin-scan",
+    "pokoin-bots",
+    "ctcm",
+    "tcgprices",
+    "cardrails",
     "orchestra",
-    "harness",
+    "honcho",
+    "qwen",
     "hermes",
+    "infisical",
+    "edge",
+    "network",
+    "hosts",
+    "ops",
     "nezopt",
     "p1",
     "pi",
-    "gallery",
-    "immich",
-    "infisical",
-    "secretary-web",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +248,7 @@ pub(super) async fn try_turn(t: &Turn<'_>, memory: &str, now: DateTime<Utc>) -> 
         "project": project,
         "title": d.title,
         "body": t.message.chars().take(4000).collect::<String>(),
+        "decided_by": "owner",
     }))
     .ok()?;
     let r = match ops.record(new, "lucina").await {

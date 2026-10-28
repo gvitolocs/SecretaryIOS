@@ -1103,3 +1103,55 @@ async fn validation_errors_name_the_field() {
     assert!(bad.is_err());
     assert!(store_lines(&w).is_empty());
 }
+
+#[tokio::test]
+async fn decisions_say_who_decided_what_for_whom() {
+    let w = world();
+    let o = ops(&w);
+    let mut r = rec(
+        Kind::Decision,
+        "lucina",
+        "Merge gallery-viewer-feel into web-live now",
+        "2026-10-28T10:10:00+01:00",
+    );
+    r.decided_by = Some(lucina_ops::DecidedBy::Lucina);
+    r.question = Some("May I merge the gallery viewer branch\nbefore the owner tests it?".into());
+    r.asked_by = Some("gallery-viewer-feel".into());
+    r.body = "The owner said this morning that web-only UI fixes may land without him.".into();
+    let got = o.record_at(r, "mcp:claude", now()).await.unwrap();
+    let page = read(&w, "Projects/lucina.md");
+    assert!(
+        page.contains("(decided by lucina for gallery-viewer-feel)"),
+        "{page}"
+    );
+    assert!(
+        page.contains(
+            "  Question: May I merge the gallery viewer branch before the owner tests it?"
+        ),
+        "{page}"
+    );
+    let log = read(&w, "Log/2026-10-28.md");
+    assert!(
+        log.contains("decided by lucina for gallery-viewer-feel"),
+        "{log}"
+    );
+    let s = o
+        .search(SearchQuery {
+            q: "who decided gallery viewer".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(s.items[0].id, got.id);
+    assert_eq!(s.items[0].decided_by, Some(lucina_ops::DecidedBy::Lucina));
+    assert_eq!(s.items[0].asked_by.as_deref(), Some("gallery-viewer-feel"));
+    let stored = o.get(&got.id).unwrap().unwrap();
+    assert!(stored
+        .question
+        .unwrap()
+        .contains("before the owner tests it"));
+    let bad: Result<NewRecord, _> = serde_json::from_value(
+        json!({"kind": "decision", "project": "x", "title": "t", "decided_by": "boss"}),
+    );
+    assert!(bad.is_err());
+}

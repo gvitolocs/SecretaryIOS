@@ -436,6 +436,7 @@ pub fn ops_place(runtime: &str, project_override: Option<&str>) -> (String, &'st
     let project = match project_override.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => p.to_owned(),
         None if runtime == "lucina-agentd" => "lucina-agents".to_owned(),
+        None if matches!(runtime, "secretary-server" | "secretary-mcp" | "web") => "secretary".to_owned(),
         None => "lucina".to_owned(),
     };
     let host = match runtime {
@@ -615,8 +616,8 @@ mod tests {
             ("lucina-agents".into(), "nezopt")
         );
         assert_eq!(ops_place("lucina-rs", None), ("lucina".into(), "nezopt"));
-        assert_eq!(ops_place("secretary-server", None), ("lucina".into(), "p1"));
-        assert_eq!(ops_place("web", None), ("lucina".into(), "p1"));
+        assert_eq!(ops_place("secretary-server", None), ("secretary".into(), "p1"));
+        assert_eq!(ops_place("web", None), ("secretary".into(), "p1"));
         assert_eq!(
             ops_place("lucina-rs", Some("pokoin")),
             ("pokoin".into(), "nezopt")
@@ -632,7 +633,7 @@ mod tests {
         let j = ops_record_json(&deploy("secretary-mcp"), None);
         assert_eq!(
             j,
-            "{\"kind\":\"deploy\",\"project\":\"lucina\",\"title\":\"secretary-mcp deployed 90e94263ab: Merge branch \\\"agents-p5\\\" into int5-rs\",\"body\":\"/home/nez/Projects/.worktrees/SecretaryIOS/lucina on lucina-rs\\nphase 5\\tlive\\nby nez@nez_opt\",\"commit\":\"90e94263abcdef0123456789abcdef0123456789\",\"host\":\"p1\",\"dedup_key\":\"deploy:secretary-mcp:90e94263abcdef0123456789abcdef0123456789\",\"at\":\"2026-10-28T15:53:08Z\"}"
+            "{\"kind\":\"deploy\",\"project\":\"secretary\",\"title\":\"secretary-mcp deployed 90e94263ab: Merge branch \\\"agents-p5\\\" into int5-rs\",\"body\":\"/home/nez/Projects/.worktrees/SecretaryIOS/lucina on lucina-rs\\nphase 5\\tlive\\nby nez@nez_opt\",\"commit\":\"90e94263abcdef0123456789abcdef0123456789\",\"host\":\"p1\",\"dedup_key\":\"deploy:secretary-mcp:90e94263abcdef0123456789abcdef0123456789\",\"at\":\"2026-10-28T15:53:08Z\"}"
         );
         let h = history_line(&deploy("lucina-rs"));
         assert!(

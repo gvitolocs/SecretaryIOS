@@ -202,6 +202,7 @@ async fn the_owners_decision_is_recorded() {
         "keep Syncthing for the lucina vault, with only the Lucina folder synced"
     );
     assert_eq!(items[0]["source"], "lucina");
+    assert_eq!(items[0]["decided_by"], "owner");
     let page = std::fs::read_to_string(h.dir.path().join("vault/Projects/lucina.md")).unwrap();
     assert!(page.contains("## Decisions\n\n- "), "{page}");
 }

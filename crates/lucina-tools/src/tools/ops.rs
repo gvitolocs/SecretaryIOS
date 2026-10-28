@@ -39,6 +39,14 @@ enum SeverityArg {
     Critical,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum DecidedByArg {
+    Owner,
+    Lucina,
+    Session,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Args {
@@ -82,6 +90,15 @@ struct Args {
     /// record: when it happened (RFC 3339), when that was not just now.
     #[serde(default)]
     at: Option<String>,
+    /// record (decisions): who decided: owner, lucina (you, for a session that asked) or session.
+    #[serde(default)]
+    decided_by: Option<DecidedByArg>,
+    /// record (decisions): the question that was decided.
+    #[serde(default)]
+    question: Option<String>,
+    /// record (decisions): who asked (the session or agent name).
+    #[serde(default)]
+    asked_by: Option<String>,
     /// search: words to look for (empty with filters: newest first).
     #[serde(default)]
     query: Option<String>,
@@ -128,6 +145,8 @@ fn record_json(a: &Args) -> Result<Value, ToolError> {
         ("cause", &a.cause),
         ("fix", &a.fix),
         ("at", &a.at),
+        ("question", &a.question),
+        ("asked_by", &a.asked_by),
     ] {
         if let Some(s) = val.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             o.insert(k.into(), json!(s));
@@ -135,6 +154,9 @@ fn record_json(a: &Args) -> Result<Value, ToolError> {
     }
     if let Some(s) = a.severity {
         o.insert("severity".into(), json!(s));
+    }
+    if let Some(d) = a.decided_by {
+        o.insert("decided_by".into(), json!(d));
     }
     Ok(v)
 }
@@ -148,7 +170,8 @@ impl Tool for OpsTool {
         "Lucina's record of Giuseppe's projects (deploys, incidents, decisions, status, findings), kept in \
          his Obsidian folder Lucina/ (daily log, one page per project, incident pages) and in her memory. \
          record: when Giuseppe decides something about one of his projects in chat (kind decision; title = \
-         the decision, body = why and the alternatives), when he reports a deploy or an incident, or when \
+         the decision, body = why and the alternatives, decided_by owner), when you decide something for a \
+         session or agent that asked you (decided_by lucina, question = what they asked, asked_by = who), when he reports a deploy or an incident, or when \
          you hit one yourself; repeats are de-duplicated and secrets are redacted. search: to answer \"what \
          happened with X\", \"what changed on X\", \"why did we decide Y\", \"when did Z go live\": answer \
          only from the returned records, citing their dates and pages (Lucina/Projects/<project>.md); never \
@@ -236,6 +259,9 @@ impl Tool for OpsTool {
                             "host": i.host,
                             "severity": i.severity,
                             "source": i.source,
+                            "decided_by": i.decided_by,
+                            "question": i.question,
+                            "asked_by": i.asked_by,
                             "page": format!("Lucina/{}", i.paths.project),
                         })
                     })

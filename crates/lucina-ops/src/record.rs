@@ -16,6 +16,8 @@ pub const MAX_LINE: usize = 500;
 pub const MAX_CAUSE: usize = 4000;
 pub const MAX_FOLLOW_UPS: usize = 20;
 pub const MAX_DEDUP_KEY: usize = 200;
+pub const MAX_QUESTION: usize = 4000;
+pub const MAX_ASKED_BY: usize = 100;
 /// How far in the future `at` may be (clock skew between hosts).
 pub const MAX_FUTURE_MINUTES: i64 = 10;
 
@@ -86,6 +88,26 @@ impl Severity {
     }
 }
 
+/// Who made a decision: the owner, Lucina (deciding for a session from what
+/// the owner told her), or the reporting session or agent itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecidedBy {
+    Owner,
+    Lucina,
+    Session,
+}
+
+impl DecidedBy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DecidedBy::Owner => "owner",
+            DecidedBy::Lucina => "lucina",
+            DecidedBy::Session => "session",
+        }
+    }
+}
+
 /// What a caller reports (the wire contract of `POST /api/secretary/ops/records`
 /// and the MCP tool `ops_record`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +138,15 @@ pub struct NewRecord {
     pub at: Option<DateTime<FixedOffset>>,
     #[serde(default)]
     pub dedup_key: Option<String>,
+    /// Decisions: who decided.
+    #[serde(default)]
+    pub decided_by: Option<DecidedBy>,
+    /// Decisions: the question that was decided.
+    #[serde(default)]
+    pub question: Option<String>,
+    /// Decisions: who asked (a session or agent name).
+    #[serde(default)]
+    pub asked_by: Option<String>,
 }
 
 impl NewRecord {
@@ -136,6 +167,9 @@ impl NewRecord {
             follow_ups: Vec::new(),
             at: None,
             dedup_key: None,
+            decided_by: None,
+            question: None,
+            asked_by: None,
         }
     }
 }
@@ -180,6 +214,12 @@ pub struct StoredRecord {
     pub source: String,
     #[serde(default)]
     pub dedup_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<DecidedBy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_by: Option<String>,
     #[serde(default)]
     pub redacted: bool,
     #[serde(default)]
@@ -276,6 +316,9 @@ pub(crate) struct Valid {
     pub follow_ups: Vec<String>,
     pub at: DateTime<Utc>,
     pub dedup_key: Option<String>,
+    pub decided_by: Option<DecidedBy>,
+    pub question: Option<String>,
+    pub asked_by: Option<String>,
 }
 
 pub(crate) fn validate(r: NewRecord, now: DateTime<Utc>) -> Result<Valid, OpsError> {
@@ -388,6 +431,14 @@ pub(crate) fn validate(r: NewRecord, now: DateTime<Utc>) -> Result<Valid, OpsErr
     if let Some(k) = &dedup_key {
         check_len("dedup_key", k, MAX_DEDUP_KEY)?;
     }
+    let question = opt_text(r.question);
+    if let Some(q) = &question {
+        check_len("question", q, MAX_QUESTION)?;
+    }
+    let asked_by = opt_text(r.asked_by).map(|a| single_line(&a));
+    if let Some(a) = &asked_by {
+        check_len("asked_by", a, MAX_ASKED_BY)?;
+    }
     Ok(Valid {
         kind: r.kind,
         project,
@@ -403,6 +454,9 @@ pub(crate) fn validate(r: NewRecord, now: DateTime<Utc>) -> Result<Valid, OpsErr
         follow_ups,
         at,
         dedup_key,
+        decided_by: r.decided_by,
+        question,
+        asked_by,
     })
 }
 
@@ -440,6 +494,12 @@ pub(crate) fn redact(v: &mut Valid) -> Result<bool, OpsError> {
     }
     if let Some(k) = v.dedup_key.as_mut() {
         text(k);
+    }
+    if let Some(q) = v.question.as_mut() {
+        text(q);
+    }
+    if let Some(a) = v.asked_by.as_mut() {
+        text(a);
     }
     Ok(changed)
 }

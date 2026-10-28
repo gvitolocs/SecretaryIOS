@@ -103,6 +103,12 @@ fn details(r: &StoredRecord, with_severity: bool) -> String {
     if !first.is_empty() {
         parts.push(first);
     }
+    if let Some(d) = r.decided_by {
+        parts.push(match &r.asked_by {
+            Some(a) => format!("decided by {} for {}", d.as_str(), single_line(a)),
+            None => format!("decided by {}", d.as_str()),
+        });
+    }
     if with_severity {
         if let Some(s) = r.severity {
             parts.push(format!("severity {}", s.as_str()));
@@ -263,6 +269,12 @@ pub fn project_entry(r: &StoredRecord) -> Vec<String> {
         details(r, r.kind == Kind::Incident),
         marker(&r.id)
     )];
+    if let Some(q) = &r.question {
+        out.push(format!(
+            "  Question: {}",
+            clip(&single_line(q), LOG_BODY_CHARS)
+        ));
+    }
     for l in text_lines(&clip(&r.body, PAGE_BODY_CHARS)) {
         if !l.trim().is_empty() {
             out.push(format!("  {l}"));
@@ -574,6 +586,15 @@ pub fn incident_page(r: &StoredRecord) -> String {
 /// `[kind] project: title\nbody\n(cause: ..)(fix: ..)(commit .. on host ..)(links: ..)`
 pub fn honcho_content(r: &StoredRecord) -> String {
     let mut s = format!("[{}] {}: {}", r.kind.as_str(), r.project, r.title);
+    if let Some(d) = r.decided_by {
+        s.push_str(&format!("\nDecided by {}", d.as_str()));
+        if let Some(a) = &r.asked_by {
+            s.push_str(&format!(" for {a}"));
+        }
+    }
+    if let Some(q) = &r.question {
+        s.push_str(&format!("\nQuestion: {}", q.trim()));
+    }
     if !r.body.trim().is_empty() {
         s.push('\n');
         s.push_str(r.body.trim());
