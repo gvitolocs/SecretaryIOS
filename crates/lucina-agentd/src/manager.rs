@@ -36,6 +36,7 @@ mod external_agents;
 mod gate;
 mod orch;
 mod permissions;
+mod provider_subagents;
 mod schedules;
 mod search;
 mod workspaces;
@@ -44,6 +45,7 @@ pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
 pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, ORIGIN_LABEL};
 pub use schedules::{owner_timezone, ScheduleInput, RUN_LABEL, SCHEDULE_LABEL};
 pub use search::{PromptEntry, SearchMatch, SearchResult};
+pub use provider_subagents::{Direction as SubagentDirection, SubagentTimeline};
 pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
 
@@ -129,6 +131,8 @@ pub enum ManagerError {
     /// An MCP token or an agent changing a schedule it didn't create.
     #[error("{0}")]
     ScheduleForbidden(String),
+    #[error("No provider subagent found matching: {0}")]
+    SubagentNotFound(String),
 }
 
 impl ManagerError {
@@ -159,6 +163,7 @@ impl ManagerError {
             ManagerError::ScheduleNotFound(_) => "SCHEDULE_NOT_FOUND",
             ManagerError::ScheduleConflict(_) => "SCHEDULE_CONFLICT",
             ManagerError::ScheduleForbidden(_) => "SCHEDULE_FORBIDDEN",
+            ManagerError::SubagentNotFound(_) => "PROVIDER_SUBAGENT_NOT_FOUND",
         }
     }
 }
@@ -180,6 +185,11 @@ pub enum BusEvent {
     },
     AgentDeleted {
         agent_id: String,
+    },
+    /// A provider subagent was created or changed, got a timeline item, or was removed
+    /// (Paseo `agent.provider_subagents.update`).
+    ProviderSubagent {
+        event: Box<lucina_agents::subagent::SubagentUpdate>,
     },
     /// Lucina only: a permission request (agent or external) was raised or changed.
     Permission {
@@ -348,6 +358,8 @@ struct Agent {
     gate_running: bool,
     /// A turn completed while the gate task ran: check again.
     gate_again: bool,
+    /// The children the provider runs inside this agent, each with its own timeline.
+    subagents: Vec<provider_subagents::Sub>,
 }
 
 impl Agent {
@@ -495,6 +507,7 @@ impl Manager {
             manager.inner.store.save(&record)?;
             let info = manager.inner.providers.get(&record.provider).map(|p| p.info());
             let agent = Agent {
+                subagents: manager.load_subagents(&record.id),
                 capabilities: Capabilities::stored(),
                 modes: info.as_ref().map(|i| i.modes.clone()).unwrap_or_default(),
                 echoes_user_message: info.as_ref().is_some_and(|i| i.echoes_user_message),
@@ -873,6 +886,10 @@ impl Manager {
                     None => Ok(()),
                 }
             }
+            StreamEvent::ProviderSubagent { provider, event } => {
+                self.apply_subagent(agent, &provider, event);
+                Ok(())
+            }
             other @ StreamEvent::AttentionRequired { .. } => {
                 self.forward(agent, other);
                 Ok(())
@@ -1052,6 +1069,7 @@ impl Manager {
                 gate_pending: false,
                 gate_running: false,
                 gate_again: false,
+                subagents: Vec::new(),
             };
             self.persist(&mut agent);
             self.publish_state(&agent);
@@ -1310,6 +1328,9 @@ impl Manager {
             agent.record.archived_at = Some(archived_at.clone());
             agent.active_turn = None;
             let session = if effects.contains(&Effect::CloseRuntime) { agent.session.take() } else { None };
+            if session.is_some() {
+                self.cancel_running_subagents(agent);
+            }
             self.persist(agent);
             self.publish_state(agent);
             let children: Vec<String> = agents
@@ -1351,6 +1372,7 @@ impl Manager {
             let agent = agents.get_mut(id).ok_or_else(|| ManagerError::NotFound(id.to_string()))?;
             let effects = self.transition(agent, Event::Delete, None)?;
             let session = agent.session.take();
+            self.remove_subagents(agent);
             agents.remove(id);
             (effects, session)
         };

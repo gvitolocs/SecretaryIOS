@@ -30,6 +30,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::acp_subagents::{is_task_call, Children, Ended};
 use crate::jsonrpc::{Incoming, Rpc, RpcError};
 use crate::process::{resolve_program, Proc, Registry, Spec};
 use crate::provider::{EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Session, SessionConfig};
@@ -203,6 +204,7 @@ impl AcpProvider {
                 loading: resume.is_some(),
                 permissions: HashMap::new(),
                 tools: HashMap::new(),
+                subs: Children::default(),
             })),
         });
         session.clone().spawn_reader(incoming);
@@ -326,6 +328,8 @@ struct State {
     /// Our permission id -> (JSON-RPC id, the agent's options as (optionId, kind)).
     permissions: HashMap<String, (Value, Vec<(String, String)>)>,
     tools: HashMap<String, OpenTool>,
+    /// Child sessions (OpenCode's `task` tool), each a provider subagent.
+    subs: Children,
 }
 
 pub struct AcpSession {
@@ -336,11 +340,11 @@ pub struct AcpSession {
     state: Arc<Mutex<State>>,
 }
 
-fn s(v: &Value) -> Option<String> {
+pub(super) fn s(v: &Value) -> Option<String> {
     v.as_str().map(str::to_string)
 }
 
-fn content_text(content: &Value) -> String {
+pub(super) fn content_text(content: &Value) -> String {
     match content {
         Value::Array(items) => items.iter().map(content_text).collect::<Vec<_>>().join(""),
         Value::Object(_) => match content["type"].as_str() {
@@ -362,8 +366,25 @@ pub fn acp_detail(update: &Value, previous: Option<&ToolCallDetail>) -> ToolCall
         (!t.is_empty()).then_some(t).or_else(|| s(&update["rawOutput"]["output"]))
     };
     let diff = update["content"].as_array().and_then(|c| c.iter().find(|i| i["type"] == "diff").cloned());
-    let kind = update["kind"].as_str();
+    // A `task` call keeps its `sub_agent` shape through later updates, whatever `kind` they carry.
+    let kind = if matches!(previous, Some(ToolCallDetail::SubAgent { .. })) { None } else { update["kind"].as_str() };
+    if is_task_call(update) && !matches!(previous, Some(ToolCallDetail::SubAgent { .. })) {
+        return ToolCallDetail::SubAgent {
+            sub_agent_type: s(&raw["subagent_type"]),
+            description: s(&raw["description"]),
+            child_session_id: s(&update["rawOutput"]["metadata"]["sessionId"]),
+            log: output.unwrap_or_default(),
+            actions: Some(Vec::new()),
+        };
+    }
     match (kind, previous) {
+        (None, Some(ToolCallDetail::SubAgent { sub_agent_type, description, child_session_id, log, actions })) => ToolCallDetail::SubAgent {
+            sub_agent_type: sub_agent_type.clone(),
+            description: description.clone(),
+            child_session_id: s(&update["rawOutput"]["metadata"]["sessionId"]).or_else(|| child_session_id.clone()),
+            log: output.unwrap_or_else(|| log.clone()),
+            actions: actions.clone(),
+        },
         (None, Some(prev)) => match (prev, output) {
             (ToolCallDetail::Shell { command, cwd, exit_code, .. }, Some(out)) => {
                 ToolCallDetail::Shell { command: command.clone(), cwd: cwd.clone(), output: Some(out), exit_code: exit_code.clone() }
@@ -420,7 +441,7 @@ pub fn is_quota_reply(reply: &str) -> bool {
             || r.starts_with("usage limit reached"))
 }
 
-fn tool_status(v: &Value) -> Option<ToolCallStatus> {
+pub(super) fn tool_status(v: &Value) -> Option<ToolCallStatus> {
     Some(match v.as_str()? {
         "pending" | "in_progress" => ToolCallStatus::Running,
         "completed" => ToolCallStatus::Completed,
@@ -448,13 +469,34 @@ impl AcpSession {
             while let Some(msg) = incoming.recv().await {
                 match msg {
                     Incoming::Notification { method, params } if method == "session/update" => {
-                        if !self.lock().loading {
+                        let (loading, own) = {
+                            let st = self.lock();
+                            (st.loading, st.session_id.clone())
+                        };
+                        let from = params["sessionId"].as_str().unwrap_or_default();
+                        if loading {
+                        } else if !from.is_empty() && !own.is_empty() && from != own {
+                            // A child session's update: not the agent's conversation.
+                            let events = {
+                                let mut st = self.lock();
+                                let st = &mut *st;
+                                let running: Vec<String> = st.tools.iter().filter(|(_, t)| matches!(t.detail, ToolCallDetail::SubAgent { .. })).map(|(c, _)| c.clone()).collect();
+                                st.subs.child_update(&self.provider, from, &params["update"], &running)
+                            };
+                            for e in events {
+                                self.emit(e);
+                            }
+                        } else {
                             self.on_update(&params["update"]);
                         }
                     }
                     Incoming::Notification { .. } => {}
                     Incoming::Request { id, method, params } => self.on_request(id, &method, &params).await,
                     Incoming::Closed => {
+                        let lost = self.lock().subs.turn_ended(&self.provider, Ended::Failed);
+                        for e in lost {
+                            self.emit(e);
+                        }
                         let turn = self.lock().turn_id.take();
                         if let Some(turn) = turn {
                             let tail = self.proc_.lock().await.stderr_tail();
@@ -505,7 +547,12 @@ impl AcpSession {
                         st.tools.insert(call_id.clone(), OpenTool { name: name.clone(), detail: detail.clone() });
                     }
                 }
+                let task = matches!(detail, ToolCallDetail::SubAgent { .. }) && is_task_call(u);
+                let linked = if task { self.lock().subs.note_call(&self.provider, &call_id, u) } else { Vec::new() };
                 self.timeline(TimelineItem::ToolCall(Box::new(ToolCall { agent_message: None, call_id, name, detail, metadata: None, status, error })));
+                for e in linked {
+                    self.emit(e);
+                }
             }
             Some("plan") => {
                 let items = u["entries"]
@@ -616,6 +663,17 @@ impl Session for AcpSession {
             };
             if !ours {
                 return;
+            }
+            let ended = match &result {
+                Ok(v) if v["stopReason"] == "cancelled" => Ended::Canceled,
+                Ok(v) if v["stopReason"] == "refusal" => Ended::Failed,
+                Ok(_) if is_quota_reply(&reply) => Ended::Failed,
+                Ok(_) => Ended::Completed,
+                Err(_) => Ended::Failed,
+            };
+            let children = state.lock().unwrap_or_else(|p| p.into_inner()).subs.turn_ended(&provider, ended);
+            for e in children {
+                let _ = events.send(e);
             }
             let ev = match result {
                 Ok(_) if is_quota_reply(&reply) => StreamEvent::TurnFailed {
@@ -729,6 +787,11 @@ mod tests {
         assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type":"edit","filePath":"/w/a","oldString":"a","newString":"b"}));
         let r = acp_detail(&json!({"kind":"read","title":"Read","locations":[{"path":"/w/b"}]}), None);
         assert_eq!(r.kind(), "read");
+        // OpenCode's `task` call is a sub_agent card, with the child's session once the result names it.
+        let t = acp_detail(&json!({"kind":"other","title":"task","rawInput":{"subagent_type":"explore","description":"find it","prompt":"p"}}), None);
+        assert_eq!(serde_json::to_value(&t).unwrap(), json!({"type":"sub_agent","subAgentType":"explore","description":"find it","log":"","actions":[]}));
+        let t2 = acp_detail(&json!({"toolCallId":"t","status":"completed","kind":"other","rawOutput":{"output":"found","metadata":{"sessionId":"ses_1"}}}), Some(&t));
+        assert_eq!(serde_json::to_value(&t2).unwrap(), json!({"type":"sub_agent","subAgentType":"explore","description":"find it","childSessionId":"ses_1","log":"found","actions":[]}));
         assert_eq!(tool_status(&json!("in_progress")), Some(ToolCallStatus::Running));
         assert!(is_quota_reply("Upgrade your plan to continue"));
         assert!(is_quota_reply("Error: You have exceeded your monthly quota (Request ID: F361)"));

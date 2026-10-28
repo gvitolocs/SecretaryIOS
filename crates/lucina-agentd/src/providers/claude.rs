@@ -12,6 +12,8 @@
 //!   answered with a `control_response`. Interrupts are a `control_request` too.
 //! - Modes are Paseo's: plan, default ("Always Ask", the CLI's `manual`),
 //!   acceptEdits, auto, bypassPermissions.
+//! - A `Task` subagent's frames (`parent_tool_use_id` set) are kept out of the conversation: each
+//!   child gets a timeline of its own ([`super::claude_subagents`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -27,6 +29,7 @@ use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
 
+use super::claude_subagents::{Ended, Subagents};
 use crate::process::{Proc, Registry, Spec};
 use crate::provider::{EventSink, ModelInfo, Provider, ProviderError, ProviderInfo, Session, SessionConfig};
 
@@ -111,6 +114,8 @@ impl ClaudeProvider {
                 streamed_messages: HashSet::new(),
                 current_message: None,
                 tools: HashMap::new(),
+                subs: Subagents::default(),
+                closing: false,
                 permissions: HashMap::new(),
                 request_seq: 0,
             })),
@@ -159,9 +164,10 @@ impl Provider for ClaudeProvider {
     }
 }
 
-struct ToolUse {
-    name: String,
-    input: Value,
+#[derive(Clone)]
+pub(super) struct ToolUse {
+    pub(super) name: String,
+    pub(super) input: Value,
 }
 
 struct State {
@@ -175,6 +181,9 @@ struct State {
     streamed_messages: HashSet<String>,
     current_message: Option<String>,
     tools: HashMap<String, ToolUse>,
+    /// The `Task` subagents, each with a timeline of its own (see [`super::claude_subagents`]).
+    subs: Subagents,
+    closing: bool,
     /// Our permission id -> the CLI's control request id.
     permissions: HashMap<String, String>,
     request_seq: u64,
@@ -187,7 +196,7 @@ pub struct ClaudeSession {
     state: Arc<Mutex<State>>,
 }
 
-fn s(v: &Value) -> Option<String> {
+pub(super) fn s(v: &Value) -> Option<String> {
     v.as_str().map(str::to_string)
 }
 
@@ -243,7 +252,7 @@ pub fn detail_for(name: &str, input: &Value, output: Option<&Value>) -> ToolCall
     }
 }
 
-fn tool_result_text(v: &Value) -> String {
+pub(super) fn tool_result_text(v: &Value) -> String {
     match v {
         Value::String(t) => t.clone(),
         Value::Array(blocks) => blocks.iter().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
@@ -251,7 +260,17 @@ fn tool_result_text(v: &Value) -> String {
     }
 }
 
-fn todo_items(input: &Value) -> Vec<TodoEntry> {
+/// The `Task` call a frame belongs to, when it comes from inside a subagent. Claude Code's liveness
+/// tick for a long-running tool also names that tool as its parent, but it is not a frame of a
+/// conversation, and nothing but `assistant` and `user` frames (and their deltas) is routed.
+pub(super) fn sidechain_parent(msg: &Value) -> Option<String> {
+    if !matches!(msg["type"].as_str(), Some("assistant" | "user" | "stream_event")) {
+        return None;
+    }
+    msg["parent_tool_use_id"].as_str().filter(|p| !p.is_empty()).map(str::to_string)
+}
+
+pub(super) fn todo_items(input: &Value) -> Vec<TodoEntry> {
     input["todos"]
         .as_array()
         .map(|todos| {
@@ -276,7 +295,7 @@ fn todo_items(input: &Value) -> Vec<TodoEntry> {
         .unwrap_or_default()
 }
 
-fn tool_item(call_id: &str, name: &str, detail: ToolCallDetail, status: ToolCallStatus, error: Value) -> TimelineItem {
+pub(super) fn tool_item(call_id: &str, name: &str, detail: ToolCallDetail, status: ToolCallStatus, error: Value) -> TimelineItem {
     TimelineItem::ToolCall(Box::new(ToolCall { agent_message: None, call_id: call_id.into(), name: name.into(), detail, metadata: None, status, error }))
 }
 
@@ -294,6 +313,16 @@ impl ClaudeSession {
         self.emit(StreamEvent::Timeline { provider: ID.into(), item, turn_id: turn });
     }
 
+    /// Events from the subagent tracker; its parent-timeline items belong to `turn`.
+    fn emit_all(&self, events: Vec<StreamEvent>, turn: Option<String>) {
+        for ev in events {
+            self.emit(match ev {
+                StreamEvent::Timeline { provider, item, turn_id: None } => StreamEvent::Timeline { provider, item, turn_id: turn.clone() },
+                other => other,
+            });
+        }
+    }
+
     async fn write(&self, msg: Value) -> Result<(), ProviderError> {
         let mut line = msg.to_string();
         line.push('\n');
@@ -309,6 +338,9 @@ impl ClaudeSession {
                 let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else { continue };
                 self.on_message(&msg).await;
             }
+            // Closed on purpose (archive, shutdown): the manager cancels what was running.
+            let lost = if self.lock().closing { Vec::new() } else { self.lock().subs.lost() };
+            self.emit_all(lost, None);
             let turn = self.lock().turn_id.take();
             if let Some(turn) = turn {
                 let tail = self.proc_.lock().await.stderr_tail();
@@ -324,6 +356,16 @@ impl ClaudeSession {
     }
 
     async fn on_message(&self, msg: &Value) {
+        // A subagent's frames are tagged with its `Task` call: they go to its own timeline.
+        if let Some(parent) = sidechain_parent(msg) {
+            let (events, turn) = {
+                let mut st = self.lock();
+                let st = &mut *st;
+                (st.subs.sidechain(msg, &parent, &st.tools), st.turn_id.clone())
+            };
+            self.emit_all(events, turn);
+            return;
+        }
         match msg["type"].as_str() {
             Some("system") if msg["subtype"] == "init" => {
                 let mut st = self.lock();
@@ -336,6 +378,14 @@ impl ClaudeSession {
                 let id = st.session_id.clone();
                 drop(st);
                 self.emit(StreamEvent::ThreadStarted { session_id: id, provider: ID.into() });
+            }
+            Some("system") => {
+                let (events, turn) = {
+                    let mut st = self.lock();
+                    let st = &mut *st;
+                    (st.subs.observe_system(msg, &st.tools), st.turn_id.clone())
+                };
+                self.emit_all(events, turn);
             }
             Some("stream_event") => self.on_stream_event(&msg["event"]),
             Some("assistant") => self.on_assistant(&msg["message"]),
@@ -400,7 +450,15 @@ impl ClaudeSession {
             let failed = block["is_error"] == true;
             let output = &block["content"];
             let (status, error) = if failed { (ToolCallStatus::Failed, json!(tool_result_text(output))) } else { (ToolCallStatus::Completed, Value::Null) };
-            self.timeline(tool_item(&call_id, &tool.name, detail_for(&tool.name, &tool.input, Some(output)), status, error));
+            // A `Task` call that started a subagent: its card carries what the child did.
+            let card = self.lock().subs.settle(&call_id, status, &error, Some(output));
+            match card {
+                Some(events) => {
+                    let turn = self.lock().turn_id.clone();
+                    self.emit_all(events, turn);
+                }
+                None => self.timeline(tool_item(&call_id, &tool.name, detail_for(&tool.name, &tool.input, Some(output)), status, error)),
+            }
         }
     }
 
@@ -424,15 +482,23 @@ impl ClaudeSession {
         let open: Vec<(String, ToolUse)> = self.lock().tools.drain().collect();
         for (call_id, tool) in open {
             let status = if interrupted { ToolCallStatus::Canceled } else { ToolCallStatus::Completed };
-            self.emit(StreamEvent::Timeline {
-                provider: ID.into(),
-                item: tool_item(&call_id, &tool.name, detail_for(&tool.name, &tool.input, None), status, Value::Null),
-                turn_id: turn.clone(),
-            });
+            let card = self.lock().subs.settle(&call_id, status, &Value::Null, None);
+            match card {
+                Some(events) => self.emit_all(events, turn.clone()),
+                None => self.emit(StreamEvent::Timeline {
+                    provider: ID.into(),
+                    item: tool_item(&call_id, &tool.name, detail_for(&tool.name, &tool.input, None), status, Value::Null),
+                    turn_id: turn.clone(),
+                }),
+            }
         }
+        let failed = msg["is_error"] == true || msg["subtype"].as_str().is_some_and(|st| st.starts_with("error"));
+        let ended = if interrupted { Ended::Canceled } else if failed { Ended::Failed } else { Ended::Completed };
+        let events = self.lock().subs.turn_ended(ended);
+        self.emit_all(events, turn.clone());
         if interrupted {
             self.emit(StreamEvent::TurnCanceled { provider: ID.into(), turn_id: turn, reason: "Interrupted".into() });
-        } else if msg["is_error"] == true || msg["subtype"].as_str().is_some_and(|st| st.starts_with("error")) {
+        } else if failed {
             let error = s(&msg["result"]).filter(|r| !r.is_empty()).or_else(|| s(&msg["subtype"])).unwrap_or_else(|| "Claude turn failed".into());
             // `api_error` (e.g. usage_limit_reached) or the terminal reason; the
             // subtype says "success" even for API errors.
@@ -565,6 +631,7 @@ impl Session for ClaudeSession {
     }
 
     async fn close(&self) {
+        self.lock().closing = true;
         let _ = self.interrupt().await;
         self.proc_.lock().await.shutdown(Duration::from_secs(3)).await;
     }
