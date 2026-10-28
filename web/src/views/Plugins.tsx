@@ -1,6 +1,6 @@
 import { useNavigate } from "@solidjs/router";
 import { For, Show, type JSX } from "solid-js";
-import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
+import { AgentsIcon, BookIcon, BulbIcon, BubbleIcon, CheckCircleIcon, CodeIcon, ComputerIcon, DriveIcon, FilmIcon, GamepadIcon, GridIcon, HangerIcon, InstagramIcon, LinkIcon, ListIcon, MicIcon, NoteIcon, PagesIcon, PhoneIcon, PixivIcon, PulseIcon, QrIcon } from "../components/Icons";
 import { t } from "../i18n";
 import { desktopShell } from "../lib/desktopShell";
 import { setShowAdult, showAdult } from "../lib/adult";
@@ -56,6 +56,8 @@ export const PLUGINS: Plugin[] = [
   // Approve a QR sign-in on another screen (views/ScanQr.tsx).
   { id: "scan", icon: QrIcon, title: () => t("login.scanOpen"), detail: () => t("login.scanOpenHint"), href: "/scan" },
   { id: "memos", icon: MicIcon, title: () => t("plugins.memos"), detail: () => t("plugins.memosDetail"), href: "/memos" },
+  // Lucina Prompter: talking points crossed out live (views/Prompter.tsx).
+  { id: "prompter", icon: ListIcon, title: () => t("prompter.title"), detail: () => t("prompter.detail"), href: "/prompter" },
   { id: "films", icon: FilmIcon, title: () => t("plugins.films"), detail: () => t("plugins.filmsDetail"), href: "/films" },
   { id: "drive", icon: DriveIcon, title: () => t("plugins.drive"), detail: () => t("plugins.driveDetail"), href: "/drive" },
   { id: "library", icon: BookIcon, title: () => t("plugins.library"), detail: () => t("plugins.libraryDetail"), href: "/library" },

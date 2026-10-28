@@ -32,6 +32,15 @@ export interface SecretaryShell {
   setAdultPlugins?(on: boolean): void;
   /** Show a red dot with a count on a plugin's rail icon (0 clears it). The rail implements it. */
   setBadge?(plugin: string, count: number): void;
+  /**
+   * Lucina Prompter: open `path` (this origin, e.g. `/prompter/<slug>?live=1&overlay=1`) in a small frameless
+   * window that stays above other apps, at `opacity` (0.3-1). One overlay at a time; a second call reuses it.
+   */
+  openPrompterOverlay?(path: string, opts?: { opacity?: number }): void;
+  /** Inside the overlay: change its window opacity (0.3-1). */
+  setOverlayOpacity?(opacity: number): void;
+  /** Inside the overlay: the take ended; close the overlay window. */
+  closePrompterOverlay?(): void;
 }
 
 declare global {

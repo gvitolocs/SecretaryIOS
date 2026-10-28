@@ -48,7 +48,8 @@ import { nclient } from "./dict/nclient";
 import { pixiv } from "./dict/pixiv";
 import { instagram } from "./dict/instagram";
 import { agents } from "./dict/agents";
+import { prompter } from "./dict/prompter";
 
-export const dictionaries = { decisions, approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup, galleryCategories };
+export const dictionaries = { decisions, approvals, chats, library, common, computer, desk, shell, share, chat, login, weight, gym, wardrobe, notify, links, maps, notes, keep, tasks, studio, models, memos, media, films, drive, plugins, serverHealth, viewer, secrets, gallery, galleryInfo, nclient, pixiv, instagram, agents, prompter, editor, browse, galleryShare, galleryCompare, lab, galleryAlbums, galleryLive, gallerySmart, galleryPeople, galleryDedup, galleryCategories };
 
 export type Dictionaries = typeof dictionaries;

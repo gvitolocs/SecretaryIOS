@@ -1,0 +1,490 @@
+/* Lucina Prompter (views/Prompter.tsx, views/PrompterLive.tsx).
+   The editor page uses the page system (styles/page.css). The live take is a focused
+   full-screen flow, like the live workout: near-black, big type, one accent for the point
+   to read now, readable from 1-2 m. The overlay is the same take, compact. */
+
+.pr-page .pr-row-current {
+  background: var(--pg-fill);
+}
+.pr-rail-empty {
+  margin: 0;
+  padding: 4px 24px 16px;
+  font-size: 13px;
+}
+.pr-rail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--pg-hair);
+}
+.pr-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pr-check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 14px;
+  cursor: pointer;
+}
+.pr-check input {
+  margin-top: 3px;
+  accent-color: var(--pg-data);
+}
+.pr-check small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.pr-notice-ok.pg-notice {
+  color: var(--pg-success);
+  border-color: color-mix(in srgb, var(--pg-success) 35%, transparent);
+  background: color-mix(in srgb, var(--pg-success) 10%, transparent);
+}
+.pr-title-field {
+  margin-bottom: 16px;
+}
+.pr-editor-mode {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.pr-textarea {
+  min-height: 240px;
+  font: 14px/1.6 var(--font-mono, ui-monospace, monospace);
+  resize: vertical;
+}
+.pr-edit-section {
+  padding: 12px 0 16px;
+  border-top: 1px solid var(--pg-hair);
+}
+.pr-edit-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+.pr-edit-head,
+.pr-edit-points li {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.pr-edit-head .pg-input,
+.pr-edit-points .pg-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.pr-edit-title {
+  font-weight: 600;
+}
+.pr-edit-points {
+  margin: 8px 0 4px;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pr-edit-points li::marker {
+  color: var(--pg-muted);
+  font-size: 12px;
+}
+.pr-takes h3 {
+  margin-top: 20px;
+  font-size: 15px;
+}
+.pr-takes h3:first-child {
+  margin-top: 0;
+}
+.pr-result {
+  margin-bottom: 16px;
+}
+.pr-result-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pr-said,
+.pr-missed-list {
+  margin: 0;
+  padding-left: 22px;
+  line-height: 1.6;
+}
+.pr-missed-list {
+  color: var(--pg-warning);
+}
+.pr-missed-list--later {
+  color: var(--pg-muted);
+}
+.pr-sub {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.pr-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.pr-error-text {
+  color: var(--pg-danger);
+  margin: 0;
+}
+
+/* ---------- The live take ---------- */
+
+.pr-live {
+  --pr-bg: #05070a;
+  --pr-text: #f5f7fa;
+  --pr-dim: #8a94a3;
+  --pr-done: #5b6573;
+  --pr-accent: #33d1ff;
+  --pr-started: #ffc94d;
+  --pr-missed: #ff9f5a;
+  --pr-line: rgba(255, 255, 255, 0.1);
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(20px, 3vw, 40px) clamp(20px, 5vw, 72px);
+  background: var(--pr-bg);
+  color: var(--pr-text);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+.pr-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding-bottom: clamp(12px, 2vh, 24px);
+  border-bottom: 1px solid var(--pr-line);
+}
+.pr-kicker {
+  margin: 0 0 6px;
+  font-size: clamp(13px, 1.1vw, 16px);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--pr-accent);
+}
+.pr-section {
+  margin: 0;
+  font-size: clamp(26px, 2.8vw, 44px);
+  font-weight: 600;
+  line-height: 1.15;
+}
+.pr-status {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: clamp(13px, 1vw, 15px);
+  color: var(--pr-dim);
+}
+.pr-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--pr-dim);
+}
+.pr-dot--listening {
+  background: #ff4d5e;
+  box-shadow: 0 0 0 calc(var(--lvl, 0) * 8px) rgba(255, 77, 94, 0.35);
+  transition: box-shadow 80ms linear;
+}
+.pr-dot--paused {
+  background: var(--pr-started);
+}
+.pr-dot--offline {
+  background: var(--pr-missed);
+}
+.pr-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--pr-line);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pr-error {
+  margin: 12px 0 0;
+  color: var(--pr-missed);
+  font-size: 16px;
+}
+.pr-points {
+  flex: 1;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: clamp(12px, 2.5vh, 32px) 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(6px, 1.2vh, 14px);
+}
+.pr-point {
+  display: grid;
+  grid-template-columns: clamp(96px, 8vw, 132px) 1fr;
+  align-items: baseline;
+  gap: 16px;
+  padding: clamp(8px, 1.4vh, 16px) 20px;
+  border-radius: 14px;
+  border-left: 4px solid transparent;
+  cursor: pointer;
+  transition: background 200ms, color 200ms;
+}
+.pr-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: clamp(11px, 0.85vw, 13px);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pr-dim);
+}
+.pr-key {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--pr-line);
+  border-radius: 6px;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.pr-text {
+  font-size: clamp(26px, 2.9vw, 50px);
+  font-weight: 600;
+  line-height: 1.22;
+  color: var(--pr-dim);
+  text-decoration-thickness: 3px;
+}
+.pr-point.is-current {
+  background: rgba(51, 209, 255, 0.09);
+  border-left-color: var(--pr-accent);
+}
+.pr-point.is-current .pr-text {
+  color: var(--pr-text);
+}
+.pr-point.is-current .pr-tag {
+  color: var(--pr-accent);
+}
+.pr-point.is-started .pr-tag {
+  color: var(--pr-started);
+}
+.pr-point.is-started .pr-text {
+  color: var(--pr-text);
+}
+.pr-point.is-done .pr-text {
+  color: var(--pr-done);
+  text-decoration: line-through;
+  text-decoration-color: var(--pr-accent);
+}
+.pr-point.is-done .pr-tag {
+  color: var(--pr-done);
+}
+.pr-point.is-flash {
+  animation: pr-flash 900ms ease-out;
+}
+@keyframes pr-flash {
+  0% {
+    background: rgba(51, 209, 255, 0.35);
+  }
+  100% {
+    background: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pr-point.is-flash {
+    animation: none;
+  }
+}
+.pr-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: clamp(10px, 1.6vh, 18px);
+  border-top: 1px solid var(--pr-line);
+}
+.pr-next {
+  margin: 0;
+  font-size: clamp(15px, 1.3vw, 20px);
+  color: var(--pr-dim);
+}
+.pr-missed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pr-missed-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pr-missed);
+}
+.pr-missed-chip {
+  max-width: 36ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--pr-missed) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pr-missed) 12%, transparent);
+  color: var(--pr-text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.pr-heard {
+  margin: 0;
+  min-height: 1.4em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: ltr;
+  font-size: 14px;
+  color: var(--pr-dim);
+}
+.pr-heard em {
+  color: var(--pr-text);
+  font-style: normal;
+  opacity: 0.75;
+}
+.pr-heard-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-right: 6px;
+}
+.pr-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.pr-btn {
+  padding: 9px 16px;
+  border: 1px solid var(--pr-line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--pr-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.pr-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.pr-btn--stop {
+  border-color: rgba(255, 77, 94, 0.6);
+  background: rgba(255, 77, 94, 0.16);
+}
+.pr-live :is(button, input, li):focus-visible {
+  outline: 2px solid var(--pr-accent);
+  outline-offset: 2px;
+}
+.pr-shortcuts {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--pr-done);
+}
+.pr-opacity {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--pr-dim);
+}
+
+/* Phone: the controls wrap, the shortcuts are hidden (no keyboard). */
+@media (max-width: 700px) {
+  .pr-live {
+    padding: 16px;
+  }
+  .pr-top {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .pr-status {
+    justify-content: flex-start;
+  }
+  .pr-point {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 8px 12px;
+  }
+  .pr-shortcuts,
+  .pr-btn-text {
+    display: none;
+  }
+}
+
+/* ---------- The overlay (Secretary Code's always-on-top window) ---------- */
+
+.pr-live--overlay {
+  padding: 14px 16px;
+  background: rgba(5, 7, 10, 0.92);
+  -webkit-app-region: drag;
+}
+.pr-live--overlay :is(button, input, li, select) {
+  -webkit-app-region: no-drag;
+}
+.pr-live--overlay .pr-top {
+  padding-bottom: 8px;
+}
+.pr-live--overlay .pr-kicker {
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.pr-live--overlay .pr-section {
+  font-size: 18px;
+}
+.pr-live--overlay .pr-status {
+  font-size: 11px;
+  gap: 6px;
+}
+.pr-live--overlay .pr-chip:nth-of-type(n + 4) {
+  display: none;
+}
+.pr-live--overlay .pr-points {
+  padding: 8px 0;
+  gap: 2px;
+}
+.pr-live--overlay .pr-point {
+  grid-template-columns: 1fr;
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+.pr-live--overlay .pr-tag {
+  display: none;
+}
+.pr-live--overlay .pr-text {
+  font-size: clamp(16px, 4.4vw, 26px);
+}
+.pr-live--overlay .pr-heard,
+.pr-live--overlay .pr-shortcuts,
+.pr-live--overlay .pr-btn-text {
+  display: none;
+}
+.pr-live--overlay .pr-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.pr-live--overlay .pr-next {
+  font-size: 13px;
+}
