@@ -121,6 +121,7 @@ pub fn router(lib: Library, extra: Option<Router>) -> Router {
         .route("/v1/media/sources", get(list_sources))
         .route("/v1/media/events", get(events))
         .merge(uploads)
+        .merge(crate::edits::routes())
         .merge(crate::share_http::owner_routes())
         .merge(crate::share_http::public_routes())
         .with_state(lib.clone())
@@ -183,6 +184,8 @@ pub struct ItemOut {
     /// `trashed_at` plus the retention (RFC 3339) while in the Trash; `null` otherwise, and when
     /// the Trash is kept forever.
     pub trash_expires_at: Option<String>,
+    /// The photo has editor changes: `urls.edited` is the derivative, `urls.original` the untouched file.
+    pub edited: bool,
     /// Text around the search words, when a search matched the file's content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -219,7 +222,11 @@ pub fn item_out_full(
         None => (None, None),
     };
     let id = &it.id;
-    let v = it.version;
+    // An edited photo's renditions carry the edit's stamp in their version (`edits.rs`).
+    let edit_stamp = (it.kind == "photo")
+        .then(|| crate::edits::stamp(&lib.cfg, id))
+        .flatten();
+    let v = crate::edits::url_version(it.version, edit_stamp);
     let has_thumb = it.thumb_state == "ready";
     let urls = json!({
         "original": format!("/v1/media/items/{id}/original"),
@@ -228,11 +235,15 @@ pub fn item_out_full(
         "poster": (has_thumb && matches!(it.kind.as_str(), "video" | "audio")).then(|| format!("/v1/media/items/{id}/poster?v={v}")),
         // JPEG XL renditions for the Rust viewer: 256 px grid tile, 1440 px progressive preview.
         // Tokenised when the play secret is configured (no device rate limit, no header).
-        "grid": has_thumb.then(|| rendition_url(lib, id, "grid", v)),
-        "preview": has_thumb.then(|| rendition_url(lib, id, "preview", v)),
+        "grid": has_thumb.then(|| rendition_url(lib, id, "grid", &v)),
+        "preview": has_thumb.then(|| rendition_url(lib, id, "preview", &v)),
         "play": matches!(it.kind.as_str(), "video" | "audio").then(|| format!("/v1/media/items/{id}/play")),
     });
     let mut urls = urls;
+    if edit_stamp.is_some() {
+        urls["edited"] = json!(rendition_url(lib, id, "edited", &v));
+        urls["download_edited"] = json!(format!("/v1/media/items/{id}/edits/download"));
+    }
     let doc = doc_type_of(&it, drive.as_ref());
     let name = drive
         .as_ref()
@@ -266,11 +277,12 @@ pub fn item_out_full(
         drive,
         origin,
         trash_expires_at,
+        edited: edit_stamp.is_some(),
         snippet,
     }
 }
 
-fn rendition_url(lib: &Library, id: &str, which: &str, v: i64) -> String {
+fn rendition_url(lib: &Library, id: &str, which: &str, v: &str) -> String {
     match &lib.signer {
         Some(s) => format!("{}/r/{which}?v={v}", s.base(id).0),
         None => format!("/v1/media/items/{id}/r/{which}?v={v}"),
@@ -550,7 +562,7 @@ struct OriginalQuery {
 }
 
 /// `inline` or `attachment` with the file's name: ASCII for old clients, UTF-8 (RFC 5987) for the rest.
-fn content_disposition(kind: &str, name: &str) -> Option<HeaderValue> {
+pub(crate) fn content_disposition(kind: &str, name: &str) -> Option<HeaderValue> {
     let clean: String = name
         .chars()
         .filter(|c| !c.is_control() && *c != '"' && *c != '\\' && *c != '/')
@@ -951,9 +963,11 @@ async fn rendition(
     Path((id, rendition)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
-    let file = match rendition.as_str() {
-        "grid" => "g.jxl",
-        "preview" => "p.jxl",
+    let (file, mime) = match rendition.as_str() {
+        "grid" => ("g.jxl", "image/jxl"),
+        "preview" => ("p.jxl", "image/jxl"),
+        // The photo editor's full-resolution derivative (`edits.rs`).
+        "edited" => (thumbs::EDITED_FILE, "image/jpeg"),
         _ => return Err(not_found()),
     };
     if id.contains('/') || id.contains("..") {
@@ -969,11 +983,12 @@ async fn rendition(
     if !path.is_file() {
         return Err(not_found());
     }
+    let suffix = crate::edits::etag_suffix(crate::edits::stamp(&lib.cfg, &id));
     serve_file(
         headers,
         path,
-        "image/jxl",
-        &format!("{}-{}-{file}", it.hash, it.version),
+        mime,
+        &format!("{}-{}-{file}{suffix}", it.hash, it.version),
         "private, max-age=31536000, immutable",
     )
     .await
@@ -1006,11 +1021,12 @@ async fn thumb_file(
     if !path.is_file() {
         return Err(not_found());
     }
+    let suffix = crate::edits::etag_suffix(crate::edits::stamp(&lib.cfg, &id));
     serve_file(
         headers,
         path,
         "image/jpeg",
-        &format!("{}-{}-{file}", it.hash, it.version),
+        &format!("{}-{}-{file}{suffix}", it.hash, it.version),
         "private, max-age=604800",
     )
     .await

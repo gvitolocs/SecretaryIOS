@@ -20,6 +20,7 @@ pub mod deletions;
 pub mod doctype;
 pub mod drive;
 pub mod drive_kernel;
+pub mod edits;
 pub mod extract;
 pub mod gallery;
 pub mod geo;

@@ -3,6 +3,9 @@
 //! - `l.jpg`: long side 1600 px, for the viewer;
 //! - `poster.jpg`: a frame of a video (or an audio file's cover art);
 //! - `page1.jpg`: the first page of a Drive PDF or converted Office file (`drive.rs`);
+//! - `edited.jpg`: the photo editor's full-resolution derivative of an edited photo (`edits.rs`); the
+//!   renditions below are made from it instead of the original while it exists;
+//! - `base.jpg`: the unedited picture at 1600 px, the editor's working copy of an edited photo;
 //! - `preview.jpg`: the rendering the phone sent with the upload, used as the source for formats
 //!   we can't decode here (HEIC: nezopt's libheif has no HEVC plugin);
 //! - `g.jxl`: the grid tile, 256 px square (centre crop), JPEG XL d2.5 (about 9 KB);
@@ -17,6 +20,9 @@ use std::process::{Command, Stdio};
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
 use crate::config::Config;
+
+/// The editor's derivative (`edits.rs`).
+pub const EDITED_FILE: &str = "edited.jpg";
 
 pub const SMALL_SHORT_SIDE: u32 = 360;
 pub const LARGE_LONG_SIDE: u32 = 1600;
@@ -84,13 +90,13 @@ pub fn generate(
     let preview = dir.join("preview.jpg");
     let poster = dir.join("poster.jpg");
     let source: Option<PathBuf> = match kind {
+        // An edited photo's renditions show the edit (`edits.rs` keeps the derivative here).
         "photo" => {
-            if preview.is_file() {
-                Some(preview.clone())
-            } else if decodable(original) {
-                Some(original.to_path_buf())
+            let edited = dir.join(EDITED_FILE);
+            if edited.is_file() {
+                Some(edited)
             } else {
-                None
+                display_source(&dir, original)
             }
         }
         "video" => {
@@ -132,6 +138,19 @@ pub fn generate(
     Ok(ThumbState::Ready(thumb_hash(&img)))
 }
 
+/// The file renditions of a photo are made from: the phone's own rendering of it (`preview.jpg`,
+/// for formats we can't decode, like HEIC) or the original itself when the `image` crate reads it.
+pub fn display_source(dir: &Path, original: &Path) -> Option<PathBuf> {
+    let preview = dir.join("preview.jpg");
+    if preview.is_file() {
+        Some(preview)
+    } else if decodable(original) {
+        Some(original.to_path_buf())
+    } else {
+        None
+    }
+}
+
 fn decodable(p: &Path) -> bool {
     ImageReader::open(p)
         .and_then(|r| r.with_guessed_format())
@@ -163,7 +182,7 @@ fn resize_short(img: &DynamicImage, short: u32) -> DynamicImage {
     )
 }
 
-fn resize_long(img: &DynamicImage, long: u32) -> DynamicImage {
+pub fn resize_long(img: &DynamicImage, long: u32) -> DynamicImage {
     if img.width().max(img.height()) <= long {
         return img.clone();
     }

@@ -246,6 +246,22 @@ The upload protocol's decisions (chunk offsets, finish once, dedupe or version) 
   - `-SecretaryGalleryOpenFirst YES` and `-SecretaryGalleryOpen <id>` (open the viewer at launch).
 - Formats compared on real photos: `tools/image-bench` (results in the side-session notes, gallery-image-formats.md). JPEG XL won as the only format with a pure-Rust progressive decoder.
 
+## Photo edits (2026-10-28)
+
+The Gallery's editor (web `components/gallery/editor`) edits non-destructively: an edit list per item plus a rendered derivative. The original file is never touched.
+
+- **Edit list** (`secretary_image::edit::EditList`, JSON, `"v": 1`; the format and the render order are documented at the top of `crates/secretary-image/src/edit.rs`): quarter turns, straighten (±45°, cut to the largest inscribed rectangle), a crop box, nine adjustments (exposure in EV, contrast, highlights, shadows, saturation, warmth, tint, vignette, fade), a named filter with a strength, and markup (pen, highlighter, arrow, text; frame coordinates).
+- **One renderer.** The web editor previews through `image-core.wasm` (`image_edit`, on a copy of at most 1600 px); the server renders the same list from the original at full resolution. Single-threaded, one job at a time (`Library::jobs`), on the blocking pool.
+- **Routes** (`edits.rs`):
+  - `GET items/{id}/edits` → `{ edited, edits, updated_at, base_url, item }`.
+  - `PUT items/{id}/edits` (body: the list) validates (400 with the reason), renders, writes `thumbs/<id>/edited.jpg` (JPEG q92), stores the list in `item_edits`, remakes `s.jpg`, `l.jpg`, `g.jxl`, `p.jxl` and the ThumbHash from the edited picture, sets the item's width and height to the derivative's, and answers like GET. An identity list is a revert. 400 for non-photos, 409 in the Trash, 422 when the server can't decode the picture, 503 when the original is unreachable.
+  - `DELETE items/{id}/edits` reverts: list and derivative go, renditions are made again from the original, width and height come back. Idempotent.
+  - `GET items/{id}/edits/base` is the unedited picture at 1600 px (the editor's working copy; `l.jpg` while not edited, `base.jpg` after). `GET items/{id}/edits/download` is the derivative as `<name>-edited.jpg`.
+- **Item JSON:** `edited: bool`; `urls.edited` (`r/edited`, the full-size derivative) and `urls.download_edited` while edited. `urls.original` and `urls.download` stay the untouched file. An edited item's rendition URLs carry `v=<version>e<stamp>` (the derivative's mtime), so no cache mixes the two looks; a revert returns to the old URLs.
+- **HEIC and other formats the server can't decode** are edited from `preview.jpg` (the phone's rendering), the same source the renditions use. `thumbs::generate` makes renditions from `edited.jpg` while it exists, so a regeneration keeps the edit.
+- A new original for the same asset (the phone re-sends an edited photo) forgets the edit list. Purging an item removes its list and derivative with the rest of its thumbs.
+- Not done: JPEG XL for the derivative (it is JPEG so the renditions can be made from it with the `image` crate); edits for videos; a batch "edited" filter in the list API; text outlines and fonts beyond the embedded Latin subset.
+
 ## Backup and the device rate limit
 
 Every `/v1/media/*` request outside `/s/` passes p1's forward_auth, which allows 60 requests a minute for each device. The backup therefore:

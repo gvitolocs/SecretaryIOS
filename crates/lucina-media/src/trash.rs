@@ -105,6 +105,7 @@ pub fn purge_in(c: &Connection, ids: &[String]) -> rusqlite::Result<PurgeReport>
             [id],
         )?;
         c.execute("DELETE FROM item_versions WHERE item_id = ?1", [id])?;
+        c.execute("DELETE FROM item_edits WHERE item_id = ?1", [id])?;
         c.execute("DELETE FROM externals WHERE item_id = ?1", [id])?;
         c.execute("DELETE FROM uploads WHERE item_id = ?1", [id])?;
         c.execute(

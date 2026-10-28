@@ -255,6 +255,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute(&format!("ALTER TABLE items ADD COLUMN {ddl}"), [])?;
         }
     }
+    crate::edits::init_schema(conn)?;
     Ok(())
 }
 

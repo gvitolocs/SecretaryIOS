@@ -8,8 +8,11 @@
 //!    (the server's 1440 px preview) renders a coarse picture after its first passes and refines
 //!    with every pass; JPEG and PNG (posters, older renditions) appear once complete;
 //! 3. [`view`]: zoom and pan as pure functions, so pinch, double tap and clamping behave the same
-//!    on every platform.
+//!    on every platform;
+//! 4. [`edit`]: non-destructive edits (crop, straighten, colour, markup) as a JSON edit list and a pure
+//!    renderer, so the editor's live preview and the server's full-resolution derivative agree.
 
+pub mod edit;
 pub mod view;
 
 use std::fmt;

@@ -165,6 +165,8 @@ pub fn ingest_file(
             let v = lib
                 .db
                 .with(|c| new_version(c, &item_id, &hash, bytes, &x, place.as_ref()))?;
+            // A new original replaces the editor's look of the old one.
+            crate::edits::forget(lib, &item_id);
             let dir = thumbs::dir_for(cfg, &item_id);
             for f in ["s.jpg", "l.jpg", "poster.jpg", "preview.jpg"] {
                 let _ = std::fs::remove_file(dir.join(f));
