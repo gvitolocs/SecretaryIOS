@@ -31,6 +31,8 @@ pub enum WriterKind {
 #[derive(Clone)]
 pub struct Config {
     pub share: crate::share::ShareConfig,
+    /// YouTube video reports (crate::video, docs/youtube-reports.md).
+    pub video: crate::video::VideoConfig,
     pub bind: SocketAddr,
     /// Every address to listen on (`LUCINA_BIND`, comma-separated; the
     /// first is `bind`).
@@ -370,8 +372,11 @@ impl Config {
             secretary_service_token_file.clone(),
         );
         let hospital = crate::bot_hospital::HospitalConfig::from_lookup(&get, &data_dir);
+        let share = crate::share::ShareConfig::from_lookup(&get);
+        let video = crate::video::VideoConfig::from_lookup(&get, &data_dir, &share.whisper);
         Ok(Self {
-            share: crate::share::ShareConfig::from_lookup(&get),
+            share,
+            video,
             bind,
             binds,
             shadow: flag("LUCINA_SHADOW", false),
