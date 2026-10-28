@@ -1,9 +1,10 @@
 import { Route } from "@solidjs/router";
 import { fireEvent, screen, waitFor, within } from "@solidjs/testing-library";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IgItem, IgPage } from "../api/instagram";
 import { stubFetch, type Call } from "../test/fetch";
 import { renderAt } from "../test/router";
+import { stubWide } from "../test/wide";
 import { instagramBadges, resetInstagramBadges } from "../state/instagramBadge";
 import InstagramView, { errorText } from "./Instagram";
 
@@ -377,5 +378,34 @@ describe("Instagram", () => {
       const body = calls.find((c) => c.url === "/v1/instagram/save")!.body as { items: { url: string; kind: string }[] };
       expect(body.items.map((i) => [i.url, i.kind])).toEqual([["/v1/instagram/s/9/x/c0", "image"], ["/v1/instagram/s/9/x/c1", "video"]]);
     });
+  });
+});
+
+describe("Instagram desktop", () => {
+  beforeEach(() => stubWide());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetInstagramBadges();
+  });
+
+  it("shows the header, Open accent, recent list and watched rail", async () => {
+    serve({
+      recent: [{ username: "nasa", fullName: "NASA", isVerified: true, picUrl: null, openedAt: 1 }],
+      watched: [{ username: "natgeo", picUrl: null, newStories: 2, newPosts: 0, autoSave: false, gone: false }],
+    });
+    renderIg();
+    expect(await screen.findByRole("heading", { level: 1 })).toHaveTextContent("Instagram");
+    expect(screen.getByText("Anonymous: nothing here logs in to Instagram.")).toBeInTheDocument();
+    expect(document.querySelectorAll(".pg-cta")).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Recent profiles" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Watched accounts" })).toBeInTheDocument();
+    expect(document.querySelector(".ig-chips")).toBeNull();
+  });
+
+  it("shows a back link on a profile", async () => {
+    serve({ profile: bundle() });
+    renderIg("/instagram/natgeo");
+    expect(await screen.findByRole("link", { name: "Recent profiles" })).toHaveAttribute("href", "/instagram");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Instagram");
   });
 });

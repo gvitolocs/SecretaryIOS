@@ -120,3 +120,6 @@
 .ig-chip .ig-avatar { width: 32px; height: 32px; font-size: .9rem; }
 .ig-chip__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--lu-type-subheadline); font-weight: 600; }
 .ig-dot { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; border-radius: var(--lu-radius-pill); background: #ff3b30; color: #fff; font-size: 12px; font-weight: 700; line-height: 1; }
+
+.pg .ig-find { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pg .ig-find .media-search { flex: 1; min-width: 12rem; max-width: 20rem; }
