@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use crate::client::{Client, ClientError};
 use crate::config::{default_socket, shorten_path};
 
+mod orch;
 mod ws;
 
 #[derive(Parser, Debug)]
@@ -70,6 +71,18 @@ pub enum Command {
     Workspace(WorkspaceCommand),
     /// Clone a GitHub repo (owner/repo or URL) and register it as a workspace
     Clone(CloneArgs),
+    /// Manage schedules (recurring agent runs)
+    #[command(subcommand)]
+    Schedule(orch::ScheduleCommand),
+    /// Recurring prompts to the calling agent (inside an agent)
+    #[command(subcommand)]
+    Heartbeat(orch::HeartbeatCommand),
+    /// Search agents by title, workspace, branch or what was said
+    Search(orch::SearchArgs),
+    /// Make a subagent independent without stopping or moving it
+    Detach { id: String },
+    /// Serve the agents' MCP tools on stdio (agentd attaches this to its agents)
+    Mcp,
 }
 
 #[derive(Subcommand, Debug)]
@@ -1057,6 +1070,14 @@ pub async fn run(cli: &Cli) -> Result<Output, CmdError> {
         Command::Project(cmd) => ws::project(&client, cmd).await,
         Command::Workspace(cmd) => ws::workspace(&client, cmd).await,
         Command::Clone(a) => ws::clone(&client, a).await,
+        Command::Schedule(cmd) => orch::schedule(&client, cmd).await,
+        Command::Heartbeat(cmd) => orch::heartbeat(&client, cmd).await,
+        Command::Search(a) => orch::search(&client, a).await,
+        Command::Detach { id } => orch::detach(&client, id).await,
+        Command::Mcp => {
+            crate::mcp::serve(client).await.map_err(|e| CmdError::new("MCP_FAILED", e.to_string()))?;
+            Ok(Output { json: None, text: String::new() })
+        }
     }
 }
 

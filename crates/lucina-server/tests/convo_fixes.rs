@@ -76,8 +76,8 @@ async fn paused_game_and_failed_plans() {
     assert!(!system.contains("PRIORITY: this live game block outranks"));
     assert!(system.contains("Reply language: Italian"));
 
-    // 2. A playing run does take the planner; its answer is not JSON twice, so the fallback reply runs
-    //    without tools and is told to answer the latest message only, in its language.
+    // 2. A playing run does take the planner; its answer is not JSON twice, so she says so briefly in the
+    //    language of the message instead of a tool-less guess (no reply call).
     let playing = game_server(true).await;
     let h = harness(
         script(json!({"rules": [
@@ -100,7 +100,11 @@ async fn paused_game_and_failed_plans() {
     let d = h
         .chat("You know what time is the meeting therese è teresa")
         .await;
-    assert_eq!(d["reply"], "It is at 12:00.", "{d}");
+    assert_eq!(
+        d["reply"],
+        "Sorry, I got tangled up working out how to handle that message. Could you send it again?",
+        "{d}"
+    );
     let ks = kinds(&h);
     assert_eq!(
         ks.iter().filter(|k| **k == "plan").count(),
@@ -116,13 +120,7 @@ async fn paused_game_and_failed_plans() {
     assert!(plans[1]["messages"]
         .to_string()
         .contains("Return only the JSON object for this turn"));
-    let reply = reqs
-        .iter()
-        .rfind(|r| lucina_server::fake::kind_of(r) == "reply")
-        .unwrap();
-    let system = system_of(reply);
-    assert!(system.contains("Answer ONLY the owner's latest message"));
-    assert!(system.contains("Reply language: English"));
+    assert!(!ks.contains(&"reply"), "no tool-less guess after two failed plans: {ks:?}");
 }
 
 /// 10:59: "Explode outlook in your sandbox" (speech-to-text for "Explore ...") is routed to her computer before

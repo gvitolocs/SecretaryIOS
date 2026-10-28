@@ -34,11 +34,17 @@ use crate::store::{Store, StoreError};
 
 mod external_agents;
 mod gate;
+mod orch;
 mod permissions;
+mod schedules;
+mod search;
 mod workspaces;
 
 pub use gate::{GateConfig, GateRequest, CONFIG_FILE};
-pub use permissions::{ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
+pub use orch::{Caller, DEPTH_LABEL, MAX_DEPTH, ORIGIN_LABEL};
+pub use schedules::{owner_timezone, ScheduleInput, RUN_LABEL, SCHEDULE_LABEL};
+pub use search::{PromptEntry, SearchMatch, SearchResult};
+pub use permissions::{ApprovalCandidate, ExternalRequest, PermissionView, Resolution, EXPIRED_MESSAGE};
 pub use workspaces::{metadata_provider, SWEEP_EVERY};
 
 use crate::workspaces::{Registry as Workspaces, WsError};
@@ -108,6 +114,19 @@ pub enum ManagerError {
     CommandNotFound(String),
     #[error("{0}")]
     CommandExpired(String),
+    /// A subagent tried to start another agent (the depth limit).
+    #[error("{0}")]
+    DelegationDepth(String),
+    /// An agent acted on an agent that is not its subagent.
+    #[error("{0}")]
+    NotYourAgent(String),
+    #[error("{0}")]
+    ScheduleNotFound(String),
+    #[error("{0}")]
+    ScheduleConflict(String),
+    /// An MCP token or an agent changing a schedule it didn't create.
+    #[error("{0}")]
+    ScheduleForbidden(String),
 }
 
 impl ManagerError {
@@ -133,6 +152,11 @@ impl ManagerError {
             ManagerError::NotOwner(_) => "NOT_OWNER",
             ManagerError::CommandNotFound(_) => "COMMAND_NOT_FOUND",
             ManagerError::CommandExpired(_) => "COMMAND_EXPIRED",
+            ManagerError::DelegationDepth(_) => "DELEGATION_DEPTH",
+            ManagerError::NotYourAgent(_) => "NOT_YOUR_AGENT",
+            ManagerError::ScheduleNotFound(_) => "SCHEDULE_NOT_FOUND",
+            ManagerError::ScheduleConflict(_) => "SCHEDULE_CONFLICT",
+            ManagerError::ScheduleForbidden(_) => "SCHEDULE_FORBIDDEN",
         }
     }
 }
@@ -321,6 +345,8 @@ struct Inner {
     book: Mutex<HashMap<String, permissions::Entry>>,
     options: Options,
     workspaces: Workspaces,
+    /// Schedules, subagents and agent messages (phase 6).
+    orch: orch::Orch,
 }
 
 #[derive(Clone)]
@@ -368,9 +394,11 @@ impl Manager {
             let _ = ws_bus.send(BusEvent::Workspace { workspace: Box::new(w.clone()) });
         });
         let workspaces = Workspaces::open(store.clone(), options.workspaces.clone(), publish)?;
+        let orch = orch::Orch::open(&store)?;
         let manager = Manager {
             inner: Arc::new(Inner {
                 workspaces,
+                orch,
                 store,
                 providers,
                 lanes,
@@ -620,8 +648,23 @@ impl Manager {
         }
     }
 
+    /// Append to the timeline. A prompt that is a `<lucina-system>` envelope (an agent's
+    /// message, a finish notice, a heartbeat) shows as what it is (Paseo
+    /// `projectAgentMessages`).
     fn append(&self, agent: &mut Agent, item: TimelineItem, turn_id: Option<String>) {
-        let row = TimelineRow { seq: agent.next_seq(), timestamp: now_iso(), item, turn_id };
+        if let TimelineItem::UserMessage { text, .. } = &item {
+            if text.starts_with(&format!("<{}", lucina_agents::envelope::TAG)) {
+                for projected in lucina_agents::envelope::project_user_text(text) {
+                    self.append_row(agent, projected, turn_id.clone());
+                }
+                return;
+            }
+        }
+        self.append_row(agent, item, turn_id)
+    }
+
+    fn append_row(&self, agent: &mut Agent, item: TimelineItem, turn_id: Option<String>) {
+        let row =TimelineRow { seq: agent.next_seq(), timestamp: now_iso(), item, turn_id };
         if let Err(e) = self.inner.store.append_row(&agent.record.id, &row) {
             tracing::error!(agent = %agent.record.id, error = %e, "failed to append timeline row");
         }

@@ -209,13 +209,13 @@ impl AcpProvider {
         let (session_id, modes, config_options) = match resume {
             Some(sid) if can_load => {
                 let resp = rpc
-                    .request("session/load", json!({"sessionId": sid, "cwd": config.cwd, "mcpServers": []}), RPC_TIMEOUT)
+                    .request("session/load", json!({"sessionId": sid, "cwd": config.cwd, "mcpServers": crate::mcp::acp_servers(config.agent_id.is_some())}), RPC_TIMEOUT)
                     .await
                     .map_err(|e| fail("session/load", e))?;
                 (sid.to_string(), resp["modes"].clone(), resp["configOptions"].clone())
             }
             _ => {
-                let resp = rpc.request("session/new", json!({"cwd": config.cwd, "mcpServers": []}), RPC_TIMEOUT).await;
+                let resp = rpc.request("session/new", json!({"cwd": config.cwd, "mcpServers": crate::mcp::acp_servers(config.agent_id.is_some())}), RPC_TIMEOUT).await;
                 let resp = match resp {
                     Ok(v) => v,
                     Err(e) => {

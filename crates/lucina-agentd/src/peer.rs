@@ -59,25 +59,42 @@ fn stat_ids(pid: i32) -> Option<(i32, i32, i32)> {
 
 /// Whether `pid` runs under one of `providers` (ancestor, process group or session).
 pub fn descends_from(pid: i32, providers: &HashSet<u32>) -> bool {
+    provider_of(pid, providers).is_some()
+}
+
+/// The provider process `pid` runs under (the nearest one: the process itself, then
+/// its group or session, then its ancestors').
+pub fn provider_of(pid: i32, providers: &HashSet<u32>) -> Option<u32> {
     if providers.is_empty() {
-        return false;
+        return None;
     }
-    let hit = |p: i32| p > 0 && providers.contains(&(p as u32));
+    let hit = |p: i32| (p > 0 && providers.contains(&(p as u32))).then_some(p as u32);
     let mut current = pid;
     for _ in 0..64 {
-        if hit(current) {
-            return true;
+        if let Some(p) = hit(current) {
+            return Some(p);
         }
-        let Some((ppid, pgrp, session)) = stat_ids(current) else { return false };
-        if hit(pgrp) || hit(session) {
-            return true;
+        let (ppid, pgrp, session) = stat_ids(current)?;
+        if let Some(p) = hit(pgrp).or_else(|| hit(session)) {
+            return Some(p);
         }
         if ppid <= 1 {
-            return false;
+            return None;
         }
         current = ppid;
     }
-    false
+    None
+}
+
+/// The agent a provider process runs for: the `LUCINA_AGENT_ID` agentd put in its
+/// environment at launch (`/proc/<pid>/environ` is the launch environment, which the
+/// agent's own commands can't change).
+pub fn agent_of(provider_pid: u32) -> Option<String> {
+    let env = std::fs::read(format!("/proc/{provider_pid}/environ")).ok()?;
+    env.split(|b| *b == 0)
+        .find_map(|kv| kv.strip_prefix(b"LUCINA_AGENT_ID="))
+        .map(|v| String::from_utf8_lossy(v).to_string())
+        .filter(|v| !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
 }
 
 /// The origin of a request (see the module docs).

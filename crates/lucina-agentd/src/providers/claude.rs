@@ -89,6 +89,12 @@ impl ClaudeProvider {
         if let Some(r) = resume {
             args.extend(["--resume".into(), r.to_string()]);
         }
+        // The agents' own tools (subagents, heartbeats, search): `lagent mcp`.
+        if config.agent_id.is_some() {
+            if let Some(server) = crate::mcp::attach() {
+                args.extend(["--mcp-config".into(), serde_json::json!({"mcpServers": {crate::mcp::SERVER: server}}).to_string()]);
+            }
+        }
         let spec = Spec { program: self.bin.clone(), args, cwd: config.cwd.clone(), env: config.env.clone(), env_remove: Vec::new() };
         let (proc_, stdin, stdout) = Proc::spawn(&spec, self.registry.as_ref()).map_err(|e| ProviderError::new(format!("cannot start claude: {e}")))?;
         let session = Arc::new(ClaudeSession {

@@ -35,6 +35,10 @@
 //!   and when a worktree may be removed (`verification/verus/worktree_guard.rs`).
 //! - Lucina only: [`external`] (agents another host runs, their owner device and
 //!   queued commands) and [`stream`] (event ids and `Last-Event-ID` resume).
+//! - Orchestration (phase 6): [`schedule`] (schedules, heartbeats, cron;
+//!   `protocol/schedule/*`), [`envelope`] (messages between agents and finish
+//!   notices; `agent-messages/envelope.js`, `finish-subscriptions/internal/notification.js`)
+//!   and [`text_match`] (typo-tolerant search ranking; `protocol/search/text-match.js`).
 //!
 //! String lengths and cuts follow JavaScript (UTF-16 code units, JS whitespace;
 //! see [`jsstr`]), so truncated texts match Paseo's byte for byte.
@@ -46,6 +50,7 @@ pub mod bucket;
 pub mod curator;
 pub mod diffparse;
 pub mod display;
+pub mod envelope;
 pub mod events;
 pub mod external;
 pub mod jsstr;
@@ -55,7 +60,9 @@ pub mod permission;
 pub mod permission_gate;
 pub mod projection;
 pub mod run_gate;
+pub mod schedule;
 pub mod stream;
+pub mod text_match;
 pub mod timeline;
 pub mod title;
 pub mod types;
